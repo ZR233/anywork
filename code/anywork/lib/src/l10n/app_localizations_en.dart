@@ -2344,6 +2344,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanApproved => 'Approved';
 
   @override
+  String get planDetailDrafting => 'Drafting';
+
+  @override
+  String get planDetailRevisionRequested => 'Changes requested';
+
+  @override
   String get statusPlanEntry => 'Plan';
 
   @override
@@ -3998,6 +4004,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineUserInputNoAnswer => 'No answer provided';
+
+  @override
+  String get timelineUserInputOptions => 'Options';
 
   @override
   String get timelineUserInputSecretHidden => 'Sensitive answer hidden';

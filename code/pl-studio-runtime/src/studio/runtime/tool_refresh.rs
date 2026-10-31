@@ -92,7 +92,8 @@ impl CatalogSources {
             | StudioProductEventKind::AgentProfilesStateChanged(_)
             | StudioProductEventKind::AcpAuthStateChanged(_)
             | StudioProductEventKind::AcpInstallStateChanged(_)
-            | StudioProductEventKind::BotsStateChanged(_) => None,
+            | StudioProductEventKind::BotsStateChanged(_)
+            | StudioProductEventKind::ChildInteractionsChanged(_) => None,
         };
         if let Some((key, value)) = entry {
             self.0.insert(key, crate::hash::canonical_json_hash(&value));

@@ -1,8 +1,10 @@
-//! 按身份、字段与 revision 分块读取完整正文。
+//! 按记录、字段与字节偏移分块读取完整正文。
 //!
-//! 详情不是“整条全文入口”：请求必须同时给出条目身份、字段身份、内容版本与可选 continuation，
-//! 结果是一段落在 UTF-8 边界上的有界正文块、字段完整字节数和下一块游标。读取只取所需区间，不先
-//! 物化整个前缀或剩余全文；版本变化时明确报错，绝不把不同 revision 的块拼成一篇正文。
+//! 详情不是“整条全文入口”：请求给出条目身份、字段身份与可选 continuation，结果是一段落在
+//! UTF-8 边界上的有界正文块、字段完整字节数和下一块游标。读取只取所需区间，不先物化整个前缀或
+//! 剩余全文。完成记录不可变，因此没有内容版本：continuation 绑定记录身份、字段身份与偏移，读取
+//! 时逐项校验，从一个字段取得的 continuation 不能被带到另一个字段或另一条记录上，也不会被当成
+//! “附近某个位置”的猜测。不存在字段与空字段是两种不同的事实。
 
 use crate::chat::{ChatError, ChatField};
 
@@ -16,26 +18,23 @@ pub const MAX_DETAIL_BYTES: usize = 256 * 1024;
 /// 方不会被强制读取远超所需的字节。
 pub const MIN_DETAIL_BYTES: usize = 4;
 
-/// 字段内的一段位置游标：绑定身份、字段、版本与字节偏移的 continuation。
+/// 字段内的一段位置游标：绑定记录身份、字段身份与字节偏移的 continuation。
 ///
-/// 它不是 Dart 字符下标，也不是可跨字段复用的偏移：`item_id`、`field` 与 `revision` 一起构成它的
-/// 语义，读取时逐项校验，因此从一个字段取得的 continuation 不能被带到另一个字段、另一条条目或另一个
-/// 版本上，也不会被当成“附近某个位置”的猜测。偏移本身始终落在已交付正文的 UTF-8 边界上。
+/// 它不是 Dart 字符下标，也不是可跨字段复用的偏移：`item_id` 与 `field` 一起构成它的语义，读取时
+/// 逐项校验。偏移本身始终落在已交付正文的 UTF-8 边界上。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatDetailCursor {
     item_id: String,
     field: ChatField,
-    revision: u64,
     offset: u64,
 }
 
 impl ChatDetailCursor {
     /// 由绑定事实与字段内字节偏移构造 continuation。
-    pub fn new(item_id: impl Into<String>, field: ChatField, revision: u64, offset: u64) -> Self {
+    pub fn new(item_id: impl Into<String>, field: ChatField, offset: u64) -> Self {
         Self {
             item_id: item_id.into(),
             field,
-            revision,
             offset,
         }
     }
@@ -48,11 +47,6 @@ impl ChatDetailCursor {
     /// 该 continuation 所属的字段身份。
     pub fn field(&self) -> &ChatField {
         &self.field
-    }
-
-    /// 该 continuation 绑定的内容版本。
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     /// 字段内字节偏移。
@@ -74,12 +68,6 @@ impl ChatDetailCursor {
                 self.field, request.field
             )));
         }
-        if self.revision != request.revision {
-            return Err(ChatError::InvalidArgument(format!(
-                "detail continuation binds revision {} instead of {}",
-                self.revision, request.revision
-            )));
-        }
         Ok(())
     }
 }
@@ -89,19 +77,16 @@ impl ChatDetailCursor {
 pub struct ChatDetailRequest {
     pub item_id: String,
     pub field: ChatField,
-    /// 读取绑定的内容版本；与当前版本不一致时明确报过期，不混版本拼接。
-    pub revision: u64,
     pub continuation: Option<ChatDetailCursor>,
     pub max_bytes: Option<usize>,
 }
 
 impl ChatDetailRequest {
     /// 从字段开头读取一块。
-    pub fn new(item_id: impl Into<String>, field: ChatField, revision: u64) -> Self {
+    pub fn new(item_id: impl Into<String>, field: ChatField) -> Self {
         Self {
             item_id: item_id.into(),
             field,
-            revision,
             continuation: None,
             max_bytes: None,
         }
@@ -143,7 +128,6 @@ impl ChatDetailRequest {
 pub struct ChatDetailChunk {
     pub item_id: String,
     pub field: ChatField,
-    pub revision: u64,
     pub text: String,
     pub total_bytes: u64,
     pub continuation: Option<ChatDetailCursor>,

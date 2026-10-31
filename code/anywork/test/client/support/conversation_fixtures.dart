@@ -10,14 +10,11 @@ import 'pump_client_future.dart';
 ConversationItem conversationFixture({
   String id = 'item',
   String threadId = 'thread-main',
-  String turnId = 'turn',
-  int ordinal = 1,
-  int revision = 1,
-  bool saved = true,
-  ConversationLifecycle lifecycle = ConversationLifecycle.terminal,
+  String? turnId = 'turn',
+  int appendSeq = 1,
+  int? sourceEffectSeq,
+  int? sealedAt,
   ConversationDescriptor? descriptor,
-  DateTime? createdAt,
-  DateTime? updatedAt,
   ConversationItemSource source = const ConversationContentSource(),
   Map<ThreadContentFieldView, int> totalBytes = const {},
   Map<ThreadContentFieldView, String>? fields,
@@ -26,23 +23,22 @@ ConversationItem conversationFixture({
     id: id,
     threadId: threadId,
     turnId: turnId,
-    ordinal: ordinal,
-    createdAt: createdAt ?? DateTime.fromMillisecondsSinceEpoch(1700000000000),
-    updatedAt: updatedAt ?? DateTime.fromMillisecondsSinceEpoch(1700000001000),
+    appendSeq: appendSeq,
+    sourceEffectSeq: sourceEffectSeq,
+    sealedAt: sealedAt,
   ),
-  revision: revision,
   descriptor:
       descriptor ??
       ConversationTextDescriptor(
         channel: ThreadTextChannel.finalAnswer,
         attachments: const [],
-        lifecycle: CompletedThreadContentView(
-          DateTime.fromMillisecondsSinceEpoch(1700000001000),
+        outcome: ConversationContentCompleted(
+          CompletedThreadContentView(
+            DateTime.fromMillisecondsSinceEpoch(1700000001),
+          ),
         ),
       ),
   source: source,
-  saved: saved,
-  lifecycle: lifecycle,
   fields: List.unmodifiable(
     (fields ?? {const ThreadTextFieldView(): '中文 🐱\n'}).entries.map(
       (entry) => ConversationFieldPreview(
@@ -84,28 +80,23 @@ typedef ConversationInputFixture = ({
 /// 准备独立的读快照；不是更新算法，调用方必须显式给出完整字段事实。
 ConversationItem conversationCopyFixture(
   ConversationItem current, {
-  int? revision,
-  int? ordinal,
+  int? appendSeq,
   String? turnId,
-  DateTime? updatedAt,
+  int? sourceEffectSeq,
+  int? sealedAt,
   ConversationDescriptor? descriptor,
   ConversationItemSource? source,
-  bool? saved,
-  ConversationLifecycle? lifecycle,
   Map<ThreadContentFieldView, String>? fields,
   Map<ThreadContentFieldView, int> totalBytes = const {},
 }) => conversationFixture(
   id: current.id,
   threadId: current.header.threadId,
   turnId: turnId ?? current.header.turnId,
-  ordinal: ordinal ?? current.header.ordinal,
-  createdAt: current.header.createdAt,
-  updatedAt: updatedAt ?? current.header.updatedAt,
-  revision: revision ?? current.revision,
+  appendSeq: appendSeq ?? current.header.appendSeq,
+  sourceEffectSeq: sourceEffectSeq ?? current.header.sourceEffectSeq,
+  sealedAt: sealedAt ?? current.header.sealedAt,
   descriptor: descriptor ?? current.descriptor,
   source: source ?? current.source,
-  saved: saved ?? current.saved,
-  lifecycle: lifecycle ?? current.lifecycle,
   fields:
       fields ?? {for (final field in current.fields) field.field: field.text},
   totalBytes: {
@@ -189,6 +180,8 @@ final class ConversationProbe {
     while (true) {
       final frame = await next();
       switch (frame.event) {
+        case ConversationActivityContentEvent():
+          await feed.acknowledge(frame.deliverySequence);
         case ConversationBaselineEvent(:final baseline):
           await feed.acknowledge(frame.deliverySequence);
           return baseline;
@@ -208,6 +201,8 @@ final class ConversationProbe {
     while (true) {
       final frame = await next();
       switch (frame.event) {
+        case ConversationActivityContentEvent():
+          await feed.acknowledge(frame.deliverySequence);
         case ConversationUpdateEvent(:final update):
           await feed.acknowledge(frame.deliverySequence);
           return update;

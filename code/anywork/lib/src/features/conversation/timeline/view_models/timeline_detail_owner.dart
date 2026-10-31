@@ -15,6 +15,7 @@ final class TimelineDetailOwner extends ChangeNotifier {
     required this.itemId,
     required this.field,
   }) {
+    _item = lease.itemOf(itemId);
     _reference = lease.detailRef(itemId, field);
     lease.retirement.addListener(_checkIdentity);
     _rebindIdentity();
@@ -24,12 +25,13 @@ final class TimelineDetailOwner extends ChangeNotifier {
   final String itemId;
   final ThreadContentFieldView field;
   late final ConversationDetailRef? _reference;
+  late final ConversationItem? _item;
   Listenable? _entry;
   Listenable? _member;
   ConversationQueryScope? _scope;
   Future<void>? _accepted;
   Future<void>? _closing;
-  String? _continuation;
+  ConversationQueryCursor? _continuation;
   bool _closed = false;
   bool _invalidated = false;
   TimelineDetailState _state = const TimelineDetailState();
@@ -49,7 +51,7 @@ final class TimelineDetailOwner extends ChangeNotifier {
   bool get _valid =>
       !lease.isRetired &&
       _reference != null &&
-      lease.detailRef(itemId, field) == _reference;
+      identical(lease.itemOf(itemId), _item);
 
   void _rebindIdentity() {
     final entry = lease.presentationFor(itemId);
@@ -86,9 +88,10 @@ final class TimelineDetailOwner extends ChangeNotifier {
   }
 
   bool _isIdentityFailure(Object error) =>
+      error is StaleConversationScope ||
       error is StudioFailure &&
-      (error.code == StudioFailureCode.staleRevision ||
-          error.code == StudioFailureCode.notFound);
+          (error.code == StudioFailureCode.conflict ||
+              error.code == StudioFailureCode.notFound);
 
   Future<void> load() {
     if (_closed || _state.loading || _state.complete || _state.terminal) {
@@ -124,8 +127,8 @@ final class TimelineDetailOwner extends ChangeNotifier {
         final chunk = await scope.readDetail(
           itemId: itemId,
           query: ConversationDetailQuery(
+            timelineEpoch: lease.timelineEpoch,
             field: field,
-            revision: _reference!.revision,
             continuation: before,
             maxBytes: 64 * 1024,
           ),

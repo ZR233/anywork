@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use pl_studio_runtime::{
     StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
     StudioProductEventKind,
@@ -11,7 +11,7 @@ use super::runtime::{
     bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
     bridge_thread_mode_catalog, bridge_update_state,
 };
-use super::thread_stream::bridge_thread;
+use super::thread_stream::{bridge_child_interaction, bridge_thread};
 use crate::api::studio::types::*;
 
 pub(crate) fn bridge_product_event(
@@ -88,6 +88,11 @@ pub(crate) fn bridge_product_event(
             StudioProductEventKind::SessionCostsChanged(state) => {
                 BridgeProductEventPayload::SessionCostsChanged(Box::new(
                     bridge_session_costs_state(state),
+                ))
+            }
+            StudioProductEventKind::ChildInteractionsChanged(state) => {
+                BridgeProductEventPayload::ChildInteractionsChanged(Box::new(
+                    bridge_child_interactions_state(state)?,
                 ))
             }
             StudioProductEventKind::UpdaterStateChanged(state) => {
@@ -168,6 +173,11 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::SessionCosts(state) => {
             BridgeProductBaseline::SessionCosts(Box::new(bridge_session_costs_state(*state)))
         }
+        StudioProductBaselineState::ChildInteractions(state) => {
+            BridgeProductBaseline::ChildInteractions(Box::new(bridge_child_interactions_state(
+                *state,
+            )?))
+        }
         StudioProductBaselineState::Updater(state) => {
             BridgeProductBaseline::Updater(bridge_update_state(*state))
         }
@@ -189,4 +199,132 @@ pub(crate) fn bridge_product_baseline(
         }
     };
     Ok((revision, state))
+}
+
+fn bridge_child_interactions_state(
+    value: pl_studio_runtime::StudioChildInteractionsState,
+) -> Result<BridgeChildInteractionsState> {
+    let revision = value.state.revision();
+    let updated_at = value.state.updated_at();
+    let items = value
+        .state
+        .into_value()
+        .context("child interactions projection has no committed baseline")?
+        .into_iter()
+        .map(bridge_child_interaction)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(BridgeChildInteractionsState {
+        host_thread_id: value.host_thread_id,
+        revision,
+        updated_at,
+        items,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_protocol::{
+        ChildInteractionSummary, InteractionRequest, InteractionScope, UserQuestion,
+    };
+    use pl_studio_runtime::{StudioChildInteractionsState, StudioProductTopic};
+
+    #[test]
+    fn child_interactions_baseline_and_event_preserve_scope_and_pending_payload() -> Result<()> {
+        let mut interaction = InteractionRequest::user_input(
+            "interaction-1",
+            InteractionScope {
+                thread_id: "child-1".into(),
+                turn_id: "turn-1".into(),
+                item_id: Some("item-1".into()),
+                tool_id: Some("tool-1".into()),
+                agent_path: Some("root/child-1".into()),
+                purpose: Default::default(),
+            },
+            vec![UserQuestion {
+                id: "question-1".into(),
+                header: "Credential".into(),
+                question: "Provide the test credential".into(),
+                is_other: true,
+                is_secret: true,
+                options: None,
+            }],
+            41,
+        );
+        interaction.revision = 23;
+        let state = StudioChildInteractionsState {
+            host_thread_id: "root".into(),
+            state: pl_protocol::ObservedResource::ready(
+                7,
+                43,
+                vec![ChildInteractionSummary::new(interaction)],
+            ),
+        };
+        let (_, baseline) = bridge_product_baseline(StudioProductBaseline {
+            topic: StudioProductTopic::ChildInteractions {
+                host_thread_id: "root".into(),
+            },
+            revision: 7,
+            state: StudioProductBaselineState::ChildInteractions(Box::new(state.clone())),
+        })?;
+        let event = bridge_product_event(StudioProductEventEnvelope {
+            event_id: "event-1".into(),
+            sequence: 101,
+            created_at: 47,
+            kind: StudioProductEventKind::ChildInteractionsChanged(state),
+        })?;
+        let BridgeProductBaseline::ChildInteractions(baseline) = baseline else {
+            anyhow::bail!("expected a scoped child-interactions baseline");
+        };
+        let BridgeProductEventPayload::ChildInteractionsChanged(ref payload) = event.payload else {
+            anyhow::bail!("expected a scoped child-interactions event");
+        };
+        assert_eq!(baseline, *payload);
+        assert_eq!(payload.host_thread_id, "root");
+        assert_eq!(payload.revision, 7);
+        assert_eq!(payload.updated_at, 43);
+        let item = &payload.items[0];
+        assert_eq!(item.child_thread_id, "child-1");
+        assert_eq!(item.interaction_id, "interaction-1");
+        assert_eq!(item.revision, 23);
+        assert_eq!(item.interaction.scope.turn_id, "turn-1");
+        let BridgeInteractionContent::UserInput { questions, state } = &item.interaction.content
+        else {
+            anyhow::bail!("pending user input changed kind");
+        };
+        assert!(questions[0].is_secret);
+        assert_eq!(questions[0].question, "Provide the test credential");
+        assert_eq!(
+            state,
+            &BridgeUserInputInteractionState::Pending {
+                operation_id: "interaction-1".into(),
+            }
+        );
+        let encoded = serde_json::to_vec(&event)?;
+        assert_eq!(
+            serde_json::from_slice::<BridgeProductEventEnvelope>(&encoded)?,
+            event
+        );
+
+        let empty = bridge_child_interactions_state(StudioChildInteractionsState {
+            host_thread_id: "root".into(),
+            state: pl_protocol::ObservedResource::ready(8, 49, vec![]),
+        })?;
+        assert_eq!(empty.revision, 8);
+        assert!(empty.items.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn child_interactions_without_committed_state_cannot_masquerade_as_empty() {
+        let result = bridge_child_interactions_state(StudioChildInteractionsState {
+            host_thread_id: "root".into(),
+            state: pl_protocol::ObservedResource::uninitialized(0),
+        });
+        assert!(result.is_err());
+        let invalid = BridgeProductTopic::ChildInteractions {
+            host_thread_id: " ".into(),
+        };
+        assert!(invalid.validate_scope().is_err());
+    }
 }

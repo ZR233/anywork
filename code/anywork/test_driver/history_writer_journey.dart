@@ -89,14 +89,6 @@ _ContentBytes _contentBytes(Map<String, dynamic> snapshot) {
   );
 }
 
-/// Live pointer-free progress token over real typed bytes only.
-///
-/// 只累加真实内容字节（正文 UTF-8、工具进度、逐字段详情 total/preview），因此后续
-/// 观测证明的是**新内容**，不是同一快照重读、行数/状态变化或单纯 revision 抖动。
-/// Evidence only: it is never a performance measurement.
-int _streamingRevision(Map<String, dynamic> snapshot) =>
-    _contentBytes(snapshot).total;
-
 Future<void> main(List<String> args) async {
   if (args.length != 4) {
     stderr.writeln(
@@ -278,32 +270,47 @@ class HistoryLockJourney {
     timings['lockedSubmittedAt'] = lockedAt;
     final samples = <Map<String, Object?>>[];
     var domains = _contentBytes(running);
-    var revision = domains.total;
+    var activityParts = conversationActivityContentObservation(running);
+    if (activityParts == null) {
+      throw StateError('conversationActivity parts absent during locked Turn');
+    }
     var growth = 0;
     for (var step = 0; step < 8 && growth < 3; step++) {
       final next = await waitFor(
-        (snapshot) =>
-            turnId(snapshot) == turn && _streamingRevision(snapshot) > revision,
+        (snapshot) {
+          final current = conversationActivityContentObservation(snapshot);
+          return turnId(snapshot) == turn &&
+              current != null &&
+              conversationActivityContentChanged(activityParts, current);
+        },
         'history_lock_live_increment',
         timeout: const Duration(seconds: 45),
         abort: turnFailed,
       );
       final after = _contentBytes(next);
+      final nextActivityParts = conversationActivityContentObservation(next);
+      if (!conversationActivityContentChanged(
+        activityParts,
+        nextActivityParts,
+      )) {
+        throw StateError(
+          'activity part content did not change at growth sample',
+        );
+      }
       growth += 1;
       final activity = conversationActivity(next);
       samples.add(<String, Object?>{
         'step': growth,
-        'revision': after.total,
-        'bytesBefore': domains.toJson(),
-        'bytesAfter': after.toJson(),
-        'bytesDelta': after.total - domains.total,
+        'activityParts': nextActivityParts,
+        'completedAtomBytesBefore': domains.toJson(),
+        'completedAtomBytesAfter': after.toJson(),
         'rows': timelineRows(next).length,
         'busy': isBusy(next),
         'activityIdentity': activity?['identity'],
         'activityKind': activity?['kind'],
       });
       domains = after;
-      revision = after.total;
+      activityParts = nextActivityParts;
     }
     checks['liveContentGrowsWhileWriterLocked'] = growth >= 3;
     counts['liveGrowthSamples'] = samples.length;
@@ -355,7 +362,7 @@ class HistoryLockJourney {
         'primeTurnId': primeTurn,
         'turnId': turn,
         'terminalStatus': turnStatus(terminal),
-        'liveRevision': revision,
+        'liveActivityParts': conversationActivityContentObservation(terminal),
         'liveGrowthSamples': samples.length,
         'activityIdentity': conversationActivity(terminal)?['identity'],
         'answerLengthBeforeRelease': [

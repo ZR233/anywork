@@ -84,6 +84,7 @@ final settingsTopicSyncProvider = Provider.autoDispose
         AgentDirectoryTopic() ||
         ThreadModeCatalogTopic() ||
         SessionCostsTopic() ||
+        ChildInteractionsTopic() ||
         UpdaterTopic() ||
         PersistenceTopic() ||
         PersistenceQueueTopic() => const DomainSyncStatus(),

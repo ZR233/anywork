@@ -409,7 +409,9 @@ void main() {
             graph.client.conversations
                 .existingSession('thread-main')!
                 .content
-                .lastDeliveredFrame !=
+                .state
+                .value
+                .snapshot !=
             null,
         'Client delivers the initial content baseline',
       );

@@ -45,6 +45,18 @@ pub enum StudioProductEventKind {
     PersistenceQueueStateChanged(StudioPersistenceQueueStateSnapshot),
     AgentProfilesStateChanged(Box<StudioAgentProfilesStateSnapshot>),
     BotsStateChanged(pl_protocol::studio::BotsStateSnapshot),
+    ChildInteractionsChanged(StudioChildInteractionsState),
+}
+
+/// 一个根会话当前可见的直接 child 待决交互集合。
+///
+/// revision 属于该 host 的集合领域，与 Thread commit sequence、interaction revision 和
+/// transport sequence 相互独立。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioChildInteractionsState {
+    pub host_thread_id: String,
+    pub state: ObservedResource<Vec<pl_protocol::ChildInteractionSummary>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

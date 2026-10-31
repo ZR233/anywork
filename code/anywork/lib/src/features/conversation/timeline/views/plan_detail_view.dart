@@ -1,6 +1,37 @@
+import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+
+/// Dock 计划详情的展示状态。运行态来自 [PlanRuntimePhase]；历史决定
+/// `cancelled`/`resolved` 只出现在时间线回执，不进入当前 dock。
+enum PlanDetailStatus {
+  drafting,
+  awaitingConfirmation,
+  revisionRequested,
+  approved,
+}
+
+PlanDetailStatus planDetailStatusFromRuntime(PlanRuntimePhase phase) =>
+    switch (phase) {
+      PlanRuntimePhase.drafting => PlanDetailStatus.drafting,
+      PlanRuntimePhase.awaitingConfirmation =>
+        PlanDetailStatus.awaitingConfirmation,
+      PlanRuntimePhase.revisionRequested => PlanDetailStatus.revisionRequested,
+      PlanRuntimePhase.approved => PlanDetailStatus.approved,
+    };
+
+String planDetailStatusLabel(BuildContext context, PlanDetailStatus status) {
+  final l10n = context.l10n;
+  return switch (status) {
+    PlanDetailStatus.drafting => l10n.planDetailDrafting,
+    PlanDetailStatus.awaitingConfirmation =>
+      l10n.interactionPlanAwaitingConfirmation,
+    PlanDetailStatus.revisionRequested => l10n.planDetailRevisionRequested,
+    PlanDetailStatus.approved => l10n.interactionPlanApproved,
+  };
+}
 
 class PlanDetailView extends StatefulWidget {
   const PlanDetailView({
@@ -8,7 +39,7 @@ class PlanDetailView extends StatefulWidget {
     required this.identity,
     required this.title,
     required this.body,
-    required this.awaitingConfirmation,
+    required this.status,
     required this.onClose,
     this.onToggleReadingMode,
     this.fullWidth = false,
@@ -16,7 +47,7 @@ class PlanDetailView extends StatefulWidget {
   final String identity;
   final String title;
   final Widget body;
-  final bool awaitingConfirmation;
+  final PlanDetailStatus status;
   final VoidCallback onClose;
   final VoidCallback? onToggleReadingMode;
   final bool fullWidth;
@@ -53,7 +84,7 @@ class _PlanDetailViewState extends State<PlanDetailView> {
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                     Text(
-                      widget.awaitingConfirmation ? '等待确认' : '已批准',
+                      planDetailStatusLabel(context, widget.status),
                       key: StudioDriverKeys.planDetailsStatus,
                     ),
                   ],
@@ -67,7 +98,9 @@ class _PlanDetailViewState extends State<PlanDetailView> {
                     minWidth: 48,
                     minHeight: 48,
                   ),
-                  tooltip: widget.fullWidth ? '并排阅读' : '全宽阅读',
+                  tooltip: widget.fullWidth
+                      ? context.l10n.planRestoreSplit
+                      : context.l10n.planExpandReading,
                   onPressed: widget.onToggleReadingMode,
                   icon: Icon(
                     widget.fullWidth
@@ -81,7 +114,7 @@ class _PlanDetailViewState extends State<PlanDetailView> {
                 key: StudioDriverKeys.planDetailsClose,
                 visualDensity: VisualDensity.standard,
                 constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-                tooltip: '关闭',
+                tooltip: context.l10n.modelDetailClose,
                 onPressed: widget.onClose,
                 icon: const Icon(Icons.close),
               ),

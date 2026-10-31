@@ -1,14 +1,87 @@
 //! Typed FRB mirror of the canonical current-activity projection.
 //!
-//! 活动只携带小型 typed 摘要与身份；完整 reasoning/正文/工具参数由
-//! `read_thread_activity_detail` 按身份按需读取。
+//! 活动正文通过有界 begin/text/commit 事件直接交付；分块 staging 与当前态归约归 SDK。
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeActivityTextRegion {
+    Reasoning { item_id: String },
+    Response { item_id: String },
+    ToolArguments { call_id: String },
+    ToolOutput { call_id: String, part_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeActivityPartMetadata {
+    pub item_id: String,
+    pub complete: bool,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeActivityToolMetadata {
+    pub call_id: String,
+    pub task_id: Option<String>,
+    pub name: String,
+    pub state: BridgeThreadActivityToolState,
+    pub started_at: Option<i64>,
+    pub source_order: Option<u64>,
+    pub arguments_bytes: Option<u64>,
+    pub output_bytes: Option<u64>,
+    pub output_parts: Vec<BridgeActivityToolOutputMetadata>,
+    pub wait: Option<super::BridgeThreadWaitPresentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeActivityToolOutputMetadata {
+    pub part_id: String,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeActivityTextOperation {
+    Append {
+        region: BridgeActivityTextRegion,
+        text: String,
+    },
+    Replace {
+        region: BridgeActivityTextRegion,
+        text: String,
+    },
+    Remove {
+        region: BridgeActivityTextRegion,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeActivityContentFrame {
+    Begin {
+        generation: String,
+        base_revision: Option<u64>,
+        revision: u64,
+        activity: Option<Box<BridgeThreadActivity>>,
+        reasoning: Vec<BridgeActivityPartMetadata>,
+        response: Vec<BridgeActivityPartMetadata>,
+        tools: Vec<BridgeActivityToolMetadata>,
+        total_bytes: u64,
+    },
+    Text {
+        generation: String,
+        revision: u64,
+        operations: Vec<BridgeActivityTextOperation>,
+    },
+    Commit {
+        generation: String,
+        revision: u64,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadActivity {
     pub thread_id: String,
     pub identity: String,
     pub revision: u64,
-    pub turn_id: String,
+    pub turn_id: Option<String>,
+    pub execution_id: Option<String>,
     pub input_id: Option<String>,
     pub attempt_id: Option<String>,
     pub kind: BridgeThreadActivityKind,
@@ -71,50 +144,6 @@ pub struct BridgeThreadActivityTools {
     pub background: u32,
     pub active: Vec<BridgeThreadActivityToolEntry>,
     pub latest_started: Option<BridgeThreadActivityToolEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeThreadActivityContentPart {
-    pub item_id: String,
-    /// canonical item revision；`None` 表示这段内容来自纯内存推导，没有可证明的 revision。
-    pub revision: Option<u64>,
-    /// 该内容段是否已终态；`false` 表示仍在流式追加。
-    pub complete: bool,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeThreadActivityToolDetail {
-    pub call_id: String,
-    pub task_id: Option<String>,
-    pub name: String,
-    pub state: BridgeThreadActivityToolState,
-    /// canonical item 的原始调用参数；不可读时为 `None`。
-    pub arguments: Option<String>,
-    /// 目前观测到的流式或终态输出；暂无输出为 `None`。
-    pub output: Option<String>,
-    pub ordinal: Option<u64>,
-    pub started_at: Option<i64>,
-    pub wait: Option<super::BridgeThreadWaitPresentation>,
-}
-
-/// 活动详情的生命周期结果：只有 `Current` 携带正文。
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeThreadActivityDetail {
-    Current {
-        activity: BridgeThreadActivity,
-        reasoning: Vec<BridgeThreadActivityContentPart>,
-        response: Vec<BridgeThreadActivityContentPart>,
-        tools: Vec<BridgeThreadActivityToolDetail>,
-    },
-    Superseded {
-        activity: BridgeThreadActivity,
-        requested_activity_id: String,
-    },
-    Ended {
-        thread_id: String,
-        activity_id: String,
-    },
 }
 
 /// Thread 存储状态；所有字段都是 typed 事实，缺失表示未知而不是零。

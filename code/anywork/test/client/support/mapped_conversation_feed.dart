@@ -30,14 +30,6 @@ final class MappedConversationFeed implements ConversationFeed {
   Future<void> acknowledge(int deliverySequence) =>
       inner.acknowledge(deliverySequence);
   @override
-  Future<ConversationPage> page({String? before, int? limit}) =>
-      inner.page(before: before, limit: limit);
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) => inner.readDetail(itemId: itemId, query: query);
-  @override
   void requestClose() => inner.requestClose();
   @override
   Future<void> close() => inner.close();
@@ -123,22 +115,6 @@ class ScriptedConversationFeed implements ConversationFeed {
       publish(ConversationUpdateEvent(update: update));
   void emitState(ThreadStreamFrame frame) =>
       publish(ConversationStateEvent(frame: frame));
-
-  @override
-  Future<ConversationPage> page({String? before, int? limit}) async =>
-      const ConversationPage(items: [], before: null, hasOlder: false);
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) async => ConversationDetailChunk(
-    itemId: itemId,
-    field: query.field,
-    revision: query.revision,
-    text: '',
-    totalBytes: 0,
-    continuation: null,
-  );
 
   @override
   void requestClose() {

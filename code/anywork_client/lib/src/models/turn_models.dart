@@ -236,7 +236,7 @@ enum StudioTurnBudgetLimitKind {
   finalization,
 }
 
-class StudioTurnBudgetUsage {
+final class StudioTurnBudgetUsage {
   const StudioTurnBudgetUsage({
     required this.modelSteps,
     required this.toolCalls,
@@ -261,7 +261,7 @@ class StudioTurnBudgetUsage {
   int get hashCode => Object.hash(modelSteps, toolCalls, waitCalls, elapsedMs);
 }
 
-class StudioTurnBudgetLimit {
+final class StudioTurnBudgetLimit {
   const StudioTurnBudgetLimit({required this.kind, required this.usage});
 
   final StudioTurnBudgetLimitKind kind;
@@ -373,7 +373,7 @@ class StudioTurnView {
       Object.hash(inputId, turnId, threadId, revision, state, updatedAt);
 }
 
-class StudioTurnFailureView {
+final class StudioTurnFailureView {
   const StudioTurnFailureView({
     required this.category,
     required this.providerKind,

@@ -6,8 +6,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flyer_chat_file_message/flyer_chat_file_message.dart';
-import 'package:flyer_chat_text_stream_message/flyer_chat_text_stream_message.dart'
-    show StreamState, StreamStateStreaming;
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
@@ -65,6 +63,7 @@ class TimelineView extends StatefulWidget {
 
 class _TimelineViewState extends State<TimelineView> {
   StreamSubscription<ChatOperation>? _operations;
+  VoidCallback? _scrollToBottom;
   bool _userIntent = false;
   bool _actionIntent = false;
   bool _scheduled = false;
@@ -100,9 +99,7 @@ class _TimelineViewState extends State<TimelineView> {
       !widget.controls.isRetired &&
       widget.view.hasOlder &&
       !widget.view.isLoadingOlder &&
-      widget.view.olderError == null &&
-      !widget.view.isPreparingLive &&
-      widget.view.connection == TimelineConnectionPhase.ready;
+      widget.view.olderError == null;
   void _scheduleFill() {
     if (!mounted || _scheduled) return;
     _scheduled = true;
@@ -158,6 +155,26 @@ class _TimelineViewState extends State<TimelineView> {
     return false;
   }
 
+  Future<void> _returnToLatest() async {
+    final controls = widget.controls;
+    final scrollToBottom = _scrollToBottom;
+    if (scrollToBottom == null) return;
+    await widget.onReturnLive();
+    if (!mounted ||
+        !identical(widget.controls, controls) ||
+        controls.isRetired ||
+        !controls.scrollController.hasClients) {
+      return;
+    }
+    // Keep our explicit reading intent/footer, but delegate geometry and timing
+    // to Flyer's public builder callback for this mounted list.
+    scrollToBottom();
+    // The official callback only registers a postFrameCallback, which never
+    // schedules a frame itself. If this continuation lands after the last
+    // scheduled frame, guarantee one frame so that scroll can actually run.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   Widget _body(ConversationItem item, String text) => TimelineMarkdown(
     id: item.id,
     text: text,
@@ -184,6 +201,8 @@ class _TimelineViewState extends State<TimelineView> {
         _body(entry.first, message.text),
         _terminal(entry.first),
         TimelineDetailNotices(item: entry.first, onDetail: widget.onDetail),
+        if (timelineAttachments(entry.first).isNotEmpty)
+          widget.groupMediaBuilder(entry.first),
       ],
     );
   }
@@ -193,11 +212,11 @@ class _TimelineViewState extends State<TimelineView> {
     if (descriptor is! ConversationTextDescriptor) {
       return const SizedBox.shrink();
     }
-    final lifecycle = descriptor.lifecycle;
+    final outcome = descriptor.outcome;
     // Stops/errors remain outside the exact canonical body and selection.
-    final text = switch (lifecycle) {
-      CancelledThreadContentView() => context.l10n.timelineTurnStopped,
-      FailedThreadContentView(:final error) => error,
+    final text = switch (outcome) {
+      ConversationContentCancelled() => context.l10n.timelineTurnStopped,
+      ConversationContentFailed(:final value) => value.error,
       _ => null,
     };
     return text == null
@@ -208,32 +227,13 @@ class _TimelineViewState extends State<TimelineView> {
               child: Text(
                 text,
                 style: context.text.bodySmall?.copyWith(
-                  color: lifecycle is FailedThreadContentView
+                  color: outcome is ConversationContentFailed
                       ? context.colors.error
                       : context.colors.onSurfaceVariant,
                 ),
               ),
             ),
           );
-  }
-
-  Widget _stream(TextStreamMessage message) {
-    final stream = widget.controls.streamFor(message.id);
-    if (stream == null) return const SizedBox.shrink();
-    return ValueListenableBuilder<StreamState>(
-      valueListenable: stream,
-      builder: (context, value, _) {
-        final text = value is StreamStateStreaming ? value.accumulatedText : '';
-        final item = timelineEntryOf(message)!.first;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _body(item, text),
-            TimelineDetailNotices(item: item, onDetail: widget.onDetail),
-          ],
-        );
-      },
-    );
   }
 
   @override
@@ -338,8 +338,10 @@ class _TimelineViewState extends State<TimelineView> {
                                 builders: Builders(
                                   composerBuilder: (_) =>
                                       const SizedBox.shrink(),
-                                  scrollToBottomBuilder: (_, _, _) =>
-                                      const SizedBox.shrink(),
+                                  scrollToBottomBuilder: (_, _, onPressed) {
+                                    _scrollToBottom = onPressed;
+                                    return const SizedBox.shrink();
+                                  },
                                   emptyChatListBuilder: (_) => Center(
                                     child: SelectionContainer.disabled(
                                       child: Text(
@@ -440,13 +442,6 @@ class _TimelineViewState extends State<TimelineView> {
                                     required bool isSentByMe,
                                     MessageGroupStatus? groupStatus,
                                   }) => _text(context, message),
-                                  textStreamMessageBuilder: (
-                                    context,
-                                    message,
-                                    index, {
-                                    required bool isSentByMe,
-                                    MessageGroupStatus? groupStatus,
-                                  }) => _stream(message),
                                   imageMessageBuilder:
                                       (
                                         context,
@@ -513,13 +508,9 @@ class _TimelineViewState extends State<TimelineView> {
                 alignment: AlignmentDirectional.centerEnd,
                 child: TextButton.icon(
                   key: StudioDriverKeys.timelineReturnLive,
-                  onPressed:
-                      widget.view.mode != TimelineDisplayMode.history ||
-                          widget.view.isPreparingLive
+                  onPressed: widget.view.mode != TimelineDisplayMode.history
                       ? null
-                      : () => unawaited(
-                          widget.onReturnLive().catchError((Object _) {}),
-                        ),
+                      : () => unawaited(_returnToLatest()),
                   icon: const Icon(Icons.south),
                   label: Text(
                     widget.view.hasNewOutput

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -8,666 +6,502 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
-class _CustomDeployState {
-  const _CustomDeployState({
-    required this.environment,
-    this.stepsCompleted = 0,
-    this.logs = const <String>[],
-  });
-
-  final String environment;
-  final int stepsCompleted;
-  final List<String> logs;
-}
-
-sealed class _CustomDeployEvent {
-  const _CustomDeployEvent();
-}
-
-final class _CustomDeployStepAdvanced extends _CustomDeployEvent {
-  const _CustomDeployStepAdvanced(this.logLine);
-  final String logLine;
-}
-
-final class _CustomDeployToolSpec
-    implements LiveToolSpec<_CustomDeployState, _CustomDeployEvent> {
-  const _CustomDeployToolSpec();
-
-  @override
-  _CustomDeployState reduce(
-    _CustomDeployState state,
-    _CustomDeployEvent message,
-  ) {
-    return switch (message) {
-      _CustomDeployStepAdvanced(:final logLine) => _CustomDeployState(
-        environment: state.environment,
-        stepsCompleted: state.stepsCompleted + 1,
-        logs: <String>[...state.logs, logLine],
-      ),
-    };
-  }
-
-  @override
-  String buildSummaryLabel(BuildContext context, _CustomDeployState state) =>
-      'Deploy(${state.environment}) · step ${state.stepsCompleted}';
-
-  @override
-  String? buildSubtitleLabel(BuildContext context, _CustomDeployState state) =>
-      null;
-
-  @override
-  Widget buildLeading(BuildContext context, _CustomDeployState state) =>
-      const Text('⚡');
-
-  @override
-  bool isExpandable(_CustomDeployState state) => true;
-
-  @override
-  Widget buildExpandedDetails(
-    BuildContext context,
-    _CustomDeployState state, {
-    required int elapsedSeconds,
-  }) {
-    return LiveToolDetailRail(
-      elapsedSeconds: elapsedSeconds,
-      children: [for (final line in state.logs) Text(line)],
-    );
-  }
-}
-
-Widget _wrapWithApp(Widget child) {
+Widget _wrapWithApp(Widget child, {bool disableAnimations = false}) {
   return MaterialApp(
     locale: const Locale('zh'),
     theme: pureStudioTheme(locale: const Locale('zh')),
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
+    builder: (context, appChild) {
+      return MediaQuery(
+        data: MediaQuery.of(context)
+            .copyWith(disableAnimations: disableAnimations),
+        child: appChild!,
+      );
+    },
     home: Scaffold(
-      body: Center(child: SizedBox(width: 720, child: child)),
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: SizedBox(width: 720, child: child),
+      ),
     ),
   );
 }
 
+ConversationActivityView _view({
+  required String identity,
+  required ConversationActivityKind kind,
+  String? summary,
+  String? thinkingSummary,
+  int? thinkingSeconds,
+  List<ThreadActivityContentPart> reasoningParts = const [],
+  List<ThreadActivityContentPart> responseParts = const [],
+  List<ThreadActivityToolEntry> activeTools = const [],
+  List<ThreadActivityToolDetail> toolDetails = const [],
+  int activeToolCount = 0,
+  String? errorMessage,
+  List<ConversationActivityDetail> details = const [],
+  bool expandable = false,
+}) {
+  return ConversationActivityView(
+    identity: identity,
+    kind: kind,
+    summary: summary,
+    thinkingSummary: thinkingSummary,
+    thinkingSeconds: thinkingSeconds,
+    reasoningParts: reasoningParts,
+    responseParts: responseParts,
+    activeTools: activeTools,
+    toolDetails: toolDetails,
+    activeToolCount: activeToolCount,
+    errorMessage: errorMessage,
+    details: details,
+    expandable: expandable,
+  );
+}
+
+ThreadActivityContentPart _part({
+  required String itemId,
+  required String text,
+  bool complete = false,
+}) {
+  return ThreadActivityContentPart(
+    itemId: itemId,
+    complete: complete,
+    text: text,
+  );
+}
+
+ThreadActivityToolEntry _toolEntry({
+  required String callId,
+  required String name,
+  String? summary,
+  int? startedAt,
+}) {
+  return ThreadActivityToolEntry(
+    callId: callId,
+    name: name,
+    summary: summary ?? name,
+    arguments: ThreadActivityArgumentsKind.opaque,
+    state: ThreadActivityToolState.running,
+    startedAt: startedAt,
+  );
+}
+
+ThreadActivityToolDetail _toolDetail({
+  required String callId,
+  required String name,
+  String? arguments,
+  List<ThreadActivityToolOutputPart>? outputParts,
+}) {
+  return ThreadActivityToolDetail(
+    callId: callId,
+    name: name,
+    state: ThreadActivityToolState.running,
+    arguments: arguments,
+    outputParts: outputParts,
+  );
+}
+
 void main() {
-  group(
-    'ConversationLiveStatusController & ConversationActivityBar (Pure Dart)',
-    () {
-      testWidgets('压缩阶段显示“正在压缩”而非“准备中”，并支持从 ThreadActivityKind.compacting 映射', (
-        tester,
-      ) async {
-        final controller = ConversationLiveStatusController();
-        addTearDown(controller.dispose);
-
-        controller.ingest(
-          const ConversationLivePhaseMessage(
-            identity: 'activity:turn-1:preparing:preparing',
-            turnId: 'turn-1',
-            phase: ConversationLivePhase.preparing,
+  group('ConversationActivityBar (direct ConversationActivityView)', () {
+    testWidgets('思考中且无正文时只显示不可展开的「思考中」', (tester) async {
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:thinking-empty',
+              kind: ConversationActivityKind.thinking,
+            ),
           ),
-        );
+        ),
+      );
+      await tester.pump();
 
-        await tester.pumpWidget(
-          _wrapWithApp(
-            ConversationActivityBar.fromController(controller: controller),
+      expect(find.text('思考中'), findsOneWidget);
+      expect(find.text('正在压缩'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-details')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('conversation-activity')),
+          matching: find.byType(InkWell),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('压缩阶段显示「正在压缩」，与思考中互斥且不可展开', (tester) async {
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:compacting',
+              kind: ConversationActivityKind.compacting,
+            ),
           ),
-        );
-        await tester.pump();
+        ),
+      );
+      await tester.pump();
 
-        expect(find.text('准备中'), findsOneWidget);
-        expect(find.text('正在压缩'), findsNothing);
+      expect(find.text('正在压缩'), findsOneWidget);
+      expect(find.text('思考中'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-details')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('conversation-activity')),
+          matching: find.byType(InkWell),
+        ),
+        findsNothing,
+      );
+    });
 
-        controller.ingest(
-          const ConversationLivePhaseMessage(
-            identity: 'activity:turn-1:preparing:compacting',
-            turnId: 'turn-1',
-            phase: ConversationLivePhase.compacting,
-            summary: '正在归纳历史上下文',
+    testWidgets('有真实推理正文才可展开，展开后完整阅读且摘要保持单行', (tester) async {
+      const reasoning = '第一段早期推理内容会被完整保留。\n\n第二段继续推进，确认展开区不是单行截断。';
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:thinking-full',
+              kind: ConversationActivityKind.thinking,
+              thinkingSummary: '已收敛出最终架构设计方案',
+              reasoningParts: [
+                _part(itemId: 'think-1', text: reasoning),
+              ],
+              expandable: true,
+            ),
           ),
-        );
-        await tester.pump();
+        ),
+      );
+      await tester.pump();
 
-        expect(find.text('正在压缩'), findsOneWidget);
-        expect(find.text('准备中'), findsNothing);
-        expect(find.text('正在归纳历史上下文'), findsOneWidget);
-
-        final projected = projectConversationActivity(
-          activity: const ThreadActivityView(
-            threadId: 'thread-1',
-            identity: 'activity:turn-1:preparing:compacting',
-            revision: 1,
-            turnId: 'turn-1',
-            kind: ThreadActivityKind.compacting,
-            summary: '',
-          ),
-        );
-        expect(projected?.kind, ConversationActivityKind.compacting);
-      });
-
-      testWidgets(
-        '思考摘要以 Markdown 显示并在后续工具执行阶段保持粘性，直到新摘要替换；展开后可查看正在执行的工具及秒数详情',
-        (tester) async {
-          var now = DateTime.utc(2026, 10, 28, 12, 0, 0);
-          final controller = ConversationLiveStatusController(clock: () => now);
-          addTearDown(controller.dispose);
-
-          controller.ingestAll([
-            const ConversationLivePhaseMessage(
-              identity: 'activity:turn-1:step-1:thinking',
-              turnId: 'turn-1',
-              phase: ConversationLivePhase.thinking,
-            ),
-            const ConversationLiveThinkingSummaryMessage(
-              turnId: 'turn-1',
-              summaryMarkdown: '正在准备计划并检查 `LiveToolSpec`',
-              elapsedSeconds: 3,
-            ),
-          ]);
-
-          await tester.pumpWidget(
-            _wrapWithApp(
-              ConversationActivityBar.fromController(controller: controller),
-            ),
-          );
-          await tester.pump();
-
-          expect(find.text('思考了 3 秒'), findsOneWidget);
-          expect(
-            find.byKey(const ValueKey('conversation-activity-sticky-summary')),
-            findsOneWidget,
-          );
-
-          // 进入工具执行阶段（不带新思考摘要）：外层仍然保持上一步的思考摘要作为最外部展示。
-          final toolStart = now;
-          now = now.add(const Duration(seconds: 4));
-          controller.ingestAll([
-            const ConversationLivePhaseMessage(
-              identity: 'activity:turn-1:step-1:runningTool',
-              turnId: 'turn-1',
-              phase: ConversationLivePhase.runningTool,
-            ),
-            ConversationLiveToolStartedMessage<
-              CommandLiveToolState,
-              CommandLiveToolEvent
-            >(
-              callId: 'call-exec-1',
-              toolName: 'exec',
-              spec: const CommandLiveToolSpec(),
-              initialState: const CommandLiveToolState(
-                command: 'cargo test --workspace',
-                workingDirectory: 'code/pl-core',
-                stdout: 'running 12 tests',
-              ),
-              startedAt: toolStart,
-            ),
-          ]);
-          await tester.pump();
-
-          // 最外层依旧展示粘性思考摘要，并提示有工具在执行。
-          expect(find.text('思考了 3 秒'), findsOneWidget);
-          expect(find.text('1 项工具执行中'), findsOneWidget);
-
-          // 点击展开状态栏，内部展示正在执行的工具及已执行秒数（4s）。
-          await tester.tap(find.byKey(const ValueKey('conversation-activity')));
-          await tester.pump();
-
-          expect(
-            find.byKey(const ValueKey('conversation-activity-details')),
-            findsOneWidget,
-          );
-          expect(
-            find.text('cargo test --workspace  code/pl-core'),
-            findsOneWidget,
-          );
-          expect(find.text('4s'), findsOneWidget);
-
-          // 点击工具行二次展开详情，看到已执行秒数与流式 stdout。
-          await tester.tap(
-            find.byKey(const ValueKey('live-tool-row-call-exec-1')),
-          );
-          await tester.pump();
-
-          expect(
-            find.byKey(const ValueKey('live-tool-details-call-exec-1')),
-            findsOneWidget,
-          );
-          expect(find.text('已执行 4s'), findsOneWidget);
-          expect(find.text('running 12 tests'), findsOneWidget);
-
-          // 时钟推进 3 秒并喂入工具流式事件：秒数更新为 7s，stdout 追加新行。
-          now = now.add(const Duration(seconds: 3));
-          controller.ingest(
-            const ConversationLiveToolEventMessage<CommandLiveToolEvent>(
-              callId: 'call-exec-1',
-              event: CommandStdoutAppendEvent('\ntest result: ok.'),
-            ),
-          );
-          await tester.pump();
-
-          expect(find.text('7s'), findsOneWidget);
-          expect(find.text('已执行 7s'), findsOneWidget);
-          expect(find.textContaining('test result: ok.'), findsOneWidget);
-
-          // 出现新的思考摘要时，外层立即替换为新摘要。
-          controller.ingest(
-            const ConversationLiveThinkingSummaryMessage(
-              turnId: 'turn-1',
-              summaryMarkdown: '正在整理测试结果并生成变更报告',
-              elapsedSeconds: 6,
-            ),
-          );
-          await tester.pump();
-
-          expect(find.text('思考了 6 秒'), findsOneWidget);
-          expect(find.text('思考了 3 秒'), findsNothing);
-        },
+      expect(find.textContaining('已收敛出最终架构设计方案'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-thinking-full')),
+        findsNothing,
       );
 
-      testWidgets('泛型 LiveToolSpec<S, M> 支持外部自定义工具状态与消息，无需修改状态栏组件', (
-        tester,
-      ) async {
-        var now = DateTime.utc(2026, 10, 28, 12, 0, 0);
-        final controller = ConversationLiveStatusController(clock: () => now);
-        addTearDown(controller.dispose);
+      await tester.tap(find.byKey(const ValueKey('conversation-activity')));
+      await tester.pump();
 
-        controller.ingestAll([
-          const ConversationLivePhaseMessage(
-            identity: 'activity:turn-custom:runningTool',
-            turnId: 'turn-custom',
-            phase: ConversationLivePhase.runningTool,
-          ),
-          ConversationLiveToolStartedMessage<
-            _CustomDeployState,
-            _CustomDeployEvent
-          >(
-            callId: 'call-deploy-1',
-            toolName: 'custom_deploy',
-            spec: const _CustomDeployToolSpec(),
-            initialState: const _CustomDeployState(environment: 'staging'),
-            startedAt: now,
-          ),
-        ]);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-details')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation-activity-thinking-full')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('第一段早期推理内容会被完整保留'), findsWidgets);
+    });
 
-        // 喂入自定义工具事件
-        now = now.add(const Duration(seconds: 5));
-        controller.ingest(
-          const ConversationLiveToolEventMessage<_CustomDeployEvent>(
-            callId: 'call-deploy-1',
-            event: _CustomDeployStepAdvanced('Uploaded bundle artifact'),
-          ),
-        );
-        controller.ingest(
-          const ConversationLiveToolEventMessage<_CustomDeployEvent>(
-            callId: 'call-deploy-1',
-            event: _CustomDeployStepAdvanced('Healthcheck passed'),
-          ),
-        );
-
-        await tester.pumpWidget(
-          _wrapWithApp(
-            ConversationActivityBar.fromController(controller: controller),
-          ),
-        );
-        await tester.pump();
-
-        expect(find.text('Deploy(staging) · step 2'), findsOneWidget);
-
-        // 展开顶层与自定义工具详情
-        controller.setExpanded(true);
-        controller.setToolExpanded('call-deploy-1', true);
-        await tester.pump();
-
-        expect(find.text('已执行 5s'), findsOneWidget);
-        expect(find.text('Uploaded bundle artifact'), findsOneWidget);
-        expect(find.text('Healthcheck passed'), findsOneWidget);
-      });
-
-      testWidgets('流式思考内容：有摘要只显示摘要；无摘要显示一行流式更新并前向截断，可展开查看完整思考正文', (
-        tester,
-      ) async {
-        final controller = ConversationLiveStatusController();
-        addTearDown(controller.dispose);
-
-        controller.ingest(
-          const ConversationLivePhaseMessage(
-            identity: 'activity:turn-stream:thinking',
-            turnId: 'turn-stream',
-            phase: ConversationLivePhase.thinking,
-          ),
-        );
-        controller.ingest(
-          const ConversationLiveThinkingStreamMessage.append(
-            '第一段早期推理内容会被截断在最前面，只保留最新流式追加的尾部文字供单行预览阅读。',
-          ),
-        );
-        controller.ingest(
-          const ConversationLiveThinkingStreamMessage.append(
-            '第二段新增的流式思考内容持续推进，确保尾部始终可见：TAIL_MARKER_99',
-          ),
-        );
-
-        expect(controller.hasStickyThinkingSummary, isFalse);
-        expect(controller.hasStreamingThinkingWithoutSummary, isTrue);
-        final truncated = controller.frontTruncatedThinkingLine(maxChars: 32);
-        expect(truncated.startsWith('…'), isTrue);
-        expect(truncated.endsWith('TAIL_MARKER_99'), isTrue);
-
-        await tester.pumpWidget(
-          _wrapWithApp(
-            ConversationActivityBar.fromController(controller: controller),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          find.byKey(
-            const ValueKey('conversation-activity-thinking-stream-single-line'),
-          ),
-          findsOneWidget,
-        );
-
-        // 点击展开查看完整思考内容
-        await tester.tap(find.byKey(const ValueKey('conversation-activity')));
-        await tester.pump();
-
-        expect(
-          find.byKey(const ValueKey('conversation-activity-thinking-full')),
-          findsOneWidget,
-        );
-        expect(controller.thinkingStreamText, contains('第一段早期推理内容会被截断在最前面'));
-
-        // 一旦喂入思考摘要，外层立即只显示思考摘要，不再显示单行流式思考正文
-        controller.ingest(
-          const ConversationLiveThinkingSummaryMessage(
-            turnId: 'turn-stream',
-            summaryMarkdown: '已收敛出最终架构设计方案',
-            elapsedSeconds: 4,
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          find.byKey(
-            const ValueKey('conversation-activity-thinking-stream-single-line'),
-          ),
-          findsNothing,
-        );
-        expect(
-          find.byKey(const ValueKey('conversation-activity-sticky-summary')),
-          findsOneWidget,
-        );
-      });
-
-      test('活动详情正文按源顺序保留首尾空白和分片边界', () {
-        const activity = ThreadActivityView(
-          threadId: 'thread-1',
-          identity: 'activity:response-parts',
-          revision: 1,
-          turnId: 'turn-1',
-          kind: ThreadActivityKind.responding,
-          summary: '',
-        );
-        final projected = projectConversationActivity(
-          activity: activity,
-          detail: const CurrentThreadActivityDetail(
-            activity: activity,
-            response: [
-              ThreadActivityContentPart(
-                itemId: 'a',
-                complete: false,
-                text: '\n first ',
-              ),
-              ThreadActivityContentPart(
-                itemId: 'b',
-                complete: false,
-                text: ' \n',
-              ),
-              ThreadActivityContentPart(
-                itemId: 'c',
-                complete: false,
-                text: 'second\n\n',
-              ),
-            ],
-          ),
-        );
-        expect(projected?.responseText, '\n first  \nsecond\n\n');
-      });
-
-      test('现役文件和待办工具使用专用状态与真实路径', () {
-        for (final name in [
-          'write_file',
-          'create_directory',
-          'delete_path',
-          'copy_path',
-          'move_path',
-        ]) {
-          final copy = name == 'copy_path' || name == 'move_path';
-          final entry = ThreadActivityToolEntry(
-            callId: name,
-            name: name,
-            summary: name,
-            arguments: ThreadActivityArgumentsKind.opaque,
-            state: ThreadActivityToolState.running,
-          );
-          final message =
-              ConversationLiveStatusAdapter.createToolStartedMessage(
-                entry,
-                detail: ThreadActivityToolDetail(
-                  callId: name,
-                  name: name,
-                  state: ThreadActivityToolState.running,
-                  arguments: copy
-                      ? '{"from":"source.txt","to":"target.txt"}'
-                      : '{"path":"source.txt"}',
-                ),
-              );
-          expect(
-            message,
-            isA<
-              ConversationLiveToolStartedMessage<
-                FileLiveToolState,
-                FileLiveToolEvent
-              >
-            >(),
-            reason: name,
-          );
-          final state =
-              (message
-                      as ConversationLiveToolStartedMessage<
-                        FileLiveToolState,
-                        FileLiveToolEvent
-                      >)
-                  .initialState;
-          expect(state.path, 'source.txt', reason: name);
-          expect(
-            state.destinationPath,
-            copy ? 'target.txt' : null,
-            reason: name,
-          );
-        }
-        final todo = ConversationLiveStatusAdapter.createToolStartedMessage(
-          const ThreadActivityToolEntry(
-            callId: 'todo',
-            name: 'update_todo_list',
-            summary: '',
-            arguments: ThreadActivityArgumentsKind.opaque,
-            state: ThreadActivityToolState.running,
-          ),
-        );
-        expect(
-          todo,
-          isA<
-            ConversationLiveToolStartedMessage<
-              PlanWorkflowLiveToolState,
-              PlanWorkflowLiveToolEvent
-            >
-          >(),
-        );
-      });
-
-      testWidgets('stdin 空白输入与首尾字符在状态及实际详情中保真', (tester) async {
-        for (final input in ['\n', '   ', '  input  \n']) {
-          final message =
-              ConversationLiveStatusAdapter.createToolStartedMessage(
-                const ThreadActivityToolEntry(
-                  callId: 'stdin',
-                  name: 'write_stdin',
-                  summary: 'write_stdin',
-                  arguments: ThreadActivityArgumentsKind.opaque,
-                  state: ThreadActivityToolState.running,
-                ),
-                detail: ThreadActivityToolDetail(
-                  callId: 'stdin',
-                  name: 'write_stdin',
-                  state: ThreadActivityToolState.running,
-                  arguments: jsonEncode({
-                    'taskId': 'task:exec',
-                    'chars': input,
-                  }),
-                ),
-              ) as ConversationLiveToolStartedMessage<
-                CommandLiveToolState,
-                CommandLiveToolEvent
-              >;
-          expect(message.initialState.stdinInput, input);
-          await tester.pumpWidget(
-            _wrapWithApp(
-              Builder(
-                builder: (context) => message.spec.buildExpandedDetails(
-                  context,
-                  message.initialState,
-                  elapsedSeconds: 1,
-                ),
-              ),
+    testWidgets('思考摘要本身不可展开；多段正文各自增长且不拼接', (tester) async {
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:thinking-summary-only',
+              kind: ConversationActivityKind.thinking,
+              thinkingSummary: '已收敛出最终架构设计方案',
             ),
-          );
-          expect(
-            tester
-                .widgetList<RichText>(find.byType(RichText))
-                .map((text) => text.text.toPlainText())
-                .where((text) => text.startsWith('stdin  ')),
-            ['stdin  $input'],
-          );
-        }
-      });
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('已收敛出最终架构设计方案'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('conversation-activity')),
+          matching: find.byType(InkWell),
+        ),
+        findsNothing,
+      );
 
-      testWidgets('工具流式详情保留输出首尾空白', (tester) async {
-        const output = '\n  tool output  \n';
-        await tester.pumpWidget(
-          _wrapWithApp(
-            Builder(
-              builder: (context) =>
-                  const CommandLiveToolSpec().buildExpandedDetails(
-                    context,
-                    const CommandLiveToolState(
-                      command: 'printf',
-                      stdout: output,
+      const firstA = '模型甲第一段。';
+      const firstB = '模型乙第一段。';
+      const grownA = '模型甲第一段。续写甲。';
+      const grownB = '模型乙第一段。续写乙。';
+      Widget bar({required String a, required String b}) {
+        return _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:thinking-parts',
+              kind: ConversationActivityKind.thinking,
+              thinkingSummary: '摘要不是完整正文',
+              reasoningParts: [
+                _part(itemId: 'model-a', text: a),
+                _part(itemId: 'model-b', text: b),
+              ],
+              expandable: true,
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(bar(a: firstA, b: firstB));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('conversation-activity')));
+      await tester.pump();
+
+      final keyA = find.byKey(
+        const ValueKey('conversation-activity-thinking-part-model-a'),
+      );
+      final keyB = find.byKey(
+        const ValueKey('conversation-activity-thinking-part-model-b'),
+      );
+      expect(keyA, findsOneWidget);
+      expect(keyB, findsOneWidget);
+      expect(tester.getTopLeft(keyA).dy, lessThan(tester.getTopLeft(keyB).dy));
+      expect(find.text(firstA), findsOneWidget);
+      expect(find.text(firstB), findsOneWidget);
+      expect(find.text(firstA + firstB), findsNothing);
+
+      await tester.pumpWidget(bar(a: grownA, b: grownB));
+      await tester.pump();
+      expect(keyA, findsOneWidget);
+      expect(keyB, findsOneWidget);
+      expect(tester.getTopLeft(keyA).dy, lessThan(tester.getTopLeft(keyB).dy));
+      expect(find.text(grownA), findsOneWidget);
+      expect(find.text(grownB), findsOneWidget);
+      expect(find.text(firstA), findsNothing);
+      expect(find.text(grownA + grownB), findsNothing);
+    });
+
+    testWidgets('多工具用 ExpansionTile 真实展开，参数与输出原文保留', (tester) async {
+      const firstArgs = '  rg --files  \n';
+      const firstOut = '\n  tool output  \n';
+      const secondArgs = '{"path":"source.txt"}';
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:tools',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: [
+                _toolEntry(
+                  callId: 'exec-1',
+                  name: 'exec',
+                  summary: 'rg --files',
+                ),
+                _toolEntry(
+                  callId: 'write-1',
+                  name: 'write_file',
+                  summary: 'write_file source.txt',
+                ),
+              ],
+              toolDetails: [
+                _toolDetail(
+                  callId: 'exec-1',
+                  name: 'exec',
+                  arguments: firstArgs,
+                  outputParts: [
+                    const ThreadActivityToolOutputPart(
+                      partId: 'stdout',
+                      text: firstOut,
                     ),
-                    elapsedSeconds: 1,
-                  ),
+                  ],
+                ),
+                _toolDetail(
+                  callId: 'write-1',
+                  name: 'write_file',
+                  arguments: secondArgs,
+                ),
+              ],
+              activeToolCount: 2,
+              expandable: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('执行中'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('conversation-activity')));
+      await tester.pump();
+
+      expect(find.textContaining('rg --files'), findsWidgets);
+      expect(find.byType(ExpansionTile), findsNWidgets(2));
+      expect(
+        find.byKey(const ValueKey('live-tool-details-exec-1')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('live-tool-row-exec-1')));
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('live-tool-details-exec-1')),
+        findsOneWidget,
+      );
+      expect(find.text(firstArgs), findsOneWidget);
+      expect(find.text(firstOut), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('live-tool-row-write-1')));
+      await tester.pump();
+      expect(find.text(secondArgs), findsOneWidget);
+    });
+
+    testWidgets('多段工具输出按 part 顺序各自更新，原文可完整阅读', (tester) async {
+      const first = 'stdout line 1\n';
+      const secondStart = 'stderr start';
+      const secondUpdated = 'stderr start\nstderr continued  \n';
+      Widget bar({
+        required String partA,
+        required String partB,
+      }) {
+        return _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:tool-parts',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: [
+                _toolEntry(callId: 'exec-parts', name: 'exec', summary: 'exec'),
+              ],
+              toolDetails: [
+                _toolDetail(
+                  callId: 'exec-parts',
+                  name: 'exec',
+                  outputParts: [
+                    ThreadActivityToolOutputPart(partId: 'stdout', text: partA),
+                    ThreadActivityToolOutputPart(partId: 'stderr', text: partB),
+                  ],
+                ),
+              ],
+              activeToolCount: 1,
+              expandable: true,
             ),
           ),
         );
-        expect(find.text(output), findsOneWidget);
-      });
+      }
 
-      testWidgets('状态栏保留回复原文且不自动加载 Markdown 外部图片', (tester) async {
-        const url = 'https://fixture.invalid/status-image.png';
-        const body = '\n![external]($url)\n\n正常文字。\n';
-        final controller = ConversationLiveStatusController();
-        addTearDown(controller.dispose);
-        controller.ingestAll([
-          const ConversationLivePhaseMessage(
-            identity: 'activity:image-boundary',
-            phase: ConversationLivePhase.responding,
+      await tester.pumpWidget(bar(partA: first, partB: secondStart));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('conversation-activity')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('live-tool-row-exec-parts')));
+      await tester.pump();
+
+      final stdoutKey = find.byKey(
+        const ValueKey('live-tool-output-exec-parts-stdout'),
+      );
+      final stderrKey = find.byKey(
+        const ValueKey('live-tool-output-exec-parts-stderr'),
+      );
+      expect(stdoutKey, findsOneWidget);
+      expect(stderrKey, findsOneWidget);
+      expect(
+        tester.getTopLeft(stdoutKey).dy,
+        lessThan(tester.getTopLeft(stderrKey).dy),
+      );
+      expect(find.text(first), findsOneWidget);
+      expect(find.text(secondStart), findsOneWidget);
+      expect(find.text(first + secondStart), findsNothing);
+
+      await tester.pumpWidget(bar(partA: first, partB: secondUpdated));
+      await tester.pump();
+
+      expect(stdoutKey, findsOneWidget);
+      expect(stderrKey, findsOneWidget);
+      expect(
+        tester.getTopLeft(stdoutKey).dy,
+        lessThan(tester.getTopLeft(stderrKey).dy),
+      );
+      expect(find.text(first), findsOneWidget);
+      expect(find.text(secondUpdated), findsOneWidget);
+      expect(find.text(secondStart), findsNothing);
+      expect(find.text(first + secondUpdated), findsNothing);
+    });
+
+    testWidgets('回复正文有界滚动且不可展开，保留原文且不加载外部图片', (tester) async {
+      const url = 'https://fixture.invalid/status-image.png';
+      const body = '\n![external]($url)\n\n正常文字。\n';
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:responding',
+              kind: ConversationActivityKind.responding,
+              responseParts: [
+                _part(itemId: 'resp-1', text: body),
+              ],
+            ),
+            maxResponseHeight: 120,
           ),
-          const ConversationLiveResponseStreamMessage.replace(body),
-        ]);
-        await tester.pumpWidget(
-          _wrapWithApp(
-            ConversationActivityBar.fromController(controller: controller),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('回复中'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-response-stream')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('live-response-part-resp-1')),
+        findsOneWidget,
+      );
+      expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, body);
+      expect(find.text(url), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+
+      final longBody = StringBuffer(body);
+      for (var i = 0; i < 20; i++) {
+        longBody.writeln('- 第 $i 条详细输出说明，验证达到最大高度上限后不再无限撑高状态栏。');
+      }
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:responding',
+              kind: ConversationActivityKind.responding,
+              responseParts: [
+                _part(itemId: 'resp-1', text: longBody.toString()),
+              ],
+            ),
+            maxResponseHeight: 120,
           ),
-        );
-        await tester.pump();
+        ),
+      );
+      await tester.pump();
 
-        expect(controller.responseStreamText, body);
-        expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, body);
-        expect(find.text(url), findsOneWidget);
-        expect(find.byType(Image), findsNothing);
-        expect(tester.takeException(), isNull);
-      });
+      final streamBoxSize = tester.getSize(
+        find.byKey(const ValueKey('conversation-activity-response-stream')),
+      );
+      expect(streamBoxSize.height, lessThanOrEqualTo(120.0));
+      expect(
+        find.byKey(const ValueKey('conversation-activity-details')),
+        findsNothing,
+      );
+    });
 
-      testWidgets('文本输出（responding）直接流式展示全部内容，随内容动态增高，达最大高度可滚动，且不可展开', (
-        tester,
-      ) async {
-        final controller = ConversationLiveStatusController();
-        addTearDown(controller.dispose);
-
-        controller.ingestAll([
-          const ConversationLivePhaseMessage(
-            identity: 'activity:turn-resp:responding',
-            turnId: 'turn-resp',
-            phase: ConversationLivePhase.responding,
-          ),
-          const ConversationLiveResponseStreamMessage.replace('第一行回复正文。'),
-        ]);
-
-        await tester.pumpWidget(
-          _wrapWithApp(
-            ConversationActivityBar.fromController(
-              controller: controller,
-              maxResponseHeight: 120,
+    testWidgets('disableAnimations 时前导图标不旋转', (tester) async {
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'activity:thinking-static',
+              kind: ConversationActivityKind.thinking,
             ),
           ),
-        );
-        await tester.pump();
+          disableAnimations: true,
+        ),
+      );
+      await tester.pump();
 
-        expect(controller.isExpandable, isFalse);
-        expect(controller.expanded, isFalse);
-        expect(
-          find.byKey(const ValueKey('conversation-activity-response-stream')),
-          findsOneWidget,
-        );
-
-        final initialHeight = tester
-            .getSize(find.byKey(const ValueKey('conversation-activity')))
-            .height;
-
-        // 追加多行文本，状态栏高度动态增长
-        controller.ingest(
-          const ConversationLiveResponseStreamMessage.append(
-            '\n\n第二行新增流式文本。\n\n第三行新增流式文本。',
-          ),
-        );
-        await tester.pump();
-
-        final grownHeight = tester
-            .getSize(find.byKey(const ValueKey('conversation-activity')))
-            .height;
-        expect(grownHeight, greaterThan(initialHeight));
-
-        // 继续追加大量文本，受限于 maxResponseHeight 封顶并可滚动
-        for (var i = 0; i < 20; i++) {
-          controller.ingest(
-            ConversationLiveResponseStreamMessage.append(
-              '\n- 第 $i 条详细输出说明，验证达到最大高度上限后不再无限撑高状态栏。',
-            ),
-          );
-        }
-        await tester.pump();
-
-        final streamBoxSize = tester.getSize(
-          find.byKey(const ValueKey('conversation-activity-response-stream')),
-        );
-        expect(streamBoxSize.height, lessThanOrEqualTo(120.0));
-
-        // 尝试点击状态栏不会触发任何展开行为，也不存在展开详情区
-        await tester.tap(find.byKey(const ValueKey('conversation-activity')));
-        await tester.pump();
-        expect(controller.expanded, isFalse);
-        expect(
-          find.byKey(const ValueKey('conversation-activity-details')),
-          findsNothing,
-        );
-      });
-    },
-  );
+      expect(
+        find.byKey(const ValueKey('conversation-activity-leading-spin')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation-activity-leading')),
+        findsOneWidget,
+      );
+    });
+  });
 }

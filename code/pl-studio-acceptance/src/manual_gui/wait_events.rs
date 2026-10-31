@@ -76,7 +76,9 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
             "failed to initialize isolated wait-events project"
         );
         {
-            let mut gui = start_realtime_gui(workspace, home, &gui_log_path)?;
+            // Keep the wait-events behavior unchanged: no §24.3 credit-wait
+            // RUST_LOG override on this GUI subtree.
+            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, false)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
             let mut driver = start_wait_events_driver(
                 app_dir, home, &vm_url, &project, output, working, &stage,

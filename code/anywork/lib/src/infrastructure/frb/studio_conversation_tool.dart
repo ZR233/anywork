@@ -12,13 +12,8 @@ ConversationToolDescriptor _toolDescriptorFromFrb(
     taskId: value.invocation.taskId,
   ),
   state: value.state.when(
-    queued: () => const ConversationToolQueued(),
-    cancelling: () => const ConversationToolCancelling(),
-    started: () => const ConversationToolStarted(),
-    streaming: () => const ConversationToolStreaming(),
-    awaitingApproval: () => const ConversationToolAwaitingApproval(),
-    approved: () => const ConversationToolApproved(),
-    running: () => const ConversationToolRunning(),
+    backgroundStarted: (at) =>
+        ConversationToolBackgroundStarted(startedAt: _dateFromUnix(at)),
     interrupted: (at, reason) => ConversationToolInterrupted(
       interruptedAt: _dateFromUnix(at),
       reason: reason,
@@ -77,7 +72,6 @@ ConversationUserInputDescriptor _userInputDescriptorFromFrb(
     ),
   ),
   state: value.state.when(
-    pending: () => const ConversationUserInputPending(),
     cancelled: () => const ConversationUserInputCancelled(),
     resolved: (answers) => ConversationUserInputResolved(
       answers: List.unmodifiable(

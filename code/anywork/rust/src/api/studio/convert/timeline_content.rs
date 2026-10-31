@@ -1,72 +1,62 @@
-//! Timeline 内容 → FRB DTO 的机械映射。
-//!
-//! 内容映射的唯一实现是 runtime 的 `pl_studio_runtime::timeline_content`（HTTP 与 FRB 共用）。这个
-//! 模块只把已交付的 typed 结果逐字段转成 FRB 可生成类型：不复制差量逻辑、不持有第二份内容索引，也不
-//! 自己重建基线。
+//! 完成历史 → FRB 的机械映射；语义和内容裁剪均属于 Runtime。
 
 mod descriptor;
 
-use pl_protocol::{
-    ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
-    TimelineDetailQuery, TimelineFieldChange, TimelineFieldUpdate, TimelineItem,
-    TimelineItemSource, TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority,
-    TimelineRecoveryNotice, TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
-};
-
-use crate::api::studio::types::{
-    BridgeContentField, BridgeThreadUserInputFieldPart, BridgeTimelineBaseline,
-    BridgeTimelineChange, BridgeTimelineDetailChunk, BridgeTimelineDetailQuery,
-    BridgeTimelineFieldChange, BridgeTimelineFieldPreview, BridgeTimelineFieldUpdate,
-    BridgeTimelineItem, BridgeTimelineItemSource, BridgeTimelineLifecycle, BridgeTimelinePage,
-    BridgeTimelinePriority, BridgeTimelineRecoveryNotice, BridgeTimelineResyncReason,
-    BridgeTimelineUpdate,
-};
+use crate::api::studio::types::*;
+use pl_protocol::*;
 
 pub(crate) fn page(value: TimelinePage) -> BridgeTimelinePage {
     BridgeTimelinePage {
+        timeline_epoch: value.timeline_epoch,
         items: value.items.into_iter().map(item).collect(),
         before: value.before,
         has_older: value.has_older,
     }
 }
 
-/// FRB 页请求 → 共享页查询。
-pub(crate) fn page_query(before: Option<String>, limit: Option<u32>) -> TimelinePageQuery {
-    TimelinePageQuery { before, limit }
+pub(crate) fn completion_cursor(value: TimelineCompletionCursor) -> BridgeTimelineCompletionCursor {
+    BridgeTimelineCompletionCursor {
+        timeline_epoch: value.timeline_epoch,
+        append_seq: value.append_seq,
+    }
+}
+
+pub(crate) fn protocol_completion_cursor(
+    value: BridgeTimelineCompletionCursor,
+) -> TimelineCompletionCursor {
+    TimelineCompletionCursor {
+        timeline_epoch: value.timeline_epoch,
+        append_seq: value.append_seq,
+    }
 }
 
 pub(crate) fn baseline(value: TimelineTailBaseline) -> BridgeTimelineBaseline {
     BridgeTimelineBaseline {
         subscription_id: value.subscription_id,
-        version: value.version,
+        timeline_epoch: value.timeline_epoch,
         items: value.items.into_iter().map(item).collect(),
         before: value.before,
         has_older: value.has_older,
+        completed_cursor: completion_cursor(value.completed_cursor),
     }
 }
 
 pub(crate) fn update(value: TimelineTailUpdate) -> BridgeTimelineUpdate {
     match value {
-        TimelineTailUpdate::Patch {
+        TimelineTailUpdate::Batch {
             subscription_id,
-            from,
-            to,
-            changes,
-            priority,
-        } => BridgeTimelineUpdate::Patch {
+            timeline_epoch,
+            from_seq,
+            through_seq,
+            items,
+        } => BridgeTimelineUpdate::Batch {
             subscription_id,
-            from,
-            to,
-            changes: changes.into_iter().map(change).collect(),
-            priority: priority_dto(priority),
+            timeline_epoch,
+            from_seq,
+            through_seq,
+            items: items.into_iter().map(item).collect(),
         },
-        TimelineTailUpdate::Resync {
-            subscription_id,
-            reason,
-            baseline: value,
-        } => BridgeTimelineUpdate::Resync {
-            subscription_id,
-            reason: resync_reason(reason),
+        TimelineTailUpdate::Reset { baseline: value } => BridgeTimelineUpdate::Reset {
             baseline: baseline(value),
         },
     }
@@ -74,8 +64,8 @@ pub(crate) fn update(value: TimelineTailUpdate) -> BridgeTimelineUpdate {
 
 pub(crate) fn detail_query(value: BridgeTimelineDetailQuery) -> TimelineDetailQuery {
     TimelineDetailQuery {
+        timeline_epoch: value.timeline_epoch,
         field: protocol_field(value.field),
-        revision: value.revision,
         continuation: value.continuation,
         max_bytes: value.max_bytes,
     }
@@ -83,9 +73,9 @@ pub(crate) fn detail_query(value: BridgeTimelineDetailQuery) -> TimelineDetailQu
 
 pub(crate) fn detail_chunk(value: TimelineDetailChunk) -> BridgeTimelineDetailChunk {
     BridgeTimelineDetailChunk {
+        timeline_epoch: value.timeline_epoch,
         item_id: value.item_id,
         field: content_field(value.field),
-        revision: value.revision,
         text: value.text,
         total_bytes: value.total_bytes,
         continuation: value.continuation,
@@ -95,7 +85,6 @@ pub(crate) fn detail_chunk(value: TimelineDetailChunk) -> BridgeTimelineDetailCh
 fn item(value: TimelineItem) -> BridgeTimelineItem {
     BridgeTimelineItem {
         header: descriptor::header(value.header),
-        revision: value.revision,
         descriptor: descriptor::descriptor(value.descriptor),
         source: match value.source {
             TimelineItemSource::Content => BridgeTimelineItemSource::Content,
@@ -109,8 +98,6 @@ fn item(value: TimelineItem) -> BridgeTimelineItem {
                 }
             }
         },
-        saved: value.saved,
-        lifecycle: lifecycle_dto(value.lifecycle),
         fields: value
             .fields
             .into_iter()
@@ -120,73 +107,6 @@ fn item(value: TimelineItem) -> BridgeTimelineItem {
                 total_bytes: field.total_bytes,
             })
             .collect(),
-    }
-}
-
-fn change(value: TimelineChange) -> BridgeTimelineChange {
-    match value {
-        TimelineChange::Add { item: value } => BridgeTimelineChange::Add {
-            item: Box::new(item(*value)),
-        },
-        TimelineChange::Remove { item_id } => BridgeTimelineChange::Remove { item_id },
-        TimelineChange::UpdateItem {
-            item_id,
-            expected_revision,
-            revision,
-            saved,
-            lifecycle,
-            header,
-            descriptor,
-            fields,
-        } => BridgeTimelineChange::UpdateItem {
-            item_id,
-            expected_revision,
-            revision,
-            saved,
-            lifecycle: lifecycle_dto(lifecycle),
-            header: header.map(self::descriptor::header),
-            descriptor: descriptor.map(|value| Box::new(self::descriptor::descriptor(*value))),
-            fields: fields.into_iter().map(field_update).collect(),
-        },
-    }
-}
-
-fn field_update(value: TimelineFieldUpdate) -> BridgeTimelineFieldUpdate {
-    BridgeTimelineFieldUpdate {
-        field: content_field(value.field),
-        change: field_change(value.change),
-        total_bytes: value.total_bytes,
-        preview_bytes: value.preview_bytes,
-    }
-}
-
-fn field_change(value: TimelineFieldChange) -> BridgeTimelineFieldChange {
-    match value {
-        TimelineFieldChange::Unchanged => BridgeTimelineFieldChange::Unchanged,
-        TimelineFieldChange::Append { text } => BridgeTimelineFieldChange::Append { text },
-        TimelineFieldChange::Replace { text } => BridgeTimelineFieldChange::Replace { text },
-        TimelineFieldChange::Remove => BridgeTimelineFieldChange::Remove,
-    }
-}
-
-fn lifecycle_dto(value: TimelineLifecycle) -> BridgeTimelineLifecycle {
-    match value {
-        TimelineLifecycle::Streaming => BridgeTimelineLifecycle::Streaming,
-        TimelineLifecycle::Terminal => BridgeTimelineLifecycle::Terminal,
-    }
-}
-
-fn priority_dto(value: TimelinePriority) -> BridgeTimelinePriority {
-    match value {
-        TimelinePriority::Immediate => BridgeTimelinePriority::Immediate,
-        TimelinePriority::Coalesced => BridgeTimelinePriority::Coalesced,
-    }
-}
-
-fn resync_reason(value: TimelineResyncReason) -> BridgeTimelineResyncReason {
-    match value {
-        TimelineResyncReason::Lagging => BridgeTimelineResyncReason::Lagging,
-        TimelineResyncReason::Unavailable => BridgeTimelineResyncReason::Unavailable,
     }
 }
 
@@ -212,6 +132,8 @@ fn content_field(field: ThreadContentField) -> BridgeContentField {
         ThreadContentField::RawPayload { payload_index } => {
             BridgeContentField::RawPayload { payload_index }
         }
+        ThreadContentField::PlanDocument => BridgeContentField::PlanDocument,
+        ThreadContentField::PlanFeedback => BridgeContentField::PlanFeedback,
     }
 }
 
@@ -231,7 +153,6 @@ fn user_input_part(part: ThreadUserInputFieldPart) -> BridgeThreadUserInputField
     }
 }
 
-/// FRB 字段身份 → 共享字段身份（读详情时的请求方向）。
 fn protocol_field(field: BridgeContentField) -> ThreadContentField {
     match field {
         BridgeContentField::Text => ThreadContentField::Text,
@@ -254,6 +175,8 @@ fn protocol_field(field: BridgeContentField) -> ThreadContentField {
         BridgeContentField::RawPayload { payload_index } => {
             ThreadContentField::RawPayload { payload_index }
         }
+        BridgeContentField::PlanDocument => ThreadContentField::PlanDocument,
+        BridgeContentField::PlanFeedback => ThreadContentField::PlanFeedback,
     }
 }
 

@@ -48,8 +48,9 @@ pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport,
 };
 pub use activity::{
-    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityContentPart,
-    ThreadActivityDetail, ThreadActivityDetailQuery, ThreadActivityKind, ThreadActivityToolDetail,
+    ACTIVITY_FRAME_BYTES, ACTIVITY_SUMMARY_LIMIT, ACTIVITY_TEXT_FRAME_BYTES, ActivityContentFrame,
+    ActivityPartMetadata, ActivityTextOperation, ActivityTextRegion, ActivityToolMetadata,
+    ActivityToolOutputMetadata, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
     ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
 };
 pub use agent::*;
@@ -112,15 +113,16 @@ pub use observed_state::{
 };
 pub use permission::PermissionLevel;
 pub use timeline_content::{
-    ThreadContentField, ThreadUserInputFieldPart, TimelineAnswerDescriptor, TimelineChange,
-    TimelineDescriptor, TimelineDetailChunk, TimelineDetailCursor, TimelineDetailQuery,
-    TimelineDetailRef, TimelineFieldChange, TimelineFieldPreview, TimelineFieldUpdate,
-    TimelineItem, TimelineItemHeader, TimelineItemSource, TimelineLifecycle, TimelinePage,
-    TimelinePageCursor, TimelinePageQuery, TimelinePriority, TimelineQuestionDescriptor,
+    ThreadContentField, ThreadUserInputFieldPart, TimelineAgentDescriptor, TimelineAgentOutcome,
+    TimelineAnswerDescriptor, TimelineCompletionCursor, TimelineContentOutcome, TimelineDescriptor,
+    TimelineDetailChunk, TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef,
+    TimelineFieldPreview, TimelineInferenceDescriptor, TimelineInferenceOutcome, TimelineItem,
+    TimelineItemHeader, TimelineItemSource, TimelinePage, TimelinePageCursor, TimelinePageQuery,
+    TimelinePlanDecision, TimelinePlanDescriptor, TimelineQuestionDescriptor,
     TimelineRawDescriptor, TimelineRawPayloadDescriptor, TimelineRecoveryNotice,
-    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate, TimelineTextDescriptor,
-    TimelineThinkingDescriptor, TimelineToolDescriptor, TimelineToolInvocation,
-    TimelineToolOutputDescriptor, TimelineToolState, TimelineUserInputDescriptor,
+    TimelineTailBaseline, TimelineTailUpdate, TimelineTextDescriptor, TimelineThinkingDescriptor,
+    TimelineToolDescriptor, TimelineToolInvocation, TimelineToolOutputDescriptor,
+    TimelineToolState, TimelineTurnDescriptor, TimelineTurnOutcome, TimelineUserInputDescriptor,
     TimelineUserInputState,
 };
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层

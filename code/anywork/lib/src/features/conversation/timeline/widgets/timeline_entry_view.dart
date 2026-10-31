@@ -3,7 +3,6 @@ import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
-import '../../../../domain/models/plan_confirmation_ownership.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
@@ -12,6 +11,7 @@ import '../state/timeline_entry.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_group_adapter.dart';
 import 'timeline_activity_group_views.dart';
+import 'timeline_plain_text.dart';
 import 'timeline_wait_blocks.dart';
 
 typedef TimelineDetailAction = void Function(
@@ -56,7 +56,6 @@ class TimelineEntryView extends StatelessWidget {
     final groupExpandable = entry.visibleLength > 0;
     final summary = switch (entry.kind) {
       TimelineEntryKind.images => '读取图片 · ${entry.length}',
-      TimelineEntryKind.recovery => entry.recoveryText,
       _ => [
         if (entry.elapsedDuration case final duration?)
           groupWorkedLabel(context, duration),
@@ -69,8 +68,11 @@ class TimelineEntryView extends StatelessWidget {
               : context.l10n.timelineToolGroupSummary(entry.toolCount),
         if (entry.skillCount > 0)
           context.l10n.statusSkillsCount(entry.skillCount),
-        if (entry.activeCount > 0 && entry.hasThinking)
-          context.l10n.timelineReasoningActive,
+        if (entry.hasThinking &&
+            entry.elapsedDuration == null &&
+            entry.toolCount == 0 &&
+            entry.skillCount == 0)
+          context.l10n.timelineReasoningEnded,
       ].join(' · '),
     };
     return Padding(
@@ -89,7 +91,6 @@ class TimelineEntryView extends StatelessWidget {
                 label: summary,
                 expandable: groupExpandable,
                 expanded: entry.expanded,
-                active: entry.activeCount > 0,
               ),
             ),
           ),
@@ -131,6 +132,15 @@ class TimelineEntryView extends StatelessWidget {
   }
 
   Widget _member(BuildContext context, ConversationItem item) {
+    final content = _memberContent(context, item);
+    if (timelineAttachments(item).isEmpty) return content;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [content, mediaBuilder(item)],
+    );
+  }
+
+  Widget _memberContent(BuildContext context, ConversationItem item) {
     final descriptor = item.descriptor;
     if (descriptor is ConversationToolDescriptor && descriptor.wait != null) {
       final conversion = TimelineActivityGroupAdapter.convertItem(item);
@@ -162,7 +172,7 @@ class TimelineEntryView extends StatelessWidget {
         onExpansionChanged: (value) => entry.setMemberExpanded(item.id, value),
       );
     }
-    if (entry.kind == TimelineEntryKind.activity && item.terminal) {
+    if (entry.kind == TimelineEntryKind.activity) {
       final conversion = TimelineActivityGroupAdapter.convertItem(item);
       if (conversion is TimelineActivityConverted) {
         final pairedId = entry.pairedToolId(item.id);
@@ -187,18 +197,25 @@ class TimelineEntryView extends StatelessWidget {
         );
       }
     }
-    if (descriptor is ConversationToolDescriptor &&
-        descriptor.userInput != null) {
-      final input = item.userInput!;
-      if (ownsPlanConfirmation(descriptor.invocation.name) &&
-          input.interactionId == pendingPlanInteractionId &&
-          input.state is ConversationUserInputPending) {
+    if (descriptor is ConversationPlanDescriptor) {
+      if (descriptor.interactionId == pendingPlanInteractionId &&
+          descriptor.decision != ConversationPlanDecision.cancelled &&
+          descriptor.decision != ConversationPlanDecision.resolved) {
         return const SizedBox.shrink();
       }
       return TimelineQuestionReceipt(
         item: item,
-        input: input,
-        plan: ownsPlanConfirmation(descriptor.invocation.name),
+        plan: true,
+        bodyBuilder: bodyBuilder,
+        onDetail: onDetail,
+      );
+    }
+    if (descriptor is ConversationToolDescriptor &&
+        descriptor.userInput != null) {
+      return TimelineQuestionReceipt(
+        item: item,
+        input: item.userInput,
+        plan: false,
         bodyBuilder: bodyBuilder,
         onDetail: onDetail,
       );
@@ -216,7 +233,7 @@ class TimelineEntryView extends StatelessWidget {
         (item.fields.any((field) => field.text.trim().isNotEmpty) ||
             item.details.any((detail) => detail.truncated) ||
             (descriptor is ConversationThinkingDescriptor &&
-                descriptor.lifecycle.failure != null) ||
+                _thinkingFailure(descriptor.outcome) != null) ||
             (descriptor is ConversationRawDescriptor &&
                 (descriptor.notice.isNotEmpty ||
                     descriptor.payloads.isNotEmpty)) ||
@@ -236,7 +253,6 @@ class TimelineEntryView extends StatelessWidget {
               isIssue: issue,
               expandable: expandable,
               expanded: expanded,
-              active: !item.terminal,
             ),
           ),
         ),
@@ -268,14 +284,14 @@ class TimelineEntryView extends StatelessWidget {
         if (expanded && descriptor is ConversationAgentDescriptor)
           Padding(
             padding: const EdgeInsetsDirectional.only(start: 28),
-            child: bodyBuilder(item, _agentDetail(descriptor.value)),
+            child: bodyBuilder(item, _agentDetail(descriptor)),
           ),
         if (expanded &&
             descriptor is ConversationThinkingDescriptor &&
-            descriptor.lifecycle.failure != null)
+            _thinkingFailure(descriptor.outcome) != null)
           SelectionContainer.disabled(
             child: Text(
-              descriptor.lifecycle.failure!,
+              _thinkingFailure(descriptor.outcome)!,
               style: TextStyle(color: context.colors.error),
             ),
           ),
@@ -306,7 +322,6 @@ class TimelineEntryView extends StatelessWidget {
                 ),
               ],
             ),
-        if (entry.kind == TimelineEntryKind.images) mediaBuilder(item),
         if (!runtimeNotice)
           TimelineDetailNotices(item: item, onDetail: onDetail),
       ],
@@ -336,7 +351,6 @@ class TimelineEntryView extends StatelessWidget {
           label: context.l10n.timelineImageCardTitle,
           expandable: false,
           isIssue: issue,
-          active: !item.terminal,
         ),
         Padding(
           padding: const EdgeInsetsDirectional.only(start: 28, bottom: 4),
@@ -385,20 +399,14 @@ class TimelineEntryView extends StatelessWidget {
     BuildContext context,
     ConversationItem item,
   ) => switch (item.descriptor) {
-    ConversationThinkingDescriptor(:final lifecycle) => (
+    ConversationThinkingDescriptor(:final outcome) => (
       Icons.psychology_outlined,
-      lifecycle is CancelledThreadContentView
+      outcome is ConversationContentCancelled
           ? context.l10n.timelineReasoningCancelled
-          : item.terminal
-          ? context.l10n.timelineReasoningElapsedSeconds(
-              lifecycle.terminalAt == null
-                  ? 0
-                  : lifecycle.terminalAt!
-                        .difference(item.header.createdAt)
-                        .inSeconds,
-            )
-          : context.l10n.timelineReasoningActive,
-      lifecycle is FailedThreadContentView,
+          : context.l10n.timelineReasoningElapsedSeconds(
+              _thinkingElapsedSeconds(item, outcome),
+            ),
+      outcome is ConversationContentFailed,
     ),
     ConversationSkillDescriptor(:final value) => (
       Icons.auto_awesome_outlined,
@@ -417,19 +425,17 @@ class TimelineEntryView extends StatelessWidget {
           : context.l10n.timelineRawRecord,
       false,
     ),
-    ConversationTurnDescriptor(:final value) => (
-      value.state is CancelledStudioTurnState
+    ConversationTurnDescriptor(:final outcome) => (
+      outcome is ConversationTurnCancelled
           ? Icons.stop_circle_outlined
           : Icons.info_outline,
-      value.state is CancelledStudioTurnState
-          ? context.l10n.timelineTurnStopped
-          : value.state.reason ?? value.state.status.name,
-      value.state is FailedStudioTurnState ||
-          value.state is BudgetLimitedStudioTurnState,
+      _turnLabel(context, outcome),
+      outcome is ConversationTurnFailed ||
+          outcome is ConversationTurnBudgetLimited,
     ),
-    ConversationAgentDescriptor(:final value) => (
+    ConversationAgentDescriptor(:final identity) => (
       Icons.account_tree_outlined,
-      value.identity.path,
+      identity.path,
       false,
     ),
     ConversationContextCompactionDescriptor(:final value) => (
@@ -441,25 +447,19 @@ class TimelineEntryView extends StatelessWidget {
   };
 
   String _toolStatus(ConversationToolState state) => switch (state) {
-    ConversationToolQueued() => '排队中',
-    ConversationToolStarted() => '已开始',
-    ConversationToolStreaming() || ConversationToolRunning() => '运行中',
-    ConversationToolAwaitingApproval() => '等待授权',
-    ConversationToolApproved() => '已授权',
-    ConversationToolCancelling() => '停止中',
+    ConversationToolBackgroundStarted() => '运行中',
     ConversationToolSucceeded() => '已完成',
     ConversationToolFailed(:final failure) => failure.message,
     ConversationToolDenied(:final reason) => reason,
     ConversationToolCancelled() || ConversationToolInterrupted() => '已停止',
   };
-  String _agentDetail(ThreadAgentItemStateView agent) =>
-      switch (agent.lifecycle) {
-        QueuedThreadAgentView() ||
-        RunningThreadAgentView() => agent.identity.task,
-        SucceededThreadAgentView(:final summary) => summary,
-        DeniedThreadAgentView(:final reason) ||
-        CancelledThreadAgentView(:final reason) => reason,
-        FailedThreadAgentView(:final error) => error,
+
+  String _agentDetail(ConversationAgentDescriptor descriptor) =>
+      switch (descriptor.outcome) {
+        ConversationAgentSucceeded(:final value) => value.summary,
+        ConversationAgentDenied(:final value) => value.reason,
+        ConversationAgentCancelled(:final value) => value.reason,
+        ConversationAgentFailed(:final value) => value.error,
       };
 }
 
@@ -477,7 +477,8 @@ class TimelineDetailNotices extends StatelessWidget {
       :final questionIndex,
       part: ThreadUserInputAnswerFieldPartView(),
     )) {
-      final input = item.userInput!;
+      final input = item.userInput;
+      if (input == null) return false;
       final question = input.questions[questionIndex];
       if (question.isSecret) return false;
       if (input.state case ConversationUserInputResolved(:final answers)) {
@@ -522,33 +523,34 @@ String timelineFieldLabel(ThreadContentFieldView field) => switch (field) {
   ThreadToolOutputArtifactsFieldView() => '工具产物',
   ThreadRawPayloadFieldView() => '原始记录',
   ThreadToolUserInputFieldView() => '完整问答',
+  ThreadPlanDocumentFieldView() => '计划正文',
+  ThreadPlanFeedbackFieldView() => '修改意见',
 };
 
 class TimelineQuestionReceipt extends StatelessWidget {
   const TimelineQuestionReceipt({
     super.key,
     required this.item,
-    required this.input,
+    this.input,
     required this.plan,
     required this.bodyBuilder,
     required this.onDetail,
   });
   final ConversationItem item;
-  final ConversationUserInputDescriptor input;
+  final ConversationUserInputDescriptor? input;
   final bool plan;
   final TimelineBodyBuilder bodyBuilder;
   final TimelineDetailAction onDetail;
+
   @override
   Widget build(BuildContext context) {
     final receipt = plan ? item.planReceipt : null;
     final status = receipt == null
-        ? switch (input.state) {
-            ConversationUserInputPending() =>
-              context.l10n.timelineUserInputAwaiting,
+        ? switch (input?.state) {
             ConversationUserInputCancelled() =>
               context.l10n.timelineUserInputCancelled,
-            ConversationUserInputResolved() =>
-              context.l10n.timelineUserInputAnswered,
+            ConversationUserInputResolved() ||
+            null => context.l10n.timelineUserInputAnswered,
           }
         : switch (receipt.decision) {
             PlanConfirmationDecisionView.pending =>
@@ -562,156 +564,337 @@ class TimelineQuestionReceipt extends StatelessWidget {
             PlanConfirmationDecisionView.resolved =>
               context.l10n.planReceiptAnswered,
           };
+    final subtitle =
+        receipt?.title ??
+        (item.userInputText(0, const ThreadUserInputHeaderFieldPartView()) ??
+            context.l10n.timelineUserInputQuestionCount(
+              input?.questions.length ?? 0,
+            ));
     return Padding(
       key: plan
           ? StudioDriverKeys.timelinePlanReceipt(item.id)
           : StudioDriverKeys.timelineUserInput(item.id),
       padding: const EdgeInsets.symmetric(vertical: 8),
-      child: ExpansionTile(
-        key: ValueKey('timeline-input-expand:${item.id}'),
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsetsDirectional.only(start: 28, top: 8),
-        shape: const Border(),
-        collapsedShape: const Border(),
-        title: SelectionContainer.disabled(child: Text(status)),
-        subtitle: SelectionContainer.disabled(
-          child: Text(
-            receipt?.title ??
-                (item.userInputText(
-                      0,
-                      const ThreadUserInputHeaderFieldPartView(),
-                    ) ??
-                    context.l10n.timelineUserInputQuestionCount(
-                      input.questions.length,
-                    )),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+      child: Card(
+        margin: EdgeInsets.zero,
+        elevation: 0,
+        color: context.colors.surfaceContainerLow,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(StudioRadii.md),
+          side: BorderSide(color: context.colors.outlineVariant),
         ),
-        children: [
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          key: ValueKey('timeline-input-expand:${item.id}'),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          shape: const Border(),
+          collapsedShape: const Border(),
+          title: SelectionContainer.disabled(
+            child: Text(status, style: context.text.titleSmall),
+          ),
+          subtitle: SelectionContainer.disabled(
+            child: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          children: [
+            Column(
+              key: StudioDriverKeys.timelineUserInputDetails(item.id),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (receipt != null)
+                  _PlanReceiptBody(
+                    item: item,
+                    receipt: receipt,
+                    bodyBuilder: bodyBuilder,
+                  )
+                else if (input != null) ...[
+                  SelectionContainer.disabled(
+                    child: Text(
+                      context.l10n.timelineUserInputQuestionCount(
+                        input!.questions.length,
+                      ),
+                      style: context.text.labelMedium?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  for (var index = 0; index < input!.questions.length; index++)
+                    _QuestionReceiptBlock(
+                      item: item,
+                      input: input!,
+                      index: index,
+                      bodyBuilder: bodyBuilder,
+                    ),
+                ],
+                TimelineDetailNotices(item: item, onDetail: onDetail),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanReceiptBody extends StatelessWidget {
+  const _PlanReceiptBody({
+    required this.item,
+    required this.receipt,
+    required this.bodyBuilder,
+  });
+
+  final ConversationItem item;
+  final PlanConfirmationReceiptView receipt;
+  final TimelineBodyBuilder bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final document =
+        item.fieldFor(const ThreadPlanDocumentFieldView())?.text ?? '';
+    final feedback = receipt.feedback
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (document.trim().isNotEmpty) bodyBuilder(item, document),
+        if (feedback.isNotEmpty)
           Column(
-            key: StudioDriverKeys.timelineUserInputDetails(item.id),
+            key: StudioDriverKeys.timelinePlanReceiptReply(item.id),
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (!plan)
-                SelectionContainer.disabled(
-                  child: Text(
-                    context.l10n.timelineUserInputQuestionCount(
-                      input.questions.length,
-                    ),
+              const SizedBox(height: 12),
+              SelectionContainer.disabled(
+                child: Text(
+                  context.l10n.planReceiptYourFeedback,
+                  style: context.text.labelMedium?.copyWith(
+                    color: context.colors.onSurfaceVariant,
                   ),
                 ),
-              if (receipt != null) ...[
-                bodyBuilder(item, receipt.title),
-                if (receipt.feedback.isNotEmpty ||
-                    receipt.decision == PlanConfirmationDecisionView.approved)
-                  Column(
-                    key: StudioDriverKeys.timelinePlanReceiptReply(item.id),
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final feedback in receipt.feedback)
-                        SelectableText(feedback),
-                      if (receipt.feedback.isEmpty &&
-                          receipt.decision ==
-                              PlanConfirmationDecisionView.approved)
-                        Text(context.l10n.planReceiptApproveReply),
-                    ],
-                  ),
-              ] else
-                for (var index = 0; index < input.questions.length; index++)
-                  Column(
-                    key: StudioDriverKeys.timelineUserInputQuestion(
-                      item.id,
-                      index,
-                    ),
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      bodyBuilder(
-                        item,
-                        item.userInputText(
-                              index,
-                              const ThreadUserInputHeaderFieldPartView(),
-                            ) ??
-                            '',
-                      ),
-                      bodyBuilder(
-                        item,
-                        item.userInputText(
-                              index,
-                              const ThreadUserInputQuestionFieldPartView(),
-                            ) ??
-                            '',
-                      ),
-                      for (
-                        var option = 0;
-                        option < (input.questions[index].optionCount ?? 0);
-                        option++
-                      ) ...[
-                        bodyBuilder(
-                          item,
-                          item.userInputText(
-                                index,
-                                ThreadUserInputOptionLabelFieldPartView(option),
-                              ) ??
-                              '',
-                        ),
-                        bodyBuilder(
-                          item,
-                          item.userInputText(
-                                index,
-                                ThreadUserInputOptionDescriptionFieldPartView(
-                                  option,
-                                ),
-                              ) ??
-                              '',
-                        ),
-                      ],
-                      if (input.state case ConversationUserInputResolved(
-                        :final answers,
-                      ))
-                        for (final answer in answers)
-                          if (answer.questionId == input.questions[index].id)
-                            Column(
-                              key: StudioDriverKeys.timelineUserInputAnswer(
-                                item.id,
-                                index,
-                              ),
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                if (answer.redacted ||
-                                    input.questions[index].isSecret)
-                                  SelectionContainer.disabled(
-                                    child: Text(
-                                      context
-                                          .l10n
-                                          .timelineUserInputSecretHidden,
-                                    ),
-                                  )
-                                else
-                                  for (
-                                    var part = 0;
-                                    part < answer.answerCount;
-                                    part++
-                                  )
-                                    bodyBuilder(
-                                      item,
-                                      item.userInputText(
-                                            index,
-                                            ThreadUserInputAnswerFieldPartView(
-                                              part,
-                                            ),
-                                          ) ??
-                                          '',
-                                    ),
-                              ],
-                            ),
-                    ],
-                  ),
-              TimelineDetailNotices(item: item, onDetail: onDetail),
+              ),
+              const SizedBox(height: 4),
+              for (var index = 0; index < feedback.length; index++)
+                TimelinePlainText(
+                  id: '${item.id}-plan-feedback-$index',
+                  text: feedback[index],
+                  style: context.text.bodyMedium?.copyWith(height: 1.57),
+                ),
             ],
           ),
+      ],
+    );
+  }
+}
+
+class _QuestionReceiptBlock extends StatelessWidget {
+  const _QuestionReceiptBlock({
+    required this.item,
+    required this.input,
+    required this.index,
+    required this.bodyBuilder,
+  });
+
+  final ConversationItem item;
+  final ConversationUserInputDescriptor input;
+  final int index;
+  final TimelineBodyBuilder bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final question = input.questions[index];
+    final header = item.userInputText(
+      index,
+      const ThreadUserInputHeaderFieldPartView(),
+    );
+    final prompt = item.userInputText(
+      index,
+      const ThreadUserInputQuestionFieldPartView(),
+    );
+    final answers = switch (input.state) {
+      ConversationUserInputResolved(:final answers) =>
+        answers
+            .where((answer) => answer.questionId == question.id)
+            .toList(growable: false),
+      ConversationUserInputCancelled() =>
+        const <ConversationAnswerDescriptor>[],
+    };
+    final selectedLabels = <String>{};
+    for (final answer in answers) {
+      if (answer.redacted || question.isSecret) continue;
+      for (var part = 0; part < answer.answerCount; part++) {
+        final text = item.userInputText(
+          index,
+          ThreadUserInputAnswerFieldPartView(part),
+        );
+        if (text != null && text.isNotEmpty) selectedLabels.add(text);
+      }
+    }
+    final optionCount = question.optionCount ?? 0;
+    return Padding(
+      padding: EdgeInsets.only(top: index == 0 ? 0 : 16),
+      child: Column(
+        key: StudioDriverKeys.timelineUserInputQuestion(item.id, index),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (header != null && header.isNotEmpty)
+            SelectionContainer.disabled(
+              child: Text(header, style: context.text.labelLarge),
+            ),
+          if (prompt != null && prompt.isNotEmpty) ...[
+            if (header != null && header.isNotEmpty) const SizedBox(height: 4),
+            bodyBuilder(item, prompt),
+          ],
+          if (optionCount > 0) ...[
+            const SizedBox(height: 10),
+            SelectionContainer.disabled(
+              child: Text(
+                context.l10n.timelineUserInputOptions,
+                style: context.text.labelMedium?.copyWith(
+                  color: context.colors.onSurfaceVariant,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            for (var option = 0; option < optionCount; option++)
+              _QuestionOptionTile(
+                item: item,
+                index: index,
+                option: option,
+                selectedLabels: selectedLabels,
+                bodyBuilder: bodyBuilder,
+              ),
+          ],
+          const SizedBox(height: 10),
+          SelectionContainer.disabled(
+            child: Text(
+              context.l10n.timelineUserInputYourAnswer,
+              style: context.text.labelMedium?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          if (answers.isEmpty)
+            SelectionContainer.disabled(
+              child: Text(switch (input.state) {
+                ConversationUserInputCancelled() =>
+                  context.l10n.timelineUserInputCancelled,
+                ConversationUserInputResolved() =>
+                  context.l10n.timelineUserInputNoAnswer,
+              }),
+            )
+          else
+            for (final answer in answers)
+              Column(
+                key: StudioDriverKeys.timelineUserInputAnswer(item.id, index),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (answer.redacted || question.isSecret)
+                    SelectionContainer.disabled(
+                      child: Text(context.l10n.timelineUserInputSecretHidden),
+                    )
+                  else if (answer.answerCount == 0)
+                    SelectionContainer.disabled(
+                      child: Text(context.l10n.timelineUserInputNoAnswer),
+                    )
+                  else
+                    for (var part = 0; part < answer.answerCount; part++)
+                      bodyBuilder(
+                        item,
+                        item.userInputText(
+                              index,
+                              ThreadUserInputAnswerFieldPartView(part),
+                            ) ??
+                            '',
+                      ),
+                ],
+              ),
         ],
       ),
     );
   }
 }
+
+class _QuestionOptionTile extends StatelessWidget {
+  const _QuestionOptionTile({
+    required this.item,
+    required this.index,
+    required this.option,
+    required this.selectedLabels,
+    required this.bodyBuilder,
+  });
+
+  final ConversationItem item;
+  final int index;
+  final int option;
+  final Set<String> selectedLabels;
+  final TimelineBodyBuilder bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = item.userInputText(
+      index,
+      ThreadUserInputOptionLabelFieldPartView(option),
+    );
+    final description = item.userInputText(
+      index,
+      ThreadUserInputOptionDescriptionFieldPartView(option),
+    );
+    final selected = label != null && selectedLabels.contains(label);
+    final icon = selected ? Icons.check : Icons.remove;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        minVerticalPadding: 0,
+        leading: Icon(
+          icon,
+          size: 18,
+          color: selected
+              ? context.colors.primary
+              : context.colors.onSurfaceVariant,
+        ),
+        title: label == null || label.isEmpty ? null : bodyBuilder(item, label),
+        subtitle: description == null || description.isEmpty
+            ? null
+            : bodyBuilder(item, description),
+      ),
+    );
+  }
+}
+
+String? _thinkingFailure(ConversationContentOutcome outcome) =>
+    switch (outcome) {
+      ConversationContentFailed(:final value) => value.error,
+      _ => null,
+    };
+
+int _thinkingElapsedSeconds(
+  ConversationItem item,
+  ConversationContentOutcome outcome,
+) {
+  final completed = switch (outcome) {
+    ConversationContentCompleted(:final value) => value.completedAt,
+    ConversationContentFailed(:final value) => value.failedAt,
+    ConversationContentCancelled(:final value) => value.cancelledAt,
+  };
+  final startedSeconds = item.header.sourceEffectSeq ?? item.header.appendSeq;
+  final started = DateTime.fromMillisecondsSinceEpoch(
+    startedSeconds * 1000,
+    isUtc: true,
+  );
+  final elapsed = completed.difference(started).inSeconds;
+  return elapsed < 0 ? 0 : elapsed;
+}
+
+String _turnLabel(BuildContext context, ConversationTurnOutcome outcome) =>
+    switch (outcome) {
+      ConversationTurnCancelled() => context.l10n.timelineTurnStopped,
+      ConversationTurnFailed(:final value) => value.failure.message,
+      ConversationTurnBudgetLimited(:final value) =>
+        value.reason ?? value.status.name,
+      ConversationTurnCompleted(:final value) =>
+        value.reason ?? value.status.name,
+    };

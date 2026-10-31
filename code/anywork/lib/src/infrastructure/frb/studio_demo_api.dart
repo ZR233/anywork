@@ -121,6 +121,9 @@ class DemoStudioTransport extends StudioTransport
     for (final feed in _ownedConversationFeeds.toList()) {
       feed.requestClose();
     }
+    for (final reader in _ownedHistoryReaders.toList()) {
+      reader.requestClose();
+    }
     _lspActivityTimer?.cancel();
     _lspActivityTimer = null;
     for (final entry in _acpInstallTimers.entries.toList()) {
@@ -703,6 +706,7 @@ class DemoStudioTransport extends StudioTransport
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
   final Map<String, Set<_DemoConversationFeed>> _conversationFeeds = {};
+  final Set<_DemoHistoryReader> _ownedHistoryReaders = {};
   // 受管句柄不等于 GUI demand：未监听句柄和迟到 factory 也有真实关闭责任。
   final Set<ConversationFeed> _ownedConversationFeeds =
       Set<ConversationFeed>.identity();
@@ -737,6 +741,7 @@ class DemoStudioTransport extends StudioTransport
     await Future.wait([
       for (final feed in _ownedConversationFeeds.toList())
         _closeDemoConversation(feed),
+      for (final reader in _ownedHistoryReaders.toList()) reader.close(),
       ..._openingConversationFeeds,
     ]);
     // 迟到 factory 自己汇合其返回的 owner。失败 owner 留在集合供下次 cleanup。
@@ -747,11 +752,11 @@ class DemoStudioTransport extends StudioTransport
 
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
 
-  /// 每个 Thread 的内存条目：正文不属于 Thread 状态，只由内容连接按页/尾部交付。
-  final Map<String, List<ConversationItem>> _threadItems = {};
+  final Map<String, _DemoHistory> _histories = {};
+  final Map<String, Map<String, _DemoItem>> _pendingItems = {};
 
-  /// 每个 Thread 自己的内容版本；与 Thread 状态 revision、持久化水位无关。
-  final Map<String, int> _contentVersions = {};
+  _DemoHistory _historyOf(String threadId) =>
+      _histories.putIfAbsent(threadId, _DemoHistory.new);
   Timer? _lspActivityTimer;
   final Map<String, ThreadWorkspace> _workspaces = {};
   final Map<String, int> _promptGenerations = {};
@@ -797,6 +802,70 @@ class DemoStudioTransport extends StudioTransport
     })
   >
   _resolvedInteractions = {};
+  final Map<String, _DemoPlanRequest> _demoPlanRequests = {};
+
+  void _freezeDemoPlanRequest(
+    PendingInteraction interaction, {
+    PlanDocumentView? document,
+    int? planRevision,
+  }) {
+    final question = _demoPlanQuestion(interaction);
+    if (question == null) {
+      _demoPlanRequests.remove(interaction.id);
+      return;
+    }
+    if (document != null && document.markdown != question.question) {
+      throw _conversationQueryFailure;
+    }
+    final existing = _demoPlanRequests[interaction.id];
+    if (document == null &&
+        existing != null &&
+        existing.interaction.threadId == interaction.threadId &&
+        existing.interaction.turnId == interaction.turnId &&
+        existing.interaction.revision == interaction.revision &&
+        existing.markdown == question.question) {
+      return;
+    }
+    _demoPlanRequests[interaction.id] = (
+      interaction: interaction,
+      markdown: question.question,
+      document: document,
+      planRevision: planRevision,
+    );
+  }
+
+  void _validateDemoPlanRequest(
+    _DemoPlanRequest request,
+    PendingInteraction interaction,
+  ) {
+    final question = _demoPlanQuestion(interaction);
+    if (request.interaction.threadId != interaction.threadId ||
+        request.interaction.turnId != interaction.turnId ||
+        request.interaction.revision != interaction.revision ||
+        question?.question != request.markdown) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'Plan confirmation no longer matches its frozen request',
+        retryable: false,
+        correlationId: 'demo-plan-confirmation-identity',
+      );
+    }
+    if (request.document != null) {
+      final plan = _workspaces[interaction.threadId]?.runtime.plan;
+      if (plan == null ||
+          plan.state != PlanRuntimePhase.awaitingConfirmation ||
+          plan.revision != request.planRevision ||
+          plan.document != request.document) {
+        throw const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'Plan confirmation no longer matches the pending Plan',
+          retryable: false,
+          correlationId: 'demo-plan-confirmation-state',
+        );
+      }
+    }
+  }
+
   final List<StudioThread> _createdRootThreads = [];
   final List<StudioThread> _pageFillThreads = [];
   final List<SshServer> _sshServers = [
@@ -1492,12 +1561,11 @@ class DemoStudioTransport extends StudioTransport
     final route = _demoModeRoute(thread.mode);
     final userCreatedAt = now.subtract(const Duration(minutes: 9));
     final agentCreatedAt = now.subtract(const Duration(minutes: 8));
-    _threadItems[thread.id] = List.unmodifiable([
+    _installDemoHistory(thread.id, [
       _messageItem(
         id: 'turn-demo:user',
         threadId: thread.id,
         turnId: 'turn-demo',
-        ordinal: 0,
         channel: ThreadTextChannel.user,
         text:
             '用 Flutter 重构 anywork。\n\n'
@@ -1509,9 +1577,6 @@ class DemoStudioTransport extends StudioTransport
         id: 'turn-demo:reasoning',
         threadId: thread.id,
         turnId: 'turn-demo',
-        ordinal: 1,
-        revision: 0,
-        createdAt: agentCreatedAt,
         updatedAt: agentCreatedAt,
         content: _demoThinking(
           summary: const ['## 判断\n\nUI 只消费当前 Thread 的高频通知。'],
@@ -1523,18 +1588,15 @@ class DemoStudioTransport extends StudioTransport
         id: 'turn-demo:tool',
         threadId: thread.id,
         turnId: 'turn-demo',
-        ordinal: 2,
-        revision: 0,
-        createdAt: agentCreatedAt,
         updatedAt: agentCreatedAt,
         content: _demoTool(
           invocation: const ConversationToolInvocation(
             toolCallId: 'turn-demo:tool-call',
             name: 'cargo test -p pl-studio-bridge',
           ),
-          lifecycle: ConversationToolSucceeded(
+          outcome: ConversationToolSucceeded(
             completedAt: agentCreatedAt,
-            output: const ConversationToolOutputDescriptor(attachments: []),
+            output: ConversationToolOutputDescriptor(attachments: []),
           ),
           result: '1 passed; bridge envelope uses typed payload.',
         ),
@@ -1543,7 +1605,6 @@ class DemoStudioTransport extends StudioTransport
         id: 'turn-demo:final',
         threadId: thread.id,
         turnId: 'turn-demo',
-        ordinal: 4,
         channel: ThreadTextChannel.finalAnswer,
         text:
             '### Streaming Markdown preview\n\n'
@@ -1601,12 +1662,11 @@ class DemoStudioTransport extends StudioTransport
     String modelId,
     DateTime createdAt,
   ) {
-    _threadItems[thread.id] = List.unmodifiable([
+    _installDemoHistory(thread.id, [
       _messageItem(
         id: '${thread.id}:final',
         threadId: thread.id,
         turnId: '${thread.id}:turn',
-        ordinal: 0,
         channel: ThreadTextChannel.finalAnswer,
         text: text,
         createdAt: createdAt,
@@ -2843,6 +2903,8 @@ class DemoStudioTransport extends StudioTransport
         removed: removedThreadIds,
       ),
     );
+    // 归档真实提交后撤下该宿主的待决集合投影（成员同被移除）。
+    _publishChildInteractionsIfChanged(threadId);
     return ArchiveThreadCommandReply(
       result: ArchiveThreadResult(
         archivedRootId: threadId,
@@ -3806,6 +3868,9 @@ class DemoStudioTransport extends StudioTransport
       AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
       AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
       BotsTopic() => BotsBaseline(_demoBotsState()),
+      ChildInteractionsTopic(:final hostThreadId) => ChildInteractionsBaseline(
+        _demoChildInteractionsState(hostThreadId),
+      ),
     };
     final revision = switch (baseline) {
       ProjectDirectoryBaseline(:final state) => state.revision,
@@ -3827,6 +3892,7 @@ class DemoStudioTransport extends StudioTransport
       AcpAuthBaseline(:final state) => state.revision,
       AcpInstallBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
+      ChildInteractionsBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
       topic: topic,
@@ -3854,14 +3920,17 @@ class DemoStudioTransport extends StudioTransport
   Future<StudioThread> readThread(String threadId) async =>
       _demoWorkspace(threadId).thread;
 
-  /// Thread 首帧只暴露当前状态：正文由内容连接的分页/尾部交付。
+  /// Thread 首帧只暴露当前状态；历史正文由独立 reader 和完成尾部交付。
   ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {
     return workspace.copyWith(latestTurn: null);
   }
 
-  /// 内容连接：正文（含流式）只经它交给 UI，与状态流相互独立。
+  /// 完成尾部与当前活动共享有界交付；历史查询独立持有读取 scope。
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     _ensureDemoRunning();
     if (!_workspaces.containsKey(threadId)) {
       throw const StudioFailure(
@@ -3871,7 +3940,12 @@ class DemoStudioTransport extends StudioTransport
         correlationId: 'demo-conversation-not-found',
       );
     }
-    final connection = _DemoConversationFeed(this, threadId);
+    final connection = _DemoConversationFeed(
+      this,
+      threadId,
+      _historyOf(threadId),
+      resumeAfter,
+    );
     _ownedConversationFeeds.add(connection);
     final factory = _conversationFeedFactory;
     // 工厂拿到的是真实连接：注入者只包装故障点，不会再次回到 openConversationFeed。
@@ -3920,15 +3994,34 @@ class DemoStudioTransport extends StudioTransport
   /// 测试夹具：把 demo 的 canonical 内存条目写成给定内容。
   ///
   /// 真实运行时这些条目由脚本化的 prompt 流程写入；这里只准备内存条目，内容仍然只经
-  /// [openConversationFeed] 的连接（有界尾部 + 页 + 详情）交付，不绕过内容契约。
+  /// [openConversationFeed] 的完成尾部或 [openHistoryReader] 交付。
   @visibleForTesting
   void seedConversationItems(
     String threadId,
     Iterable<ConversationItem> items,
   ) {
     for (final item in items) {
-      _upsertChatItem(threadId, item);
+      if (item.header.threadId != threadId) throw _conversationQueryFailure;
+      if (_historyOf(threadId).accept(item, _sameDemoFacts)) {
+        _publishContent(threadId);
+      }
     }
+  }
+
+  @override
+  Future<ConversationHistoryReader> openHistoryReader(String threadId) async {
+    _ensureDemoRunning();
+    if (!_workspaces.containsKey(threadId)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Unknown Demo conversation',
+        retryable: false,
+        correlationId: 'demo-history-not-found',
+      );
+    }
+    final reader = _DemoHistoryReader(this, threadId, _historyOf(threadId));
+    _ownedHistoryReaders.add(reader);
+    return reader;
   }
 
   /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
@@ -3941,54 +4034,6 @@ class DemoStudioTransport extends StudioTransport
     _demoWorkspace(threadId);
     _emitThreadUpdate(threadId, update);
     return _demoWorkspace(threadId);
-  }
-
-  /// 测试夹具：撤下一条 demo canonical 条目（真实 `Remove` 的环境准备）。
-  ///
-  /// 与 [seedConversationItems] 同一环境准备 seam：只改 demo 的 canonical 内存条目与通知，
-  /// 发布仍只经 [openConversationFeed] 的连接，不新增业务删除 API。
-  @visibleForTesting
-  void retractConversationItem(String threadId, String itemId) {
-    final items = [...?_threadItems[threadId]];
-    final index = items.indexWhere((item) => item.id == itemId);
-    if (index < 0) return;
-    items.removeAt(index);
-    _threadItems[threadId] = items;
-    _notifyItemsChanged(threadId);
-    _publishContent(
-      threadId,
-      _DemoItemChange(
-        version: _contentVersionOf(threadId),
-        itemId: itemId,
-        removed: true,
-      ),
-    );
-  }
-
-  /// 按活动身份读取完整详情。demo 没有独立的正文投影，活动本身即为可用事实。
-  @override
-  Future<ThreadActivityDetail> readThreadActivityDetail(
-    String threadId,
-    String activityId,
-  ) async {
-    final workspace = _workspaces[threadId];
-    if (workspace == null) {
-      throw StateError('unknown demo thread $threadId');
-    }
-    final activity = workspace.activity;
-    if (activity == null) {
-      return EndedThreadActivityDetail(
-        threadId: threadId,
-        activityId: activityId,
-      );
-    }
-    if (activity.identity != activityId) {
-      return SupersededThreadActivityDetail(
-        activity: activity,
-        requestedActivityId: activityId,
-      );
-    }
-    return CurrentThreadActivityDetail(activity: activity);
   }
 
   @override
@@ -4100,7 +4145,6 @@ class DemoStudioTransport extends StudioTransport
         id: input.inputId,
         threadId: threadId,
         turnId: turnId,
-        ordinal: _nextOrdinal(threadId),
         channel: ThreadTextChannel.user,
         text: trimmed,
         createdAt: now,
@@ -4177,9 +4221,6 @@ class DemoStudioTransport extends StudioTransport
         id: reasoningId,
         threadId: threadId,
         turnId: turnId,
-        ordinal: _nextOrdinal(threadId),
-        revision: 0,
-        createdAt: startedAt,
         updatedAt: startedAt,
         content: _demoThinking(
           summary: [],
@@ -4193,7 +4234,6 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      revision: 1,
       field: const ThreadThinkingSummaryFieldView(0),
       text: '## Inspecting',
     );
@@ -4202,14 +4242,12 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      revision: 2,
       field: const ThreadThinkingSummaryFieldView(0),
       text: ' the request\n\nChecking the live ThreadItem projection.',
     );
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      revision: 3,
       field: const ThreadThinkingContentFieldView(0),
       text: reasoningContent,
     );
@@ -4221,14 +4259,13 @@ class DemoStudioTransport extends StudioTransport
       kind: ThreadActivityKind.thinking,
       summary: 'Checking the live ThreadItem projection.',
     );
-    final liveReasoning = _itemsOf(threadId)
+    final liveReasoning = _pendingItemsOf(threadId)
         .firstWhere((item) => item.id == reasoningId);
     final reasoningCompletedAt = DateTime.now();
     _upsertChatItem(
       threadId,
       _demoRevise(
         liveReasoning,
-        revision: 4,
         updatedAt: reasoningCompletedAt,
         content: _demoThinking(
           summary: const [reasoningSummary],
@@ -4244,9 +4281,6 @@ class DemoStudioTransport extends StudioTransport
         id: commentaryId,
         threadId: threadId,
         turnId: turnId,
-        ordinal: _nextOrdinal(threadId),
-        revision: 0,
-        createdAt: startedAt,
         updatedAt: startedAt,
         content: _demoText(
           channel: ThreadTextChannel.commentary,
@@ -4259,7 +4293,6 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: commentaryId,
-      revision: 1,
       field: const ThreadTextFieldView(),
       text: '正在逐段核对 Timeline',
     );
@@ -4268,18 +4301,16 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: commentaryId,
-      revision: 2,
       field: const ThreadTextFieldView(),
       text: ' 的 typed delta。',
     );
     final commentaryCompletedAt = DateTime.now();
-    final liveCommentary = _itemsOf(threadId)
+    final liveCommentary = _pendingItemsOf(threadId)
         .firstWhere((item) => item.id == commentaryId);
     _upsertChatItem(
       threadId,
       _demoRevise(
         liveCommentary,
-        revision: 3,
         updatedAt: commentaryCompletedAt,
         content: _demoText(
           channel: ThreadTextChannel.commentary,
@@ -4319,23 +4350,18 @@ class DemoStudioTransport extends StudioTransport
         id: toolId,
         threadId: threadId,
         turnId: turnId,
-        ordinal: _nextOrdinal(threadId),
-        revision: 0,
-        createdAt: startedAt,
         updatedAt: startedAt,
         content: _demoTool(
           invocation: ConversationToolInvocation(
             toolCallId: '$turnId:tool-call',
             name: 'exec',
           ),
-          lifecycle: const ConversationToolStarted(),
         ),
       ),
     );
     _appendChatContent(
       threadId,
       itemId: toolId,
-      revision: 1,
       field: const ThreadToolArgumentsFieldView(),
       text: '{"command":"cargo test -p pl-model ',
     );
@@ -4344,33 +4370,28 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: toolId,
-      revision: 2,
       field: const ThreadToolArgumentsFieldView(),
       text: '--test provider_wire"}',
     );
-    final streamedTool = _itemsOf(threadId)
+    final streamedTool = _pendingItemsOf(threadId)
         .firstWhere((item) => item.id == toolId);
-    final streamedToolState =
-        streamedTool.descriptor as ConversationToolDescriptor;
+    final streamedToolState = streamedTool.content.invocation!;
     _upsertChatItem(
       threadId,
       _demoRevise(
         streamedTool,
-        revision: 3,
         updatedAt: DateTime.now(),
         content: _demoTool(
-          invocation: streamedToolState.invocation,
-          arguments: streamedTool
-              .fieldFor(const ThreadToolArgumentsFieldView())!
-              .text,
-          lifecycle: const ConversationToolRunning(),
+          invocation: streamedToolState,
+          arguments: streamedTool.textFor(
+            const ThreadToolArgumentsFieldView(),
+          )!,
         ),
       ),
     );
     _appendChatContent(
       threadId,
       itemId: toolId,
-      revision: 4,
       field: const ThreadToolResultFieldView(),
       text: 'running widget tests...\n',
     );
@@ -4379,44 +4400,42 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: toolId,
-      revision: 5,
       field: const ThreadToolResultFieldView(),
       text: '[stderr] analyzer warnings: 0\n',
     );
-    final runningTool = _itemsOf(threadId)
+    final runningTool = _pendingItemsOf(threadId)
         .firstWhere((item) => item.id == toolId);
-    final runningToolState =
-        runningTool.descriptor as ConversationToolDescriptor;
+    final runningToolState = runningTool.content.invocation!;
     final toolCompletedAt = DateTime.now();
     _upsertChatItem(
       threadId,
       _demoRevise(
         runningTool,
-        revision: 6,
         updatedAt: toolCompletedAt,
         content: _demoTool(
-          invocation: runningToolState.invocation,
-          lifecycle: ConversationToolSucceeded(
+          invocation: runningToolState,
+          outcome: ConversationToolSucceeded(
             completedAt: toolCompletedAt,
-            output: const ConversationToolOutputDescriptor(attachments: []),
+            output: ConversationToolOutputDescriptor(attachments: []),
           ),
-          arguments: runningTool
-              .fieldFor(const ThreadToolArgumentsFieldView())!
-              .text,
+          arguments: runningTool.textFor(const ThreadToolArgumentsFieldView())!,
           result: 'running widget tests...\n[stderr] analyzer warnings: 0\nAll widget tests passed.',
         ),
       ),
     );
     final finalId = '$turnId:final';
+    _emitActivity(
+      threadId,
+      turnId: turnId,
+      inputId: null,
+      kind: ThreadActivityKind.responding,
+    );
     _upsertChatItem(
       threadId,
       _demoItem(
         id: finalId,
         threadId: threadId,
         turnId: turnId,
-        ordinal: _nextOrdinal(threadId),
-        revision: 0,
-        createdAt: startedAt,
         updatedAt: startedAt,
         content: _demoText(
           channel: ThreadTextChannel.finalAnswer,
@@ -4429,7 +4448,6 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: finalId,
-      revision: 1,
       field: const ThreadTextFieldView(),
       text: 'Demo response for: **$trimmedPrompt**',
     );
@@ -4439,18 +4457,16 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: finalId,
-      revision: 2,
       field: const ThreadTextFieldView(),
       text: finalSuffix,
     );
     final finalCompletedAt = DateTime.now();
-    final liveFinal = _itemsOf(threadId)
+    final liveFinal = _pendingItemsOf(threadId)
         .firstWhere((item) => item.id == finalId);
     _upsertChatItem(
       threadId,
       _demoRevise(
         liveFinal,
-        revision: 3,
         updatedAt: finalCompletedAt,
         content: _demoText(
           channel: ThreadTextChannel.finalAnswer,
@@ -4744,9 +4760,19 @@ class DemoStudioTransport extends StudioTransport
   Future<List<ChildInteractionSummary>> readChildInteractions(
     String hostThreadId,
   ) async {
+    return _collectChildInteractions(hostThreadId);
+  }
+
+  /// 主会话可见的子任务待决交互集合；child Plan 是诊断事实，不进入集合。
+  List<ChildInteractionSummary> _collectChildInteractions(String hostThreadId) {
+    // 归档的宿主或成员不再是可见事实来源：集合排除已归档子树。
+    if (_archivedThreadIds.contains(hostThreadId)) return const [];
     final summaries = <ChildInteractionSummary>[];
     for (final workspace in _workspaces.values) {
       if (workspace.thread.parentThreadId != hostThreadId) continue;
+      if (_archivedThreadIds.contains(workspace.thread.effectiveRootThreadId)) {
+        continue;
+      }
       for (final interaction in workspace.interactions) {
         // 子会话的计划请求是诊断事实：生产侧的目录与决议入口都按计划确认问题身份排除它，
         // 演示数据据同一判据不把它提供给主会话决议。
@@ -4763,6 +4789,66 @@ class DemoStudioTransport extends StudioTransport
       }
     }
     return summaries;
+  }
+
+  final Map<String, int> _childInteractionRevisions = {};
+  final Map<String, List<ChildInteractionSummary>> _childInteractionPublished =
+      {};
+
+  ChildInteractionsStateView _demoChildInteractionsState(String hostThreadId) {
+    // Baseline reads the currently published projection; a host never
+    // published before starts at its first snapshot without bumping revision.
+    final published = _childInteractionPublished[hostThreadId];
+    final items =
+        published ??
+        _childInteractionPublished.putIfAbsent(
+          hostThreadId,
+          () => List.unmodifiable(_collectChildInteractions(hostThreadId)),
+        );
+    return ChildInteractionsStateView(
+      hostThreadId: hostThreadId,
+      revision: _childInteractionRevisions[hostThreadId] ?? 0,
+      updatedAt: DateTime.now(),
+      items: items,
+    );
+  }
+
+  /// 交互事实变化后重算宿主集合：未变集合不提升领域 revision。
+  void _publishChildInteractionsIfChanged(String hostThreadId) {
+    final current = _collectChildInteractions(hostThreadId);
+    final previous = _childInteractionPublished[hostThreadId];
+    if (previous != null && _sameChildInteractionSummaries(previous, current)) {
+      return;
+    }
+    _childInteractionPublished[hostThreadId] = List.unmodifiable(current);
+    final revision = (_childInteractionRevisions[hostThreadId] ?? 0) + 1;
+    _childInteractionRevisions[hostThreadId] = revision;
+    _publishProductPayload(
+      ChildInteractionsChangedPayload(
+        ChildInteractionsStateView(
+          hostThreadId: hostThreadId,
+          revision: revision,
+          updatedAt: DateTime.now(),
+          items: current,
+        ),
+      ),
+    );
+  }
+
+  bool _sameChildInteractionSummaries(
+    List<ChildInteractionSummary> left,
+    List<ChildInteractionSummary> right,
+  ) {
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (left[i].childThreadId != right[i].childThreadId ||
+          left[i].interactionId != right[i].interactionId ||
+          left[i].kind != right[i].kind ||
+          left[i].revision != right[i].revision) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool _interruptDemoTurn(String threadId, String turnId) {
@@ -4863,7 +4949,8 @@ class DemoStudioTransport extends StudioTransport
     // A child Plan request stays a diagnostic: it is not offered in the main session
     // projection and its decision entry rejects it too, exactly like the production
     // handover filter.
-    if (decided.threadId != hostThreadId && decided.isPlanConfirmation) {
+    if (decided.threadId != hostThreadId &&
+        _demoPlanRequests.containsKey(decided.id)) {
       throw const StudioFailure(
         code: StudioFailureCode.permissionDenied,
         message:
@@ -4898,6 +4985,12 @@ class DemoStudioTransport extends StudioTransport
         reason: StudioFailureReason.staleInteraction,
       );
     }
+    final planRequest = _demoPlanRequests[interactionId];
+    // Validate the original command shape on replay too: the generic facts map
+    // intentionally normalizes question keys and cannot prove answer uniqueness.
+    final planDecision = planRequest == null
+        ? null
+        : _demoPlanDecision(resolution);
     if (previous != null) {
       if (!_sameDemoFacts(previous.resolution, facts) ||
           previous.interaction.threadId != decided.threadId) {
@@ -4921,6 +5014,17 @@ class DemoStudioTransport extends StudioTransport
         correlationId: 'demo-interaction-not-found',
       );
     }
+    if (planRequest != null) {
+      _validateDemoPlanRequest(planRequest, interaction);
+    }
+    final completedAt = DateTime.now();
+    if (planRequest != null && planDecision != null) {
+      // Canonical admission can still reject a conflicting completion; do that
+      // before mutating the runtime, interaction, or operation receipt table.
+      _completeDemoItem(
+        _demoPlanCompletion(planRequest, planDecision, completedAt),
+      );
+    }
     final receipt = _demoReceipt(
       operationId,
       changed: true,
@@ -4928,6 +5032,24 @@ class DemoStudioTransport extends StudioTransport
       effect: EffectPoint.immediate,
       requiresIdentityObservation: true,
     );
+    if (planRequest == null && resolution is UserInputResolutionCommand) {
+      _sealDemoUserInput(interaction, resolution);
+    }
+    if (planRequest?.document != null && planDecision != null) {
+      final workspace = _workspaces[interaction.threadId]!;
+      final plan = workspace.runtime.plan!;
+      _workspaces[interaction.threadId] = workspace.copyWith(
+        runtime: workspace.runtime.copyWith(
+          plan: plan.copyWith(
+            revision: plan.revision + 1,
+            state: planDecision.decision == ConversationPlanDecision.approved
+                ? PlanRuntimePhase.approved
+                : PlanRuntimePhase.revisionRequested,
+            updatedAt: completedAt,
+          ),
+        ),
+      );
+    }
     _resolvedInteractions[interactionId] = (
       interaction: interaction,
       resolution: facts,
@@ -4941,10 +5063,98 @@ class DemoStudioTransport extends StudioTransport
       interaction.threadId,
       ThreadInteractionUpdate(interaction: interaction, pending: false),
     );
+    if (planRequest != null) _publishContent(interaction.threadId);
     if (interaction.kind == InteractionKind.userInput) {
       _advanceDemoLastUserMessage(interaction.threadId, DateTime.now());
     }
     return InteractionCommandReply(interaction: interaction, receipt: receipt);
+  }
+
+  void _sealDemoUserInput(
+    PendingInteraction interaction,
+    UserInputResolutionCommand resolution,
+  ) {
+    final payload = interaction.payload;
+    if (payload is! UserInputInteractionPayload) {
+      throw _conversationQueryFailure;
+    }
+    final answers = {
+      for (final answer in resolution.answers)
+        answer.questionId: answer.answers,
+    };
+    final fields = <ThreadContentFieldView, String>{};
+    for (var i = 0; i < payload.questions.length; i++) {
+      final question = payload.questions[i];
+      if (question.isSecret) continue;
+      void put(ThreadUserInputFieldPartView part, String text) {
+        fields[ThreadToolUserInputFieldView(questionIndex: i, part: part)] =
+            text;
+      }
+
+      put(const ThreadUserInputHeaderFieldPartView(), question.header);
+      put(const ThreadUserInputQuestionFieldPartView(), question.question);
+      for (var j = 0; j < question.options.length; j++) {
+        put(
+          ThreadUserInputOptionLabelFieldPartView(j),
+          question.options[j].label,
+        );
+        put(
+          ThreadUserInputOptionDescriptionFieldPartView(j),
+          question.options[j].description,
+        );
+      }
+      final values = answers[question.id] ?? const <String>[];
+      for (var j = 0; j < values.length; j++) {
+        put(ThreadUserInputAnswerFieldPartView(j), values[j]);
+      }
+    }
+    final now = DateTime.now();
+    _upsertChatItem(
+      interaction.threadId,
+      _demoItem(
+        id: 'demo-user-input:${interaction.id}',
+        threadId: interaction.threadId,
+        turnId: interaction.turnId,
+        updatedAt: now,
+        content: (
+          kind: _DemoContentKind.completed,
+          descriptor: ConversationToolDescriptor(
+            invocation: ConversationToolInvocation(
+              toolCallId: 'demo-user-input:${interaction.id}',
+              name: 'request_user_input',
+            ),
+            state: ConversationToolSucceeded(
+              completedAt: now,
+              output: ConversationToolOutputDescriptor(attachments: const []),
+            ),
+            userInput: ConversationUserInputDescriptor(
+              interactionId: interaction.id,
+              questions: [
+                for (final question in payload.questions)
+                  ConversationQuestionDescriptor(
+                    id: question.id,
+                    isOther: question.isOther,
+                    isSecret: question.isSecret,
+                    optionCount: question.options.length,
+                  ),
+              ],
+              state: ConversationUserInputResolved(
+                answers: [
+                  for (final question in payload.questions)
+                    ConversationAnswerDescriptor(
+                      questionId: question.id,
+                      answerCount: answers[question.id]?.length ?? 0,
+                      redacted: question.isSecret,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          fields: fields,
+          invocation: null,
+        ),
+      ),
+    );
   }
 
   @override
@@ -5769,13 +5979,9 @@ class DemoStudioTransport extends StudioTransport
     return selected;
   }
 
-  void _notifyItemsChanged(String threadId) {
-    _contentVersions[threadId] = _contentVersionOf(threadId) + 1;
-  }
-
-  void _publishContent(String threadId, _DemoItemChange change) {
+  void _publishContent(String threadId) {
     for (final feed in [...?_conversationFeeds[threadId]]) {
-      feed._contentChanged(change);
+      feed._contentChanged();
     }
   }
 
@@ -5788,6 +5994,12 @@ class DemoStudioTransport extends StudioTransport
     if (_runtimeExiting) return;
     final workspace = _workspaces[threadId];
     if (workspace == null) return;
+    if (update case ThreadInteractionUpdate(
+      :final interaction,
+      pending: true,
+    )) {
+      _freezeDemoPlanRequest(interaction);
+    }
     final revision = workspace.revision + 1;
     // Turn revisions share the Thread event sequence, just like the native projector.
     if (update case ThreadTurnUpdate(:final turn)) {
@@ -5826,6 +6038,27 @@ class DemoStudioTransport extends StudioTransport
         _demoUpdateInteraction(workspace, revision, interaction, pending),
     };
     _workspaces[threadId] = updated;
+    // 子会话的交互事实变化同时刷新宿主主会话的待决集合投影。
+    if (update is ThreadInteractionUpdate) {
+      final host = updated.thread.parentThreadId;
+      if (host != null) _publishChildInteractionsIfChanged(host);
+    }
+    if (update case ThreadTurnUpdate(:final turn) when turn.state.isTerminal) {
+      _completeDemoItem(
+        _demoItem(
+          id: 'turn:${turn.turnId.length}:${turn.turnId}',
+          threadId: threadId,
+          turnId: turn.turnId,
+          updatedAt: turn.updatedAt,
+          content: _demoTurn(turn.state, inputId: turn.inputId),
+        ),
+      );
+      _pendingItems.remove(threadId);
+      _workspaces[threadId] = updated.copyWith(activity: null);
+      // Capture completion and live exit together; a consumer sees the new
+      // activity only after accepting the completion attached to its Commit.
+      _publishContent(threadId);
+    }
     final receivers = _conversationFeeds[threadId];
     if (receivers != null && receivers.isNotEmpty) {
       final frame = ThreadNotificationFrame(
@@ -5855,103 +6088,59 @@ class DemoStudioTransport extends StudioTransport
         ),
       );
     }
-    if (update case ThreadTurnUpdate(:final turn)) {
-      final id = 'turn:${turn.turnId.length}:${turn.turnId}';
-      final previous = _threadItems[threadId]
-          ?.where((item) => item.id == id)
-          .firstOrNull;
-      _upsertChatItem(
-        threadId,
-        _demoItem(
-          id: id,
-          threadId: threadId,
-          turnId: turn.turnId,
-          ordinal: previous?.header.ordinal ?? _nextOrdinal(threadId),
-          revision: turn.revision,
-          createdAt: previous?.header.createdAt ?? turn.updatedAt,
-          updatedAt: turn.updatedAt,
-          content: _demoTurn(turn.state, inputId: turn.inputId),
-        ),
-      );
-    }
   }
 
-  /// 把一条条目写入内存内容：条目只属于内容连接，不推进线程状态水位。
-  void _upsertChatItem(String threadId, ConversationItem item) {
+  /// Script progress remains private. Each member seals independently and moves
+  /// to canonical completion before the feed captures the new live boundary.
+  void _upsertChatItem(String threadId, _DemoItem item) {
     if (!_workspaces.containsKey(threadId)) return;
-    // demo 的内存条目没有独立的执行终态事件：状态进入终态即视为内容终态。
-    final entry = item;
-    final items = [...?_threadItems[threadId]];
-    final index = items.indexWhere((existing) => existing.id == entry.id);
-    if (index < 0) {
-      items.add(entry);
-    } else {
-      items[index] = entry;
-    }
-    items.sort(
-      (a, b) => _DemoConversationFeed._compareKeys(
-        _DemoConversationFeed._keyOf(a),
-        _DemoConversationFeed._keyOf(b),
-      ),
-    );
-    _threadItems[threadId] = items;
-    _notifyItemsChanged(threadId);
-    // 通知携带本次 typed 变更的身份与预览值：内容连接无需扫描全历史就能表达差量。
-    _publishContent(
-      threadId,
-      _DemoItemChange(
-        version: _contentVersionOf(threadId),
-        itemId: entry.id,
-        item: entry,
-      ),
-    );
-  }
-
-  List<ConversationItem> _itemsOf(String threadId) =>
-      _threadItems[threadId] ?? const <ConversationItem>[];
-
-  int _contentVersionOf(String threadId) => _contentVersions[threadId] ?? 0;
-
-  /// 应用一帧 typed `UpdateItem` 字段变化，与 `BridgeViewChange::UpdateItem` 同形状：
-  /// 按字段身份落到条目的 domain 字段，本地基线必须等于当前 revision；条目缺失、
-  /// revision 不连续或已终态接受流式变化时丢弃（真实链路会重建权威窗口）。
-  void _applyChatFieldUpdates(
-    String threadId, {
-    required String itemId,
-    required int revision,
-    required List<ConversationFieldUpdate> fields,
-  }) {
-    if (!_workspaces.containsKey(threadId)) return;
-    final items = [...?_threadItems[threadId]];
-    final index = items.indexWhere((item) => item.id == itemId);
-    if (index < 0) return;
-    final current = items[index];
-    final values = {
-      for (final field in current.fields) field.field: field.text,
-    };
-    for (final field in fields) {
-      switch (field.change) {
-        case UnchangedThreadFieldChangeView():
-          break;
-        case AppendThreadFieldChangeView(:final text):
-          values[field.field] = (values[field.field] ?? '') + text;
-        case ReplaceThreadFieldChangeView(:final text):
-          values[field.field] = text;
-        case RemoveThreadFieldChangeView():
-          values.remove(field.field);
+    final pending = _pendingItems.putIfAbsent(threadId, () => {});
+    if (item.content.descriptor == null) {
+      if (_historyOf(threadId).byId.containsKey(item.id)) {
+        throw StateError('Completed Demo member cannot resume streaming');
       }
+      pending[item.id] = item;
+    } else {
+      _completeDemoItem(item);
+      pending.remove(item.id);
     }
-    final next = _demoRevise(current, revision: revision, fields: values);
-    items[index] = next;
-    _threadItems[threadId] = items;
-    _notifyItemsChanged(threadId);
-    _publishContent(
-      threadId,
-      _DemoItemChange(
-        version: _contentVersionOf(threadId),
-        itemId: next.id,
-        item: next,
+    _publishContent(threadId);
+  }
+
+  Iterable<_DemoItem> _pendingItemsOf(String threadId) =>
+      _pendingItems[threadId]?.values ?? const <_DemoItem>[];
+
+  void _installDemoHistory(String threadId, List<_DemoItem> items) {
+    for (final item in items) {
+      if (item.threadId != threadId) throw _conversationQueryFailure;
+      _completeDemoItem(item);
+    }
+  }
+
+  void _completeDemoItem(_DemoItem item) {
+    final descriptor = item.content.descriptor;
+    if (descriptor == null) throw StateError('Demo member has not completed');
+    _historyOf(item.threadId).accept(
+      ConversationItem(
+        header: ConversationItemHeader(
+          id: item.id,
+          threadId: item.threadId,
+          turnId: item.turnId,
+          appendSeq: 0,
+          sealedAt: item.updatedAt.millisecondsSinceEpoch ~/ 1000,
+        ),
+        descriptor: descriptor,
+        source: const ConversationContentSource(),
+        fields: [
+          for (final entry in item.content.fields.entries)
+            ConversationFieldPreview(
+              field: entry.key,
+              text: entry.value,
+              totalBytes: utf8.encode(entry.value).length,
+            ),
+        ],
       ),
+      _sameDemoFacts,
     );
   }
 
@@ -5959,29 +6148,23 @@ class DemoStudioTransport extends StudioTransport
   void _appendChatContent(
     String threadId, {
     required String itemId,
-    required int revision,
     required ThreadContentFieldView field,
     required String text,
   }) {
-    final previous = _itemsOf(threadId)
-        .where((item) => item.id == itemId)
-        .firstOrNull
-        ?.fieldFor(field)
-        ?.text;
-    final bytes = utf8.encode('${previous ?? ''}$text').length;
-    _applyChatFieldUpdates(
-      threadId,
-      itemId: itemId,
-      revision: revision,
-      fields: [
-        ConversationFieldUpdate(
-          field: field,
-          change: AppendThreadFieldChangeView(text),
-          totalBytes: bytes,
-          previewBytes: bytes,
+    final item = _pendingItems[threadId]?[itemId];
+    if (item == null) throw StateError('No active Demo member $itemId');
+    if (field is ThreadToolResultFieldView) {
+      final parts = item.outputParts ??= [];
+      parts.add(
+        ThreadActivityToolOutputPart(
+          partId: '$itemId:output:${parts.length}',
+          text: text,
         ),
-      ],
-    );
+      );
+    } else {
+      item.content.fields[field] = (item.content.fields[field] ?? '') + text;
+    }
+    _publishContent(threadId);
   }
 
   /// demo 脚本化的当前活动：作为 typed `ActivityChanged` 状态走状态流。
@@ -6000,6 +6183,7 @@ class DemoStudioTransport extends StudioTransport
           identity: 'activity:$turnId:${kind.name}',
           revision: 0,
           turnId: turnId,
+          executionId: _demoExecutionId(turnId),
           inputId: inputId,
           kind: kind,
           summary: summary,
@@ -6010,24 +6194,13 @@ class DemoStudioTransport extends StudioTransport
 
   /// Turn 结束或打断：清空当前活动（`activity == null`）。
   void _clearActivity(String threadId) {
+    // Generation cancellation ends the script, not each partially produced
+    // member. Only individually completed members are eligible for history.
+    _pendingItems.remove(threadId);
     _emitThreadUpdate(threadId, const ThreadActivityUpdate(activity: null));
-  }
-
-  int _nextOrdinal(String threadId) {
-    final items = _itemsOf(threadId);
-    return items.isEmpty
-        ? 0
-        : items
-                  .map((item) => item.header.ordinal)
-                  .reduce((left, right) => left > right ? left : right) +
-              1;
   }
 }
 
-/// 一次内容变更的 typed 事实：推送它的身份、新预览值或“已删除”。
-///
-/// 这就是 demo 的“producer 通知”：内容连接不需要为每次交付重建全历史版本表。
-/// demo 已受理的一次无内容继续；同一个操作身份只回答同一份事实。
 final class _DemoDelay {
   _DemoDelay(Duration duration) {
     _timer = Timer(duration, _finish);
@@ -6073,25 +6246,10 @@ final class _DemoContinuation {
       expectedModelRouteRevision == routeRevision;
 }
 
-final class _DemoItemChange {
-  const _DemoItemChange({
-    required this.version,
-    required this.itemId,
-    this.item,
-    this.removed = false,
-  });
-
-  final int version;
-  final String itemId;
-  final ConversationItem? item;
-  final bool removed;
-}
-
-ConversationItem _messageItem({
+_DemoItem _messageItem({
   required String id,
   required String threadId,
   required String turnId,
-  required int ordinal,
   required ThreadTextChannel channel,
   required String text,
   required DateTime createdAt,
@@ -6100,9 +6258,6 @@ ConversationItem _messageItem({
   id: id,
   threadId: threadId,
   turnId: turnId,
-  ordinal: ordinal,
-  revision: 0,
-  createdAt: createdAt,
   updatedAt: createdAt,
   content: _demoText(
     channel: channel,
@@ -6163,9 +6318,35 @@ ThreadWorkspace _demoUpdateInteraction(
 class DriverDemoStudioTransport extends DemoStudioTransport {
   DriverDemoStudioTransport({super.lspActivityLoop});
 
+  /// 为子任务交互旅程准备真实 demo 工作区；订阅与归档仍走原所有者。
+  void prepareChildInteractionScenario() {
+    _ensureWorkspaceFixture();
+    final child = _workspaces['thread-reviewer']!;
+    _workspaces[child.thread.id] = child.copyWith(
+      interactions: const [
+        PendingInteraction(
+          id: 'driver-child-approval',
+          threadId: 'thread-reviewer',
+          turnId: 'driver-child-turn',
+          revision: 1,
+          kind: InteractionKind.toolApproval,
+          title: 'Review command',
+          body: 'Approve the reviewer command.',
+          payload: ToolApprovalInteractionPayload(
+            toolName: 'exec',
+            arguments: {'command': 'git diff --check'},
+            workingDirectory: '/demo',
+          ),
+        ),
+      ],
+    );
+    _publishChildInteractionsIfChanged('thread-main');
+  }
+
   bool _retiredPlannerScenario = false;
   int _fixtureScenarioRevision = 0;
   int _appliedFixtureScenarioRevision = -1;
+  String? _themePlanRequestId;
 
   void prepareRetiredPlannerScenario() {
     prepareSessionLifecycleScenario();
@@ -6178,6 +6359,11 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
   _ensureWorkspaceFixture() {
     final fixture = super._ensureWorkspaceFixture();
     if (_appliedFixtureScenarioRevision != _fixtureScenarioRevision) {
+      final previousPlanRequestId = _themePlanRequestId;
+      if (previousPlanRequestId != null) {
+        _demoPlanRequests.remove(previousPlanRequestId);
+        _themePlanRequestId = null;
+      }
       _workspaces.update('thread-main', _driverWorkspaceFixture);
       _resolvedInteractions.clear();
       _appliedFixtureScenarioRevision = _fixtureScenarioRevision;
@@ -6254,9 +6440,6 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
             id: '$turnId:connection-retry-$attempt',
             threadId: threadId,
             turnId: turnId,
-            ordinal: _nextOrdinal(threadId),
-            revision: 0,
-            createdAt: now,
             updatedAt: now,
             content: _demoText(
               channel: ThreadTextChannel.commentary,
@@ -6322,6 +6505,8 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
 
   void preparePagingScenario(int count) {
     _fixtureScenarioRevision += 1;
+    _themeScenario = false;
+    _themePlanScenario = false;
     _sessionLifecycleScenario = false;
     _fallbackInputScenario = false;
     _pagingFixtureCount = count;
@@ -6341,6 +6526,8 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
 
   void prepareFallbackInputScenario() {
     _fixtureScenarioRevision += 1;
+    _themeScenario = false;
+    _themePlanScenario = false;
     _sessionLifecycleScenario = false;
     _fallbackInputScenario = true;
     _pageFillThreads.clear();
@@ -6370,6 +6557,14 @@ final theme = pureStudioTheme();
 - [ ] Verify narrow windows and keyboard focus.
 - [ ] Inspect [the design reference](https://example.com/design).
 ''';
+
+  // Exact SHA-256 of the 613 UTF-8 bytes above, including its trailing newline.
+  // Keep the digest synchronized when changing this fixed fixture document.
+  static const _themePlanDocument = PlanDocumentView(
+    version: 1,
+    markdown: _themePlanMarkdown,
+    contentHash: 'sha256:30205da061addd1c07201c28d92cd9533f77cb5740c452a478425751f3685f0d',
+  );
 
   @override
   Duration get promptActivityDelay => const Duration(seconds: 3);
@@ -6408,10 +6603,64 @@ final theme = pureStudioTheme();
 
   ThreadWorkspace _driverWorkspaceFixture(ThreadWorkspace workspace) {
     if (_sessionLifecycleScenario) {
-      return workspace.copyWith(interactions: const [], todo: null);
+      return workspace.copyWith(
+        runtime: workspace.runtime.copyWith(plan: null),
+        interactions: const [],
+        todo: null,
+      );
     }
     const threadId = 'thread-main';
+    PendingInteraction? planInteraction;
+    PlanRuntimeView? plan;
+    if (_themePlanScenario) {
+      // A fresh scenario is a new request, not a replay of a retired identity.
+      final requestId = 'driver-theme-plan:$_fixtureScenarioRevision';
+      const document = _themePlanDocument;
+      plan = PlanRuntimeView(
+        revision: 1,
+        state: PlanRuntimePhase.awaitingConfirmation,
+        document: document,
+        updatedAt: _fixtureTime,
+      );
+      planInteraction = PendingInteraction(
+        id: requestId,
+        threadId: threadId,
+        turnId: 'driver-origin-turn',
+        revision: 1,
+        kind: InteractionKind.userInput,
+        title: 'Theme implementation plan',
+        body: document.markdown,
+        payload: UserInputInteractionPayload(
+          questions: [
+            UserQuestionView(
+              id: agentSessionPlanConfirmationQuestionId,
+              header: 'Plan',
+              question: document.markdown,
+              isOther: true,
+              isSecret: false,
+              options: [
+                UserQuestionOptionView(
+                  label: agentSessionPlanApproveAnswer,
+                  description: 'Approve this plan.',
+                ),
+                UserQuestionOptionView(
+                  label: agentSessionPlanReviseAnswer,
+                  description: 'Revise this plan.',
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+      _themePlanRequestId = requestId;
+      _freezeDemoPlanRequest(
+        planInteraction,
+        document: document,
+        planRevision: plan.revision,
+      );
+    }
     return workspace.copyWith(
+      runtime: workspace.runtime.copyWith(plan: plan),
       todo: _themeScenario
           ? const TimelineTodoListUpdate(
               callId: 'driver-theme-todo',
@@ -6432,38 +6681,8 @@ final theme = pureStudioTheme();
               ],
             )
           : workspace.todo,
-      interactions: _themePlanScenario
-          ? const [
-              PendingInteraction(
-                id: 'driver-theme-plan',
-                threadId: threadId,
-                turnId: 'driver-origin-turn',
-                kind: InteractionKind.userInput,
-                title: 'Theme implementation plan',
-                body: _themePlanMarkdown,
-                payload: UserInputInteractionPayload(
-                  questions: [
-                    UserQuestionView(
-                      id: agentSessionPlanConfirmationQuestionId,
-                      header: 'Plan',
-                      question: _themePlanMarkdown,
-                      isOther: true,
-                      isSecret: false,
-                      options: [
-                        UserQuestionOptionView(
-                          label: agentSessionPlanApproveAnswer,
-                          description: 'Approve this plan.',
-                        ),
-                        UserQuestionOptionView(
-                          label: agentSessionPlanReviseAnswer,
-                          description: 'Revise this plan.',
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ]
+      interactions: planInteraction != null
+          ? [planInteraction]
           : _fallbackInputScenario
           ? const [
               PendingInteraction(

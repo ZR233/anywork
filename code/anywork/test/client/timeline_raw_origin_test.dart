@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/conversation_fixtures.dart';
 import 'support/pump_client_future.dart';
+import 'support/mapped_conversation_feed.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -23,52 +24,15 @@ void main() {
 
   ConversationItem rawItem(
     String id, {
-    required int ordinal,
+    required int appendSeq,
     required ConversationRawDescriptor descriptor,
     Map<ThreadContentFieldView, String> fields = const {},
   }) => conversationFixture(
     id: id,
     threadId: 'thread',
-    ordinal: ordinal,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    appendSeq: appendSeq,
     descriptor: descriptor,
     fields: fields,
-  );
-
-  TimelineDisplayLease leaseWith(
-    WidgetTester tester,
-    List<ConversationItem> items,
-  ) {
-    final lease = TimelineDisplayLease(
-      threadId: 'thread',
-      generation: 1,
-      content: conversationContentFixture(tester: tester),
-    );
-    lease.adoptBaseline(
-      ConversationBaseline(
-        subscriptionId: 'test',
-        version: 0,
-        items: items,
-        before: null,
-        hasOlder: false,
-      ),
-    );
-    return lease;
-  }
-
-  TimelineSessionViewState viewState() => TimelineSessionViewState(
-    threadId: 'thread',
-    generation: 1,
-    mode: TimelineDisplayMode.live,
-    connection: TimelineConnectionPhase.ready,
-    connectionError: null,
-    olderCursor: null,
-    hasOlder: false,
-    isLoadingOlder: false,
-    olderError: null,
-    hasNewOutput: false,
-    isPreparingLive: false,
   );
 
   Future<void> unmountTimeline(
@@ -84,6 +48,60 @@ void main() {
     );
     expect(lease.isReleased, isTrue, reason: '卸载后等待真实 stock operations done');
   }
+
+  Future<TimelineDisplayLease> leaseWith(
+    WidgetTester tester,
+    List<ConversationItem> items,
+  ) async {
+    final client = AnyworkClient(
+      transport: _RawTransport(items),
+      clientId: 'raw-origin',
+    );
+    final owner = TimelineSessionOwner(client: client);
+    client.conversations.setVisibleThread('thread');
+    owner.select('thread');
+    late TimelineDisplayLease lease;
+    addTearDown(() async {
+      client.conversations.setVisibleThread(null);
+      await unmountTimeline(tester, lease);
+      expect(
+        (await pumpClientFuture(
+          tester,
+          owner.close(),
+          'raw owner close',
+        )).complete,
+        isTrue,
+      );
+      expect(
+        (await pumpClientFuture(
+          tester,
+          client.close(),
+          'raw client close',
+        )).complete,
+        isTrue,
+      );
+    });
+    await pumpClientFuture(
+      tester,
+      client.conversations.session('thread').content.ready,
+      'raw owner acceptance',
+    );
+    lease = owner.lease('thread')!;
+    return lease;
+  }
+
+  TimelineSessionViewState viewState() => TimelineSessionViewState(
+    threadId: 'thread',
+    generation: 1,
+    mode: TimelineDisplayMode.live,
+    connection: TimelineConnectionPhase.ready,
+    connectionError: null,
+    olderCursor: null,
+    hasOlder: false,
+    isLoadingOlder: false,
+    olderError: null,
+    hasNewOutput: false,
+  );
 
   Future<void> pumpTimeline(
     WidgetTester tester,
@@ -122,10 +140,10 @@ void main() {
   }
 
   testWidgets('运行时说明不冒充原始历史记录，历史载荷仍可展开', (tester) async {
-    final lease = leaseWith(tester, [
+    final lease = await leaseWith(tester, [
       rawItem(
         'notice',
-        ordinal: 1,
+        appendSeq: 1,
         descriptor: ConversationRawDescriptor(
           payloads: const [],
           notice: 'This session continued after it was stopped.',
@@ -135,7 +153,7 @@ void main() {
       ),
       rawItem(
         'payload',
-        ordinal: 2,
+        appendSeq: 2,
         descriptor: ConversationRawDescriptor(
           payloads: const [
             ConversationRawPayloadDescriptor(
@@ -187,4 +205,29 @@ void main() {
     expect(find.text('{"ok":false}'), findsOneWidget, reason: '展开后显示原始载荷正文');
     await unmountTimeline(tester, lease);
   });
+}
+
+final class _RawTransport extends Fake implements StudioTransport {
+  _RawTransport(this.items);
+  final List<ConversationItem> items;
+
+  @override
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async => ScriptedConversationFeed(
+    threadId: threadId,
+    subscriptionId: 'raw',
+    baseline: () => ConversationBaseline(
+      subscriptionId: 'raw',
+      timelineEpoch: 'raw-epoch',
+      items: items,
+      before: null,
+      hasOlder: false,
+      completedCursor: ConversationCompletionCursor(
+        timelineEpoch: 'raw-epoch',
+        appendSeq: items.last.header.appendSeq,
+      ),
+    ),
+  );
 }

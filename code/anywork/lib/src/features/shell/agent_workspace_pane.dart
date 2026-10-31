@@ -138,7 +138,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final Map<String, bool> _todoExpandedByThread = {};
 
-  /// 当前打开的计划详情身份（`interaction:` 或 `approved:` 前缀）。
+  /// 当前打开的计划详情身份（`interaction:` 或 `document:` 前缀）。
   final Map<String, String> _openedPlanByThread = {};
   final Map<String, String> _autoOpenedPlanByThread = {};
 
@@ -169,11 +169,14 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
       builder: (context, constraints) {
         final todo = workspace.todo;
         final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final approvedPlan = _approvedPlanPresentation(workspace.runtime.plan);
-        // pending 与 approved 互斥：确认中只用 interaction 正文，批准后才用投影文档。
+        final runtimePlan = _runtimeDocumentPresentation(
+          workspace.runtime.plan,
+        );
+        // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
+        // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
         final presentedPlan = pendingPlan != null
             ? _WorkspacePlanPresentation.fromPending(pendingPlan)
-            : approvedPlan;
+            : runtimePlan;
         final planIdentity = presentedPlan?.identity;
         if (_openedPlanByThread[threadId] != planIdentity) {
           _openedPlanByThread.remove(threadId);
@@ -283,10 +286,10 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                               );
                             }
                           },
-                    showPlanEntry: approvedPlan != null,
-                    onOpenPlan: approvedPlan == null
+                    showPlanEntry: pendingPlan == null && runtimePlan != null,
+                    onOpenPlan: pendingPlan != null || runtimePlan == null
                         ? null
-                        : () => _openPlan(threadId, approvedPlan.identity),
+                        : () => _openPlan(threadId, runtimePlan.identity),
                   ),
                   // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
                   todoPanel:
@@ -400,16 +403,14 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     });
   }
 
-  static _WorkspacePlanPresentation? _approvedPlanPresentation(
+  static _WorkspacePlanPresentation? _runtimeDocumentPresentation(
     PlanRuntimeView? plan,
   ) {
     final document = plan?.document;
-    if (plan == null ||
-        plan.state != PlanRuntimePhase.approved ||
-        document == null) {
+    if (plan == null || document == null) {
       return null;
     }
-    return _WorkspacePlanPresentation.fromApproved(document);
+    return _WorkspacePlanPresentation.fromDocument(plan, document);
   }
 
   /// footer 可用高度上限：先给时间线留下最小可视高度，剩余高度交给 footer。
@@ -431,7 +432,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     return PlanDetailConnector(
       identity: presentation.identity,
       markdown: presentation.markdown,
-      awaitingConfirmation: presentation.pending,
+      status: presentation.status,
       fullWidth: fullWidth,
       onToggleReadingMode: sideBySideFeasible
           ? () => _toggleReadingMode(threadId)
@@ -445,28 +446,31 @@ class _WorkspacePlanPresentation {
   const _WorkspacePlanPresentation({
     required this.identity,
     required this.markdown,
-    required this.pending,
+    required this.status,
   });
 
   factory _WorkspacePlanPresentation.fromPending(PlanConfirmationView plan) {
     return _WorkspacePlanPresentation(
       identity: 'interaction:${plan.interactionId}',
       markdown: plan.markdown,
-      pending: true,
+      status: PlanDetailStatus.awaitingConfirmation,
     );
   }
 
-  factory _WorkspacePlanPresentation.fromApproved(PlanDocumentView document) {
+  factory _WorkspacePlanPresentation.fromDocument(
+    PlanRuntimeView plan,
+    PlanDocumentView document,
+  ) {
     return _WorkspacePlanPresentation(
-      identity: 'approved:${document.version}',
+      identity: 'document:${document.version}',
       markdown: document.markdown,
-      pending: false,
+      status: planDetailStatusFromRuntime(plan.state),
     );
   }
 
   final String identity;
   final String markdown;
-  final bool pending;
+  final PlanDetailStatus status;
 }
 
 /// 计划并排阅读区：会话列 + 计划详情的可拖动分栏。

@@ -50,6 +50,9 @@ pub(super) async fn publish(
         updated_at: thread.updated_at,
     };
     projector.events.update_agent_directory(entry).await;
+    projector
+        .events
+        .update_child_interactions(&thread, snapshot)?;
     Ok(())
 }
 
@@ -114,6 +117,9 @@ pub(super) async fn publish_cold_scheduling_state(
         updated_at: thread.updated_at,
     };
     projector.events.update_agent_directory(entry).await;
+    projector
+        .events
+        .update_child_interactions(thread, snapshot)?;
     Ok(())
 }
 

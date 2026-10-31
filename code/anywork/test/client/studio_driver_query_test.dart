@@ -14,7 +14,6 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
-import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
@@ -25,6 +24,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import '../../test_driver/timeline_observation.dart' as observation;
 
 final class _UnusedTransport extends UnusedAccountPorts
     implements StudioTransport {
@@ -426,9 +426,7 @@ void main() {
     await (graph..setConversationPageVisible(true)).client.directoryCommands
         .selectThread('thread-main');
     final session = client.conversations.existingSession('thread-main')!;
-    await session.content.state.waitFor(
-      (state) => state.snapshot is ConversationBaselineFrame,
-    );
+    await session.content.state.waitFor((state) => state.snapshot == true);
     final initial = session.state.workspace!;
     // A runtime baseline may predate the directory's terminal/title/mode frame.
     await (client.transport as RecordingDemoTransport).publishWorkspace(
@@ -505,6 +503,7 @@ void main() {
     expect(facts.timelineScroll!.isScrolling, isFalse);
     expect((json['timelineScroll'] as Map)['isScrolling'], isFalse);
     final generation = facts.timeline!.generation;
+    final display = timeline.lease('thread-main');
     await timeline.returnToLive('thread-main');
     final switched = queryStudioDriverFacts(
       client,
@@ -514,9 +513,10 @@ void main() {
       acpService: graph.acp,
       timeline: timeline,
     );
-    expect(switched.timeline!.generation, greaterThan(generation));
+    expect(switched.timeline!.generation, generation);
+    expect(timeline.lease('thread-main'), same(display));
     expect(switched.timeline!.threadId, 'thread-main');
-    // 切代次后诊断仍读当前 lease 的真实身份，不残留上一代几何。
+    // 阅读模式不切代次；诊断仍从同一真实 lease 读取几何。
     expect(switched.timelineScroll, isNotNull);
     expect(switched.timelineScroll!.generation, switched.timeline!.generation);
     expect(switched.timelineScroll!.threadId, 'thread-main');
@@ -988,7 +988,7 @@ void main() {
     },
   );
 
-  test('timeline facts expose authoritative text channel and plan-confirmation bool', () async {
+  test('timeline facts expose completed clocks, text channels and typed Plan decisions', () async {
     final transport = _ScriptedTimelineTransport();
     final graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
@@ -1047,29 +1047,78 @@ void main() {
     // 普通问答：false + 无决定。
     expect(userInputOf('qa-normal')!['isPlanConfirmation'], isFalse);
     expect(userInputOf('qa-normal')!['planDecision'], isNull);
-    // 待确认的计划同样是计划确认，且决定来自权威 getter。
-    expect(userInputOf('qa-plan-pending')!['isPlanConfirmation'], isTrue);
-    expect(userInputOf('qa-plan-pending')!['planDecision'], 'pending');
-    // cancelled / approved 按权威 getter 直出。
-    expect(userInputOf('qa-plan-cancelled')!['isPlanConfirmation'], isTrue);
-    expect(userInputOf('qa-plan-cancelled')!['planDecision'], 'cancelled');
-    expect(userInputOf('qa-plan-approved')!['isPlanConfirmation'], isTrue);
-    expect(userInputOf('qa-plan-approved')!['planDecision'], 'approved');
+    // Plan completion is its own typed atom. A pending Plan has no historical atom.
+    expect(
+      items.cast<Map<String, dynamic>>().map((item) => item['id']),
+      isNot(contains('qa-plan-pending')),
+    );
+    expect(itemOf('plan-cancelled')['kind'], 'plan');
+    expect(itemOf('plan-cancelled')['status'], 'completed');
+    expect(
+      graph.timeline
+          .lease('thread')!
+          .itemOf('plan-cancelled')!
+          .planReceipt!
+          .decision,
+      PlanConfirmationDecisionView.cancelled,
+    );
+    expect(itemOf('plan-approved')['kind'], 'plan');
+    expect(itemOf('plan-approved')['status'], 'completed');
+    expect(
+      graph.timeline
+          .lease('thread')!
+          .itemOf('plan-approved')!
+          .planReceipt!
+          .decision,
+      PlanConfirmationDecisionView.approved,
+    );
+    expect(userInputOf('plan-approved'), isNull);
+    final approved = itemOf('plan-approved')['plan'];
+    expect(approved, {
+      'interactionId': 'approved',
+      'decision': 'approved',
+      'documentVersion': 7,
+      'contentHash': 'recorded-approved-hash',
+      'document': '# Approved plan',
+      'feedback': '  historical feedback\n',
+    });
+    final typed = observation.TimelineObservation.parse(json);
+    typed.requireConsistentIds();
+    expect(typed.hiddenPresentationItems.single.kind, 'hidden');
+    expect(typed.hiddenPresentationItems.single.memberIds, ['turn-completed']);
+    final lease = timeline.lease('thread')!;
+    expect(
+      lease.controller.messages.map((message) => message.id),
+      isNot(contains(typed.hiddenPresentationItems.single.id)),
+      reason: '只读诊断不能为 hidden owner 制造 Flyer Message',
+    );
+    expect(typed.item('plan-approved')!.plan!.toJson(), approved);
+    expect(typed.item('plan-approved')!.frozenFields()['plan'], approved);
+    expect(typed.item('plan-cancelled')!.plan!.documentVersion, isNull);
+    expect(typed.item('plan-cancelled')!.plan!.contentHash, isNull);
+    expect(typed.item('qa-plan-legacy')!.plan, isNull);
+    final timelineJson = json['timeline'] as Map<String, dynamic>;
+    expect(timelineJson['timelineEpoch'], 'facts-epoch');
+    expect(timelineJson['completedThrough'], 9);
+    expect(itemOf('cm')['appendSeq'], 1);
+    expect(itemOf('cm')['sourceEffectSeq'], 101);
+    expect(itemOf('cm')['sealedAt'], isNull);
+    expect(itemOf('fa')['sealedAt'], 1767225600);
+    final presentations = (timelineJson['presentationItems'] as List)
+        .cast<Map<String, dynamic>>();
+    expect(presentations.first['firstAppendSeq'], 1);
+    expect(itemOf('cm').keys, isNot(contains('revision')));
+    expect(itemOf('cm').keys, isNot(contains('ordinal')));
     // 旧普通问答复用保留 ID：归属只看工具名，仍是普通问答。
     expect(userInputOf('qa-plan-legacy')!['isPlanConfirmation'], isFalse);
     expect(userInputOf('qa-plan-legacy')!['planDecision'], isNull);
     // 每个问答条目都始终输出该键（固定 schema）。
-    for (final id in const [
-      'qa-normal',
-      'qa-plan-pending',
-      'qa-plan-cancelled',
-      'qa-plan-approved',
-      'qa-plan-legacy',
-    ]) {
+    for (final id in const ['qa-normal', 'qa-plan-legacy']) {
       expect(userInputOf(id)!.containsKey('isPlanConfirmation'), isTrue);
       expect(userInputOf(id)!.containsKey('planDecision'), isTrue);
     }
 
+    client.conversations.setVisibleThread(null);
     await timeline.close(
       deadline: DateTime.now().add(const Duration(seconds: 5)),
     );
@@ -1276,6 +1325,7 @@ void main() {
       expect(transport.opens, opensBefore);
 
       // 释放展示后诊断读不到上一代附件。
+      client.conversations.setVisibleThread(null);
       await timeline.close(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
       );
@@ -1466,7 +1516,10 @@ final class _ScriptedTimelineTransport extends UnusedAccountPorts
   int opens = 0;
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     opens++;
     return _FactsConnection(threadId, _baseline);
   }
@@ -1489,45 +1542,38 @@ UserQuestionView _factsQuestion({required String id, String text = 'Q'}) =>
 
 ConversationItem _textItem(
   String id,
-  int ordinal,
+  int appendSeq,
   ThreadTextChannel channel, {
   List<ThreadAttachmentView> attachments = const [],
 }) => conversationFixture(
   id: id,
   threadId: 'thread',
   turnId: 'turn',
-  ordinal: ordinal,
-  revision: 1,
-  createdAt: DateTime.utc(2026),
-  updatedAt: DateTime.utc(2026),
-  saved: true,
-  lifecycle: ConversationLifecycle.terminal,
+  appendSeq: appendSeq,
+  sourceEffectSeq: 100 + appendSeq,
+  sealedAt: appendSeq == 1 ? null : 1767225600,
   descriptor: ConversationTextDescriptor(
     channel: channel,
     attachments: attachments,
-    lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+    outcome: ConversationContentCompleted(
+      CompletedThreadContentView(DateTime.utc(2026)),
+    ),
   ),
   fields: {const ThreadTextFieldView(): 'body-$id'},
 );
 
 ConversationItem _toolItem(
   String id,
-  int ordinal, {
+  int appendSeq, {
   ConversationInputFixture? userInput,
-  ConversationToolState lifecycle = const ConversationToolRunning(),
-  ConversationLifecycle itemLifecycle = ConversationLifecycle.streaming,
+  ConversationToolState? state,
   String name = 'ask_user',
   String result = '',
 }) => conversationFixture(
   id: id,
   threadId: 'thread',
   turnId: 'turn',
-  ordinal: ordinal,
-  revision: 1,
-  createdAt: DateTime.utc(2026),
-  updatedAt: DateTime.utc(2026),
-  saved: true,
-  lifecycle: itemLifecycle,
+  appendSeq: appendSeq,
   descriptor: ConversationToolDescriptor(
     invocation: ConversationToolInvocation(
       toolCallId: id,
@@ -1535,7 +1581,12 @@ ConversationItem _toolItem(
       name: name,
     ),
     userInput: userInput?.descriptor,
-    state: lifecycle,
+    state:
+        state ??
+        ConversationToolSucceeded(
+          completedAt: DateTime.utc(2026),
+          output: ConversationToolOutputDescriptor(attachments: const []),
+        ),
   ),
   fields: {
     const ThreadToolArgumentsFieldView(): '{}',
@@ -1546,7 +1597,11 @@ ConversationItem _toolItem(
 
 ConversationBaseline _factsBaseline() => ConversationBaseline(
   subscriptionId: 'facts',
-  version: 1,
+  timelineEpoch: 'facts-epoch',
+  completedCursor: const ConversationCompletionCursor(
+    timelineEpoch: 'facts-epoch',
+    appendSeq: 9,
+  ),
   before: null,
   hasOlder: false,
   items: [
@@ -1561,9 +1616,9 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
         questions: [_factsQuestion(id: 'q1')],
         state: ConversationUserInputResolved(
           answers: [
-            ConversationAnswerDescriptor(
+            const ConversationAnswerDescriptor(
               questionId: 'q1',
-              answerCount: (['A']).length,
+              answerCount: 1,
               redacted: false,
             ),
           ],
@@ -1573,67 +1628,31 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
         },
       ),
     ),
-    _toolItem(
-      'qa-plan-pending',
-      5,
-      name: planSubmitToolName,
-      userInput: conversationInputFixture(
-        interactionId: 'plan-pending',
-        questions: [
-          _factsQuestion(
-            id: agentSessionPlanConfirmationQuestionId,
-            text: '# Plan',
-          ),
-        ],
-        state: const ConversationUserInputPending(),
-        answers: const <String, List<String>>{},
+    conversationFixture(
+      id: 'plan-cancelled',
+      threadId: 'thread',
+      appendSeq: 6,
+      descriptor: const ConversationPlanDescriptor(
+        interactionId: 'cancelled',
+        decision: ConversationPlanDecision.cancelled,
       ),
+      fields: {const ThreadPlanDocumentFieldView(): '# Cancelled plan'},
     ),
-    _toolItem(
-      'qa-plan-cancelled',
-      6,
-      name: planSubmitToolName,
-      userInput: conversationInputFixture(
-        interactionId: 'plan-cancelled',
-        questions: [
-          _factsQuestion(
-            id: agentSessionPlanConfirmationQuestionId,
-            text: '# Plan',
-          ),
-        ],
-        state: const ConversationUserInputCancelled(),
-        answers: const <String, List<String>>{},
+    conversationFixture(
+      id: 'plan-approved',
+      threadId: 'thread',
+      appendSeq: 7,
+      descriptor: const ConversationPlanDescriptor(
+        interactionId: 'approved',
+        decision: ConversationPlanDecision.approved,
+        documentVersion: 7,
+        contentHash: 'recorded-approved-hash',
       ),
+      fields: {
+        const ThreadPlanDocumentFieldView(): '# Approved plan',
+        const ThreadPlanFeedbackFieldView(): '  historical feedback\n',
+      },
     ),
-    _toolItem(
-      'qa-plan-approved',
-      7,
-      name: planSubmitToolName,
-      userInput: conversationInputFixture(
-        interactionId: 'plan-approved',
-        questions: [
-          _factsQuestion(
-            id: agentSessionPlanConfirmationQuestionId,
-            text: '# Plan',
-          ),
-        ],
-        state: ConversationUserInputResolved(
-          answers: [
-            ConversationAnswerDescriptor(
-              questionId: agentSessionPlanConfirmationQuestionId,
-              answerCount: ([agentSessionPlanApproveAnswer]).length,
-              redacted: false,
-            ),
-          ],
-        ),
-        answers: {
-          agentSessionPlanConfirmationQuestionId: [
-            agentSessionPlanApproveAnswer,
-          ],
-        },
-      ),
-    ),
-    // 旧历史的普通问答工具复用过保留的问题 ID：它仍必须报告为普通问答。
     _toolItem(
       'qa-plan-legacy',
       8,
@@ -1647,9 +1666,9 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
         ],
         state: ConversationUserInputResolved(
           answers: [
-            ConversationAnswerDescriptor(
+            const ConversationAnswerDescriptor(
               questionId: agentSessionPlanConfirmationQuestionId,
-              answerCount: ([agentSessionPlanApproveAnswer]).length,
+              answerCount: 1,
               redacted: false,
             ),
           ],
@@ -1659,6 +1678,21 @@ ConversationBaseline _factsBaseline() => ConversationBaseline(
             agentSessionPlanApproveAnswer,
           ],
         },
+      ),
+    ),
+    conversationFixture(
+      id: 'turn-completed',
+      threadId: 'thread',
+      turnId: 'turn',
+      appendSeq: 9,
+      descriptor: const ConversationTurnDescriptor(
+        outcome: ConversationTurnCompleted(
+          CompletedStudioTurnState(
+            startedAt: null,
+            completedAt: 1,
+            completion: StudioTurnCompletion.normal,
+          ),
+        ),
       ),
     ),
   ],
@@ -1701,7 +1735,11 @@ const _toolVideo = ThreadAttachmentView(
 /// 顶层附件行与 nested 工具附件，且 modality 是 canonical enum 名。
 ConversationBaseline _attachmentBaseline() => ConversationBaseline(
   subscriptionId: 'attachments',
-  version: 1,
+  timelineEpoch: 'attachments-epoch',
+  completedCursor: const ConversationCompletionCursor(
+    timelineEpoch: 'attachments-epoch',
+    appendSeq: 2,
+  ),
   before: null,
   hasOlder: false,
   items: [
@@ -1716,8 +1754,7 @@ ConversationBaseline _attachmentBaseline() => ConversationBaseline(
       2,
       name: 'bash',
       result: 'ok',
-      itemLifecycle: ConversationLifecycle.terminal,
-      lifecycle: ConversationToolSucceeded(
+      state: ConversationToolSucceeded(
         completedAt: DateTime.utc(2026),
         output: ConversationToolOutputDescriptor(
           attachments: [_toolImage, _toolVideo],

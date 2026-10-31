@@ -102,8 +102,8 @@ Map<String, Object?> assessThumbDrag(List<dynamic> samples, bool increasing) {
 /// Opt-in native observation of the standard timeline scroll behaviour.
 ///
 /// 全部依据只读事实：`timeline`（展示代次/模式/身份）与 `timelineScroll`（当前标准
-/// `ScrollController` 几何）。滚轮是真实指针输入；到达冻结集合的本地底端**不会**回到
-/// 实时，只有显式「回到实时」才建立新代次（design/26 §26.3）。
+/// `ScrollController` 几何）。滚轮是真实指针输入；到达已加载集合的本地底端不会改变
+/// 阅读意图，显式「回到实时」保留同一 lease、完整窗口与消费身份（design/26 §26.8）。
 Future<Map<String, Object?>> observeTimelineScrolling(
   String vmUrl,
   Directory output,
@@ -165,7 +165,7 @@ Future<Map<String, Object?>> observeTimelineScrolling(
           wheel[index + 1]['pixels'] == wheel[index + 1]['maxScrollExtent'];
     }).every((moved) => moved);
     final afterWheel = TimelineObservation.parse(await snapshot());
-    // 离开真实底端后进入 History：这是内容发布策略，不是像素贴底事实。
+    // 离开真实底端后进入 History：这是阅读意图，不改变完成项接纳。
     observations['wheelDetached'] =
         afterWheel.isHistory && (wheel.last['pixels'] as num) > 0.5;
     await File('${output.path}/scroll-wheel.png')
@@ -181,7 +181,7 @@ Future<Map<String, Object?>> observeTimelineScrolling(
     observations['wheelReturning'] = returning;
     final returned = returning.last;
     final returnedTimeline = TimelineObservation.parse(await snapshot());
-    // 到达冻结集合的本地底端：几何贴底，但仍然是同一个 History 代次。
+    // 到达已加载集合的本地底端：几何贴底，但仍然是同一个 History 代次。
     //
     // 标准反向列表的底端是 offset 0（`extentBefore` 0、`extentAfter` 为全部可滚动
     // 内容）；`extentAfter ≈ 0` 是非反向 ListView 的贴底语义，不能拿来判反向列表。
@@ -196,21 +196,24 @@ Future<Map<String, Object?>> observeTimelineScrolling(
 
     final state = await snapshot();
     final current = TimelineObservation.parse(state);
-    if (current.items.isEmpty) {
-      throw StateError('Timeline exposes no canonical item to observe');
+    current.requireConsistentIds();
+    if (current.presentationItems.isEmpty) {
+      throw StateError('Timeline exposes no presentation row to observe');
     }
+    final lastPresentationId = current.presentationItems.last.id;
     final view = await driver.sendCommand(ToolProbe(timelineFinder, 'observe'));
     final last = await driver.sendCommand(
-      ToolProbe(
-        find.byValueKey('timeline-row-${current.items.last.id}'),
-        'observe',
-      ),
+      ToolProbe(find.byValueKey('timeline-row-$lastPresentationId'), 'observe'),
     );
     final viewport = (view['samples'] as List).last as Map;
     final tail = (last['samples'] as List).last as Map;
+    observations['latestRowId'] = lastPresentationId;
     observations['latestRowGeometry'] = tail;
     observations['wheelLastLineVisible'] =
         tail['mounted'] != false &&
+        (tail['height'] as num) > 0 &&
+        (tail['top'] as num) + (tail['height'] as num) >
+            (viewport['top'] as num) &&
         (tail['top'] as num) + (tail['height'] as num) <=
             (viewport['top'] as num) + (viewport['height'] as num) + 0.5;
 
@@ -229,12 +232,22 @@ Future<Map<String, Object?>> observeTimelineScrolling(
     observations['thumbUpContinuous'] = upAssessment['continuous'];
     observations['thumbDownContinuous'] = downAssessment['continuous'];
 
-    // 显式回到实时：新代次、最新小页、offset 0。滚动条/滚轮到本地底端不会自行换代。
+    // 显式回到实时只改变阅读意图与滚动位置，不重开基线或裁掉已加载窗口。
     final beforeReturn = TimelineObservation.parse(await snapshot());
+    beforeReturn.requireConsistentIds();
+    if (!beforeReturn.isHistory ||
+        !beforeReturn.ready ||
+        beforeReturn.connection != 'ready' ||
+        beforeReturn.generation < 1 ||
+        beforeReturn.timelineEpoch == null ||
+        beforeReturn.items.isEmpty ||
+        !beforeReturn.appendSeqAscending ||
+        beforeReturn.loadedCount != beforeReturn.itemCount ||
+        beforeReturn.completedThrough != beforeReturn.items.last.appendSeq) {
+      throw StateError('Return to live lacks a valid loaded History lease');
+    }
     await driver.sendCommand(RawTap(find.byValueKey('timeline-return-live')));
-    // 只要求“建立了更新的代次”：代次由 owner 单调递增，跨越多个内部重同步时
-    // 增量可能大于 1；真正要证明的是新代次属于本 Thread 且几何归它所有。
-    // 成功前旧 History 一直保留，所以等到旧代次被新 Live 代次替换再看。
+    // generation 就是当前 lease 的身份；几何与内容必须仍属于同一 Thread/epoch/lease。
     final returnDeadline = DateTime.now().add(const Duration(seconds: 30));
     late TimelineScrollObservation returnedLive;
     late TimelineObservation liveTimeline;
@@ -242,16 +255,23 @@ Future<Map<String, Object?>> observeTimelineScrolling(
       final settledScroll = await settle(stage: 'return-live');
       final timeline = TimelineObservation.parse(await snapshot());
       if (timeline.isLive &&
-          timeline.generation > beforeReturn.generation &&
-          !timeline.preparingLive &&
-          settledScroll.generation == timeline.generation) {
+          timeline.ready &&
+          timeline.connection == 'ready' &&
+          timeline.threadId == beforeReturn.threadId &&
+          timeline.timelineEpoch == beforeReturn.timelineEpoch &&
+          timeline.generation == beforeReturn.generation &&
+          settledScroll.threadId == timeline.threadId &&
+          settledScroll.generation == timeline.generation &&
+          settledScroll.atLiveEdge &&
+          (settledScroll.pixels ?? 1).abs() <= 0.5 &&
+          !timeline.hasNewOutput) {
         returnedLive = settledScroll;
         liveTimeline = timeline;
         break;
       }
       if (DateTime.now().isAfter(returnDeadline)) {
         throw StateError(
-          'Explicit return to live did not establish a new generation',
+          'Explicit return to live did not settle on the original lease',
         );
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -260,17 +280,118 @@ Future<Map<String, Object?>> observeTimelineScrolling(
       'scroll': returnedLive.toJson(),
       'timeline': liveTimeline.summary(),
     };
-    observations['returnLiveNewGeneration'] =
+    liveTimeline.requireConsistentIds();
+    final firstKept = liveTimeline.itemIds.indexOf(beforeReturn.itemIds.first);
+    final retainedEnd = firstKept + beforeReturn.items.length;
+    // 只有返回前已在途的分页可前插；前缀必须为正序号且无缺口地接到旧首项。
+    final prefixAuthorizedAndContinuous =
+        firstKept == 0 ||
+        (firstKept > 0 &&
+            beforeReturn.loadingOlder &&
+            List.generate(firstKept, (index) {
+              final sequence = liveTimeline.items[index].appendSeq;
+              return sequence > 0 &&
+                  sequence ==
+                      beforeReturn.items.first.appendSeq - firstKept + index;
+            }).every((continuous) => continuous));
+    final windowPreserved =
+        firstKept >= 0 &&
+        prefixAuthorizedAndContinuous &&
+        retainedEnd <= liveTimeline.items.length &&
+        jsonEncode([
+              for (final item in beforeReturn.items) item.frozenFields(),
+            ]) ==
+            jsonEncode([
+              for (final item in liveTimeline.items.sublist(
+                firstKept,
+                retainedEnd,
+              ))
+                item.frozenFields(),
+            ]);
+    final beforeH = beforeReturn.completedThrough!;
+    final afterH = liveTimeline.completedThrough;
+    final appended = liveTimeline.items
+        .where((item) => item.appendSeq > beforeH)
+        .toList();
+    // 旧窗口可因已发起的分页前插而右移；尾部只能接纳 H 后的连续完成项。
+    final completionContinuous =
+        afterH != null &&
+        afterH >= beforeH &&
+        liveTimeline.appendSeqAscending &&
+        liveTimeline.loadedCount == liveTimeline.itemCount &&
+        liveTimeline.items.isNotEmpty &&
+        liveTimeline.items.last.appendSeq == afterH &&
+        appended.length == afterH - beforeH &&
+        List.generate(
+          appended.length,
+          (index) => appended[index].appendSeq == beforeH + index + 1,
+        ).every((continuous) => continuous);
+    final keptIds = beforeReturn.itemIds.toSet();
+    final presentationPositionsValid = [beforeReturn, liveTimeline].every(
+      (timeline) =>
+          [
+            ...timeline.presentationItems,
+            ...timeline.hiddenPresentationItems,
+          ].every(
+            (group) =>
+                group.firstAppendSeq ==
+                timeline.item(group.memberIds.first)?.appendSeq,
+          ),
+    );
+    // 投影回原窗口后，展示 owner 的身份、顺序和完整成员关系必须原样保留；
+    // 新分页或完成项可扩展边界组，但不能把旧成员移到另一组或另造 owner。
+    // visibleMemberIds/skillPairs 随完整组扩展派生，不在此冻结或重验配对算法。
+    List<Map<String, Object?>> membership(
+      List<TimelinePresentationObservation> groups,
+    ) => [
+      for (final group in groups)
+        if (group.memberIds.any(keptIds.contains))
+          <String, Object?>{
+            'id': group.id,
+            'kind': group.kind,
+            'memberIds': group.memberIds.where(keptIds.contains).toList(),
+            'expanded': group.expanded,
+          },
+    ];
+    final presentationPreserved =
+        jsonEncode(membership(beforeReturn.presentationItems)) ==
+            jsonEncode(membership(liveTimeline.presentationItems)) &&
+        jsonEncode(membership(beforeReturn.hiddenPresentationItems)) ==
+            jsonEncode(membership(liveTimeline.hiddenPresentationItems));
+    observations['returnLivePreservesLoadedWindow'] =
         liveTimeline.isLive &&
-        liveTimeline.generation > beforeReturn.generation &&
+        liveTimeline.threadId == beforeReturn.threadId &&
+        liveTimeline.timelineEpoch == beforeReturn.timelineEpoch &&
+        liveTimeline.generation == beforeReturn.generation &&
+        returnedLive.threadId == liveTimeline.threadId &&
         returnedLive.generation == liveTimeline.generation &&
         returnedLive.atLiveEdge &&
         (returnedLive.pixels ?? 1).abs() <= 0.5 &&
-        liveTimeline.hasNewOutput == false;
-    observations['returnLiveGeneration'] = <String, Object?>{
-      'before': beforeReturn.generation,
-      'after': liveTimeline.generation,
+        !liveTimeline.hasNewOutput &&
+        windowPreserved &&
+        presentationPositionsValid &&
+        presentationPreserved &&
+        completionContinuous;
+    observations['returnLivePreservation'] = <String, Object?>{
+      'before': beforeReturn.summary(),
+      'after': liveTimeline.summary(),
       'scrollGeneration': returnedLive.generation,
+      'beforeItemIds': beforeReturn.itemIds,
+      'afterItemIds': liveTimeline.itemIds,
+      'prefixAuthorizedAndContinuous': prefixAuthorizedAndContinuous,
+      'windowPreserved': windowPreserved,
+      'presentationPositionsValid': presentationPositionsValid,
+      'presentationPreserved': presentationPreserved,
+      'beforePresentationMembership': membership(
+        beforeReturn.presentationItems,
+      ),
+      'afterPresentationMembership': membership(liveTimeline.presentationItems),
+      'beforeHiddenMembership': membership(
+        beforeReturn.hiddenPresentationItems,
+      ),
+      'afterHiddenMembership': membership(liveTimeline.hiddenPresentationItems),
+      'completionContinuous': completionContinuous,
+      'appendedSequences': [for (final item in appended) item.appendSeq],
     };
     observations['pass'] = [
       'wheelViewportStable',
@@ -281,7 +402,7 @@ Future<Map<String, Object?>> observeTimelineScrolling(
       'wheelLastLineVisible',
       'thumbUpContinuous',
       'thumbDownContinuous',
-      'returnLiveNewGeneration',
+      'returnLivePreservesLoadedWindow',
     ].every((key) => observations[key] == true);
     return observations;
   } finally {

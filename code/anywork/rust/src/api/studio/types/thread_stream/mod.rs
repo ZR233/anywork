@@ -421,7 +421,8 @@ pub enum BridgePromptPrefixChangedReason {
     ContextRecovered,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeInteractionRequest {
     pub interaction_id: String,
     pub scope: BridgeInteractionScope,
@@ -432,7 +433,8 @@ pub struct BridgeInteractionRequest {
 }
 
 /// 主会话中的一条子任务待决交互摘要：只读投影，决定仍回到原交互身份。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeChildInteractionSummary {
     pub child_thread_id: String,
     pub interaction_id: String,
@@ -441,7 +443,8 @@ pub struct BridgeChildInteractionSummary {
     pub interaction: BridgeInteractionRequest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeInteractionScope {
     pub thread_id: String,
     pub turn_id: String,
@@ -450,7 +453,8 @@ pub struct BridgeInteractionScope {
     pub agent_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeInteractionContent {
     UserInput {
         questions: Vec<BridgeUserQuestion>,
@@ -465,7 +469,8 @@ pub enum BridgeInteractionContent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeUserInputInteractionState {
     Pending {
         operation_id: String,
@@ -486,7 +491,8 @@ pub enum BridgeUserInputInteractionState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeToolApprovalInteractionState {
     Pending {
         operation_id: String,
@@ -508,7 +514,8 @@ pub enum BridgeToolApprovalInteractionState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeUserQuestion {
     pub id: String,
     pub header: String,
@@ -518,7 +525,8 @@ pub struct BridgeUserQuestion {
     pub options: Option<Vec<BridgeUserQuestionOption>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeUserQuestionOption {
     pub label: String,
     pub description: String,
@@ -535,13 +543,15 @@ pub enum BridgeInteractionResolution {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeUserInputAnswer {
     pub question_id: String,
     pub answers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum BridgeToolApprovalResolution {
     Approved,
     Denied,

@@ -121,10 +121,11 @@ class ToolProbeExtension extends CommandExtension {
             'height': presentationBox.size.height,
           },
         'expanded': ?expanded,
-        // A failed tool can expose a typed failure without an output payload.
-        // Read only this mounted tile's ordinary labels/error Text; arguments
-        // and successful payloads live in SelectableText and are not included.
-        if (probe.action == 'readText')
+        // Read this mounted target's standard Text labels, errors and payloads.
+        // Code payloads join the surrounding SelectionArea through Text.
+        if (probe.action == 'readText') ...{
+          'visibleHeight': _visibleInViewports(box).height
+              .clamp(0.0, double.infinity),
           'texts': [
             for (final e
                 in find
@@ -134,6 +135,7 @@ class ToolProbeExtension extends CommandExtension {
                   (e.widget as Text).textSpan?.toPlainText() ??
                   '',
           ],
+        },
         'scroll': scroll,
         // 展示模式来自同一次只读快照，供宿主断言“同 Thread/gen/History”。
         'mode': timeline is Map ? timeline['mode'] : null,
@@ -153,7 +155,9 @@ class ToolProbeExtension extends CommandExtension {
     }
 
     final samples = <Object?>[sample()];
-    if (probe.action == 'readText') return _ProbeResult(samples);
+    if (probe.action == 'readText') {
+      return _ProbeResult(samples);
+    }
     final box = target.evaluate().single.renderObject! as RenderBox;
     final top = box.localToGlobal(Offset.zero);
     if (probe.action == 'hover') {

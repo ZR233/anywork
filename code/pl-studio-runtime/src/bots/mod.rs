@@ -41,14 +41,6 @@ pub(crate) enum BotInputRead {
     Absent,
 }
 
-/// 目标 Turn 的持久 typed 状态读取。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BotTurnRead {
-    Ready(pl_protocol::TurnState),
-    /// Turn 条目尚未持久化；不能据此推断 Turn 不存在或已结束。
-    Absent,
-}
-
 /// 交互类别对自动回复的语义差异。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BotInteractionKind {

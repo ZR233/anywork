@@ -252,7 +252,7 @@ impl ProductEventBus {
     /// calls writer 进度都来自协调器；calls 侧只在指标真变时回灌，避免自唤醒循环。
     fn update_persistence_queue(&self) {
         let coordinator = self.store.thread_persistence();
-        coordinator.refresh_calls_metrics(self.store.calls().metrics());
+        coordinator.refresh_calls_metrics(self.store.calls());
         let queue = coordinator.queue_snapshot();
         let mut current = self
             .persistence_queue

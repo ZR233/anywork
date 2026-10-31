@@ -8,7 +8,6 @@ import 'driver_read_commands.dart';
 import 'flutter_driver_session.dart';
 import 'scrolling_journey.dart';
 import 'timeline_observation.dart';
-import 'timeline_scroll.dart' as streaming_scroll;
 // The multi-item stress journey already owns the session-switch flow helpers.
 import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
 
@@ -20,7 +19,7 @@ import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
 /// timing and raw frame data: the synthetic account's own byte count lives in
 /// the fixture report and is never treated as an FRB transfer measurement.
 ///
-/// 断言只读当前展示事实：`timeline`（身份/revision/省略声明/逐字段详情引用）与
+/// 断言只读当前展示事实：`timeline`（epoch/原子身份/append sequence/省略声明/详情引用）与
 /// `timelineScroll`（当前标准 ScrollController 几何）。正文预览有界；超过单项预览
 /// 预算的正文只在用户显式打开的详情查看器里逐块读取。
 const _prompt = 'Stream the local GUI stress body fixture';
@@ -164,7 +163,7 @@ Future<void> main(List<String> args) async {
     await mark(stage);
     final streaming = await _waitFor(
       driver,
-      (snapshot) => _bodyCharacters(snapshot) > 0,
+      (snapshot) => _streamingBodyObservation(snapshot) != null,
       'streaming',
       evidence: output,
     );
@@ -172,17 +171,18 @@ Future<void> main(List<String> args) async {
     report['firstContentAt'] = firstContentAt;
     report['timeToFirstContentMillis'] = firstContentAt - submittedAt;
     report['streamingOutputTokens'] = _outputTokens(streaming);
-    report['streamingAnswerLength'] = _bodyCharacters(streaming);
+    final firstBody = _streamingBodyObservation(streaming)!;
+    report['streamingAnswerLength'] = firstBody['characters'];
+    report['streamingBodySource'] = firstBody;
     stage = 'streaming';
     await mark(stage);
     // Large body only: prove the body really keeps following the stream while it
     // is still generating *above* the per-item preview budget. Preview bytes stay
-    // capped by contract, so the growing fact is the item's true total bytes and
-    // revision; the journey never taps a load-full affordance.
+    // capped by contract. Streaming growth comes from actual ordered activity
+    // response parts; completed detail is read only after the atom is sealed.
     //
-    // 两个观测必须分阶段，不能并行：增长采样要求展示仍在 Live 且贴底，而 companion
-    // 的第一步真实 drag 就会把展示推进 History。宿主截图也要排在这两者之后——一次
-    // 大帧截图会消耗数秒流窗口，先截图会让采样和 companion 都落到终态之后。
+    // 流中历史阅读/拖动/滚动条由 timeline-history 的完成种子旅程承载。
+    // 本单项场景先采样 Live 正文增长，再截图，避免截图消耗生成窗口。
     if (largeBody) {
       final growing = await _sampleStreamingLargeBody(driver, output);
       report['streamingGrowth'] = growing;
@@ -191,20 +191,12 @@ Future<void> main(List<String> args) async {
           growing['identityStable'] == true &&
           (growing['growthFramesAboveWindow'] as int) >= 2 &&
           growing['stayedLiveAtEdge'] == true;
-      // 真实 drag/滚轮/滚动条进入 History 的 companion。它仍在后台生成期间运行，
-      // 用自己的断言证明冻结行为；失败、超时或证据缺失都原样传播到本旅程。
-      await streaming_scroll.main([args[0], '${output.path}/streaming-scroll']);
-      final companion = await _companionEvidence(output);
-      // companion 自己失败会抛错；这里再核对它确实产出了“冻结中仍有后台输出”的
-      // 证据，不能因为只是跑过一遍就算覆盖。
-      if (companion['checksPassed'] != true ||
-          companion['backgroundOutputWhileFrozen'] != true) {
+      if (checks['largeBodyGrowingFullFollow'] != true) {
         throw StateError(
-          'streaming companion did not prove a frozen history display while '
-          'the output was still generating: $companion',
+          'Large body did not prove same-source text growth above the preview '
+          'budget while following Live: ${jsonEncode(growing)}',
         );
       }
-      report['streamingCompanion'] = companion;
     }
     await File('${output.path}/stress-body-streaming.png')
         .writeAsBytes(await driver.screenshot());
@@ -279,8 +271,8 @@ Future<void> main(List<String> args) async {
       'deliveredBytes': bodyBytes,
       'detailTotalBytes': totalBytes,
       'previewBytes': detail?.previewBytes,
-      'detailRevision': detail?.revision,
-      'itemRevision': longBody?.revision,
+      'timelineEpoch': settledTimeline.timelineEpoch,
+      'appendSeq': longBody?.appendSeq,
       'truncated': longBody?.textTruncated,
       'largeBody': largeBody,
       'prefixOk': prefixOk,
@@ -308,8 +300,8 @@ Future<void> main(List<String> args) async {
     }
     // suffix 只在预览确实覆盖正文尾部时才成立：有界预览不应包含尾部标记。
     checks['bodyPreviewExcludesTail'] = !suffixOk;
-    // Evidence of what this journey actually loaded: identities, revisions and
-    // preview bytes of the current generation.
+    // Evidence of the current epoch, completed identities, append positions and
+    // preview bytes.
     findings['loadedItems'] = <String, Object?>{
       'itemCount': settledTimeline.itemCount,
       'mode': settledTimeline.mode,
@@ -326,7 +318,7 @@ Future<void> main(List<String> args) async {
       'note': 'preview bytes of the currently loaded canonical items',
     };
 
-    // 完整正文只经用户显式打开的详情查看器读取并复制；行内预览另有跨块选择/复制
+    // 完整正文只经用户显式打开的详情查看器读取并复制；行内预览另有真实渲染/选择复制
     // 证据（有界，不当全文）。
     stage = 'detail_copy';
     await mark(stage);
@@ -348,7 +340,7 @@ Future<void> main(List<String> args) async {
       largeBody,
     );
     report['previewCopy'] = previewCopy;
-    checks['crossBlockSelectionCopy'] = previewCopy['pass'] == true;
+    checks['renderedOriginalPreviewCopy'] = previewCopy['pass'] == true;
 
     await markStage('wheel_and_scrollbar');
     final scrolling = await observeTimelineScrolling(args[0], output);
@@ -359,9 +351,10 @@ Future<void> main(List<String> args) async {
     // session and switch back. Reopening starts from the latest small page by
     // contract: no pixel anchor is saved or restored.
     final originalId = selectedThread(settledSnapshot);
-    await mark('reading');
+    await markStage('reading');
     final reading = await _readIntoLongBody(driver, output, settledSnapshot);
     report['reading'] = reading;
+    checks['readingInsideLongBody'] = reading['pass'] == true;
     await mark('second_session');
     final secondId = await _createSecondSession(
       driver,
@@ -388,7 +381,6 @@ Future<void> main(List<String> args) async {
         return _selectedThreadOrNull(snapshot) == originalId &&
             timeline != null &&
             timeline.ready &&
-            !timeline.preparingLive &&
             scroll != null &&
             scroll.laidOut &&
             !scroll.isScrolling &&
@@ -425,15 +417,13 @@ Future<void> main(List<String> args) async {
         reopenedScroll.atLiveEdge &&
         (reopenedScroll.pixels ?? 1).abs() <= 0.5 &&
         (reopenedScroll.extentBefore ?? 1).abs() <= 0.5 &&
-        !reopenedTimeline.preparingLive &&
         timelineViewportSettled(reopened);
     // 同身份正文仍在展示范围内：身份 + 真实总长一致，行内预览不因重开被替换成
     // 另一份正文。
     final stableBodyOnReopen =
-        reading['itemId'] == null ||
-        (reopenedBody != null &&
-            reopenedBody.id == reading['itemId'] &&
-            reopenedDetail?.totalBytes == expectedBodyCharacters);
+        reopenedBody != null &&
+        reopenedBody.id == reading['itemId'] &&
+        reopenedDetail?.totalBytes == expectedBodyCharacters;
     report['sessionSwitch'] = <String, Object?>{
       'originalThreadId': originalId,
       'secondThreadId': secondId,
@@ -706,7 +696,7 @@ bool _settled(Map<String, dynamic> snapshot) {
       persistence['pendingCommits'] == 0 &&
       timeline != null &&
       timeline.ready &&
-      !timeline.preparingLive;
+      timeline.connection == 'ready';
 }
 
 /// 当前展示的助手正文条目：已加载 agentMessage 中正文预览最长的一条。
@@ -721,14 +711,63 @@ TimelineItemObservation? _longBodyItem(Map<String, dynamic> snapshot) {
   return best;
 }
 
-int _bodyCharacters(Map<String, dynamic> snapshot) =>
-    _longBodyItem(snapshot)?.text.length ?? 0;
+/// 首正文只来自当前 busy Turn 的未完成活动段，不能用完成历史预览代替。
+Map<String, Object?>? _streamingBodyObservation(Map<String, dynamic> snapshot) {
+  if (!_isBusy(snapshot)) return null;
+  if (!snapshot.containsKey('conversationActivity')) {
+    throw StateError('Streaming snapshot lacks conversationActivity');
+  }
+  final rawActivity = snapshot['conversationActivity'];
+  if (rawActivity == null) return null;
+  if (rawActivity is! Map) {
+    throw StateError('Streaming conversationActivity is not an object');
+  }
+  final identity = rawActivity['identity'];
+  final turnId = rawActivity['turnId'];
+  final executionId = rawActivity['executionId'];
+  final rawParts = rawActivity['responseParts'];
+  if (identity is! String ||
+      identity.isEmpty ||
+      turnId is! String ||
+      turnId.isEmpty ||
+      turnId != _turnIdOrNull(snapshot) ||
+      !rawActivity.containsKey('executionId') ||
+      (executionId != null &&
+          (executionId is! String || executionId.isEmpty)) ||
+      rawParts is! List) {
+    throw StateError('Streaming body lacks current activity/source identity');
+  }
+  if (rawParts.isEmpty) return null;
+  if (rawParts.length != 1) {
+    throw StateError(
+      'Single-item body stream published multiple response parts',
+    );
+  }
+  final part = _responseActivityPart(rawParts.single, 0);
+  final itemId = part['itemId']! as String;
+  final text = part['text']! as String;
+  if (itemId.isEmpty) {
+    throw StateError('Streaming response part lacks item identity');
+  }
+  if (part['complete'] != false || text.isEmpty) return null;
+  return <String, Object?>{
+    'busy': _isBusy(snapshot),
+    'currentTurnId': _turnIdOrNull(snapshot),
+    'activityIdentity': identity,
+    'turnId': turnId,
+    'executionId': executionId,
+    'itemId': itemId,
+    'complete': part['complete'],
+    'characters': text.length,
+    'byteLength': part['byteLength'],
+  };
+}
 
 /// Samples the in-flight large body while it is still generating.
 ///
-/// 预览字节按契约封顶，所以“正文继续增长”的事实来自同一身份的 `text` 详情引用：
-/// 真实总字节数与 revision 增长，而行内预览长度保持在上限内。判定还要求展示仍在
-/// Live 且几何贴底——即自然跟随，不依赖任何定位/锚点机制。
+/// Streaming progress is sampled from the real ordered response parts of the
+/// current `conversationActivity`. No detail query is made until the completed
+/// atom is explicitly opened below.
 Future<Map<String, Object?>> _sampleStreamingLargeBody(
   FlutterDriverSession driver,
   Directory output,
@@ -738,94 +777,146 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
   var identityStable = true;
   var stayedLiveAtEdge = true;
   var growthFrames = 0;
-  String? previousId;
-  int? previousBytes;
-  // 有界 deadline 覆盖合成流窗口即可：采样拖得越久，后面的真实 drag companion 越
-  // 可能落到终态之后。终态在循环内单独 break，不靠 deadline 收尾。
+  final growthProofs = <Map<String, Object?>>[];
+  Map<String, Object?>? previousFrame;
+  Object? samplingError;
+  StackTrace? samplingStack;
+  // 有界 deadline 覆盖合成流窗口即可；终态在循环内单独 break，不靠 deadline 收尾。
   final deadline = DateTime.now().add(const Duration(seconds: 20));
-  while (DateTime.now().isBefore(deadline) && growthFrames < 2) {
-    final snapshot = await driver.readSnapshot();
-    final terminal =
-        _outputTokens(snapshot) >= _expectedTokens && !_isBusy(snapshot);
-    if (terminal) break;
-    final item = _longBodyItem(snapshot);
-    final id = item?.id;
-    final bytes = item?.textTotalBytes;
-    final scroll = TimelineScrollObservation.optional(snapshot);
-    final timeline = TimelineObservation.optional(snapshot);
-    // 观测需要已发布的展示与几何事实；缺少事实的帧只跳过，不记成“未贴边”。
-    if (id is! String ||
-        bytes == null ||
-        timeline == null ||
-        scroll == null ||
-        !scroll.laidOut) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      continue;
-    }
-    if (bytes > _productPreviewBudgetBytes) {
-      windowPassed = true;
-      final sameIdentity = previousId == id;
-      final grew =
-          sameIdentity && previousBytes != null && bytes > previousBytes;
-      if (previousId != null && !sameIdentity) identityStable = false;
-      final liveAtEdge = timeline.isLive && scroll.atLiveEdge;
-      if (!liveAtEdge) stayedLiveAtEdge = false;
-      if (grew) growthFrames += 1;
-      frames.add(<String, Object?>{
+  try {
+    while (DateTime.now().isBefore(deadline) && growthFrames < 2) {
+      final snapshot = await driver.readSnapshot();
+      final rawActivity = snapshot['conversationActivity'];
+      final activity = rawActivity is Map ? rawActivity : null;
+      final rawParts = activity?['responseParts'];
+      final frame = <String, Object?>{
         'at': DateTime.now().millisecondsSinceEpoch,
-        'itemId': id,
-        'previewCharacters': item?.text.length,
-        'previewBytes': item?.textBytes,
-        'totalBytes': bytes,
-        'itemRevision': item?.revision,
-        'detailRevision': item?.detail('text')?.revision,
-        'grewOverPrevious': grew,
-        'terminal': terminal,
+        'busy': _isBusy(snapshot),
+        'currentTurnId': _turnIdOrNull(snapshot),
+        'activityIdentity': activity?['identity'],
+        'turnId': activity?['turnId'],
+        'executionId': activity?['executionId'],
+        'responsePartCount': rawParts is List ? rawParts.length : null,
+        'responseParts': rawParts,
+        'countedGrowth': false,
+      };
+      frames.add(frame);
+      if (!_isBusy(snapshot)) break;
+      final body = _streamingBodyObservation(snapshot);
+      if (body == null) {
+        throw StateError('Large body has no current incomplete streaming text');
+      }
+      final part = _responseActivityPart((rawParts as List).single, 0);
+      final itemId = part['itemId']! as String;
+      final text = part['text']! as String;
+      final byteLength = part['byteLength']! as int;
+      final scroll = TimelineScrollObservation.parse(snapshot);
+      final timeline = TimelineObservation.parse(snapshot);
+      final liveAtEdge =
+          timeline.isLive &&
+          scroll.laidOut &&
+          scroll.threadId == timeline.threadId &&
+          scroll.generation == timeline.generation &&
+          scroll.atLiveEdge;
+      frame.addAll(<String, Object?>{
+        ...body,
+        'part': part,
         'mode': timeline.mode,
         'atLiveEdge': scroll.atLiveEdge,
         'pixels': scroll.pixels,
         'extentBefore': scroll.extentBefore,
         'extentAfter': scroll.extentAfter,
       });
-      previousId = id;
-      previousBytes = bytes;
+      if (!liveAtEdge) {
+        stayedLiveAtEdge = false;
+        throw StateError('Large body growth left the Live edge');
+      }
+      if (byteLength > _productPreviewBudgetBytes) windowPassed = true;
+      final previous = previousFrame;
+      if (previous != null) {
+        if (body['activityIdentity'] != previous['activityIdentity'] ||
+            body['turnId'] != previous['turnId'] ||
+            body['executionId'] != previous['executionId'] ||
+            itemId != previous['itemId']) {
+          identityStable = false;
+          throw StateError('Large body changed activity/source/part identity');
+        }
+        final previousPart = previous['part']! as Map<String, Object?>;
+        final previousText = previousPart['text']! as String;
+        final previousByteLength = previousPart['byteLength']! as int;
+        if (!text.startsWith(previousText) ||
+            text.length < previousText.length ||
+            byteLength < previousByteLength) {
+          throw StateError('Large body text was replaced or regressed');
+        }
+        if (previousByteLength > _productPreviewBudgetBytes &&
+            byteLength > _productPreviewBudgetBytes &&
+            text.length > previousText.length &&
+            byteLength > previousByteLength) {
+          frame['countedGrowth'] = true;
+          growthFrames += 1;
+          growthProofs.add(<String, Object?>{
+            'before': previous,
+            'after': frame,
+          });
+        }
+      }
+      previousFrame = frame;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+  } catch (error, stackTrace) {
+    samplingError = error;
+    samplingStack = stackTrace;
+  }
+  if (samplingError == null && growthFrames < 2) {
+    samplingError = StateError(
+      'Large body ended or sampling window expired before two valid growths',
+    );
+    samplingStack = StackTrace.current;
   }
   final evidence = <String, Object?>{
     'windowPassed': windowPassed,
     'identityStable': identityStable,
     'stayedLiveAtEdge': stayedLiveAtEdge,
     'growthFramesAboveWindow': growthFrames,
+    'growthProofs': growthProofs,
     'framesSampled': frames.length,
     'thresholdBytes': _productPreviewBudgetBytes,
     'manualLoadTapped': false,
+    'error': samplingError?.toString(),
     // Bounded tail so a reviewer can re-check the growth without the whole list.
-    'frames': frames.length > 8 ? frames.sublist(frames.length - 8) : frames,
+    'recentFrames': frames.length > 8
+        ? frames.sublist(frames.length - 8)
+        : frames,
   };
   // 这份证据是判定的一部分，不是可选旁证：写入失败必须原样传播到本旅程，由外层
   // 保留原始错误并完成 shutdown 收束，不能吞掉后当“已观测”。
-  await File(
-    '${output.path}/stress-body-large-growth.json',
-  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
+  try {
+    await File('${output.path}/stress-body-large-growth.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+    );
+  } catch (error) {
+    if (samplingError == null) rethrow;
+    stderr.writeln('Large body growth evidence write failed: $error');
+  }
+  if (samplingError != null) {
+    Error.throwWithStackTrace(samplingError, samplingStack!);
+  }
   return evidence;
 }
 
-/// 读取 companion 自己写出的最终证据，附在本旅程报告里。
-///
-/// companion 已按自身断言在失败时抛错，这里只补可复核事实，不重新判定。
-Future<Map<String, Object?>> _companionEvidence(Directory output) async {
-  final file = File('${output.path}/streaming-scroll/timeline-scroll.json');
-  final decoded = jsonDecode(await file.readAsString());
-  if (decoded is! Map) {
-    throw StateError('streaming companion evidence is not an object: $decoded');
+Map<String, Object?> _responseActivityPart(Object? raw, int index) {
+  if (raw is! Map || raw['complete'] is! bool) {
+    throw StateError('conversationActivity.responseParts lacks complete state');
   }
-  final map = decoded.cast<String, Object?>();
   return <String, Object?>{
-    'checksPassed': map['checksPassed'],
-    'backgroundOutputWhileFrozen': map['backgroundOutputWhileFrozen'],
-    'historyGeneration': map['historyGeneration'],
-    'error': map['error'],
+    ...parseConversationActivityPart(
+      raw,
+      index: index,
+      identityField: 'itemId',
+      context: 'conversationActivity.responseParts',
+    ),
+    'complete': raw['complete'],
   };
 }
 
@@ -844,22 +935,32 @@ Future<Map<String, Object?>> _readIntoLongBody(
   final item = _longBodyItem(settledSnapshot);
   final target = item?.id;
   final probe = TimelineRowsProbe(driver.requestData);
-  if (target is! String) {
-    return <String, Object?>{
-      'itemId': null,
-      'scrolled': false,
-      'insideLongBody': false,
-      'reason': 'no assistant body identity was available to read into',
-    };
-  }
-  var scrolled = false;
-  var mode = TimelineObservation.parse(settledSnapshot).mode;
   final geometry = <Map<String, Object?>>[];
-  var detached = false;
+  final evidence = <String, Object?>{
+    'itemId': target,
+    'kind': item?.kind,
+    'geometry': geometry,
+    'pass': false,
+  };
   try {
+    if (item == null ||
+        target == null ||
+        item.kind != 'agentMessage' ||
+        !item.text.startsWith('body-00000 ')) {
+      throw StateError(
+        'No canonical assistant fixture body is available to read',
+      );
+    }
+    final initial = TimelineObservation.parse(settledSnapshot);
+    initial.requireConsistentIds();
+    final presentationId = initial.presentationFor(target).id;
+    evidence['presentationId'] = presentationId;
+    var scrolled = false;
+    var mode = initial.mode;
+    var detached = false;
     for (var step = 0; step < _maxReadSteps && !detached; step++) {
-      final beforeRows = await probe.read(rowIds: [target]);
-      final row = beforeRows.row(target);
+      final beforeRows = await probe.read(rowIds: [presentationId]);
+      final row = beforeRows.row(presentationId);
       geometry.add(<String, Object?>{
         'phase': 'before_scroll_${step + 1}',
         'row': row?.toJson(),
@@ -877,7 +978,6 @@ Future<Map<String, Object?>> _readIntoLongBody(
           final timeline = TimelineObservation.optional(snapshot);
           final scroll = TimelineScrollObservation.optional(snapshot);
           return timeline != null &&
-              !timeline.preparingLive &&
               scroll != null &&
               scroll.laidOut &&
               !scroll.isScrolling;
@@ -887,9 +987,20 @@ Future<Map<String, Object?>> _readIntoLongBody(
       );
       final timeline = TimelineObservation.parse(state);
       final scroll = TimelineScrollObservation.parse(state);
+      timeline.requireConsistentIds();
+      if (timeline.threadId != initial.threadId ||
+          timeline.timelineEpoch != initial.timelineEpoch ||
+          timeline.generation != initial.generation ||
+          scroll.threadId != timeline.threadId ||
+          scroll.generation != timeline.generation ||
+          timeline.presentationFor(target).id != presentationId ||
+          jsonEncode(timeline.item(target)?.frozenFields()) !=
+              jsonEncode(item.frozenFields())) {
+        throw StateError('Reading changed the canonical body or its owner');
+      }
       mode = timeline.mode;
-      final rows = await probe.read(rowIds: [target]);
-      final after = rows.row(target);
+      final rows = await probe.read(rowIds: [presentationId]);
+      final after = rows.row(presentationId);
       final viewport = rows.viewport;
       // 可见点在行内（顶部高于视口、底部低于视口），说明视口真的落在巨大正文内部。
       final insideRow =
@@ -917,43 +1028,106 @@ Future<Map<String, Object?>> _readIntoLongBody(
         'detached': detached,
       });
     }
-  } on Object catch (error) {
-    // The geometry below is still the real observation, so record the failure
-    // instead of guessing the reading position.
-    await File('${output.path}/stress-body-reading-scroll-error.txt')
-        .writeAsString('$error\n');
+    await File('${output.path}/stress-body-reading.png')
+        .writeAsBytes(await driver.screenshot());
+    final layout = _decodeDriverMap(await driver.requestData('body-layout'));
+    evidence['layout'] = layout;
+    await File(
+      '${output.path}/stress-body-reading-layout.json',
+    ).writeAsString('${const JsonEncoder.withIndent('  ').convert(layout)}\n');
+    final visible = layout?['visible'];
+    final characterOffset = visible is Map ? visible['characterOffset'] : null;
+    final visibleText = visible is Map ? visible['text'] : null;
+    final bodyLayoutMatchesPreview =
+        layout?['ok'] == true &&
+        layout?['characters'] == item.text.length &&
+        characterOffset is int &&
+        characterOffset > 0 &&
+        characterOffset < item.text.length &&
+        visibleText is String &&
+        visibleText.isNotEmpty &&
+        characterOffset + visibleText.length <= item.text.length &&
+        item.text.substring(
+              characterOffset,
+              characterOffset + visibleText.length,
+            ) ==
+            visibleText;
+    final finalState = await driver.readSnapshot();
+    final finalTimeline = TimelineObservation.parse(finalState);
+    final finalScroll = TimelineScrollObservation.parse(finalState);
+    finalTimeline.requireConsistentIds();
+    final insideLongBody = detached && bodyLayoutMatchesPreview;
+    final pass =
+        scrolled &&
+        insideLongBody &&
+        finalTimeline.isHistory &&
+        finalTimeline.threadId == initial.threadId &&
+        finalTimeline.timelineEpoch == initial.timelineEpoch &&
+        finalTimeline.generation == initial.generation &&
+        finalTimeline.presentationFor(target).id == presentationId &&
+        jsonEncode(finalTimeline.item(target)?.frozenFields()) ==
+            jsonEncode(item.frozenFields()) &&
+        finalScroll.threadId == initial.threadId &&
+        finalScroll.generation == initial.generation &&
+        !finalScroll.atLiveEdge &&
+        (finalScroll.extentBefore ?? 0) >
+            _detachedExtentThreshold(finalScroll.viewportDimension) &&
+        (finalScroll.pixels ?? 0) < (finalScroll.maxScrollExtent ?? 0) - 1.0;
+    evidence.addAll(<String, Object?>{
+      'scrolled': scrolled,
+      'steps': geometry.length ~/ 2,
+      'mode': mode,
+      'finalMode': finalTimeline.mode,
+      'generation': finalTimeline.generation,
+      'insideLongBody': insideLongBody,
+      'bodyLayoutMatchesPreview': bodyLayoutMatchesPreview,
+      'detachedFromLiveEdge': !finalScroll.atLiveEdge,
+      'extentBefore': finalScroll.extentBefore,
+      'extentAfter': finalScroll.extentAfter,
+      'pixels': finalScroll.pixels,
+      'maxScrollExtent': finalScroll.maxScrollExtent,
+      'detachedThreshold': _detachedExtentThreshold(
+        finalScroll.viewportDimension,
+      ),
+      'final': finalScroll.toJson(),
+      'pass': pass,
+    });
+    await File('${output.path}/stress-body-reading-scroll.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+    );
+    if (!pass) {
+      throw StateError('Reading did not reach the canonical body interior');
+    }
+    return evidence;
+  } catch (error, stackTrace) {
+    evidence['error'] = '$error';
+    evidence['pass'] = false;
+    if (evidence['layout'] == null) {
+      try {
+        final layout = _decodeDriverMap(
+          await driver.requestData('body-layout'),
+        );
+        evidence['layout'] = layout;
+        await File('${output.path}/stress-body-reading-layout.json')
+            .writeAsString(
+              '${const JsonEncoder.withIndent('  ').convert(layout)}\n',
+            );
+      } catch (captureError) {
+        stderr.writeln('Reading layout capture failed: $captureError');
+      }
+    }
+    try {
+      await File('${output.path}/stress-body-reading-scroll-error.txt')
+          .writeAsString('$error\n$stackTrace\n');
+      await File('${output.path}/stress-body-reading-scroll.json')
+          .writeAsString(
+            '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+          );
+    } catch (captureError) {
+      stderr.writeln('Reading failure evidence write failed: $captureError');
+    }
+    Error.throwWithStackTrace(error, stackTrace);
   }
-  await File('${output.path}/stress-body-reading.png')
-      .writeAsBytes(await driver.screenshot());
-  final layout = _decodeDriverMap(await driver.requestData('body-layout'));
-  await File('${output.path}/stress-body-reading-layout.json')
-      .writeAsString('${const JsonEncoder.withIndent('  ').convert(layout)}\n');
-  final finalState = await driver.readSnapshot();
-  final finalTimeline = TimelineObservation.parse(finalState);
-  final finalScroll = TimelineScrollObservation.parse(finalState);
-  await File('${output.path}/stress-body-reading-scroll.json').writeAsString(
-    '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'targetItemId': target, 'geometry': geometry, 'final': finalScroll.toJson()})}\n',
-  );
-  return <String, Object?>{
-    'itemId': target,
-    'kind': item?.kind,
-    'scrolled': scrolled,
-    'steps': geometry.length ~/ 2,
-    'geometry': geometry,
-    'layout': layout,
-    'mode': mode,
-    'finalMode': finalTimeline.mode,
-    'generation': finalTimeline.generation,
-    'insideLongBody': detached,
-    'detachedFromLiveEdge': !finalScroll.atLiveEdge,
-    'extentBefore': finalScroll.extentBefore,
-    'extentAfter': finalScroll.extentAfter,
-    'pixels': finalScroll.pixels,
-    'maxScrollExtent': finalScroll.maxScrollExtent,
-    'detachedThreshold': _detachedExtentThreshold(
-      finalScroll.viewportDimension,
-    ),
-  };
 }
 
 /// A full viewport of content (never below [_minDetachedExtentAfter] px) must
@@ -1062,8 +1236,8 @@ String _expectedBodySuffix(bool largeBody) =>
 /// Drives a real `SelectionArea` select/copy of the **bounded inline preview**.
 ///
 /// 产品正文预算是 32 KiB：行内只交付有界预览，完整正文由显式详情查看器提供
-/// （[_copyThroughDetailViewer]）。这里验证真实跨块选择与产品复制回调对交付预览
-/// 逐字节一致，不把预览当成全文，也不为 Driver 写剪贴板。
+/// （[_copyThroughDetailViewer]）。这里验证实际生产 RenderParagraph 与产品复制回调
+/// 对交付预览逐字节一致；标准 Text 可以只有一个段落，本纯文本样例不证明跨块选择。
 Future<Map<String, Object?>> _selectAndCopyPreview(
   FlutterDriverSession driver,
   Directory output,
@@ -1092,7 +1266,7 @@ Future<Map<String, Object?>> _selectAndCopyPreview(
     );
     if (rendered?['ok'] != true) break;
     final paragraphs = (rendered?['paragraphCount'] as num? ?? 0).toInt();
-    if (rendered?['characters'] == previewCharacters && paragraphs >= 2) {
+    if (rendered?['characters'] == previewCharacters && paragraphs >= 1) {
       if (paragraphs == stableParagraphCount) {
         stablePolls += 1;
       } else {
@@ -1109,8 +1283,9 @@ Future<Map<String, Object?>> _selectAndCopyPreview(
   }
   final renderedReady =
       rendered != null &&
+      rendered['ok'] == true &&
       rendered['characters'] == previewCharacters &&
-      (rendered['paragraphCount'] as num? ?? 0) >= 2 &&
+      (rendered['paragraphCount'] as num? ?? 0) >= 1 &&
       rendered['hash'] == expectedHash;
   final selected = _decodeDriverMap(
     await driver.requestData(
@@ -1126,11 +1301,13 @@ Future<Map<String, Object?>> _selectAndCopyPreview(
   );
   final copiedText = copied?['copied'] as String?;
   final copiedHash = copied?['copiedHash'];
-  // 复制内容必须与交付预览逐字节一致（跨块、无插入换行），不能只要求“包含”。
+  // 平台剪贴板回读必须与原文预览精确相等，不允许前后缀或插入换行。
   final copiedMatchesPreview =
       copiedText != null &&
+      copiedText.length == previewCharacters &&
+      copied?['copiedLength'] == previewCharacters &&
       copiedHash == expectedHash &&
-      copiedText.contains(expectedPreview);
+      copiedText == expectedPreview;
   String? cancelClickError;
   var cancelClicked = false;
   try {
@@ -1287,9 +1464,11 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
   final previewUnchanged =
       rowBefore != null &&
       rowAfter != null &&
-      rowBefore.text.length == rowAfter.text.length &&
-      rowBefore.textTotalBytes == rowAfter.textTotalBytes &&
-      rowBefore.revision == rowAfter.revision;
+      before.timelineEpoch == after.timelineEpoch &&
+      rowBefore.id == rowAfter.id &&
+      rowBefore.appendSeq == rowAfter.appendSeq &&
+      jsonEncode(rowBefore.frozenFields()) ==
+          jsonEncode(rowAfter.frozenFields());
   evidence.addAll(<String, Object?>{
     'itemId': itemId,
     'expectedCharacters': expectedBodyCharacters,

@@ -2274,18 +2274,7 @@ class FrbStudioTransport
     final response = await _bridgeCall(
       () => frb.readChildInteractions(threadId: threadId),
     );
-    return [
-      for (final summary in response)
-        ChildInteractionSummary(
-          childThreadId: summary.childThreadId,
-          interactionId: summary.interactionId,
-          kind:
-              _interactionKindFromLabel(summary.kind) ??
-              _interactionFromFrb(summary.interaction).kind,
-          revision: summary.revision.toInt(),
-          interaction: _interactionFromFrb(summary.interaction),
-        ),
-    ];
+    return response.map(_childInteractionFromFrb).toList();
   }
 
   @override
@@ -2391,23 +2380,10 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ThreadActivityDetail> readThreadActivityDetail(
-    String threadId,
-    String activityId,
-  ) async {
-    await _ensureReady();
-    return _activityDetailFromFrb(
-      await _bridgeCall(
-        () => frb.readThreadActivityDetail(
-          threadId: threadId,
-          activityId: activityId,
-        ),
-      ),
-    );
-  }
-
-  @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     await _ensureReady();
     frb_chat.BridgeConversationFeed? handle;
     FrbConversationFeed? adapter;
@@ -2430,7 +2406,15 @@ class FrbStudioTransport
     _trackDartSubscription(tracked);
     try {
       handle = await _bridgeCall(
-        () => frb_chat.openConversationFeed(threadId: threadId),
+        () => frb_chat.openConversationFeed(
+          threadId: threadId,
+          resumeAfter: resumeAfter == null
+              ? null
+              : frb_chat_types.BridgeTimelineCompletionCursor(
+                  timelineEpoch: resumeAfter.timelineEpoch,
+                  appendSeq: BigInt.from(resumeAfter.appendSeq),
+                ),
+        ),
       );
       final feed = FrbConversationFeed(handle!);
       adapter = feed;
@@ -2469,6 +2453,72 @@ class FrbStudioTransport
     } finally {
       tracked.markCreated();
       if (handle == null) await tracked.beginCancel();
+    }
+  }
+
+  @override
+  Future<ConversationHistoryReader> openHistoryReader(String threadId) async {
+    await _ensureReady();
+    frb_history_reader.BridgeTimelineReader? handle;
+    FrbConversationHistoryReader? adapter;
+    final tracked = _DartSubscription(
+      'timeline-reader:$threadId',
+      () async {
+        final owned = adapter;
+        final native = handle;
+        if (owned != null) {
+          await owned._releaseNative();
+        } else if (native != null) {
+          native.requestClose();
+          await native.close();
+          native.dispose();
+        }
+      },
+      _forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    _trackDartSubscription(tracked);
+    try {
+      handle = await _bridgeCall(
+        () => frb_history_reader.openTimelineReader(threadId: threadId),
+      );
+      final reader = FrbConversationHistoryReader(handle!);
+      adapter = reader;
+      tracked.markCreated();
+      reader._registration = tracked;
+      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
+        reader.requestClose();
+        await reader.close();
+        throw _conversationClosedFailure;
+      }
+      if (reader.threadId != threadId || reader.timelineEpoch.isEmpty) {
+        reader.requestClose();
+        await reader.close();
+        throw const StudioFailure(
+          code: StudioFailureCode.internal,
+          message: 'Timeline reader identity does not match its request',
+          retryable: false,
+          correlationId: 'client-timeline-reader-identity',
+        );
+      }
+      return reader;
+    } catch (error, stack) {
+      tracked.markCreated();
+      if (handle != null && adapter == null) {
+        try {
+          handle.requestClose();
+          await tracked.beginCancel();
+        } catch (_) {
+          // The existing registry retains failed cleanup for retry.
+        }
+      }
+      Error.throwWithStackTrace(error, stack);
+    } finally {
+      // A failed native creation owns no handle, but its registration must still
+      // drain now rather than accumulating until whole-transport shutdown.
+      if (handle == null || (tracked.cancelRequested && adapter == null)) {
+        await tracked.beginCancel();
+      }
     }
   }
 

@@ -1920,9 +1920,11 @@ impl ModelProgressSender {
                 provider_item_id,
                 part,
             );
-            reservation
-                .store
-                .reserve_observed_item(&reservation.thread_id, &item_id)?;
+            reservation.store.reserve_observed_item(
+                &reservation.thread_id,
+                &reservation.attempt_id,
+                &item_id,
+            )?;
         }
         Ok(())
     }

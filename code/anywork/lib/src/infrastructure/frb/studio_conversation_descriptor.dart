@@ -13,10 +13,10 @@ ConversationDescriptor _descriptorFromFrb(
       frb_item.BridgeThreadTextChannel.final_ => ThreadTextChannel.finalAnswer,
     },
     attachments: List.unmodifiable(value.attachments.map(_attachmentFromFrb)),
-    lifecycle: _contentLifecycleFromFrb(value.lifecycle),
+    outcome: _conversationContentOutcome(value.outcome),
   ),
   thinking: (value) => ConversationThinkingDescriptor(
-    lifecycle: _contentLifecycleFromFrb(value.lifecycle),
+    outcome: _conversationContentOutcome(value.outcome),
   ),
   tool: _toolDescriptorFromFrb,
   raw: (value) => ConversationRawDescriptor(
@@ -36,27 +36,117 @@ ConversationDescriptor _descriptorFromFrb(
     notice: value.notice,
     recordedAt: _dateFromUnix(value.recordedAt),
   ),
-  agent: (identity, state) => ConversationAgentDescriptor(
-    ThreadAgentItemStateView(
-      identity: ThreadAgentIdentityView(
-        id: identity.id,
-        path: identity.path,
-        parentPath: identity.parentPath,
-        role: identity.role,
-        task: identity.task,
-        depth: identity.depth,
+  agent: (identity, outcome) => ConversationAgentDescriptor(
+    identity: ThreadAgentIdentityView(
+      id: identity.id,
+      path: identity.path,
+      parentPath: identity.parentPath,
+      role: identity.role,
+      task: identity.task,
+      depth: identity.depth,
+    ),
+    outcome: outcome.when(
+      succeeded: (at, summary) => ConversationAgentSucceeded(
+        SucceededThreadAgentView(_dateFromUnix(at), summary),
       ),
-      lifecycle: _agentLifecycleFromFrb(state),
+      denied: (at, reason) => ConversationAgentDenied(
+        DeniedThreadAgentView(_dateFromUnix(at), reason),
+      ),
+      failed: (at, error) => ConversationAgentFailed(
+        FailedThreadAgentView(_dateFromUnix(at), error),
+      ),
+      cancelled: (at, reason) => ConversationAgentCancelled(
+        CancelledThreadAgentView(_dateFromUnix(at), reason),
+      ),
     ),
   ),
-  turn: (state, inputId) => ConversationTurnDescriptor(
-    ThreadTurnItemStateView(_turnStateFromFrb(state), inputId: inputId),
+  turn: (outcome, inputId) => ConversationTurnDescriptor(
+    inputId: inputId,
+    outcome: outcome.when(
+      completed: (startedAt, completedAt, completion) =>
+          ConversationTurnCompleted(
+            CompletedStudioTurnState(
+              startedAt: _exactNullableSignedTimelineInt(startedAt),
+              completedAt: _exactSignedTimelineInt(completedAt),
+              completion: switch (completion) {
+                frb.BridgeTurnCompletion.normal => StudioTurnCompletion.normal,
+                frb.BridgeTurnCompletion.interactionRequested =>
+                  StudioTurnCompletion.interactionRequested,
+              },
+            ),
+          ),
+      cancelled: (startedAt, requestedAt, completedAt, cause) =>
+          ConversationTurnCancelled(
+            CancelledStudioTurnState(
+              startedAt: _exactNullableSignedTimelineInt(startedAt),
+              requestedAt: _exactSignedTimelineInt(requestedAt),
+              completedAt: _exactSignedTimelineInt(completedAt),
+              cause: _turnCancellationCauseFromFrb(cause),
+            ),
+          ),
+      failed: (startedAt, completedAt, failure) => ConversationTurnFailed(
+        FailedStudioTurnState(
+          startedAt: _exactNullableSignedTimelineInt(startedAt),
+          completedAt: _exactSignedTimelineInt(completedAt),
+          failure: _turnFailureFromFrb(failure),
+        ),
+      ),
+      budgetLimited: (startedAt, completedAt, limit, rollover) =>
+          ConversationTurnBudgetLimited(
+            BudgetLimitedStudioTurnState(
+              startedAt: _exactNullableSignedTimelineInt(startedAt),
+              completedAt: _exactSignedTimelineInt(completedAt),
+              limit: StudioTurnBudgetLimit(
+                kind: StudioTurnBudgetLimitKind.values.byName(limit.kind.name),
+                usage: StudioTurnBudgetUsage(
+                  modelSteps: limit.usage.modelSteps,
+                  toolCalls: limit.usage.toolCalls,
+                  waitCalls: limit.usage.waitCalls,
+                  elapsedMs: _exactTimelineInt(
+                    limit.usage.elapsedMs,
+                    'elapsed ms',
+                  ),
+                ),
+              ),
+              rollover: rollover.when(
+                notAttempted: () => const RolloverNotAttempted(),
+                succeeded: () => const RolloverSucceeded(),
+                failed: (error) => RolloverFailed(error: error),
+              ),
+            ),
+          ),
+    ),
   ),
-  inference: (inferenceId, model, state) => ConversationInferenceDescriptor(
-    ThreadInferenceItemStateView(
-      inferenceId: inferenceId,
-      model: model,
-      lifecycle: _inferenceLifecycleFromFrb(state),
+  inference: (inferenceId, model, outcome) => ConversationInferenceDescriptor(
+    inferenceId: inferenceId,
+    model: model,
+    outcome: outcome.when(
+      completed: (at, usage) => ConversationInferenceCompleted(
+        CompletedThreadInferenceView(
+          _dateFromUnix(at),
+          ThreadInferenceUsageView(
+            promptTokens: _exactTimelineInt(
+              usage.promptTokens,
+              'prompt tokens',
+            ),
+            completionTokens: _exactTimelineInt(
+              usage.completionTokens,
+              'completion tokens',
+            ),
+            cachedPromptTokens: _exactTimelineInt(
+              usage.cachedPromptTokens,
+              'cached tokens',
+            ),
+            totalTokens: _exactTimelineInt(usage.totalTokens, 'total tokens'),
+          ),
+        ),
+      ),
+      failed: (at, error) => ConversationInferenceFailed(
+        FailedThreadInferenceView(_dateFromUnix(at), error),
+      ),
+      cancelled: (at, reason) => ConversationInferenceCancelled(
+        CancelledThreadInferenceView(_dateFromUnix(at), reason),
+      ),
     ),
   ),
   skill: (name, source, providerId, resourceBase, cause, activatedAt) =>
@@ -102,4 +192,37 @@ ConversationDescriptor _descriptorFromFrb(
           _dateFromUnix(compactedAt),
         ),
       ),
+  plan: (interactionId, documentVersion, contentHash, decision) =>
+      ConversationPlanDescriptor(
+        interactionId: interactionId,
+        documentVersion: _exactNullableTimelineInt(
+          documentVersion,
+          'plan version',
+        ),
+        contentHash: contentHash,
+        decision: switch (decision) {
+          frb_descriptor.BridgeTimelinePlanDecision.approved =>
+            ConversationPlanDecision.approved,
+          frb_descriptor.BridgeTimelinePlanDecision.revisionRequested =>
+            ConversationPlanDecision.revisionRequested,
+          frb_descriptor.BridgeTimelinePlanDecision.cancelled =>
+            ConversationPlanDecision.cancelled,
+          frb_descriptor.BridgeTimelinePlanDecision.resolved =>
+            ConversationPlanDecision.resolved,
+        },
+      ),
+);
+
+ConversationContentOutcome _conversationContentOutcome(
+  frb_descriptor.BridgeTimelineContentOutcome value,
+) => value.when(
+  completed: (at) => ConversationContentCompleted(
+    CompletedThreadContentView(_dateFromUnix(at)),
+  ),
+  failed: (at, error) => ConversationContentFailed(
+    FailedThreadContentView(_dateFromUnix(at), error),
+  ),
+  cancelled: (at, reason) => ConversationContentCancelled(
+    CancelledThreadContentView(_dateFromUnix(at), reason),
+  ),
 );

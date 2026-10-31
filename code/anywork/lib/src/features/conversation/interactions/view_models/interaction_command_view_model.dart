@@ -57,10 +57,13 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
     final session = client.conversations.session(hostThreadId);
     final commandState = _observe(lifecycle, client.threadCommands.source);
     final sessionState = _observe(lifecycle, session.source);
-    final childState = _observe(lifecycle, client.childInteractions.source);
+    // 只借用 Client 主题需求安装的宿主镜像；不存在时没有可投影的 child 事实。
+    final childStore = client.existingChildInteractions(hostThreadId);
+    final childClock = childStore == null
+        ? null
+        : _observe(lifecycle, childStore.source);
     final intent = _childDecision;
-    if (intent != null &&
-        !_ownsChildDecision(intent, childState, hostThreadId)) {
+    if (intent != null && intent.hostThreadId != hostThreadId) {
       _childDecision = null;
     }
     ChildDecisionNotice? childNotice;
@@ -88,8 +91,11 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
       final matches = command?.target.label == interaction.id;
       actions[interaction.id] = _project(command, matches: matches);
     }
-    if (childState.loaded && childState.hostThreadId == hostThreadId) {
-      for (final child in childState.visibleItems) {
+    final childItems = childClock?.canonical;
+    if (childItems != null &&
+        childItems.loaded &&
+        childItems.value?.hostThreadId == hostThreadId) {
+      for (final child in childItems.value!.items) {
         final matches = command?.target.label == child.interactionId;
         actions[child.interactionId] = _project(command, matches: matches);
       }
@@ -169,9 +175,12 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
     if (gate == null) return;
     try {
       if (!ref.mounted || !identical(_lifecycle, lifecycle)) return;
-      final state = client.childInteractions.state;
-      if (!state.loaded || state.hostThreadId != hostThreadId) return;
-      final current = state.items
+      final clock = client
+          .existingChildInteractions(hostThreadId)
+          ?.state
+          .canonical;
+      if (clock == null || !clock.loaded || clock.value == null) return;
+      final current = clock.value!.items
           .where(
             (item) =>
                 item.childThreadId == captured.childThreadId &&
@@ -184,10 +193,8 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
           current.interaction.isPlanConfirmation) {
         return;
       }
-      if (state.visibleHostThreadId != hostThreadId) return;
       final intent = _ChildDecisionIntent(
         hostThreadId: hostThreadId,
-        displayGeneration: state.displayGeneration,
         interactionId: captured.interactionId,
         kind: captured.kind,
       );
@@ -200,12 +207,7 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
         captured,
         resolution,
       );
-      if (!ref.mounted ||
-          !_ownsChildDecision(
-            intent,
-            client.childInteractions.state,
-            hostThreadId,
-          )) {
+      if (!ref.mounted || !identical(_childDecision, intent)) {
         return;
       }
       intent.operation = operation;
@@ -213,30 +215,6 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
     } finally {
       _releaseGate(key, gate);
     }
-  }
-
-  bool _ownsChildDecision(
-    _ChildDecisionIntent intent,
-    ChildInteractionsState display,
-    String hostThreadId,
-  ) =>
-      identical(_childDecision, intent) &&
-      intent.hostThreadId == hostThreadId &&
-      display.visibleHostThreadId == intent.hostThreadId &&
-      display.displayGeneration == intent.displayGeneration;
-
-  Future<void> readChildInteractions(
-    String hostThreadId, {
-    required int displayGeneration,
-  }) {
-    final client = ref.read(anyworkClientProvider);
-    final display = client.childInteractions.state;
-    // A deferred UI callback must not start a read in a replacement display.
-    if (display.visibleHostThreadId != hostThreadId ||
-        display.displayGeneration != displayGeneration) {
-      return Future<void>.value();
-    }
-    return client.threadCommands.readChildInteractions(hostThreadId);
   }
 
   Object? _beginDispatch(String key, Object lifecycle) {
@@ -263,13 +241,11 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
 final class _ChildDecisionIntent {
   _ChildDecisionIntent({
     required this.hostThreadId,
-    required this.displayGeneration,
     required this.interactionId,
     required this.kind,
   });
 
   final String hostThreadId;
-  final int displayGeneration;
   final String interactionId;
   final InteractionKind kind;
   OperationHandle? operation;

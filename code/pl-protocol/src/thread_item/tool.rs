@@ -15,7 +15,7 @@ pub struct ThreadToolItem {
     /// stays on the call's own item instead of becoming a second persisted Q&A record. An ordinary
     /// question tool and the `plan_submit` call's Plan confirmation share this one structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    user_input: Option<ThreadToolUserInput>,
+    user_input: Option<Box<ThreadToolUserInput>>,
     /// Typed wait/sleep presentation derived from canonical parameters, tasks and results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wait: Option<Box<ThreadWaitPresentation>>,
@@ -33,7 +33,7 @@ impl ThreadToolItem {
 
     /// Attaches (or clears) the Q&A history projection without touching the call's own state.
     pub fn with_user_input(mut self, user_input: Option<ThreadToolUserInput>) -> Self {
-        self.user_input = user_input;
+        self.user_input = user_input.map(Box::new);
         self
     }
 
@@ -52,7 +52,7 @@ impl ThreadToolItem {
     }
 
     pub fn user_input(&self) -> Option<&ThreadToolUserInput> {
-        self.user_input.as_ref()
+        self.user_input.as_deref()
     }
 
     pub fn wait(&self) -> Option<&ThreadWaitPresentation> {
@@ -92,6 +92,16 @@ pub struct ThreadToolUserInput {
     interaction_id: String,
     questions: Vec<UserQuestion>,
     state: ThreadToolUserInputState,
+    /// 本次确认所绑定的文档身份；旧事实缺少版本时保持未知。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_document: Option<ThreadPlanDocumentIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPlanDocumentIdentity {
+    pub version: Option<u64>,
+    pub content_hash: String,
 }
 
 impl ThreadToolUserInput {
@@ -104,7 +114,17 @@ impl ThreadToolUserInput {
             interaction_id,
             questions,
             state,
+            plan_document: None,
         }
+    }
+
+    pub fn with_plan_document(mut self, identity: ThreadPlanDocumentIdentity) -> Self {
+        self.plan_document = Some(identity);
+        self
+    }
+
+    pub fn plan_document(&self) -> Option<&ThreadPlanDocumentIdentity> {
+        self.plan_document.as_ref()
     }
 
     pub fn interaction_id(&self) -> &str {

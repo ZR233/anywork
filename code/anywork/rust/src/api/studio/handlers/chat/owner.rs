@@ -1,8 +1,11 @@
-//! Admission, query RAII and cancellation-safe task/native joins for a single conversation feed.
-use std::sync::{Arc, Mutex as SyncMutex};
+//! Feed admission, credit and cancellation-safe task/native joins. Historical queries are independent.
+use std::{
+    future::{Future, poll_fn},
+    sync::{Arc, Mutex as SyncMutex},
+};
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
-use pl_studio_runtime::{ConversationFeed, TimelineContentReader};
+use pl_studio_runtime::ConversationFeed;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -16,7 +19,6 @@ pub(crate) struct ConversationOwner {
     pub(super) cancel: CancellationToken,
     pub(super) state: SyncMutex<DeliveryState>,
     pub(super) credit: Notify,
-    reader: SyncMutex<Option<Arc<TimelineContentReader>>>,
     native: Mutex<Option<ConversationFeed>>,
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
@@ -24,7 +26,6 @@ pub(crate) struct ConversationOwner {
     /// Installed by registration before publishing the facade. The task waits with a Weak owner,
     /// so merely installing it cannot form an uncancelled Arc self-cycle.
     lifecycle: SyncMutex<Option<Arc<Mutex<OwnedTaskSlot>>>>,
-    idle: Notify,
     close_error: SyncMutex<Option<BridgeError>>,
 }
 
@@ -35,7 +36,6 @@ pub(super) struct DeliveryState {
     started: bool,
     pub(super) sent: u64,
     acknowledged: u64,
-    active_queries: usize,
     settled: bool,
 }
 
@@ -44,12 +44,8 @@ pub(super) struct DeliveryState {
 struct OwnedTaskSlot {
     task: Option<JoinHandle<Result<(), BridgeError>>>,
     /// Retained even after a JoinError so later close callers never poll a completed handle or lose
-    /// the first failure. Native close/query drain still run after any owned task failure.
+    /// the first failure. Native close still runs after any owned task failure.
     outcome: Option<Result<(), BridgeError>>,
-}
-
-pub(super) struct QueryGuard<'a> {
-    owner: &'a ConversationOwner,
 }
 
 impl ConversationOwner {
@@ -57,7 +53,6 @@ impl ConversationOwner {
         Self {
             thread_id: feed.thread_id().to_owned(),
             subscription_id: feed.subscription_id().to_owned(),
-            reader: SyncMutex::new(Some(Arc::new(feed.reader().clone()))),
             native: Mutex::new(Some(feed)),
             cancel,
             state: SyncMutex::new(DeliveryState::default()),
@@ -65,7 +60,6 @@ impl ConversationOwner {
             gate: Mutex::new(()),
             producer: Mutex::new(OwnedTaskSlot::default()),
             lifecycle: SyncMutex::new(None),
-            idle: Notify::new(),
             close_error: SyncMutex::new(None),
         }
     }
@@ -181,27 +175,10 @@ impl ConversationOwner {
         }
     }
 
-    pub(super) fn begin_query(&self) -> Result<QueryGuard<'_>, BridgeError> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.check_open(&state)?;
-        state.active_queries = state
-            .active_queries
-            .checked_add(1)
-            .ok_or_else(|| error(StudioErrorCode::Overloaded, "too many conversation queries"))?;
-        Ok(QueryGuard { owner: self })
-    }
-
-    pub(super) fn reader(&self) -> Result<Arc<TimelineContentReader>, BridgeError> {
-        self.reader
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(closed)
-    }
-
     /// Reserve capacity before native receive and conversion. Only the single producer sends, while
     /// ACK can only increase credit, so capacity cannot be stolen between this check and publication.
     pub(super) async fn wait_credit(&self) -> bool {
+        let mut recorded_wait = false;
         loop {
             let notified = self.credit.notified();
             tokio::pin!(notified);
@@ -218,10 +195,37 @@ impl ConversationOwner {
                     return true;
                 }
             }
+            let waiting = poll_fn(|cx| {
+                let polled = notified.as_mut().poll(cx);
+                if polled.is_pending() && !recorded_wait {
+                    let counters = {
+                        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        (!state.closing
+                            && !self.cancel.is_cancelled()
+                            && state.sent - state.acknowledged == 2)
+                            .then_some((state.sent, state.acknowledged))
+                    };
+                    if let Some((sent, acknowledged)) = counters {
+                        // Observe the original registered wait after an actual Pending poll.
+                        // Logging never takes credit, consumes another notification or holds state.
+                        tracing::debug!(
+                            target: "anywork::conversation_credit",
+                            credit_wait = %serde_json::json!({
+                                "subscriptionId": self.subscription_id.as_str(),
+                                "sent": sent,
+                                "acknowledged": acknowledged,
+                            }),
+                            "producer_credit_wait_pending"
+                        );
+                        recorded_wait = true;
+                    }
+                }
+                polled
+            });
             tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => return false,
-                () = notified => {},
+                () = waiting => {},
             }
         }
     }
@@ -281,22 +285,6 @@ impl ConversationOwner {
         if let Err(error) = self.close_native().await {
             self.remember_failure(error);
         }
-        loop {
-            let idle = self.idle.notified();
-            tokio::pin!(idle);
-            idle.as_mut().enable();
-            if self
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .active_queries
-                == 0
-            {
-                break;
-            }
-            idle.await;
-        }
-        self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(error) = self
             .close_error
             .lock()
@@ -338,19 +326,6 @@ impl ConversationOwner {
 
     pub(crate) fn is_settled(&self) -> bool {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).settled
-    }
-}
-
-impl Drop for QueryGuard<'_> {
-    fn drop(&mut self) {
-        let idle = {
-            let mut state = self.owner.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.active_queries -= 1;
-            state.active_queries == 0
-        };
-        if idle {
-            self.owner.idle.notify_waiters();
-        }
     }
 }
 

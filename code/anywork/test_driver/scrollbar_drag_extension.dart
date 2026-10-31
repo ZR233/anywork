@@ -1,5 +1,9 @@
 import 'dart:convert';
 
+import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/features/status/thread_status_bar.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
@@ -86,10 +90,72 @@ class ScrollbarDragCommandExtension extends CommandExtension {
     }
 
     final samples = <Object?>[];
+    List<Map<String, Object?>> geometry(Finder finder) => [
+      for (final element in finder.evaluate())
+        if (element.renderObject case final RenderBox box when box.hasSize)
+          {
+            'widget': element.widget.runtimeType.toString(),
+            'top': box.localToGlobal(Offset.zero).dy,
+            'left': box.localToGlobal(Offset.zero).dx,
+            'width': box.size.width,
+            'height': box.size.height,
+            if (element.widget case final ConstrainedBox constrained)
+              'constraints': constrained.constraints.toString(),
+          },
+    ];
+    num? previousViewport;
+    var recordFollowingFrame = false;
     void sample() {
-      samples.add(
-        jsonDecode(StudioDriverState.snapshotJson())['timelineScroll'],
-      );
+      final snapshot =
+          jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+      final scroll = snapshot['timelineScroll'] as Map<String, dynamic>;
+      final viewport = scroll['viewportDimension'] as num?;
+      final viewportChanged = viewport != previousViewport;
+      final recordGeometry = viewportChanged || recordFollowingFrame;
+      previousViewport = viewport;
+      recordFollowingFrame = viewportChanged;
+      // Keep the actual scroll samples and input path unchanged. These public
+      // layout bounds identify which sibling changes the viewport during a drag.
+      // Only inspect the tree at a change and its following frame so steady
+      // samples retain the original observation cost.
+      samples.add({
+        ...scroll,
+        if (recordGeometry)
+          'geometry': {
+            'scrollbar': geometry(paintFinder),
+            'timeline': geometry(find.byKey(StudioDriverKeys.timeline)),
+            'returnLive': geometry(
+              find.byKey(StudioDriverKeys.timelineReturnLive),
+            ),
+            'connectionNotice': geometry(
+              find.byKey(StudioDriverKeys.timelineConnectionNotice),
+            ),
+            'loadingOlder': geometry(
+              find.byKey(StudioDriverKeys.timelineLoadingOlder),
+            ),
+            'retryOlder': geometry(
+              find.byKey(StudioDriverKeys.timelineRetryOlder),
+            ),
+            'footer': geometry(
+              find.byKey(StudioDriverKeys.workspaceFooterScroll),
+            ),
+            'activity': geometry(
+              find.byKey(const ValueKey('conversation-activity')),
+            ),
+            'response': geometry(
+              find.byKey(
+                const ValueKey('conversation-activity-response-stream'),
+              ),
+            ),
+            'composerDock': geometry(find.byType(ComposerDockConnector)),
+            'composerInput': geometry(
+              find.byKey(StudioDriverKeys.composerInput),
+            ),
+            'statusBar': geometry(find.byType(ThreadStatusBar)),
+            'workspaceBody': geometry(find.byType(StudioWorkspaceBody)),
+            'workspacePane': geometry(find.byType(AgentWorkspacePane)),
+          },
+      });
     }
 
     final gesture = await prober.createGesture(kind: PointerDeviceKind.mouse);

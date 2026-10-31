@@ -1,350 +1,447 @@
-//! Bounded, target-only Final projection. No internal body survives this boundary.
+//! Bounded target-only projection of immutable completions and committed activity.
 
 use super::content::{FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS};
 use pl_protocol::{
-    ThreadContentField, ThreadTextChannel, TimelineChange, TimelineDescriptor, TimelineFieldChange,
-    TimelineFieldUpdate, TimelineItem, TimelineItemHeader,
+    ActivityContentFrame, ActivityPartMetadata, ActivityTextOperation, ActivityTextRegion,
+    ActivityToolMetadata, ThreadActivity, ThreadContentField, ThreadTextChannel,
+    TimelineDescriptor, TimelineItem, TimelineTurnOutcome,
 };
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-#[derive(Clone, PartialEq, Eq)]
-struct FinalField {
-    text: Arc<String>,
-    total_bytes: u64,
-}
+const ACTIVITY_BUDGET: usize = 64 * 1024 * 1024;
 
-#[derive(Clone, PartialEq, Eq)]
-struct ReplyItem {
-    header: TimelineItemHeader,
+#[derive(Clone)]
+struct ActivityState {
+    generation: String,
     revision: u64,
-    is_final: bool,
-    is_start: bool,
-    body: Option<FinalField>,
+    activity: Option<Box<ThreadActivity>>,
+    response: Vec<ActivityPartMetadata>,
+    reasoning: Vec<ActivityPartMetadata>,
+    tools: Vec<ActivityToolMetadata>,
+    text: BTreeMap<ActivityTextRegion, String>,
+    total_bytes: u64,
 }
 
 pub(super) struct ReplyProjection {
     thread_id: String,
     turn_id: String,
-    items: BTreeMap<String, ReplyItem>,
+    items: BTreeMap<u64, TimelineItem>,
     covered: bool,
+    current: Option<ActivityState>,
+    staging: Option<ActivityState>,
 }
 
 impl ReplyProjection {
     pub(super) fn new(thread_id: &str, turn_id: &str) -> Self {
         Self {
-            thread_id: thread_id.to_string(),
-            turn_id: turn_id.to_string(),
+            thread_id: thread_id.into(),
+            turn_id: turn_id.into(),
             items: BTreeMap::new(),
             covered: false,
+            current: None,
+            staging: None,
         }
     }
 
     pub(super) fn add_page(&mut self, items: Vec<TimelineItem>) -> Result<(), FinalError> {
-        let changes = items
-            .into_iter()
-            .map(|item| TimelineChange::Add {
-                item: Box::new(item),
-            })
-            .collect();
-        self.apply(changes)
-    }
-
-    pub(super) fn has_start(&self) -> bool {
-        self.items.values().any(|item| item.is_start)
+        let mut staged = self.items.clone();
+        for mut item in items {
+            if item.header.thread_id != self.thread_id
+                || item.header.id.is_empty()
+                || item.header.append_seq == 0
+            {
+                return Err(gap("reply completion identity conflict"));
+            }
+            if item.header.turn_id.as_deref() != Some(&self.turn_id) {
+                continue;
+            }
+            if !matches!(&item.descriptor, TimelineDescriptor::Turn(_))
+                && !matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == ThreadTextChannel::Final)
+            {
+                continue;
+            }
+            item.fields
+                .retain(|field| field.field == ThreadContentField::Text);
+            if item.fields.len() > 1
+                || item
+                    .fields
+                    .iter()
+                    .any(|field| field.text.len() as u64 > field.total_bytes)
+            {
+                return Err(gap("invalid reply text preview"));
+            }
+            if let Some(old) = staged.get(&item.header.append_seq) {
+                if old != &item {
+                    return Err(gap("reply completion changed immutable item"));
+                }
+                continue;
+            }
+            if staged.values().any(|old| old.header.id == item.header.id) {
+                return Err(gap("duplicate reply completion identity"));
+            }
+            staged.insert(item.header.append_seq, item);
+        }
+        let bytes = staged
+            .values()
+            .flat_map(|item| &item.fields)
+            .try_fold(0usize, |n, field| n.checked_add(field.text.len()))
+            .ok_or_else(|| gap("reply body size overflow"))?;
+        if staged.len() > MAX_TURN_CONTENT_ITEMS || bytes > MAX_TURN_BODY_BYTES {
+            return Err(FinalError::Attention(
+                "reply projection exceeded its item or UTF-8 budget".into(),
+            ));
+        }
+        self.items = staged;
+        Ok(())
     }
 
     pub(super) fn mark_covered(&mut self) {
         self.covered = true;
     }
 
+    pub(super) fn reset_activity(&mut self) {
+        self.current = None;
+        self.staging = None;
+    }
+
+    pub(super) fn validate_commit(&self, frame: &ActivityContentFrame) -> Result<(), FinalError> {
+        let ActivityContentFrame::Commit {
+            generation,
+            revision,
+        } = frame
+        else {
+            return Err(gap("activity frame is not commit"));
+        };
+        let stage = self
+            .staging
+            .as_ref()
+            .ok_or_else(|| gap("activity commit without begin"))?;
+        if stage.generation != *generation
+            || stage.revision != *revision
+            || stage
+                .text
+                .values()
+                .map(|text| text.len() as u64)
+                .sum::<u64>()
+                != stage.total_bytes
+            || stage.response.iter().any(|part| {
+                stage
+                    .text
+                    .get(&ActivityTextRegion::Response {
+                        item_id: part.item_id.clone(),
+                    })
+                    .map_or(0, String::len) as u64
+                    != part.total_bytes
+            })
+        {
+            return Err(gap("activity commit identity or length conflict"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn terminal(&self, durable_seq: u64) -> Option<TimelineTurnOutcome> {
+        self.items
+            .values()
+            .rev()
+            .find_map(|item| match &item.descriptor {
+                TimelineDescriptor::Turn(turn) if item.header.append_seq <= durable_seq => {
+                    Some(turn.outcome.clone())
+                }
+                _ => None,
+            })
+    }
+
     pub(super) fn preview(&self) -> Option<String> {
         if !self.covered {
             return None;
         }
-        let mut ordered: Vec<_> = self.items.values().collect();
-        ordered.sort_by_key(|item| (item.header.ordinal, item.header.id.as_str()));
         let mut text = String::new();
-        for item in ordered {
-            if !item.is_final {
+        for item in self.items.values() {
+            if !matches!(&item.descriptor, TimelineDescriptor::Text(value) if value.channel == ThreadTextChannel::Final)
+            {
                 continue;
             }
-            if let Some(body) = &item.body {
-                // A prefix with omitted bytes cannot be followed by another block:
-                // that would silently splice a hole into the displayed answer.
-                text.push_str(body.text.as_str());
-                if body.text.len() as u64 != body.total_bytes {
-                    break;
+            if let Some(field) = item
+                .fields
+                .iter()
+                .find(|field| field.field == ThreadContentField::Text)
+            {
+                text.push_str(&field.text);
+                if field.text.len() as u64 != field.total_bytes {
+                    return (!text.trim().is_empty()).then_some(text);
+                }
+            }
+        }
+        if let Some(current) = &self.current
+            && current.activity.as_ref().is_some_and(|a| {
+                a.thread_id == self.thread_id && a.turn_id.as_deref() == Some(self.turn_id.as_str())
+            })
+        {
+            let mut progress = String::new();
+            for part in &current.reasoning {
+                if let Some(value) = current.text.get(&ActivityTextRegion::Reasoning {
+                    item_id: part.item_id.clone(),
+                }) && !value.trim().is_empty()
+                {
+                    progress.push_str("思考中：");
+                    progress.extend(value.chars().take(2048));
+                    progress.push('\n');
+                }
+            }
+            for tool in &current.tools {
+                progress.push_str("工具：");
+                progress.extend(tool.name.chars().take(128));
+                progress.push_str(&format!(" ({:?})\n", tool.state));
+            }
+            if !progress.is_empty() {
+                text.push_str(&progress);
+                text.push('\n');
+            }
+            for part in &current.response {
+                if self
+                    .items
+                    .values()
+                    .any(|item| item.header.id == part.item_id)
+                {
+                    continue;
+                }
+                if let Some(value) = current.text.get(&ActivityTextRegion::Response {
+                    item_id: part.item_id.clone(),
+                }) {
+                    text.push_str(value);
                 }
             }
         }
         (!text.trim().is_empty()).then_some(text)
     }
 
-    /// Stage only touched records. Validation precedes all writes, including revision commits.
-    pub(super) fn apply(&mut self, changes: Vec<TimelineChange>) -> Result<(), FinalError> {
-        let mut staged: BTreeMap<String, Option<ReplyItem>> = BTreeMap::new();
-        for change in changes {
-            match change {
-                TimelineChange::Add { item } => {
-                    validate_header(&item.header, &self.thread_id)?;
-                    let current = staged
-                        .get(&item.header.id)
-                        .map_or_else(|| self.items.get(&item.header.id), Option::as_ref);
-                    if let Some(current) = current
-                        && (current.header.ordinal != item.header.ordinal
-                            || item.revision < current.revision
-                            || item.revision == current.revision && current.header != item.header)
-                    {
-                        return Err(gap("Final Add identity or revision conflict"));
-                    }
-                    if item.header.turn_id != self.turn_id {
-                        // An authoritative Add may reclassify a previously retained item.
-                        staged.insert(item.header.id, None);
-                        continue;
-                    }
-                    let next = reply_item(*item)?;
-                    if let Some(current) = current
-                        && current.revision == next.revision
-                        && !same_revision(current, &next)
-                    {
-                        return Err(gap("Final Add changed content without revision"));
-                    }
-                    staged.insert(next.header.id.clone(), Some(next));
+    /// Prepare a change without exposing any intermediate frame.
+    pub(super) fn activity(&mut self, frame: ActivityContentFrame) -> Result<(), FinalError> {
+        if matches!(frame, ActivityContentFrame::Commit { .. }) {
+            self.validate_commit(&frame)?;
+        }
+        match frame {
+            ActivityContentFrame::Begin {
+                generation,
+                base_revision,
+                revision,
+                activity,
+                reasoning,
+                response,
+                tools,
+                total_bytes,
+            } => {
+                if self.staging.is_some()
+                    || generation.is_empty()
+                    || total_bytes > ACTIVITY_BUDGET as u64
+                    || reasoning.len() + response.len() + tools.len() > MAX_TURN_CONTENT_ITEMS
+                    || activity
+                        .as_ref()
+                        .is_some_and(|a| a.thread_id != self.thread_id)
+                {
+                    return Err(gap("invalid activity begin"));
                 }
-                TimelineChange::Remove { item_id } => {
-                    staged.insert(item_id, None);
-                }
-                TimelineChange::UpdateItem {
-                    item_id,
-                    expected_revision,
+                let text = match (base_revision, &self.current) {
+                    (None, _) => BTreeMap::new(),
+                    (Some(base), Some(current))
+                        if current.generation == generation
+                            && current.revision == base
+                            && revision > base =>
+                    {
+                        current.text.clone()
+                    }
+                    _ => return Err(gap("activity revision gap")),
+                };
+                self.staging = Some(ActivityState {
+                    generation,
                     revision,
-                    header,
-                    descriptor,
-                    fields,
-                    ..
-                } => {
-                    if let Some(header) = &header {
-                        validate_header(header, &self.thread_id)?;
-                        if header.id != item_id {
-                            return Err(gap("Final patch item identity conflict"));
+                    activity,
+                    reasoning,
+                    response,
+                    tools,
+                    text,
+                    total_bytes,
+                });
+            }
+            ActivityContentFrame::Text {
+                generation,
+                revision,
+                operations,
+            } => {
+                let stage = self
+                    .staging
+                    .as_mut()
+                    .ok_or_else(|| gap("activity text without begin"))?;
+                if stage.generation != generation || stage.revision != revision {
+                    return Err(gap("activity text identity conflict"));
+                }
+                for operation in operations {
+                    match operation {
+                        ActivityTextOperation::Append { region, text } => {
+                            stage.text.entry(region).or_default().push_str(&text)
+                        }
+                        ActivityTextOperation::Replace { region, text } => {
+                            stage.text.insert(region, text);
+                        }
+                        ActivityTextOperation::Remove { region } => {
+                            stage.text.remove(&region);
                         }
                     }
-                    let current = staged
-                        .get(&item_id)
-                        .map_or_else(|| self.items.get(&item_id), Option::as_ref);
-                    let Some(current) = current else {
-                        if header.as_ref().is_some_and(|h| h.turn_id == self.turn_id) {
-                            return Err(gap("patch moved an unknown item into reply target"));
-                        }
-                        continue;
-                    };
-                    if current.revision != expected_revision || revision < expected_revision {
-                        return Err(gap("Final patch revision is not continuous"));
+                    let bytes = stage
+                        .text
+                        .values()
+                        .try_fold(0usize, |n, text| n.checked_add(text.len()))
+                        .ok_or_else(|| gap("activity size overflow"))?;
+                    if bytes > ACTIVITY_BUDGET {
+                        return Err(gap("activity content budget exceeded"));
                     }
-                    let mut next = current.clone();
-                    if let Some(header) = header {
-                        if header.ordinal != current.header.ordinal {
-                            return Err(gap("Final patch changed stable order"));
-                        }
-                        next.header = header;
-                    }
-                    if next.header.turn_id != self.turn_id {
-                        if revision == expected_revision {
-                            return Err(gap("Final target changed without revision"));
-                        }
-                        staged.insert(item_id, None);
-                        continue;
-                    }
-                    if let Some(descriptor) = descriptor {
-                        let is_final = is_final(&descriptor);
-                        next.is_start = matches!(*descriptor, TimelineDescriptor::Turn(_));
-                        if !is_final {
-                            next.body = None;
-                        }
-                        if is_final && !next.is_final {
-                            // A former private channel's Unchanged text is not cached here.
-                            // Require an authoritative replacement or a fresh baseline.
-                            next.body = None;
-                            if !fields.iter().any(|field| {
-                                field.field == ThreadContentField::Text
-                                    && matches!(field.change, TimelineFieldChange::Replace { .. })
-                            }) {
-                                return Err(gap("Final channel changed without a text baseline"));
-                            }
-                        }
-                        next.is_final = is_final;
-                    }
-                    let mut saw_text = false;
-                    for field in fields {
-                        if field.field != ThreadContentField::Text || !next.is_final {
-                            continue;
-                        }
-                        if saw_text {
-                            return Err(gap("duplicate Final text field update"));
-                        }
-                        saw_text = true;
-                        apply_field(&mut next.body, field)?;
-                    }
-                    if revision == expected_revision && !same_revision(current, &next) {
-                        return Err(gap("Final content changed without revision"));
-                    }
-                    next.revision = revision;
-                    staged.insert(item_id, Some(next));
                 }
             }
-        }
-        let mut bytes = 0usize;
-        let mut count = 0usize;
-        for (id, item) in &self.items {
-            if !staged.contains_key(id) {
-                account(item, &mut bytes, &mut count)?;
-            }
-        }
-        for item in staged.values().flatten() {
-            account(item, &mut bytes, &mut count)?;
-        }
-        for (id, item) in staged {
-            match item {
-                Some(item) => {
-                    self.items.insert(id, item);
-                }
-                None => {
-                    self.items.remove(&id);
-                }
+            ActivityContentFrame::Commit { .. } => {
+                let stage = self
+                    .staging
+                    .take()
+                    .ok_or_else(|| gap("activity commit without begin"))?;
+                self.current = Some(stage);
             }
         }
         Ok(())
     }
 }
 
-fn reply_item(item: TimelineItem) -> Result<ReplyItem, FinalError> {
-    let mut body = None;
-    let is_final = is_final(&item.descriptor);
-    if is_final {
-        for field in item.fields {
-            if field.field != ThreadContentField::Text {
-                continue;
-            }
-            if body.is_some() || field.text.len() as u64 > field.total_bytes {
-                return Err(gap("invalid Final text preview"));
-            }
-            body = Some(FinalField {
-                text: Arc::new(field.text),
-                total_bytes: field.total_bytes,
-            });
-        }
-    }
-    Ok(ReplyItem {
-        header: item.header,
-        revision: item.revision,
-        is_final,
-        is_start: matches!(item.descriptor, TimelineDescriptor::Turn(_)),
-        body,
-    })
+pub(super) fn gap(message: &str) -> FinalError {
+    FinalError::Retryable(message.into())
 }
 
-fn is_final(descriptor: &TimelineDescriptor) -> bool {
-    matches!(descriptor, TimelineDescriptor::Text(text) if text.channel == ThreadTextChannel::Final)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_protocol::{ThreadActivityKind, ThreadActivityTools};
 
-fn same_revision(previous: &ReplyItem, next: &ReplyItem) -> bool {
-    if previous.header != next.header
-        || previous.is_final != next.is_final
-        || previous.is_start != next.is_start
-    {
-        return false;
-    }
-    match (&previous.body, &next.body) {
-        (None, None) => true,
-        (Some(previous), Some(next)) => {
-            // Page and tail can carry different preview budgets for the same
-            // revision. Only prefix length may differ, never authoritative bytes.
-            previous.total_bytes == next.total_bytes
-                && (previous.text.starts_with(next.text.as_str())
-                    || next.text.starts_with(previous.text.as_str()))
+    fn begin(revision: u64, base_revision: Option<u64>, size: u64) -> ActivityContentFrame {
+        ActivityContentFrame::Begin {
+            generation: "generation".into(),
+            base_revision,
+            revision,
+            activity: Some(Box::new(ThreadActivity {
+                thread_id: "thread".into(),
+                identity: "activity".into(),
+                revision,
+                turn_id: Some("turn".into()),
+                execution_id: None,
+                input_id: None,
+                attempt_id: None,
+                kind: ThreadActivityKind::Responding,
+                summary: String::new(),
+                summary_truncated: false,
+                thinking_summary: None,
+                thinking_seconds: None,
+                tools: ThreadActivityTools::default(),
+            })),
+            reasoning: vec![],
+            response: vec![ActivityPartMetadata {
+                item_id: "response".into(),
+                complete: false,
+                total_bytes: size,
+            }],
+            tools: vec![],
+            total_bytes: size,
         }
-        _ => false,
     }
-}
 
-fn apply_field(
-    body: &mut Option<FinalField>,
-    update: TimelineFieldUpdate,
-) -> Result<(), FinalError> {
-    if update.preview_bytes > update.total_bytes {
-        return Err(gap("Final preview exceeds total bytes"));
-    }
-    match update.change {
-        TimelineFieldChange::Remove => {
-            if update.preview_bytes != 0 || update.total_bytes != 0 {
-                return Err(gap("Final field removal has nonzero bytes"));
+    fn text(revision: u64, value: &str, append: bool) -> ActivityContentFrame {
+        let region = ActivityTextRegion::Response {
+            item_id: "response".into(),
+        };
+        let operation = if append {
+            ActivityTextOperation::Append {
+                region,
+                text: value.into(),
             }
-            *body = None;
-        }
-        TimelineFieldChange::Replace { text } => {
-            if text.len() as u64 != update.preview_bytes {
-                return Err(gap("Final replacement length conflict"));
+        } else {
+            ActivityTextOperation::Replace {
+                region,
+                text: value.into(),
             }
-            *body = Some(FinalField {
-                text: Arc::new(text),
-                total_bytes: update.total_bytes,
-            });
-        }
-        TimelineFieldChange::Append { text } => {
-            let Some(body) = body else {
-                return Err(gap("Final append lacks a field baseline"));
-            };
-            if body
-                .text
-                .len()
-                .checked_add(text.len())
-                .map(|len| len as u64)
-                != Some(update.preview_bytes)
-                || update.total_bytes < body.total_bytes
-            {
-                return Err(gap("Final append length conflict"));
-            }
-            Arc::make_mut(&mut body.text).push_str(&text);
-            body.total_bytes = update.total_bytes;
-        }
-        TimelineFieldChange::Unchanged => {
-            let Some(body) = body else {
-                return Err(gap("Final unchanged field lacks a baseline"));
-            };
-            if body.text.len() as u64 != update.preview_bytes {
-                return Err(gap("Final unchanged preview length conflict"));
-            }
-            body.total_bytes = update.total_bytes;
+        };
+        ActivityContentFrame::Text {
+            generation: "generation".into(),
+            revision,
+            operations: vec![operation],
         }
     }
-    Ok(())
-}
 
-fn validate_header(header: &TimelineItemHeader, thread_id: &str) -> Result<(), FinalError> {
-    // Pending/discarded inputs legitimately have no Turn binding. Target
-    // association is checked by the caller, not by shared header validation.
-    if header.thread_id != thread_id || header.id.is_empty() {
-        return Err(gap("reply content identity conflict"));
+    fn commit(revision: u64) -> ActivityContentFrame {
+        ActivityContentFrame::Commit {
+            generation: "generation".into(),
+            revision,
+        }
     }
-    Ok(())
-}
 
-fn account(item: &ReplyItem, bytes: &mut usize, count: &mut usize) -> Result<(), FinalError> {
-    *count += 1;
-    if let Some(body) = &item.body {
-        *bytes = bytes
-            .checked_add(body.text.len())
-            .ok_or_else(|| gap("reply body size overflow"))?;
+    #[test]
+    fn activity_is_published_only_after_valid_commit() {
+        let mut projection = ReplyProjection::new("thread", "turn");
+        projection.mark_covered();
+        assert!(projection.activity(begin(1, None, 3)).is_ok());
+        assert!(projection.activity(text(1, "abc", false)).is_ok());
+        assert_eq!(projection.preview(), None);
+        assert!(projection.activity(commit(1)).is_ok());
+        assert_eq!(projection.preview().as_deref(), Some("abc"));
+        assert!(projection.activity(begin(2, Some(1), 4)).is_ok());
+        assert!(projection.activity(text(2, "d", true)).is_ok());
+        assert_eq!(projection.preview().as_deref(), Some("abc"));
+        assert!(projection.activity(commit(2)).is_ok());
+        assert_eq!(projection.preview().as_deref(), Some("abcd"));
+        assert!(projection.activity(begin(3, Some(1), 4)).is_err());
+        assert_eq!(projection.preview().as_deref(), Some("abcd"));
     }
-    if *count > MAX_TURN_CONTENT_ITEMS || *bytes > MAX_TURN_BODY_BYTES {
-        return Err(FinalError::Attention(
-            "reply projection exceeded its item or UTF-8 budget".to_string(),
+
+    #[test]
+    fn bad_commit_never_publishes_partial_text() {
+        let mut projection = ReplyProjection::new("thread", "turn");
+        projection.mark_covered();
+        assert!(projection.activity(begin(1, None, 4)).is_ok());
+        assert!(projection.activity(text(1, "abc", false)).is_ok());
+        assert!(projection.activity(commit(1)).is_err());
+        assert_eq!(projection.preview(), None);
+    }
+
+    #[test]
+    fn terminal_requires_durable_completion_and_exact_turn() {
+        use pl_protocol::{
+            CompletedTurnState, TimelineItemHeader, TimelineItemSource, TimelineTurnDescriptor,
+            TurnCompletion,
+        };
+        let mut projection = ReplyProjection::new("thread", "turn");
+        let item = TimelineItem {
+            header: TimelineItemHeader {
+                id: "turn-item".into(),
+                thread_id: "thread".into(),
+                turn_id: Some("turn".into()),
+                append_seq: 7,
+                source_effect_seq: None,
+                sealed_at: None,
+            },
+            descriptor: TimelineDescriptor::Turn(TimelineTurnDescriptor {
+                input_id: None,
+                outcome: TimelineTurnOutcome::Completed(CompletedTurnState::new(
+                    None,
+                    1,
+                    TurnCompletion::Normal,
+                )),
+            }),
+            source: TimelineItemSource::Content,
+            fields: vec![],
+        };
+        let mut unbound = item.clone();
+        unbound.header.turn_id = None;
+        assert!(projection.add_page(vec![unbound]).is_ok());
+        assert!(projection.terminal(7).is_none());
+        assert!(projection.add_page(vec![item]).is_ok());
+        assert!(projection.terminal(6).is_none());
+        assert!(matches!(
+            projection.terminal(7),
+            Some(TimelineTurnOutcome::Completed(_))
         ));
     }
-    Ok(())
-}
-
-pub(super) fn gap(message: &str) -> FinalError {
-    FinalError::Retryable(message.to_string())
 }

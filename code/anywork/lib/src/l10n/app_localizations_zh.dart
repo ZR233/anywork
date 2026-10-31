@@ -2217,6 +2217,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionPlanApproved => '已批准';
 
   @override
+  String get planDetailDrafting => '起草中';
+
+  @override
+  String get planDetailRevisionRequested => '已请求修改';
+
+  @override
   String get statusPlanEntry => '计划';
 
   @override
@@ -3793,6 +3799,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineUserInputNoAnswer => '未提供回答';
+
+  @override
+  String get timelineUserInputOptions => '选项';
 
   @override
   String get timelineUserInputSecretHidden => '敏感回答已隐藏';

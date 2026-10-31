@@ -184,7 +184,7 @@ int? _loadedTargetOrdinal(TimelineObservation timeline, String key) {
   for (final group in timeline.presentationItems) {
     if (key == 'timeline-row-${group.id}' ||
         key == 'timeline-activity-summary-${group.id}') {
-      return group.ordinal;
+      return group.firstAppendSeq;
     }
   }
   for (final item in timeline.items) {
@@ -194,14 +194,14 @@ int? _loadedTargetOrdinal(TimelineObservation timeline, String key) {
               (attachment) => key.contains(attachment.id),
             ) ??
             false)) {
-      return item.ordinal;
+      return item.appendSeq;
     }
   }
   return null;
 }
 
 int? _ordinalOfItemId(TimelineObservation timeline, String id) =>
-    timeline.ordinalOfIdentity(id);
+    timeline.appendSeqOfIdentity(id);
 
 /// 目标相对当前可见行的外层滚动方向。
 ///
@@ -1344,7 +1344,6 @@ Future<void> main(List<String> args) async {
           workspace?['syncState'] == 'ready' &&
           timeline != null &&
           timeline.ready &&
-          !timeline.preparingLive &&
           timeline.generation != previousGeneration &&
           scroll != null &&
           scroll.laidOut &&

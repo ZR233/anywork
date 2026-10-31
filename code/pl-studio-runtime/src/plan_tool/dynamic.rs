@@ -69,6 +69,9 @@ pub(crate) struct PlanConfirmationPrompt {
     pub question: pl_protocol::UserQuestion,
     pub expected_plan_revision: u64,
     pub plan_hash: String,
+    /// 保存于确认请求自身；读取历史不查询当前 Plan。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_version: Option<u64>,
     pub created_at: i64,
     pub presentation: pl_protocol::MessagePresentation,
 }
@@ -187,6 +190,7 @@ impl Tool for ThreadPlanTool {
                         question,
                         expected_plan_revision: machine.state().revision,
                         plan_hash,
+                        document_version: machine.state().document.as_ref().map(|doc| doc.version),
                         created_at: now,
                         presentation: self.options.submitted_plan_presentation(),
                     };

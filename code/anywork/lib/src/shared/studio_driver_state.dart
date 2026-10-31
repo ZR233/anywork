@@ -10,8 +10,8 @@ import '../domain/models/timeline_commands.dart';
 
 /// 一个展示代次的只读事实（design/26 §26.9）。
 ///
-/// 身份与数量来自当前 stock controller 的真实消息集合，不从状态流猜测；`items` 是同一批
-/// Message 的轻量 typed 预览诊断，只用于验收旅程，不是第二份业务事实源。
+/// `items` 来自当前 lease 的完整原子集合；可见 owner 来自 stock controller 的真实消息，
+/// hidden owner 从同一 lease 读取。只用于验收，不保留第二份业务事实源。
 final class TimelineDisplayFacts {
   TimelineDisplayFacts({
     required this.threadId,
@@ -19,7 +19,9 @@ final class TimelineDisplayFacts {
     required this.ready,
     required this.mode,
     required this.connection,
-    required this.appliedVersion,
+    required this.timelineEpoch,
+    required this.completedThrough,
+    required this.loadedCount,
     required this.olderCursor,
     required this.hasOlder,
     required this.loadingOlder,
@@ -27,18 +29,21 @@ final class TimelineDisplayFacts {
     required this.olderErrorCode,
     required this.olderErrorCorrelationId,
     required this.hasNewOutput,
-    required this.preparingLive,
     List<TimelineItemFacts> items = const [],
     List<TimelinePresentationFacts> presentationItems = const [],
+    List<TimelinePresentationFacts> hiddenPresentationItems = const [],
   }) : items = List.unmodifiable(items),
-       presentationItems = List.unmodifiable(presentationItems);
+       presentationItems = List.unmodifiable(presentationItems),
+       hiddenPresentationItems = List.unmodifiable(hiddenPresentationItems);
 
   final String threadId;
   final int generation;
   final bool ready;
   final TimelineDisplayMode mode;
   final TimelineConnectionPhase connection;
-  final int? appliedVersion;
+  final String? timelineEpoch;
+  final int? completedThrough;
+  final int? loadedCount;
   final String? olderCursor;
   final bool hasOlder;
   final bool loadingOlder;
@@ -46,9 +51,9 @@ final class TimelineDisplayFacts {
   final StudioFailureCode? olderErrorCode;
   final String? olderErrorCorrelationId;
   final bool hasNewOutput;
-  final bool preparingLive;
   final List<TimelineItemFacts> items;
   final List<TimelinePresentationFacts> presentationItems;
+  final List<TimelinePresentationFacts> hiddenPresentationItems;
 }
 
 /// GUI groups have their own identity; members still denote individual canonical records.
@@ -60,12 +65,11 @@ final class TimelinePresentationFacts {
   TimelinePresentationFacts({
     required this.id,
     required this.kind,
-    required this.ordinal,
+    required this.firstAppendSeq,
     required List<String> memberIds,
     required List<String> visibleMemberIds,
     required Map<String, String> skillPairs,
     required this.expanded,
-    required this.activeCount,
     required this.issueCount,
   }) : memberIds = List.unmodifiable(memberIds),
        visibleMemberIds = List.unmodifiable(visibleMemberIds),
@@ -73,7 +77,7 @@ final class TimelinePresentationFacts {
 
   final String id;
   final String kind;
-  final int ordinal;
+  final int firstAppendSeq;
   final List<String> memberIds;
 
   /// 当前组内可见活动行的成员身份，按 canonical 顺序。
@@ -83,7 +87,6 @@ final class TimelinePresentationFacts {
   final Map<String, String> skillPairs;
 
   final bool expanded;
-  final int activeCount;
   final int issueCount;
 }
 
@@ -91,10 +94,9 @@ final class TimelinePresentationFacts {
 final class TimelineItemFacts {
   TimelineItemFacts({
     required this.id,
-    required this.ordinal,
-    required this.revision,
-    required this.saved,
-    required this.terminal,
+    required this.appendSeq,
+    required this.sourceEffectSeq,
+    required this.sealedAt,
     required this.omittedBytes,
     required this.kind,
     required this.status,
@@ -104,14 +106,14 @@ final class TimelineItemFacts {
     List<TimelineAttachmentFacts> attachments = const [],
     this.tool,
     this.userInput,
+    this.plan,
   }) : details = List.unmodifiable(details),
        attachments = List.unmodifiable(attachments);
 
   final String id;
-  final int ordinal;
-  final int revision;
-  final bool saved;
-  final bool terminal;
+  final int appendSeq;
+  final int? sourceEffectSeq;
+  final int? sealedAt;
   final int omittedBytes;
   final String kind;
   final String status;
@@ -127,6 +129,27 @@ final class TimelineItemFacts {
   final List<TimelineAttachmentFacts> attachments;
   final TimelineToolFacts? tool;
   final TimelineUserInputFacts? userInput;
+  final TimelinePlanFacts? plan;
+}
+
+/// 已完成 Plan 自己的身份和有界字段预览，不读取或回填当前 Plan。
+/// 完整字段长度仍由同一 item 的 details 给出；缺失来源保持 null。
+final class TimelinePlanFacts {
+  const TimelinePlanFacts({
+    required this.interactionId,
+    required this.decision,
+    required this.documentVersion,
+    required this.contentHash,
+    required this.document,
+    required this.feedback,
+  });
+
+  final String interactionId;
+  final String decision;
+  final int? documentVersion;
+  final String? contentHash;
+  final String? document;
+  final String? feedback;
 }
 
 /// 一条工具调用的预览诊断：不展开全文，也不为 Driver 额外读取详情。
@@ -138,7 +161,7 @@ final class TimelineToolFacts {
     required this.arguments,
     required this.result,
     required this.progressBytes,
-    required this.itemRevision,
+    required this.appendSeq,
     this.denialReason,
     this.workingDirectory,
     this.exitCode,
@@ -153,24 +176,22 @@ final class TimelineToolFacts {
 
   /// 预览结果的 UTF-8 字节数：逐次增长即在途真实产出。
   final int progressBytes;
-  final int itemRevision;
+  final int appendSeq;
   final String? denialReason;
   final String? workingDirectory;
   final int? exitCode;
   final List<TimelineAttachmentFacts> attachments;
 }
 
-/// 一个内容字段的详情引用诊断（字段身份 + revision + 完整/预览字节数）。
+/// 一个内容字段的详情引用诊断（字段身份 + 完整/预览字节数）。
 final class TimelineDetailFacts {
   const TimelineDetailFacts({
     required this.field,
-    required this.revision,
     required this.totalBytes,
     required this.previewBytes,
   });
 
   final String field;
-  final int revision;
   final int totalBytes;
   final int previewBytes;
 }
@@ -1017,15 +1038,62 @@ abstract final class StudioDriverState {
           : {
               'identity': _conversationActivity!.identity,
               'kind': _conversationActivity!.kind.name,
+              'turnId': _conversationActivity!.turnId,
+              'executionId': _conversationActivity!.executionId,
               'summary': _conversationActivity!.summary,
+              'reasoningParts': [
+                for (final part in _conversationActivity!.reasoningParts)
+                  {
+                    'itemId': part.itemId,
+                    'complete': part.complete,
+                    'text': part.text,
+                    'byteLength': utf8.encode(part.text).length,
+                  },
+              ],
+              'reasoningBytes': _conversationActivity!.reasoningParts.fold(
+                0,
+                (total, part) => total + utf8.encode(part.text).length,
+              ),
+              'responseParts': [
+                for (final part in _conversationActivity!.responseParts)
+                  {
+                    'itemId': part.itemId,
+                    'complete': part.complete,
+                    'text': part.text,
+                    'byteLength': utf8.encode(part.text).length,
+                  },
+              ],
+              'responseBytes': _conversationActivity!.responseParts.fold(
+                0,
+                (total, part) => total + utf8.encode(part.text).length,
+              ),
               'activeToolCount': _conversationActivity!.activeToolCount,
               'backgroundToolCount': _conversationActivity!.backgroundToolCount,
               'errorMessage': _conversationActivity!.errorMessage,
               'expandable': _conversationActivity!.expandable,
               // `expandable` 是能力；`expanded` 是用户此刻的实际展开态。
               'expanded': _activityExpanded,
-              'detailsLoading': _conversationActivity!.detailsLoading,
-              'detailsError': _conversationActivity!.detailsError,
+              'toolDetails': [
+                for (final tool in _conversationActivity!.toolDetails)
+                  {
+                    'callId': tool.callId,
+                    'taskId': tool.taskId,
+                    'name': tool.name,
+                    'state': tool.state.name,
+                    'outputParts': [
+                      for (final part in tool.outputParts ?? const [])
+                        {
+                          'partId': part.partId,
+                          'text': part.text,
+                          'byteLength': utf8.encode(part.text).length,
+                        },
+                    ],
+                    'outputBytes': (tool.outputParts ?? const []).fold(
+                      0,
+                      (total, part) => total + utf8.encode(part.text).length,
+                    ),
+                  },
+              ],
               'details': [
                 for (final detail in _conversationActivity!.details)
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
@@ -1180,7 +1248,9 @@ abstract final class StudioDriverState {
       'ready': timeline.ready,
       'mode': timeline.mode.name,
       'connection': timeline.connection.name,
-      'appliedVersion': timeline.appliedVersion,
+      'timelineEpoch': timeline.timelineEpoch,
+      'completedThrough': timeline.completedThrough,
+      'loadedCount': timeline.loadedCount,
       'itemCount': timeline.items.length,
       'itemIds': [for (final item in timeline.items) item.id],
       'presentationItemCount': timeline.presentationItems.length,
@@ -1189,12 +1259,24 @@ abstract final class StudioDriverState {
           {
             'id': item.id,
             'kind': item.kind,
-            'ordinal': item.ordinal,
+            'firstAppendSeq': item.firstAppendSeq,
             'memberIds': item.memberIds,
             'visibleMemberIds': item.visibleMemberIds,
             'skillPairs': item.skillPairs,
             'expanded': item.expanded,
-            'activeCount': item.activeCount,
+            'issueCount': item.issueCount,
+          },
+      ],
+      'hiddenPresentationItems': [
+        for (final item in timeline.hiddenPresentationItems)
+          {
+            'id': item.id,
+            'kind': item.kind,
+            'firstAppendSeq': item.firstAppendSeq,
+            'memberIds': item.memberIds,
+            'visibleMemberIds': item.visibleMemberIds,
+            'skillPairs': item.skillPairs,
+            'expanded': item.expanded,
             'issueCount': item.issueCount,
           },
       ],
@@ -1205,15 +1287,13 @@ abstract final class StudioDriverState {
       'olderErrorCode': timeline.olderErrorCode?.name,
       'olderErrorCorrelationId': timeline.olderErrorCorrelationId,
       'hasNewOutput': timeline.hasNewOutput,
-      'preparingLive': timeline.preparingLive,
       'items': [
         for (final item in timeline.items)
           {
             'id': item.id,
-            'ordinal': item.ordinal,
-            'revision': item.revision,
-            'saved': item.saved,
-            'terminal': item.terminal,
+            'appendSeq': item.appendSeq,
+            'sourceEffectSeq': item.sourceEffectSeq,
+            'sealedAt': item.sealedAt,
             'omittedBytes': item.omittedBytes,
             'kind': item.kind,
             'status': item.status,
@@ -1223,7 +1303,6 @@ abstract final class StudioDriverState {
               for (final detail in item.details)
                 {
                   'field': detail.field,
-                  'revision': detail.revision,
                   'totalBytes': detail.totalBytes,
                   'previewBytes': detail.previewBytes,
                 },
@@ -1248,7 +1327,7 @@ abstract final class StudioDriverState {
                 // 在途工具的只读采样字段（同一 typed 事实的派生视图）。
                 'output': tool.result,
                 'progressBytes': tool.progressBytes,
-                'itemRevision': tool.itemRevision,
+                'appendSeq': tool.appendSeq,
                 'denialReason': tool.denialReason,
                 'workingDirectory': tool.workingDirectory,
                 'exitCode': tool.exitCode,
@@ -1269,6 +1348,15 @@ abstract final class StudioDriverState {
                 // 计划确认是 typed 判别事实：任何问答都给出真实 bool 与权威决定。
                 'isPlanConfirmation': userInput.isPlanConfirmation,
                 'planDecision': userInput.planDecision,
+              },
+            if (item.plan case final plan?)
+              'plan': {
+                'interactionId': plan.interactionId,
+                'decision': plan.decision,
+                'documentVersion': plan.documentVersion,
+                'contentHash': plan.contentHash,
+                'document': plan.document,
+                'feedback': plan.feedback,
               },
           },
       ],

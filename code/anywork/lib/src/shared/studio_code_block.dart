@@ -48,7 +48,11 @@ class StudioCodeBlock extends StatelessWidget {
 
     Widget codeBody = Padding(
       padding: padding,
-      child: SelectableText(text, style: codeTextStyle),
+      // Join the surrounding document selection instead of creating a separate
+      // editable selection boundary. Standalone code keeps its own selection.
+      child: SelectionContainer.maybeOf(context) == null
+          ? SelectableText(text, style: codeTextStyle)
+          : Text(text, style: codeTextStyle),
     );
     if (horizontalScroll) {
       codeBody = SingleChildScrollView(

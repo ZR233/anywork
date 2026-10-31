@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$TimelineSessionViewState {
 
- String get threadId; int get generation; TimelineDisplayMode get mode; TimelineConnectionPhase get connection; Object? get connectionError; String? get olderCursor; bool get hasOlder; bool get isLoadingOlder; Object? get olderError; bool get hasNewOutput; bool get isPreparingLive;
+ String get threadId; int get generation; TimelineDisplayMode get mode; TimelineConnectionPhase get connection; Object? get connectionError; String? get olderCursor; bool get hasOlder; bool get isLoadingOlder; Object? get olderError; bool get hasNewOutput;
 /// Create a copy of TimelineSessionViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,20 +27,20 @@ $TimelineSessionViewStateCopyWith<TimelineSessionViewState> get copyWith => _$Ti
 @override
 bool operator ==(Object other) {
   final _this = this as TimelineSessionViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TimelineSessionViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.generation, _this.generation) || other.generation == _this.generation)&&(identical(other.mode, _this.mode) || other.mode == _this.mode)&&(identical(other.connection, _this.connection) || other.connection == _this.connection)&&const DeepCollectionEquality().equals(other.connectionError, _this.connectionError)&&(identical(other.olderCursor, _this.olderCursor) || other.olderCursor == _this.olderCursor)&&(identical(other.hasOlder, _this.hasOlder) || other.hasOlder == _this.hasOlder)&&(identical(other.isLoadingOlder, _this.isLoadingOlder) || other.isLoadingOlder == _this.isLoadingOlder)&&const DeepCollectionEquality().equals(other.olderError, _this.olderError)&&(identical(other.hasNewOutput, _this.hasNewOutput) || other.hasNewOutput == _this.hasNewOutput)&&(identical(other.isPreparingLive, _this.isPreparingLive) || other.isPreparingLive == _this.isPreparingLive));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is TimelineSessionViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.generation, _this.generation) || other.generation == _this.generation)&&(identical(other.mode, _this.mode) || other.mode == _this.mode)&&(identical(other.connection, _this.connection) || other.connection == _this.connection)&&const DeepCollectionEquality().equals(other.connectionError, _this.connectionError)&&(identical(other.olderCursor, _this.olderCursor) || other.olderCursor == _this.olderCursor)&&(identical(other.hasOlder, _this.hasOlder) || other.hasOlder == _this.hasOlder)&&(identical(other.isLoadingOlder, _this.isLoadingOlder) || other.isLoadingOlder == _this.isLoadingOlder)&&const DeepCollectionEquality().equals(other.olderError, _this.olderError)&&(identical(other.hasNewOutput, _this.hasNewOutput) || other.hasNewOutput == _this.hasNewOutput));
 }
 
 
 @override
 int get hashCode {
   final _this = this as TimelineSessionViewState;
-  return Object.hash(runtimeType,_this.threadId,_this.generation,_this.mode,_this.connection,const DeepCollectionEquality().hash(_this.connectionError),_this.olderCursor,_this.hasOlder,_this.isLoadingOlder,const DeepCollectionEquality().hash(_this.olderError),_this.hasNewOutput,_this.isPreparingLive);
+  return Object.hash(runtimeType,_this.threadId,_this.generation,_this.mode,_this.connection,const DeepCollectionEquality().hash(_this.connectionError),_this.olderCursor,_this.hasOlder,_this.isLoadingOlder,const DeepCollectionEquality().hash(_this.olderError),_this.hasNewOutput);
 }
 
 @override
 String toString() {
   final _this = this as TimelineSessionViewState;
-  return 'TimelineSessionViewState(threadId: ${_this.threadId}, generation: ${_this.generation}, mode: ${_this.mode}, connection: ${_this.connection}, connectionError: ${_this.connectionError}, olderCursor: ${_this.olderCursor}, hasOlder: ${_this.hasOlder}, isLoadingOlder: ${_this.isLoadingOlder}, olderError: ${_this.olderError}, hasNewOutput: ${_this.hasNewOutput}, isPreparingLive: ${_this.isPreparingLive})';
+  return 'TimelineSessionViewState(threadId: ${_this.threadId}, generation: ${_this.generation}, mode: ${_this.mode}, connection: ${_this.connection}, connectionError: ${_this.connectionError}, olderCursor: ${_this.olderCursor}, hasOlder: ${_this.hasOlder}, isLoadingOlder: ${_this.isLoadingOlder}, olderError: ${_this.olderError}, hasNewOutput: ${_this.hasNewOutput})';
 }
 
 
@@ -51,7 +51,7 @@ abstract mixin class $TimelineSessionViewStateCopyWith<$Res>  {
   factory $TimelineSessionViewStateCopyWith(TimelineSessionViewState value, $Res Function(TimelineSessionViewState) _then) = _$TimelineSessionViewStateCopyWithImpl;
 @useResult
 $Res call({
- String threadId, int generation, TimelineDisplayMode mode, TimelineConnectionPhase connection, Object? connectionError, String? olderCursor, bool hasOlder, bool isLoadingOlder, Object? olderError, bool hasNewOutput, bool isPreparingLive
+ String threadId, int generation, TimelineDisplayMode mode, TimelineConnectionPhase connection, Object? connectionError, String? olderCursor, bool hasOlder, bool isLoadingOlder, Object? olderError, bool hasNewOutput
 });
 
 
@@ -68,7 +68,7 @@ class _$TimelineSessionViewStateCopyWithImpl<$Res>
 
 /// Create a copy of TimelineSessionViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? generation = null,Object? mode = null,Object? connection = null,Object? connectionError = freezed,Object? olderCursor = freezed,Object? hasOlder = null,Object? isLoadingOlder = null,Object? olderError = freezed,Object? hasNewOutput = null,Object? isPreparingLive = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? generation = null,Object? mode = null,Object? connection = null,Object? connectionError = freezed,Object? olderCursor = freezed,Object? hasOlder = null,Object? isLoadingOlder = null,Object? olderError = freezed,Object? hasNewOutput = null,}) {
   return _then(TimelineSessionViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
@@ -78,7 +78,6 @@ as TimelineConnectionPhase,connectionError: freezed == connectionError ? _self.c
 as String?,hasOlder: null == hasOlder ? _self.hasOlder : hasOlder // ignore: cast_nullable_to_non_nullable
 as bool,isLoadingOlder: null == isLoadingOlder ? _self.isLoadingOlder : isLoadingOlder // ignore: cast_nullable_to_non_nullable
 as bool,olderError: freezed == olderError ? _self.olderError : olderError ,hasNewOutput: null == hasNewOutput ? _self.hasNewOutput : hasNewOutput // ignore: cast_nullable_to_non_nullable
-as bool,isPreparingLive: null == isPreparingLive ? _self.isPreparingLive : isPreparingLive // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }
@@ -164,10 +163,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput,  bool isPreparingLive)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _TimelineSessionViewState() when $default != null:
-return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput,_that.isPreparingLive);case _:
+return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput);case _:
   return orElse();
 
 }
@@ -185,10 +184,10 @@ return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput,  bool isPreparingLive)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput)  $default,) {final _that = this;
 switch (_that) {
 case _TimelineSessionViewState():
-return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput,_that.isPreparingLive);case _:
+return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -205,10 +204,10 @@ return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput,  bool isPreparingLive)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  int generation,  TimelineDisplayMode mode,  TimelineConnectionPhase connection,  Object? connectionError,  String? olderCursor,  bool hasOlder,  bool isLoadingOlder,  Object? olderError,  bool hasNewOutput)?  $default,) {final _that = this;
 switch (_that) {
 case _TimelineSessionViewState() when $default != null:
-return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput,_that.isPreparingLive);case _:
+return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_that.connectionError,_that.olderCursor,_that.hasOlder,_that.isLoadingOlder,_that.olderError,_that.hasNewOutput);case _:
   return null;
 
 }
@@ -220,7 +219,7 @@ return $default(_that.threadId,_that.generation,_that.mode,_that.connection,_tha
 
 
 class _TimelineSessionViewState implements TimelineSessionViewState {
-  const _TimelineSessionViewState({required this.threadId, required this.generation, required this.mode, required this.connection, this.connectionError, this.olderCursor, this.hasOlder = false, this.isLoadingOlder = false, this.olderError, this.hasNewOutput = false, this.isPreparingLive = false});
+  const _TimelineSessionViewState({required this.threadId, required this.generation, required this.mode, required this.connection, this.connectionError, this.olderCursor, this.hasOlder = false, this.isLoadingOlder = false, this.olderError, this.hasNewOutput = false});
 
 
 @override final  String threadId;
@@ -233,7 +232,6 @@ class _TimelineSessionViewState implements TimelineSessionViewState {
 @override@JsonKey() final  bool isLoadingOlder;
 @override final  Object? olderError;
 @override@JsonKey() final  bool hasNewOutput;
-@override@JsonKey() final  bool isPreparingLive;
 
 /// Create a copy of TimelineSessionViewState
 /// with the given fields replaced by the non-null parameter values.
@@ -245,18 +243,18 @@ _$TimelineSessionViewStateCopyWith<_TimelineSessionViewState> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _TimelineSessionViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.generation, generation) || other.generation == generation)&&(identical(other.mode, mode) || other.mode == mode)&&(identical(other.connection, connection) || other.connection == connection)&&const DeepCollectionEquality().equals(other.connectionError, connectionError)&&(identical(other.olderCursor, olderCursor) || other.olderCursor == olderCursor)&&(identical(other.hasOlder, hasOlder) || other.hasOlder == hasOlder)&&(identical(other.isLoadingOlder, isLoadingOlder) || other.isLoadingOlder == isLoadingOlder)&&const DeepCollectionEquality().equals(other.olderError, olderError)&&(identical(other.hasNewOutput, hasNewOutput) || other.hasNewOutput == hasNewOutput)&&(identical(other.isPreparingLive, isPreparingLive) || other.isPreparingLive == isPreparingLive));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _TimelineSessionViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.generation, generation) || other.generation == generation)&&(identical(other.mode, mode) || other.mode == mode)&&(identical(other.connection, connection) || other.connection == connection)&&const DeepCollectionEquality().equals(other.connectionError, connectionError)&&(identical(other.olderCursor, olderCursor) || other.olderCursor == olderCursor)&&(identical(other.hasOlder, hasOlder) || other.hasOlder == hasOlder)&&(identical(other.isLoadingOlder, isLoadingOlder) || other.isLoadingOlder == isLoadingOlder)&&const DeepCollectionEquality().equals(other.olderError, olderError)&&(identical(other.hasNewOutput, hasNewOutput) || other.hasNewOutput == hasNewOutput));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,threadId,generation,mode,connection,const DeepCollectionEquality().hash(connectionError),olderCursor,hasOlder,isLoadingOlder,const DeepCollectionEquality().hash(olderError),hasNewOutput,isPreparingLive);
+    return Object.hash(runtimeType,threadId,generation,mode,connection,const DeepCollectionEquality().hash(connectionError),olderCursor,hasOlder,isLoadingOlder,const DeepCollectionEquality().hash(olderError),hasNewOutput);
 }
 
 @override
 String toString() {
-    return 'TimelineSessionViewState(threadId: $threadId, generation: $generation, mode: $mode, connection: $connection, connectionError: $connectionError, olderCursor: $olderCursor, hasOlder: $hasOlder, isLoadingOlder: $isLoadingOlder, olderError: $olderError, hasNewOutput: $hasNewOutput, isPreparingLive: $isPreparingLive)';
+    return 'TimelineSessionViewState(threadId: $threadId, generation: $generation, mode: $mode, connection: $connection, connectionError: $connectionError, olderCursor: $olderCursor, hasOlder: $hasOlder, isLoadingOlder: $isLoadingOlder, olderError: $olderError, hasNewOutput: $hasNewOutput)';
 }
 
 
@@ -267,7 +265,7 @@ abstract mixin class _$TimelineSessionViewStateCopyWith<$Res> implements $Timeli
   factory _$TimelineSessionViewStateCopyWith(_TimelineSessionViewState value, $Res Function(_TimelineSessionViewState) _then) = __$TimelineSessionViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- String threadId, int generation, TimelineDisplayMode mode, TimelineConnectionPhase connection, Object? connectionError, String? olderCursor, bool hasOlder, bool isLoadingOlder, Object? olderError, bool hasNewOutput, bool isPreparingLive
+ String threadId, int generation, TimelineDisplayMode mode, TimelineConnectionPhase connection, Object? connectionError, String? olderCursor, bool hasOlder, bool isLoadingOlder, Object? olderError, bool hasNewOutput
 });
 
 
@@ -284,7 +282,7 @@ class __$TimelineSessionViewStateCopyWithImpl<$Res>
 
 /// Create a copy of TimelineSessionViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? generation = null,Object? mode = null,Object? connection = null,Object? connectionError = freezed,Object? olderCursor = freezed,Object? hasOlder = null,Object? isLoadingOlder = null,Object? olderError = freezed,Object? hasNewOutput = null,Object? isPreparingLive = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? generation = null,Object? mode = null,Object? connection = null,Object? connectionError = freezed,Object? olderCursor = freezed,Object? hasOlder = null,Object? isLoadingOlder = null,Object? olderError = freezed,Object? hasNewOutput = null,}) {
   return _then(_TimelineSessionViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
@@ -294,7 +292,6 @@ as TimelineConnectionPhase,connectionError: freezed == connectionError ? _self.c
 as String?,hasOlder: null == hasOlder ? _self.hasOlder : hasOlder // ignore: cast_nullable_to_non_nullable
 as bool,isLoadingOlder: null == isLoadingOlder ? _self.isLoadingOlder : isLoadingOlder // ignore: cast_nullable_to_non_nullable
 as bool,olderError: freezed == olderError ? _self.olderError : olderError ,hasNewOutput: null == hasNewOutput ? _self.hasNewOutput : hasNewOutput // ignore: cast_nullable_to_non_nullable
-as bool,isPreparingLive: null == isPreparingLive ? _self.isPreparingLive : isPreparingLive // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }

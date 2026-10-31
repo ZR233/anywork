@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:anywork_client/studio_client.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../../../app/app_graph.dart';
 import '../../../../presentation/providers/account_domains.dart';
 import '../../../../presentation/providers/attachment_drafts.dart';
 import '../../../../presentation/providers/client_provider.dart';
@@ -211,18 +210,18 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       }
     });
     final commandBoardState = _observe(lifecycle, client.threadCommands.source);
-    final childInteractions = _observe(
-      lifecycle,
-      client.childInteractions.source,
-    );
+    // 根可见子任务待决交互按宿主借用已安装的领域镜像；镜像由 Client 的主题
+    // 需求创建，非宿主或未准备页面不观察、不产生第二事实源。
+    final childStore = (thread?.isRoot ?? false)
+        ? client.existingChildInteractions(threadId)
+        : null;
+    final childInteractions = childStore == null
+        ? null
+        : _observe(lifecycle, childStore.source);
     final stopKey = 'stop:$threadId';
     final commandBoard = commandBoardState.commands;
     final stopCommand = commandBoard[stopKey];
     final continueCommand = commandBoard['continue:$threadId'];
-    final ChildInteractionsState visibleChildInteractions =
-        (thread?.isRoot ?? false)
-        ? childInteractions
-        : const ChildInteractionsState();
     final agents =
         ref.watch(projectStoreProvider).agents?.values ??
         const <StudioAgentView>[];
@@ -249,10 +248,17 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       executionClosed:
           (thread?.status.blocksNewExecution ?? false) ||
           (session.workspace?.thread.status.blocksNewExecution ?? false),
-      childInteractions: visibleChildInteractions.hostThreadId == threadId
-          ? visibleChildInteractions.visibleItems
+      // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
+      // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
+      // 仍由在途操作持有的观察可借当前 canonical 作为本地基线。
+      childInteractions:
+          childInteractions != null &&
+              childInteractions.hasCurrentBaseline &&
+              childInteractions.canonical.loaded &&
+              childInteractions.canonical.value?.hostThreadId == threadId
+          ? childInteractions.canonical.value!.items
           : const [],
-      childInteractionGeneration: childInteractions.displayGeneration,
+      childInteractionSync: childInteractions?.canonical.sync,
       childInteractionSources: {
         for (final agent in AgentDirectoryQueries.forRoot(
           rootThreadId: (thread?.isRoot ?? false) ? threadId : null,
@@ -294,14 +300,8 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     });
   }
 
-  Future<void> submit(String threadId) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .submit(
-        beforeSubmit: () =>
-            ref.read(appGraphProvider).timeline.prepareSend(threadId),
-      );
+  Future<void> submit(String threadId) =>
+      ref.read(anyworkClientProvider).drafts.composer(threadId).submit();
 
   void updateDraft(String threadId, String text) => ref
       .read(anyworkClientProvider)

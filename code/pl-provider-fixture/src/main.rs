@@ -9,13 +9,14 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_provider_fixture::{
-    FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS, ReadyFile, WebSearchFault,
-    WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
+    FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS,
+    GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES, ReadyFile, WebSearchFault, WebSearchOptions,
+    gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
     gui_plan_recovery_script, gui_question_history_script, gui_realtime_script, gui_script,
     gui_shutdown_script, gui_single_instance_script, gui_statistics_script,
     gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
-    gui_timeline_history_script, gui_tool_scroll_script, gui_wait_events_script,
-    gui_web_search_script, gui_websocket_recovery_script,
+    gui_timeline_history_20k_script, gui_timeline_history_script, gui_tool_scroll_script,
+    gui_wait_events_script, gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -266,6 +267,10 @@ async fn main() -> Result<()> {
         "unknown fixture scenario: {scenario}"
     );
     ensure!(
+        scenario != "timeline-history-20k" || cfg!(target_os = "linux"),
+        "timeline-history-20k is supported only on Linux"
+    );
+    ensure!(
         !(args.posix_exec || args.resource_lifecycle) || scenario == "tool-scroll",
         "--posix-exec and --resource-lifecycle require --scenario tool-scroll"
     );
@@ -287,6 +292,7 @@ async fn main() -> Result<()> {
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),
         "timeline-history" => gui_timeline_history_script(),
+        "timeline-history-20k" => gui_timeline_history_20k_script(),
         "statistics" => gui_statistics_script(),
         "realtime" => {
             let directory = realtime_host_cwd_directory(args.ready_file.as_deref())?;
@@ -332,6 +338,8 @@ async fn main() -> Result<()> {
         ),
     };
     let options = FixtureOptions {
+        request_body_limit: (scenario == "timeline-history-20k")
+            .then_some(GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES),
         web_search: (scenario == "web-search").then_some(WebSearchOptions { fault }),
         provider_usage: scenario == "provider-usage",
         model_catalog,

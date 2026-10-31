@@ -5,20 +5,61 @@ sealed class ConversationDescriptor {
   const ConversationDescriptor();
 }
 
-final class ConversationTextDescriptor extends ConversationDescriptor {
-  const ConversationTextDescriptor({
-    required this.channel,
-    required this.attachments,
-    required this.lifecycle,
+/// The decision sealed into this historical Plan, not the current live Plan.
+enum ConversationPlanDecision {
+  approved,
+  revisionRequested,
+  cancelled,
+  resolved,
+}
+
+final class ConversationPlanDescriptor extends ConversationDescriptor {
+  const ConversationPlanDescriptor({
+    required this.interactionId,
+    required this.decision,
+    this.documentVersion,
+    this.contentHash,
   });
+
+  final String interactionId;
+  final int? documentVersion;
+  final String? contentHash;
+  final ConversationPlanDecision decision;
+}
+
+final class ConversationTextDescriptor extends ConversationDescriptor {
+  ConversationTextDescriptor({
+    required this.channel,
+    required List<ThreadAttachmentView> attachments,
+    required this.outcome,
+  }) : attachments = List.unmodifiable(attachments);
   final ThreadTextChannel channel;
   final List<ThreadAttachmentView> attachments;
-  final ThreadContentLifecycleView lifecycle;
+  final ConversationContentOutcome outcome;
 }
 
 final class ConversationThinkingDescriptor extends ConversationDescriptor {
-  const ConversationThinkingDescriptor({required this.lifecycle});
-  final ThreadContentLifecycleView lifecycle;
+  const ConversationThinkingDescriptor({required this.outcome});
+  final ConversationContentOutcome outcome;
+}
+
+sealed class ConversationContentOutcome {
+  const ConversationContentOutcome();
+}
+
+final class ConversationContentCompleted extends ConversationContentOutcome {
+  const ConversationContentCompleted(this.value);
+  final CompletedThreadContentView value;
+}
+
+final class ConversationContentFailed extends ConversationContentOutcome {
+  const ConversationContentFailed(this.value);
+  final FailedThreadContentView value;
+}
+
+final class ConversationContentCancelled extends ConversationContentOutcome {
+  const ConversationContentCancelled(this.value);
+  final CancelledThreadContentView value;
 }
 
 final class ConversationRawPayloadDescriptor {
@@ -31,12 +72,12 @@ final class ConversationRawPayloadDescriptor {
 }
 
 final class ConversationRawDescriptor extends ConversationDescriptor {
-  const ConversationRawDescriptor({
+  ConversationRawDescriptor({
     required this.origin,
-    required this.payloads,
+    required List<ConversationRawPayloadDescriptor> payloads,
     required this.notice,
     required this.recordedAt,
-  });
+  }) : payloads = List.unmodifiable(payloads);
   final ThreadRawItemOrigin origin;
   final List<ConversationRawPayloadDescriptor> payloads;
   final String notice;
@@ -74,52 +115,21 @@ final class ConversationToolInvocation {
 }
 
 final class ConversationToolOutputDescriptor {
-  const ConversationToolOutputDescriptor({
-    required this.attachments,
+  ConversationToolOutputDescriptor({
+    required List<ThreadAttachmentView> attachments,
     this.exitCode,
-  });
+  }) : attachments = List.unmodifiable(attachments);
   final List<ThreadAttachmentView> attachments;
   final int? exitCode;
 }
 
 sealed class ConversationToolState {
   const ConversationToolState();
-  bool get isTerminal => switch (this) {
-    ConversationToolInterrupted() ||
-    ConversationToolSucceeded() ||
-    ConversationToolFailed() ||
-    ConversationToolDenied() ||
-    ConversationToolCancelled() => true,
-    _ => false,
-  };
 }
 
-final class ConversationToolQueued extends ConversationToolState {
-  const ConversationToolQueued();
-}
-
-final class ConversationToolCancelling extends ConversationToolState {
-  const ConversationToolCancelling();
-}
-
-final class ConversationToolStarted extends ConversationToolState {
-  const ConversationToolStarted();
-}
-
-final class ConversationToolStreaming extends ConversationToolState {
-  const ConversationToolStreaming();
-}
-
-final class ConversationToolAwaitingApproval extends ConversationToolState {
-  const ConversationToolAwaitingApproval();
-}
-
-final class ConversationToolApproved extends ConversationToolState {
-  const ConversationToolApproved();
-}
-
-final class ConversationToolRunning extends ConversationToolState {
-  const ConversationToolRunning();
+final class ConversationToolBackgroundStarted extends ConversationToolState {
+  const ConversationToolBackgroundStarted({required this.startedAt});
+  final DateTime startedAt;
 }
 
 final class ConversationToolInterrupted extends ConversationToolState {
@@ -167,11 +177,11 @@ final class ConversationToolCancelled extends ConversationToolState {
 }
 
 final class ConversationUserInputDescriptor {
-  const ConversationUserInputDescriptor({
+  ConversationUserInputDescriptor({
     required this.interactionId,
-    required this.questions,
+    required List<ConversationQuestionDescriptor> questions,
     required this.state,
-  });
+  }) : questions = List.unmodifiable(questions);
   final String interactionId;
   final List<ConversationQuestionDescriptor> questions;
   final ConversationUserInputState state;
@@ -194,16 +204,14 @@ sealed class ConversationUserInputState {
   const ConversationUserInputState();
 }
 
-final class ConversationUserInputPending extends ConversationUserInputState {
-  const ConversationUserInputPending();
-}
-
 final class ConversationUserInputCancelled extends ConversationUserInputState {
   const ConversationUserInputCancelled();
 }
 
 final class ConversationUserInputResolved extends ConversationUserInputState {
-  const ConversationUserInputResolved({required this.answers});
+  ConversationUserInputResolved({
+    required List<ConversationAnswerDescriptor> answers,
+  }) : answers = List.unmodifiable(answers);
   final List<ConversationAnswerDescriptor> answers;
 }
 
@@ -219,18 +227,98 @@ final class ConversationAnswerDescriptor {
 }
 
 final class ConversationAgentDescriptor extends ConversationDescriptor {
-  const ConversationAgentDescriptor(this.value);
-  final ThreadAgentItemStateView value;
+  const ConversationAgentDescriptor({
+    required this.identity,
+    required this.outcome,
+  });
+  final ThreadAgentIdentityView identity;
+  final ConversationAgentOutcome outcome;
+}
+
+sealed class ConversationAgentOutcome {
+  const ConversationAgentOutcome();
+}
+
+final class ConversationAgentSucceeded extends ConversationAgentOutcome {
+  const ConversationAgentSucceeded(this.value);
+  final SucceededThreadAgentView value;
+}
+
+final class ConversationAgentDenied extends ConversationAgentOutcome {
+  const ConversationAgentDenied(this.value);
+  final DeniedThreadAgentView value;
+}
+
+final class ConversationAgentCancelled extends ConversationAgentOutcome {
+  const ConversationAgentCancelled(this.value);
+  final CancelledThreadAgentView value;
+}
+
+final class ConversationAgentFailed extends ConversationAgentOutcome {
+  const ConversationAgentFailed(this.value);
+  final FailedThreadAgentView value;
 }
 
 final class ConversationTurnDescriptor extends ConversationDescriptor {
-  const ConversationTurnDescriptor(this.value);
-  final ThreadTurnItemStateView value;
+  const ConversationTurnDescriptor({this.inputId, required this.outcome});
+  final String? inputId;
+  final ConversationTurnOutcome outcome;
+}
+
+sealed class ConversationTurnOutcome {
+  const ConversationTurnOutcome();
+}
+
+final class ConversationTurnCompleted extends ConversationTurnOutcome {
+  const ConversationTurnCompleted(this.value);
+  final CompletedStudioTurnState value;
+}
+
+final class ConversationTurnFailed extends ConversationTurnOutcome {
+  const ConversationTurnFailed(this.value);
+  final FailedStudioTurnState value;
+}
+
+final class ConversationTurnCancelled extends ConversationTurnOutcome {
+  const ConversationTurnCancelled(this.value);
+  final CancelledStudioTurnState value;
+}
+
+final class ConversationTurnBudgetLimited extends ConversationTurnOutcome {
+  const ConversationTurnBudgetLimited(this.value);
+  final BudgetLimitedStudioTurnState value;
 }
 
 final class ConversationInferenceDescriptor extends ConversationDescriptor {
-  const ConversationInferenceDescriptor(this.value);
-  final ThreadInferenceItemStateView value;
+  const ConversationInferenceDescriptor({
+    required this.inferenceId,
+    required this.model,
+    required this.outcome,
+  });
+  final String inferenceId;
+  final String model;
+  final ConversationInferenceOutcome outcome;
+}
+
+sealed class ConversationInferenceOutcome {
+  const ConversationInferenceOutcome();
+}
+
+final class ConversationInferenceCompleted
+    extends ConversationInferenceOutcome {
+  const ConversationInferenceCompleted(this.value);
+  final CompletedThreadInferenceView value;
+}
+
+final class ConversationInferenceFailed extends ConversationInferenceOutcome {
+  const ConversationInferenceFailed(this.value);
+  final FailedThreadInferenceView value;
+}
+
+final class ConversationInferenceCancelled
+    extends ConversationInferenceOutcome {
+  const ConversationInferenceCancelled(this.value);
+  final CancelledThreadInferenceView value;
 }
 
 final class ConversationSkillDescriptor extends ConversationDescriptor {

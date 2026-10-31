@@ -233,19 +233,14 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_details(serde_json::json!({ "identity": identity })),
-        Chat::StaleRevision {
-            item_id,
-            field,
-            revision,
-        } => StudioError::new(
+        Chat::EpochMismatch { cursor, session } => StudioError::new(
             StudioErrorCode::StaleRevision,
-            "Timeline content changed; reload the item before reading it again",
+            "The timeline epoch changed; establish the current completion window",
             true,
         )
         .with_details(serde_json::json!({
-            "itemId": item_id,
-            "field": field.to_string(),
-            "revision": revision,
+            "requestedEpoch": cursor.as_str(),
+            "timelineEpoch": session.as_str(),
         })),
         Chat::Cancelled => StudioError::new(
             StudioErrorCode::Cancelled,
@@ -258,11 +253,6 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_details(serde_json::json!({ "reason": reason })),
-        Chat::ReadInvalidated => StudioError::new(
-            StudioErrorCode::Busy,
-            "The timeline range is not fully readable yet; retry the read",
-            true,
-        ),
         Chat::Conflict(identity) => StudioError::new(
             StudioErrorCode::Conflict,
             "Timeline content conflicts with the fact this Thread already holds",
@@ -270,7 +260,11 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
         )
         .with_details(serde_json::json!({ "identity": identity })),
         Chat::History(_) => StudioError::storage(),
-        Chat::OrderExhausted | Chat::OrderNotInitialized => StudioError::internal(),
+        Chat::SeqExhausted => StudioError::new(
+            StudioErrorCode::Overloaded,
+            "The timeline completion sequence is exhausted",
+            false,
+        ),
     }
 }
 

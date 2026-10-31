@@ -32,6 +32,8 @@ ProductTopicEventPayload _productPayloadFromFrb(
       AccountUsageStateChangedPayload(_accountUsageStateFromFrb(field0)),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsChangedPayload(_sessionCostsStateFromFrb(field0)),
+    frb.BridgeProductEventPayload_ChildInteractionsChanged(:final field0) =>
+      ChildInteractionsChangedPayload(_childInteractionsStateFromFrb(field0)),
     frb.BridgeProductEventPayload_UpdaterStateChanged(:final field0) =>
       UpdaterStateChangedPayload(updaterStateFromFrb(field0)),
     frb.BridgeProductEventPayload_PersistenceStateChanged(:final field0) =>
@@ -120,6 +122,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       const AccountUsageTopic(),
     frb_topic_types.BridgeProductTopic_SessionCosts(:final rootThreadId) =>
       SessionCostsTopic(rootThreadId: rootThreadId),
+    frb_topic_types.BridgeProductTopic_ChildInteractions(:final hostThreadId) =>
+      ChildInteractionsTopic(hostThreadId: hostThreadId),
     frb_topic_types.BridgeProductTopic_Updater() => const UpdaterTopic(),
     frb_topic_types.BridgeProductTopic_Persistence() =>
       const PersistenceTopic(),
@@ -159,6 +163,8 @@ ProductTopic _productPayloadTopicFromBridge(
       const AccountUsageTopic(),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsTopic(rootThreadId: field0.rootThreadId),
+    frb.BridgeProductEventPayload_ChildInteractionsChanged(:final field0) =>
+      ChildInteractionsTopic(hostThreadId: field0.hostThreadId),
     frb.BridgeProductEventPayload_UpdaterStateChanged() => const UpdaterTopic(),
     frb.BridgeProductEventPayload_PersistenceStateChanged() =>
       const PersistenceTopic(),
@@ -197,6 +203,10 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     SessionCostsTopic(:final rootThreadId) =>
       frb_topic_types.BridgeProductTopic.sessionCosts(
         rootThreadId: rootThreadId,
+      ),
+    ChildInteractionsTopic(:final hostThreadId) =>
+      frb_topic_types.BridgeProductTopic.childInteractions(
+        hostThreadId: hostThreadId,
       ),
     UpdaterTopic() => const frb_topic_types.BridgeProductTopic.updater(),
     PersistenceTopic() =>
@@ -241,6 +251,8 @@ ProductTopicBaselineState _productBaselineFromFrb(
       AccountUsageBaseline(_accountUsageStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_SessionCosts(:final field0) =>
       SessionCostsBaseline(_sessionCostsStateFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_ChildInteractions(:final field0) =>
+      ChildInteractionsBaseline(_childInteractionsStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Updater(:final field0) =>
       UpdaterBaseline(updaterStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Persistence(:final field0) =>
@@ -541,6 +553,30 @@ PersistenceQueueSnapshot _persistenceQueueFromFrb(
           pressurePaused: thread.pressurePaused,
         ),
     ],
+  );
+}
+
+ChildInteractionsStateView _childInteractionsStateFromFrb(
+  frb_topic_types.BridgeChildInteractionsState value,
+) => ChildInteractionsStateView(
+  hostThreadId: value.hostThreadId,
+  revision: value.revision.toInt(),
+  updatedAt: value.updatedAt.toInt() == 0
+      ? null
+      : _dateFromUnix(value.updatedAt),
+  items: value.items.map(_childInteractionFromFrb).toList(),
+);
+
+ChildInteractionSummary _childInteractionFromFrb(
+  frb.BridgeChildInteractionSummary value,
+) {
+  final interaction = _interactionFromFrb(value.interaction);
+  return ChildInteractionSummary(
+    childThreadId: value.childThreadId,
+    interactionId: value.interactionId,
+    kind: _interactionKindFromLabel(value.kind) ?? interaction.kind,
+    revision: value.revision.toInt(),
+    interaction: interaction,
   );
 }
 

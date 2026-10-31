@@ -39,6 +39,7 @@ class ScriptedConversationFeed extends TestConversationFeed {
     String threadId = 'thread',
     ConversationBaseline? initial,
     Stream<ThreadStreamFrame>? states,
+    this.resumeAfter,
   }) : initial = initial ?? baseline(1),
        states = states,
        super(
@@ -47,6 +48,7 @@ class ScriptedConversationFeed extends TestConversationFeed {
        );
   final ConversationBaseline initial;
   final Stream<ThreadStreamFrame>? states;
+  final ConversationCompletionCursor? resumeAfter;
   StreamSubscription<ThreadStreamFrame>? _states;
   @override
   Stream<ConversationFrame> get events {
@@ -54,7 +56,9 @@ class ScriptedConversationFeed extends TestConversationFeed {
     // Native creation captures a baseline before subsequent publication.
     scheduleMicrotask(() {
       if (requestCloseStarted.isCompleted) return;
-      send(ConversationBaselineEvent(baseline: initial));
+      if (resumeAfter == null) {
+        send(ConversationBaselineEvent(baseline: initial));
+      }
       _states = states?.listen(
         (state) => send(ConversationStateEvent(frame: state)),
         onError: (Object error, StackTrace stack) => send(

@@ -1,13 +1,12 @@
 use pl_protocol::studio::HistoryFault;
 use pl_protocol::{
-    ThreadActivity, ThreadActivityArguments, ThreadActivityDetail, ThreadActivityKind,
-    ThreadActivityToolState, ThreadStorageExecution, ThreadStorageState,
+    ThreadActivity, ThreadActivityArguments, ThreadActivityKind, ThreadActivityToolState,
+    ThreadStorageExecution, ThreadStorageState,
 };
 
 use crate::api::studio::types::{
     BridgeHistoryFault, BridgeThreadActivity, BridgeThreadActivityArguments,
-    BridgeThreadActivityContentPart, BridgeThreadActivityDetail, BridgeThreadActivityKind,
-    BridgeThreadActivityToolDetail, BridgeThreadActivityToolEntry, BridgeThreadActivityToolState,
+    BridgeThreadActivityKind, BridgeThreadActivityToolEntry, BridgeThreadActivityToolState,
     BridgeThreadActivityTools, BridgeThreadStorageExecution, BridgeThreadStorageState,
 };
 
@@ -17,6 +16,7 @@ pub(crate) fn activity(value: ThreadActivity) -> BridgeThreadActivity {
         identity: value.identity,
         revision: value.revision,
         turn_id: value.turn_id,
+        execution_id: value.execution_id,
         input_id: value.input_id,
         attempt_id: value.attempt_id,
         kind: activity_kind(value.kind),
@@ -57,7 +57,7 @@ fn activity_arguments(value: ThreadActivityArguments) -> BridgeThreadActivityArg
     }
 }
 
-fn tool_state(value: ThreadActivityToolState) -> BridgeThreadActivityToolState {
+pub(super) fn tool_state(value: ThreadActivityToolState) -> BridgeThreadActivityToolState {
     match value {
         ThreadActivityToolState::Running => BridgeThreadActivityToolState::Running,
         ThreadActivityToolState::AwaitingApproval => {
@@ -76,59 +76,6 @@ fn activity_tool(value: pl_protocol::ThreadActivityToolEntry) -> BridgeThreadAct
         summary: value.summary,
         arguments: activity_arguments(value.arguments),
         state: tool_state(value.state),
-        ordinal: value.ordinal,
-        started_at: value.started_at,
-        wait: value.wait.map(super::wait_presentation),
-    }
-}
-
-pub(crate) fn activity_detail(value: ThreadActivityDetail) -> BridgeThreadActivityDetail {
-    match value {
-        ThreadActivityDetail::Current {
-            activity: current,
-            reasoning,
-            response,
-            tools,
-        } => BridgeThreadActivityDetail::Current {
-            activity: activity(current),
-            reasoning: reasoning.into_iter().map(content_part).collect(),
-            response: response.into_iter().map(content_part).collect(),
-            tools: tools.into_iter().map(tool_detail).collect(),
-        },
-        ThreadActivityDetail::Superseded {
-            activity: current,
-            requested_activity_id,
-        } => BridgeThreadActivityDetail::Superseded {
-            activity: activity(current),
-            requested_activity_id,
-        },
-        ThreadActivityDetail::Ended {
-            thread_id,
-            activity_id,
-        } => BridgeThreadActivityDetail::Ended {
-            thread_id,
-            activity_id,
-        },
-    }
-}
-
-fn content_part(value: pl_protocol::ThreadActivityContentPart) -> BridgeThreadActivityContentPart {
-    BridgeThreadActivityContentPart {
-        item_id: value.item_id,
-        revision: value.revision,
-        complete: value.complete,
-        text: value.text,
-    }
-}
-
-fn tool_detail(value: pl_protocol::ThreadActivityToolDetail) -> BridgeThreadActivityToolDetail {
-    BridgeThreadActivityToolDetail {
-        call_id: value.call_id,
-        task_id: value.task_id,
-        name: value.name,
-        state: tool_state(value.state),
-        arguments: value.arguments,
-        output: value.output,
         ordinal: value.ordinal,
         started_at: value.started_at,
         wait: value.wait.map(super::wait_presentation),

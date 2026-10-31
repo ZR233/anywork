@@ -11,6 +11,7 @@
 // - 生成器统一重建输出集后，本文件与引用方保持同一份 canonical 生成 API。
 
 export '../../rust/api/studio/handlers/history.dart';
+export '../../rust/api/studio/handlers/history/timeline_reader.dart';
 export '../../rust/api/studio/handlers/agent_profiles.dart';
 export '../../rust/api/studio/handlers/external_state.dart';
 export '../../rust/api/studio/handlers/lifecycle.dart';

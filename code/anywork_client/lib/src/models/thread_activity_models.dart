@@ -7,9 +7,8 @@ import 'collection_equality.dart';
 /// 当前执行活动的 typed 事实（后端投影的 Dart 映射）。
 ///
 /// 与 Timeline 窗口无关：活动只描述“此刻在做什么”，其身份、版本、摘要与活跃工具
-/// 都来自后端 typed 活动投影（快照或 `ActivityChanged` 通知），完整 reasoning /
-/// 输出 / 工具参数按需由 `read_thread_activity_detail` 读取。这里不含正文，也不做
-/// 任何窗口内搜索或 SQL 回读。
+/// 都来自后端 typed 活动投影，正文由当前活动事件分段交付。这里不含正文，
+/// 不做窗口内搜索、详情 query 或 SQL 回读。
 enum ThreadActivityKind {
   /// Turn 运行中但还没有运行中的 attempt（正在准备）。
   preparing,
@@ -49,7 +48,7 @@ enum ThreadActivityArgumentsKind { commandLine, opaque, streaming, unavailable }
 enum ThreadActivityToolState { running, awaitingApproval, cancelling, finished }
 
 /// 活动里的活跃工具条目；`summary` 是命令行摘要或工具名称。
-class ThreadActivityToolEntry {
+final class ThreadActivityToolEntry {
   const ThreadActivityToolEntry({
     required this.callId,
     required this.name,
@@ -107,13 +106,19 @@ class ThreadActivityToolEntry {
   );
 }
 
-class ThreadActivityTools {
-  const ThreadActivityTools({
+final class ThreadActivityTools {
+  ThreadActivityTools({
     this.count = 0,
     this.background = 0,
-    this.active = const [],
+    List<ThreadActivityToolEntry> active = const [],
     this.latestStarted,
-  });
+  }) : active = List.unmodifiable(active);
+
+  const ThreadActivityTools._empty()
+    : count = 0,
+      background = 0,
+      active = const [],
+      latestStarted = null;
 
   /// 活跃工具数量（= [active] 的长度）。
   final int count;
@@ -125,7 +130,7 @@ class ThreadActivityTools {
   /// 最近启动的活跃工具；没有活跃工具时为空。
   final ThreadActivityToolEntry? latestStarted;
 
-  static const empty = ThreadActivityTools();
+  static const empty = ThreadActivityTools._empty();
 
   @override
   bool operator ==(Object other) {
@@ -143,7 +148,7 @@ class ThreadActivityTools {
 }
 
 /// 当前执行活动的小型 typed 摘要；不携带正文。
-class ThreadActivityView {
+final class ThreadActivityView {
   const ThreadActivityView({
     required this.threadId,
     required this.identity,
@@ -157,15 +162,17 @@ class ThreadActivityView {
     this.tools = ThreadActivityTools.empty,
     this.inputId,
     this.attemptId,
+    this.executionId,
   });
 
   final String threadId;
 
-  /// 稳定活动身份 `activity:{turnId}:{step}:{kind}`；同一活动内 revision 单调递增，
+  /// 不透明稳定活动身份；同一活动内 revision 单调递增，
   /// 身份变化即新活动（版本从 0 重启）。
   final String identity;
   final int revision;
-  final String turnId;
+  final String? turnId;
+  final String? executionId;
   final String? inputId;
   final String? attemptId;
   final ThreadActivityKind kind;
@@ -189,6 +196,7 @@ class ThreadActivityView {
             identity == other.identity &&
             revision == other.revision &&
             turnId == other.turnId &&
+            executionId == other.executionId &&
             inputId == other.inputId &&
             attemptId == other.attemptId &&
             kind == other.kind &&
@@ -205,6 +213,7 @@ class ThreadActivityView {
     identity,
     revision,
     turnId,
+    executionId,
     inputId,
     attemptId,
     kind,
@@ -345,7 +354,7 @@ StudioFailure threadStorageContinuationFailure(ThreadStorageStateView storage) {
 }
 
 /// 活动详情里的一段内容（reasoning 或输出正文）。
-class ThreadActivityContentPart {
+final class ThreadActivityContentPart {
   const ThreadActivityContentPart({
     required this.itemId,
     required this.complete,
@@ -362,18 +371,20 @@ class ThreadActivityContentPart {
 }
 
 /// 活动详情里的一条工具调用（含完整参数与已观测输出）。
-class ThreadActivityToolDetail {
-  const ThreadActivityToolDetail({
+final class ThreadActivityToolDetail {
+  ThreadActivityToolDetail({
     required this.callId,
     required this.name,
     required this.state,
     this.taskId,
     this.arguments,
-    this.output,
+    List<ThreadActivityToolOutputPart>? outputParts,
     this.ordinal,
     this.startedAt,
     this.wait,
-  });
+  }) : outputParts = outputParts == null
+           ? null
+           : List.unmodifiable(outputParts);
 
   final String callId;
   final String? taskId;
@@ -383,50 +394,18 @@ class ThreadActivityToolDetail {
   /// canonical 原始调用参数；不可读时为空。
   final String? arguments;
 
-  /// 目前观测到的流式或终态输出；暂无输出为空。
-  final String? output;
+  /// 原始输出段；null 表示尚无输出事实，空列表表示已观察到空输出。
+  final List<ThreadActivityToolOutputPart>? outputParts;
   final int? ordinal;
   final int? startedAt;
   final ThreadWaitPresentationView? wait;
 }
 
-/// 按活动身份读取的详情结果；只有 [CurrentThreadActivityDetail] 携带正文。
-sealed class ThreadActivityDetail {
-  const ThreadActivityDetail();
-}
-
-final class CurrentThreadActivityDetail extends ThreadActivityDetail {
-  const CurrentThreadActivityDetail({
-    required this.activity,
-    this.reasoning = const [],
-    this.response = const [],
-    this.tools = const [],
+final class ThreadActivityToolOutputPart {
+  const ThreadActivityToolOutputPart({
+    required this.partId,
+    required this.text,
   });
-
-  final ThreadActivityView activity;
-  final List<ThreadActivityContentPart> reasoning;
-  final List<ThreadActivityContentPart> response;
-  final List<ThreadActivityToolDetail> tools;
-}
-
-/// 请求的身份已不再是当前活动；客户端丢弃迟到的展开结果。
-final class SupersededThreadActivityDetail extends ThreadActivityDetail {
-  const SupersededThreadActivityDetail({
-    required this.activity,
-    required this.requestedActivityId,
-  });
-
-  final ThreadActivityView activity;
-  final String requestedActivityId;
-}
-
-/// 活动所属 Thread 已不再驻留 / 活动已结束。
-final class EndedThreadActivityDetail extends ThreadActivityDetail {
-  const EndedThreadActivityDetail({
-    required this.threadId,
-    required this.activityId,
-  });
-
-  final String threadId;
-  final String activityId;
+  final String partId;
+  final String text;
 }

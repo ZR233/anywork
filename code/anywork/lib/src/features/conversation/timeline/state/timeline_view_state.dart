@@ -18,6 +18,5 @@ abstract class TimelineSessionViewState with _$TimelineSessionViewState {
     @Default(false) bool isLoadingOlder,
     Object? olderError,
     @Default(false) bool hasNewOutput,
-    @Default(false) bool isPreparingLive,
   }) = _TimelineSessionViewState;
 }

@@ -1314,7 +1314,14 @@ class WaitEventsJourney {
   bool _timelineItemIsVisible(TimelineItemObservation item) {
     return switch (item.kind) {
       'inference' || 'file' => false,
-      'turn' => item.terminal && item.text.trim().isNotEmpty,
+      'turn' =>
+        const {
+              'completed',
+              'failed',
+              'cancelled',
+              'budgetLimited',
+            }.contains(item.status) &&
+            item.text.trim().isNotEmpty,
       _ => true,
     };
   }

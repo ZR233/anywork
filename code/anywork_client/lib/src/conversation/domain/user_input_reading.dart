@@ -3,7 +3,6 @@ import 'dart:convert';
 import '../../../models.dart';
 
 const int _maxImageCardCaptionRunes = 240;
-const String _planSubmitToolName = 'plan_submit';
 
 String? _completeKnownToolStringArgument(
   ConversationItem item, {
@@ -63,56 +62,25 @@ extension ConversationUserInputReading on ConversationItem {
       )?.text;
 
   PlanConfirmationReceiptView? get planReceipt {
-    final tool = descriptor;
-    if (tool is! ConversationToolDescriptor ||
-        tool.invocation.name != _planSubmitToolName) {
-      return null;
-    }
-    final input = tool.userInput;
-    if (input == null ||
-        input.questions.length != 1 ||
-        input.questions.single.id != agentSessionPlanConfirmationQuestionId)
-      return null;
-    final question = input.questions.single;
-    final answer = switch (input.state) {
-      ConversationUserInputResolved(:final answers) =>
-        answers.where((value) => value.questionId == question.id).firstOrNull,
-      _ => null,
-    };
-    final values = <String>[
-      if (answer != null && !answer.redacted && !question.isSecret)
-        for (var index = 0; index < answer.answerCount; index++)
-          if (userInputText(0, ThreadUserInputAnswerFieldPartView(index))
-              case final text?)
-            text,
-    ];
-    final decision = switch (input.state) {
-      ConversationUserInputPending() => PlanConfirmationDecisionView.pending,
-      ConversationUserInputCancelled() =>
+    final plan = descriptor;
+    if (plan is! ConversationPlanDescriptor) return null;
+    final document = fieldFor(const ThreadPlanDocumentFieldView())?.text ?? '';
+    final feedback = fieldFor(const ThreadPlanFeedbackFieldView())?.text;
+    final decision = switch (plan.decision) {
+      ConversationPlanDecision.approved =>
+        PlanConfirmationDecisionView.approved,
+      ConversationPlanDecision.revisionRequested =>
+        PlanConfirmationDecisionView.revisionRequested,
+      ConversationPlanDecision.cancelled =>
         PlanConfirmationDecisionView.cancelled,
-      ConversationUserInputResolved() =>
-        values.contains(agentSessionPlanApproveAnswer)
-            ? PlanConfirmationDecisionView.approved
-            : values.contains(agentSessionPlanReviseAnswer)
-            ? PlanConfirmationDecisionView.revisionRequested
-            : PlanConfirmationDecisionView.resolved,
+      ConversationPlanDecision.resolved =>
+        PlanConfirmationDecisionView.resolved,
     };
     return PlanConfirmationReceiptView(
-      interactionId: input.interactionId,
-      title: planDocumentTitle(
-        userInputText(0, const ThreadUserInputQuestionFieldPartView()) ?? '',
-        fallback:
-            userInputText(0, const ThreadUserInputHeaderFieldPartView()) ?? '',
-      ),
+      interactionId: plan.interactionId,
+      title: planDocumentTitle(document, fallback: ''),
       decision: decision,
-      feedback: decision == PlanConfirmationDecisionView.revisionRequested
-          ? values.where(
-              (value) =>
-                  value != agentSessionPlanApproveAnswer &&
-                  value != agentSessionPlanReviseAnswer &&
-                  value.trim().isNotEmpty,
-            )
-          : const [],
+      feedback: feedback == null ? const [] : [feedback],
     );
   }
 }

@@ -5,15 +5,17 @@ import 'support/timeline_transport.dart';
 
 void main() {
   test(
-    'wait readiness is typed and not guessed from tool result text',
+    'completed wait preserves typed readiness independently of opaque output',
     () async {
       final fixture = ConversationFixture();
-      final content = fixture.session().content;
+      final feed = await fixture.open();
       final item = ConversationItem(
-        header: timelineItem(1).header,
-        revision: 1,
-        saved: false,
-        lifecycle: ConversationLifecycle.terminal,
+        header: const ConversationItemHeader(
+          id: 'wait',
+          threadId: 'thread',
+          appendSeq: 2,
+        ),
+        source: const ConversationContentSource(),
         descriptor: ConversationToolDescriptor(
           invocation: const ConversationToolInvocation(
             toolCallId: 'wait-call',
@@ -21,11 +23,11 @@ void main() {
           ),
           state: ConversationToolSucceeded(
             completedAt: DateTime.utc(2026),
-            output: const ConversationToolOutputDescriptor(attachments: []),
+            output: ConversationToolOutputDescriptor(attachments: const []),
           ),
-          wait: const ThreadWaitPresentationView(
+          wait: ThreadWaitPresentationView(
             intent: ThreadWaitEventsIntentView(
-              targets: [
+              targets: const [
                 ThreadWaitTargetView(
                   taskId: 'task:exec',
                   summary: 'still running',
@@ -46,60 +48,94 @@ void main() {
           ),
         ],
       );
-      final merged = content.mergeItem(item, item);
-      final descriptor = merged.descriptor as ConversationToolDescriptor;
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: ConversationBatch(
+            subscriptionId: 'sub',
+            timelineEpoch: 'epoch',
+            fromSeq: 1,
+            throughSeq: 2,
+            items: [item],
+          ),
+        ),
+      );
+      final delivered =
+          (fixture.consumers['thread']!.frames.last
+                  as ConversationCompletedBatchFrame)
+              .batch
+              .items
+              .single;
+      final descriptor = delivered.descriptor as ConversationToolDescriptor;
       expect(descriptor.wait!.messagesReady, isTrue);
       expect(descriptor.wait!.state, ThreadWaitStateView.ready);
-      final intent = descriptor.wait!.intent as ThreadWaitEventsIntentView;
-      expect(intent.targets.single.status, ThreadWaitTargetStatusView.running);
       expect(
-        merged.fieldFor(const ThreadToolResultFieldView())!.text,
+        (descriptor.wait!.intent as ThreadWaitEventsIntentView)
+            .targets
+            .single
+            .status,
+        ThreadWaitTargetStatusView.running,
+      );
+      expect(
+        delivered.fieldFor(const ThreadToolResultFieldView())!.text,
         '{opaque tool result}',
       );
-      await fixture.close();
+      expect((await fixture.close()).complete, isTrue);
     },
   );
 
-  test('timer and cancelled waits retain original typed state across saved acknowledgement', () async {
-    final fixture = ConversationFixture();
-    final content = fixture.session().content;
-    final item = ConversationItem(
-      header: timelineItem(1).header,
-      revision: 1,
-      descriptor: const ConversationToolDescriptor(
-        invocation: ConversationToolInvocation(
-          toolCallId: 'sleep-call',
-          name: 'sleep',
+  test(
+    'cancelled timer wait preserves its typed intent and terminal outcome',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      final item = ConversationItem(
+        header: const ConversationItemHeader(
+          id: 'sleep',
+          threadId: 'thread',
+          appendSeq: 2,
         ),
-        state: ConversationToolRunning(),
-        wait: ThreadWaitPresentationView(
-          intent: ThreadWaitTimerIntentView(durationMs: 10),
-          state: ThreadWaitStateView.cancelled,
+        source: const ConversationContentSource(),
+        descriptor: ConversationToolDescriptor(
+          invocation: const ConversationToolInvocation(
+            toolCallId: 'sleep-call',
+            name: 'sleep',
+          ),
+          state: ConversationToolCancelled(
+            cancelledAt: DateTime.utc(2026),
+            reason: 'cancelled',
+          ),
+          wait: const ThreadWaitPresentationView(
+            intent: ThreadWaitTimerIntentView(durationMs: 10),
+            state: ThreadWaitStateView.cancelled,
+          ),
         ),
-      ),
-      saved: false,
-      lifecycle: ConversationLifecycle.terminal,
-      fields: const [],
-    );
-    final next = content.reduceItem(
-      item,
-      const ConversationUpdateItem(
-        itemId: 'item',
-        expectedRevision: 1,
-        revision: 1,
-        saved: true,
-        lifecycle: ConversationLifecycle.terminal,
-        fields: [],
-      ),
-    );
-    final descriptor = next.descriptor as ConversationToolDescriptor;
-    expect(descriptor.wait!.state, ThreadWaitStateView.cancelled);
-    expect(
-      (descriptor.wait!.intent as ThreadWaitTimerIntentView).durationMs,
-      10,
-    );
-    expect(next.saved, isTrue);
-    expect(descriptor.state, isA<ConversationToolRunning>());
-    await fixture.close();
-  });
+        fields: const [],
+      );
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: ConversationBatch(
+            subscriptionId: 'sub',
+            timelineEpoch: 'epoch',
+            fromSeq: 1,
+            throughSeq: 2,
+            items: [item],
+          ),
+        ),
+      );
+      final delivered =
+          (fixture.consumers['thread']!.frames.last
+                  as ConversationCompletedBatchFrame)
+              .batch
+              .items
+              .single;
+      final descriptor = delivered.descriptor as ConversationToolDescriptor;
+      expect(descriptor.wait!.state, ThreadWaitStateView.cancelled);
+      expect(
+        (descriptor.wait!.intent as ThreadWaitTimerIntentView).durationMs,
+        10,
+      );
+      expect(descriptor.state, isA<ConversationToolCancelled>());
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
 }

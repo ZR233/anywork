@@ -79,7 +79,10 @@ final class _DraftTransport extends AccountsTestTransport {
   bool removeSucceeds = true;
   late _DraftConnection window;
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     feedOpens++;
     return window = _DraftConnection(
       threadId: threadId,
@@ -288,16 +291,18 @@ final class _DraftConnection extends ScriptedConversationFeed {
          initial:
              initial ?? baseline(1, subscriptionId: 'draft', items: const []),
        );
-  int _version = 1;
-  Future<void> emit(ConversationChange change) async {
-    final from = _version++;
+  int _sequence = 1;
+  Future<void> emitItem(ConversationItem item) async {
+    final from = _sequence;
+    _sequence = item.header.appendSeq;
     await deliver(
       ConversationUpdateEvent(
-        update: patch(
-          from,
-          _version,
+        update: ConversationBatch(
           subscriptionId: 'draft',
-          changes: [change],
+          timelineEpoch: 'epoch',
+          fromSeq: from,
+          throughSeq: _sequence,
+          items: [item],
         ),
       ),
     );
@@ -397,6 +402,7 @@ Future<AnyworkClient> _client(
   ResourceBudget? budget,
   Future<String?> Function(Uint8List)? stage,
   Future<void> Function(String)? cleanup,
+  TestCompletionConsumer? completionConsumer,
 }) async {
   final resourcesBudget = budget ?? ResourceBudget();
   final coordinator = SettingsWriteCoordinator();
@@ -473,6 +479,10 @@ Future<AnyworkClient> _client(
     domains.acceptFrame(frame);
   }
   client.selection.selectProject(_project.id);
+  client.conversations
+      .session('thread')
+      .content
+      .attachConsumer(completionConsumer ?? TestCompletionConsumer());
   client.conversations.setVisibleThread('thread');
   await scriptedFeed('thread');
   return client;
@@ -491,32 +501,34 @@ ConversationItem _inputTurn(
   StudioTurnState state, {
   String threadId = 'thread',
   String itemId = 'turn-item',
-  bool saved = false,
-  int revision = 1,
+  String turnId = 'turn',
+  int appendSeq = 2,
 }) => ConversationItem(
   header: ConversationItemHeader(
     id: itemId,
     threadId: threadId,
-    turnId: 'turn',
-    ordinal: 1,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    turnId: turnId,
+    appendSeq: appendSeq,
   ),
-  revision: revision,
+  source: const ConversationContentSource(),
   descriptor: ConversationTurnDescriptor(
-    ThreadTurnItemStateView(state, inputId: inputId),
+    inputId: inputId,
+    outcome: switch (state) {
+      CompletedStudioTurnState() => ConversationTurnCompleted(state),
+      FailedStudioTurnState() => ConversationTurnFailed(state),
+      CancelledStudioTurnState() => ConversationTurnCancelled(state),
+      BudgetLimitedStudioTurnState() => ConversationTurnBudgetLimited(state),
+      QueuedStudioTurnState() || RunningStudioTurnState() =>
+        throw ArgumentError('Only a terminal Turn is a completed item'),
+    },
   ),
-  saved: saved,
-  lifecycle: state.isTerminal
-      ? ConversationLifecycle.terminal
-      : ConversationLifecycle.streaming,
   fields: const [],
 );
 
 void main() {
   for (final evictBeforeReceipt in [false, true]) {
     test(
-      'pre-dispatch input evidence survives unrelated patches and tail eviction=$evictBeforeReceipt',
+      'pre-dispatch input evidence survives unrelated completed batches=$evictBeforeReceipt',
       () async {
         final transport = _DraftTransport();
         final client = await _client(transport);
@@ -533,63 +545,41 @@ void main() {
           client.budget.used(ResourceKind.observer),
           baselineObservers + 1,
         );
-        await transport.window.emit(
-          ConversationAdd(
-            _inputTurn(
-              input.inputId,
-              const CompletedStudioTurnState(
-                startedAt: 1,
-                completedAt: 2,
-                completion: StudioTurnCompletion.normal,
+        await transport.window.emitItem(
+          _inputTurn(
+            input.inputId,
+            const CompletedStudioTurnState(
+              startedAt: 1,
+              completedAt: 2,
+              completion: StudioTurnCompletion.normal,
+            ),
+          ),
+        );
+        await client.conversations
+            .session('thread')
+            .deliverWorkspace(_workspace(revision: 2));
+        await client.conversations
+            .session('thread')
+            .deliverNotification(
+              const ThreadNotificationFrame(
+                threadId: 'thread',
+                revision: 3,
+                baseRevision: 2,
+                epoch: 1,
+                update: ThreadStorageUpdate(
+                  storage: ThreadStorageStateView(durableSequence: 7),
+                ),
               ),
-            ),
-          ),
-        );
-        // Descriptor is deliberately omitted: the conversation reducer supplies
-        // input identity and typed status from its already reduced current item.
-        await transport.window.emit(
-          ConversationUpdateItem(
-            itemId: 'turn-item',
-            expectedRevision: 1,
-            revision: 1,
-            saved: true,
-            lifecycle: ConversationLifecycle.terminal,
-            header: ConversationItemHeader(
-              id: 'turn-item',
-              threadId: 'thread',
-              turnId: 'rebound-turn',
-              ordinal: 1,
-              createdAt: DateTime.utc(2026),
-              updatedAt: DateTime.utc(2026, 2),
-            ),
-            fields: const [],
-          ),
-        );
+            );
         if (evictBeforeReceipt) {
           for (var index = 0; index < 101; index++) {
-            await transport.window.emit(
-              ConversationAdd(
-                timelineItem(index + 2, id: 'tail-$index', ordinal: index + 2),
-              ),
+            await transport.window.emitItem(
+              timelineItem(index + 3, id: 'tail-$index'),
             );
           }
         }
-        await transport.window.emit(
-          ConversationAdd(
-            timelineItem(200, id: 'unrelated-last', ordinal: 200),
-          ),
-        );
-        expect(
-          (client.conversations.session('thread').content.lastDeliveredFrame!
-                  as ConversationPatchFrame)
-              .patch
-              .changes
-              .single,
-          isA<ConversationAdd>().having(
-            (change) => change.item.id,
-            'unrelated final frame',
-            'unrelated-last',
-          ),
+        await transport.window.emitItem(
+          timelineItem(200, id: 'unrelated-last'),
         );
         expect(operation.state.value.receipt, isNull);
         expect(
@@ -647,13 +637,18 @@ void main() {
             completion: StudioTurnCompletion.normal,
           ),
           threadId: id,
-          saved: true,
+          appendSeq: 1,
         ),
       ],
     );
     final selected = client.selection.source.watch((state) {
-      if (state.selectedThreadId == 'new-thread')
+      if (state.selectedThreadId == 'new-thread') {
+        client.conversations
+            .session('new-thread')
+            .content
+            .attachConsumer(TestCompletionConsumer());
         client.conversations.setVisibleThread('new-thread');
+      }
     });
     transport.startReply.complete(
       StartNewThreadResult(
@@ -667,6 +662,21 @@ void main() {
     );
     final feed = await scriptedFeed('new-thread');
     await feed.acknowledged(1);
+    final newSession = client.conversations.session('new-thread');
+    await newSession.deliverWorkspace(
+      _workspace(thread: _thread('new-thread')),
+    );
+    await newSession.deliverNotification(
+      const ThreadNotificationFrame(
+        threadId: 'new-thread',
+        revision: 2,
+        baseRevision: 1,
+        epoch: 1,
+        update: ThreadStorageUpdate(
+          storage: ThreadStorageStateView(durableSequence: 8),
+        ),
+      ),
+    );
     expect(client.selection.state.selectedThreadId, 'new-thread');
     expect(
       operation.state.value.receipt,
@@ -679,6 +689,11 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
+    // The visible root page keeps one child-interactions observer share;
+    // releasing the page withdraws it before the budget conservation check.
+    client.conversations.setVisibleThread(null);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
     expect(client.budget.used(ResourceKind.observer), initialObservers);
     selected.cancel();
     await _close(client, transport);
@@ -695,16 +710,13 @@ void main() {
     final operation = client.mutations.lookup(
       OperationId(request.input.inputId),
     )!;
-    await transport.window.emit(
-      ConversationAdd(
-        _inputTurn(
-          request.input.inputId,
-          const CompletedStudioTurnState(
-            startedAt: 1,
-            completedAt: 2,
-            completion: StudioTurnCompletion.normal,
-          ),
-          saved: true,
+    await transport.window.emitItem(
+      _inputTurn(
+        request.input.inputId,
+        const CompletedStudioTurnState(
+          startedAt: 1,
+          completedAt: 2,
+          completion: StudioTurnCompletion.normal,
         ),
       ),
     );
@@ -746,17 +758,19 @@ void main() {
     final baselineObservers = client.budget.used(ResourceKind.observer);
     final submitting = owner.submit();
     final input = await transport.promptEntered.future;
-    for (final id in ['turn-item', 'conflicting-turn-item']) {
-      await transport.window.emit(
-        ConversationAdd(
-          _inputTurn(
-            input.inputId,
-            const RunningStudioTurnState(
-              startedAt: 1,
-              activity: StudioTurnActivity.thinking,
-            ),
-            itemId: id,
+    var seq = 1;
+    for (final id in ['turn', 'conflicting-turn']) {
+      await transport.window.emitItem(
+        _inputTurn(
+          input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
           ),
+          itemId: 'item-$id',
+          turnId: id,
+          appendSeq: ++seq,
         ),
       );
     }
@@ -1136,9 +1150,6 @@ void main() {
     );
     // Frame arrives before the command receipt. Atomic watchLatest must see it.
     await session.deliverWorkspace(_workspace(revision: 2, turn: queued));
-    await transport.window.emit(
-      ConversationAdd(_inputTurn(input.inputId, queued.state)),
-    );
     transport.promptReply.complete(
       SubmitPromptReceipt(
         threadId: 'thread',
@@ -1184,19 +1195,6 @@ void main() {
             activity: StudioTurnActivity.thinking,
           ),
           updatedAt: DateTime.utc(2026),
-        ),
-      ),
-    );
-    await transport.window.emit(
-      ConversationAdd(
-        _inputTurn(
-          input.inputId,
-          const CompletedStudioTurnState(
-            startedAt: 1,
-            completedAt: 2,
-            completion: StudioTurnCompletion.normal,
-          ),
-          revision: 2,
         ),
       ),
     );
@@ -1821,111 +1819,114 @@ void main() {
     await _close(client, transport);
   });
 
-  test('actual accepted input waits for its Chat Turn saved flag after execution completes', () async {
-    final transport = _DraftTransport();
-    final client = await _client(transport);
-    final session = client.conversations.session('thread');
-    await session.deliverWorkspace(_workspace());
-    await session.content.ready;
-    final baselineObservers = client.budget.used(ResourceKind.observer);
-    final owner = client.drafts.composer('thread');
-    owner.updateDraft('durable input');
-    final submission = owner.submit();
-    final input = await transport.promptEntered.future;
-    await session.deliverWorkspace(
-      _workspace(
-        revision: 2,
-        turn: StudioTurnView(
-          inputId: input.inputId,
-          turnId: 'turn',
+  test(
+    'completion is not durability and storage watermark advances independently',
+    () async {
+      final transport = _DraftTransport();
+      final consumer = TestCompletionConsumer();
+      final client = await _client(transport, completionConsumer: consumer);
+      final session = client.conversations.session('thread');
+      await session.deliverWorkspace(_workspace());
+      await session.content.ready;
+      final owner = client.drafts.composer('thread');
+      owner.updateDraft('durable input');
+      final submission = owner.submit();
+      final input = await transport.promptEntered.future;
+      await session.deliverWorkspace(
+        _workspace(
+          revision: 2,
+          turn: StudioTurnView(
+            inputId: input.inputId,
+            turnId: 'turn',
+            threadId: 'thread',
+            revision: 1,
+            state: const RunningStudioTurnState(
+              startedAt: 1,
+              activity: StudioTurnActivity.thinking,
+            ),
+            updatedAt: DateTime.utc(2026),
+          ),
+        ),
+      );
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
           threadId: 'thread',
-          revision: 1,
-          state: const RunningStudioTurnState(
-            startedAt: 1,
-            activity: StudioTurnActivity.thinking,
-          ),
-          updatedAt: DateTime.utc(2026),
-        ),
-      ),
-    );
-    await transport.window.emit(
-      ConversationAdd(
-        _inputTurn(
-          input.inputId,
-          const RunningStudioTurnState(
-            startedAt: 1,
-            activity: StudioTurnActivity.thinking,
-          ),
-        ),
-      ),
-    );
-    transport.promptReply.complete(
-      SubmitPromptReceipt(
-        threadId: 'thread',
-        inputId: input.inputId,
-        cursor: 7,
-      ),
-    );
-    await submission;
-    final operation = client.mutations.lookup(OperationId(input.inputId))!;
-    expect(operation.state.value.observed, isTrue);
-    expect(operation.state.value.effective, isTrue);
-    expect(operation.state.value.durable, isFalse);
-    expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
-
-    final terminal = ConversationItem(
-      header: ConversationItemHeader(
-        id: 'turn-item',
-        threadId: 'thread',
-        turnId: 'turn',
-        ordinal: 1,
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
-      ),
-      revision: 2,
-      saved: false,
-      lifecycle: ConversationLifecycle.terminal,
-      descriptor: ConversationTurnDescriptor(
-        ThreadTurnItemStateView(
-          const CompletedStudioTurnState(
-            startedAt: 1,
-            completedAt: 2,
-            completion: StudioTurnCompletion.normal,
-          ),
           inputId: input.inputId,
+          cursor: 7,
         ),
-      ),
-      fields: const [],
-    );
-    await transport.window.emit(ConversationAdd(terminal));
-    await session.content.state.waitFor(
-      (state) => state.snapshot is ConversationPatchFrame,
-    );
-    expect(
-      operation.state.value.durable,
-      isFalse,
-      reason: 'A terminal Turn that has not been saved is not durable',
-    );
-    expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
-    await transport.window.emit(
-      const ConversationUpdateItem(
-        itemId: 'turn-item',
-        expectedRevision: 2,
-        revision: 2,
-        saved: true,
-        lifecycle: ConversationLifecycle.terminal,
-        fields: [],
-      ),
-    );
-    await session.content.state.waitFor(
-      (state) =>
-          state.snapshot is ConversationPatchFrame &&
-          (state.snapshot! as ConversationPatchFrame).patch.to == 4,
-    );
-    expect(operation.state.value.durable, isTrue);
-    expect(client.budget.used(ResourceKind.observer), baselineObservers);
-    await _close(client, transport);
-  });
+      );
+      await submission;
+      final operation = client.mutations.lookup(OperationId(input.inputId))!;
+      expect(operation.state.value.observed, isTrue);
+      expect(operation.state.value.effective, isTrue);
+      expect(operation.state.value.durable, isFalse);
+      final terminal = ConversationItem(
+        header: ConversationItemHeader(
+          id: 'turn-item',
+          threadId: 'thread',
+          turnId: 'turn',
+          appendSeq: 2,
+        ),
+        source: const ConversationContentSource(),
+        descriptor: ConversationTurnDescriptor(
+          inputId: input.inputId,
+          outcome: const ConversationTurnCompleted(
+            CompletedStudioTurnState(
+              startedAt: 1,
+              completedAt: 2,
+              completion: StudioTurnCompletion.normal,
+            ),
+          ),
+        ),
+        fields: const [],
+      );
+      await transport.window.deliver(
+        ConversationUpdateEvent(
+          update: ConversationBatch(
+            subscriptionId: 'draft',
+            timelineEpoch: 'epoch',
+            fromSeq: 1,
+            throughSeq: 2,
+            items: [terminal],
+          ),
+        ),
+      );
+      expect(consumer.frames.last, isA<ConversationCompletedBatchFrame>());
+      expect(
+        operation.state.value.durable,
+        isFalse,
+        reason: 'A completion is not proof of storage durability',
+      );
+      final count = consumer.frames.length;
+      await session.deliverNotification(
+        const ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 3,
+          baseRevision: 2,
+          epoch: 1,
+          update: ThreadStorageUpdate(
+            storage: ThreadStorageStateView(durableSequence: 6),
+          ),
+        ),
+      );
+      expect(operation.state.value.durable, isFalse);
+      expect(consumer.frames, hasLength(count));
+      await session.deliverNotification(
+        const ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 4,
+          baseRevision: 3,
+          epoch: 1,
+          update: ThreadStorageUpdate(
+            storage: ThreadStorageStateView(durableSequence: 7),
+          ),
+        ),
+      );
+      expect(operation.state.value.durable, isTrue);
+      expect(consumer.frames, hasLength(count));
+      await _close(client, transport);
+    },
+  );
 
   test('pre-dispatch input observer budget failure never sends and preserves draft references', () async {
     final transport = _DraftTransport();

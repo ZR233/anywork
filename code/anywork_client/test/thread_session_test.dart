@@ -171,12 +171,23 @@ void main() {
     expect(session.state.runtime!.cacheUsage.sampleCount, 2);
     expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
-      (session.content.lastDeliveredFrame as ConversationBaselineFrame)
+      (fixture.consumers['thread']!.frames.single as ConversationBaselineFrame)
           .baseline
-          .version,
+          .completedCursor
+          .appendSeq,
       100,
     );
-    await feed.deliver(ConversationUpdateEvent(update: patch(100, 101)));
+    await feed.deliver(
+      ConversationUpdateEvent(
+        update: ConversationBatch(
+          subscriptionId: feed.subscriptionId,
+          timelineEpoch: 'epoch',
+          fromSeq: 100,
+          throughSeq: 101,
+          items: [timelineItem(101, id: 'next')],
+        ),
+      ),
+    );
     expect(session.state.revision, 2);
     expect(feed.acknowledgements, [1, 2, 3, 4]);
     await feed.deliver(
@@ -247,8 +258,10 @@ void main() {
     );
     expect((await resync).revision, 3);
     await second.deliver(
-      ConversationBaselineEvent(
-        baseline: baseline(7, subscriptionId: 'second'),
+      ConversationUpdateEvent(
+        update: ConversationReset(
+          baseline(7, subscriptionId: 'second', timelineEpoch: 'new'),
+        ),
       ),
     );
     await first.closeCompleted.future;
@@ -296,8 +309,10 @@ void main() {
     );
     expect((await resync!).revision, 3);
     await second.deliver(
-      ConversationBaselineEvent(
-        baseline: baseline(7, subscriptionId: 'snapshot-resync'),
+      ConversationUpdateEvent(
+        update: ConversationReset(
+          baseline(7, subscriptionId: 'snapshot-resync', timelineEpoch: 'new'),
+        ),
       ),
     );
     observation.cancel();
@@ -446,26 +461,32 @@ void main() {
     fixture.repository.setVisibleThread(null);
     await first.closeCompleted.future;
     expect(first.closeCalls, 1);
-    expect(session.content.lastDeliveredFrame, isNull);
+    expect(session.isActive, isFalse);
 
     fixture.repository.setVisibleThread('thread');
     await fixture.transport.opened(1);
     final second = TestConversationFeed(subscriptionId: 'second');
     fixture.transport.opens[1].result.complete(second);
+    expect(
+      fixture.transport.resumes.last,
+      const ConversationCompletionCursor(timelineEpoch: 'epoch', appendSeq: 1),
+    );
     await second.deliver(
-      ConversationBaselineEvent(
-        baseline: baseline(1, subscriptionId: 'second'),
+      ConversationUpdateEvent(
+        update: ConversationBatch(
+          subscriptionId: 'second',
+          timelineEpoch: 'epoch',
+          fromSeq: 1,
+          throughSeq: 2,
+          items: [timelineItem(2, id: 'next')],
+        ),
       ),
     );
-    final reopened = await session.content.ready;
-    expect(reopened.baseline.subscriptionId, 'second');
-    expect(reopened.baseline.version, 1);
-    // 新 attempt 的补丁必须从它自己的基线开始。
-    await second.deliver(
-      ConversationUpdateEvent(update: patch(1, 2, subscriptionId: 'second')),
-    );
-    final frame = session.content.lastDeliveredFrame as ConversationPatchFrame;
-    expect(frame.patch.from, 1);
+    await session.content.ready;
+    final frame =
+        fixture.consumers['thread']!.frames.last
+            as ConversationCompletedBatchFrame;
+    expect(frame.batch.fromSeq, 1);
     await fixture.close();
   });
 
@@ -476,8 +497,15 @@ void main() {
       // 没有 Thread 快照时内容连接同样建立：正文与状态流互相独立。
       final feed = await fixture.open(initial: baseline(2));
       final session = fixture.session();
-      final ready = await session.content.ready;
-      expect(ready.baseline.version, 2);
+      await session.content.ready;
+      expect(
+        (fixture.consumers['thread']!.frames.single
+                as ConversationBaselineFrame)
+            .baseline
+            .completedCursor
+            .appendSeq,
+        2,
+      );
       expect(session.state.hasSnapshot, isFalse);
       expect(session.state.workspace, isNull);
       await fixture.close();
@@ -492,7 +520,7 @@ void main() {
       final fixture = ConversationFixture(budget: budget);
       final session = fixture.repository.session('thread');
       final observation = session.content.state.watch((state) {
-        if (state is ChatOpening<ConversationContentFrame>) {
+        if (state is ChatOpening<bool>) {
           fixture.repository.setVisibleThread(null);
         }
       });
@@ -501,7 +529,7 @@ void main() {
       // 没有 ACK 与任何后继帧；isActive 立即为 false。
       expect(fixture.transport.opens, isEmpty);
       expect(session.isActive, isFalse);
-      expect(session.content.lastDeliveredFrame, isNull);
+      expect(session.isActive, isFalse);
       await fixture.close();
       expect(budget.usage, isEmpty);
       observation.cancel();
@@ -513,7 +541,7 @@ void main() {
     final fixture = ConversationFixture(budget: budget);
     final session = fixture.repository.session('thread');
     final observation = session.content.state.watch((state) {
-      if (state is ChatOpening<ConversationContentFrame>) {
+      if (state is ChatOpening<bool>) {
         unawaited(fixture.client.close());
       }
     });
@@ -528,9 +556,11 @@ void main() {
     final budget = ResourceBudget();
     final fixture = ConversationFixture(budget: budget);
     final session = fixture.repository.session('thread');
+    final consumer = TestCompletionConsumer();
+    session.content.attachConsumer(consumer);
     var phase = 0;
     final observation = session.content.state.watch((state) {
-      if (state is ChatOpening<ConversationContentFrame> && phase == 0) {
+      if (state is ChatOpening<bool> && phase == 0) {
         phase = 1;
         fixture.repository.setVisibleThread('other');
         fixture.repository.setVisibleThread('thread');
@@ -553,9 +583,10 @@ void main() {
     fixture.transport.opens[0].result.complete(feed);
     await feed.deliver(ConversationBaselineEvent(baseline: baseline(9)));
     expect(
-      (session.content.lastDeliveredFrame! as ConversationBaselineFrame)
+      (consumer.frames.single as ConversationBaselineFrame)
           .baseline
-          .version,
+          .completedCursor
+          .appendSeq,
       9,
     );
     observation.cancel();
@@ -566,9 +597,11 @@ void main() {
   test('synchronous same-target reentry during ChatOpening does not retire or reopen', () async {
     final fixture = ConversationFixture();
     final session = fixture.repository.session('thread');
+    final consumer = TestCompletionConsumer();
+    session.content.attachConsumer(consumer);
     var openings = 0;
     final observation = session.content.state.watch((state) {
-      if (state is ChatOpening<ConversationContentFrame>) {
+      if (state is ChatOpening<bool>) {
         openings++;
         fixture.repository.setVisibleThread('thread');
       }
@@ -581,9 +614,10 @@ void main() {
     fixture.transport.opens[0].result.complete(feed);
     await feed.deliver(ConversationBaselineEvent(baseline: baseline(4)));
     expect(
-      (session.content.lastDeliveredFrame! as ConversationBaselineFrame)
+      (consumer.frames.single as ConversationBaselineFrame)
           .baseline
-          .version,
+          .completedCursor
+          .appendSeq,
       4,
     );
     observation.cancel();

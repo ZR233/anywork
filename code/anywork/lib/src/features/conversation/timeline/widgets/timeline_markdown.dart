@@ -6,25 +6,19 @@ import '../../../../shared/studio_chrome.dart';
 import 'timeline_plain_text.dart';
 
 /// Shared body renderer for completed and streaming text. Only syntax-free
-/// messages use bounded Flutter text chunks; Markdown uses the public builder
+/// messages use standard Flutter Text; Markdown uses the public builder
 /// with explicit media actions and the existing soft-wrapping code/table
 /// components. Never repair, trim or insert characters into canonical text.
 ///
-/// The autolink recognizer also claims bare emails (`a@b`), `mailto:`/`xmpp:`,
-/// `<scheme:...>` and case-insensitive `www.` hosts. Route all candidates here
-/// so only the host's safe-link predicate can give them a gesture. A stray
-/// colon or at-sign taking the Markdown path is acceptable; mutating canonical
-/// text is not.
+/// Newlines, indentation, colons and bare emails do not opt ordinary text into
+/// Markdown: its native Text selection preserves the complete source. Markdown
+/// and autolink candidates use the renderer's safe-link predicate for gestures.
 bool timelineNeedsSafeMarkdown(String text) =>
-    text.contains('\n') ||
-    text.contains('\r') ||
     // A leading dash/plus may start a list or a thematic break (`---`).
     // Route candidates, not a second Markdown parser: GptMarkdown decides.
-    RegExp(r'^ {0,3}(?:[-+]|\d+[.)]\s+)').hasMatch(text) ||
+    RegExp(r'^ {0,3}(?:[-+]|\d+[.)]\s+)', multiLine: true).hasMatch(text) ||
     RegExp(r'[\\`*_\[\]()#>~!|]').hasMatch(text) ||
     text.contains('://') ||
-    text.contains('@') ||
-    text.contains(':') ||
     RegExp(r'www\.', caseSensitive: false).hasMatch(text);
 
 class TimelineMarkdown extends StatelessWidget {
@@ -37,7 +31,7 @@ class TimelineMarkdown extends StatelessWidget {
     required this.imageBuilder,
     this.style,
     this.maxLines,
-    this.overflow = TextOverflow.clip,
+    this.overflow,
   });
   final String id;
   final String text;
@@ -46,7 +40,7 @@ class TimelineMarkdown extends StatelessWidget {
   final Widget Function(BuildContext, String) imageBuilder;
   final TextStyle? style;
   final int? maxLines;
-  final TextOverflow overflow;
+  final TextOverflow? overflow;
 
   @override
   Widget build(BuildContext context) {

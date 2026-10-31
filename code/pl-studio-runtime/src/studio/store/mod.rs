@@ -71,7 +71,7 @@ impl StudioStore {
         self.history_for(session.workspace_id(), thread_id).await
     }
 
-    /// Explicit Project + Thread history handle for tests and child prepare before catalog
+    /// Explicit Workspace + Thread history handle for tests and child prepare before catalog
     /// publication. Cold reads still do not create the database file.
     pub(crate) async fn history_for(
         &self,
@@ -112,7 +112,10 @@ impl StudioStore {
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(self.history_for(workspace_id, thread_id).await?);
+        let session = pl_core::chat::Session::new(
+            self.history_for(workspace_id, thread_id).await?,
+            pl_core::chat::TimelineEpoch::new(crate::studio::ids::new_id("timeline"))?,
+        );
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))

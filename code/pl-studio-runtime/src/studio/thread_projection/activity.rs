@@ -7,8 +7,8 @@
 //! 条投影，而不是第二份正文缓存，也不会在每帧回源 SQL。
 //!
 //! 摘要只读当前观察的**有界尾部**（[`ACTIVITY_SUMMARY_TAIL_BYTES`]），不按 token 物化整段正文；
-//! 完整正文（reasoning、输出正文、工具参数与流式输出）只在按活动身份读取详情时才物化，而且同样只由
-//! **当前活动自己的**驻留内存事实推导：不读会话、不做 SQL、不整 Turn 回读历史，也不新增正文缓存。
+//! 正文快照只共享当前活动自己的 `ContentBlock`；订阅者从共享来源编码增量，不物化累计全文、
+//! 不读会话或 SQL，也不从已完成内容回填当前态。
 //!
 //! `preparing` 来自 core 的**显式** [`ModelExecutionPhase`] 准备类阶段（准备上下文 / 构造请求 /
 //! 准备请求 / 准入等待），或没有更精确阶段事实时的**中性**兜底；两者都只是“此刻没有可观察到的前台
@@ -24,16 +24,16 @@ use pl_core::model::{
     ObservedPartKind,
 };
 use pl_core::thread::{
-    AttemptStatus, ModelExecutionPhase, RequestAttempt, ThreadSnapshot, TurnRecord, TurnState,
+    AttemptStatus, ExecutionPhase, ModelExecutionPhase, RequestAttempt, ThreadSnapshot, TurnRecord,
+    TurnState,
     input::InputExecution,
     interactions::InteractionState,
     permissions::PermissionState,
     task::{TaskRecord, TaskStatus},
 };
 use pl_protocol::{
-    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityContentPart,
-    ThreadActivityKind, ThreadActivityToolDetail, ThreadActivityToolEntry, ThreadActivityToolState,
-    ThreadActivityTools,
+    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
+    ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
 };
 
 /// 当前执行活动的权威小摘要；`None` 表示该 Thread 当前没有活动。
@@ -46,14 +46,30 @@ pub(in crate::studio) fn project_activity(
     state: &ThreadSnapshot,
     previous: Option<&ThreadActivity>,
 ) -> Option<ThreadActivity> {
-    let turn = active_turn(state)?;
-    let attempt = turn_attempt(state, turn.turn_id);
+    let origin = active_origin(state)?;
+    let attempt = origin.turn_id.and_then(|id| turn_attempt(state, id));
     let tasks = active_tasks(state);
-    let kind = kind(state, turn.turn_id, attempt, &tasks);
-    let tools = project_tools(state, &tasks, kind, previous);
+    let kind = if origin.execution_id.is_some()
+        && state
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.phase == ExecutionPhase::Stopping)
+    {
+        ThreadActivityKind::Stopping
+    } else {
+        origin
+            .turn_id
+            .map_or(ThreadActivityKind::Preparing, |turn_id| {
+                kind(state, turn_id, attempt, &tasks)
+            })
+    };
+    let tools = project_tools(state, &tasks, origin.turn_id, kind, previous);
     let associated = associated_attempt(attempt);
-    let (summary, summary_truncated) = summary(state, associated, kind, &tools);
-    let previous_turn = previous.filter(|prev| prev.turn_id == turn.turn_id);
+    let (summary, summary_truncated) = summary(state, associated, origin.turn_id, kind, &tools);
+    let previous_turn = previous.filter(|prev| {
+        prev.turn_id.as_deref() == origin.turn_id
+            && prev.execution_id.as_deref() == origin.execution_id
+    });
     let thinking_summary = match kind {
         ThreadActivityKind::Responding => None,
         _ => latest_thinking_summary(state, associated)
@@ -66,10 +82,11 @@ pub(in crate::studio) fn project_activity(
     let step = associated.map_or("preparing", |attempt| attempt.attempt_id.as_str());
     let body = ThreadActivity {
         thread_id: thread_id.to_owned(),
-        identity: ThreadActivity::identity(turn.turn_id, step, kind),
+        identity: ThreadActivity::identity(origin.source_id, step, kind),
         revision: 0,
-        turn_id: turn.turn_id.to_owned(),
-        input_id: turn.input_id.map(str::to_owned),
+        turn_id: origin.turn_id.map(str::to_owned),
+        execution_id: origin.execution_id.map(str::to_owned),
+        input_id: origin.input_id.map(str::to_owned),
         attempt_id: associated.map(|attempt| attempt.attempt_id.clone()),
         kind,
         summary,
@@ -93,33 +110,55 @@ pub(in crate::studio) fn project_activity(
     })
 }
 
-/// 当前活动指向的 Turn。
+/// 当前活动的真实来源；执行准备可以早于 Turn 建立。
 ///
 /// Turn 记录只保留运行中的 Turn，但**原生 `exec` 超过 1s 默认转后台**：一个已经完成的 Turn 仍可能
 /// 有正在运行的工具任务，其 Turn 记录已经离开运行集合。因此活动不能只看 `TurnState::Running`，
 /// 还要由运行中的任务事实、正在进行的打断，以及**仍在等待用户回答的交互**确定当前 Turn：否则
 /// “等待输入”会因为 Turn 记录离场而整条消失。
-struct ActiveTurn<'a> {
-    turn_id: &'a str,
+struct ActivityOrigin<'a> {
+    source_id: &'a str,
+    turn_id: Option<&'a str>,
+    execution_id: Option<&'a str>,
     input_id: Option<&'a str>,
 }
 
-fn active_turn(state: &ThreadSnapshot) -> Option<ActiveTurn<'_>> {
+fn turn_origin<'a>(
+    state: &'a ThreadSnapshot,
+    turn_id: &'a str,
+    input_id: Option<&'a str>,
+) -> ActivityOrigin<'a> {
+    let execution_id = state
+        .execution
+        .as_ref()
+        .filter(|execution| execution.turn_id.as_deref() == Some(turn_id))
+        .map(|execution| execution.id.as_str());
+    ActivityOrigin {
+        source_id: execution_id.unwrap_or(turn_id),
+        turn_id: Some(turn_id),
+        execution_id,
+        input_id,
+    }
+}
+
+fn active_origin(state: &ThreadSnapshot) -> Option<ActivityOrigin<'_>> {
     if let InputExecution::Interrupting { turn_id } = &state.input_execution {
         let input_id = state
             .turns
             .iter()
             .find(|turn| &turn.turn_id == turn_id)
             .and_then(|turn| turn.input_id.as_deref());
-        return Some(ActiveTurn {
-            turn_id: turn_id.as_str(),
-            input_id,
-        });
+        return Some(turn_origin(state, turn_id, input_id));
     }
     if let Some(turn) = running_turn(state) {
-        return Some(ActiveTurn {
-            turn_id: turn.turn_id.as_str(),
-            input_id: turn.input_id.as_deref(),
+        return Some(turn_origin(state, &turn.turn_id, turn.input_id.as_deref()));
+    }
+    if let Some(execution) = state.execution.as_ref() {
+        return Some(ActivityOrigin {
+            source_id: &execution.id,
+            turn_id: execution.turn_id.as_deref(),
+            execution_id: Some(&execution.id),
+            input_id: None,
         });
     }
     // Turn 已结束但后台任务仍在运行：以最近仍在运行的调用所属 Turn 作为当前活动。
@@ -133,10 +172,7 @@ fn active_turn(state: &ThreadSnapshot) -> Option<ActiveTurn<'_>> {
                 .then_with(|| left.call_id.cmp(&right.call_id))
         });
     if let Some(background) = background {
-        return Some(ActiveTurn {
-            turn_id: background.turn_id.as_str(),
-            input_id: None,
-        });
+        return Some(turn_origin(state, &background.turn_id, None));
     }
     // Turn 已经离开运行集合，但仍有一条等待用户回答的交互：以该交互所属 Turn 作为当前活动，
     // 否则“等待输入”会因为 Turn 记录离场而整条消失。
@@ -145,10 +181,7 @@ fn active_turn(state: &ThreadSnapshot) -> Option<ActiveTurn<'_>> {
         .values()
         .filter(|record| record.state == InteractionState::Pending)
         .max_by_key(|record| record.updated_at)?;
-    Some(ActiveTurn {
-        turn_id: pending.request.turn_id.as_str(),
-        input_id: None,
-    })
+    Some(turn_origin(state, &pending.request.turn_id, None))
 }
 
 /// 运行中的 Turn 记录；没有运行中的 Turn 就没有可读的 Turn 级事实。
@@ -183,8 +216,8 @@ fn active_tasks(state: &ThreadSnapshot) -> Vec<&TaskRecord> {
 
 /// 活动当前指向的 attempt：只有运行中或已提交的 attempt 才代表“当前步骤”。
 ///
-/// 失败/取消的 attempt 是历史的：Turn 正在为下一次尝试做准备时，活动不再指向它，避免详情按身份
-/// 读回上一次尝试的残留正文。
+/// 失败/取消的 attempt 是历史的：Turn 正在为下一次尝试做准备时，活动不再指向它。
+/// 已提交 attempt 只参与阶段与摘要判断，正文快照只共享运行中 attempt 的来源。
 fn associated_attempt(attempt: Option<&RequestAttempt>) -> Option<&RequestAttempt> {
     attempt.filter(|attempt| {
         matches!(
@@ -215,21 +248,21 @@ fn kind(
     if matches!(
         &state.input_execution,
         InputExecution::Interrupting { turn_id: id } if id.as_str() == turn_id
-    ) || active_tasks.iter().any(|task| task.cancel_requested)
+    ) || active_tasks
+        .iter()
+        .any(|task| task.turn_id == turn_id && task.cancel_requested)
     {
         return ThreadActivityKind::Stopping;
     }
     if active_tasks
         .iter()
-        .any(|task| awaiting_approval(state, task))
+        .any(|task| task.turn_id == turn_id && awaiting_approval(state, task))
     {
         return ThreadActivityKind::AwaitingApproval;
     }
-    if state
-        .interactions
-        .values()
-        .any(|record| record.state == InteractionState::Pending)
-    {
+    if state.interactions.values().any(|record| {
+        record.request.turn_id == turn_id && record.state == InteractionState::Pending
+    }) {
         return ThreadActivityKind::AwaitingInput;
     }
     if let Some(attempt) = attempt
@@ -246,10 +279,12 @@ fn kind(
     }
     // No running attempt yet, but the owner reports an explicit driver phase: the foreground is
     // that phase, and any still-running tool is a background tool.
-    if let Some(phase) = state.model_execution {
+    if let Some(phase) = state.model_execution
+        && running_turn(state).is_some_and(|turn| turn.turn_id == turn_id)
+    {
         return phase_kind(phase);
     }
-    if !active_tasks.is_empty() {
+    if active_tasks.iter().any(|task| task.turn_id == turn_id) {
         return ThreadActivityKind::RunningTool;
     }
     let Some(attempt) = attempt else {
@@ -310,10 +345,11 @@ fn tool_state(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolSt
 fn project_tools(
     state: &ThreadSnapshot,
     active_tasks: &[&TaskRecord],
+    foreground_turn: Option<&str>,
     kind: ThreadActivityKind,
     previous: Option<&ThreadActivity>,
 ) -> ThreadActivityTools {
-    let foreground = foreground_calls(state, active_tasks, kind);
+    let foreground = foreground_calls(state, active_tasks, foreground_turn, kind);
     // 启动顺序是 owner 的真实事实：任务开始时拿到自己的提交序号，所以并发工具的“最近开始”既不是
     // GUI 猜的、不是同秒时间戳或 `call_id` 排序，也不用最新输出冒充启动。只有更早的 v2 记录缺这个
     // 字段时才回落到该 Turn 的调用次序（内存事实），最后才是调用身份。
@@ -370,20 +406,21 @@ fn start_order(state: &ThreadSnapshot, task: &TaskRecord) -> (u8, u64, u64, u64)
 fn foreground_calls<'a>(
     state: &ThreadSnapshot,
     active_tasks: &[&'a TaskRecord],
+    foreground_turn: Option<&str>,
     kind: ThreadActivityKind,
 ) -> BTreeSet<&'a str> {
+    let current = || {
+        active_tasks
+            .iter()
+            .filter(move |task| Some(task.turn_id.as_str()) == foreground_turn)
+    };
     match kind {
-        ThreadActivityKind::RunningTool => active_tasks
-            .iter()
-            .map(|task| task.call_id.as_str())
-            .collect(),
-        ThreadActivityKind::AwaitingApproval => active_tasks
-            .iter()
+        ThreadActivityKind::RunningTool => current().map(|task| task.call_id.as_str()).collect(),
+        ThreadActivityKind::AwaitingApproval => current()
             .filter(|task| awaiting_approval(state, task))
             .map(|task| task.call_id.as_str())
             .collect(),
-        ThreadActivityKind::Stopping => active_tasks
-            .iter()
+        ThreadActivityKind::Stopping => current()
             .filter(|task| task.cancel_requested)
             .map(|task| task.call_id.as_str())
             .collect(),
@@ -523,6 +560,7 @@ fn tool_name_summary(tool_id: &str) -> String {
 fn summary(
     state: &ThreadSnapshot,
     attempt: Option<&RequestAttempt>,
+    foreground_turn: Option<&str>,
     kind: ThreadActivityKind,
     tools: &ThreadActivityTools,
 ) -> (String, bool) {
@@ -545,8 +583,16 @@ fn summary(
         ThreadActivityKind::RunningTool
         | ThreadActivityKind::AwaitingApproval
         | ThreadActivityKind::Stopping => tools
-            .latest_started
-            .as_ref()
+            .active
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry
+                    .task_id
+                    .as_ref()
+                    .and_then(|id| state.tasks.get(id))
+                    .is_some_and(|task| Some(task.turn_id.as_str()) == foreground_turn)
+            })
             .map_or_else(String::new, |entry| entry.summary.clone()),
         ThreadActivityKind::Preparing
         | ThreadActivityKind::Compacting
@@ -865,6 +911,7 @@ fn same_body(left: &ThreadActivity, right: &ThreadActivity) -> bool {
     left.thread_id == right.thread_id
         && left.identity == right.identity
         && left.turn_id == right.turn_id
+        && left.execution_id == right.execution_id
         && left.input_id == right.input_id
         && left.attempt_id == right.attempt_id
         && left.kind == right.kind
@@ -875,40 +922,25 @@ fn same_body(left: &ThreadActivity, right: &ThreadActivity) -> bool {
         && left.tools == right.tools
 }
 
-/// 活动详情的完整内容：reasoning / 输出正文 / 工具调用事实。
-#[derive(Debug, Default)]
-pub(in crate::studio) struct ActivityContent {
-    pub reasoning: Vec<ThreadActivityContentPart>,
-    pub response: Vec<ThreadActivityContentPart>,
-    pub tools: Vec<ThreadActivityToolDetail>,
-}
-
-/// 活动详情的驻留来源：**只保留共享句柄与小型身份**，正文在按身份读取详情时才物化。
-///
-/// 详情读取只需要活动身份，不需要再扫 Turn 或读 Session：观察任务在来源真实变化时捕获一次来源，
-/// 之后每个 token 只刷新共享观察句柄（克隆一次 `Arc`，不复制正文）与有界摘要，因此流式进展不会重建
-/// 整份详情，也不会在读取路径上物化整 Turn 的正文。
-struct ActivityDetailOwner {
+/// 当前活动的共享来源；只保留共享句柄、活动身份和实时工具元数据。
+struct ActivitySource {
     activity: ThreadActivity,
     /// 活动指向的稳定 attempt 身份；内容段身份由实时投影与 writer 共用的 `order::*` 派生，因此与
     /// canonical 条目一致。
     attempt_id: Option<String>,
     /// 该 attempt 当前观察的**共享句柄**（只追加内容块的前缀链），克隆不复制正文。
     progress: Option<ModelProgress>,
-    /// 该 attempt 的已提交输出事实；只在提交事实出现时捕获一次。
-    committed: Option<pl_core::context::ContextRecord>,
     /// 活跃工具条目的键；只有它变化时才重建工具来源。
     tool_key: Vec<ThreadActivityToolEntry>,
-    tools: Vec<ToolDetailSource>,
+    tools: Vec<ToolSource>,
     source: ActivitySourceKey,
 }
 
-/// 详情来源签名：只有它变化才需要重新捕获来源（换活动、观察出现或消失、提交事实出现）。
+/// 来源签名：换活动、观察出现或消失时重新捕获来源。
 struct ActivitySourceKey {
     identity: String,
     attempt_id: Option<String>,
     observed: bool,
-    committed: bool,
 }
 
 impl ActivitySourceKey {
@@ -917,33 +949,44 @@ impl ActivitySourceKey {
         self.identity == other.identity
             && self.attempt_id == other.attempt_id
             && self.observed == other.observed
-            && self.committed == other.committed
     }
 }
 
 /// 一条活跃工具调用的驻留来源：身份、参数事实与共享输出句柄。
-struct ToolDetailSource {
+struct ToolSource {
     entry: ThreadActivityToolEntry,
     task_id: Option<String>,
     /// 该调用的完整参数（调用已提交才有）；读不到时如实为 `None`，不填假参数。
-    arguments: Option<String>,
-    /// 该调用仍在任务表时的事实：任务存在但还没有流式输出时是 `Some(空)`，因此**不会**回落到交付结果。
+    arguments: Option<std::sync::Arc<pl_core::model::ContentBlock>>,
+    /// `None` 表示尚无观测；`Some` 的空 parts 表示生产者已发布空输出事实。
     ///
     /// 判空与截断都由共享内容块自己给出，读取时才知道字节数，不复制已观察正文。
     task_output: Option<pl_core::model::ToolProgress>,
-    /// 该调用已经离开任务表时的交付结果事实。
-    delivered_output: Option<Vec<ContextContent>>,
 }
 
-impl ActivityDetailOwner {
-    /// 详情内容：**读取时**才物化。
-    ///
-    /// 读取范围只有两组驻留事实：该活动指向的 attempt 自己的 typed 观察句柄（及其提交输出），以及
-    /// 活跃工具调用来源。观察内容段带稳定身份与共享内容块，因此这里既不重解码 JSON、也不整 Turn 回读
-    /// 历史；`revision` 只有观察者提交 canonical 条目事实时才可知，否则如实为 `None`，不填推测值——
-    /// 观察层的内容版本不是 canonical item revision，不能冒充它。
-    fn materialize(&self) -> ActivityContent {
-        let mut content = ActivityContent::default();
+/// One immutable view of the current activity. Text remains shared with its canonical producer;
+/// each subscriber encodes only the suffix since its own last delivery.
+#[derive(Debug, Clone, Default)]
+pub(in crate::studio) struct ActivitySnapshot {
+    /// 发布该活动快照前已可查询的完成上界；传输在活动退出前连续移交到此位置。
+    pub completed_through: u64,
+    pub activity: Option<ThreadActivity>,
+    pub reasoning: Vec<pl_protocol::ActivityPartMetadata>,
+    pub response: Vec<pl_protocol::ActivityPartMetadata>,
+    pub tools: Vec<pl_protocol::ActivityToolMetadata>,
+    pub text: std::collections::BTreeMap<
+        pl_protocol::ActivityTextRegion,
+        std::sync::Arc<pl_core::model::ContentBlock>,
+    >,
+}
+
+impl ActivitySource {
+    fn snapshot(&self) -> ActivitySnapshot {
+        use pl_protocol::{ActivityPartMetadata, ActivityTextRegion, ActivityToolMetadata};
+        let mut value = ActivitySnapshot {
+            activity: Some(self.activity.clone()),
+            ..Default::default()
+        };
         if let (Some(attempt_id), Some(progress)) =
             (self.attempt_id.as_deref(), self.progress.as_ref())
         {
@@ -953,75 +996,72 @@ impl ActivityDetailOwner {
                 else {
                     continue;
                 };
-                let content_part = ThreadActivityContentPart {
-                    item_id,
-                    revision: None,
+                let metadata = ActivityPartMetadata {
+                    item_id: item_id.clone(),
                     complete: false,
-                    text: part.text(),
+                    total_bytes: part.len() as u64,
                 };
-                match stream {
-                    ObservedStream::Response => content.response.push(content_part),
-                    ObservedStream::Reasoning | ObservedStream::Summary => {
-                        content.reasoning.push(content_part);
+                let region = match stream {
+                    ObservedStream::Response => {
+                        value.response.push(metadata);
+                        ActivityTextRegion::Response { item_id }
                     }
-                }
-            }
-        }
-        if let (Some(attempt_id), Some(output)) =
-            (self.attempt_id.as_deref(), self.committed.as_ref())
-        {
-            let text = super::content::text_content(&output.content);
-            if !text.is_empty() {
-                content.response.push(ThreadActivityContentPart {
-                    item_id: super::order::response_id(attempt_id, "text"),
-                    revision: None,
-                    complete: true,
-                    text,
-                });
+                    ObservedStream::Reasoning | ObservedStream::Summary => {
+                        value.reasoning.push(metadata);
+                        ActivityTextRegion::Reasoning { item_id }
+                    }
+                };
+                value.text.insert(region, part.content().clone());
             }
         }
         for tool in &self.tools {
-            content.tools.push(tool.materialize());
+            let arguments = tool.arguments.clone();
+            value.tools.push(ActivityToolMetadata {
+                call_id: tool.entry.call_id.clone(),
+                task_id: tool.task_id.clone().or_else(|| tool.entry.task_id.clone()),
+                name: tool.entry.name.clone(),
+                state: tool.entry.state,
+                started_at: tool.entry.started_at,
+                source_order: tool.entry.ordinal,
+                arguments_bytes: arguments.as_ref().map(|block| block.len() as u64),
+                output_bytes: tool
+                    .task_output
+                    .as_ref()
+                    .map(pl_core::model::ToolProgress::bytes),
+                output_parts: tool.task_output.as_ref().map_or_else(Vec::new, |progress| {
+                    progress
+                        .parts()
+                        .iter()
+                        .map(|part| pl_protocol::ActivityToolOutputMetadata {
+                            part_id: part.id().to_owned(),
+                            total_bytes: part.len() as u64,
+                        })
+                        .collect()
+                }),
+                wait: tool.entry.wait.clone(),
+            });
+            if let Some(block) = arguments {
+                value.text.insert(
+                    ActivityTextRegion::ToolArguments {
+                        call_id: tool.entry.call_id.clone(),
+                    },
+                    block,
+                );
+            }
+            if let Some(progress) = &tool.task_output {
+                for part in progress.parts() {
+                    value.text.insert(
+                        ActivityTextRegion::ToolOutput {
+                            call_id: tool.entry.call_id.clone(),
+                            part_id: part.id().to_owned(),
+                        },
+                        part.content().clone(),
+                    );
+                }
+            }
         }
-        content
+        value
     }
-}
-
-impl ToolDetailSource {
-    /// 活跃工具调用 → 详情条目；参数与输出都在读取时才物化，`ordinal` 沿用该任务 owner 的开始序号，
-    /// Unix 开始时间在本会话不可读时如实为 `None`。
-    fn materialize(&self) -> ThreadActivityToolDetail {
-        let output = match (&self.task_output, &self.delivered_output) {
-            (Some(task_output), _) => progress_output(task_output),
-            (None, delivered) => delivered.as_ref().and_then(|content| tool_output(content)),
-        };
-        ThreadActivityToolDetail {
-            call_id: self.entry.call_id.clone(),
-            task_id: self.task_id.clone().or_else(|| self.entry.task_id.clone()),
-            name: self.entry.name.clone(),
-            state: self.entry.state,
-            arguments: self.arguments.clone(),
-            output,
-            ordinal: self.entry.ordinal,
-            started_at: self.entry.started_at,
-            wait: self.entry.wait.clone(),
-        }
-    }
-}
-
-/// 运行中工具输出的共享正文；没有可读文本时如实为 `None`。
-///
-/// 正文只在读取详情时物化一次，热路径只共享内容块；因此这里物化的是**当前**有界预览，而不是每个
-/// chunk 复制一次的累计全文。
-fn progress_output(progress: &pl_core::model::ToolProgress) -> Option<String> {
-    let text = progress.content().text();
-    (!text.is_empty()).then_some(text)
-}
-
-/// 工具输出正文；没有可读文本时如实为 `None`。
-fn tool_output(content: &[ContextContent]) -> Option<String> {
-    let text = super::content::text_content(content);
-    (!text.is_empty()).then_some(text)
 }
 
 /// 活动指向的 attempt：活动身份优先，其次该 Turn 当前最新的 attempt。
@@ -1038,11 +1078,19 @@ fn activity_attempt<'a>(
                 .iter()
                 .find(|attempt| attempt.attempt_id == id)
         })
-        .or_else(|| turn_attempt(state, &activity.turn_id))
+        .or_else(|| {
+            activity
+                .turn_id
+                .as_deref()
+                .and_then(|id| turn_attempt(state, id))
+        })
 }
 
 /// 该 attempt 的共享观察句柄；克隆它只增加一次 `Arc` 引用计数，不复制已观察正文。
 fn shared_progress(state: &ThreadSnapshot, attempt: &RequestAttempt) -> Option<ModelProgress> {
+    if attempt.status != AttemptStatus::Running {
+        return None;
+    }
     state
         .model_progress
         .as_ref()
@@ -1051,10 +1099,7 @@ fn shared_progress(state: &ThreadSnapshot, attempt: &RequestAttempt) -> Option<M
 }
 
 /// 活跃工具条目的驻留来源：身份、参数与共享输出句柄。
-fn tool_sources(
-    state: &ThreadSnapshot,
-    entries: &[ThreadActivityToolEntry],
-) -> Vec<ToolDetailSource> {
+fn tool_sources(state: &ThreadSnapshot, entries: &[ThreadActivityToolEntry]) -> Vec<ToolSource> {
     entries
         .iter()
         .map(|entry| {
@@ -1062,22 +1107,12 @@ fn tool_sources(
                 .tasks
                 .values()
                 .find(|task| task.call_id == entry.call_id);
-            ToolDetailSource {
+            ToolSource {
                 entry: entry.clone(),
                 task_id: task.map(|task| task.id.clone()),
-                arguments: call_arguments(state, &entry.call_id),
-                task_output: task.map(|task| {
-                    state
-                        .tool_progress
-                        .get(&task.id)
-                        .cloned()
-                        .unwrap_or_default()
-                }),
-                delivered_output: state
-                    .deliveries
-                    .iter()
-                    .find(|delivery| delivery.call_id == entry.call_id)
-                    .map(|delivery| delivery.delivered_context.clone()),
+                arguments: call_arguments(state, &entry.call_id)
+                    .map(|text| pl_core::model::ContentBlock::from_text(&text)),
+                task_output: task.and_then(|task| state.tool_progress.get(&task.id).cloned()),
             }
         })
         .collect()
@@ -1085,47 +1120,37 @@ fn tool_sources(
 
 /// 活动的唯一投影 owner 助手。
 ///
-/// 它把「当前活动」与「当前活动的有界详情」的推导收敛到一处：只吃 owner 已发布的 `ThreadSnapshot`
+/// 它把当前活动与共享正文来源的推导收敛到一处：只吃 owner 已发布的 `ThreadSnapshot`
 /// 与上一条活动，不持有 Session、不 await、不读 SQL、不发帧。观察任务是这份助手的唯一持有者（每个
 /// 驻留 Thread 一份），订阅与快照投影调用同一个 [`project_activity`]，因此活动定义只有一处。
 ///
 /// 活动本体是有界 typed 摘要（稳定身份 + 前台 kind + 有界最新逻辑行 + 活跃工具条目），版本覆盖这些
-/// 已发布事实及详情的共享进度版本，不按整段正文比较；详情只保留共享观察句柄，正文在按身份读取时才物化。
-///
-/// 观察任务尚未接线时，读取路由可以用一份临时实例推导出与观察任务完全一致的当前活动与详情；接线后
-/// 路由只读观察任务保留的这份助手，不再推导。
+/// 已发布事实及正文的共享进度版本，不按整段正文比较；快照只保留当前活动成员的共享观察句柄。
 #[derive(Default)]
 pub(in crate::studio) struct ActivityProjection {
     previous: Option<ThreadActivity>,
-    detail: Option<ActivityDetailOwner>,
-    thinking_started_at: Option<(String, Option<String>, i64)>,
+    source: Option<ActivitySource>,
+    thinking_started_at: Option<ThinkingStartedAt>,
 }
 
-/// 当前活动的驻留详情：活动本体与**读取时**物化的内容。
-pub(in crate::studio) struct ActivityDetail {
-    pub activity: ThreadActivity,
-    pub content: ActivityContent,
-}
-
-/// 按活动身份读取驻留详情的生命周期结果。
-pub(in crate::studio) enum ActivityDetailRead {
-    /// 请求身份仍是当前活动，并携带驻留详情。
-    Current(ActivityDetail),
-    /// 请求身份已被同一 Thread 的更新活动取代。
-    Superseded {
-        activity: ThreadActivity,
-        requested_activity_id: String,
-    },
-    /// 该 Thread 当前没有活动。
-    Ended,
+struct ThinkingStartedAt {
+    turn_id: Option<String>,
+    execution_id: Option<String>,
+    attempt_id: Option<String>,
+    at: i64,
 }
 
 impl ActivityProjection {
-    /// 由 owner 已发布状态推导当前活动，并刷新驻留详情来源。
+    pub(in crate::studio) fn snapshot(&self) -> ActivitySnapshot {
+        self.source
+            .as_ref()
+            .map_or_else(ActivitySnapshot::default, ActivitySource::snapshot)
+    }
+
+    /// 由 owner 已发布状态推导当前活动，并刷新共享正文来源。
     ///
-    /// 返回当前活动；`None` 表示当前没有活动（Turn 已结束/尚未开始），此时驻留详情被清除，因此迟到
-    /// 的展开请求不会读回已结束活动的内容。来源不变时这里只刷新有界活动本体与共享观察句柄，不重新
-    /// 物化任何正文。
+    /// `None` 表示当前没有活动，此时来源被清除；已完成正文不会回填当前态。
+    /// 来源不变时只刷新有界活动本体与共享观察句柄，不物化正文。
     pub(in crate::studio) fn observe(
         &mut self,
         thread_id: &str,
@@ -1135,29 +1160,33 @@ impl ActivityProjection {
         if let Some(act) = activity.as_mut() {
             let now = now_unix_seconds();
             if act.kind == ThreadActivityKind::Thinking {
-                let same_step =
-                    self.thinking_started_at
-                        .as_ref()
-                        .is_some_and(|(turn_id, attempt_id, _)| {
-                            turn_id == &act.turn_id && attempt_id == &act.attempt_id
-                        });
+                let same_step = self.thinking_started_at.as_ref().is_some_and(|started| {
+                    started.turn_id == act.turn_id
+                        && started.execution_id == act.execution_id
+                        && started.attempt_id == act.attempt_id
+                });
                 if !same_step {
-                    self.thinking_started_at =
-                        Some((act.turn_id.clone(), act.attempt_id.clone(), now));
+                    self.thinking_started_at = Some(ThinkingStartedAt {
+                        turn_id: act.turn_id.clone(),
+                        execution_id: act.execution_id.clone(),
+                        attempt_id: act.attempt_id.clone(),
+                        at: now,
+                    });
                 }
                 if act.thinking_summary.is_some()
-                    && let Some((_, _, started)) = self.thinking_started_at.as_ref()
+                    && let Some(started) = self.thinking_started_at.as_ref()
                 {
-                    let elapsed = u64::try_from((now - *started).max(0)).unwrap_or(0);
+                    let elapsed = u64::try_from((now - started.at).max(0)).unwrap_or(0);
                     if act.thinking_seconds != Some(elapsed) {
                         act.thinking_seconds = Some(elapsed);
                     }
                 }
-            } else if let Some((turn_id, _, started)) = self.thinking_started_at.take()
-                && turn_id == act.turn_id
+            } else if let Some(started) = self.thinking_started_at.take()
+                && started.turn_id == act.turn_id
+                && started.execution_id == act.execution_id
                 && act.kind != ThreadActivityKind::Responding
             {
-                let elapsed = u64::try_from((now - started).max(0)).unwrap_or(0);
+                let elapsed = u64::try_from((now - started.at).max(0)).unwrap_or(0);
                 act.thinking_seconds = Some(elapsed);
             }
             if let Some(prev) = self.previous.as_ref()
@@ -1172,8 +1201,8 @@ impl ActivityProjection {
         } else {
             self.thinking_started_at = None;
         }
-        let detail_changed = self.sync_detail(state, activity.as_ref());
-        if detail_changed
+        let source_changed = self.sync_source(state, activity.as_ref());
+        if source_changed
             && let Some(act) = activity.as_mut()
             && let Some(previous) = self.previous.as_ref()
             && previous.identity == act.identity
@@ -1181,52 +1210,33 @@ impl ActivityProjection {
         {
             act.revision = previous.revision.saturating_add(1);
         }
-        if let (Some(detail), Some(activity)) = (self.detail.as_mut(), activity.as_ref()) {
-            detail.activity = activity.clone();
+        if let (Some(source), Some(activity)) = (self.source.as_mut(), activity.as_ref()) {
+            source.activity = activity.clone();
         }
         self.previous = activity.clone();
         activity
     }
 
-    /// 按活动身份读取**驻留详情**；不做 SQL，也不重新扫描 Turn。
-    pub(in crate::studio) fn detail(&self, activity_id: &str) -> ActivityDetailRead {
-        let Some(detail) = self.detail.as_ref() else {
-            return ActivityDetailRead::Ended;
-        };
-        if detail.activity.identity != activity_id {
-            return ActivityDetailRead::Superseded {
-                activity: detail.activity.clone(),
-                requested_activity_id: activity_id.to_owned(),
-            };
-        }
-        ActivityDetailRead::Current(ActivityDetail {
-            activity: detail.activity.clone(),
-            content: detail.materialize(),
-        })
-    }
-
     /// Refresh shared snapshots without materializing text. The returned change
-    /// covers detail versions as well as the lightweight activity body.
-    fn sync_detail(&mut self, state: &ThreadSnapshot, activity: Option<&ThreadActivity>) -> bool {
+    /// covers content versions as well as the lightweight activity body.
+    fn sync_source(&mut self, state: &ThreadSnapshot, activity: Option<&ThreadActivity>) -> bool {
         let Some(activity) = activity else {
-            self.detail = None;
+            self.source = None;
             return false;
         };
         let attempt = activity_attempt(state, activity);
         let progress = attempt.and_then(|attempt| shared_progress(state, attempt));
-        let committed = attempt.and_then(|attempt| committed_output(state, attempt));
         let source = ActivitySourceKey {
             identity: activity.identity.clone(),
             attempt_id: attempt.map(|attempt| attempt.attempt_id.clone()),
             observed: progress.is_some(),
-            committed: committed.is_some(),
         };
         if self
-            .detail
+            .source
             .as_ref()
             .is_some_and(|detail| detail.source.same(&source))
         {
-            let detail = self.detail.as_mut().expect("checked above");
+            let detail = self.source.as_mut().expect("checked above");
             let progress_version =
                 |progress: &ModelProgress| (progress.observation().generation, progress.version());
             let mut changed = detail.progress.as_ref().map(progress_version)
@@ -1239,12 +1249,10 @@ impl ActivityProjection {
                 changed = true;
             } else {
                 for tool in &mut detail.tools {
-                    let next = tool.task_id.as_ref().and_then(|id| {
-                        state
-                            .tasks
-                            .get(id)
-                            .map(|_| state.tool_progress.get(id).cloned().unwrap_or_default())
-                    });
+                    let next = tool
+                        .task_id
+                        .as_ref()
+                        .and_then(|id| state.tool_progress.get(id).cloned());
                     if tool
                         .task_output
                         .as_ref()
@@ -1258,11 +1266,10 @@ impl ActivityProjection {
             }
             return changed;
         }
-        self.detail = Some(ActivityDetailOwner {
+        self.source = Some(ActivitySource {
             activity: activity.clone(),
             attempt_id: source.attempt_id.clone(),
             progress,
-            committed: committed.cloned(),
             tool_key: activity.tools.active.clone(),
             tools: tool_sources(state, &activity.tools.active),
             source,
@@ -1270,14 +1277,12 @@ impl ActivityProjection {
         true
     }
 
-    /// 该助手当前驻留的字节：上一条活动摘要、当前活动本体与它捕获的详情来源。
+    /// 该助手当前驻留的字节：上一条活动摘要、当前活动本体与它捕获的共享来源。
     ///
-    /// 详情正文只在按身份读取时才物化，常驻的只有共享句柄（克隆 `Arc` 不复制正文）与小型身份；但
-    /// 工具参数与工具输出快照是真实驻留的字符串，因此它们必须计入该 Thread 的可靠保留预算，而不是
-    /// 在预算之外存在。正文只按已发布事实计量，不物化任何整段文本。
+    /// 常驻共享句柄（克隆 `Arc` 不复制正文）与小型身份按已发布事实计量，不物化整段文本。
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let mut bytes = self.previous.as_ref().map_or(0, activity_bytes);
-        if let Some(detail) = self.detail.as_ref() {
+        if let Some(detail) = self.source.as_ref() {
             bytes = bytes.saturating_add(activity_bytes(&detail.activity));
             for tool in &detail.tools {
                 bytes = bytes
@@ -1293,11 +1298,6 @@ impl ActivityProjection {
                         tool.task_output
                             .as_ref()
                             .map_or(0, pl_core::model::ToolProgress::bytes),
-                    )
-                    .saturating_add(
-                        tool.delivered_output
-                            .as_ref()
-                            .map_or(0, |output| context_bytes(output)),
                     );
             }
         }
@@ -1325,12 +1325,326 @@ fn activity_bytes(activity: &ThreadActivity) -> u64 {
     bytes
 }
 
-/// 一份上下文内容的文本字节数，不拼接整段正文。
-fn context_bytes(content: &[ContextContent]) -> u64 {
-    content.iter().fold(0_u64, |total, part| {
-        total.saturating_add(match part {
-            ContextContent::Text { text } => text.len() as u64,
-            ContextContent::Resource { .. } | ContextContent::Opaque { .. } => 0,
-        })
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_core::model::{ActiveModelProgress, ToolProgress, ToolProgressPart, ToolProgressUpdate};
+    use pl_core::thread::{
+        ActiveExecution,
+        interactions::{InteractionRecord, InteractionRequest},
+    };
+    use pl_protocol::ActivityTextRegion;
+    use std::sync::Arc;
+
+    fn running_state(text: &str) -> ThreadSnapshot {
+        let attempt: RequestAttempt = serde_json::from_value(serde_json::json!({
+            "turnId": "turn",
+            "attemptId": "attempt",
+            "retryOf": null,
+            "inputRevision": 0,
+            "status": {"kind": "running"}
+        }))
+        .unwrap();
+        ThreadSnapshot {
+            turns: Arc::from([TurnRecord {
+                turn_id: "turn".into(),
+                input_id: Some("input".into()),
+                state: TurnState::Running,
+                model_steps: 1,
+                elapsed_ms: None,
+            }]),
+            attempts: Arc::from([attempt]),
+            model_progress: Some(ActiveModelProgress {
+                attempt_id: "attempt".into(),
+                progress: ModelProgress::new(
+                    1,
+                    vec![
+                        ObservedPart::new(ObservedPartIdentity::Aggregate {
+                            channel: AggregateChannel::Text,
+                        })
+                        .appended(text),
+                    ],
+                ),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pre_turn_execution_uses_real_identity_in_all_five_phases() {
+        let mut projection = ActivityProjection::default();
+        for phase in [
+            ExecutionPhase::Preparing,
+            ExecutionPhase::AwaitingStorage,
+            ExecutionPhase::AwaitingAdmission,
+            ExecutionPhase::Running,
+            ExecutionPhase::Stopping,
+        ] {
+            let state = ThreadSnapshot {
+                execution: Some(ActiveExecution {
+                    id: "opaque-execution:id".into(),
+                    phase,
+                    turn_id: None,
+                }),
+                // Without a Turn this unrelated model phase is not a provider call fact.
+                model_execution: Some(ModelExecutionPhase::Running),
+                ..Default::default()
+            };
+            let activity = projection.observe("thread", &state).unwrap();
+            let kind = if phase == ExecutionPhase::Stopping {
+                ThreadActivityKind::Stopping
+            } else {
+                ThreadActivityKind::Preparing
+            };
+            assert_eq!(activity.turn_id, None);
+            assert_eq!(
+                activity.execution_id.as_deref(),
+                Some("opaque-execution:id")
+            );
+            assert_eq!(activity.kind, kind);
+            assert_eq!(
+                activity.identity,
+                ThreadActivity::identity("opaque-execution:id", "preparing", kind)
+            );
+            assert!(projection.snapshot().text.is_empty());
+        }
+        assert!(
+            projection
+                .observe("thread", &ThreadSnapshot::default())
+                .is_none()
+        );
+        assert!(projection.snapshot().activity.is_none());
+    }
+
+    #[test]
+    fn turn_admission_preserves_execution_and_other_turn_sources_do_not_inherit_it() {
+        let mut state = ThreadSnapshot {
+            execution: Some(ActiveExecution {
+                id: "execution".into(),
+                phase: ExecutionPhase::Preparing,
+                turn_id: None,
+            }),
+            ..Default::default()
+        };
+        let mut projection = ActivityProjection::default();
+        let preparing = projection.observe("thread", &state).unwrap();
+        state.turns = running_state("").turns;
+        state.execution.as_mut().unwrap().phase = ExecutionPhase::Running;
+        state.execution.as_mut().unwrap().turn_id = Some("turn".into());
+        let admitted = projection.observe("thread", &state).unwrap();
+        assert_eq!(admitted.turn_id.as_deref(), Some("turn"));
+        assert_eq!(admitted.execution_id.as_deref(), Some("execution"));
+        assert_eq!(preparing.identity, admitted.identity);
+
+        let execution = state.execution.take();
+        state = running_state("foreground response");
+        state.execution = execution;
+        state.tasks.insert(
+            "background".into(),
+            TaskRecord {
+                id: "background".into(),
+                call_id: "background-call".into(),
+                tool_id: "exec".into(),
+                turn_id: "background-turn".into(),
+                revision: 1,
+                status: TaskStatus::Running,
+                cancel_requested: true,
+                acknowledgement: None,
+                started_sequence: Some(5),
+            },
+        );
+        state.interactions.insert(
+            "question".into(),
+            InteractionRecord {
+                created_at: 1,
+                updated_at: 1,
+                continuation_id: None,
+                request: InteractionRequest {
+                    id: "question".into(),
+                    turn_id: "question-turn".into(),
+                    payload: pl_core::context::OpaquePayload::new("test.question", 1, "{}")
+                        .unwrap(),
+                },
+                revision: 1,
+                state: InteractionState::Pending,
+                extension_mutations: vec![],
+            },
+        );
+        let foreground = projection.observe("thread", &state).unwrap();
+        assert_eq!(foreground.kind, ThreadActivityKind::Responding);
+        assert_eq!(foreground.turn_id.as_deref(), Some("turn"));
+        assert_eq!(foreground.execution_id.as_deref(), Some("execution"));
+        assert_eq!(foreground.tools.background, 1);
+
+        let mut preparing_with_background = state.clone();
+        preparing_with_background.attempts = Arc::from([]);
+        preparing_with_background.model_progress = None;
+        let preparing = project_activity("thread", &preparing_with_background, None).unwrap();
+        assert_eq!(preparing.kind, ThreadActivityKind::Preparing);
+        assert_eq!(preparing.tools.background, 1);
+
+        // A known Running Turn is authoritative even if another execution identity is present.
+        state.execution.as_mut().unwrap().turn_id = Some("unrelated-turn".into());
+        let unrelated = projection.observe("thread", &state).unwrap();
+        assert_eq!(unrelated.turn_id.as_deref(), Some("turn"));
+        assert_eq!(unrelated.execution_id, None);
+        assert_eq!(
+            unrelated.identity,
+            ThreadActivity::identity("turn", "attempt", ThreadActivityKind::Responding)
+        );
+
+        state.execution = None;
+        state.turns = Arc::from([]);
+        let background = projection.observe("thread", &state).unwrap();
+        assert_eq!(background.turn_id.as_deref(), Some("background-turn"));
+        assert_eq!(background.execution_id, None);
+        assert_eq!(background.kind, ThreadActivityKind::Stopping);
+        state.tasks.clear();
+        let question = projection.observe("thread", &state).unwrap();
+        assert_eq!(question.turn_id.as_deref(), Some("question-turn"));
+        assert_eq!(question.execution_id, None);
+        assert_eq!(question.kind, ThreadActivityKind::AwaitingInput);
+        state.interactions.clear();
+        assert!(projection.observe("thread", &state).is_none());
+    }
+
+    #[test]
+    fn snapshot_shares_body_and_advances_when_bounded_summary_does_not() {
+        let prefix = "文".repeat(ACTIVITY_SUMMARY_LIMIT + 1);
+        let mut state = running_state(&prefix);
+        let mut projection = ActivityProjection::default();
+        let first = projection.observe("thread", &state).unwrap();
+        let first_snapshot = projection.snapshot();
+        let part = &state.model_progress.as_ref().unwrap().progress.parts()[0];
+        let region = ActivityTextRegion::Response {
+            item_id: first_snapshot.response[0].item_id.clone(),
+        };
+        assert!(Arc::ptr_eq(&first_snapshot.text[&region], part.content()));
+
+        let appended = part.appended("继续");
+        state.model_progress.as_mut().unwrap().progress =
+            ModelProgress::new(2, vec![appended.clone()]);
+        let next = projection.observe("thread", &state).unwrap();
+        assert_eq!(first.summary, next.summary);
+        assert_eq!(first.identity, next.identity);
+        assert!(next.revision > first.revision);
+        let snapshot = projection.snapshot();
+        assert!(Arc::ptr_eq(&snapshot.text[&region], appended.content()));
+        assert_eq!(snapshot.text[&region].text(), format!("{prefix}继续"));
+        assert_eq!(first_snapshot.text[&region].text(), prefix);
+        assert_eq!(projection.observe("thread", &state), Some(next));
+    }
+
+    #[test]
+    fn completed_attempt_leaves_live_body_and_next_attempt_has_its_own_identity() {
+        let mut state = running_state("old body");
+        let mut projection = ActivityProjection::default();
+        let first = projection.observe("thread", &state).unwrap();
+        assert_eq!(projection.snapshot().response.len(), 1);
+        // Keep even the stale producer handle resident: terminal attempt status is authoritative.
+        Arc::make_mut(&mut state.attempts)[0].status = AttemptStatus::Committed;
+        state.model_execution = Some(ModelExecutionPhase::PreparingContext);
+        let preparing = projection.observe("thread", &state).unwrap();
+        assert_eq!(preparing.kind, ThreadActivityKind::Preparing);
+        let snapshot = projection.snapshot();
+        assert!(snapshot.response.is_empty());
+        assert!(snapshot.reasoning.is_empty());
+        assert!(snapshot.text.is_empty());
+
+        let mut next = running_state("new body");
+        Arc::make_mut(&mut next.attempts)[0].attempt_id = "next-attempt".into();
+        next.model_progress.as_mut().unwrap().attempt_id = "next-attempt".into();
+        let current = projection.observe("thread", &next).unwrap();
+        assert_ne!(first.identity, current.identity);
+        let snapshot = projection.snapshot();
+        assert_eq!(snapshot.text.len(), 1);
+        assert_eq!(snapshot.text.values().next().unwrap().text(), "new body");
+        assert_ne!(
+            snapshot.response[0].item_id,
+            super::super::order::observation_id("attempt", 0, "text")
+        );
+
+        next.turns = Arc::from([]);
+        assert!(projection.observe("thread", &next).is_none());
+        let ended = projection.snapshot();
+        assert!(ended.activity.is_none());
+        assert!(ended.text.is_empty());
+    }
+
+    #[test]
+    fn background_tool_keeps_shared_output_until_actual_terminal_status() {
+        let mut state = ThreadSnapshot::default();
+        state.tasks.insert(
+            "task".into(),
+            TaskRecord {
+                id: "task".into(),
+                call_id: "call".into(),
+                turn_id: "finished-turn".into(),
+                tool_id: "exec".into(),
+                revision: 1,
+                status: TaskStatus::Running,
+                cancel_requested: false,
+                acknowledgement: None,
+                started_sequence: Some(12),
+            },
+        );
+        let mut projection = ActivityProjection::default();
+        let activity = projection.observe("thread", &state).unwrap();
+        assert_eq!(activity.kind, ThreadActivityKind::RunningTool);
+        assert_eq!(projection.snapshot().tools[0].output_bytes, None);
+        assert!(projection.snapshot().text.is_empty());
+
+        state
+            .tool_progress
+            .insert("task".into(), ToolProgress::default());
+        let observed_empty = projection.observe("thread", &state).unwrap();
+        assert!(observed_empty.revision > activity.revision);
+        assert_eq!(projection.snapshot().tools[0].output_bytes, Some(0));
+        assert!(projection.snapshot().tools[0].output_parts.is_empty());
+        assert!(projection.snapshot().text.is_empty());
+
+        let progress = ToolProgress::new(1, vec![ToolProgressPart::new("empty")])
+            .applied(&ToolProgressUpdate::append("stdout", "输出"))
+            .applied(&ToolProgressUpdate::append("stderr", "error"));
+        state.tool_progress.insert("task".into(), progress.clone());
+        projection.observe("thread", &state).unwrap();
+        let snapshot = projection.snapshot();
+        assert_eq!(snapshot.tools[0].call_id, "call");
+        assert_eq!(snapshot.tools[0].source_order, Some(12));
+        assert_eq!(
+            snapshot.tools[0].output_bytes,
+            Some("输出error".len() as u64)
+        );
+        assert_eq!(
+            snapshot.tools[0]
+                .output_parts
+                .iter()
+                .map(|part| (part.part_id.as_str(), part.total_bytes))
+                .collect::<Vec<_>>(),
+            vec![("empty", 0), ("stdout", 6), ("stderr", 5)]
+        );
+        for part in progress.parts() {
+            assert!(Arc::ptr_eq(
+                &snapshot.text[&ActivityTextRegion::ToolOutput {
+                    call_id: "call".into(),
+                    part_id: part.id().into(),
+                }],
+                part.content()
+            ));
+        }
+        state.tool_progress.remove("task");
+        projection.observe("thread", &state).unwrap();
+        assert_eq!(projection.snapshot().tools[0].output_bytes, None);
+        assert!(projection.snapshot().text.is_empty());
+
+        state.tasks.get_mut("task").unwrap().cancel_requested = true;
+        let stopping = projection.observe("thread", &state).unwrap();
+        assert_eq!(stopping.kind, ThreadActivityKind::Stopping);
+        assert_eq!(projection.snapshot().tools.len(), 1);
+
+        state.tasks.get_mut("task").unwrap().status = TaskStatus::Succeeded;
+        assert!(projection.observe("thread", &state).is_none());
+        assert!(projection.snapshot().tools.is_empty());
+        assert!(projection.snapshot().text.is_empty());
+    }
 }

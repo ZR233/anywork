@@ -31,6 +31,28 @@
       if (this.state.history.some(existing => existing.id === item.id)) return;
       this.state.history = [...this.state.history, freeze(clone(item))];
     }
+    completeMember(group, member) {
+      if (this.state.history.some(item => item.members?.some(existing => existing.id === member.id))) return;
+      const tail = this.state.history.at(-1);
+      const frozenMember = freeze(clone(member));
+      // This is a replaceable browser presentation group, never a completion boundary.
+      if (tail?.kind === 'workGroup' && tail.sourceId === group.id) {
+        this.state.history = [
+          ...this.state.history.slice(0, -1),
+          freeze({ ...tail, members: [...tail.members, frozenMember] })
+        ];
+      } else {
+        this.snapshot({
+          id: member.id, sourceId: group.id, kind: 'workGroup', status: 'completed',
+          summary: group.summary, elapsed: member.elapsed, members: [frozenMember]
+        });
+      }
+    }
+    publishCompletedMembers(group) {
+      group.members.filter(member => member.status !== 'running')
+        .forEach(member => this.completeMember(group, member));
+      group.members = group.members.filter(member => member.status === 'running');
+    }
     recordOutcome(live, status, error = '') {
       this.snapshot({
         id: live.id + '-outcome', kind: 'outcome', status, sourceId: live.id,
@@ -70,8 +92,9 @@
         this.apply(this.state.queue[this.state.cursor++]);
       } else if (spec?.live === 'workGroup') {
         this.state.live = app.fixtures.group(id);
+        this.publishCompletedMembers(this.state.live);
         this.state.queue = [
-          { type: 'appendCommand', line: 'test complete_group_is_a_single_history_item ... ok' },
+          { type: 'appendCommand', line: 'test each_completed_fact_is_published_immediately ... ok' },
           ...this.state.live.members.filter(item => item.status === 'running').map(item => ({ type: 'memberDone', id: item.id })),
           ...this.afterGroup(this.id('text'))
         ];
@@ -138,7 +161,7 @@
         live.members.forEach(member => {
           if (member.status === 'running') member.status = status === 'completed' ? 'completed' : 'stopped';
         });
-        if (!isWaitingForModel(live)) this.snapshot(live);
+        this.publishCompletedMembers(live);
       } else if (live.kind === 'textOutput') {
         if (live.text.trim()) this.snapshot({ ...live, kind: 'text', status, error });
       } else if (status === 'completed') {
@@ -164,6 +187,7 @@
           }
           this.state.live = clone(event.group);
           this.state.live.elapsed = Math.max(this.state.live.elapsed, live?.elapsed || 0);
+          this.publishCompletedMembers(this.state.live);
           this.state.running = true;
           break;
         case 'memberDone':
@@ -176,6 +200,7 @@
                 member.output += '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0';
               }
               member.targets?.forEach(target => { target.status = 'completed'; target.report = '核对已完成，结果已返回。'; });
+              this.publishCompletedMembers(live);
             }
           }
           break;
@@ -343,7 +368,8 @@
         receipt.title = '用户已回答';
         receipt.subtitle = pending.questions.length + ' 个问题';
         receipt.content = pending.questions.map((question, index) => {
-          const answer = [...pending.answers[index], pending.others[index]].filter(Boolean).join('、') || '未填写';
+          const answer = question.secret ? '敏感回答已隐藏'
+            : [...pending.answers[index], pending.others[index]].filter(Boolean).join('、') || '未填写';
           return '### ' + question.title + '\n' + answer;
         }).join('\n\n');
         if (pending.secret) receipt.content += '\n\n敏感回答已隐藏';

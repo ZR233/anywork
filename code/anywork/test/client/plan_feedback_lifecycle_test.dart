@@ -501,7 +501,7 @@ Widget _planReadingArea({
   final panel = PlanDetailConnector(
     identity: 'interaction:1',
     markdown: markdown,
-    awaitingConfirmation: true,
+    status: PlanDetailStatus.awaitingConfirmation,
     onToggleReadingMode: () {},
     onClose: () {},
   );

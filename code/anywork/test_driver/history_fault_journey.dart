@@ -130,14 +130,6 @@ _ContentBytes _contentBytes(Map<String, dynamic> snapshot) {
   );
 }
 
-/// Live pointer-free progress token over real typed bytes only.
-///
-/// 只累加真实内容字节（正文 UTF-8、工具进度、逐字段详情 total/preview），因此后续
-/// 观测证明的是**新内容**，不是同一快照重读、行数/状态变化或单纯 revision 抖动。
-/// Evidence only: it is never a performance measurement.
-int _streamingRevision(Map<String, dynamic> snapshot) =>
-    _contentBytes(snapshot).total;
-
 /// Whether the integrated Driver build exposes the typed storage-recovery array.
 bool _hasStorageRecovery(Map<String, dynamic> snapshot) =>
     snapshot.containsKey('storageRecovery');
@@ -290,8 +282,8 @@ Future<void> _recordConnectFailure(
 /// fault/boundary/release/retry snapshots rather than by waiting on a live
 /// stream update.
 ///
-/// The integrated GUI now projects a running tool's in-flight progress
-/// (`output`/`progressBytes`/`itemRevision`); this fault journey does not depend
+/// The integrated GUI projects live activity output parts with source and part
+/// identity; this fault journey does not depend
 /// on it, because the deferred-tool proof is the typed pre-execution status
 /// before resume and the committed `result` is the post-resume identity. A
 /// baseline build without the typed `storageRecovery` array fails with the
@@ -318,8 +310,8 @@ class HistoryFaultJourney {
   /// Observations that could not be asserted, kept explicit so a partial run is
   /// never reported as a pass.
   final List<String> pendingEvidence = <String>[
-    'typed tool in-flight progress now exists in the integrated GUI: a running '
-        'tool projects `output`/`progressBytes`/`itemRevision` (see '
+    'typed tool in-flight progress now exists in the integrated GUI as '
+        'identity-preserving activity output parts (see '
         'realtime_journey.dart), so in-flight stdout is observable. This fault '
         'journey does not depend on it — the deferred-tool proof is the typed '
         'pre-execution status before resume and the committed `result` after — so '
@@ -417,32 +409,47 @@ class HistoryFaultJourney {
     }
 
     var domains = _contentBytes(running);
-    var revision = domains.total;
+    var activityParts = conversationActivityContentObservation(running);
+    if (activityParts == null) {
+      throw StateError('conversationActivity parts absent during faulted Turn');
+    }
     var growth = 0;
     for (var step = 0; step < 8 && growth < 3; step++) {
       final next = await waitFor(
-        (snapshot) =>
-            turnId(snapshot) == turn && _streamingRevision(snapshot) > revision,
+        (snapshot) {
+          final current = conversationActivityContentObservation(snapshot);
+          return turnId(snapshot) == turn &&
+              current != null &&
+              conversationActivityContentChanged(activityParts, current);
+        },
         'history_fault_live_increment',
         timeout: const Duration(seconds: 90),
       );
       final after = _contentBytes(next);
+      final nextActivityParts = conversationActivityContentObservation(next);
+      if (!conversationActivityContentChanged(
+        activityParts,
+        nextActivityParts,
+      )) {
+        throw StateError(
+          'activity part content did not change at growth sample',
+        );
+      }
       growth += 1;
       recordGeneration(next);
       final recovery = _storageRecovery(next, threadId);
       samples.add(<String, Object?>{
         'step': growth,
-        'revision': after.total,
-        'bytesBefore': domains.toJson(),
-        'bytesAfter': after.toJson(),
-        'bytesDelta': after.total - domains.total,
+        'activityParts': nextActivityParts,
+        'completedAtomBytesBefore': domains.toJson(),
+        'completedAtomBytesAfter': after.toJson(),
         'rows': timelineRows(next).length,
         'busy': isBusy(next),
         'fault': recovery?['fault'],
         'faultGeneration': recovery?['faultGeneration'],
       });
       domains = after;
-      revision = after.total;
+      activityParts = nextActivityParts;
     }
     checks['liveContentGrowsWhileWriterLocked'] = growth >= 3;
     counts['liveGrowthSamples'] = samples.length;
@@ -600,7 +607,7 @@ class HistoryFaultJourney {
         'safeToolMarker': _toolMarker,
         'resumeRequiredAtBoundary': boundaryState['resumeRequired'],
         'canResumeAtBoundary': boundaryState['canResume'],
-        'liveRevision': revision,
+        'liveActivityParts': conversationActivityContentObservation(boundary),
         'liveGrowthSamples': samples.length,
         'faultTurnAnswersAtBoundary': answersAtBoundary,
         'rowTypesAtBoundary': [

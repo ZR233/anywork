@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flyer_chat_image_message/flyer_chat_image_message.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_driver_key_values.dart';
 import '../state/timeline_entry.dart';
@@ -248,7 +249,7 @@ class _TimelineImageConnectorState extends State<TimelineImageConnector> {
 }
 
 /// The activity entry already owns expansion intent. This connector only lays
-/// out its typed image members; it does not add a second disclosure state.
+/// out its typed attachments; it does not add a second disclosure state.
 class TimelineGroupMediaConnector extends StatelessWidget {
   const TimelineGroupMediaConnector({
     super.key,
@@ -267,34 +268,61 @@ class TimelineGroupMediaConnector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final attachments = timelineAttachments(item)
-        .where((value) => value.modality == AttachmentModalityView.image);
+    final attachments = timelineAttachments(item);
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       children: [
         for (final attachment in attachments)
-          SizedBox(
-            width: 120,
-            height: 120,
-            child: TimelineImageConnector(
+          if (attachment.modality != AttachmentModalityView.image)
+            ConstrainedBox(
               key: ValueKey((item.id, attachment.id)),
-              index: 0,
-              item: item,
-              resources: resources,
-              readBytes: () => readAttachment(attachment.id),
-              isActive: isActive,
-              onDetail: onDetail,
-              message: ImageMessage(
-                id: '${item.id}:attachment:${attachment.id}',
-                authorId: 'assistant',
-                source: 'anywork-attachment:${attachment.id}',
-                width: attachment.width?.toDouble(),
-                height: attachment.height?.toDouble(),
-                metadata: {'attachment': attachment},
+              constraints: const BoxConstraints(maxWidth: 320),
+              child: Card.outlined(
+                margin: EdgeInsets.zero,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(
+                    attachment.modality == AttachmentModalityView.video
+                        ? Icons.movie_outlined
+                        : Icons.insert_drive_file_outlined,
+                  ),
+                  title: Text(
+                    attachment.filename?.isNotEmpty == true
+                        ? attachment.filename!
+                        : context.attachmentModalityLabel(attachment.modality),
+                    softWrap: true,
+                  ),
+                  subtitle: Text(
+                    '${context.attachmentModalityLabel(attachment.modality)}'
+                    ' · ${attachment.mediaType} · ${attachment.byteSize} B',
+                    softWrap: true,
+                  ),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              width: 120,
+              height: 120,
+              child: TimelineImageConnector(
+                key: ValueKey((item.id, attachment.id)),
+                index: 0,
+                item: item,
+                resources: resources,
+                readBytes: () => readAttachment(attachment.id),
+                isActive: isActive,
+                onDetail: onDetail,
+                message: ImageMessage(
+                  id: '${item.id}:attachment:${attachment.id}',
+                  authorId: 'assistant',
+                  source: 'anywork-attachment:${attachment.id}',
+                  width: attachment.width?.toDouble(),
+                  height: attachment.height?.toDouble(),
+                  metadata: {'attachment': attachment},
+                ),
               ),
             ),
-          ),
       ],
     );
   }

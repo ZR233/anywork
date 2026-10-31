@@ -5,12 +5,12 @@
 
 import '../../../../frb_generated.dart';
 import '../attachment.dart';
-import '../thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'item.freezed.dart';
 
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeThreadAgentState`, `BridgeThreadContentLifecycle`, `BridgeThreadInferenceState`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Why one raw record exists; the payload list cannot tell the two apart.
@@ -78,31 +78,6 @@ class BridgeThreadAgentIdentity {
           depth == other.depth;
 }
 
-@freezed
-sealed class BridgeThreadAgentState with _$BridgeThreadAgentState {
-  const BridgeThreadAgentState._();
-
-  const factory BridgeThreadAgentState.queued() = BridgeThreadAgentState_Queued;
-  const factory BridgeThreadAgentState.running() =
-      BridgeThreadAgentState_Running;
-  const factory BridgeThreadAgentState.succeeded({
-    required PlatformInt64 completedAt,
-    required String summary,
-  }) = BridgeThreadAgentState_Succeeded;
-  const factory BridgeThreadAgentState.denied({
-    required PlatformInt64 deniedAt,
-    required String reason,
-  }) = BridgeThreadAgentState_Denied;
-  const factory BridgeThreadAgentState.cancelled({
-    required PlatformInt64 cancelledAt,
-    required String reason,
-  }) = BridgeThreadAgentState_Cancelled;
-  const factory BridgeThreadAgentState.failed({
-    required PlatformInt64 failedAt,
-    required String error,
-  }) = BridgeThreadAgentState_Failed;
-}
-
 class BridgeThreadAttachment {
   final String id;
   final BridgeAttachmentModality modality;
@@ -144,45 +119,6 @@ class BridgeThreadAttachment {
           width == other.width &&
           height == other.height &&
           byteSize == other.byteSize;
-}
-
-@freezed
-sealed class BridgeThreadContentLifecycle with _$BridgeThreadContentLifecycle {
-  const BridgeThreadContentLifecycle._();
-
-  const factory BridgeThreadContentLifecycle.streaming() =
-      BridgeThreadContentLifecycle_Streaming;
-  const factory BridgeThreadContentLifecycle.completed({
-    required PlatformInt64 completedAt,
-  }) = BridgeThreadContentLifecycle_Completed;
-  const factory BridgeThreadContentLifecycle.failed({
-    required PlatformInt64 failedAt,
-    required String error,
-  }) = BridgeThreadContentLifecycle_Failed;
-  const factory BridgeThreadContentLifecycle.cancelled({
-    required PlatformInt64 cancelledAt,
-    required String reason,
-  }) = BridgeThreadContentLifecycle_Cancelled;
-}
-
-@freezed
-sealed class BridgeThreadInferenceState with _$BridgeThreadInferenceState {
-  const BridgeThreadInferenceState._();
-
-  const factory BridgeThreadInferenceState.running() =
-      BridgeThreadInferenceState_Running;
-  const factory BridgeThreadInferenceState.completed({
-    required PlatformInt64 completedAt,
-    required BridgeTokenUsageSnapshot usage,
-  }) = BridgeThreadInferenceState_Completed;
-  const factory BridgeThreadInferenceState.failed({
-    required PlatformInt64 failedAt,
-    required String error,
-  }) = BridgeThreadInferenceState_Failed;
-  const factory BridgeThreadInferenceState.cancelled({
-    required PlatformInt64 cancelledAt,
-    required String reason,
-  }) = BridgeThreadInferenceState_Cancelled;
 }
 
 enum BridgeThreadTextChannel { user, commentary, final_, parentAgent }

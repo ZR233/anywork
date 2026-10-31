@@ -75,6 +75,14 @@ final class FrbConversationFeed implements ConversationFeed {
                     :final update,
                   ) =>
                     ConversationUpdateEvent(update: _update(update)),
+                  frb_chat_types.BridgeConversationEvent_ActivityContent(
+                    :final frame,
+                    :final completed,
+                  ) =>
+                    ConversationActivityContentEvent(
+                      frame: _activityContentFromFrb(frame),
+                      completed: completed == null ? null : _update(completed),
+                    ),
                   frb_chat_types.BridgeConversationEvent_Failure(
                     :final error,
                   ) =>
@@ -120,179 +128,61 @@ final class FrbConversationFeed implements ConversationFeed {
     });
   }
 
-  @override
-  Future<ConversationPage> page({String? before, int? limit}) async {
-    if (_admissionsClosed) throw _conversationClosedFailure;
-    if (limit != null && (limit < 1 || limit > 100)) {
-      throw _conversationQueryFailure;
-    }
-    return FrbStudioTransport._bridgeCall(() async {
-      final page = await _native.page(before: before, limit: limit);
-      if (_admissionsClosed) throw _conversationClosedFailure;
-      return ConversationPage(
-        items: List.unmodifiable(page.items.map(_item)),
-        before: page.before,
-        hasOlder: page.hasOlder,
-      );
-    });
-  }
-
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) async {
-    if (_admissionsClosed) throw _conversationClosedFailure;
-    _validateConversationUnsigned(query.revision);
-    _validateConversationField(query.field);
-    if (query.maxBytes case final size? when size < 4 || size > 256 * 1024) {
-      throw _conversationQueryFailure;
-    }
-    return FrbStudioTransport._bridgeCall(() async {
-      final chunk = await _native.readDetail(
-        itemId: itemId,
-        query: frb_chat_types.BridgeTimelineDetailQuery(
-          field: _contentFieldToFrb(query.field),
-          revision: BigInt.from(query.revision),
-          continuation: query.continuation,
-          maxBytes: query.maxBytes,
-        ),
-      );
-      if (_admissionsClosed) throw _conversationClosedFailure;
-      return ConversationDetailChunk(
-        itemId: chunk.itemId,
-        field: _contentField(chunk.field),
-        revision: _exactTimelineInt(chunk.revision, 'detail revision'),
-        text: chunk.text,
-        totalBytes: _exactTimelineInt(chunk.totalBytes, 'detail total bytes'),
-        continuation: chunk.continuation,
-      );
-    });
-  }
-
   ConversationBaseline _baseline(frb_chat_types.BridgeTimelineBaseline value) {
     return ConversationBaseline(
       subscriptionId: value.subscriptionId,
-      version: _exactTimelineInt(value.version, 'subscription version'),
+      timelineEpoch: value.timelineEpoch,
       items: List.unmodifiable(value.items.map(_item)),
-      before: value.before,
+      before: value.before == null
+          ? null
+          : ConversationQueryCursor(value.before!),
       hasOlder: value.hasOlder,
+      completedCursor: ConversationCompletionCursor(
+        timelineEpoch: value.completedCursor.timelineEpoch,
+        appendSeq: _exactTimelineInt(
+          value.completedCursor.appendSeq,
+          'completed sequence',
+        ),
+      ),
     );
   }
 
   ConversationUpdate _update(frb_chat_types.BridgeTimelineUpdate value) {
     return switch (value) {
-      frb_chat_types.BridgeTimelineUpdate_Patch(
+      frb_chat_types.BridgeTimelineUpdate_Batch(
         :final subscriptionId,
-        :final from,
-        :final to,
-        :final changes,
-        :final priority,
+        :final timelineEpoch,
+        :final fromSeq,
+        :final throughSeq,
+        :final items,
       ) =>
-        ConversationPatch(
+        ConversationBatch(
           subscriptionId: subscriptionId,
-          from: _exactTimelineInt(from, 'patch from'),
-          to: _exactTimelineInt(to, 'patch to'),
-          changes: List.unmodifiable(changes.map(_change)),
-          priority: switch (priority) {
-            frb_chat_types.BridgeTimelinePriority.immediate =>
-              ConversationPriority.immediate,
-            frb_chat_types.BridgeTimelinePriority.coalesced =>
-              ConversationPriority.coalesced,
-          },
+          timelineEpoch: timelineEpoch,
+          fromSeq: _exactTimelineInt(fromSeq, 'batch from'),
+          throughSeq: _exactTimelineInt(throughSeq, 'batch through'),
+          items: List.unmodifiable(items.map(_item)),
         ),
-      frb_chat_types.BridgeTimelineUpdate_Resync(
-        :final subscriptionId,
-        :final reason,
-        :final baseline,
-      ) =>
-        ConversationResync(
-          subscriptionId: subscriptionId,
-          reason: switch (reason) {
-            frb_chat_types.BridgeTimelineResyncReason.lagging =>
-              ConversationResyncReason.lagging,
-            frb_chat_types.BridgeTimelineResyncReason.unavailable =>
-              ConversationResyncReason.unavailable,
-          },
-          baseline: _baseline(baseline),
-        ),
+      frb_chat_types.BridgeTimelineUpdate_Reset(:final baseline) =>
+        ConversationReset(_baseline(baseline)),
     };
   }
 
-  ConversationChange _change(frb_chat_types.BridgeTimelineChange value) {
-    return switch (value) {
-      frb_chat_types.BridgeTimelineChange_Add(:final item) => ConversationAdd(
-        _item(item),
-      ),
-      frb_chat_types.BridgeTimelineChange_UpdateItem(
-        :final itemId,
-        :final expectedRevision,
-        :final revision,
-        :final saved,
-        :final lifecycle,
-        :final header,
-        :final descriptor,
-        :final fields,
-      ) =>
-        ConversationUpdateItem(
-          itemId: itemId,
-          expectedRevision: _exactTimelineInt(
-            expectedRevision,
-            'item expected revision',
-          ),
-          revision: _exactTimelineInt(revision, 'item revision'),
-          saved: saved,
-          lifecycle: _lifecycle(lifecycle),
-          header: header == null ? null : _header(header),
-          descriptor: descriptor == null
-              ? null
-              : _descriptorFromFrb(descriptor),
-          fields: List.unmodifiable(fields.map(_fieldUpdate)),
-        ),
-      frb_chat_types.BridgeTimelineChange_Remove(:final itemId) =>
-        ConversationRemove(itemId),
-    };
-  }
-
-  ConversationFieldUpdate _fieldUpdate(
-    frb_chat_types.BridgeTimelineFieldUpdate value,
-  ) {
-    return ConversationFieldUpdate(
-      field: _contentField(value.field),
-      change: _fieldChange(value.change),
-      totalBytes: _exactTimelineInt(value.totalBytes, 'field total bytes'),
-      previewBytes: _exactTimelineInt(
-        value.previewBytes,
-        'field preview bytes',
-      ),
-    );
-  }
-
-  ConversationItem _item(frb_chat_types.BridgeTimelineItem value) {
-    final lifecycle = _lifecycle(value.lifecycle);
+  static ConversationItem _item(frb_chat_types.BridgeTimelineItem value) {
     return ConversationItem(
       source: switch (value.source) {
         frb_chat_types.BridgeTimelineItemSource_Content() =>
           const ConversationContentSource(),
-        frb_chat_types.BridgeTimelineItemSource_ModelRecovery(
-          :final attemptId,
-          :final notice,
-        ) =>
-          ConversationRecoverySource(
-            attemptId: attemptId,
-            notice: switch (notice) {
-              frb_chat_types.BridgeTimelineRecoveryNotice.retry =>
-                ConversationRecoveryNotice.retry,
-              frb_chat_types.BridgeTimelineRecoveryNotice.result =>
-                ConversationRecoveryNotice.result,
-            },
-          ),
+        frb_chat_types.BridgeTimelineItemSource_ModelRecovery(:final notice) =>
+          ConversationRecoverySource(switch (notice) {
+            frb_chat_types.BridgeTimelineRecoveryNotice.retry =>
+              ConversationRecoveryNotice.retry,
+            frb_chat_types.BridgeTimelineRecoveryNotice.result =>
+              ConversationRecoveryNotice.result,
+          }),
       },
       header: _header(value.header),
-      revision: _exactTimelineInt(value.revision, 'item revision'),
       descriptor: _descriptorFromFrb(value.descriptor),
-      saved: value.saved,
-      lifecycle: lifecycle,
       fields: List.unmodifiable(
         value.fields.map(
           (field) => ConversationFieldPreview(
@@ -308,29 +198,23 @@ final class FrbConversationFeed implements ConversationFeed {
     );
   }
 
-  ConversationItemHeader _header(
+  static ConversationItemHeader _header(
     frb_descriptor.BridgeTimelineItemHeader value,
   ) => ConversationItemHeader(
     id: value.id,
     threadId: value.threadId,
     turnId: value.turnId,
-    ordinal: _exactTimelineInt(value.ordinal, 'item ordinal'),
-    createdAt: _dateFromUnix(value.createdAt),
-    updatedAt: _dateFromUnix(value.updatedAt),
+    appendSeq: _exactTimelineInt(value.appendSeq, 'append sequence'),
+    sourceEffectSeq: _exactNullableTimelineInt(
+      value.sourceEffectSeq,
+      'source effect sequence',
+    ),
+    sealedAt: value.sealedAt == null
+        ? null
+        : _exactSignedTimelineInt(value.sealedAt!),
   );
 
-  ConversationLifecycle _lifecycle(
-    frb_chat_types.BridgeTimelineLifecycle value,
-  ) {
-    return switch (value) {
-      frb_chat_types.BridgeTimelineLifecycle.terminal =>
-        ConversationLifecycle.terminal,
-      frb_chat_types.BridgeTimelineLifecycle.streaming =>
-        ConversationLifecycle.streaming,
-    };
-  }
-
-  ThreadContentFieldView _contentField(
+  static ThreadContentFieldView _contentField(
     frb_chat_types.BridgeContentField field,
   ) {
     return field.when(
@@ -356,10 +240,12 @@ final class FrbConversationFeed implements ConversationFeed {
         ),
       ),
       rawPayload: (payloadIndex) => ThreadRawPayloadFieldView(payloadIndex),
+      planDocument: () => const ThreadPlanDocumentFieldView(),
+      planFeedback: () => const ThreadPlanFeedbackFieldView(),
     );
   }
 
-  frb_chat_types.BridgeContentField _contentFieldToFrb(
+  static frb_chat_types.BridgeContentField _contentFieldToFrb(
     ThreadContentFieldView field,
   ) {
     return switch (field) {
@@ -404,18 +290,11 @@ final class FrbConversationFeed implements ConversationFeed {
         frb_chat_types.BridgeContentField.rawPayload(
           payloadIndex: payloadIndex,
         ),
+      ThreadPlanDocumentFieldView() =>
+        const frb_chat_types.BridgeContentField.planDocument(),
+      ThreadPlanFeedbackFieldView() =>
+        const frb_chat_types.BridgeContentField.planFeedback(),
     };
-  }
-
-  ThreadFieldChangeView _fieldChange(
-    frb_chat_types.BridgeTimelineFieldChange change,
-  ) {
-    return change.when(
-      unchanged: () => const UnchangedThreadFieldChangeView(),
-      append: (text) => AppendThreadFieldChangeView(text),
-      replace: (text) => ReplaceThreadFieldChangeView(text),
-      remove: () => const RemoveThreadFieldChangeView(),
-    );
   }
 
   @override
@@ -495,6 +374,255 @@ final class FrbConversationFeed implements ConversationFeed {
   }
 }
 
+/// Native history reader retains the Session until its in-flight reads join.
+final class FrbConversationHistoryReader implements ConversationHistoryReader {
+  FrbConversationHistoryReader(this._native)
+    : threadId = _native.threadId(),
+      timelineEpoch = _native.timelineEpoch();
+
+  final frb_history_reader.BridgeTimelineReader _native;
+  @override
+  final String threadId;
+  @override
+  final String timelineEpoch;
+  _DartSubscription? _registration;
+  bool _closed = false;
+  bool _disposed = false;
+  Future<void>? _closing;
+  Future<void>? _nativeClosing;
+
+  bool get _admissionsClosed =>
+      _closed || (_registration?.cancelRequested ?? false);
+
+  @override
+  Future<ConversationPage> page({
+    ConversationQueryCursor? before,
+    int? limit,
+  }) async {
+    if (_admissionsClosed) throw _conversationClosedFailure;
+    if (limit != null && (limit < 1 || limit > 100)) {
+      throw _conversationQueryFailure;
+    }
+    return FrbStudioTransport._bridgeCall(() async {
+      final page = await _native.page(before: before?.token, limit: limit);
+      return ConversationPage(
+        threadId: threadId,
+        timelineEpoch: page.timelineEpoch,
+        items: page.items.map(FrbConversationFeed._item).toList(),
+        before: page.before == null
+            ? null
+            : ConversationQueryCursor(page.before!),
+        hasOlder: page.hasOlder,
+      );
+    });
+  }
+
+  @override
+  Future<ConversationDetailChunk> readDetail({
+    required String itemId,
+    required ConversationDetailQuery query,
+  }) async {
+    if (_admissionsClosed) throw _conversationClosedFailure;
+    _validateConversationField(query.field);
+    if (query.maxBytes case final size? when size < 4 || size > 256 * 1024) {
+      throw _conversationQueryFailure;
+    }
+    return FrbStudioTransport._bridgeCall(() async {
+      final chunk = await _native.readDetail(
+        itemId: itemId,
+        query: frb_chat_types.BridgeTimelineDetailQuery(
+          timelineEpoch: query.timelineEpoch,
+          field: FrbConversationFeed._contentFieldToFrb(query.field),
+          continuation: query.continuation?.token,
+          maxBytes: query.maxBytes,
+        ),
+      );
+      return ConversationDetailChunk(
+        threadId: threadId,
+        timelineEpoch: chunk.timelineEpoch,
+        itemId: chunk.itemId,
+        field: FrbConversationFeed._contentField(chunk.field),
+        text: chunk.text,
+        totalBytes: _exactTimelineInt(chunk.totalBytes, 'detail total bytes'),
+        continuation: chunk.continuation == null
+            ? null
+            : ConversationQueryCursor(chunk.continuation!),
+      );
+    });
+  }
+
+  @override
+  void requestClose() {
+    if (_closed) return;
+    _closed = true;
+    try {
+      _native.requestClose();
+    } catch (_) {
+      // Registry retains the native handle until close succeeds.
+    }
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    final existing = _closing;
+    if (existing != null) return existing;
+    final work = _joinClose();
+    _closing = work;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (identical(_closing, work)) _closing = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<void> _joinClose() async {
+    try {
+      final registration = _registration;
+      if (registration == null) {
+        await _releaseNative();
+      } else {
+        await registration.beginCancel();
+      }
+    } catch (error, stack) {
+      Error.throwWithStackTrace(_studioFailure(error), stack);
+    }
+  }
+
+  Future<void> _releaseNative() {
+    requestClose();
+    final existing = _nativeClosing;
+    if (existing != null) return existing;
+    final work = _joinNative();
+    _nativeClosing = work;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (identical(_nativeClosing, work)) _nativeClosing = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<void> _joinNative() async {
+    try {
+      await _native.close();
+      if (!_disposed) {
+        _native.dispose();
+        _disposed = true;
+      }
+    } catch (error, stack) {
+      Error.throwWithStackTrace(_studioFailure(error), stack);
+    }
+  }
+}
+
+ActivityContentFrame _activityContentFromFrb(
+  frb_activity.BridgeActivityContentFrame value,
+) => value.when(
+  begin:
+      (
+        generation,
+        baseRevision,
+        revision,
+        activity,
+        reasoning,
+        response,
+        tools,
+        totalBytes,
+      ) => ActivityBegin(
+        generation: generation,
+        baseRevision: _exactNullableTimelineInt(
+          baseRevision,
+          'activity base revision',
+        ),
+        revision: _exactTimelineInt(revision, 'activity revision'),
+        activity: activity == null ? null : _threadActivityFromFrb(activity),
+        reasoning: reasoning.map(_activityPartFromFrb).toList(),
+        response: response.map(_activityPartFromFrb).toList(),
+        tools: tools
+            .map(
+              (tool) => ActivityToolMetadata(
+                callId: tool.callId,
+                taskId: tool.taskId,
+                name: tool.name,
+                state: _activityToolStateFromFrb(tool.state),
+                startedAt: tool.startedAt == null
+                    ? null
+                    : _exactSignedTimelineInt(tool.startedAt!),
+                sourceOrder: _exactNullableTimelineInt(
+                  tool.sourceOrder,
+                  'activity source order',
+                ),
+                argumentsBytes: _exactNullableTimelineInt(
+                  tool.argumentsBytes,
+                  'activity arguments bytes',
+                ),
+                outputBytes: _exactNullableTimelineInt(
+                  tool.outputBytes,
+                  'activity output bytes',
+                ),
+                outputParts: [
+                  for (final part in tool.outputParts)
+                    ActivityToolOutputMetadata(
+                      partId: part.partId,
+                      totalBytes: _exactTimelineInt(
+                        part.totalBytes,
+                        'activity output part bytes',
+                      ),
+                    ),
+                ],
+                wait: tool.wait == null ? null : _waitFromFrb(tool.wait!),
+              ),
+            )
+            .toList(),
+        totalBytes: _exactTimelineInt(totalBytes, 'activity total bytes'),
+      ),
+  text: (generation, revision, operations) => ActivityText(
+    generation: generation,
+    revision: _exactTimelineInt(revision, 'activity revision'),
+    operations: operations.map(_activityOperationFromFrb).toList(),
+  ),
+  commit: (generation, revision) => ActivityCommit(
+    generation: generation,
+    revision: _exactTimelineInt(revision, 'activity revision'),
+  ),
+);
+
+ActivityPartMetadata _activityPartFromFrb(
+  frb_activity.BridgeActivityPartMetadata value,
+) => ActivityPartMetadata(
+  itemId: value.itemId,
+  complete: value.complete,
+  totalBytes: _exactTimelineInt(value.totalBytes, 'activity part bytes'),
+);
+
+ActivityRegion _activityRegionFromFrb(
+  frb_activity.BridgeActivityTextRegion value,
+) => value.when(
+  reasoning: (id) => ActivityRegion(ActivityRegionKind.reasoning, id),
+  response: (id) => ActivityRegion(ActivityRegionKind.response, id),
+  toolArguments: (id) => ActivityRegion(ActivityRegionKind.toolArguments, id),
+  toolOutput: (callId, partId) =>
+      ActivityRegion.toolOutput(callId: callId, partId: partId),
+);
+
+ActivityTextOperation _activityOperationFromFrb(
+  frb_activity.BridgeActivityTextOperation value,
+) => value.when(
+  append: (region, text) =>
+      ActivityAppend(_activityRegionFromFrb(region), text),
+  replace: (region, text) =>
+      ActivityReplace(_activityRegionFromFrb(region), text),
+  remove: (region) => ActivityRemove(_activityRegionFromFrb(region)),
+);
+
 const _conversationClosedFailure = StudioFailure(
   code: StudioFailureCode.cancelled,
   message: 'The conversation feed is closed',
@@ -520,6 +648,8 @@ void _validateConversationField(ThreadContentFieldView field) {
 
   switch (field) {
     case ThreadTextFieldView() ||
+        ThreadPlanDocumentFieldView() ||
+        ThreadPlanFeedbackFieldView() ||
         ThreadToolArgumentsFieldView() ||
         ThreadToolResultFieldView() ||
         ThreadToolOutputArtifactsFieldView():
@@ -559,3 +689,29 @@ int _exactTimelineInt(BigInt value, String what) {
 
 int? _exactNullableTimelineInt(BigInt? value, String what) =>
     value == null ? null : _exactTimelineInt(value, what);
+
+int _exactSignedTimelineInt(Object value) {
+  final integer = switch (value) {
+    final BigInt n => n,
+    final int n => BigInt.from(n),
+    _ => throw const StudioFailure(
+      code: StudioFailureCode.internal,
+      message: 'Conversation timestamp is not an integer',
+      retryable: false,
+      correlationId: 'client-conversation-integer-type',
+    ),
+  };
+  final converted = integer.toInt();
+  if (BigInt.from(converted) != integer) {
+    throw const StudioFailure(
+      code: StudioFailureCode.overloaded,
+      message: 'Conversation timestamp cannot be represented exactly',
+      retryable: false,
+      correlationId: 'client-conversation-range',
+    );
+  }
+  return converted;
+}
+
+int? _exactNullableSignedTimelineInt(Object? value) =>
+    value == null ? null : _exactSignedTimelineInt(value);

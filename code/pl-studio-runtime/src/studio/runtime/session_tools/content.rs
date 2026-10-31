@@ -14,7 +14,7 @@ pub(super) struct ReadInput {
     #[serde(default = "super::default_limit")]
     limit: u32,
     item_id: Option<String>,
-    revision: Option<u64>,
+    timeline_epoch: Option<String>,
     continuation: Option<String>,
 }
 
@@ -24,13 +24,16 @@ pub(super) async fn read(
 ) -> Result<pl_core::tool::ToolOutput> {
     let reader = runtime.timeline_reader(&args.session_id).await?;
     if let Some(item_id) = args.item_id {
+        ensure!(args.before.is_none(), "before cannot be used with itemId");
         return output(
             &reader
                 .read_detail(
                     &item_id,
                     &TimelineDetailQuery {
                         field: ThreadContentField::Text,
-                        revision: args.revision.context("revision is required with itemId")?,
+                        timeline_epoch: args
+                            .timeline_epoch
+                            .context("timelineEpoch is required with itemId")?,
                         continuation: args.continuation,
                         max_bytes: Some(32 * 1024),
                     },
@@ -38,6 +41,10 @@ pub(super) async fn read(
                 .await?,
         );
     }
+    ensure!(
+        args.timeline_epoch.is_none() && args.continuation.is_none(),
+        "timelineEpoch and continuation require itemId"
+    );
     ensure!(
         (1..=100).contains(&args.limit),
         "limit must be between 1 and 100"
@@ -77,7 +84,7 @@ struct Cursor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PendingText {
     item_id: String,
-    revision: u64,
+    timeline_epoch: String,
     continuation: Option<String>,
     overlap: String,
     next_before: Option<String>,
@@ -89,7 +96,7 @@ struct PendingText {
 struct Match {
     session_id: String,
     item_id: String,
-    revision: u64,
+    timeline_epoch: String,
     snippet: String,
 }
 
@@ -200,7 +207,7 @@ pub(super) async fn search(
             };
             let pending = PendingText {
                 item_id: item.header.id.clone(),
-                revision: item.revision,
+                timeline_epoch: page.timeline_epoch,
                 continuation: None,
                 overlap: String::new(),
                 next_before: page.before,
@@ -213,7 +220,7 @@ pub(super) async fn search(
                     matches.push(Match {
                         session_id,
                         item_id: pending.item_id,
-                        revision: pending.revision,
+                        timeline_epoch: pending.timeline_epoch,
                         snippet,
                     });
                 }
@@ -230,18 +237,25 @@ pub(super) async fn search(
                 &pending.item_id,
                 &TimelineDetailQuery {
                     field: ThreadContentField::Text,
-                    revision: pending.revision,
+                    timeline_epoch: pending.timeline_epoch.clone(),
                     continuation: pending.continuation.take(),
                     max_bytes: Some(32 * 1024),
                 },
             )
             .await?;
+        ensure!(
+            chunk.thread_id == session_id
+                && chunk.item_id == pending.item_id
+                && chunk.timeline_epoch == pending.timeline_epoch
+                && chunk.field == ThreadContentField::Text,
+            "search detail identity conflict"
+        );
         let text = pending.overlap + &chunk.text;
         if let Some(snippet) = matched_snippet(&text, &needle) {
             matches.push(Match {
                 session_id,
                 item_id: pending.item_id,
-                revision: pending.revision,
+                timeline_epoch: pending.timeline_epoch,
                 snippet,
             });
             advance(&mut cursor, pending.next_before, pending.end_of_session);
@@ -299,4 +313,34 @@ fn matched_snippet(text: &str, needle: &str) -> Option<String> {
         .collect::<String>();
     let after: String = folded[offset..].chars().take(240).collect();
     Some(format!("{before}{after}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReadInput;
+    use serde_json::json;
+
+    #[test]
+    fn read_input_accepts_epoch_and_rejects_revision() {
+        let input: ReadInput = serde_json::from_value(json!({
+            "sessionId": "session",
+            "itemId": "item",
+            "timelineEpoch": "epoch",
+            "continuation": "cursor"
+        }))
+        .unwrap();
+        assert_eq!(input.timeline_epoch.as_deref(), Some("epoch"));
+        assert!(
+            serde_json::from_value::<ReadInput>(json!({
+                "sessionId": "session",
+                "itemId": "item",
+                "revision": 1
+            }))
+            .is_err()
+        );
+        let schema = schemars::schema_for!(ReadInput).to_value();
+        assert!(schema["properties"]["timelineEpoch"].is_object());
+        assert!(schema["properties"].get("revision").is_none());
+        assert_eq!(schema["additionalProperties"], false);
+    }
 }

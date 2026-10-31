@@ -916,16 +916,18 @@ async fn a_detail_first_request_prepares_existing_v2_history_without_activation(
     history.commit(1, std::slice::from_ref(&item), &[]).await?;
     drop(history);
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-    db.execute_unprepared("DROP TABLE seaql_migrations; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
+    db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE timeline_records; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
     db.close().await?;
     let runtime = StudioRuntime::initialize(options(temp.path())).await?;
+    let reader = runtime.timeline_reader("cold").await?;
+    let timeline_epoch = reader.epoch();
     let read = runtime
         .read_timeline_detail(
             "cold",
             &item.id,
             &pl_protocol::TimelineDetailQuery {
                 field: pl_protocol::ThreadContentField::Text,
-                revision: 1,
+                timeline_epoch: timeline_epoch.clone(),
                 continuation: None,
                 max_bytes: None,
             },
@@ -935,7 +937,7 @@ async fn a_detail_first_request_prepares_existing_v2_history_without_activation(
     let detail = read?;
     shutdown?;
     assert_eq!(detail.text, "preserved detail 中文\n");
-    assert_eq!(detail.revision, 1);
+    assert_eq!(detail.timeline_epoch, timeline_epoch);
     assert!(detail.continuation.is_none());
     Ok(())
 }

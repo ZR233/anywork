@@ -39,6 +39,7 @@ pub enum BridgeProductEventPayload {
     AcpAuthStateChanged(Box<BridgeAcpAuthSnapshot>),
     AcpInstallStateChanged(Box<BridgeAcpInstallSnapshot>),
     SessionCostsChanged(Box<super::response::BridgeSessionCostsState>),
+    ChildInteractionsChanged(Box<super::product_topic::BridgeChildInteractionsState>),
     UpdaterStateChanged(BridgeUpdaterStateSnapshot),
     PersistenceStateChanged(BridgePersistenceStateSnapshot),
     PersistenceQueueStateChanged(Box<super::response::BridgePersistenceQueueStateSnapshot>),

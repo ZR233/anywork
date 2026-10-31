@@ -22,8 +22,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// Cancellation before publication drops the native feed through its own RAII boundary.
 Future<BridgeConversationFeed> openConversationFeed({
   required String threadId,
+  BridgeTimelineCompletionCursor? resumeAfter,
 }) => RustLib.instance.api.crateApiStudioHandlersChatOpenConversationFeed(
   threadId: threadId,
+  resumeAfter: resumeAfter,
 );
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeConversationFeed>>
@@ -43,17 +45,7 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   /// Conflict; a sealed handle always returns Cancelled first. Producer exit drops the sink.
   Stream<BridgeConversationFrame> events();
 
-  /// Stateless query on the captured Session; never waits for receive or ACK credit.
-  Future<BridgeTimelinePage> page({String? before, int? limit});
-
-  /// Reads one bounded field block; cancellation drops the registered query future, not a detached
-  /// task. Already accepted synchronous DB work remains owned by the existing pool.
-  Future<BridgeTimelineDetailChunk> readDetail({
-    required String itemId,
-    required BridgeTimelineDetailQuery query,
-  });
-
-  /// Seals admission and wakes credit, receive and query waits without issuing business cancellation.
+  /// Seals admission and wakes credit and receive waits without issuing business cancellation.
   void requestClose();
 
   String subscriptionId();

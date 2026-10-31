@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use crate::studio::runtime::chat_item::typed_item;
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatCursor, ChatError, ChatHistory, ChatHistoryPage, ChatItem};
 use pl_protocol::thread::TimelineCursor;
@@ -16,7 +15,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 10;
+const HISTORY_SCHEMA_VERSION: i64 = 11;
 
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
@@ -29,6 +28,7 @@ mod parent_report;
 mod producer;
 mod review_delivery;
 mod schema;
+mod timeline;
 pub(crate) use schema::validate_layout_source;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
@@ -106,6 +106,14 @@ struct HistoryStoreState {
     /// Test-only probe fired immediately before a cold reader waits on `init`.
     #[cfg(test)]
     reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Parks the next actual completion identity read before entering its SQL query.
+    #[cfg(test)]
+    completion_read_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<String>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 /// One live connection plus the database identity it validated.
@@ -179,6 +187,8 @@ pub(crate) struct MessageIdentityReceipt {
 /// One effect's durable history write, committed as a single transaction.
 pub(crate) struct EffectCommit<'a> {
     pub items: &'a [ThreadItem],
+    /// Immutable completions already sequenced by Session, committed with this effect's facts.
+    pub completions: &'a [ChatItem],
     pub rolled_back_turns: &'a std::collections::BTreeSet<String>,
     /// Minimal identities of the terminal inputs this effect's state still carries.
     pub identities: &'a [InputIdentityWrite],
@@ -230,6 +240,8 @@ impl HistoryStore {
                 init_gate: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 reader_before_init: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                completion_read_gate: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -265,6 +277,19 @@ impl HistoryStore {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.state.reader_before_init.lock().await = Some(tx);
         rx
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn arm_completion_read_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<String>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.state.completion_read_gate.lock().await = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
     }
 
     /// The handle behind one share, or `None` once its last real holder released it.
@@ -318,6 +343,7 @@ impl HistoryStore {
             .reader
             .get_or_try_init(|| async {
                 let db = connect_read_only(&self.state.path).await?;
+                schema::validate_identity_collations(&db).await?;
                 let (database_id, schema_version) =
                     validate_existing(&db, &self.state.thread_id).await?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
@@ -494,6 +520,7 @@ impl HistoryStore {
     ) -> Result<Option<SessionAccounting>> {
         let EffectCommit {
             items,
+            completions,
             rolled_back_turns,
             identities,
             messages,
@@ -513,6 +540,7 @@ impl HistoryStore {
             (applied_write_seq(&tx).await?, None)
         };
         if write_seq <= current {
+            timeline::append_records(&tx, &self.state.thread_id, completions, false).await?;
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(&tx, checkpoint, current).await?;
             }
@@ -535,6 +563,7 @@ impl HistoryStore {
                 "history write sequence is not contiguous"
             );
         }
+        timeline::append_records(&tx, &self.state.thread_id, completions, true).await?;
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
@@ -960,6 +989,23 @@ impl HistoryStore {
         }
     }
 
+    /// Execution recovery's ordinal ceiling. This is not the public completion head.
+    pub(crate) async fn latest_execution_ordinal(&self) -> Result<u64> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(0);
+        };
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT MAX(ordinal) AS ordinal FROM history_items",
+                vec![],
+            ))
+            .await?
+            .context("history execution ordinal query returned no row")?;
+        let maximum: Option<i64> = row.try_get("", "ordinal")?;
+        Ok(u64::try_from(maximum.unwrap_or(0))?)
+    }
+
     async fn upsert_item(
         &self,
         db: &impl ConnectionTrait,
@@ -1192,109 +1238,59 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Reads one canonical item by identity, including its complete body.
-    ///
-    /// 这是按身份的**单条 on-demand 读取**，不是第二份历史：它只返回被点名的那一条正文，不带分页、
-    /// 不带邻居、也不把结果缓存进 `HistoryStore`。调用方按字段与版本分块读取正文，因此这里刻意没有
-    /// 字节上限——有上限就无法取回超预算条目的完整正文。需要遍历历史时必须走有界页，不能靠反复读取
-    /// 单条来物化整段历史。
-    ///
-    /// # Errors
-    /// Fails on a storage read failure; a missing identity is `None`.
+    /// Reads a complete frozen record, never the mutable execution fact with a similar identity.
     pub(crate) async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        let Some(row) = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT ordinal,payload FROM history_items WHERE item_id=?",
-                vec![item_id.into()],
-            ))
-            .await?
-        else {
-            return Ok(None);
-        };
-        let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)?;
-        let payload: String = row.try_get("", "payload")?;
-        let mut item: ThreadItem = serde_json::from_str(&payload)?;
-        item.ordinal = ordinal;
-        Ok(Some(chat_item(item, true)?))
+        let tx = connection.db.begin().await?;
+        let item = timeline::read_item(&tx, &self.state.thread_id, item_id).await?;
+        tx.commit().await?;
+        Ok(item)
     }
 
-    async fn latest_allocated_order(&self) -> Result<u64> {
+    async fn latest_append_seq(&self) -> Result<u64> {
         let Some(connection) = self.reader().await? else {
             return Ok(0);
         };
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT MAX(ordinal) AS ordinal FROM history_items",
-                vec![],
-            ))
-            .await?
-            .context("history ordinal query returned no row")?;
-        let maximum: Option<i64> = row.try_get("", "ordinal")?;
-        Ok(u64::try_from(maximum.unwrap_or(0))?)
+        let tx = connection.db.begin().await?;
+        let head = timeline::latest_append_seq(&tx).await?;
+        tx.commit().await?;
+        Ok(head)
     }
 
-    /// Reads up to `limit` durable rows strictly older than `before`, ascending.
-    ///
-    /// `ordinal` 是 `INTEGER PRIMARY KEY`（rowid 别名）且严格递增、永不复用，因此“严格更旧”就是一
-    /// 个 rowid range seek（`ordinal < ?`），不需要 OR 表达式或前缀扫描；identity 只用于校验游标
-    /// scope（见 [`HistoryStore::ensure_cursor_identity`]），不参与排序。`has_older` 来自真实多出的
-    /// 一行，短页本身不证明到头，并且只有本页的行会被解码。
+    /// One fresh short read transaction, opened after Session captured its completion ceiling.
     async fn chat_page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> Result<ChatHistoryPage> {
+        timeline::validate_page(ceiling, limit)?;
         let Some(connection) = self.reader().await? else {
             return Ok(ChatHistoryPage::default());
         };
-        let probe = limit.saturating_add(1);
-        let mut rows = match before {
-            Some(before) => {
-                query_chat_ids(
-                    &connection.db,
-                    "SELECT ordinal,item_id FROM history_items
-                     WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(before.order)?.into(), integer(probe)?.into()],
-                )
-                .await?
-            }
-            None => {
-                query_chat_ids(
-                    &connection.db,
-                    "SELECT ordinal,item_id FROM history_items
-                     ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(probe)?.into()],
-                )
-                .await?
-            }
+        let tx = connection.db.begin().await?;
+        let page = timeline::page(&tx, &self.state.thread_id, before, ceiling, limit).await?;
+        tx.commit().await?;
+        Ok(page)
+    }
+
+    async fn chat_page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> Result<ChatHistoryPage> {
+        timeline::validate_page(ceiling, limit)?;
+        integer(after)?;
+        let Some(connection) = self.reader().await? else {
+            return Ok(ChatHistoryPage::default());
         };
-        let has_older = rows.len() > limit;
-        rows.truncate(limit);
-        rows.reverse();
-        let mut items = Vec::with_capacity(rows.len());
-        for (ordinal, item_id) in rows {
-            let row = connection
-                .db
-                .query_one_raw(statement(
-                    "SELECT payload FROM history_items WHERE ordinal=?",
-                    vec![integer(ordinal)?.into()],
-                ))
-                .await?
-                .with_context(|| format!("chat page item {item_id} disappeared during read"))?;
-            let payload: String = row.try_get("", "payload")?;
-            let item: ThreadItem = serde_json::from_str(&payload)?;
-            ensure!(
-                item.id == item_id && item.ordinal == ordinal,
-                "chat page item {item_id} differs from its indexed identity or order"
-            );
-            items.push(chat_item(item, true)?);
-        }
-        Ok(ChatHistoryPage { items, has_older })
+        let tx = connection.db.begin().await?;
+        let page = timeline::page_after(&tx, &self.state.thread_id, after, ceiling, limit).await?;
+        tx.commit().await?;
+        Ok(page)
     }
 
     /// Reads the newest terminal Turn this Thread already committed, without a body read.
@@ -1667,8 +1663,8 @@ impl ChatHistory for HistoryStore {
         crate::studio::runtime::timeline_content::preview::bounded(item)
     }
 
-    async fn latest_allocated_order(&self) -> std::result::Result<u64, ChatError> {
-        HistoryStore::latest_allocated_order(self)
+    async fn latest_append_seq(&self) -> std::result::Result<u64, ChatError> {
+        HistoryStore::latest_append_seq(self)
             .await
             .map_err(chat_history_error)
     }
@@ -1676,71 +1672,45 @@ impl ChatHistory for HistoryStore {
     async fn page(
         &self,
         before: Option<&ChatCursor>,
+        ceiling: u64,
         limit: usize,
     ) -> std::result::Result<ChatHistoryPage, ChatError> {
-        if let Some(before) = before {
-            self.ensure_cursor_identity(before).await?;
-        }
-        self.chat_page(before, limit)
+        self.chat_page(before, ceiling, limit)
+            .await
+            .map_err(chat_history_error)
+    }
+
+    async fn page_after(
+        &self,
+        after: u64,
+        ceiling: u64,
+        limit: usize,
+    ) -> std::result::Result<ChatHistoryPage, ChatError> {
+        self.chat_page_after(after, ceiling, limit)
             .await
             .map_err(chat_history_error)
     }
 
     async fn item(&self, item_id: &str) -> std::result::Result<Option<ChatItem>, ChatError> {
+        #[cfg(test)]
+        {
+            let gate = self.state.completion_read_gate.lock().await.take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(item_id.to_owned());
+                let _ = release.await;
+            }
+        }
         self.read_chat_item(item_id)
             .await
             .map_err(chat_history_error)
     }
 }
 
-impl HistoryStore {
-    /// 校验游标身份与它命名的 durable 顺序一致。
-    ///
-    /// 顺序槽严格递增且永不复用，因此 `ordinal < ?` 恰好就是严格 `(ordinal, identity)` 边界；这里
-    /// 用一次 rowid 点查保证：如果该顺序已经有行，它的 identity 必须就是游标声明的那个，否则拒绝，
-    /// 绝不把游标当成「附近某条」的猜测位置。该顺序还没有 durable 行是合法情形——边界可以指向尚未
-    /// 落盘的权威条目。
-    async fn ensure_cursor_identity(
-        &self,
-        before: &ChatCursor,
-    ) -> std::result::Result<(), ChatError> {
-        let connection = self.reader().await.map_err(chat_history_error)?;
-        let Some(connection) = connection else {
-            return Ok(());
-        };
-        let ordinal = integer(before.order).map_err(chat_history_error)?.into();
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT item_id FROM history_items WHERE ordinal=?",
-                vec![ordinal],
-            ))
-            .await
-            .map_err(anyhow::Error::new)
-            .map_err(chat_history_error)?;
-        let Some(row) = row else {
-            return Ok(());
-        };
-        let item_id: String = row
-            .try_get("", "item_id")
-            .map_err(anyhow::Error::new)
-            .map_err(chat_history_error)?;
-        if item_id == before.item_id {
-            return Ok(());
-        }
-        Err(ChatError::InvalidArgument(format!(
-            "timeline cursor names order {} with a different identity",
-            before.order
-        )))
-    }
-}
-
-pub(crate) fn chat_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    typed_item(item, saved)
-}
-
 fn chat_history_error(error: anyhow::Error) -> ChatError {
-    ChatError::History(error.into_boxed_dyn_error())
+    match error.downcast::<ChatError>() {
+        Ok(error) => error,
+        Err(error) => ChatError::History(error.into_boxed_dyn_error()),
+    }
 }
 
 /// One query implementation for hot fixed-fence reads and strict read-only checkpoint snapshots.
@@ -2250,23 +2220,6 @@ async fn query_items(
         .collect()
 }
 
-async fn query_chat_ids(
-    db: &DatabaseConnection,
-    sql: &str,
-    values: Vec<Value>,
-) -> Result<Vec<(u64, String)>> {
-    db.query_all_raw(statement(sql, values))
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                u64::try_from(row.try_get::<i64>("", "ordinal")?)?,
-                row.try_get("", "item_id")?,
-            ))
-        })
-        .collect()
-}
-
 /// Creates or validates the schema and returns the owning database identity.
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
@@ -2544,6 +2497,285 @@ mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
 
+    fn test_session(store: HistoryStore) -> pl_core::chat::Session {
+        pl_core::chat::Session::new(
+            store,
+            pl_core::chat::TimelineEpoch::new(crate::studio::new_id("test-timeline"))
+                .expect("generated epoch is nonempty"),
+        )
+    }
+
+    /// Test callers explicitly publish completions; execution-only fixture commits stay separate.
+    async fn persist_completed(
+        store: &HistoryStore,
+        sequence: u64,
+        items: &[ThreadItem],
+    ) -> Result<Vec<ChatItem>> {
+        let session = test_session(store.clone());
+        let drafts = items
+            .iter()
+            .map(|item| crate::studio::runtime::chat_item::completion_draft(item, sequence))
+            .collect::<Result<Vec<_>>>()?;
+        let completions = session
+            .publish_batch(drafts)
+            .await?
+            .iter()
+            .map(|item| item.as_ref().clone())
+            .collect::<Vec<_>>();
+        store
+            .commit_effect(
+                sequence,
+                EffectCommit {
+                    items,
+                    completions: &completions,
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        Ok(completions)
+    }
+
+    #[tokio::test]
+    async fn atomic_timeline_commits_with_checkpoint_facts_and_retries_atomically() -> Result<()> {
+        use pl_core::thread::{ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot};
+        let directory = tempfile::tempdir()?;
+        let store =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "atomic-effect").await?;
+        let mut item = ThreadItem::completed_user_message(
+            "input".into(),
+            "atomic-effect".into(),
+            String::new(),
+            "same transaction".into(),
+            vec![],
+            17,
+        );
+        item.revision = 1;
+        let session = test_session(store.clone());
+        let completions = session
+            .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
+                &item, 1,
+            )?])
+            .await?
+            .iter()
+            .map(|item| item.as_ref().clone())
+            .collect::<Vec<_>>();
+        let mut checkpoint = ThreadCheckpoint::capture(
+            "atomic-effect".into(),
+            1,
+            ThreadSnapshot {
+                commit_sequence: 1,
+                ..Default::default()
+            },
+        );
+        let billing = crate::studio::thread_projection::AuxiliaryBillingReceipt {
+            succeeded: true,
+            billing: pl_protocol::InferenceBillingRecord {
+                inference_id: "atomic-title".into(),
+                purpose: Some("title".into()),
+                account_id: "frozen-account".into(),
+                account_display_name: None,
+                model_id: Some("frozen-model".into()),
+                model_observation: None,
+                effort: None,
+                context_window: None,
+                accounting: pl_protocol::InferenceAccounting {
+                    usage: pl_protocol::UsageReport {
+                        input_tokens: Some(10),
+                        output_tokens: Some(2),
+                        cache_read_tokens: Some(0),
+                        total_tokens: Some(12),
+                        ..Default::default()
+                    },
+                    pricing: pl_protocol::PricingOutcome::Estimated {
+                        cost: pl_protocol::RuntimeCostAmount {
+                            currency: "USD".into(),
+                            amount: 1.25,
+                        },
+                        cache_savings: None,
+                    },
+                    ..Default::default()
+                },
+                prompt_generation: None,
+                prompt_cache_policy: None,
+                prefix_changed_reason: None,
+                orchestration: Default::default(),
+                timing: None,
+                recorded_at: 17,
+            },
+        };
+        let billing_extension = pl_core::thread::extensions::ExtensionRecord {
+            revision: 1,
+            payload: billing.into_payload()?,
+        };
+        checkpoint.state.extensions.insert(
+            "studio.auxiliary-billing.title".into(),
+            billing_extension.clone(),
+        );
+        let effect = ThreadEffectBatch {
+            thread_id: "atomic-effect".into(),
+            sequence: 1,
+            extensions: vec![pl_core::thread::extensions::ExtensionChange::Put {
+                id: "studio.auxiliary-billing.title".into(),
+                record: billing_extension,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let accounting = crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?;
+        accounting.fold_into(&mut checkpoint.state.usage_summary);
+        let accounting_commit = || AccountingCommit {
+            facts: &accounting,
+            material_changed: true,
+        };
+        let rollback = std::collections::BTreeSet::new();
+        fn commit<'a>(
+            items: &'a [ThreadItem],
+            completions: &'a [ChatItem],
+            rollback: &'a std::collections::BTreeSet<String>,
+        ) -> EffectCommit<'a> {
+            EffectCommit {
+                items,
+                completions,
+                rolled_back_turns: rollback,
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            }
+        }
+        // Invalid execution ordinal fails after completion insertion in the same transaction.
+        assert!(
+            store
+                .commit_checkpoint_effect(
+                    &checkpoint,
+                    &effect,
+                    commit(std::slice::from_ref(&item), &completions, &rollback),
+                    accounting_commit(),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(store.latest_append_seq().await?, 0);
+        assert_eq!(store.watermark().await?, 0);
+        assert!(store.checkpoint().await?.is_none());
+        assert!(store.item(&item.id).await?.is_none());
+        item.ordinal = 41;
+        // Fail after history, watermark and checkpoint writes: accounting must share their
+        // transaction, not leave either completed content or an execution fence behind.
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared(
+                "CREATE TRIGGER reject_accounting BEFORE INSERT ON session_costs
+             BEGIN SELECT RAISE(ABORT, 'injected accounting failure'); END",
+            )
+            .await?;
+        let error = store
+            .commit_checkpoint_effect(
+                &checkpoint,
+                &effect,
+                commit(std::slice::from_ref(&item), &completions, &rollback),
+                accounting_commit(),
+            )
+            .await
+            .err()
+            .context("accounting failure must roll back the complete effect")?;
+        assert!(format!("{error:#}").contains("injected accounting failure"));
+        assert_eq!(store.latest_append_seq().await?, 0);
+        assert_eq!(store.watermark().await?, 0);
+        assert!(store.checkpoint().await?.is_none());
+        assert!(store.item(&item.id).await?.is_none());
+        assert!(store.accounting().await?.is_none());
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("DROP TRIGGER reject_accounting")
+            .await?;
+        let committed_accounting = store
+            .commit_checkpoint_effect(
+                &checkpoint,
+                &effect,
+                commit(std::slice::from_ref(&item), &completions, &rollback),
+                accounting_commit(),
+            )
+            .await?
+            .context("successful commit returns its compact accounting")?;
+        assert_eq!(committed_accounting.revision, 1);
+        assert_eq!(
+            committed_accounting.purpose_costs,
+            vec![(
+                Some("title".into()),
+                vec![pl_protocol::RuntimeCostAmount {
+                    currency: "USD".into(),
+                    amount: 1.25,
+                }],
+            )]
+        );
+        assert_eq!(
+            store
+                .checkpoint()
+                .await?
+                .context("checkpoint")?
+                .state
+                .usage_summary,
+            checkpoint.state.usage_summary
+        );
+        assert_eq!(store.latest_execution_ordinal().await?, 41);
+        assert_eq!(store.latest_append_seq().await?, 1);
+        assert_eq!(store.watermark().await?, 1);
+        assert_eq!(
+            store
+                .checkpoint()
+                .await?
+                .context("checkpoint")?
+                .history_fence,
+            1
+        );
+        let retried_accounting = store
+            .commit_checkpoint_effect(
+                &checkpoint,
+                &effect,
+                commit(std::slice::from_ref(&item), &completions, &rollback),
+                accounting_commit(),
+            )
+            .await?
+            .context("lost acknowledgement returns verified committed accounting")?;
+        assert_eq!(
+            retried_accounting.purpose_costs, committed_accounting.purpose_costs,
+            "retry must not add the same price twice"
+        );
+        let mut conflict = completions.clone();
+        conflict[0].sealed_at = Some(18);
+        assert!(
+            store
+                .commit_checkpoint_effect(
+                    &checkpoint,
+                    &effect,
+                    commit(std::slice::from_ref(&item), &conflict, &rollback),
+                    accounting_commit(),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.read_chat_item(&item.id).await?,
+            Some(completions[0].clone())
+        );
+        Ok(())
+    }
+
     /// Real SQLite representation maintenance must preserve old review history without granting
     /// feedback/baselines, and roll back both the checkpoint and migration name on save failure.
     #[tokio::test]
@@ -2587,12 +2819,27 @@ mod storage_fault_tests {
                 },
             );
             store.import_checkpoint(&checkpoint, &[]).await?;
+            assert_eq!(
+                store.latest_append_seq().await?,
+                0,
+                "the legacy fixture must not discard existing completion facts"
+            );
             let connection = store.writer().await?;
-            connection.db.execute_unprepared(
-                "DELETE FROM seaql_migrations WHERE version='m20261027_000003_history_review_receipt';
+            connection
+                .db
+                .execute_unprepared(
+                    "DELETE FROM seaql_migrations WHERE version IN (
+                     'm20261027_000003_history_review_receipt',
+                     'm20261027_000004_history_atomic_timeline',
+                     'm20261028_000001_history_metering_facts',
+                     'm20261028_000002_history_combined_content'
+                 );
+                 DROP TABLE timeline_records;
+                 UPDATE history_meta SET schema_version=9;
                  CREATE TRIGGER reject_review_upgrade BEFORE UPDATE ON session_checkpoint
-                 BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;"
-            ).await?;
+                 BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;",
+                )
+                .await?;
             let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
                 .await
                 .expect_err("checkpoint failure must fail the representation migration");
@@ -2683,6 +2930,7 @@ mod storage_fault_tests {
                 &checkpoint,
                 &effect,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&item),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -2748,11 +2996,19 @@ mod storage_fault_tests {
                 ],
             ))
             .await?;
+        assert_eq!(
+            store.latest_append_seq().await?,
+            0,
+            "the v8 fixture must start before immutable completions were populated"
+        );
         store.writer().await?.db.execute_unprepared(
             "DELETE FROM seaql_migrations WHERE version IN (
                  'm20261027_000001_history_retire_ordinals',
-                 'm20261028_000001_history_metering_facts'
+                 'm20261027_000004_history_atomic_timeline',
+                 'm20261028_000001_history_metering_facts',
+                 'm20261028_000002_history_combined_content'
              );
+             DROP TABLE timeline_records;
              UPDATE history_meta SET schema_version=8;
              CREATE TABLE history_ordinals (next_ordinal INTEGER NOT NULL);
              INSERT INTO history_ordinals VALUES(9000);
@@ -2788,7 +3044,7 @@ mod storage_fault_tests {
         let reading = async {
             entered.await?;
             let waiting = history.arm_reader_before_init().await;
-            let page = history.chat_page(None, 10);
+            let page = history.chat_page(None, i64::MAX as u64, 10);
             tokio::pin!(page);
             tokio::select! {
                 biased;
@@ -2828,8 +3084,12 @@ mod storage_fault_tests {
         assert_eq!(history_facts(&history.writer().await?.db).await?, expected);
         drop(history);
         let cold = HistoryStore::open(&path, thread).await?;
-        assert_eq!(cold.chat_page(None, 10).await?.items.len(), 1);
-        assert_eq!(cold.latest_allocated_order().await?, 41);
+        assert_eq!(
+            cold.chat_page(None, i64::MAX as u64, 10).await?.items.len(),
+            1
+        );
+        assert_eq!(cold.latest_execution_ordinal().await?, 41);
+        assert_eq!(cold.latest_append_seq().await?, 1);
         assert!(
             cold.state.writer.get().is_none(),
             "cold page must remain read-only"
@@ -2865,7 +3125,7 @@ mod storage_fault_tests {
         let path = directory.path().join("absent/history.sqlite");
         let absent = HistoryStore::open(&path, "absent").await?;
         absent.prepare_history_access().await?;
-        assert!(absent.chat_page(None, 10).await?.items.is_empty());
+        assert!(absent.chat_page(None, 0, 10).await?.items.is_empty());
         assert!(absent.checkpoint().await?.is_none());
         assert!(!path.parent().context("parent")?.exists());
         let legacy = directory.path().join("state.toml");
@@ -2956,7 +3216,7 @@ mod storage_fault_tests {
             item.revision = 1;
             store.commit(1, std::slice::from_ref(&item), &[]).await?;
             let db = &store.writer().await?.db;
-            db.execute_unprepared("DROP TABLE seaql_migrations; ALTER TABLE history_input_identities DROP COLUMN request_digest").await?;
+            db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE timeline_records; ALTER TABLE history_input_identities DROP COLUMN request_digest").await?;
             if version == 1 {
                 db.execute_unprepared("DROP TABLE history_message_identities; ALTER TABLE history_input_identities DROP COLUMN presentation").await?;
             }
@@ -2967,7 +3227,7 @@ mod storage_fault_tests {
             .await?;
             drop(store);
             let cold = HistoryStore::open(&path, "supported-v2").await?;
-            assert!(cold.chat_page(None, 10).await.is_err());
+            assert!(cold.chat_page(None, i64::MAX as u64, 10).await.is_err());
             let inspect = connect_read_only(&path).await?;
             assert_eq!(schema::version(&inspect).await?, version);
             inspect.close().await?;
@@ -2978,7 +3238,14 @@ mod storage_fault_tests {
                 prepared.existing_items([item.id.clone()]).await?[&item.id],
                 item
             );
-            assert_eq!(prepared.chat_page(None, 10).await?.items.len(), 1);
+            assert_eq!(
+                prepared
+                    .chat_page(None, i64::MAX as u64, 10)
+                    .await?
+                    .items
+                    .len(),
+                1
+            );
             assert_eq!(prepared.watermark().await?, 1);
             assert!(prepared.state.writer.get().is_none());
         }
@@ -3104,6 +3371,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&plan_item),
                     rolled_back_turns: &Default::default(),
                     identities: &identities,
@@ -3127,7 +3395,7 @@ mod storage_fault_tests {
         .await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
-             DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=2",
+             DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=2",
         )
         .await?;
         drop(db);
@@ -3227,6 +3495,7 @@ mod storage_fault_tests {
             .commit_effect(
                 10,
                 EffectCommit {
+                    completions: &[],
                     items: &items,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -3269,7 +3538,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=3",
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=3",
             )
             .await?;
         drop(store);
@@ -3311,16 +3580,10 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn session_orders_do_not_write_sqlite_reservations() -> Result<()> {
+    async fn session_completion_sequences_do_not_write_sqlite_reservations() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = HistoryStore::open(&path, "local-orders").await?;
-        let session = pl_core::chat::Session::new(store.clone());
-        assert_eq!(session.reserve_order("input-1").await?, 1);
-        assert_eq!(session.reserve_order("input-1").await?, 1);
-        assert_eq!(session.reserve_order("input-2").await?, 2);
-        assert!(!tokio::fs::try_exists(&path).await?);
-
         let mut item = ThreadItem::completed_user_message(
             "input-1".to_owned(),
             "local-orders".to_owned(),
@@ -3329,9 +3592,22 @@ mod storage_fault_tests {
             vec![],
             1,
         );
-        item.ordinal = 1;
+        item.ordinal = 41;
         item.revision = 1;
-        store.commit(1, &[item], &[]).await?;
+        let session = test_session(store.clone());
+        let first = crate::studio::runtime::chat_item::completion_draft(&item, 1)?;
+        let published = session.publish_batch(vec![first.clone()]).await?;
+        assert_eq!(published[0].append_seq, 1);
+        assert_eq!(session.publish_batch(vec![first]).await?, published);
+        let mut second = item.clone();
+        second.id = "input-2".into();
+        let second_draft = crate::studio::runtime::chat_item::completion_draft(&second, 1)?;
+        assert_eq!(
+            session.publish_batch(vec![second_draft]).await?[0].append_seq,
+            2
+        );
+        assert!(!tokio::fs::try_exists(&path).await?);
+        persist_completed(&store, 1, &[item]).await?;
         let row = store
             .reader()
             .await?
@@ -3357,17 +3633,35 @@ mod storage_fault_tests {
         assert!(store.commit(2, &[missing_order], &[]).await.is_err());
         assert_eq!(store.watermark().await?, 1);
         let mut changed_order = store.item("input-1").await?.context("committed input")?;
-        changed_order.ordinal = 2;
+        changed_order.ordinal = 42;
         changed_order.revision = 2;
         assert!(store.commit(2, &[changed_order], &[]).await.is_err());
         assert_eq!(store.watermark().await?, 1);
-        assert_eq!(session.reserve_order("input-3").await?, 3);
+        second.id = "input-3".into();
+        assert_eq!(
+            session
+                .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
+                    &second, 2
+                )?])
+                .await?[0]
+                .append_seq,
+            3
+        );
 
         drop(session);
-        let reopened =
-            pl_core::chat::Session::new(HistoryStore::open(&path, "local-orders").await?);
-        // Uncommitted order 2 was never durable and is not reconstructed after restart.
-        assert_eq!(reopened.reserve_order("input-4").await?, 2);
+        let reopened = test_session(HistoryStore::open(&path, "local-orders").await?);
+        // Only completion 1 was committed. Execution ordinal 41 and the lost RAM tail do not
+        // inflate the completion head of a fresh epoch.
+        second.id = "input-4".into();
+        assert_eq!(
+            reopened
+                .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
+                    &second, 2
+                )?])
+                .await?[0]
+                .append_seq,
+            2
+        );
         Ok(())
     }
 
@@ -3392,21 +3686,29 @@ mod storage_fault_tests {
                 item
             })
             .collect::<Vec<_>>();
-        store.commit(1, &items, &[]).await?;
-        let page = store.chat_page(None, 100).await?;
+        persist_completed(&store, 1, &items).await?;
+        let page = store.chat_page(None, 120, 100).await?;
         assert_eq!(page.items.len(), 100);
         assert_eq!(page.items.first().unwrap().item_id, "message-20");
         assert_eq!(page.items.last().unwrap().item_id, "message-119");
-        assert!(page.has_older);
+        assert!(page.has_more);
+        let session = test_session(store.clone());
         let before = store
-            .chat_page(Some(&pl_core::chat::ChatCursor::new(21, "message-20")), 100)
+            .chat_page(
+                Some(&pl_core::chat::ChatCursor::new(
+                    session.epoch(),
+                    21,
+                    "message-20",
+                )),
+                120,
+                100,
+            )
             .await?;
         assert_eq!(before.items.len(), 20);
-        assert!(!before.has_older);
+        assert!(!before.has_more);
 
         // A fresh session starts from the latest small page and continues by the page boundary it
         // proves, instead of pretending a short page reached the beginning of history.
-        let session = pl_core::chat::Session::new(store.clone());
         let mut initial = session.subscribe_tail().await?;
         let baseline = initial.initial()?;
         assert_eq!(baseline.items.len(), 32);
@@ -3418,11 +3720,16 @@ mod storage_fault_tests {
         );
         assert_eq!(
             baseline.before,
-            Some(pl_core::chat::ChatCursor::new(89, "message-88"))
+            Some(pl_core::chat::ChatCursor::new(
+                session.epoch(),
+                89,
+                "message-88"
+            ))
         );
         let older = session
             .page(
                 pl_core::chat::ChatPageRequest::before(pl_core::chat::ChatCursor::new(
+                    session.epoch(),
                     89,
                     "message-88",
                 ))
@@ -3438,8 +3745,7 @@ mod storage_fault_tests {
         // durable reservation to inflate the next ordinal after a restart.
         let reopened =
             HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?;
-        let resumed = pl_core::chat::Session::new(reopened);
-        assert_eq!(resumed.reserve_order("message-120").await?, 121);
+        let resumed = test_session(reopened);
         let mut committed = ThreadItem::completed_user_message(
             "message-120".to_owned(),
             "paged-thread".to_owned(),
@@ -3450,11 +3756,29 @@ mod storage_fault_tests {
         );
         committed.ordinal = 121;
         committed.revision = 2;
-        store.commit(2, &[committed], &[]).await?;
-        let final_session = pl_core::chat::Session::new(
+        assert_eq!(
+            resumed
+                .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
+                    &committed, 2
+                )?])
+                .await?[0]
+                .append_seq,
+            121
+        );
+        persist_completed(&store, 2, std::slice::from_ref(&committed)).await?;
+        let final_session = test_session(
             HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?,
         );
-        assert_eq!(final_session.reserve_order("message-121").await?, 122);
+        committed.id = "message-121".into();
+        assert_eq!(
+            final_session
+                .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
+                    &committed, 3
+                )?])
+                .await?[0]
+                .append_seq,
+            122
+        );
         Ok(())
     }
 
@@ -3469,6 +3793,7 @@ mod storage_fault_tests {
             .commit_effect(
                 sequence,
                 EffectCommit {
+                    completions: &[],
                     items: &[],
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -3543,6 +3868,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     sequence,
                     EffectCommit {
+                        completions: &[],
                         items: &[],
                         rolled_back_turns: &Default::default(),
                         identities: &[],
@@ -3621,6 +3947,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     sequence,
                     EffectCommit {
+                        completions: &[],
                         items: &[],
                         rolled_back_turns: &Default::default(),
                         identities: &[],
@@ -3779,6 +4106,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: &[],
                     rolled_back_turns: &empty,
                     identities: &[],
@@ -3806,6 +4134,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    completions: &[],
                     items: &[],
                     rolled_back_turns: &empty,
                     identities: &[],
@@ -3862,6 +4191,7 @@ mod storage_fault_tests {
         };
         let empty = std::collections::BTreeSet::new();
         let commit = || EffectCommit {
+            completions: &[],
             items: &[],
             rolled_back_turns: &empty,
             identities: &[],
@@ -4080,7 +4410,7 @@ mod storage_fault_tests {
         // A timeline owns its HistoryStore independently of an execution owner. Preserve that
         // actual shared writer holder, then require the canonical read to initialize a different,
         // truly read-only connection instead of returning the writer's fast path.
-        let _timeline = pl_core::chat::Session::new(store.clone());
+        let _timeline = test_session(store.clone());
         let share = store.shared();
         drop(store);
         let retained = HistoryStore::from_share(&share).context("timeline retained history")?;
@@ -4136,6 +4466,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: &[item.clone()],
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -4261,7 +4592,7 @@ mod storage_fault_tests {
             ],
         ))
         .await?;
-        db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
+        db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
         drop(store);
         let failed = HistoryStore::open(&path, "context-migration").await?;
         assert!(failed.prepare_activation().await.is_err());
@@ -4975,6 +5306,7 @@ mod storage_fault_tests {
                 ]),
             },
             expected_plan_revision: 1,
+            document_version: None,
             plan_hash: pl_core::context::content_hash(plan.as_bytes()),
             created_at: 100,
             presentation: MessagePresentation::Hidden,
@@ -5353,6 +5685,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5371,7 +5704,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=6",
             )
             .await?;
         drop(store);
@@ -5452,6 +5785,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5469,7 +5803,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=6",
             )
             .await?;
         drop(store);
@@ -5519,6 +5853,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5569,6 +5904,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5586,7 +5922,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=6",
             )
             .await?;
         drop(store);
@@ -5659,6 +5995,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: &[approved_item.clone(), cancelled_item.clone()],
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5677,7 +6014,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7",
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=7",
             )
             .await?;
         drop(store);
@@ -5759,6 +6096,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5832,6 +6170,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
@@ -5849,7 +6188,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7; \
+                "DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=7; \
                  CREATE TRIGGER reject_plan_history BEFORE UPDATE ON history_items \
                  BEGIN SELECT RAISE(ABORT,'injected plan history failure'); END;",
             )
@@ -6035,6 +6374,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     1,
                     EffectCommit {
+                        completions: &[],
                         items: std::slice::from_ref(&saved),
                         rolled_back_turns: &Default::default(),
                         identities: &[],
@@ -6051,7 +6391,7 @@ mod storage_fault_tests {
                 .writer()
                 .await?
                 .db
-                .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6")
+                .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=6")
                 .await?;
             drop(store);
 
@@ -6122,23 +6462,28 @@ mod storage_fault_tests {
                 .context("Q&A")?;
         crate::studio::thread_projection::attach_tool_user_input(&mut item, user_input)?;
 
-        let store = HistoryStore::open(&path, thread_id).await?;
-        store
-            .commit_effect(
-                1,
-                EffectCommit {
-                    items: std::slice::from_ref(&item),
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
+        // A resolved interaction alone does not complete its running tool execution. Freeze this
+        // fixture only after an explicit terminal tool result, as the production seal requires.
+        let ThreadItemState::Tool(tool) = item.state() else {
+            anyhow::bail!("question fixture is not a tool");
+        };
+        item = item.clone().with_state(ThreadItemState::Tool(
+            pl_protocol::ThreadToolItem::new(
+                tool.invocation().clone(),
+                pl_protocol::ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                    222,
+                    pl_protocol::ThreadToolOutput::new(
+                        "answer accepted".into(),
+                        vec![],
+                        vec![],
+                        Some(0),
+                    ),
+                )),
             )
-            .await?;
+            .with_user_input(tool.user_input().cloned()),
+        ));
+        let store = HistoryStore::open(&path, thread_id).await?;
+        persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
 
         // 静态元数据只带结构：问答正文不进 meta，因此不绕过内容预算。
         let complete = store
@@ -6165,35 +6510,37 @@ mod storage_fault_tests {
             complete.field(&answer_field).map(|block| block.text()),
             Some(long_answer.clone())
         );
-        // 完整条目按身份回源可还原全部正文，条目身份不变。
-        let restored = crate::studio::runtime::chat_item::canonical_item(&complete)?;
-        assert_eq!(restored, item);
-        let reprojected = crate::studio::runtime::chat_item::typed_item(restored, true)?;
-        assert_eq!(reprojected.meta, complete.meta);
+        // Execution recovery reads its original authority, not a reconstruction from public
+        // completion metadata. The completion codec independently preserves the frozen record.
+        assert_eq!(store.item(&item.id).await?, Some(item.clone()));
+        let encoded = crate::studio::runtime::chat_item::encode_record(&complete)?;
+        assert_eq!(
+            crate::studio::runtime::chat_item::decode_record(&encoded)?,
+            complete
+        );
 
-        // 只污染本次读取的内存副本；恢复不能接受本地 ID、畸形 wire 或其他 Thread。
-        for invalid_id in [
-            record.request.id.clone(),
-            "studio-interaction:invalid".into(),
-            crate::thread_assembler::encode_interaction_key("other-thread", &record.request.id),
-        ] {
+        // A foreign Thread or mismatched completion identity cannot enter the immutable store.
+        // Product interaction IDs no longer serve as a reverse execution-item codec.
+        for (field, invalid) in [("id", "other-record"), ("threadId", "other-thread")] {
             let mut altered = complete.clone();
             let mut altered_meta: serde_json::Value = serde_json::from_slice(&altered.meta)?;
-            *altered_meta
-                .pointer_mut("/descriptor/data/userInput/interactionId")
-                .context("Q&A wire identity in the persisted item's projection")? =
-                invalid_id.into();
+            altered_meta[field] = invalid.into();
             altered.meta = serde_json::to_vec(&altered_meta)?.into();
-            let error = crate::studio::runtime::chat_item::canonical_item(&altered)
-                .expect_err("invalid or foreign product identity must not restore");
-            assert!(matches!(
-                error.downcast_ref::<pl_core::chat::ChatError>(),
-                Some(pl_core::chat::ChatError::History(_))
-            ));
+            assert!(
+                timeline::append_records(
+                    &store.reader().await?.context("history")?.db,
+                    thread_id,
+                    &[altered],
+                    false,
+                )
+                .await
+                .is_err()
+            );
         }
+        assert_eq!(store.read_chat_item(&item.id).await?, Some(complete));
 
         // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
-        let session = pl_core::chat::Session::new(store.clone());
+        let session = test_session(store.clone());
         let page = session
             .page(pl_core::chat::ChatPageRequest::latest().with_limit(10))
             .await?;

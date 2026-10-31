@@ -4,6 +4,7 @@ import 'acp_models.dart';
 import 'acp_install_models.dart';
 import 'agent_profile_models.dart';
 import 'bot_models.dart';
+import 'command_receipts.dart' show ChildInteractionSummary;
 import 'persistence_models.dart';
 import 'runtime_models.dart';
 import '../modes/domain/mode_catalog_models.dart';
@@ -220,6 +221,23 @@ final class AcpInstallTopic extends ProductTopic {
   int get hashCode => 0x011a;
 }
 
+/// 根可见子任务待决交互：按宿主主会话作用域的事件域。
+///
+/// 基线与事件都携带同一宿主的完整待决集合和独立领域 revision；列举与订阅都不
+/// 激活任何 child，也不为其建立内容订阅。
+final class ChildInteractionsTopic extends ProductTopic {
+  const ChildInteractionsTopic({required this.hostThreadId});
+
+  final String hostThreadId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ChildInteractionsTopic && hostThreadId == other.hostThreadId;
+
+  @override
+  int get hashCode => Object.hash(0x011b, hostThreadId);
+}
+
 /// 订阅首帧携带的 canonical 基线 payload；每个 topic 只有自己的领域状态。
 sealed class ProductTopicBaselineState {
   const ProductTopicBaselineState();
@@ -339,6 +357,12 @@ final class AcpInstallBaseline extends ProductTopicBaselineState {
   const AcpInstallBaseline(this.state);
 
   final AcpInstallSnapshotView state;
+}
+
+final class ChildInteractionsBaseline extends ProductTopicBaselineState {
+  const ChildInteractionsBaseline(this.state);
+
+  final ChildInteractionsStateView state;
 }
 
 /// 单个 topic 订阅交付的帧。
@@ -468,6 +492,9 @@ sealed class ProductTopicEventPayload {
     AcpAuthStateChangedPayload() => const AcpAuthTopic(),
     BotsStateChangedPayload() => const BotsTopic(),
     AcpInstallStateChangedPayload() => const AcpInstallTopic(),
+    ChildInteractionsChangedPayload(:final state) => ChildInteractionsTopic(
+      hostThreadId: state.hostThreadId,
+    ),
   };
 }
 
@@ -595,6 +622,16 @@ final class AcpInstallStateChangedPayload extends ProductTopicEventPayload {
   final AcpInstallSnapshotView state;
 }
 
+/// 一个宿主主会话当前的子任务待决交互完整集合。
+///
+/// `revision` 是该集合的独立领域水位（见 [ChildInteractionsStateView]）；
+/// 旧水位由消费者拒绝，不与交互自身 revision 或展示 generation 混用。
+final class ChildInteractionsChangedPayload extends ProductTopicEventPayload {
+  const ChildInteractionsChangedPayload(this.state);
+
+  final ChildInteractionsStateView state;
+}
+
 /// 单个 root 会话的作用域费用状态。
 ///
 /// `cost == null` 是显式清除（例如归档后），调用方必须与“零费用”区分展示。
@@ -639,6 +676,81 @@ class SessionCostsStateView {
     readFailed,
     cost,
   );
+}
+
+/// 一个宿主主会话可见的子任务待决交互投影。
+///
+/// `items` 是该宿主的完整待决集合（直接、可见 child 的问题与权限请求；child
+/// Plan 仍是诊断事实，不进入集合）。`revision` 是集合领域水位，不是历史
+/// `append_seq`、交互自身 revision 或展示 generation。集合判等按条目身份
+/// （child、交互编号、类型）与各自 revision：同一交互在同水位下内容视为一致。
+class ChildInteractionsStateView {
+  ChildInteractionsStateView({
+    required this.hostThreadId,
+    required this.revision,
+    this.updatedAt,
+    List<ChildInteractionSummary> items = const [],
+  }) : items = List.unmodifiable(items);
+
+  final String hostThreadId;
+  final int revision;
+  final DateTime? updatedAt;
+  final List<ChildInteractionSummary> items;
+
+  /// 一条子任务决议是否已经在原交互事实上生效。
+  ///
+  /// 只有同一子会话与同一交互编号才有判断资格：交互已从集合消失，或它的
+  /// revision 已越过调用方冻结的版本，都说明它不再等待这次决议。
+  bool confirmsDecision({
+    required String childThreadId,
+    required String interactionId,
+    required int revision,
+  }) {
+    for (final item in items) {
+      if (item.childThreadId != childThreadId) continue;
+      if (item.interactionId != interactionId) continue;
+      return item.revision > revision;
+    }
+    return true;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChildInteractionsStateView &&
+          hostThreadId == other.hostThreadId &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt &&
+          _itemsEqual(items, other.items);
+
+  @override
+  int get hashCode => Object.hash(
+    hostThreadId,
+    revision,
+    updatedAt,
+    Object.hashAll([
+      for (final item in items) (item.interactionId, item.revision),
+    ]),
+  );
+}
+
+bool _itemsEqual(
+  List<ChildInteractionSummary> left,
+  List<ChildInteractionSummary> right,
+) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var i = 0; i < left.length; i++) {
+    final a = left[i];
+    final b = right[i];
+    if (a.childThreadId != b.childThreadId ||
+        a.interactionId != b.interactionId ||
+        a.kind != b.kind ||
+        a.revision != b.revision) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// 持久化队列的 typed 观测：发布 revision + 时间基线 + 协调器真实观测。

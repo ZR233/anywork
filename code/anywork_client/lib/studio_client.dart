@@ -16,8 +16,7 @@ export 'src/studio/stores/skills_store.dart';
 export 'src/studio/stores/recovery_store.dart';
 export 'src/studio/stores/bots_store.dart';
 export 'src/studio/stores/bots_send_store.dart';
-export 'src/studio/stores/child_interaction_store.dart'
-    show ChildInteractionsView, ChildInteractionsState;
+export 'src/studio/stores/child_interaction_store.dart';
 export 'src/studio/stores/domain_sync.dart';
 export 'src/studio/stores/lsp_store.dart';
 export 'src/studio/stores/canonical_clock.dart';

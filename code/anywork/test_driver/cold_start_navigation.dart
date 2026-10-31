@@ -177,7 +177,6 @@ Future<Map<String, Object?>> restoreColdStartTarget(
         timeline != null &&
         timeline.threadId == identity.threadId &&
         timeline.ready &&
-        !timeline.preparingLive &&
         scroll != null &&
         scroll.laidOut;
     if (opened) {
@@ -208,7 +207,6 @@ Future<Map<String, Object?>> restoreColdStartTarget(
       'isStartPage': navigation['isStartPage'],
       'timelineThreadId': timeline?.threadId,
       'timelineReady': timeline?.ready,
-      'preparingLive': timeline?.preparingLive,
       'scrollLaidOut': scroll?.laidOut,
     };
     if (selectedProject == identity.workspaceId &&

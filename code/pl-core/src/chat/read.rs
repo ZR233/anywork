@@ -1,200 +1,217 @@
-//! 内容读取：无状态页、有界尾部订阅的建立与按身份详情。
+//! 统一读取：Latest/Before 完成页、订阅基线、内部 after 补发窗口与按身份详情。
 //!
-//! 三条读取能力都不拥有可见行、阅读位置或视口几何，也都不跨 `.await` 持有时间线锁：
+//! 三条读取能力都不拥有可见行、阅读位置或视口几何，也都不跨 `.await` 持有时间线锁。统一次序固定：
 //!
-//! 1. 锁内只捕获有界预览候选与版本水位；
-//! 2. 存储读取在锁外完成；
-//! 3. 提交前在同一次时间线临界区里把读取期间发布的新 revision、保存确认与终态事实合回候选；
-//! 4. 通知只是唤醒信号，内容帧由订阅者相对自己的交付基线各算一次。
+//! 1. 同一短锁内捕获完成代际、上界 H 与范围内 `limit + 1` 条有界 pending 引用；
+//! 2. 锁外开启一次新的短数据库读（端口契约），限制 `append_seq <= H`，不复用捕获前的旧快照；
+//! 3. 再入短锁，把捕获引用、存储行与当前 pending 合并：按身份与序号校验、去重、排序；
+//! 4. 预算与有界预览在所有锁之外计算。
+//!
+//! 提交/回收发生在捕获之后时，读取仍持有不可变引用；发生在捕获之前时，后开的数据库读已经能看见；
+//! 两边命中只返回一项。读取不 flush、不触发 writer，也不克隆全部 pending。
+
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::chat::{
-    ChatCursor, ChatDetailChunk, ChatDetailCursor, ChatDetailRequest, ChatError, ChatItem,
-    ChatPage, ChatPageRequest, ChatTail, ChatTailBaseline, DEFAULT_PAGE_ITEMS, PAGE_PREVIEW_BYTES,
-    item::merge_items,
-    session::{
-        RECENT_BYTES, RECENT_ITEMS, Session, TimelineState, reconcile_read, resident_item,
-        unreadable_preview_boundary,
-    },
+    ChatCompletionCursor, ChatCursor, ChatDetailChunk, ChatDetailCursor, ChatDetailRequest,
+    ChatError, ChatItem, ChatPage, ChatPageRequest, MAX_PAGE_ITEMS, PAGE_PREVIEW_BYTES, Session,
+    item::same_payload,
 };
+
+/// 单个补发批次最多交付的条目数；与单页上限一致。
+const MAX_BATCH_ITEMS: usize = MAX_PAGE_ITEMS;
 
 impl Session {
     /// Reads one stateless page: newest, or strictly older than `before`.
     ///
-    /// The page is assembled from two bounded sources — the session's preview cache, which holds
-    /// facts that are not durable yet, and one short keyset read of durable history — and the two are
-    /// merged again under the timeline lock after the read, so a revision, save acknowledgement or
-    /// terminal fact published while the read awaited is never replaced by the older copy. `has_older`
-    /// only comes from a proven older identity (a dropped candidate, a published preview frontier
-    /// or the store's existence check), never from a short page. An unreadable preview cannot be
-    /// crossed to return an older durable row as a sparse EOF.
-    ///
-    /// Candidate *references* are captured before the storage step, so the same commit also drops the
-    /// ones the authority withdrew meanwhile: a released speculative preview must not come back through
-    /// the reference that was captured while it was still live. Facts published *after* the withdrawal
-    /// are unaffected: they enter through the current page candidates read after storage, so a new order
-    /// admitted under the same identity is still returned normally.
+    /// The page is assembled from two bounded sources — the session's pending records, which hold
+    /// completions that are visible but not necessarily durable yet, and one short keyset read of
+    /// committed history limited to the captured head — and the two are merged and validated again
+    /// under the timeline lock after the read. `has_older` only comes from a proven older identity
+    /// (a dropped candidate or the store's existence check), never from a short page.
     ///
     /// # Errors
-    /// [`ChatError::InvalidArgument`] for an unsupported limit, [`ChatError::ReadInvalidated`] when the
-    /// withdrawal window can no longer be proven (retry the read), plus the host's own typed storage
+    /// [`ChatError::InvalidArgument`] for an unsupported limit, [`ChatError::EpochMismatch`] when
+    /// `before` was minted by another run generation, [`ChatError::Conflict`] when the merged
+    /// candidates disagree about one identity or one sequence, plus the host's own typed storage
     /// and preview failures.
     pub async fn page(&self, request: ChatPageRequest) -> Result<ChatPage, ChatError> {
         let limit = request.limit()?;
-        let before = request.before;
-        let (since, memory, frontier) = self.with_timeline(|state| {
-            let memory = page_candidates(state, before.as_ref());
-            let frontier = unreadable_preview_boundary(state, &memory, before.as_ref());
-            (state.version, memory, frontier)
-        });
-        let stored = self.0.history.page(before.as_ref(), limit).await?;
-        let proven_older = stored.has_older;
-        let (candidates, preview_gap) = self.with_timeline(|state| {
-            let mut memory = memory;
-            // Reconcile both captured references and the captured unreadable frontier;
-            // neither can survive a withdrawal or an unprovable publication window.
-            if !memory.is_empty() || frontier.is_some() || !stored.items.is_empty() {
-                let withdrawn =
-                    reconcile_read(state, since, stored.items.iter().chain(memory.iter()))?;
-                if frontier
-                    .as_ref()
-                    .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))
-                {
-                    return Err(ChatError::ReadInvalidated);
-                }
-                memory.retain(|item| !withdrawn.contains(item.item_id.as_str()));
-            }
-            readable_suffix(
-                state,
-                merge_items(
-                    stored
-                        .items
-                        .into_iter()
-                        .chain(page_candidates(state, before.as_ref()))
-                        .chain(memory),
-                ),
-                before.as_ref(),
-                frontier.as_ref().filter(|_| state.version != since),
-            )
-        })?;
-        // Bounding is host codec work: it runs outside every lock and may refuse a preview budget.
-        let mut bounded = Vec::with_capacity(candidates.len());
-        for item in candidates {
-            bounded.push(self.0.history.bounded(&item)?);
+        if let Some(before) = &request.before {
+            before.validate_epoch(&self.0.epoch)?;
         }
-        // Only the bounded previews enter the session's own cache: a page never makes the hot preview
-        // tail resident with whole bodies, and a withdrawn identity is never seeded back.
-        self.hydrate(since, &bounded)?;
-        Ok(select_page(
-            bounded,
-            limit,
-            proven_older || preview_gap,
-            before.as_ref(),
-        ))
+        self.ensure_initialized().await?;
+        let before = request.before;
+        // Step 1: capture the head and a bounded pending window for the requested range.
+        let (head, captured) = self.with_timeline(|state| {
+            let before_seq = before.as_ref().map_or(u64::MAX, |cursor| cursor.append_seq);
+            (
+                state.head,
+                state.pending_window(0, before_seq, limit.saturating_add(1)),
+            )
+        });
+        // Step 2: one fresh short storage read outside every lock.
+        let stored = self.0.history.page(before.as_ref(), head, limit).await?;
+        // The captured head and Arc records form this read's snapshot. Publications
+        // after that head belong to the already-registered tail, never this page.
+        let mut records = captured;
+        records.extend(stored.items.into_iter().map(Arc::new));
+        let candidates = merge_records(records)?;
+        // Step 4: bound and select outside every lock; the host codec may refuse a budget.
+        let bounded = self.bound_all(candidates)?;
+        Ok(self.select_page(bounded, limit, stored.has_more, before.as_ref()))
     }
 
-    /// Opens one bounded tail observation over this session.
+    /// Captures the latest small page as one consistent subscription baseline.
     ///
-    /// The observation is registered *before* the cold page is read, so nothing published while the
-    /// read awaits can be missed. The baseline itself is captured by
-    /// [`Session::capture_latest_baseline`], i.e. by the same consistent read a resynchronization
-    /// uses, so a first frame and a later resync can never disagree about the newest page.
-    /// The registered receiver stays owned by this future until the tail takes it; a failed or
-    /// cancelled baseline capture drops it and releases demand without spawning background work.
+    /// This is the single builder of a tail baseline: the first frame of a subscription uses it, so a
+    /// first frame can never present a memory-only tail as if it were the authoritative newest page.
+    /// The shape is the shared page contract — newest [`DEFAULT_PAGE_ITEMS`] records inside the page
+    /// preview budget, the real older boundary and a proven `has_older` — plus the completed cursor
+    /// of the newest record.
     ///
     /// # Errors
-    /// The host's own typed storage and preview failures.
-    pub async fn subscribe_tail(&self) -> Result<ChatTail, ChatError> {
+    /// Same as [`Session::page`].
+    pub(crate) async fn capture_latest_baseline(
+        &self,
+    ) -> Result<crate::chat::ChatTailBaseline, ChatError> {
+        let page = self.page(ChatPageRequest::latest()).await?;
+        let epoch = page.epoch.clone();
+        Ok(crate::chat::ChatTailBaseline {
+            epoch: page.epoch,
+            completed_cursor: page
+                .items
+                .last()
+                .map(|item| ChatCompletionCursor::new(epoch, item.append_seq)),
+            items: page.items,
+            before: page.before,
+            has_older: page.has_older,
+        })
+    }
+
+    /// Opens one bounded tail subscription over this session.
+    ///
+    /// The wake receiver is registered **before** the consistent baseline is captured, so nothing
+    /// published while the capture awaits can be missed: a completion that lands during the read is
+    /// either already inside the baseline page or still ahead of the baseline cursor, and the first
+    /// wake delivers it. The registered receiver stays owned by this future until the tail takes
+    /// it; a failed or cancelled capture drops it and releases demand without spawning background
+    /// work.
+    ///
+    /// # Errors
+    /// The host's own typed storage and preview failures, plus [`ChatError::Conflict`] when merged
+    /// candidates disagree about one identity or sequence.
+    pub async fn subscribe_tail(&self) -> Result<crate::chat::ChatTail, ChatError> {
         let watch = self.0.changed.subscribe();
         let baseline = self.capture_latest_baseline().await?;
-        Ok(ChatTail::new(self.clone(), watch, baseline))
+        Ok(crate::chat::ChatTail::new(self.clone(), watch, baseline))
     }
 
-    /// Captures the latest small page as one consistent baseline.
+    /// Resumes one bounded tail subscription from an already-delivered completion position.
     ///
-    /// This is the single builder of a tail baseline: the first frame of a connection and an explicit
-    /// resynchronization both use it, so neither can present a memory-only tail as if it were the
-    /// authoritative newest page. The shape is the shared page contract — newest
-    /// [`DEFAULT_PAGE_ITEMS`] items inside the page preview budget, the real older boundary and a
-    /// proven `has_older` — with the session version captured under the same critical section as the
-    /// memory merge.
-    ///
-    /// Necessary references are captured before the storage read, the short keyset read happens
-    /// outside every lock, and the result is reconciled with the facts published meanwhile — the newer
-    /// revision, save and terminal facts *and* the identities the authority withdrew — before the
-    /// version is committed. The version and the filtered items therefore come from one critical
-    /// section: a baseline can never claim a version that already covers a removal while still listing
-    /// the removed identity.
+    /// The wake receiver is registered before the state capture, so completions landing in between
+    /// are delivered by the first batch. The subscription never captures the latest page as its
+    /// baseline: it continues from `after` exactly — a reconnecting consumer is refilled from its
+    /// own last accepted position, not skipped to the head. The one-shot
+    /// [`ChatTail::initial`](crate::chat::ChatTail::initial) frame is a placeholder that echoes the
+    /// resume cursor (empty items, no boundary, `completed_cursor = after`); the runtime consumes it
+    /// and does not publish it to the presentation owner. A resume position is the accepted sequence,
+    /// not a paging boundary, so it carries no synthetic item identity.
     ///
     /// # Errors
-    /// [`ChatError::ReadInvalidated`] when the withdrawal window can no longer be proven (the caller
-    /// retries the resynchronization), plus the host's own typed storage and preview failures.
-    pub(crate) async fn capture_latest_baseline(&self) -> Result<ChatTailBaseline, ChatError> {
-        let (since, memory, frontier) = self.with_timeline(|state| {
-            let memory = page_candidates(state, None);
-            let frontier = unreadable_preview_boundary(state, &memory, None);
-            (state.version, memory, frontier)
-        });
-        let stored = self.0.history.page(None, DEFAULT_PAGE_ITEMS).await?;
-        let proven_older = stored.has_older;
-        let (version, candidates, preview_gap) = self.with_timeline(|state| {
-            let mut memory = memory;
-            if !memory.is_empty() || frontier.is_some() || !stored.items.is_empty() {
-                let withdrawn =
-                    reconcile_read(state, since, stored.items.iter().chain(memory.iter()))?;
-                if frontier
-                    .as_ref()
-                    .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))
-                {
-                    return Err(ChatError::ReadInvalidated);
-                }
-                memory.retain(|item| !withdrawn.contains(item.item_id.as_str()));
-            }
-            let (candidates, preview_gap) = readable_suffix(
-                state,
-                merge_items(
-                    stored
-                        .items
-                        .into_iter()
-                        .chain(page_candidates(state, None))
-                        .chain(memory),
-                ),
-                None,
-                frontier.as_ref().filter(|_| state.version != since),
-            )?;
-            Ok((state.version, candidates, preview_gap))
-        })?;
-        let mut bounded = Vec::with_capacity(candidates.len());
-        for item in candidates {
-            bounded.push(self.0.history.bounded(&item)?);
+    /// [`ChatError::EpochMismatch`] when `after` was minted by another run generation,
+    /// [`ChatError::InvalidArgument`] when `after` names a sequence beyond the published head, plus
+    /// the host's own typed storage failures from the seed read.
+    pub async fn subscribe_after(
+        &self,
+        after: ChatCompletionCursor,
+    ) -> Result<crate::chat::ChatTail, ChatError> {
+        if after.epoch != self.0.epoch {
+            return Err(ChatError::EpochMismatch {
+                cursor: after.epoch,
+                session: self.0.epoch.clone(),
+            });
         }
-        Ok(latest_baseline(
-            version,
-            bounded,
-            proven_older || preview_gap,
+        let watch = self.0.changed.subscribe();
+        self.ensure_initialized().await?;
+        let head = self.with_timeline(|state| state.head);
+        if after.append_seq > head {
+            return Err(ChatError::InvalidArgument(format!(
+                "resume position {} is beyond the published head {head}",
+                after.append_seq
+            )));
+        }
+        Ok(crate::chat::ChatTail::new(
+            self.clone(),
+            watch,
+            crate::chat::ChatTailBaseline {
+                epoch: self.0.epoch.clone(),
+                items: Vec::new(),
+                before: None,
+                has_older: false,
+                completed_cursor: Some(after),
+            },
         ))
+    }
+
+    /// One bounded ascending window of the completions in `(after, head]`.
+    ///
+    /// This is the internal catch-up read behind a tail, independent of the public Latest/Before
+    /// paging. When the range starts at or after the captured durable prefix the pending records
+    /// already prove the whole window and no database read is opened; otherwise one fresh
+    /// `page_after` read fills the committed part and the merge under the timeline lock adds the
+    /// rest. The window is bounded by item count and page preview bytes from the newest end of the
+    /// window, so a lagging consumer is refilled continuously instead of being skipped to the head.
+    ///
+    /// # Errors
+    /// [`ChatError::Conflict`] when the merged candidates disagree about one identity or one
+    /// sequence, plus the host's own typed storage and preview failures.
+    pub(crate) async fn completed_after(
+        &self,
+        after_seq: u64,
+    ) -> Result<(Vec<ChatItem>, u64), ChatError> {
+        self.ensure_initialized().await?;
+        let (head, durable, captured) = self.with_timeline(|state| {
+            (
+                state.head,
+                state.durable,
+                state.pending_after(after_seq, state.head, MAX_BATCH_ITEMS.saturating_add(1)),
+            )
+        });
+        if head <= after_seq {
+            return Ok((Vec::new(), after_seq));
+        }
+        if after_seq >= durable {
+            // Everything in (after, head] is still pending; the memory window is complete.
+            let merged = merge_records(captured)?;
+            let bounded = self.bound_all(merged)?;
+            return self.take_batch(bounded, after_seq);
+        }
+        let stored = self
+            .0
+            .history
+            .page_after(after_seq, head, MAX_BATCH_ITEMS)
+            .await?;
+        let mut records = captured;
+        records.extend(stored.items.into_iter().map(Arc::new));
+        let candidates = merge_records(records)?;
+        let bounded = self.bound_all(candidates)?;
+        self.take_batch(bounded, after_seq)
     }
 
     /// Reads one bounded block of a field's complete body.
     ///
-    /// In-flight content is served from the session's own complete copy; a durable item is read once
-    /// from history. The block is taken from the shared [`ContentBlock`] by byte range, so neither the
-    /// already-delivered prefix nor the remaining text is materialized first, and the returned cursor
-    /// always points at a legal UTF-8 boundary.
+    /// A pending record is served from the session's own complete copy without any storage IO; a
+    /// record the writer already confirmed is read once from history. Records are immutable, so
+    /// there is no revision to go stale and no re-check after the await: whichever source answers
+    /// carries the same sealed payload for that identity.
     ///
-    /// A storage read is only a source of *this* revision's bytes: after it returns, the session's
-    /// current fact is checked again. If the identity moved to another revision — even to a bounded
-    /// preview — or lost the field while the read awaited, the request fails as stale/missing instead
-    /// of serving an older durable snapshot. An empty field and a removed field therefore stay
-    /// distinguishable, and a cold row can never override newer authoritative content.
-    ///
-    /// A continuation is only valid for the item, field and revision it was produced for: reusing a
-    /// token from another field, identity or revision is rejected instead of silently reading from a
-    /// guessed offset.
+    /// A continuation is only valid for the item and field it was produced for: reusing a token from
+    /// another field or identity is rejected instead of silently reading from a guessed offset.
     ///
     /// # Errors
     /// [`ChatError::InvalidArgument`] for an unsupported block size or an illegal continuation,
-    /// [`ChatError::NotFound`] for an unknown item or field, [`ChatError::StaleRevision`] when the
-    /// item's content version moved, and the host's own storage failures.
+    /// [`ChatError::NotFound`] for an unknown item or field, and the host's own storage failures.
     pub async fn read_detail(
         &self,
         request: ChatDetailRequest,
@@ -207,65 +224,139 @@ impl Session {
             .continuation
             .as_ref()
             .map_or(0, ChatDetailCursor::offset);
-        let resident = self.with_timeline(|state| memory_item(state, &request.item_id));
-        if let Some(item) = resident.filter(|item| item.field_is_complete(&request.field)) {
-            return detail_chunk(&item, &request, offset, block_bytes);
+        if let Some(record) = self.with_timeline(|state| state.pending_record(&request.item_id)) {
+            return detail_chunk(&record, &request, offset, block_bytes);
         }
-        let stored = self.0.history.item(&request.item_id).await?;
-        // 读后同权威再核：await 期间发布的更高 revision 或字段移除优先于这条冷行。
-        let current = self.with_timeline(|state| memory_item(state, &request.item_id));
-        if let Some(current) = current {
-            if current.revision != request.revision {
-                return Err(ChatError::StaleRevision {
-                    item_id: current.item_id.clone(),
-                    field: request.field.clone(),
-                    revision: request.revision,
-                });
+        let stored = self
+            .0
+            .history
+            .item(&request.item_id)
+            .await?
+            .ok_or_else(|| ChatError::NotFound(request.item_id.clone()))?;
+        detail_chunk(&stored, &request, offset, block_bytes)
+    }
+
+    /// Bounds every record through the host codec, outside every lock.
+    fn bound_all(&self, records: Vec<Arc<ChatItem>>) -> Result<Vec<ChatItem>, ChatError> {
+        let mut bounded = Vec::with_capacity(records.len());
+        for record in records {
+            bounded.push(self.0.history.bounded(&record)?);
+        }
+        Ok(bounded)
+    }
+
+    /// Selects the returned page from ascending candidates that are already strictly older.
+    fn select_page(
+        &self,
+        items: Vec<ChatItem>,
+        limit: usize,
+        proven_older: bool,
+        before: Option<&ChatCursor>,
+    ) -> ChatPage {
+        let mut items = items;
+        if let Some(before) = before {
+            items.retain(|item| item.append_seq < before.append_seq);
+        }
+        let mut has_older = proven_older;
+        let excess = items.len().saturating_sub(limit);
+        if excess > 0 {
+            items.drain(..excess);
+            has_older = true;
+        }
+        // Page preview bytes are bounded from the newest end, so a page dropped by the budget still
+        // reports a real next boundary instead of pretending the history ended.
+        let mut used = 0usize;
+        let mut keep = 0usize;
+        for item in items.iter().rev() {
+            let bytes = item.resident_bytes();
+            if keep > 0 && used.saturating_add(bytes) > PAGE_PREVIEW_BYTES {
+                break;
             }
-            if !current.fields.contains_key(&request.field) {
-                return Err(ChatError::NotFound(format!(
-                    "{}:{}",
-                    current.item_id, request.field
+            used = used.saturating_add(bytes);
+            keep += 1;
+        }
+        if keep < items.len() {
+            items.drain(..items.len() - keep);
+            has_older = true;
+        }
+        let has_older = has_older && !items.is_empty();
+        let before = if has_older {
+            items
+                .first()
+                .map(|item| ChatCursor::of(&self.0.epoch, item))
+        } else {
+            None
+        };
+        ChatPage {
+            epoch: self.0.epoch.clone(),
+            items,
+            before,
+            has_older,
+        }
+    }
+
+    /// Bounds one ascending catch-up window by item count and page bytes over its oldest prefix.
+    ///
+    /// The window continues an already-delivered position, so a budget cut keeps the oldest part and
+    /// leaves the remainder for the next batch; the returned sequence names the record actually
+    /// delivered last, never a position the caller did not receive.
+    fn take_batch(
+        &self,
+        mut items: Vec<ChatItem>,
+        after_seq: u64,
+    ) -> Result<(Vec<ChatItem>, u64), ChatError> {
+        items.retain(|item| item.append_seq > after_seq);
+        if items.is_empty() {
+            return Err(ChatError::Conflict(format!(
+                "completion history ended before the captured head after {after_seq}"
+            )));
+        }
+        let mut used = 0usize;
+        let mut keep = 0usize;
+        for item in items.iter().take(MAX_BATCH_ITEMS) {
+            let expected = after_seq + keep as u64 + 1;
+            if item.append_seq != expected {
+                return Err(ChatError::Conflict(format!(
+                    "completion gap after {after_seq}: expected {expected}, found {}",
+                    item.append_seq
                 )));
             }
+            let bytes = item.resident_bytes();
+            if keep > 0 && used.saturating_add(bytes) > PAGE_PREVIEW_BYTES {
+                break;
+            }
+            used = used.saturating_add(bytes);
+            keep += 1;
         }
-        let item = stored.ok_or_else(|| ChatError::NotFound(request.item_id.clone()))?;
-        detail_chunk(&item, &request, offset, block_bytes)
+        if keep < items.len() {
+            items.truncate(keep);
+        }
+        if items.len() > MAX_BATCH_ITEMS {
+            items.truncate(MAX_BATCH_ITEMS);
+        }
+        let through = items.last().map_or(after_seq, |item| item.append_seq);
+        Ok((items, through))
     }
 }
 
+/// One block of a field's complete body, on a UTF-8 boundary.
 fn detail_chunk(
-    item: &ChatItem,
+    record: &ChatItem,
     request: &ChatDetailRequest,
     offset: u64,
     block_bytes: usize,
 ) -> Result<ChatDetailChunk, ChatError> {
-    if item.revision != request.revision {
-        return Err(ChatError::StaleRevision {
-            item_id: item.item_id.clone(),
-            field: request.field.clone(),
-            revision: request.revision,
-        });
-    }
-    let Some(preview) = item.fields.get(&request.field) else {
+    let Some(preview) = record.fields.get(&request.field) else {
         return Err(ChatError::NotFound(format!(
             "{}:{}",
-            item.item_id, request.field
+            record.item_id, request.field
         )));
     };
-    if !preview.is_complete() {
-        // The complete body was not available for this field; a truncated preview must never be
-        // served as if it were the whole text.
-        return Err(ChatError::Overloaded(format!(
-            "{}:{} is only available as a bounded preview",
-            item.item_id, request.field
-        )));
-    }
     let total_bytes = preview.total_bytes;
     if offset > total_bytes {
         return Err(ChatError::InvalidArgument(format!(
             "continued offset {offset} exceeds the {total_bytes} bytes of {}:{}",
-            item.item_id, request.field
+            record.item_id, request.field
         )));
     }
     let start = usize::try_from(offset).map_err(|_| {
@@ -276,160 +367,44 @@ fn detail_chunk(
     let (text, end) = preview.block.range(start, block_bytes).ok_or_else(|| {
         ChatError::InvalidArgument(format!(
             "continued offset {offset} is not a UTF-8 boundary of {}:{}",
-            item.item_id, request.field
+            record.item_id, request.field
         ))
     })?;
-    let continuation = (end < preview.block.len()).then(|| {
-        ChatDetailCursor::new(
-            item.item_id.clone(),
-            request.field.clone(),
-            item.revision,
-            end as u64,
-        )
-    });
+    let continuation = (end < preview.block.len())
+        .then(|| ChatDetailCursor::new(record.item_id.clone(), request.field.clone(), end as u64));
     Ok(ChatDetailChunk {
-        item_id: item.item_id.clone(),
+        item_id: record.item_id.clone(),
         field: request.field.clone(),
-        revision: item.revision,
         text,
         total_bytes,
         continuation,
     })
 }
 
-/// 由一次一致读取得到的最新小页基线。
+/// Merges candidates from every source into one ordered, de-duplicated, validated list.
 ///
-/// 它复用同一份页契约（[`DEFAULT_PAGE_ITEMS`] 条上限、[`PAGE_PREVIEW_BYTES`] 页预览预算、真实边界与
-/// 真实 `has_older`），因此大条目时实际条数可以少于 32，但边界与 `has_older` 一定来自真实事实：
-/// `proven_older` 来自存储或已发布预览身份的存在性证明；截断到小页同样证明更旧内容存在，
-/// 条数本身从不被当作 EOF。
-pub(crate) fn latest_baseline(
-    version: u64,
-    items: Vec<ChatItem>,
-    proven_older: bool,
-) -> ChatTailBaseline {
-    let page = select_page(items, DEFAULT_PAGE_ITEMS, proven_older, None);
-    ChatTailBaseline {
-        version,
-        items: page.items,
-        before: page.before,
-        has_older: page.has_older,
-    }
-}
-
-/// A readable suffix cannot cross a published preview whose body left the hot
-/// cache before reliable ownership. The missing identity proves older content;
-/// if there is no readable suffix, retry instead of reporting a sparse EOF.
-fn readable_suffix(
-    state: &TimelineState,
-    mut candidates: Vec<ChatItem>,
-    before: Option<&ChatCursor>,
-    captured_frontier: Option<&ChatCursor>,
-) -> Result<(Vec<ChatItem>, bool), ChatError> {
-    // Reliable admission can release the speculative reservation while SQL is
-    // awaiting. That does not make its body part of this read's older snapshot.
-    let boundary = unreadable_preview_boundary(state, &candidates, before)
-        .into_iter()
-        .chain(captured_frontier.cloned())
-        .max();
-    let Some(boundary) = boundary else {
-        return Ok((candidates, false));
-    };
-    candidates.retain(|item| ChatCursor::of(item) > boundary);
-    if candidates.is_empty() {
-        return Err(ChatError::ReadInvalidated);
-    }
-    Ok((candidates, true))
-}
-
-/// One page of the session's preview cache, ordered by `(order, identity)`.
-pub(crate) fn page_candidates(state: &TimelineState, before: Option<&ChatCursor>) -> Vec<ChatItem> {
-    let mut items = merge_items(
-        state
-            .recent
-            .iter()
-            .cloned()
-            .chain(state.unsaved_previews.values().cloned()),
-    );
-    if let Some(before) = before {
-        items.retain(|item| ChatCursor::of(item) < *before);
-    }
-    items
-}
-
-/// The session's bounded hot preview tail: at most [`RECENT_ITEMS`] newest preview items and
-/// [`RECENT_BYTES`] of preview bytes.
-pub(crate) fn tail_candidates(state: &TimelineState) -> Vec<ChatItem> {
-    let mut items = page_candidates(state, None);
-    let mut used = 0usize;
-    let mut keep = 0usize;
-    for item in items.iter().rev() {
-        let bytes = item.resident_bytes();
-        if keep == RECENT_ITEMS || used.saturating_add(bytes) > RECENT_BYTES {
-            break;
+/// Records are immutable, so one identity appearing through both a captured pending reference and a
+/// committed storage row must be the very same record: a duplicate is collapsed, while the same
+/// identity or the same sequence carrying a different payload is a typed conflict rather than an
+/// arbitrary winner.
+fn merge_records(records: Vec<Arc<ChatItem>>) -> Result<Vec<Arc<ChatItem>>, ChatError> {
+    let mut by_seq: BTreeMap<u64, Arc<ChatItem>> = BTreeMap::new();
+    let mut by_id: BTreeMap<String, (u64, Arc<ChatItem>)> = BTreeMap::new();
+    for record in records {
+        if let Some((seq, existing)) = by_id.get(&record.item_id) {
+            if *seq != record.append_seq || !same_payload(existing, &record) {
+                return Err(ChatError::Conflict(record.item_id.clone()));
+            }
+            continue;
         }
-        used = used.saturating_add(bytes);
-        keep += 1;
-    }
-    if keep < items.len() {
-        items.drain(..items.len() - keep);
-    }
-    items
-}
-
-/// Selects the returned page from ascending candidates that are already strictly older.
-fn select_page(
-    items: Vec<ChatItem>,
-    limit: usize,
-    proven_older: bool,
-    before: Option<&ChatCursor>,
-) -> ChatPage {
-    let mut items = items;
-    if let Some(before) = before {
-        items.retain(|item| ChatCursor::of(item) < *before);
-    }
-    let mut has_older = proven_older;
-    let excess = items.len().saturating_sub(limit);
-    if excess > 0 {
-        items.drain(..excess);
-        has_older = true;
-    }
-    // Page preview bytes are bounded from the newest end, so a page dropped by the budget still
-    // reports a real next boundary instead of pretending the history ended.
-    let mut used = 0usize;
-    let mut keep = 0usize;
-    for item in items.iter().rev() {
-        let bytes = item.resident_bytes();
-        if keep > 0 && used.saturating_add(bytes) > PAGE_PREVIEW_BYTES {
-            break;
+        if let Some(existing) = by_seq.get(&record.append_seq) {
+            if existing.item_id != record.item_id || !same_payload(existing, &record) {
+                return Err(ChatError::Conflict(record.item_id.clone()));
+            }
+            continue;
         }
-        used = used.saturating_add(bytes);
-        keep += 1;
+        by_id.insert(record.item_id.clone(), (record.append_seq, record.clone()));
+        by_seq.insert(record.append_seq, record);
     }
-    if keep < items.len() {
-        items.drain(..items.len() - keep);
-        has_older = true;
-    }
-    let has_older = has_older && !items.is_empty();
-    let before = if has_older {
-        items.first().map(ChatCursor::of)
-    } else {
-        None
-    };
-    ChatPage {
-        items,
-        before,
-        has_older,
-    }
-}
-
-/// The complete in-memory copy of one identity, if the session still holds it.
-pub(crate) fn memory_item(state: &TimelineState, item_id: &str) -> Option<ChatItem> {
-    resident_item(state, item_id).or_else(|| {
-        state
-            .recent
-            .iter()
-            .find(|item| item.item_id == item_id)
-            .cloned()
-    })
+    Ok(by_seq.into_values().collect())
 }

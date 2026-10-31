@@ -120,6 +120,7 @@ ThreadActivityView _threadActivityFromFrb(
     identity: value.identity,
     revision: _exactTimelineInt(value.revision, 'state counter'),
     turnId: value.turnId,
+    executionId: value.executionId,
     inputId: value.inputId,
     attemptId: value.attemptId,
     kind: switch (value.kind) {
@@ -243,59 +244,6 @@ ThreadStorageStateView _threadStorageFromFrb(
   );
 }
 
-/// 按活动身份读取的完整详情映射；`revision` 为 `null` 表示纯内存推导，如实保留未知。
-ThreadActivityDetail _activityDetailFromFrb(
-  frb_activity.BridgeThreadActivityDetail value,
-) {
-  return value.when(
-    current: (activity, reasoning, response, tools) =>
-        CurrentThreadActivityDetail(
-          activity: _threadActivityFromFrb(activity),
-          reasoning: [
-            for (final part in reasoning) _activityContentPartFromFrb(part),
-          ],
-          response: [
-            for (final part in response) _activityContentPartFromFrb(part),
-          ],
-          tools: [for (final tool in tools) _activityToolDetailFromFrb(tool)],
-        ),
-    superseded: (activity, requestedActivityId) =>
-        SupersededThreadActivityDetail(
-          activity: _threadActivityFromFrb(activity),
-          requestedActivityId: requestedActivityId,
-        ),
-    ended: (threadId, activityId) =>
-        EndedThreadActivityDetail(threadId: threadId, activityId: activityId),
-  );
-}
-
-ThreadActivityContentPart _activityContentPartFromFrb(
-  frb_activity.BridgeThreadActivityContentPart value,
-) {
-  return ThreadActivityContentPart(
-    itemId: value.itemId,
-    revision: _exactNullableTimelineInt(value.revision, 'state counter'),
-    complete: value.complete,
-    text: value.text,
-  );
-}
-
-ThreadActivityToolDetail _activityToolDetailFromFrb(
-  frb_activity.BridgeThreadActivityToolDetail value,
-) {
-  return ThreadActivityToolDetail(
-    callId: value.callId,
-    taskId: value.taskId,
-    name: value.name,
-    state: _activityToolStateFromFrb(value.state),
-    arguments: value.arguments,
-    output: value.output,
-    ordinal: _exactNullableTimelineInt(value.ordinal, 'state counter'),
-    startedAt: _frbNullableInt(value.startedAt),
-    wait: value.wait == null ? null : _waitFromFrb(value.wait!),
-  );
-}
-
 StudioThread _threadFromFrb(frb.BridgeThread value) {
   return StudioThread(
     id: value.id,
@@ -384,20 +332,6 @@ ThreadWaitPresentationView _waitFromFrb(
   );
 }
 
-ThreadContentLifecycleView _contentLifecycleFromFrb(
-  frb_item.BridgeThreadContentLifecycle value,
-) {
-  return value.when(
-    streaming: () => const StreamingThreadContentView(),
-    completed: (completedAt) =>
-        CompletedThreadContentView(_dateFromUnix(completedAt)),
-    failed: (failedAt, error) =>
-        FailedThreadContentView(_dateFromUnix(failedAt), error),
-    cancelled: (cancelledAt, reason) =>
-        CancelledThreadContentView(_dateFromUnix(cancelledAt), reason),
-  );
-}
-
 ThreadAttachmentView _attachmentFromFrb(frb_item.BridgeThreadAttachment value) {
   return ThreadAttachmentView(
     id: value.id,
@@ -414,50 +348,6 @@ ThreadAttachmentView _attachmentFromFrb(frb_item.BridgeThreadAttachment value) {
     width: value.width,
     height: value.height,
     byteSize: _exactTimelineInt(value.byteSize, 'state counter'),
-  );
-}
-
-ThreadAgentLifecycleView _agentLifecycleFromFrb(
-  frb_item.BridgeThreadAgentState value,
-) {
-  return value.when(
-    queued: () => const QueuedThreadAgentView(),
-    running: () => const RunningThreadAgentView(),
-    succeeded: (completedAt, summary) =>
-        SucceededThreadAgentView(_dateFromUnix(completedAt), summary),
-    denied: (deniedAt, reason) =>
-        DeniedThreadAgentView(_dateFromUnix(deniedAt), reason),
-    cancelled: (cancelledAt, reason) =>
-        CancelledThreadAgentView(_dateFromUnix(cancelledAt), reason),
-    failed: (failedAt, error) =>
-        FailedThreadAgentView(_dateFromUnix(failedAt), error),
-  );
-}
-
-ThreadInferenceLifecycleView _inferenceLifecycleFromFrb(
-  frb_item.BridgeThreadInferenceState value,
-) {
-  return value.when(
-    running: () => const RunningThreadInferenceView(),
-    completed: (completedAt, usage) => CompletedThreadInferenceView(
-      _dateFromUnix(completedAt),
-      ThreadInferenceUsageView(
-        promptTokens: _exactTimelineInt(usage.promptTokens, 'state counter'),
-        completionTokens: _exactTimelineInt(
-          usage.completionTokens,
-          'state counter',
-        ),
-        cachedPromptTokens: _exactTimelineInt(
-          usage.cachedPromptTokens,
-          'state counter',
-        ),
-        totalTokens: _exactTimelineInt(usage.totalTokens, 'state counter'),
-      ),
-    ),
-    failed: (failedAt, error) =>
-        FailedThreadInferenceView(_dateFromUnix(failedAt), error),
-    cancelled: (cancelledAt, reason) =>
-        CancelledThreadInferenceView(_dateFromUnix(cancelledAt), reason),
   );
 }
 

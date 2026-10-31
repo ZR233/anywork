@@ -210,18 +210,45 @@ void main() {
 
   test('Thread 单流水位门：同水位与更低水位丢弃，缺口走重同步', () async {
     final session = graph.client.conversations.session(threadId);
-    await session.content.ready.timeout(const Duration(seconds: 5));
+    Future<T> stage<T>(String label, Future<T> work) => work.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => throw TestFailure(
+        '$label 超时；connection=${session.content.state.value.runtimeType}，'
+        'revision=${session.state.watermark.revision}，'
+        'epoch=${session.state.watermark.epoch}，'
+        'feeds=${transport.feeds.length}，'
+        'delivered=${transport.feeds.last.deliveredFrames}，'
+        'acks=${transport.feeds.last.acknowledgements}',
+      ),
+    );
+
+    await stage('初始 content.ready', session.content.ready);
     final workspace = session.state.workspace!;
-    await transport.publishWorkspace(workspace.copyWith(revision: 4));
+    await stage(
+      '初始 workspace revision=4 ACK',
+      transport.publishWorkspace(workspace.copyWith(revision: 4)),
+    );
     final feed = transport.feeds.last;
-    await feed.emitStateAndWait(_notification(revision: 5, epoch: 1));
+    await stage(
+      'notification revision=5 ACK',
+      feed.emitStateAndWait(_notification(revision: 5, epoch: 1)),
+    );
     expect(session.state.watermark.revision, 5);
     final accepted = session.state;
-    await feed.emitStateAndWait(_notification(revision: 5, epoch: 1));
+    await stage(
+      '同水位 revision=5 ACK',
+      feed.emitStateAndWait(_notification(revision: 5, epoch: 1)),
+    );
     expect(session.state, same(accepted), reason: '同水位不得重复应用');
-    await feed.emitStateAndWait(_notification(revision: 4, epoch: 1));
+    await stage(
+      '低水位 revision=4 ACK',
+      feed.emitStateAndWait(_notification(revision: 4, epoch: 1)),
+    );
     expect(session.state, same(accepted), reason: '更低水位不得覆盖新事实');
-    await feed.emitStateAndWait(_notification(revision: 6, epoch: 1));
+    await stage(
+      '连续 revision=6 ACK',
+      feed.emitStateAndWait(_notification(revision: 6, epoch: 1)),
+    );
     expect(session.state.watermark.revision, 6);
 
     for (final invalid in [
@@ -229,27 +256,40 @@ void main() {
       _notification(revision: 7, epoch: 1, baseRevision: 3),
       _notification(revision: 7, epoch: 2),
     ]) {
-      // 新 attempt 的 Demo 基线会重置 epoch；先经真实 feed 建立合法 epoch=1，
+      // 新 attempt 的 Demo 状态快照会重置 epoch；先经真实 feed 建立合法 epoch=1，
       // 再验证跨 epoch，不能把 epoch=2 误当成该 attempt 的首次 epoch。
-      await transport.publishWorkspace(workspace.copyWith(revision: 5));
+      final label =
+          'invalid revision=${invalid.revision} '
+          'epoch=${invalid.epoch} base=${invalid.baseRevision}';
+      await stage(
+        '$label workspace revision=5 ACK',
+        transport.publishWorkspace(workspace.copyWith(revision: 5)),
+      );
       final current = transport.feeds.last;
-      await current.emitStateAndWait(_notification(revision: 6, epoch: 1));
+      await stage(
+        '$label notification revision=6 ACK',
+        current.emitStateAndWait(_notification(revision: 6, epoch: 1)),
+      );
       expect(session.state.watermark.revision, 6);
       expect(session.state.watermark.epoch, 1);
       final attempt = session.content.currentAttemptId;
       final count = transport.feeds.length;
-      final rejected = session.source
-          .waitFor((state) => state.sync.phase == DomainSyncPhase.reconnecting)
-          .timeout(const Duration(seconds: 5));
+      final rejected = stage(
+        '$label reconnecting',
+        session.source.waitFor(
+          (state) => state.sync.phase == DomainSyncPhase.reconnecting,
+        ),
+      );
       current.emitState(invalid);
       await rejected;
-      await session.content.state
-          .waitFor(
-            (state) =>
-                state is ChatReady<ConversationContentFrame> &&
-                session.content.currentAttemptId != attempt,
-          )
-          .timeout(const Duration(seconds: 5));
+      await stage(
+        '$label 新 attempt ready',
+        session.content.state.waitFor(
+          (state) =>
+              state is ChatReady<bool> &&
+              session.content.currentAttemptId != attempt,
+        ),
+      );
       expect(
         transport.feeds.length,
         count + 1,
@@ -257,7 +297,7 @@ void main() {
       );
       expect(session.content.currentAttemptId, isNot(attempt));
       expect(current.requestCloseCalls, greaterThanOrEqualTo(1));
-      await current.joined.future.timeout(const Duration(seconds: 5));
+      await stage('$label 旧 feed joined', current.joined.future);
       expect(current.closeCalls, 1);
       expect(
         session.state.watermark.revision,

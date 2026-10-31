@@ -79,6 +79,17 @@ fn prompt(record: &InteractionRecord) -> Result<PlanConfirmationPrompt, PlanInte
     Ok(prompt)
 }
 
+/// 由已校验的确认请求读取当时文档身份；缺失的旧版本不会由当前计划补齐。
+pub(crate) fn document_identity(
+    record: &InteractionRecord,
+) -> Result<pl_protocol::ThreadPlanDocumentIdentity, PlanInteractionError> {
+    let prompt = prompt(record)?;
+    Ok(pl_protocol::ThreadPlanDocumentIdentity {
+        version: prompt.document_version,
+        content_hash: prompt.plan_hash,
+    })
+}
+
 /// Converts saved question and answer facts into Studio DTOs without rerendering the Plan.
 ///
 /// # Errors

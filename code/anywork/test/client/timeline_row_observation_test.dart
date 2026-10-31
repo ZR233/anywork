@@ -9,17 +9,11 @@ import 'support/recording_demo_transport.dart';
 import 'support/pump_client_future.dart';
 
 import 'support/conversation_fixtures.dart';
+import 'support/mapped_conversation_feed.dart';
 
-// Canonical item → 唯一 typed Message 的适配契约。
-//
-// 旧实现观察的是窗口行投影（`TimelineRow`、窗口 epoch、锚点与双向分页回执）；这些能力已
-// 按 design/26 删除，算法覆盖由展示 lease/owner 的测试承担
-// （test/client/timeline_display_lease_test.dart、timeline_session_owner_test.dart）。
-// 这里保留仍然成立且只有适配层能证明的部分：每条 canonical item 恰好一条 Message、身份与
-// 作者来自条目自身、typed 载荷的保存/终态/省略账目与逐字段详情引用，以及原位更新的身份
-// 稳定性；另外验证公开展示状态确实只携带元数据。
+// 完成原子映射为唯一正文消息；局部观察、typed 字段、省略账目与授权资源
+// 使用真实 Flyer/controller 验证。回执展开通过真实 SDK 与 owner 接纳后的 lease 验证。
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_entry.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
@@ -38,54 +32,30 @@ void main() {
 
   ConversationItem textItem(
     String id, {
-    int ordinal = 1,
-    int revision = 1,
-    String body = '正文',
+    int appendSeq = 1,
+    String body = 'body',
     ThreadTextChannel channel = ThreadTextChannel.finalAnswer,
-    bool saved = false,
-    bool terminal = false,
-    String? turnId = 'turn',
-    DateTime? updatedAt,
+    int? sealedAt,
   }) => conversationFixture(
     id: id,
     threadId: 'thread',
-    turnId: turnId ?? '',
-    ordinal: ordinal,
-    revision: revision,
-    createdAt: timestamp,
-    updatedAt: updatedAt ?? timestamp,
-    saved: saved,
-    lifecycle: terminal
-        ? ConversationLifecycle.terminal
-        : ConversationLifecycle.streaming,
+    appendSeq: appendSeq,
+    sealedAt: sealedAt,
     descriptor: ConversationTextDescriptor(
       channel: channel,
       attachments: const [],
-      lifecycle: terminal
-          ? CompletedThreadContentView(timestamp)
-          : const StreamingThreadContentView(),
+      outcome: ConversationContentCompleted(
+        CompletedThreadContentView(timestamp),
+      ),
     ),
     fields: {const ThreadTextFieldView(): body},
   );
 
-  ConversationItem toolItem(
-    String id, {
-    int ordinal = 2,
-    int revision = 3,
-    String arguments = '{"command":"cargo test"}',
-    String result = 'ok',
-  }) => conversationFixture(
+  ConversationItem toolItem(String id) => conversationFixture(
     id: id,
     threadId: 'thread',
-    turnId: 'turn',
-    ordinal: ordinal,
-    revision: revision,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    saved: true,
-    lifecycle: ConversationLifecycle.terminal,
     descriptor: ConversationToolDescriptor(
-      invocation: ConversationToolInvocation(
+      invocation: const ConversationToolInvocation(
         toolCallId: 'call-1',
         callId: 'call-1',
         name: 'exec_command',
@@ -96,182 +66,39 @@ void main() {
       ),
     ),
     fields: {
-      const ThreadToolArgumentsFieldView(): arguments,
-      const ThreadToolResultFieldView(): result,
+      const ThreadToolArgumentsFieldView(): '{"command":"cargo test"}',
+      const ThreadToolResultFieldView(): 'ok',
     },
   );
 
-  group('canonical item → Flyer 原生 Message 与唯一 entry', () {
-    test('多附件产生原生消息但只有一个业务 entry，空 Turn 身份合法', () async {
-      const attachments = [
-        ThreadAttachmentView(
-          id: 'image-a',
-          modality: AttachmentModalityView.image,
-          mediaType: 'image/png',
-          byteSize: 8,
-        ),
-        ThreadAttachmentView(
-          id: 'image-b',
-          modality: AttachmentModalityView.image,
-          mediaType: 'image/png',
-          byteSize: 9,
-        ),
-        ThreadAttachmentView(
-          id: 'file',
-          modality: AttachmentModalityView.file,
-          mediaType: 'text/plain',
-          byteSize: 10,
-        ),
-      ];
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
-      );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(
-        conversationFixture(
-          id: 'media',
-          threadId: 'thread',
-          turnId: '',
-          descriptor: ConversationTextDescriptor(
-            channel: ThreadTextChannel.user,
-            attachments: attachments,
-            lifecycle: CompletedThreadContentView(timestamp),
-          ),
-          fields: {const ThreadTextFieldView(): '正文'},
-        ),
-      );
-      final entry = messages.ownerOf('media')!;
-      expect(messages.length, 1);
-      expect(chat.messages, hasLength(4));
-      expect(chat.messages.whereType<ImageMessage>(), hasLength(2));
-      expect(chat.messages.whereType<FileMessage>(), hasLength(1));
-      expect(
-        chat.messages.where((message) => message.id == entry.id),
-        hasLength(1),
-      );
-      expect(chat.messages.map(timelineEntryOf).toSet(), {entry});
-      expect(entry.first.header.turnId, isEmpty);
-      expect(identical(messages.item('media'), entry.first), isTrue);
-
-      // 真实共享资源由 raw item 引用维护，不由 derived ImageMessage 计数。
-      ConversationItem sharedItem(String id) => conversationFixture(
-        id: id,
-        threadId: 'thread',
-        descriptor: ConversationTextDescriptor(
-          channel: ThreadTextChannel.user,
-          attachments: [attachments.first],
-          lifecycle: CompletedThreadContentView(timestamp),
-        ),
-      );
-      messages.add(sharedItem('peer'));
-      expect(messages.length, 2);
-      expect(chat.messages, hasLength(6));
-      expect(
-        chat.messages.whereType<ImageMessage>().map((message) => message.id),
-        containsAll(['media:attachment:image-a', 'peer:attachment:image-a']),
-      );
-      final transport = _ImageReadTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'shared-image-read',
-      );
-      addTearDown(() {
-        resources.retire();
-        return client.close();
-      });
-      Future<Uint8List> read() =>
-          client.readAttachmentBytes('thread', 'image-a');
-      final shared = resources.borrow('image-a');
-      expect(resources.borrow('image-a'), same(shared));
-      final first = shared.load(read);
-      final peer = shared.load(read);
-      expect(identical(first, peer), isTrue);
-      final failed = isA<StudioFailure>().having(
-        (failure) => failure.correlationId,
-        'correlationId',
-        'shared-image-failure',
-      );
-      await Future.wait([
-        expectLater(first, throwsA(failed)),
-        expectLater(peer, throwsA(failed)),
+  group('完成原子与局部展示观察', () {
+    test('完成文本只生成一条稳定消息，重复完整载荷不通知其它行', () async {
+      final h = _Messages();
+      await h.model.initialize([textItem('a'), textItem('b', appendSeq: 2)]);
+      final first = h.chat.messages.first;
+      final entry = h.model.ownerOf('a')!;
+      final member = h.model.memberObservation('a')!;
+      var changed = 0;
+      member.addListener(() => changed++);
+      await h.model.append([
+        textItem('b', appendSeq: 2),
+        textItem('c', appendSeq: 3),
       ]);
-      expect(transport.reads, [('thread', 'image-a')]);
-
-      Future<Uint8List>? leftRetry;
-      Future<Uint8List>? rightRetry;
-      void leftChanged() => leftRetry = shared.load(read);
-      void rightChanged() => rightRetry = shared.load(read);
-      shared.addListener(leftChanged);
-      shared.addListener(rightChanged);
-      transport.fail = false;
-      shared.retry(read); // 一次 retry 同时通知两个真实 resource consumer。
-      expect(leftRetry, isNotNull);
-      expect(identical(leftRetry, rightRetry), isTrue);
-      expect(await leftRetry!, orderedEquals(_ImageReadTransport.bytes));
-      expect(await rightRetry!, orderedEquals(_ImageReadTransport.bytes));
-      expect(transport.reads, hasLength(2), reason: '两个consumer共享一次额外授权读取');
+      expect(h.chat.messages, hasLength(3));
+      expect(h.chat.messages.first, same(first));
+      expect(h.model.ownerOf('a'), same(entry));
       expect(
-        identical(shared.load(read), leftRetry),
+        h.chat.messages.map((message) => message.id).toSet(),
+        hasLength(3),
+      );
+      expect(
+        h.chat.messages.every((message) => message is TextMessage),
         isTrue,
-        reason: '再次借用成功缩略图/原图bytes不触发新读取',
       );
-
-      messages.remove('media');
-      expect(resources.borrow('image-a'), same(shared));
-      expect(identical(shared.load(read), leftRetry), isTrue);
-      expect(transport.reads, hasLength(2));
-      shared.removeListener(leftChanged);
-      shared.removeListener(rightChanged);
-      messages.remove('peer');
-      expect(() => resources.borrow('image-a'), throwsStateError);
-      expect(shared.owns(leftRetry!), isFalse);
-      messages.add(sharedItem('later'));
-      final replacement = resources.borrow('image-a');
-      expect(replacement, isNot(same(shared)));
-      expect(
-        await replacement.load(read),
-        orderedEquals(_ImageReadTransport.bytes),
-      );
-      expect(transport.reads, hasLength(3), reason: '最后raw引用释放后重新加入同附件必须新读');
-    });
-    test('每条条目有唯一主 Message，身份来自条目而不是索引', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
-      );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(textItem('item-a', ordinal: 1));
-      messages.add(textItem('item-b', ordinal: 2, terminal: true));
-      expect(chat.messages.map((message) => message.id), ['item-a', 'item-b']);
-      expect(chat.messages.first, isA<TextStreamMessage>());
-      expect(chat.messages.last, isA<TextMessage>());
-      expect(chat.messages.first.createdAt, timestamp);
-      final entry = timelineEntryOf(chat.messages.first)!;
-      messages.replace('item-a', textItem('item-a', ordinal: 1));
-      expect(chat.messages, hasLength(2));
-      expect(timelineEntryOf(chat.messages.first), same(entry));
-      expect(identical(entry.first, messages.item('item-a')), isTrue);
-      expect(entry.first.revision, 1);
+      expect(changed, 0);
     });
 
-    test('作者身份只区分读者与助手，父代理输入属于读者', () {
+    test('作者身份来自频道，父代理输入属于读者', () {
       expect(
         timelineAuthor(textItem('u', channel: ThreadTextChannel.user)),
         'user',
@@ -287,221 +114,150 @@ void main() {
       expect(timelineAuthor(toolItem('t')), 'assistant');
     });
 
-    test('保存与终态互相独立，省略账目来自条目本身', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
+    test('seal未知仍为完成文本，只有真实seal生成消息日期', () async {
+      final h = _Messages();
+      await h.model.initialize([
+        textItem('unknown'),
+        textItem('known', appendSeq: 2, sealedAt: 1767323045),
+      ]);
+      expect(h.chat.messages.first, isA<TextMessage>());
+      expect(h.chat.messages.first.createdAt, isNull);
+      expect(
+        h.chat.messages.last.createdAt,
+        DateTime.fromMillisecondsSinceEpoch(1767323045000, isUtc: true),
       );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(textItem('saved-but-streaming', saved: true));
-      final payload = timelineEntryOf(chat.messages.single)!.first;
-      expect(payload.saved, isTrue);
-      expect(payload.terminal, isFalse);
-      expect(payload.omittedBytes, 0);
-      messages.add(
-        textItem('terminal', ordinal: 2, terminal: true, saved: false),
-      );
-      final terminal = timelineEntryOf(chat.messages.last)!.first;
-      expect(terminal.terminal, isTrue);
-      expect(terminal.saved, isFalse);
+      expect(h.model.item('unknown')!.header.sealedAt, isNull);
     });
 
-    test('逐字段详情引用按值语义查找，不依赖对象实例', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
+    test('逐字段详情按值查找，保留省略字节及完整读取入口', () async {
+      final h = _Messages();
+      final value = conversationCopyFixture(
+        toolItem('detail'),
+        fields: {const ThreadToolArgumentsFieldView(): 'a' * 32},
+        totalBytes: {const ThreadToolArgumentsFieldView(): 40},
       );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(
-        conversationCopyFixture(
-          toolItem('detail', revision: 4),
-          fields: {const ThreadToolArgumentsFieldView(): 'a' * 32},
-          totalBytes: {const ThreadToolArgumentsFieldView(): 40},
-        ),
-      );
-      final payload = timelineEntryOf(chat.messages.single)!.first;
-      final ref = payload.detailFor(const ThreadToolArgumentsFieldView());
-      expect(ref, isNotNull);
-      expect(ref!.revision, 4);
+      await h.model.initialize([value]);
+      final payload = h.model.item('detail')!;
+      final ref = payload.detailFor(const ThreadToolArgumentsFieldView())!;
+      expect(ref.field, const ThreadToolArgumentsFieldView());
+      expect(ref.totalBytes, 40);
+      expect(ref.previewBytes, 32);
       expect(ref.truncated, isTrue);
       expect(payload.omittedBytes, 8);
       expect(payload.detailFor(const ThreadToolResultFieldView()), isNull);
     });
 
-    test('预览被省略时仍保留按需读取入口，不把省略当成原文不存在', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
+    test('正文预览省略不等于正文不存在，工具事实不解析摘要', () async {
+      final h = _Messages();
+      final value = conversationCopyFixture(
+        textItem('truncated', body: '预览'),
+        totalBytes: {const ThreadTextFieldView(): 106},
       );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(
-        conversationCopyFixture(
-          textItem('truncated', body: '预览'),
-          totalBytes: {const ThreadTextFieldView(): 106},
-        ),
-      );
-      final message = chat.messages.single;
-      expect(message, isA<TextStreamMessage>());
-      expect(message.metadata, isNotEmpty);
-      final payload = timelineEntryOf(message)!.first;
-      expect(payload.omittedBytes, 100);
-      expect(payload.fieldFor(const ThreadTextFieldView())!.previewBytes, 6);
-      expect(payload.detailFor(const ThreadTextFieldView())!.truncated, isTrue);
-      expect(timelineText(payload), '预览');
-    });
-
-    test('工具条目的 typed 事实来自条目自身，不解析摘要字符串', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
-      );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      messages.add(toolItem('tool-1'));
-      final payload = timelineEntryOf(chat.messages.single)!.first;
-      expect(payload.descriptor, isA<ConversationToolDescriptor>());
-      final tool = payload.descriptor as ConversationToolDescriptor;
-      expect(tool.invocation.name, 'exec_command');
-      expect(payload.fieldFor(const ThreadToolResultFieldView())!.text, 'ok');
+      await h.model.initialize([value]);
+      expect(h.chat.messages.single, isA<TextMessage>());
+      expect(value.omittedBytes, 100);
+      expect(value.fieldFor(const ThreadTextFieldView())!.previewBytes, 6);
+      expect(value.detailFor(const ThreadTextFieldView())!.truncated, isTrue);
+      expect(timelineText(value), '预览');
+      final tool = toolItem('tool');
       expect(
-        payload.fieldFor(const ThreadToolArgumentsFieldView())!.text,
-        contains('cargo test'),
+        (tool.descriptor as ConversationToolDescriptor).invocation.name,
+        'exec_command',
       );
+      expect(tool.fieldFor(const ThreadToolResultFieldView())!.text, 'ok');
     });
-  });
 
-  group('原位更新保持身份', () {
-    test('同身份、更高 revision 的字段提交原地生效并前进保存/终态', () {
-      final chat = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final messages = TimelineMessageController(
-        chat,
-        generation: 1,
-        imageResources: resources,
+    test('同ID不同载荷拒绝，原消息与局部观察不变', () async {
+      final h = _Messages();
+      await h.model.initialize([textItem('a')]);
+      final message = h.chat.messages.single;
+      final member = h.model.memberObservation('a');
+      await expectLater(
+        h.model.append([textItem('a', body: 'conflict')]),
+        throwsStateError,
       );
-      addTearDown(() async {
-        resources.retire();
-        messages.dispose();
-        resources.release();
-        chat.dispose();
-      });
-      final content = conversationContentFixture();
-      final current = textItem('live', body: '前半');
-      messages.add(current);
-      final entry = timelineEntryOf(chat.messages.single)!;
-      final next = content.reduceItem(
-        current,
-        const ConversationUpdateItem(
-          itemId: 'live',
-          expectedRevision: 1,
-          revision: 2,
-          saved: true,
-          lifecycle: ConversationLifecycle.terminal,
-          fields: [
-            ConversationFieldUpdate(
-              field: ThreadTextFieldView(),
-              change: AppendThreadFieldChangeView(' 后半'),
-              totalBytes: 13,
-              previewBytes: 13,
+      expect(h.chat.messages.single, same(message));
+      expect(h.model.memberObservation('a'), same(member));
+      expect(timelineText(h.model.item('a')!), 'body');
+    });
+
+    test('同原子多附件只有一个Message，共享授权读取与重试随展示释放', () async {
+      const image = ThreadAttachmentView(
+        id: 'image-a',
+        modality: AttachmentModalityView.image,
+        mediaType: 'image/png',
+        byteSize: 8,
+      );
+      final h = _Messages();
+      ConversationItem media(String id, int seq) => conversationFixture(
+        id: id,
+        threadId: 'thread',
+        turnId: null,
+        appendSeq: seq,
+        descriptor: ConversationTextDescriptor(
+          channel: ThreadTextChannel.user,
+          attachments: const [
+            image,
+            ThreadAttachmentView(
+              id: 'file',
+              modality: AttachmentModalityView.file,
+              mediaType: 'text/plain',
+              byteSize: 10,
             ),
           ],
-        ),
-      );
-      messages.replace('live', next);
-      expect(chat.messages.single.id, current.id, reason: '身份必须保持，不移除后重插');
-      expect(timelineEntryOf(chat.messages.single), same(entry));
-      expect(chat.messages.single, isA<TextMessage>());
-      expect(entry.first.revision, 2);
-      expect(entry.first.saved, isTrue);
-      expect(entry.first.terminal, isTrue);
-      expect(timelineText(entry.first), '前半 后半');
-    });
-
-    test('revision 不连续的更新被拒绝，交给显式重同步', () {
-      final content = conversationContentFixture();
-      expect(
-        () => content.reduceItem(
-          textItem('live', revision: 2),
-          const ConversationUpdateItem(
-            itemId: 'live',
-            expectedRevision: 1,
-            revision: 3,
-            saved: false,
-            lifecycle: ConversationLifecycle.streaming,
-            fields: [
-              ConversationFieldUpdate(
-                field: ThreadTextFieldView(),
-                change: AppendThreadFieldChangeView('x'),
-                totalBytes: 1,
-                previewBytes: 1,
-              ),
-            ],
+          outcome: ConversationContentCompleted(
+            CompletedThreadContentView(timestamp),
           ),
         ),
-        throwsA(isA<ConversationContinuityError>()),
       );
-    });
-
-    test('逐字段字节账目与实际预览矛盾时拒绝该帧', () {
-      final content = conversationContentFixture();
-      final current = conversationCopyFixture(
-        textItem('accounting', body: 'ab'),
-        totalBytes: {const ThreadTextFieldView(): 6},
+      await h.model.initialize([media('media', 1), media('peer', 2)]);
+      expect(h.chat.messages, hasLength(2));
+      expect(h.chat.messages.whereType<ImageMessage>(), isEmpty);
+      expect(h.chat.messages.whereType<FileMessage>(), isEmpty);
+      expect(h.model.item('media')!.header.turnId, isNull);
+      expect(timelineAttachments(h.model.item('media')!), hasLength(2));
+      final transport = _ImageReadTransport();
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'shared-image-read',
       );
-      expect(current.omittedBytes, 4);
-      expect(
-        () => content.reduceItem(
-          current,
-          const ConversationUpdateItem(
-            itemId: 'accounting',
-            expectedRevision: 1,
-            revision: 1,
-            saved: false,
-            lifecycle: ConversationLifecycle.streaming,
-            fields: [
-              ConversationFieldUpdate(
-                field: ThreadTextFieldView(),
-                change: UnchangedThreadFieldChangeView(),
-                totalBytes: 6,
-                previewBytes: 3,
-              ),
-            ],
-          ),
-        ),
-        throwsA(isA<ConversationContinuityError>()),
+      addTearDown(client.close);
+      Future<Uint8List> read() =>
+          client.readAttachmentBytes('thread', 'image-a');
+      final shared = h.images.borrow('image-a');
+      expect(h.images.borrow('image-a'), same(shared));
+      final first = shared.load(read);
+      final peer = shared.load(read);
+      expect(peer, same(first));
+      final failed = isA<StudioFailure>().having(
+        (failure) => failure.correlationId,
+        'correlationId',
+        'shared-image-failure',
       );
-      expect(current.omittedBytes, 4, reason: '拒绝不改写原事实；整体省略量由有效字段派生');
+      await Future.wait([
+        expectLater(first, throwsA(failed)),
+        expectLater(peer, throwsA(failed)),
+      ]);
+      expect(transport.reads, [('thread', 'image-a')]);
+      Future<Uint8List>? left;
+      Future<Uint8List>? right;
+      void leftChanged() => left = shared.load(read);
+      void rightChanged() => right = shared.load(read);
+      shared.addListener(leftChanged);
+      shared.addListener(rightChanged);
+      transport.fail = false;
+      shared.retry(read);
+      expect(left, isNotNull);
+      expect(left, same(right));
+      expect(await left!, orderedEquals(_ImageReadTransport.bytes));
+      expect(await right!, orderedEquals(_ImageReadTransport.bytes));
+      expect(transport.reads, hasLength(2));
+      expect(shared.load(read), same(left));
+      shared.removeListener(leftChanged);
+      shared.removeListener(rightChanged);
+      h.model.dispose();
+      expect(() => h.images.borrow('image-a'), throwsStateError);
+      expect(shared.owns(left!), isFalse);
     });
   });
 
@@ -510,18 +266,12 @@ void main() {
   ConversationItem toolItemWithInput(
     ConversationInputFixture history, {
     String id = 'qa',
-    int revision = 1,
     String toolName = 'ask_user',
   }) => conversationFixture(
     id: id,
     threadId: 'thread',
     turnId: 'turn',
-    ordinal: 1,
-    revision: revision,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    saved: true,
-    lifecycle: ConversationLifecycle.streaming,
+    appendSeq: 1,
     descriptor: ConversationToolDescriptor(
       invocation: ConversationToolInvocation(
         toolCallId: 'call',
@@ -529,7 +279,10 @@ void main() {
         name: toolName,
       ),
       userInput: (history).descriptor,
-      state: ConversationToolRunning(),
+      state: ConversationToolSucceeded(
+        completedAt: timestamp,
+        output: ConversationToolOutputDescriptor(attachments: const []),
+      ),
     ),
     fields: {const ThreadToolArgumentsFieldView(): '{}', ...(history).fields},
   );
@@ -549,24 +302,7 @@ void main() {
     ],
   );
 
-  TimelineDisplayLease leaseWith(WidgetTester tester, ConversationItem item) {
-    final lease = TimelineDisplayLease(
-      threadId: 'thread',
-      generation: 1,
-      content: conversationContentFixture(threadId: 'thread', tester: tester),
-    );
-    lease.adoptBaseline(
-      ConversationBaseline(
-        subscriptionId: 'test',
-        version: 0,
-        items: [item],
-        before: null,
-        hasOlder: false,
-      ),
-    );
-    return lease;
-  }
-
+  final transports = <TimelineDisplayLease, _RowTransport>{};
   Future<void> unmountTimeline(
     WidgetTester tester,
     TimelineDisplayLease lease,
@@ -591,6 +327,45 @@ void main() {
       'row timeline stock operations done',
     );
     expect(lease.isReleased, isTrue, reason: '卸载后等待真实 stock operations done');
+  }
+
+  Future<TimelineDisplayLease> leaseWith(
+    WidgetTester tester,
+    ConversationItem item,
+  ) async {
+    final transport = _RowTransport(item);
+    final client = AnyworkClient(transport: transport, clientId: 'row-owner');
+    final owner = TimelineSessionOwner(client: client);
+    client.conversations.setVisibleThread('thread');
+    owner.select('thread');
+    await pumpClientFuture(
+      tester,
+      client.conversations.session('thread').content.ready,
+      'row owner acceptance',
+    );
+    final lease = owner.lease('thread')!;
+    transports[lease] = transport;
+    addTearDown(() async {
+      client.conversations.setVisibleThread(null);
+      await unmountTimeline(tester, lease);
+      expect(
+        (await pumpClientFuture(
+          tester,
+          owner.close(),
+          'row owner close',
+        )).complete,
+        isTrue,
+      );
+      expect(
+        (await pumpClientFuture(
+          tester,
+          client.close(),
+          'row client close',
+        )).complete,
+        isTrue,
+      );
+    });
+    return lease;
   }
 
   Future<void> pumpTimeline(
@@ -655,7 +430,6 @@ void main() {
                   isLoadingOlder: false,
                   olderError: null,
                   hasNewOutput: false,
-                  isPreparingLive: false,
                 ),
                 onLoadOlder: () async {},
                 onRetryOlder: () async {},
@@ -697,7 +471,7 @@ void main() {
   }
 
   group('原门禁承接：普通问答回执', () {
-    testWidgets('独立成行、默认折叠，原位更新后保留用户展开', (tester) async {
+    testWidgets('独立成行、默认折叠，追加其它原子保留用户展开', (tester) async {
       final history = conversationInputFixture(
         interactionId: 'interaction-1',
         questions: [question()],
@@ -714,7 +488,7 @@ void main() {
           'q1': ['A'],
         },
       );
-      final lease = leaseWith(tester, toolItemWithInput(history));
+      final lease = await leaseWith(tester, toolItemWithInput(history));
       await pumpTimeline(tester, lease);
 
       // 独立回执行（不并入其它 message），默认折叠：详情未构建。
@@ -738,108 +512,30 @@ void main() {
         findsOneWidget,
       );
 
-      // 同身份原位更新（工具参数替换）：不重插消息，也不收起用户已展开的回执。
-      final applied = lease.applyPatch(
-        const ConversationPatch(
-          subscriptionId: 'test',
-          from: 0,
-          to: 1,
-          priority: ConversationPriority.coalesced,
-          changes: [
-            ConversationUpdateItem(
-              itemId: 'qa',
-              expectedRevision: 1,
-              revision: 2,
-
-              saved: true,
-              lifecycle: ConversationLifecycle.streaming,
-              fields: [
-                ConversationFieldUpdate(
-                  field: ThreadToolArgumentsFieldView(),
-                  change: ReplaceThreadFieldChangeView('{"command":"x"}'),
-                  totalBytes: 15,
-                  previewBytes: 15,
-                ),
-              ],
-            ),
-          ],
+      final entry = lease.presentationFor('qa');
+      final member = lease.memberObservation('qa');
+      transports[lease]!.feed.emit(
+        ConversationBatch(
+          subscriptionId: 'row',
+          timelineEpoch: 'row-epoch',
+          fromSeq: 1,
+          throughSeq: 2,
+          items: [textItem('next', appendSeq: 2)],
         ),
       );
-      expect(applied, isTrue);
+      await pumpClientUntil(
+        tester,
+        () => lease.completedCursor?.appendSeq == 2,
+        'next atom accepted',
+      );
       await tester.pumpAndSettle();
       expect(
         find.byKey(StudioDriverKeys.timelineUserInputQuestion('qa', 0)),
         findsOneWidget,
-        reason: '原位更新不得收起用户主动展开的回执',
+        reason: '其它行提交不得收起用户主动展开的回执',
       );
-      expect(lease.itemOf('qa')!.revision, 2);
-    });
-  });
-
-  group('原门禁承接：计划回执', () {
-    ConversationInputFixture planHistory(
-      ConversationUserInputState state, {
-      List<String> answers = const [],
-    }) => conversationInputFixture(
-      interactionId: 'plan-1',
-      questions: [
-        question(
-          id: agentSessionPlanConfirmationQuestionId,
-          header: 'Plan',
-          text: '# Plan title\n\n- step one',
-        ),
-      ],
-      state: state,
-      answers: {agentSessionPlanConfirmationQuestionId: answers},
-    );
-
-    testWidgets('待确认时不出第二张历史卡', (tester) async {
-      final lease = leaseWith(
-        tester,
-        toolItemWithInput(
-          planHistory(const ConversationUserInputPending()),
-          toolName: planSubmitToolName,
-        ),
-      );
-      await pumpTimeline(tester, lease);
-      expect(
-        find.byKey(StudioDriverKeys.timelinePlanReceipt('qa')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(StudioDriverKeys.timelineUserInput('qa')),
-        findsNothing,
-      );
-    });
-
-    testWidgets('回答后显示权威决定与原始反馈', (tester) async {
-      final lease = leaseWith(
-        tester,
-        toolItemWithInput(
-          planHistory(
-            ConversationUserInputResolved(
-              answers: [
-                ConversationAnswerDescriptor(
-                  questionId: agentSessionPlanConfirmationQuestionId,
-                  answerCount: ([
-                    agentSessionPlanReviseAnswer,
-                    '请补充回滚步骤',
-                  ]).length,
-                  redacted: false,
-                ),
-              ],
-            ),
-            answers: [agentSessionPlanReviseAnswer, '请补充回滚步骤'],
-          ),
-          toolName: planSubmitToolName,
-        ),
-      );
-      await pumpTimeline(tester, lease);
-      final receipt = find.byKey(StudioDriverKeys.timelinePlanReceipt('qa'));
-      expect(receipt, findsOneWidget);
-      await tester.tap(receipt);
-      await tester.pumpAndSettle();
-      expect(find.text('请补充回滚步骤'), findsOneWidget);
+      expect(lease.presentationFor('qa'), same(entry));
+      expect(lease.memberObservation('qa'), same(member));
     });
   });
 
@@ -863,7 +559,7 @@ void main() {
     );
 
     testWidgets('已回答的普通问答仍渲染普通只读回执', (tester) async {
-      final lease = leaseWith(
+      final lease = await leaseWith(
         tester,
         toolItemWithInput(
           legacyHistory(
@@ -900,25 +596,8 @@ void main() {
       );
     });
 
-    testWidgets('待决的普通问答不被隐藏，也不出现计划卡', (tester) async {
-      final lease = leaseWith(
-        tester,
-        toolItemWithInput(legacyHistory(const ConversationUserInputPending())),
-      );
-      await pumpTimeline(tester, lease);
-      expect(
-        find.byKey(StudioDriverKeys.timelineUserInput('qa')),
-        findsOneWidget,
-        reason: '旧普通待决问答不能因为 ID 相同就被当成待确认计划而隐藏',
-      );
-      expect(
-        find.byKey(StudioDriverKeys.timelinePlanReceipt('qa')),
-        findsNothing,
-      );
-    });
-
     testWidgets('标题含 Plan 但普通问题 ID 不被改判', (tester) async {
-      final lease = leaseWith(
+      final lease = await leaseWith(
         tester,
         toolItemWithInput(
           conversationInputFixture(
@@ -980,7 +659,7 @@ void main() {
           'q1': ['A'],
         },
       );
-      final lease = leaseWith(tester, toolItemWithInput(history));
+      final lease = await leaseWith(tester, toolItemWithInput(history));
       await pumpTimeline(tester, lease, size: const Size(360, 640));
       await tester.tap(find.byKey(StudioDriverKeys.timelineUserInput('qa')));
       await tester.pumpAndSettle();
@@ -989,6 +668,59 @@ void main() {
         find.byKey(StudioDriverKeys.timelineUserInputQuestion('qa', 0)),
         findsOneWidget,
       );
+    });
+
+    testWidgets('多题按 questionId 关联，敏感回答永不渲染原文', (tester) async {
+      const secret = 'hunter2-secret-token';
+      final secretQuestion = UserQuestionView(
+        id: 'q2',
+        header: 'Secret',
+        question: 'Provide the token',
+        isOther: true,
+        isSecret: true,
+        options: const [],
+      );
+      final secretHistory = conversationInputFixture(
+        interactionId: 'interaction-multi',
+        questions: [
+          question(id: 'q1', header: 'Pick one', text: 'Visible question'),
+          secretQuestion,
+        ],
+        state: ConversationUserInputResolved(
+          answers: [
+            const ConversationAnswerDescriptor(
+              questionId: 'q1',
+              answerCount: 1,
+              redacted: false,
+            ),
+            const ConversationAnswerDescriptor(
+              questionId: 'q2',
+              answerCount: 1,
+              redacted: false,
+            ),
+          ],
+        ),
+        answers: {
+          'q1': ['A'],
+          'q2': [secret],
+        },
+      );
+      final lease = await leaseWith(tester, toolItemWithInput(secretHistory));
+      await pumpTimeline(tester, lease, size: const Size(360, 640));
+      await tester.tap(find.byKey(StudioDriverKeys.timelineUserInput('qa')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInputQuestion('qa', 0)),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInputQuestion('qa', 1)),
+        findsOneWidget,
+      );
+      expect(find.text('A'), findsWidgets);
+      expect(find.text(secret), findsNothing);
+      expect(find.text('Sensitive answer hidden'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }
@@ -1015,4 +747,47 @@ final class _ImageReadTransport extends RecordingDemoTransport {
     }
     return bytes;
   }
+}
+
+final class _Messages {
+  _Messages() {
+    addTearDown(() {
+      model.dispose();
+      images.retire();
+      images.release();
+      chat.dispose();
+    });
+  }
+  final chat = InMemoryChatController();
+  final images = TimelineImageResources(threadId: 'thread');
+  late final model = TimelineMessageController(
+    chat,
+    generation: 1,
+    imageResources: images,
+  );
+}
+
+final class _RowTransport extends Fake implements StudioTransport {
+  _RowTransport(this.item);
+  final ConversationItem item;
+  late final feed = ScriptedConversationFeed(
+    threadId: 'thread',
+    subscriptionId: 'row',
+    baseline: () => ConversationBaseline(
+      subscriptionId: 'row',
+      timelineEpoch: 'row-epoch',
+      items: [item],
+      before: null,
+      hasOlder: false,
+      completedCursor: const ConversationCompletionCursor(
+        timelineEpoch: 'row-epoch',
+        appendSeq: 1,
+      ),
+    ),
+  );
+  @override
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async => feed;
 }

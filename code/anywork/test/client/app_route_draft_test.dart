@@ -125,7 +125,7 @@ void main() {
           conversationFixture(
             id: 'route-item-$i',
             threadId: 'thread-main',
-            ordinal: 100 + i,
+            appendSeq: 100 + i,
           ),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
@@ -135,7 +135,9 @@ void main() {
             graph.client.conversations
                 .existingSession('thread-main')
                 ?.content
-                .lastDeliveredFrame !=
+                .state
+                .value
+                .snapshot !=
             null,
         'selected Thread timeline baseline',
       );
@@ -184,14 +186,14 @@ void main() {
       // Turn/执行事实可能伴随内容重同步；分页属于此刻实际挂载的展示代次。
       final oldLease = graph.timeline.lease('thread-main')!;
       final oldPage = Completer<ConversationPage>();
-      connection.scriptedPage = oldPage;
+      transport.scriptedPage = oldPage;
       final loading = graph.timeline.loadOlder(
         'thread-main',
         generation: oldLease.generation,
       );
       await pumpClientUntil(
         tester,
-        () => connection.pageCalls == 1,
+        () => transport.pageCalls == 1,
         'old page entered',
       );
       var hiddenFrames = 0;
@@ -267,14 +269,16 @@ void main() {
       expect(newConnection.subscriptionId, isNot(connection.subscriptionId));
       expect(newLease, isNot(same(oldLease)));
       final currentMessages = [...newLease.controller.messages];
-      final currentVersion = newLease.appliedVersion;
+      final currentCursor = newLease.completedCursor;
       oldPage.complete(
         ConversationPage(
+          threadId: 'thread-main',
+          timelineEpoch: oldLease.timelineEpoch,
           items: [
             conversationFixture(
               id: 'late-old-page',
               threadId: 'thread-main',
-              ordinal: 1,
+              appendSeq: 1,
             ),
           ],
           before: null,
@@ -283,7 +287,7 @@ void main() {
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
       expect(newLease.controller.messages, currentMessages);
-      expect(newLease.appliedVersion, currentVersion);
+      expect(newLease.completedCursor, currentCursor);
       expect(newLease.itemOf('late-old-page'), isNull);
 
       expect(graph.client.drafts.composer('thread-main'), same(composer));
@@ -295,10 +299,9 @@ void main() {
         newLease.items
             .where((item) => item.descriptor is ConversationTurnDescriptor)
             .map(
-              (item) =>
-                  (item.descriptor as ConversationTurnDescriptor).value.state,
+              (item) => (item.descriptor as ConversationTurnDescriptor).outcome,
             )
-            .whereType<CompletedStudioTurnState>(),
+            .whereType<ConversationTurnCompleted>(),
         isNotEmpty,
         reason: '新内容基线包含隐藏期间真正提交的终态事实',
       );
@@ -315,7 +318,7 @@ void main() {
         'start draft entered before Settings',
       );
       expect(session.content.currentAttemptId?.value, isNot(attemptId));
-      expect(session.content.lastDeliveredFrame != null, isTrue);
+      expect(session.content.state.value.snapshot != null, isTrue);
       expect(transport.feeds, hasLength(2));
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
@@ -483,7 +486,9 @@ void main() {
                 graph.client.conversations
                         .existingSession('thread-alt')
                         ?.content
-                        .lastDeliveredFrame !=
+                        .state
+                        .value
+                        .snapshot !=
                     null,
             'registered bot chat receives a fresh baseline',
           );
@@ -558,7 +563,9 @@ void main() {
                 graph.client.conversations
                         .existingSession('thread-alt')
                         ?.content
-                        .lastDeliveredFrame !=
+                        .state
+                        .value
+                        .snapshot !=
                     null,
             'returning from platform tools acquires a new bot baseline',
           );
@@ -685,6 +692,12 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   int runtimeSubscriptions = 0;
   int runtimeCancellations = 0;
   late String botProjectId;
+  Completer<ConversationPage>? scriptedPage;
+  int pageCalls = 0;
+
+  @override
+  Future<ConversationHistoryReader> openHistoryReader(String threadId) async =>
+      _RouteHistoryReader(await super.openHistoryReader(threadId), this);
 
   @override
   Future<BotConversationPage> listBotConversations(
@@ -710,8 +723,14 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   );
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
-    final feed = await super.openConversationFeed(threadId);
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
+    final feed = await super.openConversationFeed(
+      threadId,
+      resumeAfter: resumeAfter,
+    );
     if (threadId != 'thread-main') return feed;
     final owner = feed as RecordingConversationFeed;
     runtimeSubscriptions++;
@@ -749,4 +768,32 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       ThreadRuntimeUpdate(runtime: next, todo: null),
     ).runtime;
   }
+}
+
+final class _RouteHistoryReader implements ConversationHistoryReader {
+  _RouteHistoryReader(this.inner, this.transport);
+  final ConversationHistoryReader inner;
+  final _RouteTurnTransport transport;
+
+  @override
+  String get threadId => inner.threadId;
+  @override
+  String get timelineEpoch => inner.timelineEpoch;
+  @override
+  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
+    transport.pageCalls++;
+    final gate = transport.scriptedPage;
+    transport.scriptedPage = null;
+    return gate?.future ?? inner.page(before: before, limit: limit);
+  }
+
+  @override
+  Future<ConversationDetailChunk> readDetail({
+    required String itemId,
+    required ConversationDetailQuery query,
+  }) => inner.readDetail(itemId: itemId, query: query);
+  @override
+  void requestClose() => inner.requestClose();
+  @override
+  Future<void> close() => inner.close();
 }

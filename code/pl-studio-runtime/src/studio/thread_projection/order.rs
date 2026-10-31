@@ -21,6 +21,11 @@ pub(in crate::studio) fn tool_id(id: &str) -> String {
     format!("tool:{}:{id}", id.len())
 }
 
+/// 已实际返回的后台启动收据与该调用最终结果使用不同的稳定身份。
+pub(in crate::studio) fn tool_background_started_id(id: &str) -> String {
+    format!("{}:background-started", tool_id(id))
+}
+
 /// Durable receipt identity of one terminal interaction/permission record.
 ///
 /// The writer records the receipt in the same transaction as the effect that produced it and the

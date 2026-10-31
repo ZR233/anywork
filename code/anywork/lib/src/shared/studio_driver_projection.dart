@@ -247,15 +247,26 @@ TimelineDisplayFacts? _timelineFacts(
   final view = owner.source.value;
   if (view == null || view.threadId != threadId) return null;
   final lease = owner.lease(threadId);
+  final hidden = <String, TimelineEntry>{};
+  if (lease != null) {
+    for (final atom in lease.items) {
+      final entry = lease.presentationFor(atom.id);
+      if (entry != null && entry.kind == TimelineEntryKind.hidden) {
+        hidden[entry.id] = entry;
+      }
+    }
+  }
   return TimelineDisplayFacts(
     threadId: view.threadId,
     generation: lease?.generation ?? view.generation,
     ready: lease != null,
     mode: view.mode,
     connection: view.connection,
-    appliedVersion: lease?.appliedVersion,
-    olderCursor: view.olderCursor,
-    hasOlder: view.hasOlder,
+    timelineEpoch: lease?.timelineEpoch,
+    completedThrough: lease?.completedCursor?.appendSeq,
+    loadedCount: lease?.loadedCount,
+    olderCursor: lease?.olderCursor,
+    hasOlder: lease?.hasOlder ?? false,
     loadingOlder: view.isLoadingOlder,
     olderError: view.olderError?.toString(),
     olderErrorCode: switch (view.olderError) {
@@ -267,7 +278,6 @@ TimelineDisplayFacts? _timelineFacts(
       _ => null,
     },
     hasNewOutput: view.hasNewOutput,
-    preparingLive: view.isPreparingLive,
     items: [
       for (final item in lease?.items ?? const <ConversationItem>[])
         _timelineItemFacts(item),
@@ -276,23 +286,27 @@ TimelineDisplayFacts? _timelineFacts(
       for (final message in lease?.controller.messages ?? const <Message>[])
         if (timelineEntryOf(message) case final item?
             when message.id == item.id)
-          TimelinePresentationFacts(
-            id: item.id,
-            kind: item.kind.name,
-            ordinal: item.position.$1,
-            memberIds: item.memberIds,
-            visibleMemberIds: item.visibleMemberIds,
-            skillPairs: {
-              for (final id in item.visibleMemberIds)
-                id: ?item.pairedToolId(id),
-            },
-            expanded: item.expanded,
-            activeCount: item.activeCount,
-            issueCount: item.issueCount,
-          ),
+          _timelinePresentationFacts(item),
+    ],
+    hiddenPresentationItems: [
+      for (final item in hidden.values) _timelinePresentationFacts(item),
     ],
   );
 }
+
+TimelinePresentationFacts _timelinePresentationFacts(TimelineEntry item) =>
+    TimelinePresentationFacts(
+      id: item.id,
+      kind: item.kind.name,
+      firstAppendSeq: item.position.$1,
+      memberIds: item.memberIds,
+      visibleMemberIds: item.visibleMemberIds,
+      skillPairs: {
+        for (final id in item.visibleMemberIds) id: ?item.pairedToolId(id),
+      },
+      expanded: item.expanded,
+      issueCount: item.issueCount,
+    );
 
 /// 只读滚动几何：每次诊断请求**现场**读当前展示 lease 实测挂载的标准 controller。
 ///
@@ -333,10 +347,9 @@ TimelineItemFacts _timelineItemFacts(ConversationItem item) {
   final status = _itemStatus(descriptor);
   return TimelineItemFacts(
     id: item.id,
-    ordinal: item.header.ordinal,
-    revision: item.revision,
-    saved: item.saved,
-    terminal: item.terminal,
+    appendSeq: item.header.appendSeq,
+    sourceEffectSeq: item.header.sourceEffectSeq,
+    sealedAt: item.header.sealedAt,
     omittedBytes: item.omittedBytes,
     kind: _itemKind(descriptor),
     status: status,
@@ -349,7 +362,6 @@ TimelineItemFacts _timelineItemFacts(ConversationItem item) {
       for (final detail in item.details)
         TimelineDetailFacts(
           field: StudioDriverKeyValues.timelineDetailField(detail.field),
-          revision: detail.revision,
           totalBytes: detail.totalBytes,
           previewBytes: detail.previewBytes,
         ),
@@ -374,7 +386,7 @@ TimelineItemFacts _timelineItemFacts(ConversationItem item) {
                 item.fieldFor(const ThreadToolArgumentsFieldView())?.text ?? '',
             result: result,
             progressBytes: _utf8Bytes(result ?? ''),
-            itemRevision: item.revision,
+            appendSeq: item.header.appendSeq,
             denialReason: switch (tool.state) {
               ConversationToolDenied(:final reason) => reason,
               _ => null,
@@ -400,12 +412,21 @@ TimelineItemFacts _timelineItemFacts(ConversationItem item) {
         : TimelineUserInputFacts(
             interactionId: userInput.interactionId,
             state: switch (userInput.state) {
-              ConversationUserInputPending() => 'pending',
               ConversationUserInputResolved() => 'resolved',
               ConversationUserInputCancelled() => 'cancelled',
             },
             isPlanConfirmation: receipt != null,
             planDecision: receipt?.decision.name,
+          ),
+    plan: descriptor is! ConversationPlanDescriptor
+        ? null
+        : TimelinePlanFacts(
+            interactionId: descriptor.interactionId,
+            decision: descriptor.decision.name,
+            documentVersion: descriptor.documentVersion,
+            contentHash: descriptor.contentHash,
+            document: item.fieldFor(const ThreadPlanDocumentFieldView())?.text,
+            feedback: item.fieldFor(const ThreadPlanFeedbackFieldView())?.text,
           ),
   );
 }
@@ -425,6 +446,7 @@ String _itemKind(ConversationDescriptor descriptor) => switch (descriptor) {
   ConversationToolDescriptor() => 'toolCall',
   ConversationAgentDescriptor() => 'agent',
   ConversationTurnDescriptor() => 'turn',
+  ConversationPlanDescriptor() => 'plan',
   ConversationInferenceDescriptor() => 'inference',
   ConversationSkillDescriptor() => 'skill',
   ConversationRawDescriptor() => 'raw',
@@ -433,37 +455,38 @@ String _itemKind(ConversationDescriptor descriptor) => switch (descriptor) {
 };
 
 String _itemStatus(ConversationDescriptor descriptor) => switch (descriptor) {
-  ConversationTextDescriptor(:final lifecycle) ||
-  ConversationThinkingDescriptor(:final lifecycle) => lifecycle.status,
+  ConversationTextDescriptor(:final outcome) ||
+  ConversationThinkingDescriptor(:final outcome) => switch (outcome) {
+    ConversationContentCompleted() => 'completed',
+    ConversationContentFailed() => 'failed',
+    ConversationContentCancelled() => 'cancelled',
+  },
   ConversationToolDescriptor(:final state) => switch (state) {
-    ConversationToolQueued() => 'queued',
-    ConversationToolCancelling() => 'cancelling',
+    ConversationToolBackgroundStarted() => 'running',
     ConversationToolInterrupted() => 'interrupted',
-    ConversationToolStarted() => 'started',
-    ConversationToolStreaming() => 'streaming',
-    ConversationToolAwaitingApproval() => 'awaitingApproval',
-    ConversationToolApproved() => 'approved',
-    ConversationToolRunning() => 'running',
     ConversationToolSucceeded() => 'succeeded',
     ConversationToolFailed() => 'failed',
     ConversationToolDenied() => 'denied',
     ConversationToolCancelled() => 'cancelled',
   },
-  ConversationAgentDescriptor(:final value) => switch (value.lifecycle) {
-    QueuedThreadAgentView() => 'queued',
-    RunningThreadAgentView() => 'running',
-    SucceededThreadAgentView() => 'succeeded',
-    DeniedThreadAgentView() => 'denied',
-    CancelledThreadAgentView() => 'cancelled',
-    FailedThreadAgentView() => 'failed',
+  ConversationAgentDescriptor(:final outcome) => switch (outcome) {
+    ConversationAgentSucceeded() => 'succeeded',
+    ConversationAgentDenied() => 'denied',
+    ConversationAgentCancelled() => 'cancelled',
+    ConversationAgentFailed() => 'failed',
   },
-  ConversationTurnDescriptor(:final value) => value.state.status.name,
-  ConversationInferenceDescriptor(:final value) => switch (value.lifecycle) {
-    RunningThreadInferenceView() => 'running',
-    CompletedThreadInferenceView() => 'completed',
-    FailedThreadInferenceView() => 'failed',
-    CancelledThreadInferenceView() => 'cancelled',
+  ConversationTurnDescriptor(:final outcome) => switch (outcome) {
+    ConversationTurnCompleted() => 'completed',
+    ConversationTurnFailed() => 'failed',
+    ConversationTurnCancelled() => 'cancelled',
+    ConversationTurnBudgetLimited() => 'budgetLimited',
   },
+  ConversationInferenceDescriptor(:final outcome) => switch (outcome) {
+    ConversationInferenceCompleted() => 'completed',
+    ConversationInferenceFailed() => 'failed',
+    ConversationInferenceCancelled() => 'cancelled',
+  },
+  ConversationPlanDescriptor() => 'completed',
   ConversationSkillDescriptor() ||
   ConversationFileDescriptor() ||
   ConversationRawDescriptor() ||
@@ -473,14 +496,14 @@ String _itemStatus(ConversationDescriptor descriptor) => switch (descriptor) {
 String _itemText(ConversationItem item) => switch (item.descriptor) {
   ConversationTextDescriptor() => timelineText(item),
   ConversationRawDescriptor(:final notice) => notice,
-  ConversationAgentDescriptor(:final value) => switch (value.lifecycle) {
-    SucceededThreadAgentView(:final summary) => summary,
-    DeniedThreadAgentView(:final reason) ||
-    CancelledThreadAgentView(:final reason) => reason,
-    FailedThreadAgentView(:final error) => error,
-    QueuedThreadAgentView() || RunningThreadAgentView() => '',
+  ConversationAgentDescriptor(:final outcome) => switch (outcome) {
+    ConversationAgentSucceeded(:final value) => value.summary,
+    ConversationAgentDenied(:final value) => value.reason,
+    ConversationAgentCancelled(:final value) => value.reason,
+    ConversationAgentFailed(:final value) => value.error,
   },
   ConversationSkillDescriptor(:final value) => value.name,
+  ConversationPlanDescriptor(:final decision) => decision.name,
   _ => '',
 };
 

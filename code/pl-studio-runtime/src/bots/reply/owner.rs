@@ -10,15 +10,15 @@
 use super::content::{FinalError, FinalText, collect_complete_turn_text};
 use super::watch::ReplyWatch;
 
+use crate::bots::BotInputRead;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
 use crate::bots::storage::{ClaimLease, FrozenInbound};
-use crate::bots::{BotInputRead, BotTurnRead};
 use crate::studio::{StudioRuntime, TimelineContentReader};
 use pl_core::thread::input::{InputDelivery, InputState};
-use pl_protocol::{TurnCompletion, TurnState};
+use pl_protocol::{TimelineTurnOutcome, TurnCompletion, TurnState};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -80,6 +80,7 @@ struct ReplyContent<'a> {
     reader: &'a TimelineContentReader,
     preview: Option<&'a str>,
     observed: Option<TurnState>,
+    terminal: Option<TimelineTurnOutcome>,
 }
 
 /// The target is supplied by canonical input facts, never inferred from an old card.
@@ -309,6 +310,9 @@ impl BotRuntime {
             Ok(watch) => watch,
             Err(error) => return content_failure(error),
         };
+        // At most one in-place resume; subsequent failures follow the existing retryable
+        // inbound-work policy. No platform action is replayed by this recovery.
+        let mut resumed = false;
         let outcome = loop {
             if cancel.is_cancelled() || self.inner.sealed.load(Ordering::SeqCst) != 0 {
                 break InboundWorkOutcome::Interrupted;
@@ -320,6 +324,17 @@ impl BotRuntime {
             };
             if let Some(observed) = observed {
                 if let Err(error) = observed {
+                    if !resumed && matches!(error, FinalError::Retryable(_)) {
+                        resumed = true;
+                        let result = tokio::select! {
+                            _ = cancel.cancelled() => break InboundWorkOutcome::Interrupted,
+                            result = watch.reconnect(&runtime) => result,
+                        };
+                        if let Err(error) = result {
+                            break content_failure(error);
+                        }
+                        continue;
+                    }
                     break content_failure(error);
                 }
                 continue;
@@ -466,6 +481,7 @@ impl BotRuntime {
                 let reader = watch.reader();
                 let preview = watch.preview();
                 let observed = watch.observed_state(&turn_id);
+                let terminal = watch.terminal(&turn_id);
                 let action_cancel = cancel.child_token();
                 observed_step(
                     Box::pin(watch.during(
@@ -477,6 +493,7 @@ impl BotRuntime {
                                 reader: &reader,
                                 preview: preview.as_deref(),
                                 observed,
+                                terminal,
                             },
                             &action_cancel,
                         ),
@@ -572,30 +589,12 @@ impl BotRuntime {
         {
             return Step::Done(outcome);
         }
-        // A typed live observation can keep an executing Turn current. Terminal
-        // decisions still require canonical input/Turn/save coverage, never a
-        // content frame or the card's previously bound Turn.
-        let turn = match content.observed {
-            Some(state @ (TurnState::Queued(_) | TurnState::Running(_))) => {
-                Ok(BotTurnRead::Ready(state))
-            }
-            _ => runtime.bot_turn_fact(&run.thread_id, turn_id).await,
-        };
-        let turn = match turn {
-            Ok(turn) => turn,
-            Err(error) => {
-                return Step::Done(recoverable(format!(
-                    "canonical turn fact read failed: {error:#}"
-                )));
-            }
-        };
-        let state = match turn {
-            BotTurnRead::Ready(state) => state,
-            // 消费身份指向的 Turn 尚未持久化；不推断结局，等待重建。
-            BotTurnRead::Absent => return Step::Wait,
-        };
-        match state {
-            TurnState::Queued(_) | TurnState::Running(_) => {
+        match content.terminal {
+            None if matches!(
+                content.observed,
+                Some(TurnState::Queued(_) | TurnState::Running(_))
+            ) =>
+            {
                 match self
                     .hint_pending_interactions(runtime, run, turn_id, cancel)
                     .await
@@ -618,7 +617,8 @@ impl BotRuntime {
                 }
                 Step::Wait
             }
-            TurnState::Completed(state) => match state.completion() {
+            None => Step::Wait,
+            Some(TimelineTurnOutcome::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => {
                     self.finish_with_final_text(runtime, run, turn_id, content.reader, cancel)
                         .await
@@ -628,7 +628,7 @@ impl BotRuntime {
                         .await
                 }
             },
-            TurnState::Cancelled(_) => {
+            Some(TimelineTurnOutcome::Cancelled(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),
@@ -637,7 +637,7 @@ impl BotRuntime {
                 )
                 .await
             }
-            TurnState::Failed(_) => {
+            Some(TimelineTurnOutcome::Failed(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),
@@ -646,7 +646,7 @@ impl BotRuntime {
                 )
                 .await
             }
-            TurnState::BudgetLimited(_) => {
+            Some(TimelineTurnOutcome::BudgetLimited(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),

@@ -61,7 +61,7 @@ extension BridgeProductBaselinePatterns on BridgeProductBaseline {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProductBaseline_ProjectDirectory value)?  projectDirectory,TResult Function( BridgeProductBaseline_ThreadDirectory value)?  threadDirectory,TResult Function( BridgeProductBaseline_AgentDirectory value)?  agentDirectory,TResult Function( BridgeProductBaseline_SettingsConfig value)?  settingsConfig,TResult Function( BridgeProductBaseline_ModelCatalog value)?  modelCatalog,TResult Function( BridgeProductBaseline_Recovery value)?  recovery,TResult Function( BridgeProductBaseline_Mcp value)?  mcp,TResult Function( BridgeProductBaseline_Lsp value)?  lsp,TResult Function( BridgeProductBaseline_Skills value)?  skills,TResult Function( BridgeProductBaseline_ThreadModeCatalog value)?  threadModeCatalog,TResult Function( BridgeProductBaseline_AccountUsage value)?  accountUsage,TResult Function( BridgeProductBaseline_AcpAuth value)?  acpAuth,TResult Function( BridgeProductBaseline_AcpInstall value)?  acpInstall,TResult Function( BridgeProductBaseline_SessionCosts value)?  sessionCosts,TResult Function( BridgeProductBaseline_Updater value)?  updater,TResult Function( BridgeProductBaseline_Persistence value)?  persistence,TResult Function( BridgeProductBaseline_PersistenceQueue value)?  persistenceQueue,TResult Function( BridgeProductBaseline_AgentProfiles value)?  agentProfiles,TResult Function( BridgeProductBaseline_Bots value)?  bots,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProductBaseline_ProjectDirectory value)?  projectDirectory,TResult Function( BridgeProductBaseline_ThreadDirectory value)?  threadDirectory,TResult Function( BridgeProductBaseline_AgentDirectory value)?  agentDirectory,TResult Function( BridgeProductBaseline_SettingsConfig value)?  settingsConfig,TResult Function( BridgeProductBaseline_ModelCatalog value)?  modelCatalog,TResult Function( BridgeProductBaseline_Recovery value)?  recovery,TResult Function( BridgeProductBaseline_Mcp value)?  mcp,TResult Function( BridgeProductBaseline_Lsp value)?  lsp,TResult Function( BridgeProductBaseline_Skills value)?  skills,TResult Function( BridgeProductBaseline_ThreadModeCatalog value)?  threadModeCatalog,TResult Function( BridgeProductBaseline_AccountUsage value)?  accountUsage,TResult Function( BridgeProductBaseline_AcpAuth value)?  acpAuth,TResult Function( BridgeProductBaseline_AcpInstall value)?  acpInstall,TResult Function( BridgeProductBaseline_SessionCosts value)?  sessionCosts,TResult Function( BridgeProductBaseline_ChildInteractions value)?  childInteractions,TResult Function( BridgeProductBaseline_Updater value)?  updater,TResult Function( BridgeProductBaseline_Persistence value)?  persistence,TResult Function( BridgeProductBaseline_PersistenceQueue value)?  persistenceQueue,TResult Function( BridgeProductBaseline_AgentProfiles value)?  agentProfiles,TResult Function( BridgeProductBaseline_Bots value)?  bots,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory() when projectDirectory != null:
@@ -78,7 +78,8 @@ return threadModeCatalog(_that);case BridgeProductBaseline_AccountUsage() when a
 return accountUsage(_that);case BridgeProductBaseline_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeProductBaseline_AcpInstall() when acpInstall != null:
 return acpInstall(_that);case BridgeProductBaseline_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that);case BridgeProductBaseline_Updater() when updater != null:
+return sessionCosts(_that);case BridgeProductBaseline_ChildInteractions() when childInteractions != null:
+return childInteractions(_that);case BridgeProductBaseline_Updater() when updater != null:
 return updater(_that);case BridgeProductBaseline_Persistence() when persistence != null:
 return persistence(_that);case BridgeProductBaseline_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that);case BridgeProductBaseline_AgentProfiles() when agentProfiles != null:
@@ -101,7 +102,7 @@ return bots(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProductBaseline_ProjectDirectory value)  projectDirectory,required TResult Function( BridgeProductBaseline_ThreadDirectory value)  threadDirectory,required TResult Function( BridgeProductBaseline_AgentDirectory value)  agentDirectory,required TResult Function( BridgeProductBaseline_SettingsConfig value)  settingsConfig,required TResult Function( BridgeProductBaseline_ModelCatalog value)  modelCatalog,required TResult Function( BridgeProductBaseline_Recovery value)  recovery,required TResult Function( BridgeProductBaseline_Mcp value)  mcp,required TResult Function( BridgeProductBaseline_Lsp value)  lsp,required TResult Function( BridgeProductBaseline_Skills value)  skills,required TResult Function( BridgeProductBaseline_ThreadModeCatalog value)  threadModeCatalog,required TResult Function( BridgeProductBaseline_AccountUsage value)  accountUsage,required TResult Function( BridgeProductBaseline_AcpAuth value)  acpAuth,required TResult Function( BridgeProductBaseline_AcpInstall value)  acpInstall,required TResult Function( BridgeProductBaseline_SessionCosts value)  sessionCosts,required TResult Function( BridgeProductBaseline_Updater value)  updater,required TResult Function( BridgeProductBaseline_Persistence value)  persistence,required TResult Function( BridgeProductBaseline_PersistenceQueue value)  persistenceQueue,required TResult Function( BridgeProductBaseline_AgentProfiles value)  agentProfiles,required TResult Function( BridgeProductBaseline_Bots value)  bots,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProductBaseline_ProjectDirectory value)  projectDirectory,required TResult Function( BridgeProductBaseline_ThreadDirectory value)  threadDirectory,required TResult Function( BridgeProductBaseline_AgentDirectory value)  agentDirectory,required TResult Function( BridgeProductBaseline_SettingsConfig value)  settingsConfig,required TResult Function( BridgeProductBaseline_ModelCatalog value)  modelCatalog,required TResult Function( BridgeProductBaseline_Recovery value)  recovery,required TResult Function( BridgeProductBaseline_Mcp value)  mcp,required TResult Function( BridgeProductBaseline_Lsp value)  lsp,required TResult Function( BridgeProductBaseline_Skills value)  skills,required TResult Function( BridgeProductBaseline_ThreadModeCatalog value)  threadModeCatalog,required TResult Function( BridgeProductBaseline_AccountUsage value)  accountUsage,required TResult Function( BridgeProductBaseline_AcpAuth value)  acpAuth,required TResult Function( BridgeProductBaseline_AcpInstall value)  acpInstall,required TResult Function( BridgeProductBaseline_SessionCosts value)  sessionCosts,required TResult Function( BridgeProductBaseline_ChildInteractions value)  childInteractions,required TResult Function( BridgeProductBaseline_Updater value)  updater,required TResult Function( BridgeProductBaseline_Persistence value)  persistence,required TResult Function( BridgeProductBaseline_PersistenceQueue value)  persistenceQueue,required TResult Function( BridgeProductBaseline_AgentProfiles value)  agentProfiles,required TResult Function( BridgeProductBaseline_Bots value)  bots,}){
 final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory():
@@ -118,7 +119,8 @@ return threadModeCatalog(_that);case BridgeProductBaseline_AccountUsage():
 return accountUsage(_that);case BridgeProductBaseline_AcpAuth():
 return acpAuth(_that);case BridgeProductBaseline_AcpInstall():
 return acpInstall(_that);case BridgeProductBaseline_SessionCosts():
-return sessionCosts(_that);case BridgeProductBaseline_Updater():
+return sessionCosts(_that);case BridgeProductBaseline_ChildInteractions():
+return childInteractions(_that);case BridgeProductBaseline_Updater():
 return updater(_that);case BridgeProductBaseline_Persistence():
 return persistence(_that);case BridgeProductBaseline_PersistenceQueue():
 return persistenceQueue(_that);case BridgeProductBaseline_AgentProfiles():
@@ -137,7 +139,7 @@ return bots(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProductBaseline_ProjectDirectory value)?  projectDirectory,TResult? Function( BridgeProductBaseline_ThreadDirectory value)?  threadDirectory,TResult? Function( BridgeProductBaseline_AgentDirectory value)?  agentDirectory,TResult? Function( BridgeProductBaseline_SettingsConfig value)?  settingsConfig,TResult? Function( BridgeProductBaseline_ModelCatalog value)?  modelCatalog,TResult? Function( BridgeProductBaseline_Recovery value)?  recovery,TResult? Function( BridgeProductBaseline_Mcp value)?  mcp,TResult? Function( BridgeProductBaseline_Lsp value)?  lsp,TResult? Function( BridgeProductBaseline_Skills value)?  skills,TResult? Function( BridgeProductBaseline_ThreadModeCatalog value)?  threadModeCatalog,TResult? Function( BridgeProductBaseline_AccountUsage value)?  accountUsage,TResult? Function( BridgeProductBaseline_AcpAuth value)?  acpAuth,TResult? Function( BridgeProductBaseline_AcpInstall value)?  acpInstall,TResult? Function( BridgeProductBaseline_SessionCosts value)?  sessionCosts,TResult? Function( BridgeProductBaseline_Updater value)?  updater,TResult? Function( BridgeProductBaseline_Persistence value)?  persistence,TResult? Function( BridgeProductBaseline_PersistenceQueue value)?  persistenceQueue,TResult? Function( BridgeProductBaseline_AgentProfiles value)?  agentProfiles,TResult? Function( BridgeProductBaseline_Bots value)?  bots,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProductBaseline_ProjectDirectory value)?  projectDirectory,TResult? Function( BridgeProductBaseline_ThreadDirectory value)?  threadDirectory,TResult? Function( BridgeProductBaseline_AgentDirectory value)?  agentDirectory,TResult? Function( BridgeProductBaseline_SettingsConfig value)?  settingsConfig,TResult? Function( BridgeProductBaseline_ModelCatalog value)?  modelCatalog,TResult? Function( BridgeProductBaseline_Recovery value)?  recovery,TResult? Function( BridgeProductBaseline_Mcp value)?  mcp,TResult? Function( BridgeProductBaseline_Lsp value)?  lsp,TResult? Function( BridgeProductBaseline_Skills value)?  skills,TResult? Function( BridgeProductBaseline_ThreadModeCatalog value)?  threadModeCatalog,TResult? Function( BridgeProductBaseline_AccountUsage value)?  accountUsage,TResult? Function( BridgeProductBaseline_AcpAuth value)?  acpAuth,TResult? Function( BridgeProductBaseline_AcpInstall value)?  acpInstall,TResult? Function( BridgeProductBaseline_SessionCosts value)?  sessionCosts,TResult? Function( BridgeProductBaseline_ChildInteractions value)?  childInteractions,TResult? Function( BridgeProductBaseline_Updater value)?  updater,TResult? Function( BridgeProductBaseline_Persistence value)?  persistence,TResult? Function( BridgeProductBaseline_PersistenceQueue value)?  persistenceQueue,TResult? Function( BridgeProductBaseline_AgentProfiles value)?  agentProfiles,TResult? Function( BridgeProductBaseline_Bots value)?  bots,}){
 final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory() when projectDirectory != null:
@@ -154,7 +156,8 @@ return threadModeCatalog(_that);case BridgeProductBaseline_AccountUsage() when a
 return accountUsage(_that);case BridgeProductBaseline_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeProductBaseline_AcpInstall() when acpInstall != null:
 return acpInstall(_that);case BridgeProductBaseline_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that);case BridgeProductBaseline_Updater() when updater != null:
+return sessionCosts(_that);case BridgeProductBaseline_ChildInteractions() when childInteractions != null:
+return childInteractions(_that);case BridgeProductBaseline_Updater() when updater != null:
 return updater(_that);case BridgeProductBaseline_Persistence() when persistence != null:
 return persistence(_that);case BridgeProductBaseline_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that);case BridgeProductBaseline_AgentProfiles() when agentProfiles != null:
@@ -176,7 +179,7 @@ return bots(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeProjectDirectoryState field0)?  projectDirectory,TResult Function( BridgeThreadDirectoryPage field0)?  threadDirectory,TResult Function( BridgeAgentDirectoryState field0)?  agentDirectory,TResult Function( BridgeSettingsConfigStateSnapshot field0)?  settingsConfig,TResult Function( BridgeModelCatalogStateSnapshot field0)?  modelCatalog,TResult Function( BridgeRecoveryStateSnapshot field0)?  recovery,TResult Function( BridgeMcpStateSnapshot field0)?  mcp,TResult Function( BridgeLspStateSnapshot field0)?  lsp,TResult Function( BridgeSkillsStateSnapshot field0)?  skills,TResult Function( BridgeThreadModeCatalogSnapshot field0)?  threadModeCatalog,TResult Function( BridgeAccountUsageStateSnapshot field0)?  accountUsage,TResult Function( BridgeAcpAuthSnapshot field0)?  acpAuth,TResult Function( BridgeAcpInstallSnapshot field0)?  acpInstall,TResult Function( BridgeSessionCostsState field0)?  sessionCosts,TResult Function( BridgeUpdaterStateSnapshot field0)?  updater,TResult Function( BridgePersistenceStateSnapshot field0)?  persistence,TResult Function( BridgePersistenceQueueStateSnapshot field0)?  persistenceQueue,TResult Function( BridgeAgentProfilesStateSnapshot field0)?  agentProfiles,TResult Function( BridgeBotsStateSnapshot field0)?  bots,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeProjectDirectoryState field0)?  projectDirectory,TResult Function( BridgeThreadDirectoryPage field0)?  threadDirectory,TResult Function( BridgeAgentDirectoryState field0)?  agentDirectory,TResult Function( BridgeSettingsConfigStateSnapshot field0)?  settingsConfig,TResult Function( BridgeModelCatalogStateSnapshot field0)?  modelCatalog,TResult Function( BridgeRecoveryStateSnapshot field0)?  recovery,TResult Function( BridgeMcpStateSnapshot field0)?  mcp,TResult Function( BridgeLspStateSnapshot field0)?  lsp,TResult Function( BridgeSkillsStateSnapshot field0)?  skills,TResult Function( BridgeThreadModeCatalogSnapshot field0)?  threadModeCatalog,TResult Function( BridgeAccountUsageStateSnapshot field0)?  accountUsage,TResult Function( BridgeAcpAuthSnapshot field0)?  acpAuth,TResult Function( BridgeAcpInstallSnapshot field0)?  acpInstall,TResult Function( BridgeSessionCostsState field0)?  sessionCosts,TResult Function( BridgeChildInteractionsState field0)?  childInteractions,TResult Function( BridgeUpdaterStateSnapshot field0)?  updater,TResult Function( BridgePersistenceStateSnapshot field0)?  persistence,TResult Function( BridgePersistenceQueueStateSnapshot field0)?  persistenceQueue,TResult Function( BridgeAgentProfilesStateSnapshot field0)?  agentProfiles,TResult Function( BridgeBotsStateSnapshot field0)?  bots,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory() when projectDirectory != null:
 return projectDirectory(_that.field0);case BridgeProductBaseline_ThreadDirectory() when threadDirectory != null:
@@ -192,7 +195,8 @@ return threadModeCatalog(_that.field0);case BridgeProductBaseline_AccountUsage()
 return accountUsage(_that.field0);case BridgeProductBaseline_AcpAuth() when acpAuth != null:
 return acpAuth(_that.field0);case BridgeProductBaseline_AcpInstall() when acpInstall != null:
 return acpInstall(_that.field0);case BridgeProductBaseline_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that.field0);case BridgeProductBaseline_Updater() when updater != null:
+return sessionCosts(_that.field0);case BridgeProductBaseline_ChildInteractions() when childInteractions != null:
+return childInteractions(_that.field0);case BridgeProductBaseline_Updater() when updater != null:
 return updater(_that.field0);case BridgeProductBaseline_Persistence() when persistence != null:
 return persistence(_that.field0);case BridgeProductBaseline_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that.field0);case BridgeProductBaseline_AgentProfiles() when agentProfiles != null:
@@ -215,7 +219,7 @@ return bots(_that.field0);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeProjectDirectoryState field0)  projectDirectory,required TResult Function( BridgeThreadDirectoryPage field0)  threadDirectory,required TResult Function( BridgeAgentDirectoryState field0)  agentDirectory,required TResult Function( BridgeSettingsConfigStateSnapshot field0)  settingsConfig,required TResult Function( BridgeModelCatalogStateSnapshot field0)  modelCatalog,required TResult Function( BridgeRecoveryStateSnapshot field0)  recovery,required TResult Function( BridgeMcpStateSnapshot field0)  mcp,required TResult Function( BridgeLspStateSnapshot field0)  lsp,required TResult Function( BridgeSkillsStateSnapshot field0)  skills,required TResult Function( BridgeThreadModeCatalogSnapshot field0)  threadModeCatalog,required TResult Function( BridgeAccountUsageStateSnapshot field0)  accountUsage,required TResult Function( BridgeAcpAuthSnapshot field0)  acpAuth,required TResult Function( BridgeAcpInstallSnapshot field0)  acpInstall,required TResult Function( BridgeSessionCostsState field0)  sessionCosts,required TResult Function( BridgeUpdaterStateSnapshot field0)  updater,required TResult Function( BridgePersistenceStateSnapshot field0)  persistence,required TResult Function( BridgePersistenceQueueStateSnapshot field0)  persistenceQueue,required TResult Function( BridgeAgentProfilesStateSnapshot field0)  agentProfiles,required TResult Function( BridgeBotsStateSnapshot field0)  bots,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeProjectDirectoryState field0)  projectDirectory,required TResult Function( BridgeThreadDirectoryPage field0)  threadDirectory,required TResult Function( BridgeAgentDirectoryState field0)  agentDirectory,required TResult Function( BridgeSettingsConfigStateSnapshot field0)  settingsConfig,required TResult Function( BridgeModelCatalogStateSnapshot field0)  modelCatalog,required TResult Function( BridgeRecoveryStateSnapshot field0)  recovery,required TResult Function( BridgeMcpStateSnapshot field0)  mcp,required TResult Function( BridgeLspStateSnapshot field0)  lsp,required TResult Function( BridgeSkillsStateSnapshot field0)  skills,required TResult Function( BridgeThreadModeCatalogSnapshot field0)  threadModeCatalog,required TResult Function( BridgeAccountUsageStateSnapshot field0)  accountUsage,required TResult Function( BridgeAcpAuthSnapshot field0)  acpAuth,required TResult Function( BridgeAcpInstallSnapshot field0)  acpInstall,required TResult Function( BridgeSessionCostsState field0)  sessionCosts,required TResult Function( BridgeChildInteractionsState field0)  childInteractions,required TResult Function( BridgeUpdaterStateSnapshot field0)  updater,required TResult Function( BridgePersistenceStateSnapshot field0)  persistence,required TResult Function( BridgePersistenceQueueStateSnapshot field0)  persistenceQueue,required TResult Function( BridgeAgentProfilesStateSnapshot field0)  agentProfiles,required TResult Function( BridgeBotsStateSnapshot field0)  bots,}) {final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory():
 return projectDirectory(_that.field0);case BridgeProductBaseline_ThreadDirectory():
@@ -231,7 +235,8 @@ return threadModeCatalog(_that.field0);case BridgeProductBaseline_AccountUsage()
 return accountUsage(_that.field0);case BridgeProductBaseline_AcpAuth():
 return acpAuth(_that.field0);case BridgeProductBaseline_AcpInstall():
 return acpInstall(_that.field0);case BridgeProductBaseline_SessionCosts():
-return sessionCosts(_that.field0);case BridgeProductBaseline_Updater():
+return sessionCosts(_that.field0);case BridgeProductBaseline_ChildInteractions():
+return childInteractions(_that.field0);case BridgeProductBaseline_Updater():
 return updater(_that.field0);case BridgeProductBaseline_Persistence():
 return persistence(_that.field0);case BridgeProductBaseline_PersistenceQueue():
 return persistenceQueue(_that.field0);case BridgeProductBaseline_AgentProfiles():
@@ -250,7 +255,7 @@ return bots(_that.field0);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeProjectDirectoryState field0)?  projectDirectory,TResult? Function( BridgeThreadDirectoryPage field0)?  threadDirectory,TResult? Function( BridgeAgentDirectoryState field0)?  agentDirectory,TResult? Function( BridgeSettingsConfigStateSnapshot field0)?  settingsConfig,TResult? Function( BridgeModelCatalogStateSnapshot field0)?  modelCatalog,TResult? Function( BridgeRecoveryStateSnapshot field0)?  recovery,TResult? Function( BridgeMcpStateSnapshot field0)?  mcp,TResult? Function( BridgeLspStateSnapshot field0)?  lsp,TResult? Function( BridgeSkillsStateSnapshot field0)?  skills,TResult? Function( BridgeThreadModeCatalogSnapshot field0)?  threadModeCatalog,TResult? Function( BridgeAccountUsageStateSnapshot field0)?  accountUsage,TResult? Function( BridgeAcpAuthSnapshot field0)?  acpAuth,TResult? Function( BridgeAcpInstallSnapshot field0)?  acpInstall,TResult? Function( BridgeSessionCostsState field0)?  sessionCosts,TResult? Function( BridgeUpdaterStateSnapshot field0)?  updater,TResult? Function( BridgePersistenceStateSnapshot field0)?  persistence,TResult? Function( BridgePersistenceQueueStateSnapshot field0)?  persistenceQueue,TResult? Function( BridgeAgentProfilesStateSnapshot field0)?  agentProfiles,TResult? Function( BridgeBotsStateSnapshot field0)?  bots,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeProjectDirectoryState field0)?  projectDirectory,TResult? Function( BridgeThreadDirectoryPage field0)?  threadDirectory,TResult? Function( BridgeAgentDirectoryState field0)?  agentDirectory,TResult? Function( BridgeSettingsConfigStateSnapshot field0)?  settingsConfig,TResult? Function( BridgeModelCatalogStateSnapshot field0)?  modelCatalog,TResult? Function( BridgeRecoveryStateSnapshot field0)?  recovery,TResult? Function( BridgeMcpStateSnapshot field0)?  mcp,TResult? Function( BridgeLspStateSnapshot field0)?  lsp,TResult? Function( BridgeSkillsStateSnapshot field0)?  skills,TResult? Function( BridgeThreadModeCatalogSnapshot field0)?  threadModeCatalog,TResult? Function( BridgeAccountUsageStateSnapshot field0)?  accountUsage,TResult? Function( BridgeAcpAuthSnapshot field0)?  acpAuth,TResult? Function( BridgeAcpInstallSnapshot field0)?  acpInstall,TResult? Function( BridgeSessionCostsState field0)?  sessionCosts,TResult? Function( BridgeChildInteractionsState field0)?  childInteractions,TResult? Function( BridgeUpdaterStateSnapshot field0)?  updater,TResult? Function( BridgePersistenceStateSnapshot field0)?  persistence,TResult? Function( BridgePersistenceQueueStateSnapshot field0)?  persistenceQueue,TResult? Function( BridgeAgentProfilesStateSnapshot field0)?  agentProfiles,TResult? Function( BridgeBotsStateSnapshot field0)?  bots,}) {final _that = this;
 switch (_that) {
 case BridgeProductBaseline_ProjectDirectory() when projectDirectory != null:
 return projectDirectory(_that.field0);case BridgeProductBaseline_ThreadDirectory() when threadDirectory != null:
@@ -266,7 +271,8 @@ return threadModeCatalog(_that.field0);case BridgeProductBaseline_AccountUsage()
 return accountUsage(_that.field0);case BridgeProductBaseline_AcpAuth() when acpAuth != null:
 return acpAuth(_that.field0);case BridgeProductBaseline_AcpInstall() when acpInstall != null:
 return acpInstall(_that.field0);case BridgeProductBaseline_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that.field0);case BridgeProductBaseline_Updater() when updater != null:
+return sessionCosts(_that.field0);case BridgeProductBaseline_ChildInteractions() when childInteractions != null:
+return childInteractions(_that.field0);case BridgeProductBaseline_Updater() when updater != null:
 return updater(_that.field0);case BridgeProductBaseline_Persistence() when persistence != null:
 return persistence(_that.field0);case BridgeProductBaseline_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that.field0);case BridgeProductBaseline_AgentProfiles() when agentProfiles != null:
@@ -1315,6 +1321,74 @@ as BridgeSessionCostsState,
 /// @nodoc
 
 
+class BridgeProductBaseline_ChildInteractions extends BridgeProductBaseline {
+  const BridgeProductBaseline_ChildInteractions(this.field0): super._();
+
+
+@override final  BridgeChildInteractionsState field0;
+
+/// Create a copy of BridgeProductBaseline
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeProductBaseline_ChildInteractionsCopyWith<BridgeProductBaseline_ChildInteractions> get copyWith => _$BridgeProductBaseline_ChildInteractionsCopyWithImpl<BridgeProductBaseline_ChildInteractions>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProductBaseline_ChildInteractions&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeProductBaseline.childInteractions(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeProductBaseline_ChildInteractionsCopyWith<$Res> implements $BridgeProductBaselineCopyWith<$Res> {
+  factory $BridgeProductBaseline_ChildInteractionsCopyWith(BridgeProductBaseline_ChildInteractions value, $Res Function(BridgeProductBaseline_ChildInteractions) _then) = _$BridgeProductBaseline_ChildInteractionsCopyWithImpl;
+@useResult
+$Res call({
+ BridgeChildInteractionsState field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeProductBaseline_ChildInteractionsCopyWithImpl<$Res>
+    implements $BridgeProductBaseline_ChildInteractionsCopyWith<$Res> {
+  _$BridgeProductBaseline_ChildInteractionsCopyWithImpl(this._self, this._then);
+
+  final BridgeProductBaseline_ChildInteractions _self;
+  final $Res Function(BridgeProductBaseline_ChildInteractions) _then;
+
+/// Create a copy of BridgeProductBaseline
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeProductBaseline_ChildInteractions(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeChildInteractionsState,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
 class BridgeProductBaseline_Updater extends BridgeProductBaseline {
   const BridgeProductBaseline_Updater(this.field0): super._();
 
@@ -1705,7 +1779,7 @@ extension BridgeProductTopicPatterns on BridgeProductTopic {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProductTopic_ProjectDirectory value)?  projectDirectory,TResult Function( BridgeProductTopic_ThreadDirectory value)?  threadDirectory,TResult Function( BridgeProductTopic_AgentDirectory value)?  agentDirectory,TResult Function( BridgeProductTopic_SettingsConfig value)?  settingsConfig,TResult Function( BridgeProductTopic_ModelCatalog value)?  modelCatalog,TResult Function( BridgeProductTopic_Recovery value)?  recovery,TResult Function( BridgeProductTopic_Mcp value)?  mcp,TResult Function( BridgeProductTopic_Lsp value)?  lsp,TResult Function( BridgeProductTopic_Skills value)?  skills,TResult Function( BridgeProductTopic_ThreadModeCatalog value)?  threadModeCatalog,TResult Function( BridgeProductTopic_AccountUsage value)?  accountUsage,TResult Function( BridgeProductTopic_AcpAuth value)?  acpAuth,TResult Function( BridgeProductTopic_AcpInstall value)?  acpInstall,TResult Function( BridgeProductTopic_SessionCosts value)?  sessionCosts,TResult Function( BridgeProductTopic_Updater value)?  updater,TResult Function( BridgeProductTopic_Persistence value)?  persistence,TResult Function( BridgeProductTopic_PersistenceQueue value)?  persistenceQueue,TResult Function( BridgeProductTopic_AgentProfiles value)?  agentProfiles,TResult Function( BridgeProductTopic_Bots value)?  bots,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProductTopic_ProjectDirectory value)?  projectDirectory,TResult Function( BridgeProductTopic_ThreadDirectory value)?  threadDirectory,TResult Function( BridgeProductTopic_AgentDirectory value)?  agentDirectory,TResult Function( BridgeProductTopic_SettingsConfig value)?  settingsConfig,TResult Function( BridgeProductTopic_ModelCatalog value)?  modelCatalog,TResult Function( BridgeProductTopic_Recovery value)?  recovery,TResult Function( BridgeProductTopic_Mcp value)?  mcp,TResult Function( BridgeProductTopic_Lsp value)?  lsp,TResult Function( BridgeProductTopic_Skills value)?  skills,TResult Function( BridgeProductTopic_ThreadModeCatalog value)?  threadModeCatalog,TResult Function( BridgeProductTopic_AccountUsage value)?  accountUsage,TResult Function( BridgeProductTopic_AcpAuth value)?  acpAuth,TResult Function( BridgeProductTopic_AcpInstall value)?  acpInstall,TResult Function( BridgeProductTopic_SessionCosts value)?  sessionCosts,TResult Function( BridgeProductTopic_ChildInteractions value)?  childInteractions,TResult Function( BridgeProductTopic_Updater value)?  updater,TResult Function( BridgeProductTopic_Persistence value)?  persistence,TResult Function( BridgeProductTopic_PersistenceQueue value)?  persistenceQueue,TResult Function( BridgeProductTopic_AgentProfiles value)?  agentProfiles,TResult Function( BridgeProductTopic_Bots value)?  bots,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory() when projectDirectory != null:
@@ -1722,7 +1796,8 @@ return threadModeCatalog(_that);case BridgeProductTopic_AccountUsage() when acco
 return accountUsage(_that);case BridgeProductTopic_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeProductTopic_AcpInstall() when acpInstall != null:
 return acpInstall(_that);case BridgeProductTopic_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that);case BridgeProductTopic_Updater() when updater != null:
+return sessionCosts(_that);case BridgeProductTopic_ChildInteractions() when childInteractions != null:
+return childInteractions(_that);case BridgeProductTopic_Updater() when updater != null:
 return updater(_that);case BridgeProductTopic_Persistence() when persistence != null:
 return persistence(_that);case BridgeProductTopic_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that);case BridgeProductTopic_AgentProfiles() when agentProfiles != null:
@@ -1745,7 +1820,7 @@ return bots(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProductTopic_ProjectDirectory value)  projectDirectory,required TResult Function( BridgeProductTopic_ThreadDirectory value)  threadDirectory,required TResult Function( BridgeProductTopic_AgentDirectory value)  agentDirectory,required TResult Function( BridgeProductTopic_SettingsConfig value)  settingsConfig,required TResult Function( BridgeProductTopic_ModelCatalog value)  modelCatalog,required TResult Function( BridgeProductTopic_Recovery value)  recovery,required TResult Function( BridgeProductTopic_Mcp value)  mcp,required TResult Function( BridgeProductTopic_Lsp value)  lsp,required TResult Function( BridgeProductTopic_Skills value)  skills,required TResult Function( BridgeProductTopic_ThreadModeCatalog value)  threadModeCatalog,required TResult Function( BridgeProductTopic_AccountUsage value)  accountUsage,required TResult Function( BridgeProductTopic_AcpAuth value)  acpAuth,required TResult Function( BridgeProductTopic_AcpInstall value)  acpInstall,required TResult Function( BridgeProductTopic_SessionCosts value)  sessionCosts,required TResult Function( BridgeProductTopic_Updater value)  updater,required TResult Function( BridgeProductTopic_Persistence value)  persistence,required TResult Function( BridgeProductTopic_PersistenceQueue value)  persistenceQueue,required TResult Function( BridgeProductTopic_AgentProfiles value)  agentProfiles,required TResult Function( BridgeProductTopic_Bots value)  bots,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProductTopic_ProjectDirectory value)  projectDirectory,required TResult Function( BridgeProductTopic_ThreadDirectory value)  threadDirectory,required TResult Function( BridgeProductTopic_AgentDirectory value)  agentDirectory,required TResult Function( BridgeProductTopic_SettingsConfig value)  settingsConfig,required TResult Function( BridgeProductTopic_ModelCatalog value)  modelCatalog,required TResult Function( BridgeProductTopic_Recovery value)  recovery,required TResult Function( BridgeProductTopic_Mcp value)  mcp,required TResult Function( BridgeProductTopic_Lsp value)  lsp,required TResult Function( BridgeProductTopic_Skills value)  skills,required TResult Function( BridgeProductTopic_ThreadModeCatalog value)  threadModeCatalog,required TResult Function( BridgeProductTopic_AccountUsage value)  accountUsage,required TResult Function( BridgeProductTopic_AcpAuth value)  acpAuth,required TResult Function( BridgeProductTopic_AcpInstall value)  acpInstall,required TResult Function( BridgeProductTopic_SessionCosts value)  sessionCosts,required TResult Function( BridgeProductTopic_ChildInteractions value)  childInteractions,required TResult Function( BridgeProductTopic_Updater value)  updater,required TResult Function( BridgeProductTopic_Persistence value)  persistence,required TResult Function( BridgeProductTopic_PersistenceQueue value)  persistenceQueue,required TResult Function( BridgeProductTopic_AgentProfiles value)  agentProfiles,required TResult Function( BridgeProductTopic_Bots value)  bots,}){
 final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory():
@@ -1762,7 +1837,8 @@ return threadModeCatalog(_that);case BridgeProductTopic_AccountUsage():
 return accountUsage(_that);case BridgeProductTopic_AcpAuth():
 return acpAuth(_that);case BridgeProductTopic_AcpInstall():
 return acpInstall(_that);case BridgeProductTopic_SessionCosts():
-return sessionCosts(_that);case BridgeProductTopic_Updater():
+return sessionCosts(_that);case BridgeProductTopic_ChildInteractions():
+return childInteractions(_that);case BridgeProductTopic_Updater():
 return updater(_that);case BridgeProductTopic_Persistence():
 return persistence(_that);case BridgeProductTopic_PersistenceQueue():
 return persistenceQueue(_that);case BridgeProductTopic_AgentProfiles():
@@ -1781,7 +1857,7 @@ return bots(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProductTopic_ProjectDirectory value)?  projectDirectory,TResult? Function( BridgeProductTopic_ThreadDirectory value)?  threadDirectory,TResult? Function( BridgeProductTopic_AgentDirectory value)?  agentDirectory,TResult? Function( BridgeProductTopic_SettingsConfig value)?  settingsConfig,TResult? Function( BridgeProductTopic_ModelCatalog value)?  modelCatalog,TResult? Function( BridgeProductTopic_Recovery value)?  recovery,TResult? Function( BridgeProductTopic_Mcp value)?  mcp,TResult? Function( BridgeProductTopic_Lsp value)?  lsp,TResult? Function( BridgeProductTopic_Skills value)?  skills,TResult? Function( BridgeProductTopic_ThreadModeCatalog value)?  threadModeCatalog,TResult? Function( BridgeProductTopic_AccountUsage value)?  accountUsage,TResult? Function( BridgeProductTopic_AcpAuth value)?  acpAuth,TResult? Function( BridgeProductTopic_AcpInstall value)?  acpInstall,TResult? Function( BridgeProductTopic_SessionCosts value)?  sessionCosts,TResult? Function( BridgeProductTopic_Updater value)?  updater,TResult? Function( BridgeProductTopic_Persistence value)?  persistence,TResult? Function( BridgeProductTopic_PersistenceQueue value)?  persistenceQueue,TResult? Function( BridgeProductTopic_AgentProfiles value)?  agentProfiles,TResult? Function( BridgeProductTopic_Bots value)?  bots,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProductTopic_ProjectDirectory value)?  projectDirectory,TResult? Function( BridgeProductTopic_ThreadDirectory value)?  threadDirectory,TResult? Function( BridgeProductTopic_AgentDirectory value)?  agentDirectory,TResult? Function( BridgeProductTopic_SettingsConfig value)?  settingsConfig,TResult? Function( BridgeProductTopic_ModelCatalog value)?  modelCatalog,TResult? Function( BridgeProductTopic_Recovery value)?  recovery,TResult? Function( BridgeProductTopic_Mcp value)?  mcp,TResult? Function( BridgeProductTopic_Lsp value)?  lsp,TResult? Function( BridgeProductTopic_Skills value)?  skills,TResult? Function( BridgeProductTopic_ThreadModeCatalog value)?  threadModeCatalog,TResult? Function( BridgeProductTopic_AccountUsage value)?  accountUsage,TResult? Function( BridgeProductTopic_AcpAuth value)?  acpAuth,TResult? Function( BridgeProductTopic_AcpInstall value)?  acpInstall,TResult? Function( BridgeProductTopic_SessionCosts value)?  sessionCosts,TResult? Function( BridgeProductTopic_ChildInteractions value)?  childInteractions,TResult? Function( BridgeProductTopic_Updater value)?  updater,TResult? Function( BridgeProductTopic_Persistence value)?  persistence,TResult? Function( BridgeProductTopic_PersistenceQueue value)?  persistenceQueue,TResult? Function( BridgeProductTopic_AgentProfiles value)?  agentProfiles,TResult? Function( BridgeProductTopic_Bots value)?  bots,}){
 final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory() when projectDirectory != null:
@@ -1798,7 +1874,8 @@ return threadModeCatalog(_that);case BridgeProductTopic_AccountUsage() when acco
 return accountUsage(_that);case BridgeProductTopic_AcpAuth() when acpAuth != null:
 return acpAuth(_that);case BridgeProductTopic_AcpInstall() when acpInstall != null:
 return acpInstall(_that);case BridgeProductTopic_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that);case BridgeProductTopic_Updater() when updater != null:
+return sessionCosts(_that);case BridgeProductTopic_ChildInteractions() when childInteractions != null:
+return childInteractions(_that);case BridgeProductTopic_Updater() when updater != null:
 return updater(_that);case BridgeProductTopic_Persistence() when persistence != null:
 return persistence(_that);case BridgeProductTopic_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue(_that);case BridgeProductTopic_AgentProfiles() when agentProfiles != null:
@@ -1820,7 +1897,7 @@ return bots(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  projectDirectory,TResult Function()?  threadDirectory,TResult Function()?  agentDirectory,TResult Function()?  settingsConfig,TResult Function()?  modelCatalog,TResult Function()?  recovery,TResult Function()?  mcp,TResult Function()?  lsp,TResult Function( String workspaceId)?  skills,TResult Function()?  threadModeCatalog,TResult Function()?  accountUsage,TResult Function()?  acpAuth,TResult Function()?  acpInstall,TResult Function( String rootThreadId)?  sessionCosts,TResult Function()?  updater,TResult Function()?  persistence,TResult Function()?  persistenceQueue,TResult Function()?  agentProfiles,TResult Function()?  bots,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  projectDirectory,TResult Function()?  threadDirectory,TResult Function()?  agentDirectory,TResult Function()?  settingsConfig,TResult Function()?  modelCatalog,TResult Function()?  recovery,TResult Function()?  mcp,TResult Function()?  lsp,TResult Function( String workspaceId)?  skills,TResult Function()?  threadModeCatalog,TResult Function()?  accountUsage,TResult Function()?  acpAuth,TResult Function()?  acpInstall,TResult Function( String rootThreadId)?  sessionCosts,TResult Function( String hostThreadId)?  childInteractions,TResult Function()?  updater,TResult Function()?  persistence,TResult Function()?  persistenceQueue,TResult Function()?  agentProfiles,TResult Function()?  bots,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory() when projectDirectory != null:
 return projectDirectory();case BridgeProductTopic_ThreadDirectory() when threadDirectory != null:
@@ -1836,7 +1913,8 @@ return threadModeCatalog();case BridgeProductTopic_AccountUsage() when accountUs
 return accountUsage();case BridgeProductTopic_AcpAuth() when acpAuth != null:
 return acpAuth();case BridgeProductTopic_AcpInstall() when acpInstall != null:
 return acpInstall();case BridgeProductTopic_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that.rootThreadId);case BridgeProductTopic_Updater() when updater != null:
+return sessionCosts(_that.rootThreadId);case BridgeProductTopic_ChildInteractions() when childInteractions != null:
+return childInteractions(_that.hostThreadId);case BridgeProductTopic_Updater() when updater != null:
 return updater();case BridgeProductTopic_Persistence() when persistence != null:
 return persistence();case BridgeProductTopic_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue();case BridgeProductTopic_AgentProfiles() when agentProfiles != null:
@@ -1859,7 +1937,7 @@ return bots();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  projectDirectory,required TResult Function()  threadDirectory,required TResult Function()  agentDirectory,required TResult Function()  settingsConfig,required TResult Function()  modelCatalog,required TResult Function()  recovery,required TResult Function()  mcp,required TResult Function()  lsp,required TResult Function( String workspaceId)  skills,required TResult Function()  threadModeCatalog,required TResult Function()  accountUsage,required TResult Function()  acpAuth,required TResult Function()  acpInstall,required TResult Function( String rootThreadId)  sessionCosts,required TResult Function()  updater,required TResult Function()  persistence,required TResult Function()  persistenceQueue,required TResult Function()  agentProfiles,required TResult Function()  bots,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  projectDirectory,required TResult Function()  threadDirectory,required TResult Function()  agentDirectory,required TResult Function()  settingsConfig,required TResult Function()  modelCatalog,required TResult Function()  recovery,required TResult Function()  mcp,required TResult Function()  lsp,required TResult Function( String workspaceId)  skills,required TResult Function()  threadModeCatalog,required TResult Function()  accountUsage,required TResult Function()  acpAuth,required TResult Function()  acpInstall,required TResult Function( String rootThreadId)  sessionCosts,required TResult Function( String hostThreadId)  childInteractions,required TResult Function()  updater,required TResult Function()  persistence,required TResult Function()  persistenceQueue,required TResult Function()  agentProfiles,required TResult Function()  bots,}) {final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory():
 return projectDirectory();case BridgeProductTopic_ThreadDirectory():
@@ -1875,7 +1953,8 @@ return threadModeCatalog();case BridgeProductTopic_AccountUsage():
 return accountUsage();case BridgeProductTopic_AcpAuth():
 return acpAuth();case BridgeProductTopic_AcpInstall():
 return acpInstall();case BridgeProductTopic_SessionCosts():
-return sessionCosts(_that.rootThreadId);case BridgeProductTopic_Updater():
+return sessionCosts(_that.rootThreadId);case BridgeProductTopic_ChildInteractions():
+return childInteractions(_that.hostThreadId);case BridgeProductTopic_Updater():
 return updater();case BridgeProductTopic_Persistence():
 return persistence();case BridgeProductTopic_PersistenceQueue():
 return persistenceQueue();case BridgeProductTopic_AgentProfiles():
@@ -1894,7 +1973,7 @@ return bots();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  projectDirectory,TResult? Function()?  threadDirectory,TResult? Function()?  agentDirectory,TResult? Function()?  settingsConfig,TResult? Function()?  modelCatalog,TResult? Function()?  recovery,TResult? Function()?  mcp,TResult? Function()?  lsp,TResult? Function( String workspaceId)?  skills,TResult? Function()?  threadModeCatalog,TResult? Function()?  accountUsage,TResult? Function()?  acpAuth,TResult? Function()?  acpInstall,TResult? Function( String rootThreadId)?  sessionCosts,TResult? Function()?  updater,TResult? Function()?  persistence,TResult? Function()?  persistenceQueue,TResult? Function()?  agentProfiles,TResult? Function()?  bots,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  projectDirectory,TResult? Function()?  threadDirectory,TResult? Function()?  agentDirectory,TResult? Function()?  settingsConfig,TResult? Function()?  modelCatalog,TResult? Function()?  recovery,TResult? Function()?  mcp,TResult? Function()?  lsp,TResult? Function( String workspaceId)?  skills,TResult? Function()?  threadModeCatalog,TResult? Function()?  accountUsage,TResult? Function()?  acpAuth,TResult? Function()?  acpInstall,TResult? Function( String rootThreadId)?  sessionCosts,TResult? Function( String hostThreadId)?  childInteractions,TResult? Function()?  updater,TResult? Function()?  persistence,TResult? Function()?  persistenceQueue,TResult? Function()?  agentProfiles,TResult? Function()?  bots,}) {final _that = this;
 switch (_that) {
 case BridgeProductTopic_ProjectDirectory() when projectDirectory != null:
 return projectDirectory();case BridgeProductTopic_ThreadDirectory() when threadDirectory != null:
@@ -1910,7 +1989,8 @@ return threadModeCatalog();case BridgeProductTopic_AccountUsage() when accountUs
 return accountUsage();case BridgeProductTopic_AcpAuth() when acpAuth != null:
 return acpAuth();case BridgeProductTopic_AcpInstall() when acpInstall != null:
 return acpInstall();case BridgeProductTopic_SessionCosts() when sessionCosts != null:
-return sessionCosts(_that.rootThreadId);case BridgeProductTopic_Updater() when updater != null:
+return sessionCosts(_that.rootThreadId);case BridgeProductTopic_ChildInteractions() when childInteractions != null:
+return childInteractions(_that.hostThreadId);case BridgeProductTopic_Updater() when updater != null:
 return updater();case BridgeProductTopic_Persistence() when persistence != null:
 return persistence();case BridgeProductTopic_PersistenceQueue() when persistenceQueue != null:
 return persistenceQueue();case BridgeProductTopic_AgentProfiles() when agentProfiles != null:
@@ -2436,6 +2516,74 @@ class _$BridgeProductTopic_SessionCostsCopyWithImpl<$Res>
 @pragma('vm:prefer-inline') $Res call({Object? rootThreadId = null,}) {
   return _then(BridgeProductTopic_SessionCosts(
 rootThreadId: null == rootThreadId ? _self.rootThreadId : rootThreadId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeProductTopic_ChildInteractions extends BridgeProductTopic {
+  const BridgeProductTopic_ChildInteractions({required this.hostThreadId}): super._();
+
+
+ final  String hostThreadId;
+
+/// Create a copy of BridgeProductTopic
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeProductTopic_ChildInteractionsCopyWith<BridgeProductTopic_ChildInteractions> get copyWith => _$BridgeProductTopic_ChildInteractionsCopyWithImpl<BridgeProductTopic_ChildInteractions>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProductTopic_ChildInteractions&&(identical(other.hostThreadId, hostThreadId) || other.hostThreadId == hostThreadId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,hostThreadId);
+}
+
+@override
+String toString() {
+    return 'BridgeProductTopic.childInteractions(hostThreadId: $hostThreadId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeProductTopic_ChildInteractionsCopyWith<$Res> implements $BridgeProductTopicCopyWith<$Res> {
+  factory $BridgeProductTopic_ChildInteractionsCopyWith(BridgeProductTopic_ChildInteractions value, $Res Function(BridgeProductTopic_ChildInteractions) _then) = _$BridgeProductTopic_ChildInteractionsCopyWithImpl;
+@useResult
+$Res call({
+ String hostThreadId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeProductTopic_ChildInteractionsCopyWithImpl<$Res>
+    implements $BridgeProductTopic_ChildInteractionsCopyWith<$Res> {
+  _$BridgeProductTopic_ChildInteractionsCopyWithImpl(this._self, this._then);
+
+  final BridgeProductTopic_ChildInteractions _self;
+  final $Res Function(BridgeProductTopic_ChildInteractions) _then;
+
+/// Create a copy of BridgeProductTopic
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? hostThreadId = null,}) {
+  return _then(BridgeProductTopic_ChildInteractions(
+hostThreadId: null == hostThreadId ? _self.hostThreadId : hostThreadId // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }

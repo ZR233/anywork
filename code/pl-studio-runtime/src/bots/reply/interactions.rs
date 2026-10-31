@@ -56,7 +56,7 @@ pub(super) async fn discover_timeline_interactions(
             if item.header.thread_id != reader.thread_id() {
                 return Err(attention("canonical interaction item Thread conflict"));
             }
-            if item.header.turn_id != turn_id {
+            if item.header.turn_id.as_deref() != Some(turn_id) {
                 continue;
             }
             found_start |= matches!(item.descriptor, TimelineDescriptor::Turn(_));

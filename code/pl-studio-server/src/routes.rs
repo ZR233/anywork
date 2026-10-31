@@ -7,7 +7,6 @@ use axum::extract::{FromRequest, FromRequestParts, Multipart, Path, Query, Reque
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
     AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
@@ -145,7 +144,7 @@ fn query_rejection(rejection: QueryRejection) -> ApiError {
     ApiError(StudioError::invalid_argument("invalid query parameters"))
 }
 
-/// typed 产品 topic 的查询参数；`workspaceId`/`rootThreadId` 只服务带作用域 topic。
+/// typed 产品 topic 的查询参数；作用域身份只服务对应的带作用域 topic。
 ///
 /// 字段按 camelCase 反序列化并与 OpenAPI 文档一致；未知查询参数直接 400，
 /// 不允许以 snake_case 或多余身份静默扩大输入。
@@ -155,6 +154,7 @@ pub(crate) struct ProductTopicQuery {
     pub(crate) topic: String,
     pub(crate) workspace_id: Option<String>,
     pub(crate) root_thread_id: Option<String>,
+    pub(crate) host_thread_id: Option<String>,
 }
 
 /// 把 HTTP 查询参数解析为 typed 产品 topic。
@@ -193,6 +193,9 @@ pub(crate) fn parse_product_topic(
         "persistenceQueue" => StudioProductTopic::PersistenceQueue,
         "agentProfiles" => StudioProductTopic::AgentProfiles,
         "bots" => StudioProductTopic::Bots,
+        "childInteractions" => StudioProductTopic::ChildInteractions {
+            host_thread_id: query.host_thread_id.clone().unwrap_or_default(),
+        },
         other => {
             return Err(invalid(&format!("unknown product topic: {other}")));
         }
@@ -201,15 +204,24 @@ pub(crate) fn parse_product_topic(
         &topic,
         query.workspace_id.is_some(),
         query.root_thread_id.is_some(),
+        query.host_thread_id.is_some(),
     ) {
-        (StudioProductTopic::Skills { .. }, true, false) => {}
-        (StudioProductTopic::SessionCosts { .. }, false, true) => {}
-        (StudioProductTopic::Skills { .. } | StudioProductTopic::SessionCosts { .. }, _, _) => {
+        (StudioProductTopic::Skills { .. }, true, false, false) => {}
+        (StudioProductTopic::SessionCosts { .. }, false, true, false) => {}
+        (StudioProductTopic::ChildInteractions { .. }, false, false, true) => {}
+        (
+            StudioProductTopic::Skills { .. }
+            | StudioProductTopic::SessionCosts { .. }
+            | StudioProductTopic::ChildInteractions { .. },
+            _,
+            _,
+            _,
+        ) => {
             return Err(invalid(
                 "scoped product topic requires exactly one scope parameter",
             ));
         }
-        (_, false, false) => {}
+        (_, false, false, false) => {}
         _ => {
             return Err(invalid(
                 "global product topics do not accept scope parameters",
@@ -238,7 +250,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_threads))
         .routes(routes!(create_thread))
         .routes(routes!(read_thread))
-        .routes(routes!(read_thread_activity_detail))
         .routes(routes!(archive_thread))
         .routes(routes!(query_threads))
         .routes(routes!(restore_thread))
@@ -340,7 +351,8 @@ async fn read_state(State(state): State<AppState>) -> Result<impl IntoResponse, 
     params(
         ("topic" = String, Query, description = "typed 产品 topic（camelCase 标签）"),
         ("workspaceId" = Option<String>, Query, description = "Skills topic 的项目作用域"),
-        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域")
+        ("rootThreadId" = Option<String>, Query, description = "SessionCosts topic 的根会话作用域"),
+        ("hostThreadId" = Option<String>, Query, description = "ChildInteractions topic 的宿主会话作用域")
     ),
     responses(StudioApiErrors, (status = 200, description = "Canonical topic baseline"))
 )]
@@ -494,25 +506,6 @@ async fn read_thread(
         state
             .runtime
             .thread_snapshot(&thread_id)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
-/// 按活动身份读取当前完整内容事实（reasoning / 输出正文 / 工具参数与流式输出）。
-///
-/// 只读：不激活 owner、不 flush writer、不改变 revision。身份不再成立时返回 `superseded` /
-/// `ended`；未知 Thread 返回 404，客户端不据此恢复旧活动。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/activity/detail", operation_id = "thread.readActivityDetail", params(("thread_id" = String, Path), ("activityId" = String, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_activity_detail(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ThreadActivityDetailQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .read_thread_activity_detail(&thread_id, &query.activity_id)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -699,10 +692,10 @@ async fn list_thread_timeline(
     ))
 }
 
-/// 按 `item`／`field`／`revision` 分块读取完整正文。
+/// 按 `item`／`field`／`timelineEpoch` 分块读取不可变完整正文。
 ///
-/// 请求体是 typed 查询（字段身份、revision、不透明 continuation、块大小），不是把带索引的字段压成
-/// 临时字符串路径。读取绑定同一 revision：内容变化时报 `staleRevision`，绝不混版本拼接。
+/// typed 查询绑定完成窗口的 epoch、字段身份、不透明 continuation 与块大小；
+/// 不把执行 revision 当正文版本，跨 epoch 拒绝拼接，也不读取运行中的活动正文。
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/items/{item_id}/detail", operation_id = "thread.readTimelineDetail", params(("thread_id" = String, Path), ("item_id" = String, Path)), request_body = TimelineDetailQuery, responses(StudioApiErrors, (status = 200)))]
 async fn read_thread_timeline_detail(
     State(state): State<AppState>,

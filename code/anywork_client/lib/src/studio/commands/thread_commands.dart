@@ -2,6 +2,7 @@ import '../../../conversation.dart';
 import '../../../drafts_ports.dart';
 
 import 'dart:async';
+import 'dart:developer' show log;
 
 import '../../../models.dart';
 import '../../../studio_ports.dart';
@@ -17,9 +18,9 @@ import '../../../anywork_client.dart'
         ValueObservation;
 import '../anywork_client.dart';
 import '../agent_directory_queries.dart';
-import '../stores/child_interaction_store.dart';
 import '../stores/domain_sync.dart';
 import '../stores/project_store.dart';
+import '../bridge/product_topic_registry.dart' show BridgeTopicLease;
 import '../../commands/mutation_board.dart' show OperationPhase;
 import 'command_lane.dart';
 
@@ -38,15 +39,10 @@ enum _ObservationFailurePolicy {
 
 class ThreadCommands extends ReadModel<ThreadCommandBoard>
     implements DraftSubmissionCommands {
-  ThreadCommands(
-    this._client, {
-    required ChildInteractionStore childInteractions,
-    int Function()? nowMs,
-  }) : _childInteractions = childInteractions,
-       _nowMs = nowMs ?? _wallClockMs,
-       super(const ThreadCommandBoard());
+  ThreadCommands(this._client, {int Function()? nowMs})
+    : _nowMs = nowMs ?? _wallClockMs,
+      super(const ThreadCommandBoard());
   final AnyworkClient _client;
-  final ChildInteractionStore _childInteractions;
 
   /// 命令登记时间来源；界面用自己的墙钟比较，因此这里使用 Unix 毫秒。
   final int Function() _nowMs;
@@ -905,8 +901,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
 
   /// 读取主会话可见的子任务待决交互只读投影。
   ///
-  /// 结果写入 [ChildInteractionStore]，决议命令以同一 canonical 镜像观察原交互事实；
-  /// 列举本身不激活任何子会话，也不建立其完整内容订阅。
+  /// 普通只读查询：返回值不写入事件所属的领域镜像，也不作为 UI 刷新来源；
+  /// 待决集合事实由 `ChildInteractions` 主题的基线与事件交付。列举本身不激活
+  /// 任何子会话，也不建立其完整内容订阅。
   Future<List<ChildInteractionSummary>> readChildInteractions(
     String hostThreadId,
   ) {
@@ -917,17 +914,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         recoveryIssue.blockedFailure(),
       );
     }
-    final read = _childInteractions.beginRead();
-    return _lane.run(() async {
-      final items = await _api.readChildInteractions(hostThreadId);
-      _childInteractions.apply(
-        hostThreadId,
-        items,
-        sequence: read.sequence,
-        readDisplayGeneration: read.displayGeneration,
-      );
-      return items;
-    });
+    return _lane.run(() => _api.readChildInteractions(hostThreadId));
   }
 
   /// 主会话代表子任务提交交互决议。
@@ -982,19 +969,35 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     final key = 'interaction:$hostThreadId';
     final operation = _client.mutations.begin(target: key);
     _begin(key, label: summary.interactionId);
+    // 在途决议自己保留该宿主的主题份额：离开页面只 detach 展示，不撤销本次
+    // 操作的事实观察；观察结算或失败时随 binding 一并回收。
+    BridgeTopicLease decisionLease;
+    try {
+      decisionLease = _client.channels.acquireChildInteractions(hostThreadId);
+    } catch (error) {
+      operation.reject(error);
+      if (_isLatest(operation)) _fail(key, summary.interactionId, error);
+      return Future<OperationHandle>.error(error);
+    }
     try {
       _watchPredicate(
         operation,
-        _client.childInteractions.source,
-        (state) => state.confirmsDecision(
-          hostThreadId: hostThreadId,
-          childThreadId: summary.childThreadId,
-          interactionId: summary.interactionId,
-          revision: summary.revision,
-        ),
+        _client.childInteractions(hostThreadId).source,
+        (observation) =>
+            observation.canonical.loaded &&
+            (observation.canonical.value?.confirmsDecision(
+                  childThreadId: summary.childThreadId,
+                  interactionId: summary.interactionId,
+                  revision: summary.revision,
+                ) ??
+                false),
         () => _clear(key),
+        topicLease: decisionLease,
       );
     } catch (error) {
+      // A failed registration never owned the binding; the lease share must
+      // not outlive this attempt. Release is idempotent for a cancelled binding.
+      unawaited(decisionLease.release().catchError((Object _) {}));
       operation.reject(error);
       if (_isLatest(operation)) _fail(key, summary.interactionId, error);
       return Future<OperationHandle>.error(error);
@@ -1648,12 +1651,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     void Function() onObserved, {
     _ObservationFailurePolicy policy =
         _ObservationFailurePolicy.cancelOnFailure,
+    BridgeTopicLease? topicLease,
   }) {
     final permit = _client.budget.acquire(
       ResourceKind.observer,
       owner: 'command:${operation.id.value}',
     );
-    final binding = _IdentityOperationObservation(permit);
+    final binding = _IdentityOperationObservation(permit, topicLease);
     var confirmed = false;
     void completeIfAccepted() {
       final current = operation.state.value;
@@ -1832,8 +1836,12 @@ final class _ContinuationIntent {
 
 /// An identity predicate and its operation retention form one bounded observer.
 final class _IdentityOperationObservation implements Observation {
-  _IdentityOperationObservation(this.permit);
+  _IdentityOperationObservation(this.permit, [this.topicLease]);
   final ResourcePermit permit;
+
+  /// 本次观察保留的主题份额；观察结算、失败或关闭时一并释放。
+  /// 释放失败由订阅登记表保留原句柄与许可，这里只记录诊断。
+  final BridgeTopicLease? topicLease;
   Observation? owner;
   Observation? operation;
   @override
@@ -1857,5 +1865,20 @@ final class _IdentityOperationObservation implements Observation {
     owner?.cancel();
     operation?.cancel();
     permit.release();
+    final lease = topicLease;
+    if (lease != null) {
+      unawaited(
+        lease.release().then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stack) {
+            log(
+              'command_topic_lease_release_failed topic=${lease.topic} '
+              'error=$error',
+              stackTrace: stack,
+            );
+          },
+        ),
+      );
+    }
   }
 }

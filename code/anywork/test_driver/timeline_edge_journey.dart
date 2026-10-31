@@ -122,7 +122,7 @@ Future<void> main(List<String> args) async {
           'pagedItems': paged.itemCount,
           'pagingHappened': paged.itemCount > initialTimeline.itemCount,
           'identityRetained': retained,
-          'canonicalOrder': paged.ordinalAscending,
+          'canonicalOrder': paged.appendSeqAscending,
           'latestUnchanged':
               latestItem == null || paged.itemIds.last == latestItem,
           'olderCursor': paged.olderCursor,

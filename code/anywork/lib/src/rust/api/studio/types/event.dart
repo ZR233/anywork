@@ -14,6 +14,7 @@ import 'delegation.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'product_topic.dart';
 import 'response.dart';
 import 'runtime.dart';
 import 'settings.dart';
@@ -105,6 +106,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.sessionCostsChanged(
     BridgeSessionCostsState field0,
   ) = BridgeProductEventPayload_SessionCostsChanged;
+  const factory BridgeProductEventPayload.childInteractionsChanged(
+    BridgeChildInteractionsState field0,
+  ) = BridgeProductEventPayload_ChildInteractionsChanged;
   const factory BridgeProductEventPayload.updaterStateChanged(
     BridgeUpdaterStateSnapshot field0,
   ) = BridgeProductEventPayload_UpdaterStateChanged;

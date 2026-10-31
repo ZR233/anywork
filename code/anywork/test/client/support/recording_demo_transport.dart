@@ -39,11 +39,17 @@ class RecordingDemoTransport extends DemoStudioTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     final failure = failNextInitial;
     failNextInitial = null;
     final feed = RecordingConversationFeed(
-      inner: await super.openConversationFeed(threadId),
+      inner: await super.openConversationFeed(
+        threadId,
+        resumeAfter: resumeAfter,
+      ),
       initialFailure: failure,
     );
     feeds.add(feed);
@@ -220,21 +226,6 @@ class RecordingConversationFeed implements ConversationFeed {
     if (native != null) await inner.acknowledge(native);
     _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
     _ackWaiters.remove(deliverySequence)?.complete();
-  }
-
-  @override
-  Future<ConversationPage> page({String? before, int? limit}) {
-    pageCalls++;
-    return scriptedPage?.future ?? inner.page(before: before, limit: limit);
-  }
-
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) {
-    detailCalls++;
-    return inner.readDetail(itemId: itemId, query: query);
   }
 
   @override

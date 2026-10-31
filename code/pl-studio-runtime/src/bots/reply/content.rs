@@ -4,8 +4,7 @@ use super::projection::{ReplyProjection, gap};
 use crate::studio::{StudioRuntime, TimelineContentReader};
 use pl_protocol::{
     ThreadContentField, ThreadTextChannel, TimelineDescriptor, TimelineDetailCursor,
-    TimelineDetailQuery, TimelineItem, TimelineLifecycle, TimelinePageCursor, TimelinePageQuery,
-    TimelineTailBaseline,
+    TimelineDetailQuery, TimelineItem, TimelinePageCursor, TimelinePageQuery, TimelineTailBaseline,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,9 +30,10 @@ pub(super) fn begin_projection(
 ) -> Result<(ReplyProjection, Option<PrefixRecovery>), FinalError> {
     let mut projection = ReplyProjection::new(thread_id, turn_id);
     let mut coverage = Coverage::new(thread_id);
+    coverage.epoch(&baseline.timeline_epoch)?;
     coverage.page(&baseline.items)?;
     projection.add_page(baseline.items)?;
-    if projection.has_start() || !baseline.has_older {
+    if !baseline.has_older {
         projection.mark_covered();
         return Ok((projection, None));
     }
@@ -58,7 +58,7 @@ pub(super) async fn recover_prefix(
     projection: &mut ReplyProjection,
     recovery: &mut PrefixRecovery,
 ) -> Result<(), FinalError> {
-    while !projection.has_start() && recovery.has_older {
+    while recovery.has_older {
         let token = recovery.coverage.cursor(recovery.before.clone())?;
         let page = reader
             .page(&TimelinePageQuery {
@@ -70,6 +70,7 @@ pub(super) async fn recover_prefix(
         if page.thread_id != reader.thread_id() {
             return Err(gap("reply prefix page belongs to another Thread"));
         }
+        recovery.coverage.epoch(&page.timeline_epoch)?;
         recovery.coverage.page(&page.items)?;
         projection.add_page(page.items)?;
         recovery.before = page.before;
@@ -95,6 +96,7 @@ pub(super) async fn collect_complete_turn_text(
     let mut before = None;
     let mut coverage = Coverage::new(reader.thread_id());
     let mut saw_target = false;
+    let mut saw_terminal = false;
     loop {
         let page = reader
             .page(&TimelinePageQuery {
@@ -106,28 +108,25 @@ pub(super) async fn collect_complete_turn_text(
         if page.thread_id != reader.thread_id() {
             return Err(gap("canonical final page belongs to another Thread"));
         }
+        coverage.epoch(&page.timeline_epoch)?;
+        let epoch = page.timeline_epoch.clone();
         coverage.page(&page.items)?;
-        let mut found_start = false;
         for item in page.items {
-            if item.header.turn_id != turn_id {
+            if item.header.turn_id.as_deref() != Some(turn_id) {
                 continue;
             }
             saw_target = true;
-            if !item.saved {
+            if item.header.append_seq > reader.durable_seq() {
                 return Err(gap(
                     "canonical target has not reached reliable save coverage",
                 ));
             }
-            found_start |= matches!(item.descriptor, TimelineDescriptor::Turn(_));
+            saw_terminal |= matches!(item.descriptor, TimelineDescriptor::Turn(_));
             let TimelineDescriptor::Text(descriptor) = &item.descriptor else {
                 continue;
             };
             if descriptor.channel != ThreadTextChannel::Final {
                 continue;
-            }
-            if item.lifecycle != TimelineLifecycle::Terminal || !descriptor.lifecycle.is_terminal()
-            {
-                return Err(gap("canonical Final has not reached Terminal"));
             }
             let fields: Vec<_> = item
                 .fields
@@ -147,6 +146,7 @@ pub(super) async fn collect_complete_turn_text(
                 read_complete_text(
                     reader,
                     &item,
+                    &epoch,
                     field.total_bytes,
                     &field.text,
                     &mut body_bytes,
@@ -156,14 +156,14 @@ pub(super) async fn collect_complete_turn_text(
                 account_body_bytes(&field.text, &mut body_bytes)?;
                 field.text.clone()
             };
-            collected.insert((item.header.ordinal, item.header.id), body);
+            collected.insert((item.header.append_seq, item.header.id), body);
         }
-        if found_start || !page.has_older {
+        if !page.has_older {
             break;
         }
         before = Some(coverage.cursor(page.before)?);
     }
-    if !saw_target {
+    if !saw_target || !saw_terminal {
         return Err(gap("canonical terminal target content is not yet covered"));
     }
     // Blocks are original content fragments, not paragraphs we may normalize.
@@ -178,6 +178,7 @@ pub(super) async fn collect_complete_turn_text(
 async fn read_complete_text(
     reader: &TimelineContentReader,
     item: &TimelineItem,
+    timeline_epoch: &str,
     total_bytes: u64,
     preview: &str,
     body_bytes: &mut usize,
@@ -195,7 +196,7 @@ async fn read_complete_text(
                 &item.header.id,
                 &TimelineDetailQuery {
                     field: ThreadContentField::Text,
-                    revision: item.revision,
+                    timeline_epoch: timeline_epoch.to_string(),
                     continuation,
                     max_bytes: None,
                 },
@@ -205,10 +206,10 @@ async fn read_complete_text(
         if chunk.thread_id != reader.thread_id()
             || chunk.item_id != item.header.id
             || chunk.field != ThreadContentField::Text
-            || chunk.revision != item.revision
+            || chunk.timeline_epoch != timeline_epoch
             || chunk.total_bytes != total_bytes
         {
-            return Err(gap("canonical Final detail identity or revision conflict"));
+            return Err(gap("canonical Final detail identity or epoch conflict"));
         }
         account_body_bytes(&chunk.text, body_bytes)?;
         body.push_str(&chunk.text);
@@ -222,7 +223,7 @@ async fn read_complete_text(
                 if cursor.thread_id != reader.thread_id()
                     || cursor.item_id != item.header.id
                     || cursor.field != ThreadContentField::Text.token_label()
-                    || cursor.revision != item.revision
+                    || cursor.timeline_epoch != timeline_epoch
                     || cursor.offset != body.len() as u64
                     || chunk.text.is_empty()
                 {
@@ -242,6 +243,7 @@ async fn read_complete_text(
 
 pub(super) struct Coverage {
     thread_id: String,
+    epoch: Option<String>,
     inspected: usize,
     oldest: Option<(u64, String)>,
     cursors: BTreeSet<String>,
@@ -251,10 +253,19 @@ impl Coverage {
     pub(super) fn new(thread_id: &str) -> Self {
         Self {
             thread_id: thread_id.to_string(),
+            epoch: None,
             inspected: 0,
             oldest: None,
             cursors: BTreeSet::new(),
         }
+    }
+
+    pub(super) fn epoch(&mut self, epoch: &str) -> Result<(), FinalError> {
+        if epoch.is_empty() || self.epoch.as_deref().is_some_and(|old| old != epoch) {
+            return Err(gap("canonical reply page epoch conflict"));
+        }
+        self.epoch = Some(epoch.to_owned());
+        Ok(())
     }
 
     pub(super) fn page(&mut self, items: &[TimelineItem]) -> Result<(), FinalError> {
@@ -266,7 +277,7 @@ impl Coverage {
         }
         let mut previous = None;
         for item in items {
-            let order = (item.header.ordinal, item.header.id.as_str());
+            let order = (item.header.append_seq, item.header.id.as_str());
             if item.header.thread_id != self.thread_id
                 || item.header.id.is_empty()
                 || previous.is_some_and(|previous| previous >= order)
@@ -282,7 +293,7 @@ impl Coverage {
             previous = Some(order);
         }
         if let Some(first) = items.first() {
-            self.oldest = Some((first.header.ordinal, first.header.id.clone()));
+            self.oldest = Some((first.header.append_seq, first.header.id.clone()));
         }
         Ok(())
     }
@@ -294,7 +305,11 @@ impl Coverage {
         let cursor = TimelinePageCursor::decode(&token)
             .ok_or_else(|| gap("canonical reply page cursor is invalid"))?;
         if cursor.thread_id != self.thread_id
-            || self.oldest.as_ref() != Some(&(cursor.order, cursor.item_id))
+            || self
+                .epoch
+                .as_ref()
+                .is_some_and(|epoch| epoch != &cursor.timeline_epoch)
+            || self.oldest.as_ref() != Some(&(cursor.append_seq, cursor.item_id))
         {
             return Err(gap(
                 "canonical reply cursor is not the page's older boundary",

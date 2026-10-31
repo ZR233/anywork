@@ -1,7 +1,7 @@
 import 'collection_equality.dart';
 
 /// Typed wait/sleep presentation attached to the original tool call.
-class ThreadWaitPresentationView {
+final class ThreadWaitPresentationView {
   const ThreadWaitPresentationView({
     required this.intent,
     required this.state,
@@ -30,10 +30,10 @@ sealed class ThreadWaitIntentView {
 }
 
 final class ThreadWaitEventsIntentView extends ThreadWaitIntentView {
-  const ThreadWaitEventsIntentView({
-    required this.targets,
+  ThreadWaitEventsIntentView({
+    required List<ThreadWaitTargetView> targets,
     required this.timeoutMs,
-  });
+  }) : targets = List.unmodifiable(targets);
 
   final List<ThreadWaitTargetView> targets;
   final int timeoutMs;
@@ -65,7 +65,7 @@ final class ThreadWaitTimerIntentView extends ThreadWaitIntentView {
   int get hashCode => durationMs.hashCode;
 }
 
-class ThreadWaitTargetView {
+final class ThreadWaitTargetView {
   const ThreadWaitTargetView({
     required this.taskId,
     this.toolName,

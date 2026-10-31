@@ -3,33 +3,18 @@ import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
-ConversationUpdateItem update({
-  int expected = 1,
-  int revision = 2,
-  bool saved = false,
-  ConversationLifecycle lifecycle = ConversationLifecycle.streaming,
-  List<ConversationFieldUpdate> fields = const [],
-  ConversationItemHeader? header,
-  ConversationDescriptor? descriptor,
-}) => ConversationUpdateItem(
-  itemId: 'item',
-  expectedRevision: expected,
-  revision: revision,
-  saved: saved,
-  lifecycle: lifecycle,
-  fields: fields,
-  header: header,
-  descriptor: descriptor,
-);
-ConversationFieldUpdate textUpdate(
-  ThreadFieldChangeView change, {
-  required int total,
-  required int preview,
-}) => ConversationFieldUpdate(
-  field: const ThreadTextFieldView(),
-  change: change,
-  totalBytes: total,
-  previewBytes: preview,
+ConversationBatch batch({
+  int from = 1,
+  int through = 2,
+  String epoch = 'epoch',
+  String subscription = 'sub',
+  List<ConversationItem>? items,
+}) => ConversationBatch(
+  subscriptionId: subscription,
+  timelineEpoch: epoch,
+  fromSeq: from,
+  throughSeq: through,
+  items: items ?? [timelineItem(2, id: 'second')],
 );
 
 void main() {
@@ -41,11 +26,9 @@ void main() {
   }) async {
     final fixture = ConversationFixture();
     final feed = await fixture.open();
-    final content = fixture.session().content;
-    final failure = content.state.waitFor(
-      (state) =>
-          state is ChatReconnecting<ConversationContentFrame> ||
-          state is ChatFailed<ConversationContentFrame>,
+    final consumer = fixture.consumers['thread']!;
+    final failure = fixture.session().content.state.waitFor(
+      (state) => state is ChatReconnecting<bool> || state is ChatFailed<bool>,
     );
     feed.send(
       event,
@@ -55,362 +38,119 @@ void main() {
     );
     final result = await failure;
     expect(feed.acknowledgements, [1]);
-    expect(
-      content.lastDeliveredFrame,
-      isA<ConversationBaselineFrame>().having(
-        (frame) => frame.baseline.version,
-        'last committed version',
-        1,
-      ),
-    );
+    expect(consumer.frames, hasLength(1));
     await fixture.close();
     return switch (result) {
       ChatReconnecting(:final error) || ChatFailed(:final error) => error,
-      _ => throw StateError('Expected an explicit sync failure'),
+      _ => throw StateError('expected failure'),
     };
   }
 
-  test(
-    'a batch over 8 MiB fails atomically before copying otherwise valid items',
-    () async {
-      final notice = List.filled(200 * 1024, 'x').join();
-      final changes = List<ConversationChange>.generate(
-        50,
-        (index) => ConversationAdd(
-          ConversationItem(
-            header: timelineItem(index + 2, id: 'raw-$index').header,
-            revision: 1,
-            descriptor: ConversationRawDescriptor(
-              origin: ThreadRawItemOrigin.stored,
-              payloads: const [],
-              notice: notice,
-              recordedAt: DateTime.utc(2026),
-            ),
-            saved: true,
-            lifecycle: ConversationLifecycle.terminal,
-            fields: const [],
-          ),
-        ),
-      );
-      expect(
-        await reject(
-          ConversationUpdateEvent(update: patch(1, 2, changes: changes)),
-        ),
-        isA<ConversationContinuityError>(),
-      );
-    },
-  );
-
-  test(
-    'subscription, thread, delivery prefix and content version are independent',
-    () async {
-      for (final event in [
-        ConversationUpdateEvent(update: patch(9, 10)),
-        ConversationUpdateEvent(update: patch(1, 1)),
-        ConversationUpdateEvent(update: patch(1, 2, subscriptionId: 'other')),
-      ]) {
-        expect(await reject(event), isA<ConversationContinuityError>());
-      }
-      expect(
-        await reject(ConversationUpdateEvent(update: patch(1, 2)), sequence: 3),
-        isA<ConversationContinuityError>(),
-      );
-      expect(
-        await reject(
-          ConversationUpdateEvent(update: patch(1, 2)),
-          frameThread: 'other',
-        ),
-        isA<ConversationContinuityError>(),
-      );
-      expect(
-        await reject(
-          ConversationUpdateEvent(update: patch(1, 2)),
-          frameSubscription: 'other',
-        ),
-        isA<ConversationContinuityError>(),
-      );
-    },
-  );
-
-  test('whole item update validates on a candidate and commits no partial field or revision', () async {
-    final fixture = ConversationFixture();
-    final content = fixture.session().content;
-    final initial = timelineItem(1, body: '中', totalBytes: 3);
-    final candidate = update(
-      fields: [
-        textUpdate(
-          const AppendThreadFieldChangeView('文'),
-          total: 6,
-          preview: 6,
-        ),
-        const ConversationFieldUpdate(
-          field: ThreadThinkingSummaryFieldView(0),
-          change: AppendThreadFieldChangeView('bad'),
-          totalBytes: 3,
-          previewBytes: 3,
-        ),
-      ],
-    );
-    expect(
-      () => content.reduceItem(initial, candidate),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(initial.revision, 1);
-    expect(initial.fieldFor(const ThreadTextFieldView())!.text, '中');
-    final next = content.reduceItem(
-      initial,
-      update(
-        fields: [
-          textUpdate(
-            const AppendThreadFieldChangeView('文\n'),
-            total: 7,
-            preview: 7,
-          ),
-        ],
-      ),
-    );
-    expect(next.revision, 2);
-    expect(next.fieldFor(const ThreadTextFieldView())!.text, '中文\n');
-    expect(next.omittedBytes, 0);
-    expect(next.details.single.previewBytes, 7);
-    await fixture.close();
-  });
-
-  test('same revision completeness, saving and terminal reliable corrections retain exact text', () async {
-    final fixture = ConversationFixture();
-    final content = fixture.session().content;
-    final partial = timelineItem(
-      1,
-      body: 'a',
-      totalBytes: 3,
-      lifecycle: ConversationLifecycle.terminal,
-    );
-    final complete = content.reduceItem(
-      partial,
-      update(
-        revision: 1,
-        lifecycle: ConversationLifecycle.terminal,
-        fields: [
-          textUpdate(
-            const AppendThreadFieldChangeView('b\n'),
-            total: 3,
-            preview: 3,
-          ),
-        ],
-      ),
-    );
-    expect(complete.fieldFor(const ThreadTextFieldView())!.text, 'ab\n');
-    final saved = content.reduceItem(
-      complete,
-      update(
-        revision: 1,
-        saved: true,
-        lifecycle: ConversationLifecycle.terminal,
-      ),
-    );
-    expect(saved.saved, isTrue);
-    final corrected = content.reduceItem(
-      saved,
-      update(
-        saved: false,
-        lifecycle: ConversationLifecycle.terminal,
-        fields: [
-          textUpdate(
-            const ReplaceThreadFieldChangeView('x'),
-            total: 1,
-            preview: 1,
-          ),
-        ],
-      ),
-    );
-    expect(corrected.terminal, isTrue);
-    expect(corrected.saved, isFalse);
-    expect(corrected.fields.single.text, 'x');
-    expect(
-      () => content.reduceItem(
-        saved,
-        update(
-          revision: 1,
-          saved: true,
-          lifecycle: ConversationLifecycle.terminal,
-          fields: [
-            textUpdate(
-              const ReplaceThreadFieldChangeView('a'),
-              total: 3,
-              preview: 1,
-            ),
-          ],
-        ),
-      ),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(
-      () => content.reduceItem(saved, update(revision: 0, saved: true)),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(
-      () => content.reduceItem(saved, update(saved: true)),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    await fixture.close();
-  });
-
-  test(
-    'UTF-8 lengths, duplicate fields and all four patch operations are strict',
-    () async {
-      final fixture = ConversationFixture();
-      final content = fixture.session().content;
-      final initial = timelineItem(1, body: 'é');
-      for (final invalid in [
-        update(expected: 0),
-        update(
-          fields: [
-            textUpdate(
-              const AppendThreadFieldChangeView('!'),
-              total: 2,
-              preview: 2,
-            ),
-          ],
-        ),
-        update(
-          fields: [
-            textUpdate(
-              const UnchangedThreadFieldChangeView(),
-              total: 1,
-              preview: 1,
-            ),
-          ],
-        ),
-        update(
-          fields: [
-            textUpdate(
-              const RemoveThreadFieldChangeView(),
-              total: 1,
-              preview: 0,
-            ),
-          ],
-        ),
-        update(
-          fields: [
-            textUpdate(
-              const UnchangedThreadFieldChangeView(),
-              total: 2,
-              preview: 2,
-            ),
-            textUpdate(
-              const UnchangedThreadFieldChangeView(),
-              total: 2,
-              preview: 2,
-            ),
-          ],
-        ),
-      ]) {
-        expect(
-          () => content.reduceItem(initial, invalid),
-          throwsA(isA<ConversationContinuityError>()),
-        );
-      }
-      final unchanged = content.reduceItem(
-        initial,
-        update(
-          fields: [
-            textUpdate(
-              const UnchangedThreadFieldChangeView(),
-              total: 2,
-              preview: 2,
-            ),
-          ],
-        ),
-      );
-      expect(unchanged.fields.single.text, 'é');
-      final removed = content.reduceItem(
-        unchanged,
-        update(
-          expected: 2,
-          revision: 3,
-          fields: [
-            textUpdate(
-              const RemoveThreadFieldChangeView(),
-              total: 0,
-              preview: 0,
-            ),
-          ],
-        ),
-      );
-      expect(removed.fields, isEmpty);
-      expect(removed.omittedBytes, 0);
-      await fixture.close();
-    },
-  );
-
-  test('Add updates known identity; old-order Add and untracked Remove are delivered, not guessed away', () async {
+  test('a continuous batch is accepted as immutable items and acked', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open();
-    final content = fixture.session().content;
-    await feed.deliver(
-      ConversationUpdateEvent(
-        update: patch(
-          1,
-          2,
-          changes: [
-            ConversationAdd(timelineItem(2, body: 'replacement')),
-            ConversationAdd(timelineItem(1, id: 'earlier', ordinal: 0)),
-            const ConversationRemove('loaded-only-in-history'),
-          ],
-        ),
-      ),
+    final consumer = fixture.consumers['thread']!;
+    final items = [timelineItem(2, id: 'next', body: 'hello')];
+    final update = batch(items: items);
+    items.clear();
+    await feed.deliver(ConversationUpdateEvent(update: update));
+    final frame = consumer.frames.last as ConversationCompletedBatchFrame;
+    expect(
+      frame.batch.items.single.fieldFor(const ThreadTextFieldView())!.text,
+      'hello',
     );
-    final frame = content.lastDeliveredFrame as ConversationPatchFrame;
-    expect(frame.patch.changes, hasLength(3));
-    // The next update proves the SDK committed Add's revision, rather than
-    // waiting for an unpromised later replacement from the producer.
-    await feed.deliver(
-      ConversationUpdateEvent(
-        update: patch(
-          2,
-          3,
-          changes: [update(expected: 2, revision: 3, saved: true)],
-        ),
-      ),
-    );
-    expect(feed.acknowledgements, [1, 2, 3]);
+    expect(() => frame.batch.items.clear(), throwsUnsupportedError);
+    expect(feed.acknowledgements, [1, 2]);
     await fixture.close();
   });
 
-  test(
-    'explicit Resync adopts a new baseline on the same subscription only',
-    () async {
-      final fixture = ConversationFixture();
-      final feed = await fixture.open();
-      await feed.deliver(
-        ConversationUpdateEvent(
-          update: ConversationResync(
-            subscriptionId: 'sub',
-            reason: ConversationResyncReason.lagging,
-            baseline: baseline(50),
-          ),
-        ),
+  test('subscription, epoch, delivery sequence and completion cursor are independent', () async {
+    for (final update in [
+      batch(from: 7, through: 8, items: [timelineItem(8)]),
+      batch(epoch: 'wrong'),
+      batch(subscription: 'wrong'),
+    ]) {
+      expect(
+        await reject(ConversationUpdateEvent(update: update)),
+        isA<ConversationContinuityError>(),
       );
-      final frame =
-          fixture.session().content.lastDeliveredFrame
-              as ConversationBaselineFrame;
-      expect(frame.isResync, isTrue);
-      expect(frame.baseline.version, 50);
-      await feed.deliver(ConversationUpdateEvent(update: patch(50, 51)));
-      // 重同步后的补丁以新基线版本为 from：新基线已被真正采纳。
-      final updated =
-          fixture.session().content.lastDeliveredFrame
-              as ConversationPatchFrame;
-      expect(updated.patch.from, 50);
-      expect(updated.patch.to, 51);
-      await fixture.close();
+    }
+    expect(
+      await reject(ConversationUpdateEvent(update: batch()), sequence: 3),
+      isA<ConversationContinuityError>(),
+    );
+    expect(
+      await reject(
+        ConversationUpdateEvent(update: batch()),
+        frameThread: 'other',
+      ),
+      isA<ConversationContinuityError>(),
+    );
+    expect(
+      await reject(
+        ConversationUpdateEvent(update: batch()),
+        frameSubscription: 'other',
+      ),
+      isA<ConversationContinuityError>(),
+    );
+  });
+
+  test(
+    'invalid item identity or byte lengths do not reach consumer or ACK',
+    () async {
+      final duplicate = batch(
+        through: 3,
+        items: [
+          timelineItem(2, id: 'same'),
+          timelineItem(3, id: 'same'),
+        ],
+      );
+      final badLength = batch(
+        items: [timelineItem(2, body: '你好', totalBytes: 1)],
+      );
+      final badThread = batch(items: [timelineItem(2, threadId: 'other')]);
+      for (final value in [duplicate, badLength, badThread]) {
+        expect(
+          await reject(ConversationUpdateEvent(update: value)),
+          isA<ConversationContinuityError>(),
+        );
+      }
+    },
+  );
+
+  test(
+    'oversized immutable metadata or batch is rejected before delivery',
+    () async {
+      ConversationItem raw(int seq, String notice) => ConversationItem(
+        header: ConversationItemHeader(
+          id: 'raw-$seq',
+          threadId: 'thread',
+          appendSeq: seq,
+        ),
+        source: const ConversationContentSource(),
+        descriptor: ConversationRawDescriptor(
+          origin: ThreadRawItemOrigin.stored,
+          payloads: const [],
+          notice: notice,
+          recordedAt: DateTime.utc(2026),
+        ),
+        fields: const [],
+      );
       expect(
         await reject(
           ConversationUpdateEvent(
-            update: ConversationResync(
-              subscriptionId: 'sub',
-              reason: ConversationResyncReason.lagging,
-              baseline: baseline(3, subscriptionId: 'other'),
+            update: batch(items: [raw(2, 'x' * (256 * 1024))]),
+          ),
+        ),
+        isA<ConversationContinuityError>(),
+      );
+      final large = 'x' * (240 * 1024);
+      expect(
+        await reject(
+          ConversationUpdateEvent(
+            update: batch(
+              through: 10,
+              items: [for (var seq = 2; seq <= 10; seq++) raw(seq, large)],
             ),
           ),
         ),
@@ -419,7 +159,214 @@ void main() {
     },
   );
 
-  test('Failure/Closed terminal envelopes repeat the last data sequence without ACK', () async {
+  test(
+    'body and tool argument preview caps are enforced before delivery',
+    () async {
+      final text = timelineItem(2, body: 'x' * (32 * 1024 + 1));
+      expect(
+        await reject(ConversationUpdateEvent(update: batch(items: [text]))),
+        isA<ConversationContinuityError>(),
+      );
+      final tool = ConversationItem(
+        header: const ConversationItemHeader(
+          id: 'tool',
+          threadId: 'thread',
+          appendSeq: 2,
+        ),
+        source: const ConversationContentSource(),
+        descriptor: ConversationToolDescriptor(
+          invocation: const ConversationToolInvocation(
+            toolCallId: 'call',
+            name: 'exec',
+          ),
+          state: ConversationToolSucceeded(
+            completedAt: DateTime.utc(2026),
+            output: ConversationToolOutputDescriptor(attachments: const []),
+          ),
+        ),
+        fields: [
+          ConversationFieldPreview(
+            field: const ThreadToolArgumentsFieldView(),
+            text: 'x' * 4097,
+            totalBytes: 4097,
+          ),
+        ],
+      );
+      expect(
+        await reject(ConversationUpdateEvent(update: batch(items: [tool]))),
+        isA<ConversationContinuityError>(),
+      );
+    },
+  );
+
+  test('all Turn failure and rollover strings are charged before consumer acceptance', () async {
+    ConversationItem turn(int seq, String field, String payload) {
+      final failure = StudioTurnFailureView(
+        category: field == 'category' ? payload : 'category',
+        providerKind: field == 'providerKind' ? payload : 'provider',
+        code: field == 'code' ? payload : 'code',
+        httpStatus: 500,
+        message: field == 'message' ? payload : 'message',
+        retryable: false,
+        retryAfterMs: null,
+      );
+      final ConversationTurnOutcome outcome = field == 'rollover'
+          ? ConversationTurnBudgetLimited(
+              BudgetLimitedStudioTurnState(
+                startedAt: 1,
+                completedAt: 2,
+                limit: const StudioTurnBudgetLimit(
+                  kind: StudioTurnBudgetLimitKind.modelStep,
+                  usage: StudioTurnBudgetUsage(
+                    modelSteps: 1,
+                    toolCalls: 0,
+                    waitCalls: 0,
+                    elapsedMs: 1,
+                  ),
+                ),
+                rollover: RolloverFailed(error: payload),
+              ),
+            )
+          : ConversationTurnFailed(
+              FailedStudioTurnState(
+                startedAt: 1,
+                completedAt: 2,
+                failure: failure,
+              ),
+            );
+      return ConversationItem(
+        header: ConversationItemHeader(
+          id: 'turn-$seq',
+          threadId: 'thread',
+          appendSeq: seq,
+        ),
+        source: const ConversationContentSource(),
+        descriptor: ConversationTurnDescriptor(
+          inputId: 'input-$seq',
+          outcome: outcome,
+        ),
+        fields: const [],
+      );
+    }
+
+    for (final field in [
+      'message',
+      'category',
+      'providerKind',
+      'code',
+      'rollover',
+    ]) {
+      final oversized = turn(2, field, 'x' * (256 * 1024));
+      expect(
+        await reject(
+          ConversationUpdateEvent(update: batch(items: [oversized])),
+        ),
+        isA<ConversationContinuityError>(),
+        reason: '$field must be charged',
+      );
+      final large = 'x' * (240 * 1024);
+      expect(
+        await reject(
+          ConversationUpdateEvent(
+            update: batch(
+              through: 10,
+              items: [
+                for (var seq = 2; seq <= 10; seq++) turn(seq, field, large),
+              ],
+            ),
+          ),
+        ),
+        isA<ConversationContinuityError>(),
+        reason: '$field must count toward batch',
+      );
+    }
+
+    final fixture = ConversationFixture();
+    final feed = await fixture.open();
+    final originals = [
+      for (final (index, field) in [
+        'message',
+        'category',
+        'providerKind',
+        'code',
+        'rollover',
+      ].indexed)
+        turn(index + 2, field, 'value-$field'),
+    ];
+    await feed.deliver(
+      ConversationUpdateEvent(update: batch(through: 6, items: originals)),
+    );
+    final delivered =
+        (fixture.consumers['thread']!.frames.last
+                as ConversationCompletedBatchFrame)
+            .batch
+            .items;
+    for (var i = 0; i < delivered.length; i++) {
+      expect(delivered[i], same(originals[i]));
+    }
+    final failure =
+        ((delivered[1].descriptor as ConversationTurnDescriptor).outcome
+                as ConversationTurnFailed)
+            .value
+            .failure;
+    expect(failure.category, 'value-category');
+    expect(
+      ((delivered.last.descriptor as ConversationTurnDescriptor).outcome
+              as ConversationTurnBudgetLimited)
+          .value
+          .rollover,
+      isA<RolloverFailed>().having((v) => v.error, 'error', 'value-rollover'),
+    );
+    expect(feed.acknowledgements, [1, 2]);
+    await fixture.close();
+  });
+
+  test(
+    'reset changes epoch and next batch uses the newly accepted cursor',
+    () async {
+      final fixture = ConversationFixture();
+      final feed = await fixture.open();
+      final consumer = fixture.consumers['thread']!;
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: ConversationReset(
+            baseline(
+              5,
+              timelineEpoch: 'next',
+              items: [timelineItem(5, id: 'new')],
+            ),
+          ),
+        ),
+      );
+      await feed.deliver(
+        ConversationUpdateEvent(
+          update: batch(
+            from: 5,
+            through: 6,
+            epoch: 'next',
+            items: [timelineItem(6, id: 'after')],
+          ),
+        ),
+      );
+      expect(consumer.frames[1], isA<ConversationResetFrame>());
+      expect(
+        (consumer.frames[2] as ConversationCompletedBatchFrame)
+            .batch
+            .throughSeq,
+        6,
+      );
+      expect(feed.acknowledgements, [1, 2, 3]);
+      await fixture.close();
+      expect(
+        await reject(
+          ConversationUpdateEvent(update: ConversationReset(baseline(5))),
+        ),
+        isA<ConversationContinuityError>(),
+      );
+    },
+  );
+
+  test('Failure and Closed terminal envelopes do not consume ACK', () async {
     const failure = StudioFailure(
       code: StudioFailureCode.busy,
       message: 'producer unavailable',

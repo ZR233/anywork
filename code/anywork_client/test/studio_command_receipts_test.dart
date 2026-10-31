@@ -121,6 +121,8 @@ final class _Transport extends AccountsTestTransport {
   final compactions = <Completer<void>>[];
   final Completer<void> compactEntered = Completer<void>();
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
+  final Map<ProductTopic, StreamController<ProductTopicFrame>>
+  topicSinksByTopic = {};
   final List<StreamController<ThreadStreamFrame>> threadBindings = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
@@ -164,10 +166,17 @@ final class _Transport extends AccountsTestTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
     threadBindings.add(states);
-    return ScriptedConversationFeed(threadId: threadId, states: states.stream);
+    return ScriptedConversationFeed(
+      threadId: threadId,
+      states: states.stream,
+      resumeAfter: resumeAfter,
+    );
   }
 
   @override
@@ -181,9 +190,10 @@ final class _Transport extends AccountsTestTransport {
 
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    final sink = StreamController<ProductTopicFrame>();
+    final sink = StreamController<ProductTopicFrame>(sync: true);
     addTearDown(() => sink.close());
     topicSinks.add(sink);
+    topicSinksByTopic[topic] = sink;
     return sink.stream;
   }
 
@@ -320,6 +330,7 @@ final class _RouteConflictFeed extends ScriptedConversationFeed {
     required super.threadId,
     required super.initial,
     required super.states,
+    super.resumeAfter,
     required this.onClose,
   });
 
@@ -352,7 +363,10 @@ final class _RouteConflictTransport extends _Transport {
   int windowOpens = 0;
 
   @override
-  Future<ConversationFeed> openConversationFeed(String threadId) async {
+  Future<ConversationFeed> openConversationFeed(
+    String threadId, {
+    ConversationCompletionCursor? resumeAfter,
+  }) async {
     final index = bindings.length;
     // Frames may have no consumer when opening is retired immediately.
     final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
@@ -366,6 +380,7 @@ final class _RouteConflictTransport extends _Transport {
         items: const [],
       ),
       states: binding.stream,
+      resumeAfter: resumeAfter,
       onClose: () => onFeedClose?.call(index) ?? Future<void>.value(),
     );
     if (bindings.length == 2 && !refreshEntered.isCompleted)
@@ -581,6 +596,62 @@ ChildInteractionSummary _childSummary({
   ),
 );
 
+int _childTopicSequence = 0;
+
+/// 向当前 `ChildInteractions` 订阅投放一帧真实 topic 事实。
+void _emitChildTopicFrame(
+  _Transport transport,
+  String hostThreadId,
+  ChildInteractionsStateView state,
+) {
+  final topic = ChildInteractionsTopic(hostThreadId: hostThreadId);
+  transport.topicSinksByTopic[topic]?.add(
+    ProductTopicDataFrame(
+      topic: topic,
+      event: ProductTopicEventEnvelope(
+        eventId: 'child-evt-${++_childTopicSequence}',
+        sequence: BigInt.from(_childTopicSequence),
+        createdAt: DateTime.now(),
+        payload: ChildInteractionsChangedPayload(state),
+      ),
+    ),
+  );
+}
+
+void _emitChildBaseline(
+  _Transport transport,
+  String hostThreadId, {
+  required int revision,
+  required List<ChildInteractionSummary> items,
+}) {
+  final topic = ChildInteractionsTopic(hostThreadId: hostThreadId);
+  transport.topicSinksByTopic[topic]?.add(
+    ProductTopicBaselineFrame(
+      topic: topic,
+      revision: revision,
+      state: ChildInteractionsBaseline(
+        ChildInteractionsStateView(
+          hostThreadId: hostThreadId,
+          revision: revision,
+          updatedAt: DateTime.now(),
+          items: items,
+        ),
+      ),
+    ),
+  );
+}
+
+ChildInteractionsStateView _childState(
+  String hostThreadId,
+  int revision,
+  List<ChildInteractionSummary> items,
+) => ChildInteractionsStateView(
+  hostThreadId: hostThreadId,
+  revision: revision,
+  updatedAt: DateTime.now(),
+  items: items,
+);
+
 /// The canonical continuation projection the UI freezes before continuing.
 ContinuationView _continuation({
   String id = 'continuation-1',
@@ -710,12 +781,17 @@ Future<AnyworkClient> _client(
     threadId: 'thread',
     needsOpen: true,
   );
+  final consumer = TestCompletionConsumer();
+  client.conversations.session('thread').content.attachConsumer(consumer);
+  _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
   return client;
 }
+
+final _completionConsumers = Expando<TestCompletionConsumer>();
 
 ResourceStamp _stamp(String key, int revision) =>
     ResourceStamp(resourceKey: key, ownerEpoch: _epoch, revision: revision);
@@ -2054,8 +2130,14 @@ void main() {
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    final delivered = session.content.lastDeliveredFrame;
-    expect((delivered! as ConversationBaselineFrame).baseline.version, 300);
+    final delivered = _completionConsumers[client]!.frames.single;
+    expect(
+      (delivered as ConversationBaselineFrame)
+          .baseline
+          .completedCursor
+          .appendSeq,
+      300,
+    );
     expect(transport.windowOpens, 2);
     expect(transport.bindings, hasLength(2));
   });
@@ -2124,7 +2206,7 @@ void main() {
           expect(report.complete, isFalse);
           expect(
             report.unresolved.map((resource) => resource.owner),
-            contains('thread'),
+            contains('conversation:thread'),
           );
         }
         cleanup.complete();
@@ -3348,6 +3430,10 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
+    client.conversations
+        .session('thread')
+        .content
+        .attachConsumer(TestCompletionConsumer());
     client.conversations.setVisibleThread('thread');
     await client.conversations
         .session('thread')
@@ -4641,101 +4727,134 @@ void main() {
   });
 
   test(
-    'child cards require a successful read in the current display generation',
+    'child cards follow the scoped topic, and explicit reads stay pure queries',
     () async {
       final transport = _Transport();
       final client = await _client(transport);
+      // The prepared root page owns the topic share; no read started it.
+      expect(
+        client.channels.activeTopicRefCountViews()['childInteractions:thread'],
+        1,
+      );
+      final store = client.existingChildInteractions('thread')!;
+      expect(store.state.canonical.loaded, isFalse);
+      expect(store.state.hasCurrentBaseline, isFalse);
       final summary = _childSummary(revision: 3);
-      final oldReply = Completer<List<ChildInteractionSummary>>();
-      transport.childInteractionsReply = (_) => oldReply.future;
-      final initialGeneration =
-          client.childInteractions.state.displayGeneration;
-      var notifications = 0;
-      final observation = client.childInteractions.source.watch((_) {
-        notifications++;
-      });
-      addTearDown(observation.cancel);
-      client.conversations.setVisibleThread('thread');
-      expect(notifications, 0, reason: 'The same visible target is a no-op');
-      final oldRead = client.threadCommands.readChildInteractions('thread');
-      client.conversations.setVisibleThread('other');
-      client.conversations.setVisibleThread('thread');
-      expect(notifications, 2);
-      expect(
-        client.childInteractions.state.displayGeneration,
-        initialGeneration + 2,
-      );
-      oldReply.complete([summary]);
-      expect(await oldRead, [summary]);
-      expect(client.childInteractions.state.items, [summary]);
-      expect(
-        client.childInteractions.state.readDisplayGeneration,
-        initialGeneration,
-      );
-      expect(client.childInteractions.state.visibleItems, isEmpty);
+      _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
+      expect(store.state.canonical.loaded, isTrue);
+      expect(store.state.hasCurrentBaseline, isTrue);
+      expect(store.state.canonical.value?.items, [summary]);
 
-      final failure = StateError('current read failed');
-      transport.childInteractionsReply = (_) => Future.error(failure);
-      await expectLater(
-        client.threadCommands.readChildInteractions('thread'),
-        throwsA(same(failure)),
+      // An explicit read is a plain query: its result never writes the mirror.
+      transport.childInteractions = [_childSummary(revision: 9)];
+      final queried = await client.threadCommands.readChildInteractions(
+        'thread',
       );
-      expect(client.childInteractions.state.items, [summary]);
-      expect(client.childInteractions.state.visibleItems, isEmpty);
+      expect(queried.single.revision, 9);
+      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.revision, 1);
 
-      final refreshed = _childSummary(revision: 4);
-      transport.childInteractionsReply = null;
-      transport.childInteractions = [refreshed];
-      await client.threadCommands.readChildInteractions('thread');
-      expect(client.childInteractions.state.visibleItems, [refreshed]);
-      final generation = client.childInteractions.state.displayGeneration;
-      client.selection.selectThread(workspaceId: 'project', threadId: 'other');
-      expect(client.childInteractions.state.displayGeneration, generation);
-      expect(client.childInteractions.state.visibleItems, [refreshed]);
+      // Old domain revisions are rejected; newer ones replace the collection.
+      _emitChildTopicFrame(
+        transport,
+        'thread',
+        _childState('thread', 1, [_childSummary(revision: 4)]),
+      );
+      expect(store.state.canonical.value?.items, [summary]);
+      _emitChildTopicFrame(
+        transport,
+        'thread',
+        _childState('thread', 2, [_childSummary(revision: 4)]),
+      );
+      expect(store.state.canonical.value?.items.single.revision, 4);
+
+      // Leaving the page releases the page share; the domain mirror keeps the
+      // last known facts, and returning re-arms the topic without a query.
       client.conversations.setVisibleThread(null);
-      expect(client.childInteractions.state.visibleItems, isEmpty);
-      expect(client.childInteractions.state.items, [refreshed]);
+      expect(
+        client.channels
+                .activeTopicRefCountViews()['childInteractions:thread'] ??
+            0,
+        0,
+        reason: 'Leaving the page withdraws its topic share immediately',
+      );
+      expect(store.state.canonical.value?.items.single.revision, 4);
+      final readsBeforeReturn = transport.childInteractionReads;
+      client.conversations.setVisibleThread('thread');
+      expect(
+        client.channels.activeTopicRefCountViews()['childInteractions:thread'],
+        1,
+      );
+      expect(transport.childInteractionReads, readsBeforeReturn);
+      // The returning share reuses the same owner; its replacement source is
+      // established asynchronously after the real cancel ACK.
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      // A returning baseline must still advance the domain revision; an
+      // unchanged watermark stays idempotent and a newer one replaces it.
+      _emitChildBaseline(transport, 'thread', revision: 2, items: []);
+      expect(store.state.canonical.value?.items.single.revision, 4);
+      _emitChildBaseline(transport, 'thread', revision: 3, items: []);
+      expect(store.state.canonical.value?.items, isEmpty);
+      expect(store.state.canonical.revision, 3);
     },
   );
 
   test(
-    'a newer child read intent blocks an older result before either publishes',
-    () async {
-      final transport = _Transport();
-      final client = await _client(transport);
-      final baseline = _childSummary(revision: 1);
-      transport.childInteractions = [baseline];
-      await client.threadCommands.readChildInteractions('thread');
-      final sequence = client.childInteractions.state.sequence;
-      final oldReply = Completer<List<ChildInteractionSummary>>();
-      final newReply = Completer<List<ChildInteractionSummary>>();
-      transport.childInteractionsReply = (_) => oldReply.future;
-      final oldRead = client.threadCommands.readChildInteractions('thread');
-      transport.childInteractionsReply = (_) => newReply.future;
-      final newRead = client.threadCommands.readChildInteractions('thread');
-      final stale = _childSummary(revision: 2);
-      oldReply.complete([stale]);
-      expect(await oldRead, [stale]);
-      expect(client.childInteractions.state.sequence, sequence);
-      expect(client.childInteractions.state.items, [baseline]);
-      final current = _childSummary(revision: 3);
-      newReply.complete([current]);
-      expect(await newRead, [current]);
-      expect(client.childInteractions.state.sequence, sequence + 2);
-      expect(client.childInteractions.state.visibleItems, [current]);
-    },
-  );
-
-  test(
-    'client close revokes child cards synchronously but joins the old query',
+    'a child decision keeps its topic share while the page share is gone',
     () async {
       final transport = _Transport();
       final client = await _client(transport);
       final summary = _childSummary(revision: 3);
-      transport.childInteractions = [summary];
-      await client.threadCommands.readChildInteractions('thread');
-      expect(client.childInteractions.state.visibleItems, [summary]);
-      final generation = client.childInteractions.state.displayGeneration;
+      _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
+      final entered = transport.interactions.stream.first;
+      final resolving = client.threadCommands.resolveChildInteraction(
+        'thread',
+        summary,
+        _resolution,
+      );
+      final operation = client.mutations.latest('interaction:thread')!;
+      final call = await entered;
+      // Navigation detaches the page share only; the pending decision still
+      // owns the topic and the fact observation.
+      client.conversations.setVisibleThread('other');
+      expect(
+        client.channels.activeTopicRefCountViews()['childInteractions:thread'],
+        1,
+        reason: 'The in-flight decision keeps its own topic share',
+      );
+      call.reply.complete(
+        InteractionCommandReply(
+          interaction: summary.interaction,
+          receipt: _identityReceipt(call.operationId),
+        ),
+      );
+      expect(await resolving, same(operation));
+      expect(operation.state.value.observed, isFalse);
+      _emitChildTopicFrame(
+        transport,
+        'thread',
+        _childState('thread', 2, const []),
+      );
+      expect(operation.state.value.observed, isTrue);
+      expect(
+        client.channels
+                .activeTopicRefCountViews()['childInteractions:thread'] ??
+            0,
+        0,
+        reason: 'The settled decision releases its share',
+      );
+    },
+  );
+
+  test(
+    'client close releases the child topic share but joins the old query',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final summary = _childSummary(revision: 3);
+      _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
+      final store = client.existingChildInteractions('thread')!;
       final reply = Completer<List<ChildInteractionSummary>>();
       transport.childInteractionsReply = (_) => reply.future;
       final reading = client.threadCommands.readChildInteractions('thread');
@@ -4750,11 +4869,16 @@ void main() {
         closed = true;
         return report;
       });
-      expect(client.childInteractions.state.visibleHostThreadId, isNull);
-      expect(client.childInteractions.state.displayGeneration, generation + 1);
-      expect(client.childInteractions.state.visibleItems, isEmpty);
+      // Close releases the page topic share; the domain mirror keeps the last
+      // known facts and the pending explicit query still owns its lane.
+      expect(
+        client.channels
+                .activeTopicRefCountViews()['childInteractions:thread'] ??
+            0,
+        0,
+      );
+      expect(store.state.canonical.value?.items, [summary]);
       client.conversations.setVisibleThread(null);
-      expect(client.childInteractions.state.displayGeneration, generation + 1);
       await Future<void>.value();
       expect(closed, isFalse);
       reply.complete([summary]);
@@ -4763,7 +4887,7 @@ void main() {
       expect(commandsClosed, isTrue);
       await closing;
       expect(closed, isTrue);
-      expect(client.childInteractions.state.visibleItems, isEmpty);
+      expect(store.state.canonical.value?.items, [summary]);
     },
   );
 
@@ -4780,11 +4904,17 @@ void main() {
         final transport = _Transport();
         final client = await _client(transport);
         final summary = _childSummary(revision: 3);
-        transport.childInteractions = [summary];
-        await client.threadCommands.readChildInteractions('thread');
-        expect(transport.childInteractionReads, 1);
+        _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
+        expect(transport.childInteractionReads, 0);
         expect(
-          client.childInteractions.state.items.single.interactionId,
+          client
+              .existingChildInteractions('thread')!
+              .state
+              .canonical
+              .value
+              ?.items
+              .single
+              .interactionId,
           'child-interaction',
         );
         final entered = transport.interactions.stream.first;
@@ -4820,8 +4950,11 @@ void main() {
         });
         addTearDown(acceptance.cancel);
         if (framesFirst) {
-          transport.childInteractions = const [];
-          await client.threadCommands.readChildInteractions('thread');
+          _emitChildTopicFrame(
+            transport,
+            'thread',
+            _childState('thread', 2, const []),
+          );
           expect(operation.state.value.observed, isFalse);
           expect(
             client
@@ -4895,26 +5028,29 @@ void main() {
           );
           expect(newerOperation!.state.value.observed, isFalse);
         }
+        final store = client.existingChildInteractions('thread')!;
         expect(
-          client.childInteractions.state.visibleItems,
+          store.state.canonical.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         client.conversations.setVisibleThread('other');
         client.conversations.setVisibleThread('thread');
-        expect(client.childInteractions.state.visibleItems, isEmpty);
         expect(
-          client.childInteractions.state.items,
+          store.state.canonical.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         expect(
           operation.state.value.observed,
           framesFirst,
           reason:
-              'Navigation only revokes presentation, not the pending decision',
+              'Navigation only releases presentation, not the pending decision',
         );
         // The projection stops offering the interaction: the decision took effect.
-        transport.childInteractions = const [];
-        await client.threadCommands.readChildInteractions('thread');
+        _emitChildTopicFrame(
+          transport,
+          'thread',
+          _childState('thread', 3, const []),
+        );
         expect(operation.state.value.observed, isTrue);
         if (reenter) expect(newerOperation!.state.value.observed, isTrue);
         expect(

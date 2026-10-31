@@ -861,6 +861,8 @@ String _activityFieldLabel(
   ThreadThinkingContentFieldView() => context.l10n.timelineReasoningContent,
   ThreadToolUserInputFieldView() => context.l10n.timelineUserInputYourAnswer,
   ThreadTextFieldView() => context.l10n.timelineItemBodyLoad,
+  ThreadPlanDocumentFieldView() => context.l10n.interactionPlanDetailsTitle,
+  ThreadPlanFeedbackFieldView() => context.l10n.planReceiptYourFeedback,
 };
 
 IconData _activityFieldIcon(ThreadContentFieldView field) => switch (field) {
@@ -872,6 +874,8 @@ IconData _activityFieldIcon(ThreadContentFieldView field) => switch (field) {
   ThreadThinkingContentFieldView() => Icons.subject,
   ThreadToolUserInputFieldView() => Icons.chat_bubble_outline,
   ThreadTextFieldView() => Icons.unfold_more,
+  ThreadPlanDocumentFieldView() => Icons.description_outlined,
+  ThreadPlanFeedbackFieldView() => Icons.rate_review_outlined,
 };
 
 String groupWorkedLabel(BuildContext context, Duration elapsed) {

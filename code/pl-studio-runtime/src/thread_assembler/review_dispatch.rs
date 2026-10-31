@@ -445,7 +445,7 @@ impl StudioThreadAssembler {
         let material = services
             .store
             .thread_persistence()
-            .retain_terminal_material(&reviewer.id, &material_channel, bytes);
+            .retain_terminal_material(&reviewer.id, &material_channel, bytes, None)?;
         let mut after = 0;
         loop {
             let sequences = history.terminal_report_sequences(after).await?;

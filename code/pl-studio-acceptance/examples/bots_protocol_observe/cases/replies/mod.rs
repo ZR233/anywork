@@ -125,12 +125,12 @@ pub(super) async fn wait_cancelled_turn(
         let page = session.http()?.read_timeline(thread_id, 100).await?;
         let mut present = false;
         for item in page.items.iter().rev() {
-            if item.header.turn_id != turn_id {
+            if item.header.turn_id.as_deref() != Some(turn_id) {
                 continue;
             }
             present = true;
             if let pl_protocol::TimelineDescriptor::Turn(turn) = &item.descriptor
-                && let pl_protocol::TurnState::Cancelled(state) = turn.state()
+                && let pl_protocol::TimelineTurnOutcome::Cancelled(state) = &turn.outcome
             {
                 return Ok(state.clone());
             }
@@ -149,10 +149,9 @@ pub(super) async fn wait_cancelled_turn(
 
 /// Waits until one named Turn is canonically running.
 ///
-/// The identity rule matches [`wait_cancelled_turn`]: only the timeline item
-/// carrying this `turn_id` counts, a truncated page without it is an explicit
-/// error, and a Turn that already reached a terminal state is reported as such
-/// instead of being treated as a running stop target.
+/// Running state is read only from the authoritative current Thread snapshot.
+/// The immutable Timeline contains completed facts and cannot establish that a
+/// Turn is still running.
 pub(super) async fn wait_running_turn(
     session: &Session,
     thread_id: &str,
@@ -160,30 +159,23 @@ pub(super) async fn wait_running_turn(
 ) -> Result<pl_protocol::RunningTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     loop {
-        let page = session.http()?.read_timeline(thread_id, 100).await?;
-        let mut present = false;
-        for item in page.items.iter().rev() {
-            if item.header.turn_id != turn_id {
-                continue;
+        let snapshot = session.http()?.read_thread(thread_id).await?;
+        if let Some(turn) = snapshot
+            .active_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+        {
+            match &turn.state {
+                pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
+                terminal if terminal.is_terminal() => anyhow::bail!(
+                    "Turn {turn_id} must still be running when the stop happens, but it is \
+                     already terminal: {terminal:?}"
+                ),
+                _ => {}
             }
-            present = true;
-            if let pl_protocol::TimelineDescriptor::Turn(turn) = &item.descriptor {
-                match turn.state() {
-                    pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
-                    terminal => anyhow::bail!(
-                        "Turn {turn_id} must still be running when the stop happens, but it is \
-                         already terminal: {terminal:?}"
-                    ),
-                }
-            }
-        }
-        if !present && page.has_older {
-            anyhow::bail!(
-                "the timeline page is truncated (hasOlder) and does not contain Turn {turn_id}"
-            );
         }
         if std::time::Instant::now() >= deadline {
-            anyhow::bail!("Turn {turn_id} never reached a canonical running state");
+            anyhow::bail!("Thread snapshot never showed Turn {turn_id} running");
         }
         tokio::time::sleep(crate::http::POLL).await;
     }

@@ -2,15 +2,20 @@
 //!
 //! The Thread's observation worker owns the only instance of this projection. It consumes the
 //! **admitted** writes of the Thread's reliable handoff queue in admission order, projects each
-//! immutable `ThreadWrite` exactly once, publishes the result into the shared chat session and
-//! broadcasts the same typed changes. The history writer consumes that same prepared batch, so live
-//! and durable history stay one projection of the same fact (`design/15` §15.3).
+//! immutable `ThreadWrite` exactly once, freezes each item that reached its reliable completion
+//! boundary into an immutable completion batch (`Session::publish_batch`) and broadcasts the same
+//! typed changes. The history writer consumes that same prepared batch, so live and durable history
+//! stay one projection of the same fact (`design/15` §15.3, `design/26`).
 //!
-//! Everything the projection resolves while it runs comes from its own in-memory tables: the
-//! canonical payloads of the identities it may still have to update, the ordinal/revision of every
-//! identity in the retained window, and the report facts of the newest Turn. Storage is only read
-//! once at install, when the projection is seeded with the durable facts of work that started in an
-//! earlier owner or process — never on the commit or preview path.
+//! Active canonical payloads, execution placement and report facts stay in bounded Runtime tables.
+//! A reliable fact referencing a retired identity resolves that exact identity from the explicitly
+//! bound execution history and completion collection; streaming never reads storage.
+//!
+//! Execution ordinals and content revisions are this projection's own facts: new identities draw
+//! their placement from the Runtime's shared execution-order index (seeded from `history_items`'s
+//! durable ceiling), streaming previews stay in the Runtime's bounded tables only — they are never
+//! published into the completion session — and an identity that already sealed a completion is
+//! never re-published, not even by a later execution revision of the same identity.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -18,7 +23,7 @@ use std::{
 };
 
 use pl_core::{
-    chat::{ChatField, ChatItem, ChatLifecycle, PresentationPart, Session},
+    chat::{ChatDraft, ChatField, ChatItem, PresentationPart, Session},
     model::{
         AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
         ObservedPartIdentity, ObservedPartKind,
@@ -36,15 +41,26 @@ use pl_protocol::{
 };
 
 use super::ProjectionError;
-use crate::studio::runtime::chat_item::{TOOL_RESULT_FIELD, static_meta, static_state};
+use crate::studio::runtime::chat_item::{
+    TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
+};
+use crate::studio::storage::thread_writer::{ExecutionMaterialization, RuntimeOrderIndex};
 
 /// What one effect's identities resolve to.
 ///
-/// The first map holds the canonical payloads this projection already knows for the identities
-/// (from its retained window or as a durable placeholder), and the second the orders a *new*
-/// identity just took from the session's in-memory allocator. Both are in-memory facts: resolving
-/// never reads durable history on the commit path.
-type ResolvedIdentities = (BTreeMap<String, ThreadItem>, BTreeMap<String, u64>);
+/// Canonical payloads plus the identities read from durable history in this pass.
+/// Resolution performs no index allocation; the final metadata batch commits once.
+type ResolvedIdentities = (BTreeMap<String, ThreadItem>, BTreeSet<String>);
+
+fn completion_ready(item: &ThreadItem) -> bool {
+    item.is_terminal()
+        && !matches!(
+            item.state(),
+            ThreadItemState::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
+                input.state(), pl_protocol::ThreadToolUserInputState::Pending
+            ))
+        )
+}
 
 /// Upper bounds for the short replay window a live projection retains.
 ///
@@ -145,19 +161,19 @@ struct LivePreview {
     /// Cheap stable identity of one provider/aggregate observation, absent for a tool-output
     /// preview.
     ///
-    /// The preview map itself is keyed by the projection id because the shared session contract is
-    /// defined on it; this short key is what the streaming hot path compares, so an already
+    /// The preview map itself is keyed by the projection id because the runtime's own preview
+    /// contract is defined on it; this short key is what the streaming hot path compares, so an already
     /// delivered part never has to rebuild that long identity to be recognized. Its index entry is
     /// charged to the same retained budget ([`observed_index_bytes`]) as the rest of the projection.
     observed: Option<ObservedKey>,
-    /// Static-structure-only meta, encoded once per identity.
-    meta: Arc<[u8]>,
     /// Delivered structure / terminal shape (dynamic bodies cleared, see
     /// [`crate::studio::runtime::chat_item::static_state`]). The content version compares it, so a
     /// tool state transition or an execution terminal advances the version while a volatile
     /// timestamp that only the projection re-stamps does not.
+    ///
+    /// A preview never carries completion metadata: the terminal-only timeline meta belongs to
+    /// sealed records, and this runtime shape is the preview's own structural fact.
     shape: ThreadItemState,
-    order: u64,
     /// Newest **observation** version this identity delivered (model content version / tool
     /// accumulated length), used only for de-duplication; it is not the window item's content
     /// version, which [`LiveProjection::revisions`] owns.
@@ -209,8 +225,8 @@ fn fact_bytes(id: &str, fact: &Fact) -> u64 {
 
 /// Retained bytes of one in-flight preview keyed by its identity.
 ///
-/// The resident bodies are the shared content blocks, each counted at its observed length, while the
-/// static meta is held once per identity.
+/// The resident bodies are shared content blocks, each counted at its observed length; the
+/// Runtime's static execution shape and field-map structure are charged alongside them.
 fn preview_bytes(id: &str, preview: &LivePreview) -> u64 {
     preview_entry_bytes(id.len() as u64, preview)
 }
@@ -227,8 +243,16 @@ fn preview_bytes(id: &str, preview: &LivePreview) -> u64 {
 /// never copied here.
 fn preview_entry_bytes(id_len: u64, preview: &LivePreview) -> u64 {
     let mut bytes = id_len
-        .saturating_add(preview.meta.len() as u64)
         .saturating_add(RETAINED_ENTRY_OVERHEAD)
+        .saturating_add(RETAINED_ITEM_OVERHEAD)
+        .saturating_add(state_body_bytes(&preview.shape))
+        .saturating_add((preview.fields.len() as u64).saturating_mul(RETAINED_ENTRY_OVERHEAD))
+        .saturating_add(preview.fields.keys().fold(0_u64, |bytes, field| {
+            bytes.saturating_add(match field {
+                ChatField::Host(key) => key.len() as u64,
+                _ => 0,
+            })
+        }))
         .saturating_add(preview_fields_bytes(preview));
     // The short-key observation index is resident metadata of the same projection, so its entry is
     // part of the same budget instead of living outside it.
@@ -268,7 +292,7 @@ fn revision_bytes(id: &str) -> u64 {
 /// The product content one committed effect contributes, projected exactly once.
 ///
 /// It is the output of the Thread's single live projection owner: the same projection that
-/// publishes the effect into the shared session and broadcasts its typed changes. The reliable
+/// freezes the effect's completion batch and broadcasts its typed changes. The reliable
 /// admission queue carries it to the history writer, which commits this exact identity/revision
 /// set instead of projecting the effect a second time.
 ///
@@ -282,6 +306,17 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
+    /// The frozen completion records this batch published atomically before the handoff.
+    ///
+    /// The completion session allocated their `append_seq` in one short critical section and keeps
+    /// the very same `Arc` records in its pending set; the writer submits exactly these records in
+    /// the same `history.sqlite` transaction that persists the items, then confirms the durable
+    /// prefix through them (`design/26` §26.3). They are the completion-pending bytes of this
+    /// batch, charged by [`PreparedEffect::retained_bytes`].
+    pub(in crate::studio) completions: Arc<[Arc<ChatItem>]>,
+    /// Frozen publication work owned by the pending handoff, before any history read can wait.
+    /// `Some([])` still owes publication; only `None` may enter the writer.
+    pub(in crate::studio) completion_drafts: Option<Vec<ChatDraft>>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
     pub(in crate::studio) terminal_retention:
@@ -315,6 +350,20 @@ fn review_delivery_facts(
 }
 
 impl PreparedEffect {
+    /// The report's current share of this batch's charge, before terminal transfer.
+    pub(in crate::studio) fn parent_report_retained_bytes(&self) -> u64 {
+        self.parent_report.as_ref().map_or(0, |message| {
+            if self.terminal_retention.is_some() {
+                0
+            } else {
+                (message.payload.content().len() as u64)
+                    .saturating_mul(2)
+                    .saturating_add(message.id.len() as u64)
+                    .saturating_add(256)
+            }
+        })
+    }
+
     /// Cheap retained-memory estimate of this prepared batch, owner-provided for the reliable
     /// budget.
     ///
@@ -331,29 +380,54 @@ impl PreparedEffect {
     ///
     /// Shell contract: the value includes each item's and the report's own shell, but not the
     /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
-    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method; an empty batch
-    /// without a report still estimates at zero.
+    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method. Even an empty
+    /// content batch retains its prepared accounting material and its corresponding charge.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        let parent_report = self.parent_report.as_ref().map_or(0, |message| {
-            if self.terminal_retention.is_some() {
-                0
-            } else {
-                (message.payload.content().len() as u64)
-                    .saturating_mul(2)
-                    .saturating_add(message.id.len() as u64)
-                    .saturating_add(256)
-            }
-        });
+        let parent_report = self.parent_report_retained_bytes();
         let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
             bytes
                 .saturating_add((fact.message.payload.content().len() as u64).saturating_mul(2))
                 .saturating_add(fact.message.id.len() as u64)
                 .saturating_add(256)
         });
+        // The frozen completion records are the batch's real completion-pending bytes: their field
+        // bodies are separate allocations from the canonical items (the draft codec re-encodes the
+        // text into shared blocks), and the session keeps the same Arcs in pending until the writer
+        // confirms. Charging them here puts that residency in the reliable budget without double
+        // counting the items, which are charged above by their own estimate.
+        let completions = self.completions.iter().fold(0_u64, |bytes, record| {
+            bytes
+                .saturating_add(record.preview_structure_bytes() as u64)
+                .saturating_add(record.fields.values().fold(0_u64, |fields, preview| {
+                    fields.saturating_add(preview.block.len() as u64)
+                }))
+                .saturating_add(RETAINED_ITEM_OVERHEAD)
+        });
         retained_bytes(&self.items)
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
+            .saturating_add(completions)
+            .saturating_add(self.completion_drafts.as_ref().map_or(0, |drafts| {
+                drafts.iter().fold(0_u64, |bytes, draft| {
+                    let fields = draft.fields.iter().fold(0_u64, |bytes, (field, block)| {
+                        let key = match field {
+                            ChatField::Host(key) => key.len() as u64,
+                            ChatField::Body | ChatField::Part(_) => 0,
+                        };
+                        bytes
+                            .saturating_add(128)
+                            .saturating_add(key)
+                            .saturating_add(block.len() as u64)
+                    });
+                    bytes
+                        .saturating_add(RETAINED_ITEM_OVERHEAD)
+                        .saturating_add(draft.item_id.len() as u64)
+                        .saturating_add(draft.turn_id.as_ref().map_or(0, |id| id.len() as u64))
+                        .saturating_add(draft.meta.len() as u64)
+                        .saturating_add(fields)
+                })
+            }))
     }
 }
 
@@ -377,7 +451,11 @@ fn charged_item_bytes(item: &ThreadItem) -> u64 {
 
 /// Sums every resident body of one item's category payload.
 fn item_body_bytes(item: &ThreadItem) -> u64 {
-    match item.state() {
+    state_body_bytes(item.state())
+}
+
+fn state_body_bytes(state: &ThreadItemState) -> u64 {
+    match state {
         ThreadItemState::Raw(raw) => raw
             .payloads
             .iter()
@@ -533,7 +611,11 @@ fn user_questions_bytes(questions: &[UserQuestion]) -> u64 {
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
 fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
-    let questions = user_questions_bytes(user_input.questions());
+    let questions = user_questions_bytes(user_input.questions()).saturating_add(
+        user_input.plan_document().map_or(0, |identity| {
+            (identity.content_hash.len() as u64).saturating_add(RETAINED_ENTRY_OVERHEAD)
+        }),
+    );
     user_input
         .answers()
         .iter()
@@ -1032,8 +1114,8 @@ pub(in crate::studio) struct LiveProjection {
     ///
     /// A non-terminal item is updated by a later effect, and the newest Turn's tool items are
     /// re-projected by a late delivery, so their bodies stay. A terminal body that can no longer
-    /// change is released: the shared session window and durable history own the presentation from
-    /// then on.
+    /// change is released: durable history and the frozen completion records own the presentation
+    /// from then on.
     items: BTreeMap<String, ThreadItem>,
     /// Placement metadata of every identity inside the retained window.
     facts: BTreeMap<String, Fact>,
@@ -1074,7 +1156,7 @@ pub(in crate::studio) struct LiveProjection {
     /// Content version of every window item, owned by this projection and independent of the
     /// execution commit sequence.
     ///
-    /// It is the source of `ChatItem::revision`: it advances on first delivery and whenever the
+    /// It is the source of the execution `ThreadItem::revision`: it advances on first delivery and whenever the
     /// body, structure or terminal state really changed, and otherwise keeps its old value. A
     /// streaming preview and its terminal commit therefore converge on one counter; the effect
     /// sequence stays only the commit / reliable-save watermark and no longer bounds the item
@@ -1084,9 +1166,8 @@ pub(in crate::studio) struct LiveProjection {
     ///
     /// The version is the identity's own monotonic fact, not a property of this cache: an identity
     /// that was evicted from the retained window, or re-encountered after the projection was
-    /// re-seeded, recovers its baseline from the canonical / session fact
-    /// ([`LiveProjection::adopt_revisions`] / [`LiveProjection::adopt_session_revision`]) instead of
-    /// restarting at 1.
+    /// re-seeded, recovers its baseline from the canonical fact it was seeded with
+    /// ([`LiveProjection::adopt_revisions`]) instead of restarting at 1.
     revisions: BTreeMap<String, u64>,
     /// Running retained-byte totals of the four tables that grow with a response.
     ///
@@ -1100,6 +1181,12 @@ pub(in crate::studio) struct LiveProjection {
     facts_bytes: u64,
     previews_bytes: u64,
     revisions_bytes: u64,
+    /// The Runtime's shared execution-order index of this Thread, resolved once and cached.
+    ///
+    /// It is the same index the kernel's synchronous presentation reservations draw from, so an
+    /// identity's preview frame and its terminal commit resolve one ordinal from one allocator.
+    order_index: Option<Arc<RuntimeOrderIndex>>,
+    execution_history: Option<crate::studio::storage::history::HistoryStore>,
 }
 
 impl LiveProjection {
@@ -1120,11 +1207,29 @@ impl LiveProjection {
             previews: BTreeMap::new(),
             observed: HashMap::new(),
             revisions: BTreeMap::new(),
+            order_index: None,
+            execution_history: None,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
             revisions_bytes: 0,
         }
+    }
+
+    /// Bind the channel-owned allocation authority and exact durable lookup boundary once.
+    pub(in crate::studio) fn bind_execution_history(
+        &mut self,
+        index: Arc<RuntimeOrderIndex>,
+        history: crate::studio::storage::history::HistoryStore,
+    ) -> Result<(), ProjectionError> {
+        if self.order_index.is_some() || self.execution_history.is_some() {
+            return Err(ProjectionError::History(
+                "execution history is already bound".into(),
+            ));
+        }
+        self.order_index = Some(index);
+        self.execution_history = Some(history);
+        Ok(())
     }
 
     /// Installs the durable facts of work that started before this projection existed.
@@ -1136,8 +1241,8 @@ impl LiveProjection {
     pub(in crate::studio) fn seed(&mut self, items: Vec<ThreadItem>, hidden: BTreeSet<String>) {
         // The seeded bodies already carry the content version durable history stored, so they are
         // the baseline of this projection's counter: re-encountering the same identity must never
-        // restart at 1, because a lower version is silently dropped by the shared session and the
-        // preview would stay stuck on the old body.
+        // restart at 1, because a lower version would be rejected by the durable row's revision
+        // fence and the preview would stay stuck on the old body.
         for item in &items {
             self.raise_revision(&item.id, item.revision);
         }
@@ -1174,6 +1279,15 @@ impl LiveProjection {
     /// answer.
     pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
         self.items.get(id).is_some_and(|item| item.tool().is_some())
+    }
+
+    /// The actual resident preview blocks inspected by storage fault regressions.
+    #[cfg(test)]
+    pub(in crate::studio) fn preview_fields(
+        &self,
+        id: &str,
+    ) -> Option<&BTreeMap<ChatField, Arc<ContentBlock>>> {
+        self.previews.get(id).map(|entry| &entry.fields)
     }
 
     /// Bytes this projection currently retains in its own tables.
@@ -1229,11 +1343,10 @@ impl LiveProjection {
         bytes
     }
 
-    /// Projects one admitted write into the session and broadcasts its live changes.
+    /// Projects one admitted write and freezes its publication work without awaiting publication.
     ///
-    /// The batch is published into the shared session **before** the caller hands it to the reliable
-    /// save queue, so "the writer confirmed this identity" always means "the session already holds
-    /// it": there is no save-before-publish interleaving and no hidden confirmation table.
+    /// The owner must retain and charge this batch before calling `publish_prepared`. A history
+    /// error or cancellation then resumes the same frozen drafts, never the projection.
     ///
     /// `deliver` controls only outward frame materialization. Phase, hidden-input and Turn identity
     /// maintenance, session publication and the reliable prepared batch never depend on demand.
@@ -1242,24 +1355,30 @@ impl LiveProjection {
     /// Returns a projection failure when the effect references facts this projection cannot resolve
     /// from memory. The caller reports it, so the durable barrier fails closed with the real reason
     /// instead of writing a timeline with a hole.
-    pub(in crate::studio) fn advance(
+    pub(in crate::studio) async fn prepare(
         &mut self,
-        chat: &Session,
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
-        let prepared = self.project(chat, thread, effect, state)?;
-        for item in &prepared.items {
-            chat.publish(
-                crate::studio::storage::history::chat_item(item.clone(), false)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?,
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        }
+        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
+        let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
+        let (items, review_delivery, completion_drafts) =
+            self.project(thread, effect, state).await?;
         let mut events = deliver.then(Vec::new);
-        self.emit_frames(thread, effect, state, &mut events)?;
+        self.emit_frames(thread, effect, state, turns, &mut events);
+        self.retire_effect_source(effect)?;
+        let prepared = Arc::new(PreparedEffect {
+            sequence: effect.sequence,
+            accounting,
+            items,
+            completions: Arc::from(Vec::new()),
+            completion_drafts: Some(completion_drafts),
+            parent_report: None,
+            terminal_retention: None,
+            review_delivery,
+        });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
         {
@@ -1276,56 +1395,83 @@ impl LiveProjection {
     }
 
     /// Projects one admitted write this owner installed *behind*: it folds the fact into memory and
-    /// returns the canonical batch, but publishes nothing.
+    /// returns the frozen publication work, but emits no live status frames.
     ///
     /// A commit the owner had already folded into the snapshot this projection was seeded from is
     /// never replayed as a live frame — the subscriber's baseline already carries it — yet the
     /// durable writer still owes it a row, so the same single projection produces its content here.
     ///
     /// # Errors
-    /// Same as [`LiveProjection::advance`].
-    pub(in crate::studio) fn project_committed(
+    /// Same as [`LiveProjection::prepare`].
+    pub(in crate::studio) async fn prepare_committed(
         &mut self,
-        chat: &Session,
-        thread: &pl_protocol::Thread,
-        effect: &ThreadEffectBatch,
-        state: &ThreadSnapshot,
-    ) -> Result<Arc<PreparedEffect>, ProjectionError> {
-        self.project(chat, thread, effect, state)
-    }
-
-    /// Projects one effect's canonical content exactly once.
-    ///
-    /// Every identity is resolved against this projection's own tables and the shared session's
-    /// in-memory allocator; nothing here reads storage. An identity the projection has never seen is
-    /// a new one and reserves its order in memory, which is exactly what the writer will commit. The
-    /// projected bodies are folded into this projection in the same step, so a later effect of the
-    /// same Turn resolves them without a second projection or a storage lookup.
-    fn project(
-        &mut self,
-        chat: &Session,
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
+        let (items, review_delivery, completion_drafts) =
+            self.project(thread, effect, state).await?;
+        self.retire_effect_source(effect)?;
+        let prepared = Arc::new(PreparedEffect {
+            sequence: effect.sequence,
+            accounting,
+            items,
+            completions: Arc::from(Vec::new()),
+            completion_drafts: Some(completion_drafts),
+            parent_report: None,
+            terminal_retention: None,
+            review_delivery,
+        });
+        self.retain(state);
+        Ok(prepared)
+    }
+
+    fn retire_effect_source(&self, effect: &ThreadEffectBatch) -> Result<(), ProjectionError> {
+        if let Some(attempt) = &effect.attempt
+            && !matches!(attempt.outcome, pl_core::thread::AttemptOutcome::Running)
+        {
+            self.order_index_of()?.finish_source(&attempt.attempt_id);
+        }
+        Ok(())
+    }
+
+    /// Projects one effect's canonical content exactly once.
+    ///
+    /// Resident identities resolve against this projection's own tables and its channel index;
+    /// a reliable identity miss is checked against durable history before allocating a new ordinal.
+    /// The projected bodies are folded into this projection in the same step, so a later effect of
+    /// the same Turn resolves them without a second projection or a storage lookup.
+    async fn project(
+        &mut self,
+        thread: &pl_protocol::Thread,
+        effect: &ThreadEffectBatch,
+        state: &ThreadSnapshot,
+    ) -> Result<
+        (
+            Vec<ThreadItem>,
+            Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+            Vec<ChatDraft>,
+        ),
+        ProjectionError,
+    > {
         let review_delivery =
             review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
-        self.turn_failures
-            .retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
+        let mut turn_failures = self.turn_failures.clone();
+        turn_failures.retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
         if let Some(attempt) = &effect.attempt {
             if let pl_core::thread::AttemptOutcome::Failed(error) = &attempt.outcome {
-                self.turn_failures
-                    .insert(attempt.turn_id.clone(), super::turns::model_failure(error));
+                turn_failures.insert(attempt.turn_id.clone(), super::turns::model_failure(error));
             } else if matches!(attempt.outcome, pl_core::thread::AttemptOutcome::Running) {
-                self.turn_failures.remove(&attempt.turn_id);
+                turn_failures.remove(&attempt.turn_id);
             }
         }
+        let mut hidden_inputs = self.hidden_inputs.clone();
         for change in effect.inputs.iter() {
             if let pl_core::thread::input::InputChange::Accepted(record) = change
                 && super::input_presentation(record) == pl_protocol::MessagePresentation::Hidden
             {
-                self.hidden_inputs.insert(record.input.id.clone());
+                hidden_inputs.insert(record.input.id.clone());
             }
         }
         let provisional = super::project_effect_items(
@@ -1356,7 +1502,7 @@ impl LiveProjection {
         if let Some(attempt) = &effect.attempt {
             for channel in ["reasoning", "text"] {
                 let id = super::attempt_channel_id(&attempt.attempt_id, channel);
-                if self.identity_is_started(chat, &id) {
+                if self.identity_is_started(&id) {
                     ids.push(id);
                 }
             }
@@ -1371,8 +1517,27 @@ impl LiveProjection {
                     .map(|(id, _)| id.clone()),
             );
         }
-        let (mut existing, reserved) = self.resolve(chat, thread, ids)?;
-        let hidden_inputs = self.hidden_inputs.clone();
+        let mut background_ids = Vec::new();
+        if let Some(context) = &effect.context {
+            let revision = match context {
+                pl_core::thread::journal::ContextChange::Append { revision, .. } => *revision,
+                pl_core::thread::journal::ContextChange::Replace(snapshot) => snapshot.revision,
+            };
+            for task in effect.tasks.iter() {
+                if task
+                    .acknowledgement
+                    .as_ref()
+                    .is_some_and(|ack| ack.context_revision == revision)
+                {
+                    let id = super::order::tool_background_started_id(&task.call_id);
+                    if !self.completion_exists(&id).await? {
+                        ids.push(id.clone());
+                        background_ids.push((task.call_id.clone(), id));
+                    }
+                }
+            }
+        }
+        let (mut existing, restored) = self.resolve(thread, ids).await?;
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -1381,7 +1546,9 @@ impl LiveProjection {
         if let Some(attempt) = &effect.attempt
             && super::responses::keeps_bounded_preview(&attempt.outcome)
         {
-            for (id, item) in self.attempt_preview_items(&attempt.attempt_id, &attempt.turn_id)? {
+            for (id, item) in
+                self.attempt_preview_items(&thread.id, &attempt.attempt_id, &attempt.turn_id)?
+            {
                 // The provider part the window is showing is the body this commit must close. A
                 // placement fact alone resolves to a release placeholder, so it must never beat the
                 // preview that still holds the streamed text; a canonical committed payload (this
@@ -1396,7 +1563,7 @@ impl LiveProjection {
             state,
             effect,
             &existing,
-            &reserved,
+            &BTreeMap::new(),
             &hidden_inputs,
         )?;
         // 实时帧同样不允许带着无法补全的 identity 继续：投影失败由调用方转成报告并 fail-closed。
@@ -1405,7 +1572,7 @@ impl LiveProjection {
         for item in &mut items {
             if let pl_protocol::ThreadItemState::Turn(turn) = item.state()
                 && let pl_protocol::TurnState::Failed(failed) = turn.state()
-                && let Some(failure) = self.turn_failures.get(&item.turn_id)
+                && let Some(failure) = turn_failures.get(&item.turn_id)
             {
                 let state = pl_protocol::TurnState::Failed(pl_protocol::FailedTurnState::new(
                     failed.started_at(),
@@ -1419,10 +1586,8 @@ impl LiveProjection {
                     .with_state(pl_protocol::ThreadItemState::Turn(turn));
             }
         }
-        // 内容版本基线：把这里解析到的 canonical 事实的 revision 抬成本投影的单调下限。已在内存里的
-        // 身份不复查（`adopt_revisions` 跳过 `self.items` 持有的 id），只有冷恢复/被淘汰后重现的身份才
-        // 由放置元数据恢复；同一条目因此绝不因为缓存淘汰而从 1 重编、被会话当成旧帧丢弃。
-        self.adopt_revisions(&existing);
+        // 先在候选载荷上计算内容版本；整批身份预算通过之前不修改投影自己的版本表。
+        // 冷恢复的 canonical revision 仍是单调下限，已驻留身份继续使用本所有者的版本域。
         // 每一条目的内容版本由本投影自己的内容版本给出，和 effect 序号（提交 / 可靠保存水位）无关：
         // Turn 绑定、正文、结构或终态状态真的变了才递增，否则沿用旧版本（例如只推进 saved 的保存确认，
         // 或与上次完全相同的重新投影）。该版本同时被流式预览使用，因此同一身份的预览与终态沿同一个
@@ -1443,9 +1608,17 @@ impl LiveProjection {
                     )
                 });
             let changed = self.content_changed(item.id.as_str(), item, &existing)?;
-            item.revision = match (self.revisions.get(item.id.as_str()).copied(), changed) {
-                (Some(current), false) => current,
-                _ => self.bump_content_revision(&item.id),
+            let mut current = self.revisions.get(item.id.as_str()).copied().unwrap_or(0);
+            if !self.items.contains_key(&item.id) {
+                current = current.max(
+                    existing
+                        .get(&item.id)
+                        .map_or(0, |previous| previous.revision),
+                );
+            }
+            item.revision = match (current, changed) {
+                (current, false) if current > 0 => current,
+                _ => current.saturating_add(1),
             };
             // One `(identity, revision)` pair is one canonical payload. A repeat projection whose
             // body, structure and terminal shape are unchanged therefore keeps the placement and the
@@ -1460,7 +1633,48 @@ impl LiveProjection {
                 item.updated_at = updated_at;
             }
         }
+        let index = self.order_index_of()?;
+        let mut backgrounds = Vec::with_capacity(background_ids.len());
+        for (call_id, id) in &background_ids {
+            let item = items
+                .iter()
+                .find(|item| item.id == super::order::tool_id(call_id))
+                .ok_or_else(|| ProjectionError::MissingDurableToolCall(call_id.clone()))?;
+            backgrounds.push(ExecutionMaterialization {
+                item_id: id,
+                ordinal: None,
+                ..ExecutionMaterialization::from_item(item)
+            });
+        }
+        let mut completion_drafts =
+            self.prepare_completion_drafts(effect, &items, &background_ids)?;
+        let current_ids = items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<BTreeSet<_>>();
+        // No projection body, revision or report accumulator changes until every
+        // identity and stamp in this effect has passed the same atomic budget check.
+        let orders = index
+            .materialize_execution_batch(
+                restored
+                    .iter()
+                    .filter(|id| !current_ids.contains(id.as_str()))
+                    .map(|id| ExecutionMaterialization::from_item(&existing[id]))
+                    .chain(items.iter().map(ExecutionMaterialization::from_item))
+                    .chain(backgrounds),
+                effect.sequence,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        for item in &mut items {
+            item.ordinal = orders[&item.id];
+        }
+        items.sort_by_key(|item| item.ordinal);
+        completion_drafts.sort_by_key(|draft| orders[&draft.item_id]);
+        self.turn_failures = turn_failures;
+        self.hidden_inputs = hidden_inputs;
+        self.adopt_revisions(&existing);
         for item in &items {
+            self.raise_revision(&item.id, item.revision);
             self.record(item.clone())?;
         }
         for delivery in effect.deliveries.iter() {
@@ -1470,14 +1684,138 @@ impl LiveProjection {
                 self.results.entry(turn.clone()).or_default().finish = Some(finish);
             }
         }
-        Ok(Arc::new(PreparedEffect {
-            sequence: effect.sequence,
-            accounting,
-            items,
-            parent_report: None,
-            terminal_retention: None,
-            review_delivery,
-        }))
+        Ok((items, review_delivery, completion_drafts))
+    }
+
+    /// Freezes and publishes this effect's completion batch, exactly once per identity.
+    ///
+    /// An item contributes a completion only at its reliable completion boundary — a terminal
+    /// execution fact inside an admitted effect: an accepted input is complete at acceptance, a
+    /// tool result seals when its own call finishes (a sibling tool may still be running), a text
+    /// or thinking part seals at the attempt's finalization or its explicit bounded-interrupted
+    /// boundary, and a Turn seals at its terminal transition. Non-terminal bodies stay live facts
+    /// of the runtime and never occupy the completion timeline. An identity that already sealed —
+    /// including a seeded durable terminal identity or a later higher-revision execution repair —
+    /// is skipped: the completion atom is immutable and one identity publishes once.
+    ///
+    /// # Errors
+    /// Propagates the completion session's typed failures (payload conflict, sequence exhaustion,
+    /// storage reads) as projection failures; nothing is marked sealed until the whole batch
+    /// published.
+    fn prepare_completion_drafts(
+        &self,
+        effect: &ThreadEffectBatch,
+        items: &[ThreadItem],
+        background_ids: &[(String, String)],
+    ) -> Result<Vec<ChatDraft>, ProjectionError> {
+        let mut drafts = Vec::new();
+        // An acknowledgement is an explicit Core context fact. Neither a running task nor a
+        // task_id alone proves that a background receipt was actually returned.
+        if let Some(context) = &effect.context {
+            let (revision, records) = match context {
+                pl_core::thread::journal::ContextChange::Append { revision, records } => {
+                    (*revision, records.as_ref())
+                }
+                pl_core::thread::journal::ContextChange::Replace(snapshot) => {
+                    (snapshot.revision, snapshot.records.as_ref())
+                }
+            };
+            for task in effect.tasks.iter() {
+                let Some(ack) = &task.acknowledgement else {
+                    continue;
+                };
+                let id = super::order::tool_background_started_id(&task.call_id);
+                // Use the same durable-filtered candidates as metadata materialization.
+                // A durable completion may have no resident index entry after pruning;
+                // checking only is_sealed again would recreate an unordered draft.
+                if ack.context_revision != revision
+                    || !background_ids.iter().any(|(_, candidate)| candidate == &id)
+                {
+                    continue;
+                }
+                let receipt = records.iter().find(|record| {
+                    record.id == ack.record_id
+                        && record.turn_id.as_deref() == Some(task.turn_id.as_str())
+                        && matches!(&record.source, pl_core::context::ContextSource::ToolResult {
+                            call_id, tool_id
+                        } if call_id == &task.call_id && tool_id == &task.tool_id)
+                }).ok_or_else(|| ProjectionError::History(
+                    "background acknowledgement does not match its committed context fact".into()
+                ))?;
+                let item = items
+                    .iter()
+                    .find(|item| item.id == super::order::tool_id(&task.call_id))
+                    .ok_or_else(|| ProjectionError::MissingDurableToolCall(task.call_id.clone()))?;
+                let draft = background_started_draft(
+                    item,
+                    &task.id,
+                    &super::content::text_content(&receipt.content),
+                    effect.sequence,
+                    effect.committed_at,
+                )
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                drafts.push(draft);
+            }
+        }
+        for item in items {
+            if !completion_ready(item) || self.order_index_of()?.is_sealed(&item.id) {
+                continue;
+            }
+            drafts.push(
+                completion_draft(item, effect.sequence)
+                    .map_err(|error| ProjectionError::History(error.to_string()))?,
+            );
+        }
+        Ok(drafts)
+    }
+
+    /// Publishes only the retained batch's original drafts. Every wait belongs to that batch.
+    pub(in crate::studio) async fn publish_prepared(
+        &mut self,
+        chat: &Session,
+        prepared: &mut Arc<PreparedEffect>,
+    ) -> Result<(), ProjectionError> {
+        let Some(candidates) = prepared.completion_drafts.as_ref() else {
+            return Ok(());
+        };
+        let mut drafts = Vec::with_capacity(candidates.len());
+        for draft in candidates {
+            if !self.completion_exists(&draft.item_id).await? {
+                drafts.push(draft.clone());
+            }
+        }
+        let records = chat
+            .publish_batch(drafts)
+            .await
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        for record in records.iter() {
+            self.order_index_of()?
+                .mark_completion(&record.item_id, true);
+        }
+        let prepared = Arc::make_mut(prepared);
+        prepared.completions = records;
+        prepared.completion_drafts = None;
+        Ok(())
+    }
+
+    async fn completion_exists(&self, id: &str) -> Result<bool, ProjectionError> {
+        let index = self.order_index_of()?;
+        if index.is_sealed(id) {
+            return Ok(true);
+        }
+        if index.completion_checked(id) {
+            return Ok(false);
+        }
+        let history = self
+            .execution_history
+            .as_ref()
+            .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
+        let sealed = pl_core::chat::ChatHistory::item(history, id)
+            .await
+            .map_err(|error| ProjectionError::History(error.to_string()))?
+            .is_some();
+        index.mark_completion(id, sealed);
+        Ok(sealed)
     }
 
     /// Projects the ephemeral streaming preview the owner publishes between committed effects.
@@ -1488,29 +1826,30 @@ impl LiveProjection {
     /// producer payload again. The hot path writes the observation's **shared** `Arc<ContentBlock>`
     /// straight into the window's fields: it never calls `part.text()`, never JSON-encodes the whole
     /// item and never copies the full body again. An identity whose observation version did not
-    /// advance neither re-materializes its body nor re-emits a frame, and its static `meta` is
-    /// encoded once per stable identity.
+    /// advance neither re-materializes its body nor re-emits a frame; its static execution shape
+    /// stays in this Runtime owner and is never encoded as terminal completion metadata.
     ///
-    /// The preview is written into the shared session, the one content window the GUI reads, and
-    /// emits no content frame of its own. `applied` is the subscriber's committed-effect watermark;
+    /// The preview stays a fact of this Runtime owner's bounded tables and emits no content frame
+    /// of its own; the runtime's activity projection reads it from here instead of a second mirror
+    /// published into the completion session. `applied` is the subscriber's committed-effect
+    /// watermark;
     /// it is only the commit / reliable-save watermark and **not** the item content version, which
     /// comes from this projection's own [`LiveProjection::revisions`] — the same counter the terminal
     /// commit uses, so multi-token text is never dropped merely because the commit watermark did not
     /// move.
     pub(in crate::studio) async fn stream(
         &mut self,
-        chat: &Session,
+        _chat: &Session,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
         _applied: u64,
     ) -> Result<(), ProjectionError> {
-        self.stream_model_progress(chat, thread, state).await?;
-        self.stream_tool_progress(state, chat)
+        self.stream_model_progress(thread, state).await?;
+        self.stream_tool_progress(state)
     }
 
     async fn stream_model_progress(
         &mut self,
-        chat: &Session,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
@@ -1519,11 +1858,14 @@ impl LiveProjection {
             self.clear_model_previews();
             return Ok(());
         };
-        let Some(attempt) = state
-            .attempts
-            .iter()
-            .find(|attempt| attempt.attempt_id == preview.attempt_id)
-        else {
+        let Some(attempt) = state.attempts.iter().find(|attempt| {
+            attempt.attempt_id == preview.attempt_id
+                && matches!(attempt.status, pl_core::thread::AttemptStatus::Running)
+        }) else {
+            if self.preview_attempt.as_deref() == Some(preview.attempt_id.as_str()) {
+                self.preview_attempt = None;
+                self.clear_model_previews();
+            }
             return Ok(());
         };
         let at = crate::studio::unix_seconds();
@@ -1555,30 +1897,25 @@ impl LiveProjection {
                 if streaming || self.previews.contains_key(&id) {
                     self.release_item(&id);
                     self.release_preview(&id);
-                    chat.drop_preview(&id);
                 }
             }
         }
         for failed in &progress.observation().failed {
             self.stream_observation_parts(
-                chat,
                 thread,
                 attempt,
                 failed.generation,
                 &failed.parts,
                 Some(&failed.message),
-            )
-            .await?;
+            )?;
         }
         self.stream_observation_parts(
-            chat,
             thread,
             attempt,
             progress.observation().generation,
             progress.parts(),
             None,
-        )
-        .await?;
+        )?;
         for (id, message) in
             super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
         {
@@ -1590,11 +1927,10 @@ impl LiveProjection {
             {
                 continue;
             }
-            self.adopt_session_revision(chat, &id).await?;
             let revision = self.bump_content_revision(&id);
-            let order = chat
-                .reserve_order(&id)
-                .await
+            let order = self
+                .order_index_of()?
+                .reserve_observed(&attempt.attempt_id, &id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             let created_at = self.created_at(&id, at);
             let state = ThreadItemState::Text(ThreadTextItem::new(
@@ -1603,17 +1939,6 @@ impl LiveProjection {
                 Vec::new(),
                 ThreadContentLifecycle::completed(at),
             ));
-            let meta = static_meta(&ThreadItem::new(
-                id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                order,
-                revision,
-                created_at,
-                at,
-                state.clone(),
-            ))
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
             self.store_fact(
                 id.clone(),
                 Fact {
@@ -1626,22 +1951,17 @@ impl LiveProjection {
             let entry = LivePreview {
                 fields,
                 observed: None,
-                meta,
                 shape: static_state(&state),
-                order,
                 observed_version: progress.version(),
             };
-            self.publish_preview(chat, &id, &attempt.turn_id, revision, &entry)?;
             self.store_preview(id, entry);
         }
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn stream_observation_parts(
+    fn stream_observation_parts(
         &mut self,
-        chat: &Session,
-        thread: &pl_protocol::Thread,
+        _thread: &pl_protocol::Thread,
         attempt: &pl_core::thread::RequestAttempt,
         generation: u32,
         parts: &pl_core::model::ModelParts,
@@ -1663,11 +1983,11 @@ impl LiveProjection {
             // `observed_version` of the identity's resident preview, so this skips the same set the
             // preview lookup would.
             //
-            // It runs before the terminal test below because that test takes the shared session lock
-            // and looks the identity up in the committed window — pure repetition for a part that
-            // already delivered its newest body. Both checks skip the same way (neither touches a
-            // delivered body or frame), so reordering cannot pull a terminal identity back in: an
-            // advanced version still reaches, and is rejected by, the terminal test.
+            // It runs before the terminal test below because unchanged observations need no
+            // further lookup in the channel's scoped identity table. Both
+            // checks skip the same way (neither touches a delivered body or frame), so reordering
+            // cannot pull a terminal identity back in: an advanced version still reaches, and is
+            // rejected by, the terminal test.
             let key = observed_key(generation, part.identity());
             let observed_version = ObservedVersion {
                 content: part.version(),
@@ -1686,24 +2006,15 @@ impl LiveProjection {
                     "provider presentation part does not match its item".into(),
                 ));
             };
-            // A terminal identity is never pulled back by a late streaming observation, even after
-            // this projection released its body from the retained window: the shared session owns
-            // that fact, and a preview for it would let a stale frame replace (and a later preview
-            // release erase) a row durable history already committed.
-            if chat.is_committed(&id)
+            // Within the still-active source, terminal identities cannot be pulled back by a later
+            // frame. Ended sources were rejected before any identity or body is materialized.
+            if self.identity_is_terminal(&id)
                 || self
                     .items
                     .get(&id)
                     .is_some_and(|previous| previous.state().is_terminal())
             {
                 continue;
-            }
-            // On the first encounter inside this projection the identity's baseline is recovered from
-            // the shared session when that session already holds it — an in-memory read for a resident
-            // preview, so a re-seeded projection never restarts an in-flight identity at 1 and its
-            // frames are never dropped as stale. A genuinely new identity pays no read.
-            if !self.previews.contains_key(&id) {
-                self.adopt_session_revision(chat, &id).await?;
             }
             // The observation's own content version advanced, so this is a real body change: advance
             // this projection's content version and deliver the frame. It is never skipped because
@@ -1713,27 +2024,16 @@ impl LiveProjection {
             let mut entry = match self.previews.get(&id).cloned() {
                 Some(known) => known,
                 None => {
-                    // A preview's ordinal is allocated by the shared session in memory: the preview
-                    // only ever lives in memory, and once this session assigned the stable identity its
-                    // ordinal is reused, so the terminal projection resolves the same ordinal from the
-                    // same identity without a history read.
-                    let order = chat
-                        .reserve_order(&id)
-                        .await
+                    // A preview's ordinal is allocated by the Runtime's shared execution-order
+                    // index — the same allocator the kernel's presentation reservations and the
+                    // terminal commit resolve from, so one identity keeps one ordinal across its
+                    // preview, its reservation and its durable row without a history read.
+                    let order = self
+                        .order_index_of()?
+                        .reserve_observed(&attempt.attempt_id, &id)
                         .map_err(|error| ProjectionError::History(error.to_string()))?;
                     let created_at = self.created_at(&id, at);
                     let shape = static_state(&static_item);
-                    let meta = static_meta(&ThreadItem::new(
-                        id.clone(),
-                        thread.id.clone(),
-                        attempt.turn_id.clone(),
-                        order,
-                        0,
-                        created_at,
-                        at,
-                        static_item.clone(),
-                    ))
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
                     // Placement metadata, so the retained window bounds this identity like any other
                     // fact instead of keeping its body alive for the whole Turn.
                     self.store_fact(
@@ -1750,32 +2050,18 @@ impl LiveProjection {
                         // Filled in below with the key this part already resolved, so the identity is
                         // built once per delivered part instead of once per part per frame.
                         observed: None,
-                        meta,
                         shape,
-                        order,
                         observed_version: part.version(),
                     }
                 }
             };
             let shape = static_state(&static_item);
             if entry.shape != shape {
-                entry.meta = static_meta(&ThreadItem::new(
-                    id.clone(),
-                    thread.id.clone(),
-                    attempt.turn_id.clone(),
-                    entry.order,
-                    revision,
-                    self.created_at(&id, at),
-                    at,
-                    static_item,
-                ))
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
                 entry.shape = shape;
             }
             entry.observed = Some(key);
             entry.observed_version = part.version();
             entry.fields.insert(field, part.content().clone());
-            self.publish_preview(chat, &id, &attempt.turn_id, revision, &entry)?;
             self.store_preview(id, entry);
         }
         Ok(())
@@ -1790,11 +2076,7 @@ impl LiveProjection {
     /// block comparison), a changed one carries a new block, and a bounded window that rolled over
     /// arrives as a block the consumer's baseline no longer extends. No JSON is encoded and no
     /// canonical `ThreadItem` is materialized per chunk.
-    fn stream_tool_progress(
-        &mut self,
-        state: &ThreadSnapshot,
-        chat: &Session,
-    ) -> Result<(), ProjectionError> {
+    fn stream_tool_progress(&mut self, state: &ThreadSnapshot) -> Result<(), ProjectionError> {
         for (task_id, progress) in state.tool_progress.iter() {
             let Some(task) = state.tasks.get(task_id) else {
                 continue;
@@ -1831,14 +2113,14 @@ impl LiveProjection {
             // a different block, so the typed field diff reports a whole replacement instead of
             // appending onto a body that changed identity.
             let block = progress.content();
-            let revision = self.bump_content_revision(&id);
+            // The tool identity's content version advances here so the terminal commit and the
+            // preview converge on one counter even though the preview no longer leaves this owner.
+            self.bump_content_revision(&id);
             let mut entry = match self.previews.get(&id).cloned() {
                 Some(known) => known,
                 None => {
-                    // Reuse the canonical item's static meta and body partner fields, swapping only
-                    // the streamed result for a shared block.
-                    let meta = static_meta(&committed)
-                        .map_err(|error| ProjectionError::History(error.to_string()))?;
+                    // Reuse the canonical item's body partner fields, swapping only the streamed
+                    // result for a shared block; the preview keeps the runtime's own shape fact.
                     LivePreview {
                         fields: crate::studio::runtime::chat_item::content_fields(
                             committed.state(),
@@ -1847,44 +2129,16 @@ impl LiveProjection {
                         // A tool-output preview is keyed by the call identity, not by a provider
                         // observation, so it never enters the provider observation index.
                         observed: None,
-                        meta,
                         shape: static_state(committed.state()),
-                        order: committed.ordinal,
                         observed_version: progress.version(),
                     }
                 }
             };
             entry.observed_version = progress.version();
             entry.fields.insert(result_field, block);
-            let turn_id = committed.turn_id.clone();
-            self.publish_preview(chat, &id, &turn_id, revision, &entry)?;
             self.store_preview(id, entry);
         }
         Ok(())
-    }
-
-    /// Publishes one preview fact into the shared window.
-    ///
-    /// A failed `publish_preview` keeps the baseline already published instead of pretending success.
-    fn publish_preview(
-        &self,
-        chat: &Session,
-        id: &str,
-        turn_id: &str,
-        revision: u64,
-        entry: &LivePreview,
-    ) -> Result<(), ProjectionError> {
-        chat.publish_preview(ChatItem::complete(pl_core::chat::ChatItemParts {
-            item_id: id.to_owned(),
-            turn_id: turn_id.to_owned(),
-            order: entry.order,
-            revision,
-            fields: entry.fields.clone(),
-            meta: entry.meta.clone(),
-            saved: false,
-            lifecycle: ChatLifecycle::Streaming,
-        }))
-        .map_err(|error| ProjectionError::History(error.to_string()))
     }
 
     /// Raises the content-version baseline to the lower bound of the known canonical facts.
@@ -1906,27 +2160,6 @@ impl LiveProjection {
             }
             self.raise_revision(id, item.revision);
         }
-    }
-
-    /// Raises one identity's baseline to the shared session's current content version.
-    ///
-    /// The read happens only when the session already assigned this identity, so a brand-new identity
-    /// pays nothing: the projection's own counter stays the authority for everything it published, and
-    /// only a re-seeded projection has to recover the baseline of an in-flight preview the session
-    /// already holds. This is the session's own resident fact, never a second content cache.
-    async fn adopt_session_revision(
-        &mut self,
-        chat: &Session,
-        id: &str,
-    ) -> Result<(), ProjectionError> {
-        if chat.assigned_order(id).is_none() {
-            return Ok(());
-        }
-        let Some(revision) = chat.resident_revision(id) else {
-            return Ok(());
-        };
-        self.raise_revision(id, revision);
-        Ok(())
     }
 
     /// Advances and returns one identity's new content version.
@@ -2001,18 +2234,17 @@ impl LiveProjection {
         })
     }
 
-    /// Resolves one effect's identities: canonical payloads this projection holds, plus the orders a
-    /// new identity takes from the session's in-memory allocator.
-    fn resolve(
+    /// Reads canonical identities without assigning placement or changing the index.
+    async fn resolve(
         &self,
-        chat: &Session,
         thread: &pl_protocol::Thread,
         ids: impl IntoIterator<Item = String>,
     ) -> Result<ResolvedIdentities, ProjectionError> {
         let mut existing = BTreeMap::new();
-        let mut reserved = BTreeMap::new();
+        let mut restored = BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for id in ids {
-            if existing.contains_key(&id) || reserved.contains_key(&id) {
+            if !seen.insert(id.clone()) {
                 continue;
             }
             if let Some(item) = self.items.get(&id) {
@@ -2023,21 +2255,60 @@ impl LiveProjection {
                 existing.insert(id.clone(), fact.placeholder(&id, &thread.id));
                 continue;
             }
-            let order = self.reserve_identity_in(chat, &id)?;
-            reserved.insert(id, order);
+            if let Some(item) = self.order_index_of()?.pending_placement(&id, &thread.id) {
+                existing.insert(id, item);
+                continue;
+            }
+            // Only a reliable identity miss reaches storage. Streaming frames and retained
+            // identities stay entirely in memory.
+            let history = self
+                .execution_history
+                .as_ref()
+                .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
+            if let Some(item) = history
+                .item(&id)
+                .await
+                .map_err(|error| ProjectionError::History(error.to_string()))?
+            {
+                restored.insert(id.clone());
+                existing.insert(id, item);
+            }
         }
-        Ok((existing, reserved))
+        Ok((existing, restored))
     }
 
-    /// Whether one identity is a row this projection or the shared session already holds.
+    /// The channel-owned execution-order index explicitly bound to this projection.
+    ///
+    /// # Errors
+    /// Fails when the owner has not bound execution history.
+    fn order_index_of(&self) -> Result<Arc<RuntimeOrderIndex>, ProjectionError> {
+        self.order_index
+            .clone()
+            .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))
+    }
+
+    /// Whether one identity is an execution fact this projection already knows to be terminal.
+    ///
+    /// This marker has the same active/pending lifetime as its execution placement. Frames from
+    /// an ended source are rejected before this lookup, even after the marker was reclaimed.
+    fn identity_is_terminal(&self, id: &str) -> bool {
+        self.order_index
+            .as_ref()
+            .is_some_and(|index| index.is_terminal(id))
+    }
+
+    /// Whether one identity is a row this projection or the Runtime's order index already holds.
     ///
     /// Placement metadata alone does not make an identity started: a fact can outlive the preview
     /// it described (the window replaces an aggregate preview the moment the adapter itemizes the
     /// response), and reserving its name would fabricate a terminal row nothing ever showed.
-    fn identity_is_started(&self, chat: &Session, id: &str) -> bool {
+    fn identity_is_started(&self, id: &str) -> bool {
         self.items.contains_key(id)
             || self.previews.contains_key(id)
-            || chat.assigned_order(id).is_some()
+            || self
+                .order_index
+                .as_ref()
+                .is_some_and(|index| index.assigned(id).is_some())
     }
 
     /// Provider part identities this projection already showed for one attempt.
@@ -2070,57 +2341,134 @@ impl LiveProjection {
     /// Canonical items for one attempt's in-flight provider previews.
     ///
     /// Read only for a **bounded** reception (see [`super::responses::keeps_bounded_preview`]): the
-    /// shared window is one representation of an identity ([`crate::studio::runtime::chat_item`]), so
-    /// the terminal projection reads the received prefix back through the same codec instead of
-    /// keeping a second body copy, and [`super::responses::finalize_missing_presentation`] closes it
+    /// Runtime preview is the one representation of the in-flight body, so the terminal projection
+    /// materializes that received prefix only here instead of keeping a second body copy, and
+    /// [`super::responses::finalize_missing_presentation`] closes it
     /// on the same identity. A normally received response takes its body from its own receipt instead.
     /// Only provider-part identities qualify — an aggregate channel is not a provider part, and its own
     /// liveness is decided by [`LiveProjection::identity_is_started`].
     fn attempt_preview_items(
         &self,
+        thread_id: &str,
         attempt_id: &str,
         turn_id: &str,
     ) -> Result<Vec<(String, ThreadItem)>, ProjectionError> {
         self.provider_previews(attempt_id)
             .map(|(id, preview)| {
-                let item = ChatItem::complete(pl_core::chat::ChatItemParts {
-                    item_id: id.clone(),
-                    turn_id: turn_id.to_owned(),
-                    order: preview.order,
-                    revision: self.revisions.get(id).copied().unwrap_or(0),
-                    fields: preview.fields.clone(),
-                    meta: preview.meta.clone(),
-                    saved: false,
-                    lifecycle: ChatLifecycle::Streaming,
-                });
-                crate::studio::runtime::chat_item::canonical_item(&item)
-                    .map(|item| (id.clone(), item))
-                    .map_err(|error| ProjectionError::History(error.to_string()))
+                let fact = self.facts.get(id).ok_or_else(|| {
+                    ProjectionError::History(format!("preview {id} has no execution placement"))
+                })?;
+                // Only this bounded-interruption boundary materializes the received prefix.
+                // Execution placement and lifecycle come from the Runtime's own facts, never
+                // from terminal-only completion metadata or an invented append sequence.
+                let text = |field| {
+                    preview
+                        .fields
+                        .get(&field)
+                        .map(|block| block.text())
+                        .unwrap_or_default()
+                };
+                let state = match &preview.shape {
+                    ThreadItemState::Text(value) => ThreadItemState::Text(ThreadTextItem::new(
+                        value.channel(),
+                        text(ChatField::Body),
+                        value.attachments().to_vec(),
+                        value.lifecycle().clone(),
+                    )),
+                    ThreadItemState::Thinking(value) => {
+                        ThreadItemState::Thinking(ThreadThinkingItem::new(
+                            preview
+                                .fields
+                                .iter()
+                                .filter(|(field, _)| {
+                                    matches!(
+                                        field,
+                                        ChatField::Part(PresentationPart::SummaryText(_))
+                                    )
+                                })
+                                .map(|(_, block)| block.text())
+                                .collect(),
+                            preview
+                                .fields
+                                .iter()
+                                .filter(|(field, _)| {
+                                    matches!(
+                                        field,
+                                        ChatField::Part(PresentationPart::ReasoningText(_))
+                                    )
+                                })
+                                .map(|(_, block)| block.text())
+                                .collect(),
+                            value.lifecycle().clone(),
+                        ))
+                    }
+                    _ => {
+                        return Err(ProjectionError::UnsupportedOutput(
+                            "provider preview is neither text nor thinking".into(),
+                        ));
+                    }
+                };
+                Ok((
+                    id.clone(),
+                    ThreadItem::new(
+                        id.clone(),
+                        thread_id.to_owned(),
+                        turn_id.to_owned(),
+                        fact.ordinal,
+                        fact.revision,
+                        fact.created_at,
+                        fact.created_at,
+                        state,
+                    ),
+                ))
             })
             .collect()
-    }
-
-    /// Order of a new identity: the session's own reservation first, else a new in-memory order.
-    fn reserve_identity_in(&self, chat: &Session, id: &str) -> Result<u64, ProjectionError> {
-        match chat.assigned_order(id) {
-            Some(order) => Ok(order),
-            None => chat
-                .reserve_order_in_memory(id)
-                .map_err(|error| ProjectionError::History(error.to_string())),
-        }
     }
 
     /// Maintains lifecycle continuity and optionally emits this effect's Turn and interaction frames.
     ///
     /// The frames are derived from the same effect-matched state the content was projected from, so
     /// a live subscriber and durable history describe one commit rather than two drifting views.
+    fn prepare_turn_frames(
+        &self,
+        thread: &pl_protocol::Thread,
+        effect: &ThreadEffectBatch,
+        state: &ThreadSnapshot,
+        deliver: bool,
+    ) -> Result<BTreeMap<String, Turn>, ProjectionError> {
+        let mut turns = BTreeMap::new();
+        if deliver {
+            for record in effect
+                .turn
+                .iter()
+                .chain(state.turns.iter().filter(|record| {
+                    record.state == TurnState::Running
+                        && self.turn_phases.get(&record.turn_id)
+                            != Some(&super::turns::phase(state, &record.turn_id))
+                }))
+            {
+                let turn = super::turns::project_turn(
+                    &thread.id,
+                    state,
+                    record,
+                    effect.committed_at,
+                    effect.committed_at,
+                    effect.sequence,
+                )?;
+                turns.insert(record.turn_id.clone(), turn);
+            }
+        }
+        Ok(turns)
+    }
+
     fn emit_frames(
         &mut self,
         thread: &pl_protocol::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
+        mut turns: BTreeMap<String, Turn>,
         events: &mut Option<Vec<LiveEvent>>,
-    ) -> Result<(), ProjectionError> {
+    ) {
         if let Some(record) = &effect.turn {
             let event = if record.state == TurnState::Running {
                 if self.turns_seen.insert(record.turn_id.clone()) {
@@ -2141,14 +2489,9 @@ impl LiveProjection {
                 self.turn_phases.remove(&record.turn_id);
             }
             if let Some(events) = events.as_mut() {
-                let turn = super::turns::project_turn(
-                    &thread.id,
-                    state,
-                    record,
-                    effect.committed_at,
-                    effect.committed_at,
-                    effect.sequence,
-                )?;
+                let turn = turns
+                    .remove(&record.turn_id)
+                    .expect("effect Turn frame was validated before projection");
                 events.push(LiveEvent::Turn { turn, event });
             }
         }
@@ -2172,14 +2515,9 @@ impl LiveProjection {
                 TurnEvent::Updated
             };
             if let Some(events) = events.as_mut() {
-                let turn = super::turns::project_turn(
-                    &thread.id,
-                    state,
-                    record,
-                    effect.committed_at,
-                    effect.committed_at,
-                    effect.sequence,
-                )?;
+                let turn = turns
+                    .remove(&record.turn_id)
+                    .expect("phase Turn frame was validated before projection");
                 events.push(LiveEvent::Turn { turn, event });
             }
         }
@@ -2215,7 +2553,6 @@ impl LiveProjection {
         active_inputs.extend(state.inputs.iter().map(|record| record.input.id.as_str()));
         self.hidden_inputs
             .retain(|id| active_inputs.contains(id.as_str()));
-        Ok(())
     }
 
     /// Records one projected payload and keeps its revision strictly monotonic.
@@ -2241,6 +2578,7 @@ impl LiveProjection {
         // streaming observation rebuild its static meta and argument partner fields from the freshly
         // committed canonical fact instead of reusing a stale preview.
         self.release_preview(&item.id);
+        // The channel index holds scoped terminal/completion markers alongside execution placement.
         self.fact(&item);
         self.observe_result(&item);
         self.store_item(item);
@@ -2424,6 +2762,10 @@ impl LiveProjection {
             .map(|record| super::order::message_id(&record.message.id))
             .collect::<BTreeSet<_>>();
         referenced.extend(inbox_items.iter().cloned());
+        referenced.extend(state.interactions.values().filter_map(|record| {
+            pl_core::tool::opaque::interaction_tool_call_id(&record.request.id)
+                .map(super::order::tool_id)
+        }));
         for attempt in state.attempts.iter() {
             referenced.insert(super::order::response_id(&attempt.attempt_id, "inference"));
             for channel in ["reasoning", "text"] {
@@ -2481,7 +2823,7 @@ impl LiveProjection {
             retained
                 && (!item.state().is_terminal()
                     || item.kind() == pl_protocol::ThreadItemKind::Tool
-                    || inbox_items.contains(id))
+                    || referenced.contains(id))
         });
         // A Turn that opened more identities than the window is still bounded here: the oldest
         // non-terminal bodies and tool facts are dropped by canonical placement, and the identity
@@ -2517,11 +2859,19 @@ impl LiveProjection {
         // placement fact is gone it can no longer be resolved or committed, so its body is released
         // with it. The content versions follow the same bounded window and are not a second history:
         // an identity evicted here recovers its baseline from the canonical fact
-        // ([`LiveProjection::adopt_revisions`]) or from the shared session
-        // ([`LiveProjection::adopt_session_revision`]) instead of restarting at 1.
+        // ([`LiveProjection::adopt_revisions`]) instead of restarting at 1.
         self.previews.retain(|id, _| self.facts.contains_key(id));
         self.revisions
             .retain(|id, _| self.items.contains_key(id) || self.previews.contains_key(id));
+        if let Some(index) = &self.order_index {
+            let sources = state
+                .attempts
+                .iter()
+                .filter(|attempt| matches!(attempt.status, pl_core::thread::AttemptStatus::Running))
+                .map(|attempt| attempt.attempt_id.clone())
+                .collect();
+            index.retain(&sources, &self.facts.keys().cloned().collect());
+        }
         // The pruned tables are the authority again: re-deriving the running retained-byte totals and
         // the short-key observation index here means a bounded window can never leave either carrying
         // an entry the tables no longer hold. This runs once per commit, not per streaming frame, so
@@ -2609,7 +2959,7 @@ pub(in crate::studio) async fn seed_repaired_targets(
 /// and hands it to the projection as a fact — the same shape as a reliable-output repair target. A
 /// Plan confirmation is answered after the same `plan_submit` call is already terminal, so it needs
 /// the same identity read-back. Nothing else is read: no Turn is scanned, no tool is activated, no
-/// model step starts, and the projection itself still performs no IO. A missing or non-tool durable
+/// model step starts. A missing or non-tool durable
 /// item fails explicitly, because an accepted answer must never be dropped or published as a
 /// fabricated row.
 pub(in crate::studio) async fn seed_interaction_targets(
@@ -2670,8 +3020,8 @@ fn aggregate_id(attempt_id: &str, generation: u32, channel: AggregateChannel) ->
 ///
 /// The identity comes from the observation's own stable fact — a request-level aggregate channel, or a
 /// provider item id plus part discriminator — never from the provider payload or a late output index.
-/// The returned `ThreadItemState` carries **no body**: it only feeds [`static_meta`] so the static
-/// structure is encoded once, while the body is handed out by the caller straight from the observation's
+/// The returned `ThreadItemState` carries **no body**: it is the Runtime's static execution shape,
+/// while the body is handed out by the caller straight from the observation's
 /// shared `Arc<ContentBlock>`, so the hot path never calls `part.text()`.
 ///
 /// The field index is fixed at `0`: one presentation id owns exactly one part, and the commit side
@@ -2773,4 +3123,107 @@ fn fields_equal(
                 .get(field)
                 .is_some_and(|other| ContentBlock::text_eq(block, other))
         })
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_reasoning_uses_runtime_fields_and_execution_placement() -> anyhow::Result<()> {
+        let mut projection = LiveProjection::new();
+        let id = super::super::order::presentation_id(
+            "attempt",
+            0,
+            "provider-item",
+            Some(PresentationPart::ReasoningText(0)),
+        );
+        projection.store_fact(
+            id.clone(),
+            Fact {
+                ordinal: 42,
+                revision: 9,
+                created_at: 10,
+                turn_id: "turn".into(),
+            },
+        );
+        projection.store_preview(
+            id.clone(),
+            LivePreview {
+                fields: BTreeMap::from([(
+                    ChatField::Part(PresentationPart::ReasoningText(0)),
+                    ContentBlock::from_text("received reasoning prefix"),
+                )]),
+                observed: None,
+                shape: ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    Vec::new(),
+                    Vec::new(),
+                    ThreadContentLifecycle::streaming(),
+                )),
+                observed_version: 8,
+            },
+        );
+        let items = projection.attempt_preview_items("thread", "attempt", "turn")?;
+        assert_eq!(items.len(), 1);
+        let (actual_id, item) = &items[0];
+        assert_eq!(actual_id, &id);
+        assert_eq!((item.ordinal, item.revision, item.created_at), (42, 9, 10));
+        let ThreadItemState::Thinking(thinking) = item.state() else {
+            anyhow::bail!("thinking preview lost its execution kind");
+        };
+        assert_eq!(thinking.content(), ["received reasoning prefix"]);
+        assert!(
+            !item.is_terminal(),
+            "only the subsequent reliable effect closes the prefix"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_tool_with_pending_interaction_does_not_seed_a_sealed_completion() {
+        let tool = ThreadToolItem::new(
+            pl_protocol::ThreadToolInvocation::new("call".into(), "ask".into(), "{}".into()),
+            ThreadToolState::Interrupted(pl_protocol::InterruptedThreadTool::new(
+                10,
+                "waiting".into(),
+            )),
+        )
+        .with_user_input(Some(pl_protocol::ThreadToolUserInput::new(
+            "interaction".into(),
+            Vec::new(),
+            pl_protocol::ThreadToolUserInputState::Pending,
+        )));
+        let item = ThreadItem::new(
+            "tool:4:call".into(),
+            "thread".into(),
+            "turn".into(),
+            1,
+            1,
+            10,
+            10,
+            ThreadItemState::Tool(tool),
+        );
+        assert!(!completion_ready(&item));
+        let mut projection = LiveProjection::new();
+        projection.seed(vec![item.clone()], BTreeSet::new());
+        assert!(
+            !projection
+                .order_index
+                .as_ref()
+                .is_some_and(|index| index.is_sealed(&item.id))
+        );
+        let ThreadItemState::Tool(tool) = item.state() else {
+            unreachable!()
+        };
+        let answered = item.clone().with_state(ThreadItemState::Tool(
+            ThreadToolItem::new(tool.invocation().clone(), tool.state().clone()).with_user_input(
+                Some(pl_protocol::ThreadToolUserInput::new(
+                    "interaction".into(),
+                    Vec::new(),
+                    pl_protocol::ThreadToolUserInputState::Cancelled,
+                )),
+            ),
+        ));
+        assert!(completion_ready(&answered));
+    }
 }

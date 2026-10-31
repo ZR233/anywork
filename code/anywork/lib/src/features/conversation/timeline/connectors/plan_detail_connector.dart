@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../views/plan_detail_view.dart';
+export '../views/plan_detail_view.dart'
+    show PlanDetailStatus, planDetailStatusFromRuntime;
 import '../widgets/timeline_markdown.dart';
 import 'timeline_media_connector.dart';
 
@@ -15,14 +17,14 @@ class PlanDetailConnector extends ConsumerWidget {
     super.key,
     required this.identity,
     required this.markdown,
-    required this.awaitingConfirmation,
+    required this.status,
     required this.onClose,
     this.onToggleReadingMode,
     this.fullWidth = false,
   });
   final String identity;
   final String markdown;
-  final bool awaitingConfirmation;
+  final PlanDetailStatus status;
   final VoidCallback onClose;
   final VoidCallback? onToggleReadingMode;
   final bool fullWidth;
@@ -30,7 +32,7 @@ class PlanDetailConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => PlanDetailView(
     identity: identity,
     title: planDocumentTitle(markdown, fallback: '计划'),
-    awaitingConfirmation: awaitingConfirmation,
+    status: status,
     onClose: onClose,
     onToggleReadingMode: onToggleReadingMode,
     fullWidth: fullWidth,
