@@ -63,10 +63,11 @@ impl Slot {
             } else {
                 AcpAuthState::Unchecked
             };
-            if same_connection && !cancelling {
-                if let Some(usage) = usage_update {
-                    self.usage = Some(usage);
-                }
+            if same_connection
+                && !cancelling
+                && let Some(usage) = usage_update
+            {
+                self.usage = Some(usage);
             }
         }
         Some(self.retired)

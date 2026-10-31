@@ -244,24 +244,21 @@ impl Session<'_> {
         // 在 closure 真正开始前，future 仍处于 `session/new`；只给这一阶段 PROBE_BUDGET。
         let probe_deadline = tokio::time::sleep(limits::PROBE_BUDGET);
         tokio::pin!(probe_deadline);
-        loop {
-            tokio::select! {
-                biased;
-                () = self.wire.cancellation.cancelled() => {
-                    return Err(AuthError::cancelled(AuthStage::Probe));
+        tokio::select! {
+            biased;
+            () = self.wire.cancellation.cancelled() => {
+                return Err(AuthError::cancelled(AuthStage::Probe));
+            }
+            () = &mut probe_deadline => {
+                return Err(AuthError::timeout(AuthStage::Probe));
+            }
+            started = &mut started_rx => {
+                if started.is_err() {
+                    return self.finish_query_start(query.await);
                 }
-                () = &mut probe_deadline => {
-                    return Err(AuthError::timeout(AuthStage::Probe));
-                }
-                started = &mut started_rx => {
-                    match started {
-                        Ok(()) => break,
-                        Err(_) => return self.finish_query_start(query.await),
-                    }
-                }
-                result = &mut query => {
-                    return self.finish_query_start(result);
-                }
+            }
+            result = &mut query => {
+                return self.finish_query_start(result);
             }
         }
 
