@@ -467,6 +467,9 @@ final class AcpServiceImpl implements AcpService {
   Future<AcpAuthSnapshotView> check(AcpAccountIdentity identity) =>
       _startAuth(identity, const AcpCheckActionView());
   @override
+  Future<AcpAuthSnapshotView> queryUsage(AcpAccountIdentity identity) =>
+      _startAuth(identity, const AcpQueryUsageActionView());
+  @override
   Future<AcpAuthSnapshotView> login(
     AcpAccountIdentity identity, {
     required String methodId,
@@ -929,6 +932,7 @@ AcpAuthSnapshotView _immutableAuth(AcpAuthSnapshotView snapshot) =>
           AcpAuthAccountView(
             accountId: account.accountId,
             connectionRevision: account.connectionRevision,
+            usage: _immutableUsage(account.usage),
             state: account.state is AcpRequiredState
                 ? AcpRequiredState(
                     server: (account.state as AcpRequiredState).server,
@@ -940,6 +944,25 @@ AcpAuthSnapshotView _immutableAuth(AcpAuthSnapshotView snapshot) =>
           ),
       ]),
     );
+
+AcpUsageObservationView? _immutableUsage(AcpUsageObservationView? usage) =>
+    usage == null
+    ? null
+    : AcpUsageObservationView(
+        checkedAt: usage.checkedAt,
+        state: switch (usage.state) {
+          AcpUsageReadyView(:final groups) => AcpUsageReadyView(
+            groups: List.unmodifiable([
+              for (final group in groups)
+                AcpQuotaGroupView(
+                  name: group.name,
+                  limits: List.unmodifiable(group.limits),
+                ),
+            ]),
+          ),
+          final state => state,
+        },
+      );
 AcpInstallSnapshotView _immutableInstall(AcpInstallSnapshotView snapshot) =>
     AcpInstallSnapshotView(
       revision: snapshot.revision,

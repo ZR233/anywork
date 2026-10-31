@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pl_protocol::studio::{AcpAuthAccount, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState};
+use pl_protocol::studio::{
+    AcpAuthAccount, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState, AcpUsageObservation,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -23,9 +25,52 @@ pub(super) struct Slot {
     /// 该连接身份的非密钥 revision；名称编辑不改变它。
     pub(super) revision: u64,
     pub(super) state: AcpAuthState,
+    /// 当前连接代次最近一次额度观察；只存在内存中。
+    pub(super) usage: Option<AcpUsageObservation>,
     /// 已从配置删除但仍持有资源责任的退役记录；不进入已发布快照。
     pub(super) retired: bool,
     pub(super) operation: Option<Arc<Operation>>,
+}
+
+impl Slot {
+    /// 在 slot 内裁决匹配操作并释放占用；返回该记录是否已退役。
+    fn finish_operation(
+        &mut self,
+        generation: u64,
+        connection_revision: u64,
+        terminal: AcpAuthState,
+        usage_update: Option<AcpUsageObservation>,
+    ) -> Option<bool> {
+        let operation = self.operation.as_ref()?;
+        if operation.generation != generation {
+            return None;
+        }
+        let cancelling = matches!(
+            &self.state,
+            AcpAuthState::Cancelling { operation_id }
+                if operation_id == &operation.operation_id
+        );
+        let decided = if cancelling && !matches!(&terminal, AcpAuthState::Failed { .. }) {
+            AcpAuthState::Cancelled
+        } else {
+            terminal
+        };
+        let same_connection = self.revision == connection_revision;
+        self.operation = None;
+        if !self.retired {
+            self.state = if same_connection {
+                decided
+            } else {
+                AcpAuthState::Unchecked
+            };
+            if same_connection && !cancelling {
+                if let Some(usage) = usage_update {
+                    self.usage = Some(usage);
+                }
+            }
+        }
+        Some(self.retired)
+    }
 }
 
 /// 真正决定连接语义的身份：provider 与产品固定发行身份（版本 + 宿主 target）。
@@ -123,6 +168,7 @@ impl Registry {
                     account_id: account_id.clone(),
                     connection_revision: slot.revision,
                     state: slot.state.clone(),
+                    usage: slot.usage.clone(),
                 })
                 .collect(),
         }
@@ -195,6 +241,7 @@ impl AcpAuthInner {
                             identity,
                             revision,
                             state: AcpAuthState::Unchecked,
+                            usage: None,
                             retired: false,
                             operation: None,
                         },
@@ -221,6 +268,7 @@ impl AcpAuthInner {
                 slot.identity = identity;
                 slot.retired = false;
                 slot.revision = revision;
+                slot.usage = None;
                 // 旧 owner 仍被占用时，新代次显示为 busy 非终态，不能谎称空闲。
                 slot.state = match pending.as_ref() {
                     Some(operation_id) => AcpAuthState::Closing {
@@ -378,39 +426,18 @@ impl AcpAuthInner {
         generation: u64,
         connection_revision: u64,
         terminal: AcpAuthState,
+        usage_update: Option<AcpUsageObservation>,
     ) {
         let snapshot = {
             let mut registry = self.lock();
             let Some(slot) = registry.slots.get_mut(account_id) else {
                 return;
             };
-            let Some(operation) = slot.operation.as_ref() else {
+            let Some(retired) =
+                slot.finish_operation(generation, connection_revision, terminal, usage_update)
+            else {
                 return;
             };
-            if operation.generation != generation {
-                return;
-            }
-            let cancelling = matches!(
-                &slot.state,
-                AcpAuthState::Cancelling { operation_id }
-                    if operation_id == &operation.operation_id
-            );
-            let decided = if cancelling && !matches!(&terminal, AcpAuthState::Failed { .. }) {
-                AcpAuthState::Cancelled
-            } else {
-                terminal
-            };
-            let retired = slot.retired;
-            let same_generation = slot.revision == connection_revision;
-            slot.operation = None;
-            if !retired {
-                slot.state = if same_generation {
-                    decided
-                } else {
-                    // 旧代次的协议结果不得回写新连接身份。
-                    AcpAuthState::Unchecked
-                };
-            }
             // 退役记录不再回显，资源确认停止后直接移除。
             if retired {
                 registry.slots.remove(account_id);
@@ -419,5 +446,138 @@ impl AcpAuthInner {
             registry.snapshot()
         };
         self.emit(snapshot);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_protocol::studio::{AcpUsageFailureCode, AcpUsageState};
+
+    fn operation(generation: u64, revision: u64) -> Arc<Operation> {
+        Arc::new(Operation {
+            operation_id: "op".into(),
+            account_id: "account".into(),
+            connection_revision: revision,
+            generation,
+            cancel: CancellationToken::new(),
+            join: Mutex::new(None),
+        })
+    }
+
+    fn observation(checked_at: i64, state: AcpUsageState) -> AcpUsageObservation {
+        AcpUsageObservation { checked_at, state }
+    }
+
+    fn slot(state: AcpAuthState, usage: Option<AcpUsageObservation>) -> Slot {
+        Slot {
+            identity: ConnectionIdentity {
+                provider: AcpProvider::Antigravity,
+                release: None,
+            },
+            revision: 7,
+            state,
+            usage,
+            retired: false,
+            operation: Some(operation(3, 7)),
+        }
+    }
+
+    #[test]
+    fn completion_preserves_usage_without_an_explicit_refresh() {
+        let previous = observation(10, AcpUsageState::Unavailable);
+        let mut slot = slot(
+            AcpAuthState::Checking {
+                operation_id: "op".into(),
+            },
+            Some(previous.clone()),
+        );
+        assert_eq!(
+            slot.finish_operation(
+                3,
+                7,
+                AcpAuthState::Verified {
+                    checked_at: 20,
+                    server: None,
+                },
+                None,
+            ),
+            Some(false)
+        );
+        assert_eq!(slot.usage, Some(previous));
+        assert!(slot.operation.is_none());
+    }
+
+    #[test]
+    fn matching_refresh_replaces_usage_but_cancellation_does_not() {
+        let previous = observation(10, AcpUsageState::Unavailable);
+        let refreshed = observation(
+            20,
+            AcpUsageState::Failed {
+                code: AcpUsageFailureCode::Query,
+            },
+        );
+        let mut active = slot(
+            AcpAuthState::Verifying {
+                operation_id: "op".into(),
+            },
+            Some(previous.clone()),
+        );
+        active.finish_operation(
+            3,
+            7,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            Some(refreshed.clone()),
+        );
+        assert_eq!(active.usage, Some(refreshed.clone()));
+
+        let mut cancelling = slot(
+            AcpAuthState::Cancelling {
+                operation_id: "op".into(),
+            },
+            Some(previous.clone()),
+        );
+        cancelling.finish_operation(
+            3,
+            7,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            Some(refreshed),
+        );
+        assert_eq!(cancelling.state, AcpAuthState::Cancelled);
+        assert_eq!(cancelling.usage, Some(previous));
+    }
+
+    #[test]
+    fn stale_connection_completion_does_not_publish_usage() {
+        let refreshed = observation(
+            20,
+            AcpUsageState::Failed {
+                code: AcpUsageFailureCode::Query,
+            },
+        );
+        let mut stale = slot(
+            AcpAuthState::Verifying {
+                operation_id: "op".into(),
+            },
+            None,
+        );
+        stale.finish_operation(
+            3,
+            6,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            Some(refreshed),
+        );
+        assert_eq!(stale.state, AcpAuthState::Unchecked);
+        assert_eq!(stale.usage, None);
+        assert!(stale.operation.is_none());
     }
 }

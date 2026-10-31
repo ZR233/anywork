@@ -4,6 +4,7 @@ import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import 'account_sections.dart';
+import 'account_usage_metrics.dart';
 
 String acpActionLabel(AppLocalizations l10n, AcpAccountAction action) =>
     switch (action) {
@@ -15,6 +16,7 @@ String acpActionLabel(AppLocalizations l10n, AcpAccountAction action) =>
       AcpAccountAction.verify => l10n.accountsVerifySignIn,
       AcpAccountAction.cancelAuthentication => l10n.acpAuthCancel,
       AcpAccountAction.retry => l10n.acpAuthRetry,
+      AcpAccountAction.queryUsage => l10n.acpUsageQuery,
       AcpAccountAction.openGuide => l10n.acpAccountInstallOpen,
       AcpAccountAction.openTerms => l10n.acpAccountTermsOpen,
     };
@@ -24,11 +26,13 @@ class AcpAccountPanel extends StatelessWidget {
     required this.value,
     required this.onAction,
     required this.onLoginMethodChanged,
+    this.showUsage = false,
     super.key,
   });
   final AcpAccountPresentation value;
   final ValueChanged<AcpAccountAction> onAction;
   final ValueChanged<String> onLoginMethodChanged;
+  final bool showUsage;
 
   @override
   Widget build(BuildContext context) {
@@ -59,6 +63,16 @@ class AcpAccountPanel extends StatelessWidget {
           ),
         AccountFacts(facts: value.facts),
         if (value.error != null) AccountInlineError(message: value.error!),
+        if (showUsage) ...[
+          const SizedBox(height: 16),
+          Text(
+            l10n.acpUsageTitle,
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          AcpUsageMetrics(value: value.usage),
+        ],
         if (value.loginMethods.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text(l10n.acpAuthMethodSelectHint),
@@ -107,7 +121,11 @@ class AcpAccountPanel extends StatelessWidget {
                   AccountViewKeyValues.acpAction(action.name),
                 ),
                 onPressed: () => onAction(action),
-                child: Text(acpActionLabel(l10n, action)),
+                child: Text(
+                  action == AcpAccountAction.queryUsage && value.usage.queried
+                      ? l10n.acpUsageRefresh
+                      : acpActionLabel(l10n, action),
+                ),
               ),
           ],
         ),

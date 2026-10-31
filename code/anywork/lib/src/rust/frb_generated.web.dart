@@ -411,6 +411,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpUsageObservation dco_decode_box_autoadd_bridge_acp_usage_observation(
+    dynamic raw,
+  );
+
+  @protected
   BridgeActivityContentFrame
   dco_decode_box_autoadd_bridge_activity_content_frame(dynamic raw);
 
@@ -1408,7 +1413,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpProvider dco_decode_bridge_acp_provider(dynamic raw);
 
   @protected
+  BridgeAcpQuotaGroup dco_decode_bridge_acp_quota_group(dynamic raw);
+
+  @protected
+  BridgeAcpQuotaLimit dco_decode_bridge_acp_quota_limit(dynamic raw);
+
+  @protected
+  BridgeAcpQuotaRemaining dco_decode_bridge_acp_quota_remaining(dynamic raw);
+
+  @protected
   BridgeAcpServerInfo dco_decode_bridge_acp_server_info(dynamic raw);
+
+  @protected
+  BridgeAcpUsageFailureCode dco_decode_bridge_acp_usage_failure_code(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpUsageObservation dco_decode_bridge_acp_usage_observation(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpUsageState dco_decode_bridge_acp_usage_state(dynamic raw);
 
   @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
@@ -3065,6 +3092,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpQuotaGroup> dco_decode_list_bridge_acp_quota_group(dynamic raw);
+
+  @protected
+  List<BridgeAcpQuotaLimit> dco_decode_list_bridge_acp_quota_limit(dynamic raw);
+
+  @protected
   List<BridgeActiveTurn> dco_decode_list_bridge_active_turn(dynamic raw);
 
   @protected
@@ -3460,6 +3493,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpServerInfo? dco_decode_opt_box_autoadd_bridge_acp_server_info(
     dynamic raw,
   );
+
+  @protected
+  BridgeAcpUsageObservation?
+  dco_decode_opt_box_autoadd_bridge_acp_usage_observation(dynamic raw);
 
   @protected
   BridgeAgentExecution? dco_decode_opt_box_autoadd_bridge_agent_execution(
@@ -4147,6 +4184,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpServerInfo sse_decode_box_autoadd_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpUsageObservation sse_decode_box_autoadd_bridge_acp_usage_observation(
     SseDeserializer deserializer,
   );
 
@@ -5452,7 +5494,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpQuotaGroup sse_decode_bridge_acp_quota_group(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpQuotaLimit sse_decode_bridge_acp_quota_limit(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpQuotaRemaining sse_decode_bridge_acp_quota_remaining(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpServerInfo sse_decode_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpUsageFailureCode sse_decode_bridge_acp_usage_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpUsageObservation sse_decode_bridge_acp_usage_observation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpUsageState sse_decode_bridge_acp_usage_state(
     SseDeserializer deserializer,
   );
 
@@ -7509,6 +7581,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpQuotaGroup> sse_decode_list_bridge_acp_quota_group(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpQuotaLimit> sse_decode_list_bridge_acp_quota_limit(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeActiveTurn> sse_decode_list_bridge_active_turn(
     SseDeserializer deserializer,
   );
@@ -7992,6 +8074,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpServerInfo? sse_decode_opt_box_autoadd_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpUsageObservation?
+  sse_decode_opt_box_autoadd_bridge_acp_usage_observation(
     SseDeserializer deserializer,
   );
 
@@ -8838,6 +8926,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_acp_server_info(
     BridgeAcpServerInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_usage_observation(
+    BridgeAcpUsageObservation self,
     SseSerializer serializer,
   );
 
@@ -10312,8 +10406,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_acp_quota_group(
+    BridgeAcpQuotaGroup self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_quota_limit(
+    BridgeAcpQuotaLimit self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_quota_remaining(
+    BridgeAcpQuotaRemaining self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_acp_server_info(
     BridgeAcpServerInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_usage_failure_code(
+    BridgeAcpUsageFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_usage_observation(
+    BridgeAcpUsageObservation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_usage_state(
+    BridgeAcpUsageState self,
     SseSerializer serializer,
   );
 
@@ -12814,6 +12944,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_acp_quota_group(
+    List<BridgeAcpQuotaGroup> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_quota_limit(
+    List<BridgeAcpQuotaLimit> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_active_turn(
     List<BridgeActiveTurn> self,
     SseSerializer serializer,
@@ -13380,6 +13522,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_acp_server_info(
     BridgeAcpServerInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_usage_observation(
+    BridgeAcpUsageObservation? self,
     SseSerializer serializer,
   );
 

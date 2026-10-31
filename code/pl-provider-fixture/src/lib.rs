@@ -86,9 +86,9 @@ mod acp_stdio;
 pub use acp_stdio::{
     ACP_AUTH_METHOD_ID, ACP_AUTH_RELEASE_MARKER, ACP_AUTH_STARTED_MARKER, ACP_AUTHENTICATED_MARKER,
     ACP_BEHAVIOR_FILE, ACP_EVENTS_FILE, ACP_PACKAGED_CONTROL_MEMBER, ACP_SERVER_VERSION,
-    AcpFixtureAuthentication, AcpFixtureBehavior, AcpFixtureEvent, AcpFixtureProbe,
-    AcpFixtureServerInfo, AcpPackagedControl, AcpStdioOptions, is_official_program_name,
-    official_program_name, packaged_agent, run_acp_stdio,
+    ACP_USAGE_PROMPT, ACP_USAGE_REPORT, AcpFixtureAuthentication, AcpFixtureBehavior,
+    AcpFixtureEvent, AcpFixtureProbe, AcpFixtureServerInfo, AcpPackagedControl, AcpStdioOptions,
+    is_official_program_name, official_program_name, packaged_agent, run_acp_stdio,
 };
 
 mod stdio_peer;

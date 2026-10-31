@@ -420,6 +420,27 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     }
   }
 
+  /// Usage is owned by the ACP auth observation; this command only requests
+  /// an explicit refresh and never creates a local quota cache.
+  Future<void> queryUsage() async {
+    if (_service.auth.value.stale ||
+        _auth.isBusy ||
+        _auth is! AcpVerifiedState ||
+        !_currentConnection) {
+      return;
+    }
+    _authNotice = null;
+    _publish();
+    try {
+      await _service.queryUsage(AcpAccountIdentity(_key.target.id));
+    } catch (error) {
+      if (ref.mounted && !_finished && _currentConnection) {
+        _authNotice = _notice(error, operation: _auth.operationId);
+        _publish();
+      }
+    }
+  }
+
   AccountAcpViewState _derive() {
     final install = _install;
     final auth = _auth;
@@ -470,6 +491,11 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       ] else if (!showInstall) ...[
         if (auth.isBusy && _cancelAuth?.operation != auth.operationId)
           AcpAccountAction.cancelAuthentication,
+        if (auth is AcpVerifiedState &&
+            !auth.isBusy &&
+            !_service.auth.value.stale &&
+            _currentConnection)
+          AcpAccountAction.queryUsage,
         if (!auth.isBusy &&
             _authenticating == null &&
             !_service.auth.value.stale) ...[
@@ -516,12 +542,20 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     final error = _service.install.value.stale || _service.auth.value.stale
         ? _strings['stale']
         : localError ?? canonicalError;
+    final usage = projectAcpUsage(
+      snapshot: _service.auth.value.value,
+      stale: _service.auth.value.stale,
+      accountId: _key.target.id,
+      connectionRevision: _key.connectionRevision,
+      strings: _strings,
+    );
     return AccountAcpViewState(
       preparedForEditor: _preparedForEditor,
       claimedOperationId: _intent.operationId,
       preparationGeneration: _intent.generation,
       panel: AcpAccountPresentation(
         phase: phase,
+        usage: usage,
         status: _preparing != null && !install.isBusy
             ? _strings['pendingPreparation']
             : showInstall && install.stage != null

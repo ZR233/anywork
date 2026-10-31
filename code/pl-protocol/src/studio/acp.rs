@@ -109,6 +109,8 @@ pub struct RemoveAcpAccountRequest {
 pub enum AcpAuthAction {
     /// 只检查连接与当前凭据状态。
     Check,
+    /// 在受控探测会话中执行固定 `/usage`，不调用语言模型。
+    QueryUsage,
     /// 用服务端实际公布的方法登录。
     Authenticate { method_id: String },
 }
@@ -288,6 +290,61 @@ pub struct AcpAuthAccount {
     /// 本次观察对应的连接身份；不等于 Settings revision。
     pub connection_revision: u64,
     pub state: AcpAuthState,
+    /// 本连接代次最近一次显式额度查询；未查询时为空。
+    #[serde(default)]
+    pub usage: Option<AcpUsageObservation>,
+}
+
+/// 与认证结论独立的账户额度观察。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpUsageObservation {
+    pub checked_at: i64,
+    pub state: AcpUsageState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum AcpUsageState {
+    Ready { groups: Vec<AcpQuotaGroup> },
+    NotApplicable,
+    Unavailable,
+    Failed { code: AcpUsageFailureCode },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpUsageFailureCode {
+    Query,
+    Timeout,
+    Transport,
+    ResourceLimit,
+    InvalidResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpQuotaGroup {
+    pub name: String,
+    pub limits: Vec<AcpQuotaLimit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpQuotaLimit {
+    pub label: String,
+    pub remaining: AcpQuotaRemaining,
+    pub next_reset_at: Option<i64>,
+}
+
+/// 未提供比例或总量时不推导进度，停用也不等同于剩余零。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum AcpQuotaRemaining {
+    Percentage { value: u8 },
+    Units { value: u64 },
+    Unknown,
+    Disabled,
 }
 
 /// ACP 认证 topic 的 canonical 快照（独立 revision 与时间基线）。

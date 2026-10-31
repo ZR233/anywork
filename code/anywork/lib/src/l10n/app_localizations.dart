@@ -10601,6 +10601,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.'**
   String get usageStatisticsGapNote;
+
+  /// No description provided for @acpUsageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Account quota'**
+  String get acpUsageTitle;
+
+  /// No description provided for @acpUsageQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Query quota'**
+  String get acpUsageQuery;
+
+  /// No description provided for @acpUsageRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh quota'**
+  String get acpUsageRefresh;
+
+  /// No description provided for @acpUsageNotQueried.
+  ///
+  /// In en, this message translates to:
+  /// **'Account quota has not been queried.'**
+  String get acpUsageNotQueried;
+
+  /// No description provided for @acpUsageNotApplicable.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan quota is not available for this authentication method.'**
+  String get acpUsageNotApplicable;
+
+  /// No description provided for @acpUsageUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'The server has not provided quota data yet.'**
+  String get acpUsageUnavailable;
+
+  /// No description provided for @acpUsageNoLimits.
+  ///
+  /// In en, this message translates to:
+  /// **'The server reported no quota limits.'**
+  String get acpUsageNoLimits;
+
+  /// No description provided for @acpUsageNoActiveLimits.
+  ///
+  /// In en, this message translates to:
+  /// **'This model group reported no active quota windows.'**
+  String get acpUsageNoActiveLimits;
+
+  /// No description provided for @acpUsageFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Quota query failed. Try again.'**
+  String get acpUsageFailed;
+
+  /// No description provided for @acpUsageInvalidResponse.
+  ///
+  /// In en, this message translates to:
+  /// **'The server returned an unrecognized quota report.'**
+  String get acpUsageInvalidResponse;
+
+  /// No description provided for @acpUsageDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get acpUsageDisabled;
+
+  /// No description provided for @acpUsageUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Remaining amount unknown'**
+  String get acpUsageUnknown;
 }
 
 class _AppLocalizationsDelegate

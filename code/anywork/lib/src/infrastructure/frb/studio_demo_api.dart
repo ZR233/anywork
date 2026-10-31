@@ -1832,6 +1832,7 @@ class DemoStudioTransport extends StudioTransport
     }
     final snapshot = switch (action) {
       AcpCheckActionView() => _demoAcpAuth.check(account),
+      AcpQueryUsageActionView() => _demoAcpAuth.queryUsage(account),
       AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
         account,
         methodId,

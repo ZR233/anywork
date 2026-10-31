@@ -30,6 +30,7 @@ abstract interface class AcpService {
     DraftStamp? draft,
   });
   Future<AcpAuthSnapshotView> check(AcpAccountIdentity identity);
+  Future<AcpAuthSnapshotView> queryUsage(AcpAccountIdentity identity);
   Future<AcpAuthSnapshotView> login(
     AcpAccountIdentity identity, {
     required String methodId,

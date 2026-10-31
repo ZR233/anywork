@@ -295,6 +295,69 @@ class AccountQuotaMetrics extends StatelessWidget {
   }
 }
 
+/// Thin rendering of the VM-projected ACP quota presentation.
+class AcpUsageMetrics extends StatelessWidget {
+  const AcpUsageMetrics({
+    required this.value,
+    this.density = AccountMetricDensity.detailed,
+    super.key,
+  });
+
+  final AcpUsagePresentation value;
+  final AccountMetricDensity density;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (value.busy) ...[
+          const LinearProgressIndicator(minHeight: 2),
+          const SizedBox(height: 8),
+        ],
+        if (value.status != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              value.status!,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        for (final group in value.groups) ...[
+          if (group.name.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 4),
+              child: Text(
+                group.name,
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+          if (group.emptyLabel != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                group.emptyLabel!,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            )
+          else
+            AccountQuotaMetrics(density: density, values: group.quotas),
+        ],
+        if (value.updatedLabel != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              AppLocalizations.of(context)
+                  .settingsUsageUpdated(value.updatedLabel!),
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(fontSize: 14),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 TextStyle _readingStyle(
   BuildContext context,
   bool compact, {

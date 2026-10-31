@@ -860,6 +860,9 @@ abstract final class StudioDriverState {
                 'accountId': account.accountId,
                 'connectionRevision': account.connectionRevision,
                 'state': _acpAuthStateJson(account.state),
+                'usage': account.usage == null
+                    ? null
+                    : _acpUsageJson(account.usage!),
               },
           ],
         },
@@ -1557,6 +1560,43 @@ Map<String, Object?> _usageJson(AccountUsageObservation observation) => {
             },
           },
         },
+};
+
+Map<String, Object?> _acpUsageJson(AcpUsageObservationView usage) => {
+  'checkedAt': usage.checkedAt,
+  'state': switch (usage.state) {
+    AcpUsageReadyView(:final groups) => {
+      'kind': 'ready',
+      'groups': [
+        for (final group in groups)
+          {
+            'name': group.name,
+            'limits': [
+              for (final limit in group.limits)
+                {
+                  'label': limit.label,
+                  'nextResetAt': limit.nextResetAt,
+                  'remaining': switch (limit.remaining) {
+                    AcpQuotaPercentageView(:final value) => {
+                      'kind': 'percentage',
+                      'value': value,
+                    },
+                    AcpQuotaUnitsView(:final value) => {
+                      'kind': 'units',
+                      'value': value,
+                    },
+                    AcpQuotaUnknownView() => {'kind': 'unknown'},
+                    AcpQuotaDisabledView() => {'kind': 'disabled'},
+                  },
+                },
+            ],
+          },
+      ],
+    },
+    AcpUsageNotApplicableView() => {'kind': 'notApplicable'},
+    AcpUsageUnavailableView() => {'kind': 'unavailable'},
+    AcpUsageFailedView(:final code) => {'kind': 'failed', 'code': code.name},
+  },
 };
 
 /// ACP 认证状态的只读投影：`kind` 与界面阶段 token 一致，便于 Driver 断言。
