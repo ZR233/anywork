@@ -30,6 +30,87 @@ async fn read_request(listener: &TcpListener) -> (TcpStream, Vec<u8>) {
 }
 
 #[tokio::test]
+async fn decoded_provider_failures_keep_the_redacted_http_request_id() {
+    for (request_id, expected_id) in [
+        ("trace-stream-1", Some("trace-stream-1")),
+        ("reflected-credential", Some("[REDACTED_CREDENTIAL]")),
+        ("invalid?id", None),
+    ] {
+        for terminal in [
+            serde_json::json!({"type":"error","code":"unrecognized_failure","message":"Upstream request failed"}),
+            serde_json::json!({"type":"response.failed","response":{"error":{"code":"unrecognized_failure","message":"Upstream request failed"}}}),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = async {
+                let (mut socket, _) = read_request(&listener).await;
+                let body = format!(
+                    "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"failed\"}}}}\n\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"text\",\"delta\":\"partial\"}}\n\ndata: {terminal}\n\n"
+                );
+                socket
+                    .write_all(format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nx-request-id: {request_id}\r\nConnection: close\r\n\r\n{body}",
+                        body.len(),
+                    ).as_bytes())
+                    .await
+                    .unwrap();
+            };
+            let client = async {
+                let mut model = ModelInfo::compatible("fixture");
+                model
+                    .binding
+                    .set_transport(ModelTransportProfile::responses_http());
+                let mut endpoint = ProtocolEndpoint::compatible("fixture", endpoint);
+                endpoint.bearer_token = Some("reflected-credential".into());
+                let runtime =
+                    ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
+                let request = CompletionRequest::builder()
+                    .messages(vec![Message {
+                        role: MessageRole::User,
+                        content: MessageContent::text("report stream failure"),
+                        presentation: Default::default(),
+                        reasoning_content: None,
+                        tool_calls: None,
+                        tool_result: None,
+                        metadata: Default::default(),
+                    }])
+                    .build();
+                let failure = runtime
+                    .complete(request, ModelInvocationContext::default())
+                    .await
+                    .unwrap_err();
+                let provider = failure.source.provider_failure_ref().unwrap();
+                assert_eq!(provider.context.request_id.as_deref(), expected_id);
+                assert_eq!(
+                    provider.context.stage,
+                    pl_protocol::ProviderFailureStage::Stream
+                );
+                assert_eq!(provider.code.as_deref(), Some("unrecognized_failure"));
+                assert_eq!(
+                    provider.http_status, None,
+                    "HTTP 200 is not a business error status"
+                );
+                assert_eq!(provider.retry, pl_protocol::RetryDisposition::Permanent);
+                assert!(
+                    !serde_json::to_string(provider)
+                        .unwrap()
+                        .contains("reflected-credential")
+                );
+                assert!(
+                    failure.partial_progress.is_some(),
+                    "received output is retained"
+                );
+            };
+            tokio::time::timeout(Duration::from_secs(10), async {
+                tokio::join!(server, client)
+            })
+            .await
+            .expect("stream failure and its HTTP owner finish");
+        }
+    }
+}
+
+#[tokio::test]
 async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
     // Raw body failures, model syntax errors, billing, and HTTP status have
     // different replay semantics even when the connection ends the same way.

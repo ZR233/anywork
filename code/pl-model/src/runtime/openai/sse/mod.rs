@@ -31,6 +31,9 @@ pub struct SseStreamEvent {
     pub error: Option<serde_json::Value>,
     pub code: Option<String>,
     pub message: Option<String>,
+    /// Transport-owned, validated response header; never read from provider JSON.
+    #[serde(skip)]
+    pub request_id: Option<String>,
     pub retry_after_ms: Option<u64>,
     pub status: Option<serde_json::Value>,
     pub status_code: Option<serde_json::Value>,
@@ -161,6 +164,11 @@ pub fn process_sse_events(event: &SseStreamEvent) -> Vec<ModelStreamEvent> {
         Some(StreamEventBatch::Many(events)) => events,
         None => Vec::new(),
     };
+    for failure in &mut events {
+        if let ModelStreamEvent::Failed { request_id, .. } = failure {
+            request_id.clone_from(&event.request_id);
+        }
+    }
     if let Some(model_observation) = response_model_observation(event) {
         events.insert(0, model_observation);
     }
@@ -366,6 +374,7 @@ fn provider_failure_event(
     default_message: &str,
 ) -> ModelStreamEvent {
     ModelStreamEvent::Failed {
+        request_id: None,
         code: error
             .and_then(|error| error.get("code"))
             .and_then(serde_json::Value::as_str)
@@ -388,8 +397,8 @@ fn provider_failure_event(
 fn provider_status(value: &serde_json::Value) -> Option<u16> {
     value
         .get("status")
-        .or_else(|| value.get("status_code"))
         .and_then(provider_status_value)
+        .or_else(|| value.get("status_code").and_then(provider_status_value))
 }
 
 fn provider_status_value(value: &serde_json::Value) -> Option<u16> {

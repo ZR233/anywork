@@ -61,6 +61,9 @@ impl RequestDiagnostics {
     }
 
     pub(super) fn redact_event(&self, event: &mut SseStreamEvent) {
+        if let Some(request_id) = &mut event.request_id {
+            self.text(request_id);
+        }
         if let Some(error) = &mut event.error {
             self.value(error);
         }

@@ -104,6 +104,7 @@ pub enum ModelStreamEvent {
         response_id: Option<String>,
     },
     Failed {
+        request_id: Option<String>,
         code: Option<String>,
         http_status: Option<u16>,
         retry_after_ms: Option<u64>,

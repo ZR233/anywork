@@ -388,6 +388,7 @@ impl OpenAiStreamDecoder {
     fn protocol_failure(&mut self, message: &str) -> Vec<ModelStreamEvent> {
         self.protocol_failed = true;
         vec![ModelStreamEvent::Failed {
+            request_id: None,
             code: Some("invalid_response".to_owned()),
             http_status: None,
             retry_after_ms: None,
