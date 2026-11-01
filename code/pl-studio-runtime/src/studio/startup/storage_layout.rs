@@ -19,6 +19,7 @@ use session_layout::{SessionManifest, WorkspaceManifest};
 
 const JOURNAL: &str = "storage-migration.toml";
 const ROOTS: [&str; 3] = ["v2", "studio/v2", "skills"];
+const LAYOUT_SCHEMA_VERSION: u32 = 2;
 pub(crate) mod bot_roots;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,8 +110,8 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
                 "invalid current storage file"
             );
         }
-        if let Some(content) = journal {
-            let mut record = decode_journal(&content)?;
+        let mut record = journal.as_deref().map(decode_journal).transpose()?;
+        if let Some(record) = &record {
             ensure!(
                 record.operation_id == layout.operation_id
                     && matches!(record.phase, Phase::Publishing | Phase::Completed),
@@ -118,12 +119,17 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
             );
             if record.phase == Phase::Publishing {
                 ensure!(
-                    !staging(paths, &record).data_dir().try_exists()?,
+                    !staging(paths, record).data_dir().try_exists()?,
                     "both staging and published layout exist"
                 );
-                record.phase = Phase::Completed;
-                persist(&journal_path, &record).await?;
             }
+        }
+        upgrade_layout(paths, paths, &layout, record.as_ref()).await?;
+        if let Some(record) = &mut record
+            && record.phase == Phase::Publishing
+        {
+            record.phase = Phase::Completed;
+            persist(&journal_path, record).await?;
         }
         // No recursive scan of resources on normal startup.
         return Ok(());
@@ -259,6 +265,8 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
             marker.operation_id == journal.operation_id && !paths.data_dir().try_exists()?,
             "layout publication ownership conflict"
         );
+        // An older application may have stopped after preparing a v1 staging layout.
+        upgrade_layout(paths, &stage, &marker, Some(&journal)).await?;
         managed_move(stage.data_dir(), paths.data_dir()).await?;
         journal.phase = Phase::Completed;
         persist(&journal_path, &journal).await?;
@@ -272,11 +280,37 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
 
 fn validate_layout(layout: &Layout) -> Result<()> {
     ensure!(
-        layout.schema_version == 1 && valid_id(&layout.operation_id),
+        (1..=LAYOUT_SCHEMA_VERSION).contains(&layout.schema_version)
+            && valid_id(&layout.operation_id),
         "unsupported current data layout"
     );
     Ok(())
 }
+
+/// Finish the omitted completion-address move before publishing its content-layout version.
+/// A published v1 installation uses its original journal, never its preserved source files.
+async fn upgrade_layout(
+    paths: &StudioPaths,
+    target: &StudioPaths,
+    layout: &Layout,
+    journal: Option<&Journal>,
+) -> Result<()> {
+    if layout.schema_version == LAYOUT_SCHEMA_VERSION {
+        return Ok(());
+    }
+    if let Some(journal) = journal {
+        bot_roots::migrate_workspace_completions(paths, target, &journal.bot_roots).await?;
+    }
+    persist(
+        &target.layout_file(),
+        &Layout {
+            schema_version: LAYOUT_SCHEMA_VERSION,
+            operation_id: layout.operation_id.clone(),
+        },
+    )
+    .await
+}
+
 fn decode_journal(content: &str) -> Result<Journal> {
     let record: Journal = toml::from_str(content)
         .context("invalid storage migration journal; preserving source and target")?;
