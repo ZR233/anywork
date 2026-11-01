@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>糊来帮 · anywork — 住进桌面的自进化多智能体团队</title>
+  <meta name="description" content="糊来帮（anywork）是基于 Flutter 原生界面与 Rust 内核的桌面多智能体协作工作台：自动按评分与成本选模、Git 工作树并行隔离、可视化编排工作流、支持飞书远程派活与 SSH 原生开发。">
+  <meta name="theme-color" content="#FCFBF8">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="糊来帮 · anywork — 住进桌面的自进化多智能体团队">
+  <meta property="og:description" content="无浏览器内核的原生桌面 AI 团队：自动选模、交付打分、沉淀项目技能、可视化工作流编排与飞书远程控制。">
+  <meta property="og:image" content="./assets/readme-workspace.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="256x256" href="./assets/app-icon-256.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#" aria-label="糊来帮 anywork 首页">
+        <img class="brand-icon" src="./assets/app-icon-128.png" width="34" height="34" alt="">
+        <span class="brand-title">糊来帮</span>
+        <span class="brand-sub">anywork</span>
+      </a>
+
+      <nav class="site-nav" aria-label="主导航">
+        <a href="#preview">实机画面</a>
+        <a href="#features">核心能力</a>
+        <a href="#quickstart">快速上手</a>
+        <a href="https://github.com/ZR233/anywork/blob/main/design/README.md" target="_blank" rel="noopener">设计文档</a>
+        <a href="https://github.com/ZR233/anywork" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+
+      <a class="btn btn-primary btn-sm header-cta"
+         href="https://github.com/ZR233/anywork/releases/latest"
+         data-download="header">
+        下载最新版
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <a class="release-pill"
+             href="https://github.com/ZR233/anywork/releases/latest"
+             target="_blank"
+             rel="noopener"
+             data-release-notes>
+            <span class="status-dot" aria-hidden="true"></span>
+            <span data-release-pill-text>开源桌面多智能体工作台 · 查看最新 Release</span>
+          </a>
+
+          <h1 class="hero-title">住进你桌面的<br>自进化多智能体团队</h1>
+
+          <p class="hero-lead">
+            像对同事一样说出需求，主智能体会先理清目标，再把摸底、编码、验证和审查分给最合适的子智能体。每次干完活都会打分复盘，用得越久，选模越准、花钱越省。
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg"
+               href="https://github.com/ZR233/anywork/releases/latest"
+               data-download="windows">
+              <svg class="btn-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M2.5 3.8 9.2 2.9v6.5H2.5V3.8zm7.6-1 7.4-1v7.6h-7.4V2.8zM2.5 10.3h6.7v6.5l-6.7-.9v-5.6zm7.6 0h7.4v7.6l-7.4-1v-6.6z"/>
+              </svg>
+              <span>下载 Windows 安装包</span>
+              <span class="btn-badge" data-windows-meta>最新版 · x64</span>
+            </a>
+
+            <a class="btn btn-outline btn-lg"
+               href="https://github.com/ZR233/anywork/releases/latest"
+               data-download="linux-or-all">
+              <span data-secondary-cta-label>全部发行包 / Linux</span>
+            </a>
+          </div>
+
+          <p class="hero-meta">
+            <span>Windows 10/11 x64（单用户免提权安装，支持应用内更新）</span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <a href="https://github.com/ZR233/anywork/releases/latest" target="_blank" rel="noopener" data-release-notes>发行说明</a>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <a href="https://github.com/ZR233/anywork/releases/latest/download/SHA256SUMS.txt" target="_blank" rel="noopener" data-sha256-link>SHA-256 校验和</a>
+          </p>
+        </div>
+
+        <div class="hero-mascot" aria-hidden="true">
+          <div class="mascot-backdrop"></div>
+          <picture>
+            <source srcset="./assets/anywork-startup-cat.webp" type="image/webp">
+            <img class="mascot-img"
+                 src="./assets/anywork-startup-cat.png"
+                 width="360"
+                 height="360"
+                 alt="">
+          </picture>
+        </div>
+      </div>
+    </section>
+
+    <section class="metrics-bar" aria-label="原生性能实测基线">
+      <div class="container">
+        <dl class="metrics-list">
+          <div class="metric-item">
+            <dt>冷启动首屏</dt>
+            <dd>~0.5 秒</dd>
+          </div>
+          <div class="metric-item">
+            <dt>空载常驻内存</dt>
+            <dd>~180 MB</dd>
+          </div>
+          <div class="metric-item">
+            <dt>安装包体积</dt>
+            <dd data-installer-size-metric>~45 MB</dd>
+          </div>
+          <div class="metric-item">
+            <dt>原生架构</dt>
+            <dd>Flutter + Rust</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="preview" class="showcase-section">
+      <div class="container">
+        <div class="showcase-header">
+          <div>
+            <h2 class="section-title">真实工作台一眼看清</h2>
+            <p class="section-desc">不套浏览器外壳，所有会话调度、模型流式推理、工具编排与持久化均在单进程原生运行时内完成。</p>
+          </div>
+
+          <div class="tab-bar" role="tablist" aria-label="实机界面切换">
+            <button class="tab-btn is-active"
+                    type="button"
+                    role="tab"
+                    id="tab-workspace"
+                    aria-selected="true"
+                    aria-controls="showcase-panel"
+                    data-tab-index="0">
+              多智能体派活
+            </button>
+            <button class="tab-btn"
+                    type="button"
+                    role="tab"
+                    id="tab-eval"
+                    aria-selected="false"
+                    aria-controls="showcase-panel"
+                    tabindex="-1"
+                    data-tab-index="1">
+              交付后打分
+            </button>
+            <button class="tab-btn"
+                    type="button"
+                    role="tab"
+                    id="tab-archive"
+                    aria-selected="false"
+                    aria-controls="showcase-panel"
+                    tabindex="-1"
+                    data-tab-index="2">
+              模型长期档案
+            </button>
+            <button class="tab-btn"
+                    type="button"
+                    role="tab"
+                    id="tab-workflow"
+                    aria-selected="false"
+                    aria-controls="showcase-panel"
+                    tabindex="-1"
+                    data-tab-index="3">
+              工作流画布
+            </button>
+          </div>
+        </div>
+
+        <figure id="showcase-panel"
+                class="showcase-frame"
+                role="tabpanel"
+                aria-labelledby="tab-workspace">
+          <button class="frame-zoom-trigger"
+                  type="button"
+                  data-open-lightbox
+                  aria-label="放大查看当前实机截图">
+            <img id="showcase-img"
+                 class="showcase-img"
+                 src="./assets/readme-workspace.png"
+                 width="1264"
+                 height="681"
+                 alt="糊来帮主工作台：主智能体自动选模并依次调度探索者、执行者与审查者">
+          </button>
+          <figcaption class="showcase-caption">
+            <span id="showcase-caption-text">
+              主智能体拆解任务并自动选模，依次派出探索者摸底、执行者修复、审查者独立运行测试把关；右上角下拉菜单可随时查看每位成员的任务与模型。
+            </span>
+            <span class="zoom-hint">点击画面可放大查看原图</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="features" class="features-section">
+      <div class="container">
+        <div class="section-intro">
+          <h2 class="section-title">为什么把日常活交给糊来帮</h2>
+          <p class="section-desc">围绕真实工程协作打磨核心环节：谁来干、按什么规矩干、怎么验收沉淀、人不在电脑前如何指挥。</p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-block">
+            <h3 class="feature-title">分工协作，按实测评价自动选模</h3>
+            <p class="feature-body">
+              内置只读摸底的<strong>探索者</strong>、动手改码验证的<strong>执行者</strong>、在独立 Git 工作树并行干活不弄乱当前目录的<strong>工作树执行者</strong>，以及独立挑错的<strong>审查者</strong>。开启自动选模后，系统结合价格、免费/包月额度、首字延迟、输出吞吐率与本机历史评分，按<strong>经济、平衡、快速</strong>三种偏好挑选最合适的模型；任务收尾后自动后台复盘，把有效经验整理为项目级 Skill。
+            </p>
+          </article>
+
+          <article class="feature-block">
+            <h3 class="feature-title">可视化编排工作模式，支持零费用预演</h3>
+            <p class="feature-body">
+              日常问答用「简洁模式」即问即答；复杂工程切到「任务模式」，严格按“规划 → 更新设计 → 委派实施 → 核对成果 → 整体验收”推进，先出计划、你批准后再动手，发现设计偏差还能沿返工边退回。你也可以在流程图画布上自由拖拽阶段与跳转条件，保存前静态编译检查，并支持不调模型、不花钱的离线运行预演。
+            </p>
+          </article>
+
+          <article class="feature-block">
+            <h3 class="feature-title">飞书扫码接入，手机随时远程派活</h3>
+            <p class="feature-body">
+              在设置页扫码创建或连接飞书自建应用，直连飞书官方长连接接口，无需额外部署公网服务器或安装 Node.js 网关。谁能触发完全由本机掌控：陌生私聊仅生成待批准配对请求，群聊需单独授权并显式 <code>@</code> 机器人；人在路上发条飞书消息，桌面端的 AI 团队就能在关联项目里干活并把结果发回手机。
+            </p>
+          </article>
+
+          <article class="feature-block">
+            <h3 class="feature-title">多家模型混搭与本地 / SSH 一致工具箱</h3>
+            <p class="feature-body">
+              像打开本地文件夹一样直连 SSH 远程服务器目录，读写补丁、全文检索、LSP 代码导航、终端命令、联网搜索、MCP 扩展以及内置 Word / Excel / PowerPoint 办公技能开箱即用；实时展示上下文水位、缓存命中率与会话费用估算。
+            </p>
+            <div class="provider-strip" aria-label="内置账号模板与协议支持">
+              <span class="provider-chip">
+                <img src="./assets/providers/openai.svg" width="16" height="16" alt="">
+                OpenAI / ChatGPT
+              </span>
+              <span class="provider-chip">
+                <img src="./assets/providers/deepseek.svg" width="16" height="16" alt="">
+                DeepSeek
+              </span>
+              <span class="provider-chip">
+                <img src="./assets/providers/xai.svg" width="16" height="16" alt="">
+                xAI
+              </span>
+              <span class="provider-chip">
+                <img src="./assets/providers/zhipu.svg" width="16" height="16" alt="">
+                智谱
+              </span>
+              <span class="provider-chip">
+                <img src="./assets/providers/mimo.svg" class="logo-wide" width="24" height="16" alt="">
+                小米 MiMo
+              </span>
+              <span class="provider-chip provider-chip-text">
+                Antigravity / Ollama / OpenAI 兼容
+              </span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="quickstart" class="quickstart-section">
+      <div class="container quickstart-grid">
+        <div class="steps-col">
+          <h2 class="section-title">三步开启第一个任务</h2>
+          <ol class="step-list">
+            <li>
+              <span class="step-num">1</span>
+              <div>
+                <strong>添加模型账号</strong>
+                <p>打开「设置 → 账号 → 添加账号」，选用内置模板填入 API Key，或使用订阅账号登录、接入本地模型服务。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <div>
+                <strong>选择本地或 SSH 远程目录</strong>
+                <p>直接开启非项目新会话，或在左侧栏添加本地项目目录、通过 SSH 打开远端服务器工作区。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <div>
+                <strong>选定模式，说出想法</strong>
+                <p>按需选择「简洁」或「任务」工作模式、是否新建独立 Git 工作树，以及子智能体自动选模偏好，即可交由团队推进。</p>
+              </div>
+            </li>
+          </ol>
+
+          <div class="source-box">
+            <div class="source-header">
+              <span>从源码构建体验（Windows / Linux）</span>
+              <button class="copy-btn" type="button" data-copy-cmd="cargo xtask run-gui --demo">复制命令</button>
+            </div>
+            <pre class="source-code"><code>cargo xtask run-gui --demo</code></pre>
+          </div>
+        </div>
+
+        <aside id="download" class="download-card" aria-labelledby="download-card-title">
+          <div class="download-card-head">
+            <h2 id="download-card-title">获取最新发行版</h2>
+            <span class="version-tag" data-release-version-tag>Latest Release</span>
+          </div>
+
+          <p class="download-card-desc" data-release-summary>
+            所有下载入口直连 GitHub 最新正式版 Release，包含 Minisign 签名与 SHA-256 摘要核验。
+          </p>
+
+          <div class="download-rows">
+            <div class="download-row">
+              <div class="download-info">
+                <strong>Windows 桌面安装器</strong>
+                <span data-windows-asset-detail>Windows 10 / 11 (x86_64) · 单用户安装器 (.exe)</span>
+              </div>
+              <a class="btn btn-primary btn-sm"
+                 href="https://github.com/ZR233/anywork/releases/latest"
+                 data-download="windows">
+                下载 .exe
+              </a>
+            </div>
+
+            <div class="download-row">
+              <div class="download-info">
+                <strong>Linux Debian 安装包</strong>
+                <span data-linux-asset-detail>Ubuntu 22.04+ / Debian 12+ (amd64) · 详见最新 Release 资产</span>
+              </div>
+              <a class="btn btn-outline btn-sm"
+                 href="https://github.com/ZR233/anywork/releases/latest"
+                 data-download="linux-card">
+                <span data-linux-card-btn-text>前往下载</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="download-links">
+            <a href="https://github.com/ZR233/anywork/releases/latest" target="_blank" rel="noopener" data-release-notes>
+              最新 Release 页面
+            </a>
+            <a href="https://github.com/ZR233/anywork/releases/latest/download/SHA256SUMS.txt" target="_blank" rel="noopener" data-sha256-link>
+              SHA256SUMS.txt
+            </a>
+            <a href="https://github.com/ZR233/anywork/releases" target="_blank" rel="noopener">
+              历史版本列表
+            </a>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <img src="./assets/app-icon-128.png" width="22" height="22" alt="">
+        <span>糊来帮 · anywork</span>
+        <span class="footer-license">Apache-2.0 License</span>
+      </div>
+
+      <div class="footer-links">
+        <a href="https://github.com/ZR233/anywork/releases/latest" target="_blank" rel="noopener" data-release-notes>最新下载</a>
+        <a href="https://github.com/ZR233/anywork/blob/main/design/README.md" target="_blank" rel="noopener">架构设计</a>
+        <a href="https://github.com/ZR233/anywork/blob/main/CHANGELOG.md" target="_blank" rel="noopener">更新日志</a>
+        <a href="https://github.com/ZR233/anywork" target="_blank" rel="noopener">GitHub 仓库</a>
+      </div>
+    </div>
+  </footer>
+
+  <dialog id="lightbox" class="lightbox" aria-label="实机截图大图预览">
+    <div class="lightbox-bar">
+      <span id="lightbox-title" class="lightbox-title"></span>
+      <button class="lightbox-close" type="button" data-close-lightbox aria-label="关闭大图预览">关闭 Esc</button>
+    </div>
+    <img id="lightbox-img" class="lightbox-img" src="./assets/readme-workspace.png" alt="">
+  </dialog>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
