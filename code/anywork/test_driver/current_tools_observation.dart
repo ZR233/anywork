@@ -73,11 +73,14 @@ final class CurrentToolsObservation {
   }
 
   void requireSame(CurrentToolsObservation previous) {
-    requirePage();
     previous.requirePage();
+    if (collection?.error case final error?) {
+      throw StateError('Current tools read failed: $error');
+    }
     if (qualification != previous.qualification) {
       throw StaleCurrentTools('Current tools qualification changed');
     }
+    requirePage();
   }
 
   CurrentToolObservation? toolByPrefix(String prefix) {

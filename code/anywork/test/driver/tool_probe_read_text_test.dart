@@ -11,6 +11,63 @@ class _UnusedDriverFactory extends Fake
     implements CreateFinderFactory, CommandHandlerFactory {}
 
 void main() {
+  testWidgets('title-key probe observes its nearest real ExpansionTile', (
+    tester,
+  ) async {
+    const titleKey = 'conversation-current-collection-tools';
+    final probe = ToolProbeExtension(
+      owner: () => throw StateError('disclosure reads must not acquire owner'),
+    );
+    final factory = _UnusedDriverFactory();
+    Future<Map> observe(String key) async {
+      final pending = probe.call(
+        ToolProbe(driver.find.byValueKey(key), 'observe'),
+        tester,
+        factory,
+        factory,
+      );
+      // observe samples two scheduled frames with a 16ms timer between them.
+      // Drive the widget test's fake clock rather than awaiting real time.
+      for (var i = 0; i < 3; i++) {
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      final result = await pending;
+      return (result.toJson()['samples'] as List).last as Map;
+    }
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              Text('not a disclosure', key: ValueKey('plain-text')),
+              ExpansionTile(
+                initiallyExpanded: true,
+                title: Text('outer'),
+                children: [
+                  ExpansionTile(
+                    title: Text('tools', key: ValueKey(titleKey)),
+                    children: [Text('entry')],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    // The outer tile is open; its nested title belongs to the closed inner one.
+    expect((await observe(titleKey))['expanded'], false);
+    expect((await observe('plain-text')).containsKey('expanded'), false);
+    await tester.tap(find.byKey(const ValueKey(titleKey)));
+    await tester.pumpAndSettle();
+    expect((await observe(titleKey))['expanded'], true);
+    await tester.tap(find.byKey(const ValueKey(titleKey)));
+    await tester.pumpAndSettle();
+    expect((await observe(titleKey))['expanded'], false);
+  });
+
   testWidgets(
     'live output probe reads the mounted selectable payload, not labels',
     (tester) async {
@@ -48,16 +105,14 @@ void main() {
       );
 
       await render(first);
-      expect((await read('readText'))['texts'], ['Output']);
-      final before = await read('readSelectableText');
-      expect(before['texts'], [first]);
+      final before = await read('readText');
+      expect(before['texts'], [first, 'Output']);
       expect(before['visibleHeight'], greaterThan(0));
 
       await render(grown);
-      final after = await read('readSelectableText');
-      expect(after['texts'], [grown]);
+      final after = await read('readText');
+      expect(after['texts'], [grown, 'Output']);
       expect(after['visibleHeight'], greaterThan(0));
-      expect((await read('readText'))['texts'], ['Output']);
     },
   );
 }

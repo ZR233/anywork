@@ -291,8 +291,23 @@ class WaitEventsJourney {
     final parent = original.requireChildrenParentId();
     final existing = _childrenByTurn[turn];
     if (existing != null) {
-      _qualifiedChildren(before, existing, running: true);
-      return existing;
+      // An activity can retire its UI while the same Turn continues. Reopen
+      // only that Turn's actual parent, never rebind a previous display lease.
+      existing.requireMain(TimelineObservation.parse(before));
+      if (original.threadId != existing.threadId ||
+          parent != existing.parentId) {
+        throw StateError('Original completed-member parent changed');
+      }
+      try {
+        _qualifiedChildren(before, existing, running: true);
+        return existing;
+      } on StaleCurrentTools catch (error) {
+        observations['${turn}CompletedParentRetired'] = {
+          ...existing.evidence(),
+          'childrenGeneration': existing.generation,
+          'reason': error.toString(),
+        };
+      }
     }
     final opened = await _currentTools.openCompletedItems(
       turnId: turn,
@@ -348,26 +363,46 @@ class WaitEventsJourney {
       throw ArgumentError('Exactly one original call identity is required');
     }
     final clock = Stopwatch()..start();
-    final scope = await _openCurrentChildren(
-      turn,
-      timeout: _remaining(clock, timeout),
-    );
-    final returned = await waitFor(
-      (candidate) {
+    Map<String, dynamic>? returned;
+    _WaitChildrenScope? acceptedScope;
+    while (clock.elapsed < timeout) {
+      final before = await snapshot();
+      if (turnFailed(before) ||
+          turnId(before) != turn ||
+          turnStatus(before) != 'running') {
+        throw StateError('$label lost its original Running Turn before result');
+      }
+      try {
+        final scope = await _openCurrentChildren(
+          turn,
+          timeout: _remaining(clock, timeout),
+        );
+        final candidate = await snapshot();
         _qualifiedChildren(candidate, scope, running: true);
         final tool = callId == null
             ? _toolByCallPrefix(candidate, prefix!, parentId: scope.parentId)
             : _toolByCallId(candidate, callId, parentId: scope.parentId);
-        if (tool == null) return false;
-        if (tool['presentationContract'] != contract) {
-          throw StateError('$label has an unexpected typed tool contract');
+        if (tool != null) {
+          if (tool['presentationContract'] != contract) {
+            throw StateError('$label has an unexpected typed tool contract');
+          }
+          if (tool['status'] == 'succeeded') {
+            returned = candidate;
+            acceptedScope = scope;
+            break;
+          }
         }
-        return tool['status'] == 'succeeded';
-      },
-      label,
-      timeout: _remaining(clock, timeout),
-      abort: turnFailed,
-    );
+      } on StaleCurrentTools catch (error) {
+        observations['${label}CompletedRequalification'] = error.toString();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+    if (returned == null || acceptedScope == null) {
+      throw StateError(
+        '$label has no qualified completed result within $timeout',
+      );
+    }
+    final scope = acceptedScope;
     _remaining(clock, timeout);
     final child = _qualifiedChildren(returned, scope, running: true);
     final tool = callId == null
@@ -624,7 +659,6 @@ class WaitEventsJourney {
       }
       final current = CurrentToolsObservation.optional(last);
       if (current?.turnId == turn && current?.activityId != null) {
-        await _openCurrentChildren(turn, timeout: actionBudget());
         try {
           var page = await _currentTools.openTools(
             turnId: turn,
@@ -661,8 +695,21 @@ class WaitEventsJourney {
               }
             }
             if (predicate(fresh)) {
-              _remaining(clock, timeout);
-              return candidate;
+              // Do not bind completed members to the preceding model/tool
+              // activity while still searching for the target Waiting.
+              await _openCurrentChildren(turn, timeout: actionBudget());
+              candidate = await snapshot();
+              last = candidate;
+              final admitted =
+                  CurrentToolsObservation.optional(candidate) ??
+                  (throw StaleCurrentTools(
+                    'Current retired while opening its parent',
+                  ));
+              admitted.requireSame(fresh);
+              if (predicate(admitted)) {
+                _remaining(clock, timeout);
+                return candidate;
+              }
             }
             if (fresh.collection!.continuation == null) break;
             page = await _currentTools.next(fresh, timeout: actionBudget());
@@ -1833,10 +1880,14 @@ class WaitEventsJourney {
     String callId, {
     String? parentId,
   }) {
+    Map<String, dynamic>? match;
     for (final tool in _completedTools(snapshot, parentId: parentId)) {
-      if (tool['callId'] == callId) return tool;
+      if (tool['callId'] == callId) {
+        if (match != null) throw StateError('Ambiguous terminal call $callId');
+        match = tool;
+      }
     }
-    return null;
+    return match;
   }
 
   /// Fixture call ids are `{slug}-t{generation}-call`. Each business stage owns
@@ -1857,7 +1908,10 @@ class WaitEventsJourney {
     return match;
   }
 
-  /// Completed records are visible only in explicitly opened Children.
+  /// Terminal results are visible only in explicitly opened Children.
+  /// A sealed background-start receipt is a separate immutable item, not the
+  /// terminal result of the same call. Preserve it in history, but do not accept
+  /// it as result evidence or mistake it for a duplicate terminal.
   /// These records are never used by the live current Waiting predicates.
   Iterable<Map<String, dynamic>> _completedTools(
     Map<String, dynamic> snapshot, {
@@ -1880,7 +1934,7 @@ class WaitEventsJourney {
     if (child == null || !child.ready || child.appliedSets < 1) return;
     for (final item in child.items) {
       final tool = item.frozenFields()['tool'];
-      if (tool is Map) {
+      if (tool is Map && _terminalToolStatuses.contains(tool['status'])) {
         _completedItemParents[item.id] = scope.parentId;
         yield {...tool.cast<String, dynamic>(), 'itemId': item.id};
       }

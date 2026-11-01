@@ -248,6 +248,42 @@ void main() {
   });
 
   test(
+    'a retired page stays distinct from unready or failed current reads',
+    () {
+      final original = _parse(_snapshot());
+      final replaced = CurrentToolsObservation.optional(
+        _snapshot(generation: 2, ready: false, entries: []),
+      )!;
+      expect(
+        () => replaced.requireSame(original),
+        throwsA(isA<StaleCurrentTools>()),
+      );
+      final unready = CurrentToolsObservation.optional(
+        _snapshot(ready: false, entries: []),
+      )!;
+      expect(() => unready.requireSame(original), throwsStateError);
+      final failed = CurrentToolsObservation.optional(
+        _snapshot(
+          generation: 2,
+          ready: false,
+          error: 'storage read failed',
+          entries: [],
+        ),
+      )!;
+      expect(
+        () => failed.requireSame(original),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'original read error',
+            contains('storage read failed'),
+          ),
+        ),
+      );
+    },
+  );
+
+  test(
     'completed members require the observed parent without deriving one',
     () async {
       final missing = _snapshot(childrenParentId: null);
@@ -379,6 +415,40 @@ void main() {
   );
 
   test(
+    'revealing a clipped control rechecks the original page before tapping',
+    () async {
+      for (final replacement in [
+        _snapshot(generation: 2),
+        _snapshot(revision: 8),
+      ]) {
+        final ui = _ScriptedUi(_snapshot(continuation: 'cursor'));
+        final original = _parse(ui.snapshot);
+        var reveals = 0;
+        ui.onReveal = (_) {
+          reveals++;
+          ui.snapshot = replacement;
+        };
+        await expectLater(
+          ui.driver.next(original),
+          throwsA(isA<StaleCurrentTools>()),
+        );
+        expect(ui.actions, isEmpty);
+        expect(reveals, 1);
+
+        ui.snapshot = _snapshot(continuation: 'cursor');
+        ui.entryExpanded = false;
+        await expectLater(
+          ui.driver.inspect(original, original.collection!.entries.single),
+          throwsA(isA<StaleCurrentTools>()),
+        );
+        expect(ui.actions, isEmpty);
+        expect(ui.textReads, 0);
+        expect(reveals, 2);
+      }
+    },
+  );
+
+  test(
     'retirement and a changed display reject Next before any cursor action',
     () async {
       for (final replacement in [
@@ -453,6 +523,7 @@ void main() {
       final actions = <String>[];
       final driver = CurrentToolsDriver(
         read: () async => _snapshot(collection: false),
+        reveal: (_) async => throw StateError('No control is displayed'),
         tap: (key) async {
           actions.add(key);
         },
@@ -557,8 +628,10 @@ class _ScriptedUi {
   bool completedExpanded = true;
   int textReads = 0;
   void Function(String)? onTap;
+  void Function(String)? onReveal;
   CurrentToolsDriver get driver => CurrentToolsDriver(
     read: () async => snapshot,
+    reveal: (key) async => onReveal?.call(key),
     tap: (key) async {
       actions.add(key);
       onTap?.call(key);

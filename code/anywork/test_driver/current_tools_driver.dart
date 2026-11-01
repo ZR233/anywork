@@ -11,6 +11,7 @@ import 'tool_probe.dart';
 final class CurrentToolsDriver {
   CurrentToolsDriver({
     required this.read,
+    required this.reveal,
     required this.tap,
     required this.observe,
     required this.readEntryText,
@@ -18,6 +19,11 @@ final class CurrentToolsDriver {
   factory CurrentToolsDriver.session(FlutterDriverSession driver) =>
       CurrentToolsDriver(
         read: driver.readSnapshot,
+        reveal: (key) async {
+          await driver.sendCommand(
+            ScrollIntoView(find.byValueKey(key), alignment: 0.5),
+          );
+        },
         tap: (key) => driver.rawTap(find.byValueKey(key)),
         observe: (key) async {
           final result = await driver.sendCommand(
@@ -66,6 +72,7 @@ final class CurrentToolsDriver {
       );
 
   final Future<Map<String, dynamic>> Function() read;
+  final Future<void> Function(String key) reveal;
   final Future<void> Function(String key) tap;
   final Future<Map<String, dynamic>> Function(String key) observe;
   final Future<List<String>> Function(String key) readEntryText;
@@ -143,6 +150,8 @@ final class CurrentToolsDriver {
             return fresh;
           }
           if (!completedTapped) {
+            await reveal(key);
+            _sameOwner(original, await _current());
             await tap(key);
             completedTapped = true;
             _sameOwner(original, await _current());
@@ -191,6 +200,8 @@ final class CurrentToolsDriver {
           if (state['mounted'] == true &&
               state['expanded'] == false &&
               !collectionTapped) {
+            await reveal(key);
+            _sameOwner(original, await _current());
             await tap(key);
             collectionTapped = true;
             _sameOwner(original, await _current());
@@ -217,6 +228,17 @@ final class CurrentToolsDriver {
             }
             if (state['mounted'] == true &&
                 reloaded.add(current.qualification)) {
+              await reveal(key);
+              final visible = await _current();
+              _sameOwner(original, visible);
+              if (visible.qualification != current.qualification) {
+                throw StaleCurrentTools(
+                  'Collection changed while revealing reload',
+                );
+              }
+              if (visible.collection?.error case final error?) {
+                throw StateError('Current tools read failed: $error');
+              }
               await tap(key);
               _sameOwner(original, await _current());
             }
@@ -240,8 +262,11 @@ final class CurrentToolsDriver {
     if (page.continuation == null) {
       throw StateError('Current tools page has no continuation');
     }
-    await tap(StudioDriverKeyValues.currentCollectionNext('tools'));
     final clock = Stopwatch()..start();
+    final key = StudioDriverKeyValues.currentCollectionNext('tools');
+    await reveal(key);
+    (await _current()).requireSame(previous);
+    await tap(key);
     do {
       final current = await _current();
       _sameOwner(previous, current);
@@ -311,6 +336,8 @@ final class CurrentToolsDriver {
         );
       }
       if (shown['rangeExpanded'] == false) {
+        await reveal(openKey);
+        _sameEntry(original, entry, await _current());
         await tap(openKey);
       }
       final clock = Stopwatch()..start();
@@ -332,7 +359,11 @@ final class CurrentToolsDriver {
     if (state['expanded'] is! bool) {
       throw StateError('Current entry has no public expansion state');
     }
-    if (state['expanded'] == false) await tap(key);
+    if (state['expanded'] == false) {
+      await reveal(key);
+      _sameEntry(original, entry, await _current());
+      await tap(key);
+    }
     _sameEntry(original, entry, await _current());
     final texts = await readEntryText(key);
     current = await _current();

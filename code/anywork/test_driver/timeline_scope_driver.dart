@@ -142,9 +142,15 @@ final class TimelineScopeDriver {
     final turn = before.items.singleWhere(
       (item) => item.childrenParentId == parentId,
     );
-    final header = find.descendant(
-      of: find.byValueKey('chat-item:${turn.id}'),
-      matching: find.byType('TimelineActivityRow'),
+    final header = find.ancestor(
+      of: find.descendant(
+        of: find.byValueKey('chat-item:${turn.id}'),
+        matching: find.byType('TimelineActivityRow'),
+        firstMatchOnly: true,
+      ),
+      // The inner presentational Row can have empty hit-test space at its
+      // center. The real ListTile owns this disclosure's interactive header.
+      matching: find.byType('ListTile'),
       firstMatchOnly: true,
     );
     await reveal(header);
