@@ -40,8 +40,9 @@ pub(crate) struct StreamCompletionAccumulator {
     replay: super::replay::ReplayCollector,
     presentation_items: Vec<CompletionPresentationItem>,
     presentation_indexes: HashMap<String, usize>,
-    presentation_sizes: Vec<usize>,
     presentation_bytes: usize,
+    completed_member: Option<(usize, crate::runtime::ModelMemberState)>,
+    presentation_states: HashMap<String, crate::runtime::ModelMemberState>,
     text_output_bytes: usize,
     /// Charged high-water of each tool call's argument bytes, keyed by the accumulator identity the
     /// stream resolves an event to.
@@ -80,8 +81,9 @@ impl StreamCompletionAccumulator {
             replay: Default::default(),
             presentation_items: Vec::new(),
             presentation_indexes: HashMap::new(),
-            presentation_sizes: Vec::new(),
             presentation_bytes: 0,
+            completed_member: None,
+            presentation_states: HashMap::new(),
             text_output_bytes: 0,
             tool_output_bytes: HashMap::new(),
             tool_stream: ToolStream::new(),
@@ -335,8 +337,29 @@ impl StreamCompletionAccumulator {
             ModelStreamEvent::ResponsesContextItem { item } => {
                 self.responses_context_items.push(item);
             }
-            ModelStreamEvent::PresentationItem { item } => {
+            ModelStreamEvent::PresentationItem { item, state } => {
+                let state = state.ok_or_else(|| {
+                    PureError::LlmError(
+                        "response.output_item.done has contradictory item status".into(),
+                    )
+                })?;
+                let id = item.provider_item_id.clone();
+                if self
+                    .presentation_states
+                    .get(&id)
+                    .is_some_and(|old| *old != state)
+                {
+                    return Err(PureError::LlmError("conflicting model member state".into()));
+                }
+                let duplicate = self.presentation_indexes.contains_key(&id);
                 self.record_presentation_item(item)?;
+                self.presentation_states.insert(id.clone(), state);
+                if !duplicate {
+                    self.completed_member = Some((
+                        *self.presentation_indexes.get(&id).expect("recorded item"),
+                        state,
+                    ));
+                }
             }
             ModelStreamEvent::Replay(update) => self.replay.apply(update)?,
             ModelStreamEvent::WebSearchStarted { item_id, action } => {
@@ -452,33 +475,68 @@ impl StreamCompletionAccumulator {
     }
 
     fn record_presentation_item(&mut self, item: CompletionPresentationItem) -> Result<()> {
+        use crate::completion::{
+            CompletionPresentationItemKind as ItemKind, CompletionPresentationPartKind as PartKind,
+        };
+        let mut indexes = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
+        if item.provider_item_id.is_empty()
+            || item.parts.iter().any(|part| {
+                !indexes.insert((std::mem::discriminant(&part.kind), part.content_index))
+                    || part
+                        .provider_part_id
+                        .as_ref()
+                        .is_some_and(|id| id.is_empty() || !ids.insert(id))
+                    || !matches!(
+                        (item.kind, part.kind),
+                        (ItemKind::Text(_), PartKind::OutputText)
+                            | (
+                                ItemKind::Reasoning,
+                                PartKind::ReasoningText | PartKind::SummaryText
+                            )
+                    )
+            })
+        {
+            return Err(PureError::LlmError(
+                "invalid model member identity or part kind".into(),
+            ));
+        }
         let key = item.provider_item_id.clone();
-        let previous = self
-            .presentation_indexes
-            .get(&key)
-            .map(|&index| self.presentation_sizes[index])
-            .unwrap_or(0);
-        let retained = self.presentation_bytes - previous;
+        if let Some(&index) = self.presentation_indexes.get(&key) {
+            return if self.presentation_items[index] == item {
+                Ok(())
+            } else {
+                Err(PureError::LlmError(
+                    "conflicting frozen model member".into(),
+                ))
+            };
+        }
         let size = presentation_item_bytes(&item).ok_or_else(|| {
             PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
         })?;
-        let next = retained
+        let next = self
+            .presentation_bytes
             .checked_add(size)
             .filter(|&bytes| bytes <= MAX_OUTPUT_BYTES)
             .ok_or_else(|| {
                 PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
             })?;
-        if let Some(&index) = self.presentation_indexes.get(&key) {
-            self.presentation_items[index] = item;
-            self.presentation_sizes[index] = size;
-        } else {
-            self.presentation_indexes
-                .insert(key, self.presentation_items.len());
-            self.presentation_items.push(item);
-            self.presentation_sizes.push(size);
-        }
+        self.presentation_indexes
+            .insert(key, self.presentation_items.len());
+        self.presentation_items.push(item);
         self.presentation_bytes = next;
         Ok(())
+    }
+
+    pub(crate) fn take_completed_member(
+        &mut self,
+    ) -> Option<(
+        &CompletionPresentationItem,
+        crate::runtime::ModelMemberState,
+    )> {
+        self.completed_member
+            .take()
+            .map(|(index, state)| (&self.presentation_items[index], state))
     }
 
     pub(crate) fn finish(&mut self, event_tx: &AgentEventSender) -> Result<CompletionResponse> {
@@ -805,8 +863,11 @@ fn presentation_item_bytes(item: &CompletionPresentationItem) -> Option<usize> {
     // Include fixed record and index costs so zero-length items cannot grow without a bound.
     let base = std::mem::size_of::<CompletionPresentationItem>()
         .checked_add(std::mem::size_of::<(String, Option<u32>)>())?
-        .checked_add(std::mem::size_of::<usize>())?
-        .checked_add(item.provider_item_id.len().checked_mul(2)?)?;
+        .checked_add(std::mem::size_of::<(
+            String,
+            crate::runtime::ModelMemberState,
+        )>())?
+        .checked_add(item.provider_item_id.len().checked_mul(3)?)?;
     item.parts.iter().try_fold(base, |bytes, part| {
         bytes
             .checked_add(std::mem::size_of::<CompletionPresentationPart>())?
@@ -845,4 +906,120 @@ fn stream_orchestration_metrics(
 
 struct ContentPart {
     text: String,
+}
+
+#[cfg(test)]
+mod member_tests {
+    use super::*;
+    use crate::completion::{CompletionPresentationItemKind, CompletionPresentationPartKind};
+    use crate::runtime::ModelMemberState;
+
+    fn member() -> CompletionPresentationItem {
+        CompletionPresentationItem {
+            provider_item_id: "real-provider-id".into(),
+            output_index: Some(3),
+            kind: CompletionPresentationItemKind::Reasoning,
+            parts: vec![CompletionPresentationPart {
+                content_index: 2,
+                provider_part_id: Some("real-part-id".into()),
+                kind: CompletionPresentationPartKind::SummaryText,
+                text: "authoritative summary".into(),
+            }],
+        }
+    }
+
+    fn apply(
+        acc: &mut StreamCompletionAccumulator,
+        item: CompletionPresentationItem,
+    ) -> Result<()> {
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::PresentationItem {
+                item,
+                state: Some(ModelMemberState::Interrupted),
+            },
+            &events,
+        )
+    }
+
+    #[test]
+    fn validated_member_is_frozen_before_handoff_and_final_reuses_it() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let item = member();
+        apply(&mut acc, item.clone()).unwrap();
+        let (completed, state) = acc.take_completed_member().unwrap();
+        assert_eq!(completed, &item);
+        assert_eq!(state, ModelMemberState::Interrupted);
+        apply(&mut acc, item.clone()).unwrap();
+        assert!(
+            acc.take_completed_member().is_none(),
+            "same authority does not resubmit"
+        );
+        let mut changed = item.clone();
+        changed.parts[0].text = "overwrite".into();
+        assert!(
+            apply(&mut acc, changed)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting")
+        );
+        assert_eq!(acc.presentation_items, vec![item.clone()]);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::Completed {
+                response_id: Some("response".into()),
+            },
+            &events,
+        )
+        .unwrap();
+        assert_eq!(acc.finish(&events).unwrap().presentation_items, vec![item]);
+    }
+
+    #[test]
+    fn member_identity_parts_kind_and_budget_fail_without_handoff() {
+        let base = member();
+        let mut invalid = Vec::new();
+        let mut item = base.clone();
+        item.provider_item_id.clear();
+        invalid.push(item);
+        let mut item = base.clone();
+        item.parts.push(item.parts[0].clone());
+        invalid.push(item);
+        let mut item = base.clone();
+        let mut duplicate_index = item.parts[0].clone();
+        duplicate_index.provider_part_id = Some("other-part-id".into());
+        item.parts.push(duplicate_index);
+        invalid.push(item);
+        let mut item = base.clone();
+        let mut duplicate_id = item.parts[0].clone();
+        duplicate_id.content_index += 1;
+        item.parts.push(duplicate_id);
+        invalid.push(item);
+        let mut item = base.clone();
+        item.kind = CompletionPresentationItemKind::Text(TraceTextChannel::Final);
+        invalid.push(item);
+        let mut item = base;
+        item.parts[0].text = "x".repeat(MAX_OUTPUT_BYTES);
+        invalid.push(item);
+        for item in invalid {
+            let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+            assert!(apply(&mut acc, item).is_err());
+            assert!(acc.take_completed_member().is_none());
+            assert!(acc.presentation_items.is_empty());
+        }
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        assert!(
+            acc.apply(
+                ModelStreamEvent::PresentationItem {
+                    item: member(),
+                    state: None
+                },
+                &events
+            )
+            .is_err()
+        );
+        assert!(acc.take_completed_member().is_none());
+        assert!(acc.presentation_items.is_empty());
+    }
 }

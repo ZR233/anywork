@@ -41,6 +41,8 @@ import '../conversation/composer/view_models/composer_view_model.dart';
 import '../status/thread_status_bar.dart';
 import '../conversation/timeline/widgets/conversation_activity_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
+import '../conversation/timeline/connectors/conversation_current_connector.dart';
+import '../conversation/timeline/connectors/timeline_children_connector.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../todo/todo_panel.dart';

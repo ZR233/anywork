@@ -1,14 +1,13 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart'
-    show Key, Listenable, ValueKey, ValueNotifier;
+import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
 import 'package:flutter/widgets.dart' show ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
-import '../../features/conversation/timeline/state/timeline_entry.dart';
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
+import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_view_state.dart';
 import '../../features/conversation/timeline/state/timeline_ui_controllers.dart';
 import '../../features/conversation/timeline/view_models/timeline_message_controller.dart';
@@ -17,18 +16,19 @@ export '../../features/conversation/timeline/state/timeline_view_state.dart';
 
 const Object _unset = Object();
 
-/// One presentation generation. It borrows the SDK content resource, owns its
-/// loaded atomic references and UI resources, and never owns a second feed.
+/// One presentation generation. Only its component controller owns loaded messages.
 final class TimelineDisplayLease implements TimelineUiControllers {
   TimelineDisplayLease({
     required this.threadId,
     required this.generation,
-    required this.timelineEpoch,
+    required this.demand,
     required this.content,
+    this.selectionId,
+    this.selectionStartedMicros,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
-      _controller,
+      _controller!,
       generation: generation,
       imageResources: imageResources,
     );
@@ -36,21 +36,22 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   final String threadId;
   final int generation;
-  final String timelineEpoch;
+  final ReadDemand demand;
   final ConversationContent content;
+  final int? selectionId;
+  final int? selectionStartedMicros;
   final TimelineImageResources imageResources;
-  final InMemoryChatController _controller;
+  InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
     keepScrollOffset: false,
   );
-  late final TimelineMessageController _presentation;
+  TimelineMessageController? _presentation;
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   final Set<ConversationQueryScope> _ownedQueries = {};
   final Map<ConversationQueryScope, Future<void>> _closingQueries = {};
   ConversationQueryScope? _queries;
-  ConversationQueryCursor? _before;
-  ConversationCompletionCursor? _completedCursor;
+  String? _before;
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
   bool _hasOlder = false;
   bool _mounted = false;
@@ -58,11 +59,63 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   bool _disposed = false;
   int _mutations = 0;
   Object? queryCleanupError;
+  final Set<TimelineChildrenDisplay> _childrenDisplays = {};
+  TimelineCurrentDisplay? _currentDisplay;
+  TimelineContentLayout? _firstContentLayout;
+  int _appliedSets = 0;
+  int _appliedPrepends = 0;
+  int _appliedAppends = 0;
+
+  TimelineContentLayout? get firstContentLayout => _firstContentLayout;
+  int get appliedSets => _appliedSets;
+  int get appliedPrepends => _appliedPrepends;
+  int get appliedAppends => _appliedAppends;
+
+  Iterable<TimelineChildrenDisplay> get childrenDisplays sync* {
+    if (_retired) return;
+    for (final display in _childrenDisplays) {
+      if (display.isCurrent) yield display;
+    }
+  }
+
+  /// Registers only a resource borrow. It neither opens a Children scope nor copies messages.
+  void Function() registerChildrenDisplay(TimelineChildrenDisplay display) {
+    if (_retired) return () {};
+    _childrenDisplays.add(display);
+    return () => _childrenDisplays.remove(display);
+  }
+
+  TimelineCurrentDisplay? get currentDisplay {
+    if (_retired) return null;
+    final display = _currentDisplay;
+    return display != null && display.isCurrent ? display : null;
+  }
+
+  /// Borrows only the current mounted resource. Querying never opens its read scope.
+  void Function() registerCurrentDisplay(TimelineCurrentDisplay display) {
+    if (_retired) return () {};
+    _currentDisplay = display;
+    return () {
+      if (identical(_currentDisplay, display)) _currentDisplay = null;
+    };
+  }
+
+  void _recordBatch(ChatPlacement placement) {
+    switch (placement) {
+      case ChatPlacement.set:
+        _appliedSets++;
+      case ChatPlacement.prepend:
+        _appliedPrepends++;
+      case ChatPlacement.append:
+        _appliedAppends++;
+    }
+  }
 
   @override
   Key get chatKey => ValueKey('timeline-chat:$threadId:$generation');
   @override
-  ChatController get controller => _controller;
+  ChatController get controller =>
+      _controller ?? (throw StateError('Timeline display is released'));
   @override
   ScrollController get scrollController => _scrollController;
   @override
@@ -70,42 +123,24 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   bool get isMounted => _mounted;
   bool get isReleased => _released.isCompleted;
   TimelineDisplayMode get mode => _mode;
-  ConversationCompletionCursor? get completedCursor => _completedCursor;
-  String? get olderCursor => _before?.token;
+  String? get olderCursor => _before;
   bool get hasOlder => _hasOlder;
-  int get loadedCount => _presentation.length;
-  Iterable<ConversationItem> get items => _presentation.items;
+  int get loadedCount => _controller?.messages.length ?? 0;
   Future<void> get released => _released.future;
-
-  TimelineEntry? presentationFor(String itemId) =>
-      _presentation.ownerOf(itemId);
-  Listenable? memberObservation(String itemId) =>
-      _presentation.memberObservation(itemId);
-  ConversationItem? itemOf(String itemId) => _presentation.item(itemId);
-  ConversationDetailRef? detailRef(
-    String itemId,
-    ThreadContentFieldView field,
-  ) => itemOf(itemId)?.detailFor(field);
 
   ConversationQueryScope? get queries {
     if (_retired) return null;
     final existing = _queries;
     if (existing != null && existing.isActive) return existing;
     if (existing != null) unawaited(_settleQueries(existing));
-    final scope = content.openScope(
-      timelineEpoch: timelineEpoch,
-      generation: generation,
-    );
+    final scope = content.openScope(generation: generation);
     _ownedQueries.add(scope);
     return _queries = scope;
   }
 
   ConversationQueryScope? openDetailQueries() {
     if (_retired) return null;
-    final scope = content.openScope(
-      timelineEpoch: timelineEpoch,
-      generation: generation,
-    );
+    final scope = content.openScope(generation: generation);
     _ownedQueries.add(scope);
     return scope;
   }
@@ -146,6 +181,8 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   Future<void> retire() {
     if (!_retired) {
       _retired = true;
+      _childrenDisplays.clear();
+      _currentDisplay = null;
       imageResources.retire();
       retirement.value = true;
       _queries = null;
@@ -194,16 +231,19 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       return;
     }
     _disposed = true;
-    _controller.operationsStream.listen(
+    final controller = _controller!;
+    controller.operationsStream.listen(
       (_) {},
       onDone: () {
         if (!_released.isCompleted) _released.complete();
       },
     );
-    _presentation.dispose();
+    _presentation?.dispose();
+    _presentation = null;
     imageResources.release();
     retirement.dispose();
-    _controller.dispose();
+    controller.dispose();
+    _controller = null;
     _scrollController.dispose();
   }
 }
@@ -229,6 +269,63 @@ final class TimelineSessionOwner {
   bool _bindingConsumer = false;
   bool _closed = false;
   Future<CloseReport>? _closing;
+  ReadDemand? _readDemand;
+  final Stopwatch _layoutClock = Stopwatch()..start();
+  String? _selectionTarget;
+  int _visibleSelectionId = 0;
+  int? _selectionStartedMicros;
+
+  int get monotonicMicros => _layoutClock.elapsedMicroseconds;
+
+  /// Called at AppGraph's accepted visible selection boundary, before opening its read demand.
+  void noteVisibleSelection(String? threadId) {
+    if (_closed || _selectionTarget == threadId) return;
+    _selectionTarget = threadId;
+    _visibleSelectionId++;
+    _selectionStartedMicros = threadId == null ? null : monotonicMicros;
+  }
+
+  /// Receives a timestamp captured after a real nonempty content subtree completed layout.
+  /// The witness must check actual visibility at frame end; this owner rechecks original identity.
+  void recordContentLayout(
+    TimelineDisplayLease lease,
+    String itemId,
+    int layoutCompletedMicros,
+  ) {
+    final started = lease.selectionStartedMicros;
+    final selectionId = lease.selectionId;
+    if (_closed ||
+        !identical(_current, lease) ||
+        lease.isRetired ||
+        !lease.isMounted ||
+        lease.firstContentLayout != null ||
+        _selectionTarget != lease.threadId ||
+        selectionId != _visibleSelectionId ||
+        started == null ||
+        selectionId == null ||
+        layoutCompletedMicros < started ||
+        layoutCompletedMicros > monotonicMicros ||
+        !lease.controller.messages.any((message) => message.id == itemId)) {
+      return;
+    }
+    lease._firstContentLayout = TimelineContentLayout(
+      selectionId: selectionId,
+      generation: lease.generation,
+      itemId: itemId,
+      selectionStartedMicros: started,
+      layoutCompletedMicros: layoutCompletedMicros,
+    );
+  }
+
+  /// Updated from the actual viewport before the first consumer is attached.
+  void updateReadDemand(ReadDemand demand) {
+    if (_closed) return;
+    _readDemand = demand;
+    final session = _observedSession;
+    if (session != null && _consumerObservation == null) {
+      _attachConsumer(_selection, session);
+    }
+  }
 
   TimelineDisplayLease? lease(String threadId) {
     final value = _current;
@@ -315,11 +412,15 @@ final class TimelineSessionOwner {
     // attachConsumer may synchronously open a feed and notify SDK observers
     // before returning its lease. A nested selection waits for this one local
     // acquisition to return, so A -> B -> A cannot bind over its provisional A.
-    if (_bindingConsumer || !_selected(selection, session)) return;
+    final demand = _readDemand;
+    if (_bindingConsumer || !_selected(selection, session) || demand == null) {
+      return;
+    }
     _bindingConsumer = true;
     try {
       final observation = session.content.attachConsumer(
         _TimelineConsumer(this, selection, session),
+        demand: demand,
       );
       if (_selected(selection, session)) {
         _consumerObservation = observation;
@@ -375,60 +476,55 @@ final class TimelineSessionOwner {
   Future<void> _accept(
     int selection,
     ConversationSession session,
-    ConversationContentFrame frame,
+    ChatBatch batch,
   ) => _serialize(() async {
     if (!_selected(selection, session)) return;
-    switch (frame) {
-      case ConversationBaselineFrame(:final baseline):
-        if (_current != null) {
-          throw const ConversationContinuityError(
-            'Unexpected repeated baseline',
-          );
-        }
-        await _baseline(selection, session, baseline);
-      case ConversationResetFrame(:final baseline):
-        await _baseline(selection, session, baseline);
-      case ConversationCompletedBatchFrame(:final batch):
-        final current = _current;
-        final cursor = current?._completedCursor;
-        if (current == null ||
-            cursor == null ||
-            batch.timelineEpoch != current.timelineEpoch ||
-            batch.fromSeq != cursor.appendSeq) {
-          throw const ConversationContinuityError(
-            'Completion position mismatch',
-          );
-        }
-        await current._mutate(() => current._presentation.append(batch.items));
-        if (!_selected(selection, session) ||
-            !identical(_current, current) ||
-            current.isRetired) {
-          return;
-        }
-        current._completedCursor = ConversationCompletionCursor(
-          timelineEpoch: batch.timelineEpoch,
-          appendSeq: batch.throughSeq,
-        );
-        _publishState(
-          hasNewOutput: current.mode == TimelineDisplayMode.history,
-        );
+    if (batch.placement == ChatPlacement.set) {
+      await _set(selection, session, batch);
+      return;
+    }
+    final current = _current;
+    if (current == null || current.isRetired) {
+      throw const ConversationContinuityError('Chat has no active display');
+    }
+    final presentation = current._presentation!;
+    await current._mutate(() => presentation.applyBatch(batch));
+    if (!_selected(selection, session) ||
+        !identical(_current, current) ||
+        current.isRetired) {
+      return;
+    }
+    current._recordBatch(batch.placement);
+    if (batch.placement == ChatPlacement.prepend) {
+      current._before = batch.before;
+      current._hasOlder = batch.before != null;
+      _publishState(isLoadingOlder: false, olderError: null);
+    } else if (batch.messages.isNotEmpty) {
+      _publishState(hasNewOutput: current.mode == TimelineDisplayMode.history);
     }
   });
 
-  Future<void> _baseline(
+  Future<void> _set(
     int selection,
     ConversationSession session,
-    ConversationBaseline baseline,
+    ChatBatch batch,
   ) async {
     final next = TimelineDisplayLease(
       threadId: session.threadId,
       generation: ++_generation,
-      timelineEpoch: baseline.timelineEpoch,
+      demand: _readDemand!,
       content: session.content,
+      selectionId: _selectionTarget == session.threadId
+          ? _visibleSelectionId
+          : null,
+      selectionStartedMicros: _selectionTarget == session.threadId
+          ? _selectionStartedMicros
+          : null,
     );
     _preparingDisplays.add(next);
     try {
-      await next._mutate(() => next._presentation.initialize(baseline.items));
+      final presentation = next._presentation!;
+      await next._mutate(() => presentation.applyBatch(batch));
     } catch (_) {
       _preparingDisplays.remove(next);
       _retire(next);
@@ -439,9 +535,9 @@ final class TimelineSessionOwner {
       _retire(next);
       return;
     }
-    next._before = baseline.before;
-    next._hasOlder = baseline.hasOlder;
-    next._completedCursor = baseline.completedCursor;
+    next._before = batch.before;
+    next._recordBatch(batch.placement);
+    next._hasOlder = batch.before != null;
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
@@ -559,29 +655,21 @@ final class TimelineSessionOwner {
     try {
       final scope = current.queries;
       if (scope == null) return;
-      final page = await scope.page(before: before);
-      await _serialize(() async {
-        if (!identical(_current, current) ||
-            current.isRetired ||
-            !scope.isActive) {
-          return;
-        }
-        if (page.threadId != current.threadId ||
-            page.timelineEpoch != current.timelineEpoch ||
-            page.hasOlder && (page.before == null || page.before == before)) {
-          throw const ConversationContinuityError(
-            'History page did not advance',
-          );
-        }
-        await current._mutate(() async {
-          await current._presentation.prepend(page.items);
-        });
-        if (!identical(_current, current) || current.isRetired) return;
-        // Advance by atoms, even when the complete page joined one existing group.
-        current._before = page.before;
-        current._hasOlder = page.hasOlder;
-        _publishState(isLoadingOlder: false, olderError: null);
-      });
+      // The SDK performs IO outside admission, then resolves only after the same
+      // captured consumer applied the Prepend. Do not insert the returned batch twice.
+      await scope.loadOlder(
+        before: before,
+        demand: _readDemand ?? current.demand,
+      );
+      if (!identical(_current, current) ||
+          current.isRetired ||
+          !scope.isActive) {
+        return;
+      }
+      if (current._before == before) {
+        throw const ConversationContinuityError('History page did not advance');
+      }
+      _publishState(isLoadingOlder: false, olderError: null);
     } catch (error) {
       if (identical(_current, current) && !current.isRetired) {
         _publishState(isLoadingOlder: false, olderError: error);
@@ -673,12 +761,12 @@ final class TimelineSessionOwner {
   }
 }
 
-final class _TimelineConsumer implements ConversationCompletionConsumer {
+final class _TimelineConsumer implements ConversationBatchConsumer {
   const _TimelineConsumer(this.owner, this.selection, this.session);
   final TimelineSessionOwner owner;
   final int selection;
   final ConversationSession session;
   @override
-  Future<void> accept(ConversationContentFrame frame) =>
-      owner._accept(selection, session, frame);
+  Future<void> applyBatch(ChatBatch batch) =>
+      owner._accept(selection, session, batch);
 }

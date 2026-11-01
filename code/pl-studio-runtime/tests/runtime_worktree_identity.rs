@@ -2,8 +2,8 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ObservedResourceKind, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-    TimelinePageQuery,
+    ChatPlacement, ChatScope, ContentRange, ContentRef, ObservedResourceKind, PayloadData,
+    ReadDemand, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -14,6 +14,119 @@ use pl_studio_runtime::{
 };
 use std::{path::Path, time::Duration};
 use support::{Environment, completed_prompt, git, held_reply, prompt_step, reached};
+
+// Read only the public frozen payload and explicit body references. Checkpoint
+// decoding below verifies workspace identity, never supplies chat text.
+async fn public_bytes(
+    reader: &pl_studio_runtime::ConversationReader,
+    reference: &ContentRef,
+    len: u64,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut generation = None;
+    while (bytes.len() as u64) < len {
+        let offset = bytes.len() as u64;
+        let window = reader
+            .read_content(
+                reference,
+                ContentRange {
+                    offset,
+                    max_bytes: (len - offset).min(64 * 1024) as u32,
+                },
+            )
+            .await?;
+        ensure!(window.offset == offset && window.sealed && window.available_through == len);
+        ensure!(!window.bytes.is_empty() && window.bytes.len() as u64 <= len - offset);
+        ensure!(
+            generation
+                .as_ref()
+                .is_none_or(|value| value == &window.generation)
+        );
+        generation = Some(window.generation);
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+async fn public_history(
+    runtime: &pl_studio_runtime::StudioRuntime,
+    id: &str,
+) -> Result<Vec<(String, serde_json::Value, Vec<Vec<u8>>)>> {
+    let demand = ReadDemand {
+        max_items: 3,
+        max_bytes: 64 * 1024,
+    };
+    let mut feed = runtime
+        .open_conversation_feed(id, ChatScope::Main, demand)
+        .await?;
+    let reader = feed.reader().clone();
+    let result = async {
+        ensure!(feed.thread_id() == id && reader.thread_id() == id);
+        let mut batch = loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), feed.recv())
+                .await??
+                .context("public history feed ended before Set")?;
+            if let pl_studio_runtime::ConversationEvent::Chat { batch } = event {
+                break *batch;
+            }
+        };
+        ensure!(batch.placement == ChatPlacement::Set && batch.current.is_some());
+        let mut pages = Vec::new();
+        loop {
+            let mut page = Vec::new();
+            for message in batch.messages {
+                let raw = match message.payload {
+                    PayloadData::Inline { bytes } => bytes,
+                    PayloadData::Deferred {
+                        reference,
+                        byte_length,
+                    } => public_bytes(&reader, &reference, byte_length).await?,
+                };
+                let value: serde_json::Value = serde_json::from_slice(&raw)?;
+                ensure!(value["contract"] == "anywork.chat/1");
+                let mut bodies = Vec::new();
+                for body in value["bodies"].as_array().context("public body manifest")? {
+                    let bytes = if let Some(inline) = body.get("inline") {
+                        serde_json::from_value::<Vec<u8>>(inline.clone())?
+                    } else {
+                        public_bytes(
+                            &reader,
+                            &serde_json::from_value(body["reference"].clone())?,
+                            body["byteLength"].as_u64().context("body length")?,
+                        )
+                        .await?
+                    };
+                    ensure!(Some(bytes.len() as u64) == body["byteLength"].as_u64());
+                    bodies.push(bytes);
+                }
+                page.push((message.id, value, bodies));
+            }
+            pages.splice(0..0, page);
+            let Some(before) = batch.before else {
+                break;
+            };
+            batch = reader.load_older(&before, demand).await?;
+            ensure!(batch.placement == ChatPlacement::Prepend && batch.current.is_none());
+            ensure!(
+                batch.before.as_ref() != Some(&before),
+                "history continuation did not advance"
+            );
+        }
+        let identities: std::collections::HashSet<_> = pages.iter().map(|(id, _, _)| id).collect();
+        ensure!(identities.len() == pages.len());
+        Ok(pages)
+    }
+    .await;
+    feed.request_close();
+    reader.request_close();
+    let producer = feed.close().await;
+    let read = reader.close().await;
+    let pages =
+        result.with_context(|| format!("history cleanup: producer={producer:?}, read={read:?}"))?;
+    producer?;
+    read?;
+    Ok(pages)
+}
 
 async fn preview(
     runtime: &pl_studio_runtime::StudioRuntime,
@@ -723,20 +836,14 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         env.restart().await?;
         let history = support::saved(&env.home, &root.thread.id).await?;
         let original_snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
-        let query = TimelinePageQuery::default();
-        // A page value does not retain a cold Session. Hold the same explicit
-        // query scope across subscription and recovery, as production readers do.
-        let reader = env.runtime.timeline_reader(&root.thread.id).await?;
-        let original_page = reader.page(&query).await?;
+        let original_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
-            original_page.thread_id == root.thread.id
-                && !original_page.has_older
-                && original_page.items.iter().any(|item| {
-                    item.fields.iter().any(|field| {
-                        field.field == pl_protocol::ThreadContentField::Text
-                            && field.text == "saved missing-site history"
-                    })
-                }),
+            original_page.iter().any(|(_, envelope, bodies)| {
+                envelope["type"] == "text"
+                    && bodies
+                        .iter()
+                        .any(|bytes| bytes == b"saved missing-site history")
+            }),
             "original complete history did not contain the saved reply"
         );
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
@@ -767,7 +874,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && snapshot.thread.workspace_path == root.thread.workspace_path,
             "history subscription lost the original Thread/workspace identity"
         );
-        let subscribed_page = env.runtime.timeline_page(&root.thread.id, &query).await?;
+        let subscribed_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
             subscribed_page == original_page,
             "missing-worktree subscription lost original history content: \
@@ -886,7 +993,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         );
         ensure!(
             env.runtime.thread_snapshot(&root.thread.id).await? == original_snapshot
-                && env.runtime.timeline_page(&root.thread.id, &query).await? == original_page
+                && public_history(&env.runtime, &root.thread.id).await? == original_page
                 && env
                     .runtime
                     .runtime_snapshot()

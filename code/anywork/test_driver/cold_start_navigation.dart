@@ -168,6 +168,8 @@ Future<Map<String, Object?>> restoreColdStartTarget(
     initial ??= <String, Object?>{
       'selectedProjectId': _stringOf(navigation['selectedProjectId']),
       'selectedThreadId': _stringOf(navigation['selectedThreadId']),
+      'visibleThreadId': _stringOf(navigation['visibleThreadId']),
+      'presentationThreadId': _stringOf(navigation['presentationThreadId']),
       'isStartPage': navigation['isStartPage'],
       'projectFactId': _stringOf(projectMap?['id']),
     };
@@ -201,9 +203,18 @@ Future<Map<String, Object?>> restoreColdStartTarget(
     }
     final selectedProject = _stringOf(navigation['selectedProjectId']);
     final selectedThread = _stringOf(navigation['selectedThreadId']);
+    final visibleThread = _stringOf(navigation['visibleThreadId']);
+    final presentationThread = _stringOf(navigation['presentationThreadId']);
+    final openingTarget =
+        visibleThread == identity.threadId ||
+        presentationThread == identity.threadId ||
+        timeline?.threadId == identity.threadId;
     lastFacts = <String, Object?>{
       'selectedProjectId': selectedProject,
       'selectedThreadId': selectedThread,
+      'visibleThreadId': visibleThread,
+      'presentationThreadId': presentationThread,
+      'openingTarget': openingTarget,
       'isStartPage': navigation['isStartPage'],
       'timelineThreadId': timeline?.threadId,
       'timelineReady': timeline?.ready,
@@ -211,12 +222,13 @@ Future<Map<String, Object?>> restoreColdStartTarget(
     };
     if (selectedProject == identity.workspaceId &&
         selectedThread == identity.threadId) {
-      // 恢复出的“已选中但未打开”会话：走产品自己的显式打开入口。
-      if (await log.attempt(
-        driver,
-        action: 'openSelectedThread',
-        key: 'studio-open-selected-thread',
-      )) {
+      // 已打开／正在打开时没有该按钮，也不能重放已经开始的 open。
+      if (!openingTarget &&
+          await log.attempt(
+            driver,
+            action: 'openSelectedThread',
+            key: 'studio-open-selected-thread',
+          )) {
         await onStage('requested_open');
       }
     } else if (selectedProject != identity.workspaceId) {

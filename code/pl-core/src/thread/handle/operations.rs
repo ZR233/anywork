@@ -216,6 +216,8 @@ impl ThreadHandle {
             output_refusal_rx,
             deferred_output_releases: Default::default(),
             pending_output_claim: None,
+            model_members: None,
+            pending_model_members: Vec::new(),
             resources: None,
             retry_plan: None,
             published,

@@ -58,6 +58,7 @@ struct SessionTool {
     bots: BotRuntime,
     source_thread_id: String,
     operation: Operation,
+    reads: content::ReadOwners,
 }
 
 impl std::fmt::Debug for SessionTool {
@@ -89,7 +90,7 @@ pub(crate) fn registrations(
             Operation::List => ("List anywork sessions across projects with status and pagination. Use returned session IDs, never guess IDs.", schemars::schema_for!(ListInput).to_value()),
             Operation::Get => ("Read a session's current state, model and pending interactions without running it.", schemars::schema_for!(GetInput).to_value()),
             Operation::Search => ("Search complete visible message text (including Chinese) across anywork sessions. Continue with the returned cursor until complete; a partial page is not an exhaustive search.", schemars::schema_for!(content::SearchInput).to_value()),
-            Operation::Read => ("Read session message history and attachment references. Use itemId and the page's timelineEpoch, with continuation when supplied, to read the full text of a long message.", schemars::schema_for!(content::ReadInput).to_value()),
+            Operation::Read => ("Read bounded session Chat pages and content. Supply demand for pages; retain returned readScope with every before/manifest continuation. Use itemId to list contents, then copy ContentRef and supply range for bytes. before=null means only history EOF; closeReadScope explicitly releases that readScope. Unknown or retired scopes cannot resume.", content::read_schema()),
             Operation::Send => ("Send the user's requested message to an existing anywork session. This starts or steers execution like a desktop user message. Attachments must be IDs already attached to your own bot session. Acceptance is not task completion; use get_session/read_session_messages for the result.", schemars::schema_for!(SendInput).to_value()),
             Operation::ReadInteraction => ("Read one pending interaction of an anywork session in full: the complete plan document of a plan confirmation, every question with its options, or the tool approval request. Read it before resolving an interaction ID reported by get_session.", schemars::schema_for!(InteractionInput).to_value()),
             Operation::ApprovePlan => ("Approve the pending implementation plan of an anywork session so work proceeds, acting on the user's explicit instruction. Use the pending plan confirmation interaction ID from get_session; read_session_interaction shows the full plan first.", schemars::schema_for!(InteractionInput).to_value()),
@@ -101,7 +102,7 @@ pub(crate) fn registrations(
             name: operation.name().into(), description: description.into(), input_schema,
             allowed_callers: vec![], output_schema: None,
         })?;
-        let tool = SessionTool { bots: bots.clone(), source_thread_id: thread_id.into(), operation };
+        let tool = SessionTool { bots: bots.clone(), source_thread_id: thread_id.into(), operation, reads:Default::default() };
         let registration = Registration::new(operation.name().into(), declaration, tool)?;
         Ok(if matches!(operation, Operation::Send | Operation::ApprovePlan | Operation::RevisePlan | Operation::Answer | Operation::DecideApproval) { registration.foreground() } else { registration })
     }).collect()
@@ -114,6 +115,12 @@ impl Tool for SessionTool {
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         self.run(input, context)
+            .await
+            .map_err(|error| ToolError::new(std::io::Error::other(error)))
+    }
+    async fn close(&self) -> Result<(), ToolError> {
+        self.reads
+            .close_all()
             .await
             .map_err(|error| ToolError::new(std::io::Error::other(error)))
     }
@@ -160,50 +167,20 @@ impl SessionTool {
             }
             Operation::Get => {
                 let args: GetInput = serde_json::from_str(input.content())?;
-                let snapshot = runtime.thread_snapshot(&args.session_id).await?;
-                let recent = runtime
-                    .timeline_reader(&args.session_id)
-                    .await?
-                    .page(&pl_protocol::TimelinePageQuery {
-                        before: None,
-                        limit: Some(16),
-                    })
-                    .await?;
-                let execution = recent
-                    .items
-                    .into_iter()
-                    .rev()
-                    .filter(|item| {
-                        matches!(
-                            &item.descriptor,
-                            pl_protocol::TimelineDescriptor::Turn(_)
-                                | pl_protocol::TimelineDescriptor::Inference(_)
-                        )
-                    })
-                    .take(4)
-                    .collect::<Vec<_>>();
-                let pending = snapshot.interactions.iter().take(32).map(|interaction| {
-                    let kind = match &interaction.content {
-                        pl_protocol::InteractionContent::UserInput(_) => "userInput",
-                        pl_protocol::InteractionContent::ToolApproval(_) => "toolApproval",
-                    };
-                    serde_json::json!({"interactionId": interaction.interaction_id, "kind": kind,
-                        "revision": interaction.revision, "scope": interaction.scope,
-                        "summary": interaction_summary(&interaction.content)})
-                }).collect::<Vec<_>>();
-                output(
-                    &serde_json::json!({"thread": snapshot.thread, "activeTurn": snapshot.active_turn,
-                    "model": snapshot.runtime.and_then(|runtime| runtime.model_route),
-                    "pending": pending, "pendingCount": snapshot.interactions.len(), "activity": snapshot.activity,
-                    "recentExecution": execution, "storage": snapshot.storage}),
-                )
+                content::get(&runtime, &self.reads, &args.session_id).await
             }
             Operation::Read => {
-                content::read(&runtime, serde_json::from_str(input.content())?).await
+                content::read(
+                    &runtime,
+                    &self.reads,
+                    serde_json::from_str(input.content())?,
+                )
+                .await
             }
             Operation::Search => {
                 content::search(
                     &runtime,
+                    &self.reads,
                     serde_json::from_str(input.content())?,
                     &context.cancellation,
                 )

@@ -8,29 +8,19 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/typed_json.dart';
-import 'timeline_activity_group_models.dart';
+import '../state/tool_presentation.dart';
 import 'timeline_activity_row.dart';
 
 /// 默认显示的工具摘要来源：命令首行 / 路径 / 查询词。
 String? _commandSummary(String arguments) {
   final json = decodeJsonObject(arguments);
   final command = jsonStringValue(json['command']);
-  final path =
-      jsonStringValue(json['path']) ??
-      jsonStringValue(json['filePath']) ??
-      jsonStringValue(json['targetPath']) ??
-      jsonStringValue(json['workingDirectory']);
-  final query = jsonStringValue(json['query']);
-  final value = command?.isNotEmpty == true
-      ? command!.split('\n').first
-      : path?.isNotEmpty == true
-      ? path!
-      : query;
+  final value = command?.isNotEmpty == true ? command!.split('\n').first : null;
   return value == null || value.isEmpty ? null : value;
 }
 
-bool timelineIsWebSearch(TimelineToolGroupMessage item) {
-  return item.name == 'web_search';
+bool timelineIsWebSearch(TimelineToolPresentation item) {
+  return item.presentationContract == 'builtin.web_search@1';
 }
 
 /// 网页搜索同样是统一轻量行：默认只显示状态文案，查询、链接与结果在展开区。
@@ -42,7 +32,7 @@ class TimelineWebSearchToolCard extends StatefulWidget {
     super.key,
   });
 
-  final TimelineToolGroupMessage item;
+  final TimelineToolPresentation item;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
 
@@ -167,7 +157,7 @@ class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
 /// 搜索类行的简短文案：成功、失败与进行中各自准确，其它状态保留真实状态。
 String _webSearchLabel(
   BuildContext context,
-  TimelineToolGroupMessage item,
+  TimelineToolPresentation item,
   _WebSearchCardData data,
 ) {
   final l10n = context.l10n;
@@ -206,24 +196,11 @@ class _WebSearchCardData {
     required this.links,
   });
 
-  factory _WebSearchCardData.fromTool(TimelineToolGroupMessage? tool) {
+  factory _WebSearchCardData.fromTool(TimelineToolPresentation? tool) {
     final arguments = decodeJsonObject(tool?.arguments ?? '');
     final details = <String>[];
     var kind = _WebSearchActionKind.other;
-    final type = arguments['type']?.toString();
     final queries = <String>[];
-    final directQuery = arguments['query']?.toString().trim();
-    if (directQuery?.isNotEmpty == true) {
-      queries.add(directQuery!);
-    }
-    final actionQueries = arguments['queries'];
-    if (actionQueries is List) {
-      queries.addAll(
-        actionQueries
-            .map((value) => value.toString().trim())
-            .where((value) => value.isNotEmpty),
-      );
-    }
     for (final key in const ['search_query', 'image_query']) {
       final commands = arguments[key];
       if (commands is List) {
@@ -235,12 +212,12 @@ class _WebSearchCardData {
         }
       }
     }
-    if (type == 'search' || queries.isNotEmpty) {
+    if (queries.isNotEmpty) {
       kind = _WebSearchActionKind.search;
       details.addAll(queries);
     }
 
-    String? url = arguments['url']?.toString();
+    String? url;
     final openCommands = arguments['open'];
     if (openCommands is List && openCommands.isNotEmpty) {
       final command = openCommands.first;
@@ -248,12 +225,12 @@ class _WebSearchCardData {
         url = command['ref_id']?.toString();
       }
     }
-    if (type == 'open_page' || openCommands is List) {
+    if (openCommands is List) {
       kind = _WebSearchActionKind.open;
       if (url?.isNotEmpty == true) details.add(url!);
     }
 
-    String? pattern = arguments['pattern']?.toString();
+    String? pattern;
     final findCommands = arguments['find'];
     if (findCommands is List && findCommands.isNotEmpty) {
       final command = findCommands.first;
@@ -262,7 +239,7 @@ class _WebSearchCardData {
         pattern = command['pattern']?.toString();
       }
     }
-    if (type == 'find_in_page' || findCommands is List) {
+    if (findCommands is List) {
       kind = _WebSearchActionKind.find;
       if (url?.isNotEmpty == true) details.add(url!);
       if (pattern?.isNotEmpty == true) details.add(pattern!);
@@ -330,7 +307,7 @@ class TimelineToolDetails extends StatefulWidget {
     super.key,
   });
 
-  final TimelineToolGroupMessage item;
+  final TimelineToolPresentation item;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
 
@@ -357,7 +334,10 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
     final tool = item;
     final hidePayload =
         item.statusString == 'succeeded' &&
-        const {'workflow_transition', 'workflow_restart'}.contains(item.name);
+        const {
+          'builtin.workflow_transition@1',
+          'builtin.workflow_restart@1',
+        }.contains(item.presentationContract);
     final arguments = hidePayload ? null : tool.arguments;
     final output = hidePayload ? null : tool.output;
     final error = item.error;
@@ -432,7 +412,7 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
       title: _toolRow(context, expandable: expandable),
       children: children,
     );
-    if (tool.name != 'view_image') return tile;
+    if (tool.presentationContract != 'builtin.view_image@1') return tile;
     return KeyedSubtree(
       key: StudioDriverKeys.viewImageTool(item.toolCallId),
       child: tile,
@@ -441,10 +421,12 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
 
   Widget _toolRow(BuildContext context, {required bool expandable}) {
     final item = widget.item;
-    final category = _toolCategory(item.name);
+    final category = _toolCategory(item);
     final targets = _toolRowTargets(context, item, category);
     // 只有 exec 的终态行附加本次调用耗时；write_stdin 是写输入而不是进程运行。
-    final elapsed = item.name == 'exec' ? _toolElapsed(item) : null;
+    final elapsed = item.presentationContract == 'builtin.exec@2'
+        ? _toolElapsed(item)
+        : null;
     return TimelineActivityRow(
       icon: _toolCategoryIcon(category),
       label: _toolRowLabel(
@@ -466,11 +448,12 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
 /// 行内目标与悬浮提示：文件名优先，完整路径／文件列表保留在提示与展开区。
 ({String? label, String? tooltip}) _toolRowTargets(
   BuildContext context,
-  TimelineToolGroupMessage item,
+  TimelineToolPresentation item,
   _ToolCategory category,
 ) {
   // 补丁成功只用工具权威结果预览里的 changedFiles，不在展示层重新解析补丁语法。
-  if (item.name == 'apply_patch' && item.statusString == 'succeeded') {
+  if (item.presentationContract == 'builtin.apply_patch@1' &&
+      item.statusString == 'succeeded') {
     final files = _patchChangedFiles(item);
     if (files.isNotEmpty) {
       final first = _lastPathSegment(files.first) ?? files.first;
@@ -483,8 +466,8 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
     }
   }
   // 会话笔记是 Thread 内的固定命名对象，按已知领域名显示，不虚构工作区路径。
-  if (item.name == 'apply_session_note_patch' ||
-      item.name == 'write_session_note') {
+  if (item.presentationContract == 'builtin.apply_session_note_patch@1' ||
+      item.presentationContract == 'builtin.write_session_note@1') {
     return (label: context.l10n.timelineSessionNoteName, tooltip: null);
   }
   if (category == _ToolCategory.copy || category == _ToolCategory.move) {
@@ -533,19 +516,20 @@ String? _lastPathSegment(String? path) {
 /// 结果与错误各有自己的入口，不在这里重复整段正文。
 List<String> _toolDiagnostics(
   BuildContext context,
-  TimelineToolGroupMessage item,
-  TimelineToolGroupMessage? tool,
+  TimelineToolPresentation item,
+  TimelineToolPresentation? tool,
 ) {
   return [
         // 与行内文案同一来源：完整路径／文件列表在展开区仍可读。
-        _toolRowTargets(context, item, _toolCategory(item.name)).tooltip,
+        _toolRowTargets(context, item, _toolCategory(item)).tooltip,
         tool?.taskId,
-        (_commandSummary(item.arguments) ?? ''),
+        if (item.presentationContract == 'builtin.exec@2')
+          (_commandSummary(item.arguments) ?? ''),
         tool?.workingDirectory,
         if (tool?.exitCode != null)
           context.l10n.timelineToolExitCode(tool!.exitCode!),
         if (tool?.timedOut == true) context.l10n.timelineToolTimedOut,
-        tool?.outcome == TimelineToolGroupOutcome.rejected ? tool?.error : null,
+        tool?.outcome == TimelineToolOutcome.rejected ? tool?.error : null,
         _attachmentDetail(context, tool),
       ]
       .whereType<String>()
@@ -556,7 +540,7 @@ List<String> _toolDiagnostics(
 
 String? _attachmentDetail(
   BuildContext context,
-  TimelineToolGroupMessage? tool,
+  TimelineToolPresentation? tool,
 ) {
   final attachments = tool?.attachments ?? const <ThreadAttachmentView>[];
   if (attachments.isEmpty) return null;
@@ -565,23 +549,25 @@ String? _attachmentDetail(
       .join('\n');
 }
 
-Map<String, Object?> _toolArguments(TimelineToolGroupMessage item) =>
+Map<String, Object?> _toolArguments(TimelineToolPresentation item) =>
     decodeJsonObject(item.arguments);
 
 /// 目标字段的有界提取：copy/move 取 from→to 的对象，其余沿用既有字段顺序。
-String? _targetFromArguments(Map<String, Object?> arguments, String name) {
-  final keys = switch (name) {
-    'copy_path' || 'move_path' => const ['from', 'to'],
-    _ => const [
-      'path',
-      'filePath',
-      'command',
-      'cmd',
-      'query',
-      'pattern',
-      'taskSummary',
-    ],
+String? timelineToolTarget(TimelineToolPresentation item) {
+  final keys = switch (item.presentationContract) {
+    'builtin.exec@2' => const ['command'],
+    'builtin.write_file@1' ||
+    'builtin.stat_path@1' ||
+    'builtin.create_directory@1' ||
+    'builtin.delete_path@1' ||
+    'builtin.view_image@1' => const ['path'],
+    'builtin.search_session_note@1' => const ['query'],
+    'builtin.deepseek_web_fetch@1' => const ['url'],
+    'builtin.lsp_query@1' => const ['filePath'],
+    _ => const <String>[],
   };
+  if (keys.isEmpty) return null;
+  final arguments = _toolArguments(item);
   for (final key in keys) {
     final value = _firstLine(jsonStringValue(arguments[key]));
     if (value != null) return value;
@@ -589,16 +575,13 @@ String? _targetFromArguments(Map<String, Object?> arguments, String name) {
   return null;
 }
 
-String? timelineToolTarget(TimelineToolGroupMessage item) =>
-    _targetFromArguments(_toolArguments(item), item.name);
-
 String? _firstLine(String? value) {
   final line = value?.split('\n').first.trim();
   return line == null || line.isEmpty ? null : line;
 }
 
 /// 工具结果有界预览里的权威变更文件列表；预览缺失或不完整时不猜测文件名与总数。
-List<String> _patchChangedFiles(TimelineToolGroupMessage? tool) {
+List<String> _patchChangedFiles(TimelineToolPresentation? tool) {
   final result = tool?.output;
   if (result == null || result.trim().isEmpty) return const [];
   final changed = decodeJsonObject(result)['changedFiles'];
@@ -610,7 +593,7 @@ List<String> _patchChangedFiles(TimelineToolGroupMessage? tool) {
 }
 
 /// 本次调用耗时：只取该调用的创建与 canonical 终态时间，不用保存或更新时间。
-Duration? _toolElapsed(TimelineToolGroupMessage item) {
+Duration? _toolElapsed(TimelineToolPresentation item) {
   final createdAt = item.createdAt;
   final completedAt = item.completedAt;
   if (createdAt == null || completedAt == null) return null;
@@ -634,7 +617,7 @@ String _toolElapsedLabel(BuildContext context, Duration elapsed) {
 /// 真实失败（含拒绝）继续保持错误色醒目。
 Color _toolDiagnosticColor(
   BuildContext context,
-  TimelineToolGroupMessage item,
+  TimelineToolPresentation item,
 ) => switch (item.statusString) {
   'cancelled' || 'interrupted' => context.colors.onSurfaceVariant,
   _ => context.colors.error,
@@ -689,34 +672,39 @@ const timelineIssueStatuses = {'failed', 'denied', 'budgetLimited'};
 ///
 /// 只读的计划/工作流查询保留语义图标但沿用“名称＋真实状态”文案，避免把查询说成
 /// 变更；删除、复制、移动与新建各自独立，不笼统归入“已修改”。
-_ToolCategory _toolCategory(String name) => switch (name) {
-  'read_session_note' || 'stat_path' => _ToolCategory.read,
-  'apply_patch' ||
-  'apply_session_note_patch' ||
-  'write_file' ||
-  'write_session_note' => _ToolCategory.edit,
-  'create_directory' => _ToolCategory.create,
-  'delete_path' => _ToolCategory.delete,
-  'copy_path' => _ToolCategory.copy,
-  'move_path' => _ToolCategory.move,
-  'exec' => _ToolCategory.command,
-  'write_stdin' => _ToolCategory.stdin,
-  'web_search' ||
-  'deepseek_web_search' ||
-  'search_session_note' => _ToolCategory.search,
-  'deepseek_web_fetch' => _ToolCategory.fetch,
-  'spawn_agent' => _ToolCategory.agent,
-  'send_message' => _ToolCategory.message,
-  'wait' || 'sleep' => _ToolCategory.wait,
-  'view_image' => _ToolCategory.image,
-  _ when name.startsWith('lsp_') => _ToolCategory.lsp,
-  'plan_submit' || 'plan_restart' => _ToolCategory.plan,
-  'plan_current' || 'plan_next' || 'plan_history' => _ToolCategory.planRead,
-  'workflow_transition' || 'workflow_restart' => _ToolCategory.workflow,
-  'workflow_current' ||
-  'workflow_next' ||
-  'workflow_graph' ||
-  'workflow_history' => _ToolCategory.workflowRead,
+_ToolCategory _toolCategory(
+  TimelineToolPresentation item,
+) => switch (item.presentationContract) {
+  'builtin.read_session_note@1' || 'builtin.stat_path@1' => _ToolCategory.read,
+  'builtin.apply_patch@1' ||
+  'builtin.apply_session_note_patch@1' ||
+  'builtin.write_file@1' ||
+  'builtin.write_session_note@1' => _ToolCategory.edit,
+  'builtin.create_directory@1' => _ToolCategory.create,
+  'builtin.delete_path@1' => _ToolCategory.delete,
+  'builtin.copy_path@1' => _ToolCategory.copy,
+  'builtin.move_path@1' => _ToolCategory.move,
+  'builtin.exec@2' => _ToolCategory.command,
+  'builtin.write_stdin@1' => _ToolCategory.stdin,
+  'builtin.web_search@1' ||
+  'builtin.deepseek_web_search@1' ||
+  'builtin.search_session_note@1' => _ToolCategory.search,
+  'builtin.deepseek_web_fetch@1' => _ToolCategory.fetch,
+  'builtin.spawn_agent@1' => _ToolCategory.agent,
+  'builtin.send_message@1' => _ToolCategory.message,
+  'builtin.wait@1' || 'builtin.sleep@1' => _ToolCategory.wait,
+  'builtin.view_image@1' => _ToolCategory.image,
+  'builtin.lsp_query@1' || 'builtin.lsp_capabilities@1' => _ToolCategory.lsp,
+  'builtin.plan_submit@1' || 'builtin.plan_restart@1' => _ToolCategory.plan,
+  'builtin.plan_current@1' ||
+  'builtin.plan_next@1' ||
+  'builtin.plan_history@1' => _ToolCategory.planRead,
+  'builtin.workflow_transition@1' ||
+  'builtin.workflow_restart@1' => _ToolCategory.workflow,
+  'builtin.workflow_current@1' ||
+  'builtin.workflow_next@1' ||
+  'builtin.workflow_graph@1' ||
+  'builtin.workflow_history@1' => _ToolCategory.workflowRead,
   _ => _ToolCategory.generic,
 };
 
@@ -865,7 +853,7 @@ String? _toolVerb(BuildContext context, _ToolCategory category, String status) {
 /// 耗时放在目标之前，长命令被行内省略时仍能读到本次调用耗时。
 String _toolRowLabel(
   BuildContext context,
-  TimelineToolGroupMessage item,
+  TimelineToolPresentation item,
   _ToolCategory category,
   String? target, {
   String? meta,
@@ -896,9 +884,9 @@ String _toolRowLabel(
   return '$verb $target';
 }
 
-String timelineToolTitle(BuildContext context, TimelineToolGroupMessage item) {
+String timelineToolTitle(BuildContext context, TimelineToolPresentation item) {
   final label = _toolDisplayName(context, item);
-  if (item.name == 'view_image') {
+  if (item.presentationContract == 'builtin.view_image@1') {
     return switch (item.statusString) {
       'succeeded' => context.l10n.timelineViewImageRead,
       'failed' || 'denied' => context.l10n.timelineViewImageFailed,
@@ -949,15 +937,15 @@ String _unknownToolStatusLabel(
 }
 
 /// 工具的展示名；LSP 工具使用本地化标题并附带参数摘要，其余保持原始领域名。
-String _toolDisplayName(BuildContext context, TimelineToolGroupMessage item) {
+String _toolDisplayName(BuildContext context, TimelineToolPresentation item) {
   final name = item.name;
-  if (name == 'lsp_query') {
+  if (item.presentationContract == 'builtin.lsp_query@1') {
     final detail = _lspQueryDetail(item.arguments);
     return detail.isEmpty
         ? context.l10n.timelineLspQueryTitle
         : context.l10n.timelineLspQueryTitleWithDetail(detail);
   }
-  if (name == 'lsp_capabilities') {
+  if (item.presentationContract == 'builtin.lsp_capabilities@1') {
     return context.l10n.timelineLspCapabilitiesTitle;
   }
   if (name.isEmpty || name == 'Tool') {
@@ -972,9 +960,8 @@ String _lspQueryDetail(String arguments) {
   return [
         jsonStringValue(json['languageId']),
         jsonStringValue(json['operation']),
-        jsonStringValue(json['filePath']) ??
-            jsonStringValue(json['query']) ??
-            jsonStringValue(json['path']),
+        jsonStringValue(json['filePath']),
+        jsonStringValue(json['query']),
       ]
       .map((value) => value?.trim() ?? '')
       .where((value) => value.isNotEmpty)

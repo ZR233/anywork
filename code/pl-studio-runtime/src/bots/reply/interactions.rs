@@ -1,15 +1,14 @@
-use super::content::{Coverage, read_failure};
 use super::owner::ReplyTarget;
 use super::owner::{
-    ClaimGuard, ReplyRun, Step, attention, content_failure, hint_key, interaction_hint, recoverable,
+    ClaimGuard, ReplyRun, Step, attention, hint_key, interaction_hint, recoverable,
 };
+use super::projection::ReplyProjection;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::storage::{MarkOutcome, card::CardLifecycle};
 use crate::bots::{BotInteractionKind, BotInteractionRead, SendAuthority};
-use crate::studio::{StudioRuntime, TimelineContentReader};
+use crate::studio::StudioRuntime;
 use pl_protocol::InteractionStatus;
-use pl_protocol::{TimelineDescriptor, TimelinePageQuery};
 use std::collections::BTreeSet;
 use tokio_util::sync::CancellationToken;
 
@@ -27,54 +26,6 @@ fn interaction_local<'a>(
     Ok(local)
 }
 
-/// timeline 兜底：快照不再保留该 Turn 的交互时，从 tool.user_input 投影发现 local 身份。
-pub(super) async fn discover_timeline_interactions(
-    reader: &TimelineContentReader,
-    turn_id: &str,
-    cancel: &CancellationToken,
-) -> Result<BTreeSet<String>, InboundWorkOutcome> {
-    let mut locals = BTreeSet::new();
-    let mut before = None;
-    let mut coverage = Coverage::new(reader.thread_id());
-    loop {
-        let query = TimelinePageQuery {
-            before: before.clone(),
-            limit: Some(100),
-        };
-        let page = tokio::select! {
-            _ = cancel.cancelled() => {
-                return Err(InboundWorkOutcome::Interrupted);
-            }
-            page = reader.page(&query) => page.map_err(|error| content_failure(read_failure("canonical interaction page failed", error)))?,
-        };
-        if page.thread_id != reader.thread_id() {
-            return Err(attention("canonical interaction page Thread conflict"));
-        }
-        coverage.page(&page.items).map_err(content_failure)?;
-        let mut found_start = false;
-        for item in page.items {
-            if item.header.thread_id != reader.thread_id() {
-                return Err(attention("canonical interaction item Thread conflict"));
-            }
-            if item.header.turn_id.as_deref() != Some(turn_id) {
-                continue;
-            }
-            found_start |= matches!(item.descriptor, TimelineDescriptor::Turn(_));
-            if let TimelineDescriptor::Tool(tool_item) = item.descriptor
-                && let Some(user_input) = tool_item.user_input
-            {
-                let local = interaction_local(&user_input.interaction_id, reader.thread_id())?;
-                locals.insert(local.to_owned());
-            }
-        }
-        if found_start || !page.has_older {
-            break;
-        }
-        before = Some(coverage.cursor(page.before).map_err(content_failure)?);
-    }
-    Ok(locals)
-}
-
 impl BotRuntime {
     /// Turn 以交互请求收尾：边界终局只由 UserInput 类交互决定。
     ///
@@ -87,7 +38,7 @@ impl BotRuntime {
         runtime: &StudioRuntime,
         run: &mut ReplyRun,
         turn_id: &str,
-        reader: &TimelineContentReader,
+        projection: &ReplyProjection,
         cancel: &CancellationToken,
     ) -> Step {
         if let Err(outcome) = self
@@ -103,7 +54,7 @@ impl BotRuntime {
             return Step::Done(outcome);
         }
         let locals = match self
-            .turn_interaction_locals(runtime, run, turn_id, reader, cancel)
+            .turn_interaction_locals(runtime, run, turn_id, projection)
             .await
         {
             Ok(locals) => locals,
@@ -184,14 +135,13 @@ impl BotRuntime {
         Step::Wait
     }
 
-    /// 发现目标 Turn 的交互 local 身份：统一内容源快照优先，timeline 工具条目兜底。
+    /// 发现目标 Turn 的交互 local 身份：执行事实快照优先，已覆盖的目标完成消息兜底。
     async fn turn_interaction_locals(
         &self,
         runtime: &StudioRuntime,
         run: &ReplyRun,
         turn_id: &str,
-        reader: &TimelineContentReader,
-        cancel: &CancellationToken,
+        projection: &ReplyProjection,
     ) -> Result<BTreeSet<String>, InboundWorkOutcome> {
         let snapshot = runtime
             .thread_snapshot(&run.thread_id)
@@ -208,9 +158,13 @@ impl BotRuntime {
         if !locals.is_empty() {
             return Ok(locals);
         }
-        // 快照不再保留该 Turn 的交互（例如重启窗口内已收束）：从 timeline 的
-        // tool.user_input 投影发现 local 身份，仍只读统一内容源。
-        discover_timeline_interactions(reader, turn_id, cancel).await
+        // 同一 feed 的有界目标投影已经补齐前缀并经过显式终态屏障；
+        // 不重新打开 reader，不跨 lease 套用旧 cursor，也不读取私有 checkpoint。
+        for interaction_id in projection.interactions() {
+            let local = interaction_local(interaction_id, &run.thread_id)?;
+            locals.insert(local.to_owned());
+        }
+        Ok(locals)
     }
 
     /// Turn 执行期与终态等待中的 pending 交互逐个提示；每个交互独立稳定键。

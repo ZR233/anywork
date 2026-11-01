@@ -108,10 +108,11 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
     };
     let checkpoint = ThreadCheckpoint::capture(store.thread_id().into(), sequence, state);
     store
-        .commit_checkpoint_effect(
-            &checkpoint,
-            &effect,
-            EffectCommit {
+        .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+            checkpoint: &checkpoint,
+            effect: &effect,
+            history: EffectCommit {
+                current: &crate::studio::storage::history::test_current(effect.sequence),
                 completions: &[],
                 items: &[],
                 rolled_back_turns: &empty,
@@ -123,11 +124,11 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
                 delivery_repairs: &[],
                 attempt: None,
             },
-            crate::studio::storage::history::AccountingCommit {
+            accounting: crate::studio::storage::history::AccountingCommit {
                 facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                 material_changed: true,
             },
-        )
+        }])
         .await
         .map(|_| ())
 }
@@ -1524,10 +1525,11 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
     let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state);
     let empty = BTreeSet::new();
     history
-        .commit_checkpoint_effect(
-            &checkpoint,
-            &effect,
-            EffectCommit {
+        .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+            checkpoint: &checkpoint,
+            effect: &effect,
+            history: EffectCommit {
+                current: &crate::studio::storage::history::test_current(effect.sequence),
                 completions: &[],
                 items: &[],
                 rolled_back_turns: &empty,
@@ -1539,11 +1541,11 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
                 delivery_repairs: &[],
                 attempt: None,
             },
-            crate::studio::storage::history::AccountingCommit {
+            accounting: crate::studio::storage::history::AccountingCommit {
                 facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                 material_changed: true,
             },
-        )
+        }])
         .await?;
     drop(history);
 
@@ -2744,7 +2746,9 @@ async fn restore_pre_timeline_history_fixture(
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
-            "SELECT COUNT(*) AS count FROM timeline_records",
+            "SELECT (SELECT COUNT(*) FROM timeline_records)
+                  + (SELECT COUNT(*) FROM conversation_items)
+                  + (SELECT COUNT(*) FROM conversation_contents) AS count",
         ))
         .await?
         .context("fixture timeline output")?;
@@ -2753,8 +2757,16 @@ async fn restore_pre_timeline_history_fixture(
         0,
         "legacy fixture must not discard completed history"
     );
-    db.execute_unprepared("DROP TABLE timeline_records; DROP TABLE seaql_migrations")
-        .await?;
+    db.execute_unprepared(
+        "DROP TABLE conversation_content_chunks;
+         DROP TABLE conversation_view_entries;
+         DROP TABLE conversation_view_state;
+         DROP TABLE conversation_contents;
+         DROP TABLE conversation_items;
+         DROP TABLE timeline_records;
+         DROP TABLE seaql_migrations",
+    )
+    .await?;
     db.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
         "UPDATE history_meta SET schema_version=? WHERE id=1",
@@ -2984,9 +2996,13 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         for (child, path) in children.iter().skip(2) {
             assert!(HistoryStore::open(path, &child.id).await?.checkpoint().await.is_err());
             if child.id == "timeline-child" {
-                assert!(runtime.timeline_page(&child.id, &pl_protocol::TimelinePageQuery {
-                    before: None, limit: Some(10),
-                }).await?.items.is_empty());
+                let mut feed = runtime.open_conversation_feed(&child.id, pl_protocol::ChatScope::Main,
+                    pl_protocol::ReadDemand { max_items: 10, max_bytes: 64 * 1024 }).await?;
+                let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
+                    anyhow::bail!("cold conversation did not publish its initial Chat");
+                };
+                assert!(batch.messages.is_empty());
+                feed.close().await?;
             } else {
                 assert!(runtime.list_thread_turns(&child.id, None, 10).await?.turns.is_empty());
             }
@@ -3859,9 +3875,17 @@ impl SharedHistoryDrive {
             .map_err(|_| anyhow::anyhow!("writer dropped the init gate"))?;
 
         join_shared_history_handle("persist join", &mut self.persist).await?;
-        join_shared_history_handle("checkpoint join", &mut self.checkpoint)
+        // Initialization publishes a valid database identity before the first effect commits.
+        // An independent reader may observe the empty snapshot during that interval.
+        if let Some(observed) =
+            join_shared_history_handle("checkpoint join", &mut self.checkpoint).await?
+        {
+            assert_eq!(observed.thread_id, thread_id);
+            assert_eq!(observed.state_revision, 1);
+        }
+        crate::studio::thread_factory::recovery::load_checkpoint_read_only(store, thread)
             .await?
-            .context("shared checkpoint")
+            .context("checkpoint after acknowledged persistence")
     }
 
     async fn reclaim(self) -> Result<()> {
@@ -3996,10 +4020,12 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 "product" => StudioStore::open(&path).await.map(|_| ()),
                 "calls" => CallsStore::prepare(&path).await.map(|_| ()),
                 _ => {
-                    HistoryStore::open(&path, "adoption")
-                        .await?
-                        .prepare_activation()
-                        .await
+                    async {
+                        let history = HistoryStore::open(&path, "adoption").await?;
+                        history.prepare_activation().await?;
+                        history.checkpoint().await.map(|_| ())
+                    }
+                    .await
                 }
             };
             assert!(failure.is_err(), "future {family} {fault} was accepted");

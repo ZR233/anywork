@@ -8,6 +8,7 @@
 //! canonical Turn 的取消（含 Interrupted 原因）仍按真实取消结局收束。
 
 use super::content::{FinalError, FinalText, collect_complete_turn_text};
+use super::projection::ReplyProjection;
 use super::watch::ReplyWatch;
 
 use crate::bots::BotInputRead;
@@ -16,9 +17,9 @@ use crate::bots::owner::BotRuntime;
 use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
 use crate::bots::storage::{ClaimLease, FrozenInbound};
-use crate::studio::{StudioRuntime, TimelineContentReader};
+use crate::studio::{ConversationReader, StudioRuntime};
 use pl_core::thread::input::{InputDelivery, InputState};
-use pl_protocol::{TimelineTurnOutcome, TurnCompletion, TurnState};
+use pl_protocol::{TurnCompletion, TurnState};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -77,10 +78,12 @@ pub(super) enum ClaimGuard {
 }
 
 struct ReplyContent<'a> {
-    reader: &'a TimelineContentReader,
+    reader: &'a ConversationReader,
+    projection: Option<&'a ReplyProjection>,
+    active: bool,
     preview: Option<&'a str>,
     observed: Option<TurnState>,
-    terminal: Option<TimelineTurnOutcome>,
+    terminal: Option<TurnState>,
 }
 
 /// The target is supplied by canonical input facts, never inferred from an old card.
@@ -482,6 +485,7 @@ impl BotRuntime {
                 let preview = watch.preview();
                 let observed = watch.observed_state(&turn_id);
                 let terminal = watch.terminal(&turn_id);
+                let projection = watch.projection();
                 let action_cancel = cancel.child_token();
                 observed_step(
                     Box::pin(watch.during(
@@ -491,6 +495,8 @@ impl BotRuntime {
                             &turn_id,
                             ReplyContent {
                                 reader: &reader,
+                                projection: projection.as_ref(),
+                                active: projection.as_ref().is_some_and(ReplyProjection::active),
                                 preview: preview.as_deref(),
                                 observed,
                                 terminal,
@@ -589,11 +595,29 @@ impl BotRuntime {
         {
             return Step::Done(outcome);
         }
+        // A live terminal is only a hint. Every terminal platform transition,
+        // including failure/cancel and interaction pause, requires the original
+        // explicit save barrier and completed-message/body coverage first.
+        let verified = if content.terminal.is_some() {
+            let Some(projection) = content.projection else {
+                return Step::Wait;
+            };
+            let collected = tokio::select! {
+                _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
+                collected = collect_complete_turn_text(runtime, content.reader, projection) => collected,
+            };
+            match collected {
+                Ok(text) => Some(text),
+                Err(error) => return Step::Done(content_failure(error)),
+            }
+        } else {
+            None
+        };
         match content.terminal {
             None if matches!(
                 content.observed,
                 Some(TurnState::Queued(_) | TurnState::Running(_))
-            ) =>
+            ) || content.observed.is_none() && content.active =>
             {
                 match self
                     .hint_pending_interactions(runtime, run, turn_id, cancel)
@@ -618,17 +642,28 @@ impl BotRuntime {
                 Step::Wait
             }
             None => Step::Wait,
-            Some(TimelineTurnOutcome::Completed(state)) => match state.completion() {
+            Some(TurnState::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => {
-                    self.finish_with_final_text(runtime, run, turn_id, content.reader, cancel)
-                        .await
+                    self.finish_with_final_text(
+                        run,
+                        turn_id,
+                        verified.expect("verified terminal"),
+                        cancel,
+                    )
+                    .await
                 }
                 TurnCompletion::InteractionRequested => {
-                    self.advance_interactions(runtime, run, turn_id, content.reader, cancel)
-                        .await
+                    self.advance_interactions(
+                        runtime,
+                        run,
+                        turn_id,
+                        content.projection.expect("verified projection"),
+                        cancel,
+                    )
+                    .await
                 }
             },
-            Some(TimelineTurnOutcome::Cancelled(_)) => {
+            Some(TurnState::Cancelled(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),
@@ -637,7 +672,7 @@ impl BotRuntime {
                 )
                 .await
             }
-            Some(TimelineTurnOutcome::Failed(_)) => {
+            Some(TurnState::Failed(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),
@@ -646,7 +681,7 @@ impl BotRuntime {
                 )
                 .await
             }
-            Some(TimelineTurnOutcome::BudgetLimited(_)) => {
+            Some(TurnState::BudgetLimited(_)) => {
                 self.finish_known_card(
                     run,
                     ReplyTarget::Consumed(turn_id),
@@ -655,25 +690,21 @@ impl BotRuntime {
                 )
                 .await
             }
+            Some(TurnState::Queued(_) | TurnState::Running(_)) => Step::Wait,
         }
     }
 
     /// Turn 正常完成：完整 Final + Terminal 覆盖校验后，确认最后全文更新与关闭。
     async fn finish_with_final_text(
         &self,
-        runtime: &StudioRuntime,
         run: &mut ReplyRun,
         turn_id: &str,
-        reader: &TimelineContentReader,
+        collected: FinalText,
         cancel: &CancellationToken,
     ) -> Step {
-        let collected = tokio::select! {
-            _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-            collected = collect_complete_turn_text(runtime, reader, turn_id) => collected,
-        };
         let text = match collected {
-            Ok(FinalText::CompleteText(text)) => text,
-            Ok(FinalText::CompleteNoText) => {
+            FinalText::CompleteText(text) => text,
+            FinalText::CompleteNoText => {
                 return self
                     .finish_known_card(
                         run,
@@ -683,8 +714,6 @@ impl BotRuntime {
                     )
                     .await;
             }
-            Err(FinalError::Retryable(diagnostic)) => return Step::Done(recoverable(diagnostic)),
-            Err(FinalError::Attention(diagnostic)) => return Step::Done(attention(diagnostic)),
         };
         if text.trim().is_empty() {
             return self

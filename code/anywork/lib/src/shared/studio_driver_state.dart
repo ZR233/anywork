@@ -8,10 +8,10 @@ import 'package:anywork_client/model_directory.dart';
 import '../domain/models/agent_workspace_view.dart';
 import '../domain/models/timeline_commands.dart';
 
-/// 一个展示代次的只读事实（design/26 §26.9）。
+/// 一个展示代次的只读事实（design/26 §26.10）。
 ///
-/// `items` 来自当前 lease 的完整原子集合；可见 owner 来自 stock controller 的真实消息，
-/// hidden owner 从同一 lease 读取。只用于验收，不保留第二份业务事实源。
+/// `items` 按 stock controller 的实际 Message 顺序临时读取单项 metadata。
+/// 不重建历史集合、隐藏成员或分组，也不暴露 Rust 的完成游标。
 final class TimelineDisplayFacts {
   TimelineDisplayFacts({
     required this.threadId,
@@ -19,8 +19,6 @@ final class TimelineDisplayFacts {
     required this.ready,
     required this.mode,
     required this.connection,
-    required this.timelineEpoch,
-    required this.completedThrough,
     required this.loadedCount,
     required this.olderCursor,
     required this.hasOlder,
@@ -29,20 +27,21 @@ final class TimelineDisplayFacts {
     required this.olderErrorCode,
     required this.olderErrorCorrelationId,
     required this.hasNewOutput,
+    this.appliedSets,
+    this.appliedPrepends,
+    this.appliedAppends,
+    this.firstContentLayout,
+    this.current,
+    List<TimelineChildrenFacts> children = const [],
     List<TimelineItemFacts> items = const [],
-    List<TimelinePresentationFacts> presentationItems = const [],
-    List<TimelinePresentationFacts> hiddenPresentationItems = const [],
   }) : items = List.unmodifiable(items),
-       presentationItems = List.unmodifiable(presentationItems),
-       hiddenPresentationItems = List.unmodifiable(hiddenPresentationItems);
+       children = List.unmodifiable(children);
 
   final String threadId;
   final int generation;
   final bool ready;
   final TimelineDisplayMode mode;
   final TimelineConnectionPhase connection;
-  final String? timelineEpoch;
-  final int? completedThrough;
   final int? loadedCount;
   final String? olderCursor;
   final bool hasOlder;
@@ -51,52 +50,64 @@ final class TimelineDisplayFacts {
   final StudioFailureCode? olderErrorCode;
   final String? olderErrorCorrelationId;
   final bool hasNewOutput;
+  final int? appliedSets;
+  final int? appliedPrepends;
+  final int? appliedAppends;
+  final TimelineContentLayoutFacts? firstContentLayout;
+
+  /// Request-local JSON projected from existing mounted current resources, never a resource owner.
+  final Map<String, Object?>? current;
+  final List<TimelineChildrenFacts> children;
   final List<TimelineItemFacts> items;
-  final List<TimelinePresentationFacts> presentationItems;
-  final List<TimelinePresentationFacts> hiddenPresentationItems;
 }
 
-/// GUI groups have their own identity; members still denote individual canonical records.
-///
-/// `memberIds` 始终是全部 canonical 成员，视觉去重只体现在 [visibleMemberIds] 与
-/// [skillPairs]：被技能行接管的原调用仍可按自己的身份查询，同时诊断能说清当前只有一条
-/// 可见技能行（design/26 §26.8、§26.9）。
-final class TimelinePresentationFacts {
-  TimelinePresentationFacts({
-    required this.id,
-    required this.kind,
-    required this.firstAppendSeq,
-    required List<String> memberIds,
-    required List<String> visibleMemberIds,
-    required Map<String, String> skillPairs,
-    required this.expanded,
-    required this.issueCount,
-  }) : memberIds = List.unmodifiable(memberIds),
-       visibleMemberIds = List.unmodifiable(visibleMemberIds),
-       skillPairs = Map.unmodifiable(skillPairs);
+final class TimelineChildrenFacts {
+  TimelineChildrenFacts({
+    required this.parentId,
+    required this.generation,
+    required this.ready,
+    required this.olderCursor,
+    required this.loadingOlder,
+    required this.error,
+    required this.appliedSets,
+    required this.appliedPrepends,
+    required this.appliedAppends,
+    required List<TimelineItemFacts> items,
+  }) : items = List.unmodifiable(items);
 
-  final String id;
-  final String kind;
-  final int firstAppendSeq;
-  final List<String> memberIds;
-
-  /// 当前组内可见活动行的成员身份，按 canonical 顺序。
-  final List<String> visibleMemberIds;
-
-  /// 可见技能行接管的原调用：技能成员身份 → `skill_view` 调用条目身份。
-  final Map<String, String> skillPairs;
-
-  final bool expanded;
-  final int issueCount;
+  final String parentId;
+  final int generation;
+  final bool ready;
+  final String? olderCursor;
+  final bool loadingOlder;
+  final String? error;
+  final int appliedSets;
+  final int appliedPrepends;
+  final int appliedAppends;
+  final List<TimelineItemFacts> items;
 }
 
-/// 一条 canonical item 的轻量 typed 预览诊断。
+final class TimelineContentLayoutFacts {
+  const TimelineContentLayoutFacts({
+    required this.selectionId,
+    required this.generation,
+    required this.itemId,
+    required this.selectionStartedMicros,
+    required this.layoutCompletedMicros,
+  });
+  final int selectionId;
+  final int generation;
+  final String itemId;
+  final int selectionStartedMicros;
+  final int layoutCompletedMicros;
+}
+
+/// 一条 Message.custom 已加载内容的轻量诊断。
 final class TimelineItemFacts {
   TimelineItemFacts({
     required this.id,
-    required this.appendSeq,
-    required this.sourceEffectSeq,
     required this.sealedAt,
+    required this.compatibility,
     required this.omittedBytes,
     required this.kind,
     required this.status,
@@ -107,29 +118,34 @@ final class TimelineItemFacts {
     this.tool,
     this.userInput,
     this.plan,
+    this.childrenParentId,
+    this.presentationContract,
+    this.diagnostic,
+    this.payloadByteLength,
   }) : details = List.unmodifiable(details),
        attachments = List.unmodifiable(attachments);
 
   final String id;
-  final int appendSeq;
-  final int? sourceEffectSeq;
   final int? sealedAt;
-  final int omittedBytes;
+  final String compatibility;
+  final int? omittedBytes;
   final String kind;
   final String status;
 
   /// 已脱敏的预览正文（工具行是命令摘要，不是完整参数）。
   final String text;
 
-  /// 文本条目的权威频道（commentary / finalAnswer / user / parentAgent）；
-  /// 非文本条目为 null。它来自 `ConversationTextDescriptor.channel`，不从 kind 或文本推测：
-  /// `agentMessage` 同时覆盖 commentary 与 finalAnswer。
-  final ThreadTextChannel? channel;
+  /// 当前 payload 明确提供的频道，不从作者、文本或旧工具名称推测。
+  final String? channel;
   final List<TimelineDetailFacts> details;
   final List<TimelineAttachmentFacts> attachments;
   final TimelineToolFacts? tool;
   final TimelineUserInputFacts? userInput;
   final TimelinePlanFacts? plan;
+  final String? childrenParentId;
+  final String? presentationContract;
+  final String? diagnostic;
+  final int? payloadByteLength;
 }
 
 /// 已完成 Plan 自己的身份和有界字段预览，不读取或回填当前 Plan。
@@ -161,7 +177,7 @@ final class TimelineToolFacts {
     required this.arguments,
     required this.result,
     required this.progressBytes,
-    required this.appendSeq,
+    required this.presentationContract,
     this.denialReason,
     this.workingDirectory,
     this.exitCode,
@@ -176,7 +192,7 @@ final class TimelineToolFacts {
 
   /// 预览结果的 UTF-8 字节数：逐次增长即在途真实产出。
   final int progressBytes;
-  final int appendSeq;
+  final String presentationContract;
   final String? denialReason;
   final String? workingDirectory;
   final int? exitCode;
@@ -189,11 +205,13 @@ final class TimelineDetailFacts {
     required this.field,
     required this.totalBytes,
     required this.previewBytes,
+    required this.hasReference,
   });
 
   final String field;
   final int totalBytes;
   final int previewBytes;
+  final bool hasReference;
 }
 
 final class TimelineAttachmentFacts {
@@ -1248,38 +1266,9 @@ abstract final class StudioDriverState {
       'ready': timeline.ready,
       'mode': timeline.mode.name,
       'connection': timeline.connection.name,
-      'timelineEpoch': timeline.timelineEpoch,
-      'completedThrough': timeline.completedThrough,
       'loadedCount': timeline.loadedCount,
       'itemCount': timeline.items.length,
       'itemIds': [for (final item in timeline.items) item.id],
-      'presentationItemCount': timeline.presentationItems.length,
-      'presentationItems': [
-        for (final item in timeline.presentationItems)
-          {
-            'id': item.id,
-            'kind': item.kind,
-            'firstAppendSeq': item.firstAppendSeq,
-            'memberIds': item.memberIds,
-            'visibleMemberIds': item.visibleMemberIds,
-            'skillPairs': item.skillPairs,
-            'expanded': item.expanded,
-            'issueCount': item.issueCount,
-          },
-      ],
-      'hiddenPresentationItems': [
-        for (final item in timeline.hiddenPresentationItems)
-          {
-            'id': item.id,
-            'kind': item.kind,
-            'firstAppendSeq': item.firstAppendSeq,
-            'memberIds': item.memberIds,
-            'visibleMemberIds': item.visibleMemberIds,
-            'skillPairs': item.skillPairs,
-            'expanded': item.expanded,
-            'issueCount': item.issueCount,
-          },
-      ],
       'olderCursor': timeline.olderCursor,
       'hasOlder': timeline.hasOlder,
       'loadingOlder': timeline.loadingOlder,
@@ -1287,81 +1276,120 @@ abstract final class StudioDriverState {
       'olderErrorCode': timeline.olderErrorCode?.name,
       'olderErrorCorrelationId': timeline.olderErrorCorrelationId,
       'hasNewOutput': timeline.hasNewOutput,
-      'items': [
-        for (final item in timeline.items)
+      'appliedSets': timeline.appliedSets,
+      'appliedPrepends': timeline.appliedPrepends,
+      'appliedAppends': timeline.appliedAppends,
+      'current': timeline.current,
+      'firstContentLayout': switch (timeline.firstContentLayout) {
+        final layout? => {
+          'selectionId': layout.selectionId,
+          'generation': layout.generation,
+          'itemId': layout.itemId,
+          'selectionStartedMicros': layout.selectionStartedMicros,
+          'layoutCompletedMicros': layout.layoutCompletedMicros,
+          'elapsedMicros':
+              layout.layoutCompletedMicros - layout.selectionStartedMicros,
+        },
+        null => null,
+      },
+      'children': [
+        for (final display in timeline.children)
           {
-            'id': item.id,
-            'appendSeq': item.appendSeq,
-            'sourceEffectSeq': item.sourceEffectSeq,
-            'sealedAt': item.sealedAt,
-            'omittedBytes': item.omittedBytes,
-            'kind': item.kind,
-            'status': item.status,
-            'text': item.text,
-            'channel': item.channel?.name,
-            'details': [
-              for (final detail in item.details)
-                {
-                  'field': detail.field,
-                  'totalBytes': detail.totalBytes,
-                  'previewBytes': detail.previewBytes,
-                },
-            ],
+            'parentId': display.parentId,
+            'generation': display.generation,
+            'ready': display.ready,
+            'loadedCount': display.items.length,
+            'olderCursor': display.olderCursor,
+            'loadingOlder': display.loadingOlder,
+            'error': display.error,
+            'appliedSets': display.appliedSets,
+            'appliedPrepends': display.appliedPrepends,
+            'appliedAppends': display.appliedAppends,
+            'itemIds': [for (final item in display.items) item.id],
+            'items': _timelineItemsJson(display.items),
+          },
+      ],
+      'items': _timelineItemsJson(timeline.items),
+    };
+  }
+
+  static List<Map<String, Object?>> _timelineItemsJson(
+    Iterable<TimelineItemFacts> items,
+  ) => [
+    for (final item in items)
+      {
+        'id': item.id,
+        'sealedAt': item.sealedAt,
+        'compatibility': item.compatibility,
+        'childrenParentId': item.childrenParentId,
+        'presentationContract': item.presentationContract,
+        'diagnostic': item.diagnostic,
+        'payloadByteLength': item.payloadByteLength,
+        'omittedBytes': item.omittedBytes,
+        'kind': item.kind,
+        'status': item.status,
+        'text': item.text,
+        'channel': item.channel,
+        'details': [
+          for (final detail in item.details)
+            {
+              'field': detail.field,
+              'totalBytes': detail.totalBytes,
+              'previewBytes': detail.previewBytes,
+              'hasReference': detail.hasReference,
+            },
+        ],
+        'attachments': [
+          for (final attachment in item.attachments)
+            {
+              'id': attachment.id,
+              'modality': attachment.modality,
+              'filename': attachment.filename,
+              'byteSize': attachment.byteSize,
+              if (attachment.source != null) 'source': attachment.source,
+            },
+        ],
+        if (item.tool case final tool?)
+          'tool': {
+            'name': tool.name,
+            'status': tool.status,
+            'callId': tool.callId,
+            'arguments': tool.arguments,
+            'result': tool.result,
+            'progressBytes': tool.progressBytes,
+            'presentationContract': tool.presentationContract,
+            'denialReason': tool.denialReason,
+            'workingDirectory': tool.workingDirectory,
+            'exitCode': tool.exitCode,
             'attachments': [
-              for (final attachment in item.attachments)
+              for (final attachment in tool.attachments)
                 {
                   'id': attachment.id,
                   'modality': attachment.modality,
                   'filename': attachment.filename,
                   'byteSize': attachment.byteSize,
-                  if (attachment.source != null) 'source': attachment.source,
                 },
             ],
-            if (item.tool case final tool?)
-              'tool': {
-                'name': tool.name,
-                'status': tool.status,
-                'callId': tool.callId,
-                'arguments': tool.arguments,
-                'result': tool.result,
-                // 在途工具的只读采样字段（同一 typed 事实的派生视图）。
-                'output': tool.result,
-                'progressBytes': tool.progressBytes,
-                'appendSeq': tool.appendSeq,
-                'denialReason': tool.denialReason,
-                'workingDirectory': tool.workingDirectory,
-                'exitCode': tool.exitCode,
-                'attachments': [
-                  for (final attachment in tool.attachments)
-                    {
-                      'id': attachment.id,
-                      'modality': attachment.modality,
-                      'filename': attachment.filename,
-                      'byteSize': attachment.byteSize,
-                    },
-                ],
-              },
-            if (item.userInput case final userInput?)
-              'userInput': {
-                'interactionId': userInput.interactionId,
-                'state': userInput.state,
-                // 计划确认是 typed 判别事实：任何问答都给出真实 bool 与权威决定。
-                'isPlanConfirmation': userInput.isPlanConfirmation,
-                'planDecision': userInput.planDecision,
-              },
-            if (item.plan case final plan?)
-              'plan': {
-                'interactionId': plan.interactionId,
-                'decision': plan.decision,
-                'documentVersion': plan.documentVersion,
-                'contentHash': plan.contentHash,
-                'document': plan.document,
-                'feedback': plan.feedback,
-              },
           },
-      ],
-    };
-  }
+        if (item.userInput case final userInput?)
+          'userInput': {
+            'interactionId': userInput.interactionId,
+            'state': userInput.state,
+            // 计划确认是 typed 判别事实：任何问答都给出真实 bool 与权威决定。
+            'isPlanConfirmation': userInput.isPlanConfirmation,
+            'planDecision': userInput.planDecision,
+          },
+        if (item.plan case final plan?)
+          'plan': {
+            'interactionId': plan.interactionId,
+            'decision': plan.decision,
+            'documentVersion': plan.documentVersion,
+            'contentHash': plan.contentHash,
+            'document': plan.document,
+            'feedback': plan.feedback,
+          },
+      },
+  ];
 
   static Map<String, Object?> _turnJson(StudioTurnView turn) => {
     'id': turn.turnId,

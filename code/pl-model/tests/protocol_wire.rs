@@ -186,6 +186,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     let base = plain.estimate_input(&request, None).await.unwrap().unwrap();
     let with_hosted = hosted
@@ -2986,6 +2987,7 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -4316,6 +4318,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 resources: Default::default(),
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             ThreadCompactionOptions {
                 strategy: ThreadCompactionStrategy::PreferNative,
@@ -4402,6 +4405,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 resources: Default::default(),
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             None,
         )
@@ -4719,6 +4723,7 @@ async fn instruction_snapshot_revision_and_hash_are_validated_before_admission()
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     for (label, records) in [
         (
@@ -4815,6 +4820,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -4910,6 +4916,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -5209,6 +5216,7 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
                 resources: None,
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             })
             .await
             .unwrap();
@@ -5315,6 +5323,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
                 resources: None,
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             ThreadCompactionOptions {
                 strategy: ThreadCompactionStrategy::TextSummary,
@@ -5508,6 +5517,7 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     let call = session.prepare(request.clone()).await.unwrap();
     call.execute().await.unwrap();

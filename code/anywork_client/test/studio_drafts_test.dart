@@ -11,6 +11,8 @@ import 'package:anywork_client/accounts_ports.dart';
 
 import 'support/accounts_test_runtime.dart';
 
+const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
+
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
 final class _DraftTransport extends AccountsTestTransport {
@@ -56,7 +58,7 @@ final class _DraftTransport extends AccountsTestTransport {
       : StreamController<NewThreadStartEvent>(
           onCancel: () => startCancelGate?.future,
         );
-  ConversationBaseline? Function(String threadId)? initialForThread;
+  ChatBatch? Function(String threadId)? initialForThread;
   int feedOpens = 0;
   int startCalls = 0;
   int standalonePrepareCalls = 0;
@@ -81,7 +83,8 @@ final class _DraftTransport extends AccountsTestTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     feedOpens++;
     return window = _DraftConnection(
@@ -286,27 +289,27 @@ final class _DraftConnection extends ScriptedConversationFeed {
   _DraftConnection({
     required super.threadId,
     required super.states,
-    ConversationBaseline? initial,
-  }) : super(
-         initial:
-             initial ?? baseline(1, subscriptionId: 'draft', items: const []),
-       );
-  int _sequence = 1;
-  Future<void> emitItem(ConversationItem item) async {
-    final from = _sequence;
-    _sequence = item.header.appendSeq;
+    ChatBatch? initial,
+  }) : super(initial: initial ?? chatSet(messages: const []));
+  Future<void> emitItem(ChatMessage item) async {
     await deliver(
-      ConversationUpdateEvent(
-        update: ConversationBatch(
-          subscriptionId: 'draft',
-          timelineEpoch: 'epoch',
-          fromSeq: from,
-          throughSeq: _sequence,
-          items: [item],
-        ),
+      ConversationChatEvent(
+        batch: ChatBatch(placement: ChatPlacement.append, messages: [item]),
       ),
     );
   }
+
+  Future<void> emitTurn(StudioTurnView turn) => deliver(
+    ConversationStateEvent(
+      frame: ThreadSnapshotFrame(
+        workspace: _workspace(
+          revision: turn.revision,
+          turn: turn,
+          thread: _thread(turn.threadId),
+        ),
+      ),
+    ),
+  );
 }
 
 const _project = StudioProject(
@@ -482,9 +485,13 @@ Future<AnyworkClient> _client(
   client.conversations
       .session('thread')
       .content
-      .attachConsumer(completionConsumer ?? TestCompletionConsumer());
+      .attachConsumer(
+        completionConsumer ?? TestCompletionConsumer(),
+        demand: _demand,
+      );
   client.conversations.setVisibleThread('thread');
-  await scriptedFeed('thread');
+  final feed = await scriptedFeed('thread');
+  await feed.acknowledged(1);
   return client;
 }
 
@@ -496,33 +503,19 @@ Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
   await transport.frames.close();
 }
 
-ConversationItem _inputTurn(
+StudioTurnView _inputTurn(
   String inputId,
   StudioTurnState state, {
   String threadId = 'thread',
-  String itemId = 'turn-item',
   String turnId = 'turn',
-  int appendSeq = 2,
-}) => ConversationItem(
-  header: ConversationItemHeader(
-    id: itemId,
-    threadId: threadId,
-    turnId: turnId,
-    appendSeq: appendSeq,
-  ),
-  source: const ConversationContentSource(),
-  descriptor: ConversationTurnDescriptor(
-    inputId: inputId,
-    outcome: switch (state) {
-      CompletedStudioTurnState() => ConversationTurnCompleted(state),
-      FailedStudioTurnState() => ConversationTurnFailed(state),
-      CancelledStudioTurnState() => ConversationTurnCancelled(state),
-      BudgetLimitedStudioTurnState() => ConversationTurnBudgetLimited(state),
-      QueuedStudioTurnState() || RunningStudioTurnState() =>
-        throw ArgumentError('Only a terminal Turn is a completed item'),
-    },
-  ),
-  fields: const [],
+  int revision = 1,
+}) => StudioTurnView(
+  inputId: inputId,
+  threadId: threadId,
+  turnId: turnId,
+  revision: revision,
+  state: state,
+  updatedAt: DateTime.utc(2026),
 );
 
 void main() {
@@ -545,7 +538,7 @@ void main() {
           client.budget.used(ResourceKind.observer),
           baselineObservers + 1,
         );
-        await transport.window.emitItem(
+        await transport.window.emitTurn(
           _inputTurn(
             input.inputId,
             const CompletedStudioTurnState(
@@ -573,14 +566,10 @@ void main() {
             );
         if (evictBeforeReceipt) {
           for (var index = 0; index < 101; index++) {
-            await transport.window.emitItem(
-              timelineItem(index + 3, id: 'tail-$index'),
-            );
+            await transport.window.emitItem(chatMessage(id: 'tail-$index'));
           }
         }
-        await transport.window.emitItem(
-          timelineItem(200, id: 'unrelated-last'),
-        );
+        await transport.window.emitItem(chatMessage(id: 'unrelated-last'));
         expect(operation.state.value.receipt, isNull);
         expect(
           operation.state.value.durable,
@@ -625,28 +614,12 @@ void main() {
     final operation = client.mutations.lookup(
       OperationId(request.input.inputId),
     )!;
-    transport.initialForThread = (id) => baseline(
-      1,
-      subscriptionId: 'draft',
-      items: [
-        _inputTurn(
-          request.input.inputId,
-          const CompletedStudioTurnState(
-            startedAt: 1,
-            completedAt: 2,
-            completion: StudioTurnCompletion.normal,
-          ),
-          threadId: id,
-          appendSeq: 1,
-        ),
-      ],
-    );
     final selected = client.selection.source.watch((state) {
       if (state.selectedThreadId == 'new-thread') {
         client.conversations
             .session('new-thread')
             .content
-            .attachConsumer(TestCompletionConsumer());
+            .attachConsumer(TestCompletionConsumer(), demand: _demand);
         client.conversations.setVisibleThread('new-thread');
       }
     });
@@ -664,7 +637,18 @@ void main() {
     await feed.acknowledged(1);
     final newSession = client.conversations.session('new-thread');
     await newSession.deliverWorkspace(
-      _workspace(thread: _thread('new-thread')),
+      _workspace(
+        thread: _thread('new-thread'),
+        turn: _inputTurn(
+          request.input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          threadId: 'new-thread',
+        ),
+      ),
     );
     await newSession.deliverNotification(
       const ThreadNotificationFrame(
@@ -702,6 +686,7 @@ void main() {
   test('new-thread accepts a valid result before conflicting earlier-thread evidence fails synchronization', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
     final initialObservers = client.budget.used(ResourceKind.observer);
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'preserve conflicted new-thread draft');
@@ -710,7 +695,7 @@ void main() {
     final operation = client.mutations.lookup(
       OperationId(request.input.inputId),
     )!;
-    await transport.window.emitItem(
+    await transport.window.emitTurn(
       _inputTurn(
         request.input.inputId,
         const CompletedStudioTurnState(
@@ -760,7 +745,7 @@ void main() {
     final input = await transport.promptEntered.future;
     var seq = 1;
     for (final id in ['turn', 'conflicting-turn']) {
-      await transport.window.emitItem(
+      await transport.window.emitTurn(
         _inputTurn(
           input.inputId,
           const CompletedStudioTurnState(
@@ -768,9 +753,8 @@ void main() {
             completedAt: 2,
             completion: StudioTurnCompletion.normal,
           ),
-          itemId: 'item-$id',
           turnId: id,
-          appendSeq: ++seq,
+          revision: ++seq,
         ),
       );
     }
@@ -1860,44 +1844,25 @@ void main() {
       expect(operation.state.value.observed, isTrue);
       expect(operation.state.value.effective, isTrue);
       expect(operation.state.value.durable, isFalse);
-      final terminal = ConversationItem(
-        header: ConversationItemHeader(
-          id: 'turn-item',
-          threadId: 'thread',
-          turnId: 'turn',
-          appendSeq: 2,
-        ),
-        source: const ConversationContentSource(),
-        descriptor: ConversationTurnDescriptor(
-          inputId: input.inputId,
-          outcome: const ConversationTurnCompleted(
-            CompletedStudioTurnState(
-              startedAt: 1,
-              completedAt: 2,
-              completion: StudioTurnCompletion.normal,
-            ),
-          ),
-        ),
-        fields: const [],
+      final terminal = chatMessage(
+        id: 'turn-item',
+        body: '{"inputId":"${input.inputId}","completion":"normal"}',
       );
       await transport.window.deliver(
-        ConversationUpdateEvent(
-          update: ConversationBatch(
-            subscriptionId: 'draft',
-            timelineEpoch: 'epoch',
-            fromSeq: 1,
-            throughSeq: 2,
-            items: [terminal],
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            messages: [terminal],
           ),
         ),
       );
-      expect(consumer.frames.last, isA<ConversationCompletedBatchFrame>());
+      expect(consumer.batches.last.messages, [terminal]);
       expect(
         operation.state.value.durable,
         isFalse,
         reason: 'A completion is not proof of storage durability',
       );
-      final count = consumer.frames.length;
+      final count = consumer.batches.length;
       await session.deliverNotification(
         const ThreadNotificationFrame(
           threadId: 'thread',
@@ -1910,7 +1875,7 @@ void main() {
         ),
       );
       expect(operation.state.value.durable, isFalse);
-      expect(consumer.frames, hasLength(count));
+      expect(consumer.batches, hasLength(count));
       await session.deliverNotification(
         const ThreadNotificationFrame(
           threadId: 'thread',
@@ -1923,7 +1888,7 @@ void main() {
         ),
       );
       expect(operation.state.value.durable, isTrue);
-      expect(consumer.frames, hasLength(count));
+      expect(consumer.batches, hasLength(count));
       await _close(client, transport);
     },
   );

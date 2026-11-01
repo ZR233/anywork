@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import '../../../conversation_ports.dart';
 import '../../../models.dart';
@@ -7,224 +6,314 @@ import '../../contracts/stamps.dart';
 import '../../lifecycle/resource_budget.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/conversation_repository.dart';
-import 'completion_budget.dart';
 
-/// One independently retired read scope; it never borrows a feed or its credit.
+/// Borrows the original feed's reader. Retiring this display scope cancels its
+/// watches and rejects late results, but never closes a sibling's read lease.
 final class ConversationReadScope implements ConversationQueryScope {
   ConversationReadScope({
     required this.threadId,
-    required this.timelineEpoch,
     required this.generation,
-    required ConversationTransport transport,
+    required ConversationReader reader,
     required ResourceBudget budget,
-  }) : _transport = transport,
-       _budget = budget;
+    required bool Function() isEligible,
+    required Future<void> Function(ChatBatch) applyOlder,
+  }) : _reader = reader,
+       _budget = budget,
+       _isEligible = isEligible,
+       _applyOlder = applyOlder;
+
+  @override
   final String threadId;
-  final String timelineEpoch;
+  @override
   final int generation;
-  final ConversationTransport _transport;
+  final ConversationReader _reader;
   final ResourceBudget _budget;
+  final bool Function() _isEligible;
+  final Future<void> Function(ChatBatch) _applyOlder;
   final Set<Future<void>> _pending = {};
-  ConversationHistoryReader? _reader;
-  Future<ConversationHistoryReader>? _opening;
-  Future<void>? _closingReader;
-  ResourcePermit? _readerPermit;
-  Object? _closeError;
-  Object? _identityError;
-  bool _readerClosed = false;
+  final Set<_ContentWatch> _watches = {};
   bool _retired = false;
   int _sequence = 0;
-  bool get isActive => !_retired;
+  Future<ChatBatch>? _older;
+
+  @override
+  bool get isActive => !_retired && _isEligible();
+  @override
   int get pendingQueries => _pending.length;
-  bool get isSettled => _retired && _pending.isEmpty && _readerPermit == null;
+  bool get isSettled => _retired && _pending.isEmpty && _watches.isEmpty;
 
-  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
-    final resolved = limit ?? conversationPageDefaultLimit;
-    if (resolved < 1 || resolved > conversationPageMaxLimit)
-      return Future.error(ArgumentError.value(limit, 'limit'));
-    return _run((reader) async {
-      final page = await reader.page(before: before, limit: resolved);
-      if (page.threadId != threadId ||
-          page.timelineEpoch != timelineEpoch ||
-          page.items.length > resolved ||
-          page.hasOlder != (page.before != null))
-        throw const ConversationContinuityError(
-          'page identity or bounds mismatch',
-        );
-      validateCompletionBudget(page.items);
-      var last = -1;
-      final ids = <String>{};
-      for (final item in page.items) {
-        if (item.header.threadId != threadId ||
-            item.header.appendSeq <= last ||
-            !ids.add(item.id))
-          throw const ConversationContinuityError(
-            'page ordering or identity mismatch',
-          );
-        last = item.header.appendSeq;
-      }
-      return page;
-    });
-  }
-
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
+  @override
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
   }) {
-    if (query.timelineEpoch != timelineEpoch)
-      return Future.error(
-        const ConversationContinuityError('query epoch mismatch'),
-      );
-    final max = query.maxBytes ?? 65536;
-    if (max < conversationDetailMinBytes || max > conversationDetailMaxBytes)
-      return Future.error(ArgumentError.value(query.maxBytes, 'maxBytes'));
-    return _run((reader) async {
-      final result = await reader.readDetail(itemId: itemId, query: query);
-      final bytes = utf8.encode(result.text).length;
-      if (result.threadId != threadId ||
-          result.timelineEpoch != timelineEpoch ||
-          result.itemId != itemId ||
-          result.field != query.field ||
-          bytes > max ||
-          bytes > result.totalBytes ||
-          (bytes == 0 && result.continuation != null) ||
-          (result.continuation != null &&
-              result.continuation == query.continuation))
-        throw const ConversationContinuityError(
-          'detail identity or bounds mismatch',
-        );
-      return result;
-    });
-  }
-
-  Future<ConversationHistoryReader> _ensureReader() {
-    final existing = _opening;
+    if (!isActive) return Future.error(const StaleConversationScope());
+    final existing = _older;
     if (existing != null) return existing;
-    final permit = _budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'timeline-reader:$threadId:$generation',
-      phase: ResourcePhase.opening,
+    final completion = Completer<ChatBatch>();
+    _older = completion.future;
+    completion.complete(
+      _run(() async {
+        // Start native IO outside the serial component admission queue.
+        final batch = await _reader.loadOlder(before: before, demand: demand);
+        if (!isActive) throw const StaleConversationScope();
+        await _applyOlder(batch);
+        if (!isActive) throw const StaleConversationScope();
+        return batch;
+      }),
     );
-    _readerPermit = permit;
-    final completer = Completer<ConversationHistoryReader>();
-    _opening = completer.future;
-    completer.complete(
-      Future<ConversationHistoryReader>.sync(
-        () => _transport.openHistoryReader(threadId),
-      ).then(
-        (reader) {
-          _reader = reader;
-          permit.mark(_retired ? ResourcePhase.retiring : ResourcePhase.active);
-          if (_retired) {
-            _requestReaderClose();
-            throw const StaleConversationScope();
-          }
-          if (reader.threadId != threadId ||
-              reader.timelineEpoch != timelineEpoch) {
-            _retired = true;
-            _requestReaderClose();
-            final error = ConversationContinuityError(
-              'reader identity mismatch',
-            );
-            _identityError = error;
-            throw error;
-          }
-          return reader;
-        },
-        onError: (Object error, StackTrace stack) {
-          permit.release();
-          _readerPermit = null;
-          Error.throwWithStackTrace(error, stack);
-        },
+    unawaited(
+      completion.future.then<void>(
+        (_) => _older = null,
+        onError: (Object _, StackTrace __) => _older = null,
       ),
     );
-    return completer.future;
+    return completion.future;
   }
 
-  Future<T> _run<T>(Future<T> Function(ConversationHistoryReader) operation) {
-    if (_retired) return Future.error(const StaleConversationScope());
+  @override
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  }) => _run(
+    () => _reader.listContents(
+      itemId: itemId,
+      continuation: continuation,
+      demand: demand,
+    ),
+  );
+
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) => _run(() => _reader.readContent(reference: reference, range: range));
+
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) => _run(
+    () => _reader.pageCurrent(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    ),
+  );
+
+  Future<T> _run<T>(Future<T> Function() operation) {
+    if (!isActive) return Future.error(const StaleConversationScope());
     final permit = _budget.acquire(
       ResourceKind.pendingOperation,
-      owner: 'timeline-query:$threadId:$generation:${++_sequence}',
+      owner: 'chat-query:$threadId:$generation:${++_sequence}',
     );
-    final completer = Completer<T>();
+    final completion = Completer<T>();
     late final Future<void> joined;
-    joined = completer.future
+    joined = completion.future
         .then<void>((_) {}, onError: (Object _, StackTrace __) {})
         .whenComplete(() {
           _pending.remove(joined);
           permit.release();
         });
     _pending.add(joined);
-    completer.complete(
-      Future<T>.sync(() async {
-        final reader = await _ensureReader();
-        if (_retired) throw const StaleConversationScope();
-        return operation(reader);
-      }).then(
+    completion.complete(
+      Future<T>.sync(operation).then(
         (value) {
-          if (_retired) throw const StaleConversationScope();
+          if (!isActive) throw const StaleConversationScope();
           return value;
         },
         onError: (Object error, StackTrace stack) {
-          if (_retired && !identical(error, _identityError)) {
-            throw const StaleConversationScope();
-          }
+          if (!isActive) throw const StaleConversationScope();
           Error.throwWithStackTrace(error, stack);
         },
       ),
     );
-    return completer.future;
+    return completion.future;
   }
 
+  @override
+  Stream<ContentWindow> watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    late final StreamController<ContentWindow> output;
+    _ContentWatch? watch;
+    output = StreamController<ContentWindow>(
+      onListen: () {
+        if (!isActive) {
+          output.addError(const StaleConversationScope());
+          unawaited(output.close());
+          return;
+        }
+        try {
+          final owned = _ContentWatch(
+            _budget.acquire(
+              ResourceKind.pendingOperation,
+              owner: 'chat-watch:$threadId:$generation:${++_sequence}',
+            ),
+          );
+          watch = owned;
+          _watches.add(owned);
+          owned.handle = _reader.watchContent(
+            reference: reference,
+            range: range,
+          );
+          owned.subscription = owned.handle!.windows.listen(
+            (value) {
+              if (isActive && !owned.stopping) output.add(value);
+            },
+            onError: (Object error, StackTrace stack) {
+              if (owned.stopping) return;
+              if (isActive) output.addError(error, stack);
+              // A terminal read error need not be followed by EOF. Retire the
+              // exact transport watch immediately and retain failed join IO.
+              unawaited(_finishWatchOutput(owned, output));
+            },
+            onDone: () {
+              // EOF ends delivery, not ownership of the original native
+              // watch. A failed join must remain retryable after onDone.
+              unawaited(_finishWatchOutput(owned, output));
+            },
+          );
+        } catch (error, stack) {
+          output.addError(error, stack);
+          final owned = watch;
+          if (owned == null) {
+            // Admission failed before a permit/handle existed. Keep the
+            // original error on this Stream, not its listener's uncaught Zone.
+            unawaited(output.close());
+          } else {
+            unawaited(_finishWatchOutput(owned, output));
+          }
+        } finally {
+          final owned = watch;
+          if (owned != null) {
+            owned.listening.complete();
+            if (!isActive || owned.stopping) _requestWatchClose(owned);
+          }
+        }
+      },
+      onCancel: () async {
+        final owned = watch;
+        if (owned == null) return;
+        _requestWatchClose(owned);
+        await (owned.cancelling ??
+            owned.lastCancellation ??
+            _cancelWatch(owned));
+        if (!owned.sourceEnded) {
+          if (owned.errors.firstOrNull case final error?) {
+            Error.throwWithStackTrace(error.$1, error.$2);
+          }
+        }
+      },
+      onPause: () => watch?.subscription?.pause(),
+      onResume: () => watch?.subscription?.resume(),
+    );
+    return output.stream;
+  }
+
+  void _releaseWatch(_ContentWatch watch) {
+    watch.released = true;
+    watch.permit.release();
+    _watches.remove(watch);
+  }
+
+  Future<void> _finishWatchOutput(
+    _ContentWatch watch,
+    StreamController<ContentWindow> output,
+  ) async {
+    if (watch.sourceEnded) return;
+    watch.sourceEnded = true;
+    await _cancelWatch(watch);
+    // Native EOF is not evidence of successful teardown. Deliver its actual
+    // failure before done, while the original scope retains retry ownership.
+    if (isActive && !output.isClosed) {
+      for (final error in watch.errors) {
+        output.addError(error.$1, error.$2);
+      }
+    }
+    unawaited(output.close());
+  }
+
+  void _requestWatchClose(_ContentWatch watch) {
+    watch.stopping = true;
+    final handle = watch.handle;
+    if (handle == null || watch.released) return;
+    try {
+      handle.requestClose();
+      watch.requestError = null;
+    } catch (error, stack) {
+      watch.requestError = (error, stack);
+      watch.permit.mark(ResourcePhase.unresolved);
+    }
+  }
+
+  Future<void> _cancelWatch(_ContentWatch watch) {
+    if (watch.released) return Future.value();
+    // Synchronous wake precedes every await, including a late-open/listen join.
+    _requestWatchClose(watch);
+    final existing = watch.cancelling;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    watch.cancelling = completion.future;
+    watch.lastCancellation = completion.future;
+    completion.complete(
+      Future<void>.sync(() async {
+        try {
+          await watch.listening.future;
+          _requestWatchClose(watch);
+          final subscription = watch.subscription;
+          // Dart cancel may cache its Future. Call it exactly once and retain an
+          // independent cancellation failure; native close cannot erase it.
+          final cancelled = watch.subscriptionCancellation ??=
+              Future<void>.sync(() async => subscription?.cancel()).then<void>(
+                (_) {},
+                onError: (Object error, StackTrace stack) {
+                  watch.subscriptionError = (error, stack);
+                },
+              );
+          final handle = watch.handle;
+          // Unlike StreamSubscription.cancel, this is the explicit retryable
+          // transport join on the very same watch capability.
+          final joined = Future<void>.sync(() async => handle?.close())
+              .then<void>(
+                (_) => watch.handleError = null,
+                onError: (Object error, StackTrace stack) {
+                  watch.handleError = (error, stack);
+                },
+              );
+          await Future.wait([cancelled, joined]);
+          if (watch.errors.isEmpty) {
+            _releaseWatch(watch);
+          } else {
+            watch.permit.mark(ResourcePhase.unresolved);
+          }
+        } finally {
+          watch.cancelling = null;
+        }
+      }),
+    );
+    return completion.future;
+  }
+
+  @override
   void retire() {
     if (_retired) return;
     _retired = true;
-    _requestReaderClose();
-  }
-
-  void _requestReaderClose() {
-    final reader = _reader;
-    if (reader == null || _readerClosed) return;
-    _readerPermit?.mark(ResourcePhase.retiring);
-    try {
-      reader.requestClose();
-    } catch (error) {
-      _closeError = error;
+    for (final watch in List.of(_watches)) {
+      unawaited(_cancelWatch(watch));
     }
   }
 
-  Future<void> _joinReader() async {
-    final opening = _opening;
-    if (opening == null) return;
-    try {
-      await opening;
-    } catch (_) {
-      // Open failure has already been delivered to the query; a late reader
-      // remains in _reader and must still be joined below.
-    }
-    final reader = _reader;
-    if (reader == null || _readerClosed) return;
-    _requestReaderClose();
-    final close = _closingReader ??= Future<void>.sync(reader.close);
-    try {
-      await close;
-      _readerClosed = true;
-      _closeError = null;
-      _readerPermit?.release();
-      _readerPermit = null;
-      _reader = null;
-    } catch (error) {
-      _closeError = error;
-      _readerPermit?.mark(ResourcePhase.unresolved);
-      _closingReader = null;
-    }
-  }
-
+  @override
   Future<CloseReport> close({DateTime? deadline}) async {
     retire();
-    final readerJoin = _joinReader();
-    final pending = [..._pending, readerJoin];
+    final pending = [
+      ..._pending,
+      for (final watch in List.of(_watches)) _cancelWatch(watch),
+    ];
     if (pending.isNotEmpty) {
       if (deadline == null) {
         await Future.wait(pending);
@@ -234,7 +323,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           try {
             await Future.wait(pending).timeout(remaining);
           } on TimeoutException {
-            // The registered native futures and permits remain owned until settlement.
+            /* Original operations retain their permits. */
           }
         }
       }
@@ -243,18 +332,45 @@ final class ConversationReadScope implements ConversationQueryScope {
       unresolved: [
         for (var i = 0; i < _pending.length; i++)
           UnresolvedResource(
-            owner: 'timeline-query:$threadId:$generation',
+            owner: 'chat-query:$threadId:$generation',
             attemptId: AttemptId(generation),
             reason: StateError('query still in flight'),
           ),
-        if (_readerPermit != null)
-          UnresolvedResource(
-            owner: 'timeline-reader:$threadId:$generation',
-            attemptId: AttemptId(generation),
-            reason:
-                _closeError ?? StateError('reader still opening or closing'),
-          ),
+        for (final watch in _watches)
+          for (final reason
+              in watch.errors.isEmpty
+                  ? [StateError('watch still closing')]
+                  : watch.errors.map((error) => error.$1))
+            UnresolvedResource(
+              owner: 'chat-watch:$threadId:$generation',
+              attemptId: AttemptId(generation),
+              reason: reason,
+            ),
       ],
     );
   }
+}
+
+final class _ContentWatch {
+  _ContentWatch(this.permit);
+  final ResourcePermit permit;
+  final listening = Completer<void>();
+  ConversationContentWatch? handle;
+  // Owned until both subscription cancellation and original watch join settle.
+  // ignore: cancel_subscriptions
+  StreamSubscription<ContentWindow>? subscription;
+  Future<void>? subscriptionCancellation;
+  Future<void>? cancelling;
+  Future<void>? lastCancellation;
+  (Object, StackTrace)? requestError;
+  (Object, StackTrace)? subscriptionError;
+  (Object, StackTrace)? handleError;
+  bool stopping = false;
+  bool sourceEnded = false;
+  bool released = false;
+  Iterable<(Object, StackTrace)> get errors => [
+    ?requestError,
+    ?subscriptionError,
+    ?handleError,
+  ];
 }

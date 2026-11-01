@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -400,7 +402,11 @@ Future<_Fixture> _fixture(
   await pumpClientFuture(tester, graph.client.bootstrap(), 'cards bootstrap');
   await pumpClientFuture(
     tester,
-    (graph..setConversationPageVisible(true)).client.directoryCommands
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(_rootId),
     'select root for cards',
   );

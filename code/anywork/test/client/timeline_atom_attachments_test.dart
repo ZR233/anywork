@@ -1,32 +1,50 @@
 import 'dart:typed_data';
 
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_entry.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_entry_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ConversationItem _tool(String name, List<ThreadAttachmentView> attachments) =>
-    ConversationItem(
-      header: const ConversationItemHeader(
-        id: 'tool',
-        threadId: 'thread',
-        turnId: 'turn',
-        appendSeq: 1,
-      ),
-      descriptor: ConversationToolDescriptor(
-        invocation: ConversationToolInvocation(toolCallId: 'call', name: name),
-        state: ConversationToolSucceeded(
-          completedAt: DateTime.utc(2026),
-          output: ConversationToolOutputDescriptor(attachments: attachments),
-        ),
-      ),
-      source: const ConversationContentSource(),
-      fields: const [],
-    );
+import 'support/chat_fixtures.dart';
+
+ChatItemPresentation _tool(
+  String name,
+  List<ThreadAttachmentView> attachments,
+) => ChatItemPresentation.decode(
+  chatEnvelope(
+    'tool',
+    type: 'tool',
+    data: {
+      'invocation': {
+        'toolCallId': 'call',
+        'name': name,
+        'presentationContract': 'generic@1',
+      },
+      'state': {
+        'kind': 'succeeded',
+        'completedAt': 0,
+        'output': {
+          'attachments': [
+            for (final attachment in attachments)
+              {
+                'id': attachment.id,
+                'modality': attachment.modality.name,
+                'mediaType': attachment.mediaType,
+                'byteSize': attachment.byteSize,
+                if (attachment.filename != null)
+                  'filename': attachment.filename,
+              },
+          ],
+        },
+      },
+    },
+    bodies: [inlineBody('tool.arguments', '{}')],
+  ),
+);
 
 Widget _app(Widget child) => MaterialApp(
   locale: const Locale('zh'),
@@ -64,7 +82,7 @@ void main() {
     var reads = 0;
     await tester.pumpWidget(
       _app(
-        TimelineGroupMediaConnector(
+        TimelineAttachmentsConnector(
           item: item,
           resources: resources,
           readAttachment: (_) async {
@@ -72,14 +90,13 @@ void main() {
             return Uint8List(0);
           },
           isActive: () => true,
-          onDetail: (_, _) {},
         ),
       ),
     );
     expect(find.text(filename), findsOneWidget);
-    expect(find.text('文件 · text/plain · 123 B'), findsOneWidget);
+    expect(find.text('text/plain · 123 B'), findsOneWidget);
     expect(find.text('视频'), findsOneWidget);
-    expect(find.text('视频 · video/mp4 · 456 B'), findsOneWidget);
+    expect(find.text('video/mp4 · 456 B'), findsOneWidget);
     for (final tile in tester.widgetList<ListTile>(find.byType(ListTile))) {
       expect(tile.onTap, isNull);
     }
@@ -106,26 +123,18 @@ void main() {
             filename: 'report.txt',
           ),
         ]);
-        final entry = TimelineEntry(
-          id: 'entry',
-          kind: TimelineEntryKind.activity,
-          anchorItemId: item.id,
-        )..appendMembers([item]);
-        entry.toggle();
-        addTearDown(entry.dispose);
         final resources = TimelineImageResources(threadId: 'thread');
         addTearDown(resources.release);
         var reads = 0;
-        final mediaItems = <ConversationItem>[];
+        final mediaItems = <ChatItemPresentation>[];
         await tester.pumpWidget(
           _app(
-            TimelineEntryView(
-              entry: entry,
+            ChatItemView(
+              item: item,
               bodyBuilder: (_, text) => Text(text),
-              onDetail: (_, _) {},
-              mediaBuilder: (value) {
+              attachmentBuilder: (value) {
                 mediaItems.add(value);
-                return TimelineGroupMediaConnector(
+                return TimelineAttachmentsConnector(
                   item: value,
                   resources: resources,
                   readAttachment: (_) async {
@@ -133,17 +142,15 @@ void main() {
                     return Uint8List(0);
                   },
                   isActive: () => true,
-                  onDetail: (_, _) {},
                 );
               },
             ),
           ),
         );
         expect(find.text('report.txt'), findsOneWidget);
-        expect(find.byType(TimelineGroupMediaConnector), findsOneWidget);
+        expect(find.byType(TimelineAttachmentsConnector), findsOneWidget);
         expect(mediaItems, isNotEmpty);
         expect(mediaItems.every((value) => identical(value, item)), isTrue);
-        expect(entry.length, 1);
         expect(reads, 0);
         expect(tester.takeException(), isNull);
       },

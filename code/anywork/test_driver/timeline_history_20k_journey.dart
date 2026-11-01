@@ -1,10 +1,12 @@
 // Linux-only cumulative timeline-history acceptance journey.
 //
-// The coordinator starts five independent GUI lifecycles over one isolated
-// ANYWORK_HOME: seed, cold-1, cold-2, cold-3 and growth. This host Driver never
-// writes storage or calls load-older directly. Seed/growth use the normal
-// composer/provider/Core/writer path; paging is triggered only by real
-// PointerScroll input on the production timeline.
+// The coordinator starts independent GUI lifecycles over one isolated
+// ANYWORK_HOME: seed, cold-1 through cold-20, switch and growth. Switch creates
+// a real reference session B, then measures exactly 20 B-to-A selections in
+// one process using the App owner's same-clock first-content layout witness.
+// This host Driver never writes storage or calls load-older directly.
+// Seed/reference/growth use the normal composer/provider/Core/writer path;
+// paging is triggered only by real PointerScroll input on the production timeline.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -23,6 +25,8 @@ const _growthBatches = 20;
 const _growthItemsPerBatch = 100;
 const _bodyBytes = 32;
 const _coldScrollPages = 6;
+const _switchSampleCount = 20;
+const _switchPrompt = 'Prepare timeline switch reference session';
 
 String _seedPrompt(int batch) =>
     'Seed timeline history batch ${batch.toString().padLeft(2, '0')} of $_seedBatches';
@@ -40,12 +44,16 @@ Future<void> main(List<String> args) async {
     return;
   }
   final phase = args[0];
+  final isColdPhase = <String>{
+    for (var index = 1; index <= 20; index++) 'cold-$index',
+  }.contains(phase);
   if (phase != 'seed' &&
-      phase != 'cold-1' &&
-      phase != 'cold-2' &&
-      phase != 'cold-3' &&
+      !isColdPhase &&
+      phase != 'switch' &&
       phase != 'growth') {
-    stderr.writeln('PHASE must be seed, cold-1, cold-2, cold-3 or growth');
+    stderr.writeln(
+      'PHASE must be seed, cold-1 through cold-20, switch or growth',
+    );
     exitCode = 64;
     return;
   }
@@ -56,7 +64,7 @@ Future<void> main(List<String> args) async {
     'scenario': 'timeline-history-20k',
     'phase': phase,
     'platform': Platform.operatingSystem,
-    'processCold': phase.startsWith('cold-'),
+    'processCold': isColdPhase,
     'osPageCacheControlled': false,
     'tokenMeasurement': 'notMeasured',
     'verdict': 'pending',
@@ -80,8 +88,18 @@ Future<void> main(List<String> args) async {
       final identity = ColdStartIdentity.fromBaseline(
         await _readBaseline(output),
       );
-      if (phase.startsWith('cold-')) {
+      if (isColdPhase) {
         await _runCold(driver, identity, output, report, coord, phase);
+      } else if (phase == 'switch') {
+        await _runSwitch(
+          driver,
+          identity,
+          args[2],
+          output,
+          report,
+          coord,
+          phase,
+        );
       } else {
         await _runGrowth(driver, identity, output, report, coord, phase);
       }
@@ -233,13 +251,18 @@ Future<void> _runCold(
   final stability = TimelineViewportStability();
   final firstViewport = await _waitFor(
     driver,
-    stability.accept,
+    (snapshot) =>
+        stability.accept(snapshot) &&
+        TimelineObservation.parse(snapshot).firstContentLayout != null,
     '$phase-first-viewport',
     timeout: const Duration(minutes: 3),
   );
   final viewportMillis = openWatch.elapsedMilliseconds;
   final initial = TimelineObservation.parse(firstViewport);
   initial.requireConsistentIds();
+  if (initial.appliedSets == null || initial.appliedSets! <= 0) {
+    throw StateError('$phase first content has no actual Main Set acceptance');
+  }
   if (!initial.isLive) {
     throw StateError(
       '$phase initial window is not partial: ${initial.summary()}',
@@ -252,6 +275,12 @@ Future<void> _runCold(
   );
   final openFrames = await _stopFrames(driver, '$phase-coldOpen');
   final storageAfterOpen = await _storageSample(pid);
+  // Capture only after the same-clock content sample, FrameTiming window and open IO observation
+  // have ended; screenshot work must not become part of the first-content measurement.
+  final screenshotName = 'timeline-history-20k-$phase-first-content.png';
+  await File('${output.path}/$screenshotName')
+      .writeAsBytes(await driver.screenshot());
+  report['firstContentScreenshot'] = screenshotName;
   final idleState = await _settled(driver, '$phase-idle');
   final idle = TimelineObservation.parse(idleState);
   idle.requireConsistentIds();
@@ -273,6 +302,7 @@ Future<void> _runCold(
     await _persistenceQueue(driver),
     context: '$phase before real scroll',
   );
+  final storageBeforeScroll = await _storageSample(pid);
   await driver.requestData('frame-start');
   final pages = await _scrollOlderPages(
     driver,
@@ -302,13 +332,15 @@ Future<void> _runCold(
     'restore': restore,
   };
   report['coldLoad'] = <String, Object?>{
-    'selectionToOpenedMillis': selectedMillis,
-    'selectionToFirstViewportSettledMillis': viewportMillis,
+    'hostRestoreToOpenedMillis': selectedMillis,
+    'hostRestoreToViewportSettledMillis': viewportMillis,
+    'selectionToFirstContentLayoutMillis':
+        initial.firstContentLayout!.elapsedMicros / 1000,
+    'firstContentLayout': initial.firstContentLayout!.toJson(),
+    'contentLayoutMeasurement': 'application-selection-owner-monotonic-clock',
     'partialLoadBudget': timelineHistory20kColdWindowBudget,
     'initialLoadedCount': initial.loadedCount,
     'initialCanonicalAtomsLoaded': initial.itemCount,
-    'initialPresentationGroups': initial.presentationItems.length,
-    'initialHiddenPresentationGroups': initial.hiddenPresentationItems.length,
     'hasOlder': initial.hasOlder,
     'olderCursor': initial.olderCursor,
     'queryCalls': null,
@@ -319,7 +351,6 @@ Future<void> _runCold(
     'viewport': _timelineSummary(firstViewport),
     'idleCanonicalAtomsLoaded': idle.itemCount,
     'idleLoadedCount': idle.loadedCount,
-    'idlePresentationGroups': idle.presentationItems.length,
     'idleHasOlder': idle.hasOlder,
     'idleOlderCursor': idle.olderCursor,
     'idleWindowUnchanged': true,
@@ -337,12 +368,11 @@ Future<void> _runCold(
     'scrollTriggeredPageLoadsObserved': pages.length,
     'pages': pages,
     'finalCanonicalAtomsLoaded': finalTimeline.itemCount,
-    'finalPresentationGroups': finalTimeline.presentationItems.length,
     'frames': scrollFrames,
     'storage': <String, Object?>{
-      'before': storageAfterOpen,
+      'before': storageBeforeScroll,
       'after': storageAfterScroll,
-      'delta': _storageDelta(storageAfterOpen, storageAfterScroll),
+      'delta': _storageDelta(storageBeforeScroll, storageAfterScroll),
     },
   };
   report['coldWatermarks'] = <String, Object?>{
@@ -350,6 +380,274 @@ Future<void> _runCold(
     'afterScroll': afterScrollQueue.toJson(),
   };
   report['persistence'] = queue;
+}
+
+Future<void> _runSwitch(
+  FlutterDriverSession driver,
+  ColdStartIdentity target,
+  String project,
+  Directory output,
+  Map<String, Object?> report,
+  Directory coord,
+  String phase,
+) async {
+  // Opening A and creating/saving B prepare the environment, outside all samples.
+  final targetRestore = await _restore(driver, target, phase, coord);
+  final targetBeforeReference = await _switchViewport(
+    driver,
+    target,
+    project,
+    '$phase-target-before-reference',
+  );
+  final initialTarget = TimelineObservation.parse(targetBeforeReference);
+  requireTimelineHistory20kColdWindow(
+    loadedCount: initialTarget.loadedCount,
+    itemCount: initialTarget.itemCount,
+    hasOlder: initialTarget.hasOlder,
+  );
+  final newSession = find.byValueKey(
+    'project-new-session-${target.workspaceId}',
+  );
+  await driver.waitFor(newSession, timeout: const Duration(seconds: 60));
+  await driver.rawTap(newSession);
+  final startPage = await _waitFor(driver, (snapshot) {
+    final navigation = snapshot['navigation'];
+    final selected = snapshot['project'];
+    return navigation is Map &&
+        selected is Map &&
+        navigation['selectedProjectId'] == target.workspaceId &&
+        selected['id'] == target.workspaceId &&
+        selected['path'] == project &&
+        navigation['selectedThreadId'] == null &&
+        navigation['isStartPage'] == true;
+  }, '$phase-reference-start-page');
+  await driver.waitFor(
+    find.byValueKey('composer-input'),
+    timeout: const Duration(seconds: 60),
+  );
+  final previousTurnId = _lastTurnId(startPage);
+  await _submit(driver, _switchPrompt);
+  final referenceReady = await _waitFor(
+    driver,
+    (snapshot) =>
+        !_busy(snapshot) &&
+        _lastTurnId(snapshot) != null &&
+        _lastTurnId(snapshot) != previousTurnId &&
+        _lastTurnStatus(snapshot) == 'completed' &&
+        _durable(snapshot) &&
+        _viewportReady(snapshot),
+    '$phase-reference-completed-and-durable',
+    timeout: const Duration(minutes: 5),
+  );
+  final referenceIdentity = readOpenedTimelineIdentity(referenceReady);
+  if (!referenceIdentity.consistent ||
+      referenceIdentity.workspaceId != target.workspaceId ||
+      referenceIdentity.threadId == null ||
+      referenceIdentity.threadId == target.threadId ||
+      referenceIdentity.facts['projectPath'] != project) {
+    throw StateError(
+      '$phase reference is not a new session in the baseline project: '
+      '${referenceIdentity.toJson()}',
+    );
+  }
+  final source = ColdStartIdentity(
+    workspaceId: referenceIdentity.workspaceId!,
+    threadId: referenceIdentity.threadId!,
+  );
+  final referenceViewport = await _switchViewport(
+    driver,
+    source,
+    project,
+    '$phase-reference-ready',
+  );
+  final referenceTimeline = TimelineObservation.parse(referenceViewport);
+  final referenceOutputs = referenceTimeline.items
+      .where((item) => item.isFinalAnswer)
+      .toList();
+  if (referenceOutputs.length != 1 ||
+      referenceOutputs.single.text.isEmpty ||
+      referenceTimeline.items
+              .where((item) => item.isUserMessage && item.text == _switchPrompt)
+              .length !=
+          1 ||
+      _lastTurnId(referenceViewport) != _lastTurnId(referenceReady) ||
+      _lastTurnStatus(referenceViewport) != 'completed' ||
+      _busy(referenceViewport) ||
+      !_durable(referenceViewport)) {
+    throw StateError(
+      '$phase reference must have one completed, saved ordinary text response',
+    );
+  }
+  report['switchPreparation'] = <String, Object?>{
+    'targetRestore': targetRestore,
+    'targetIdentity': readOpenedTimelineIdentity(targetBeforeReference)
+        .toJson(),
+    'sourceIdentity': referenceIdentity.toJson(),
+    'prompt': _switchPrompt,
+    'completedTurnId': _lastTurnId(referenceViewport),
+    'responseItemId': referenceOutputs.single.id,
+    'viewport': _timelineSummary(referenceViewport),
+    'persistence': await _persistenceQueue(driver),
+  };
+  await _stage(coord, phase, 'reference_ready');
+
+  final samples = <Map<String, Object?>>[];
+  final ordinarySwitch = <String, Object?>{
+    'processCold': false,
+    'sampleCount': 0,
+    'sourceThreadId': source.threadId,
+    'targetThreadId': target.threadId,
+    'samples': samples,
+    'osPageCacheControlled': false,
+  };
+  // Keep partial evidence on failure; only 20 valid, distinct samples can pass.
+  report['ordinarySwitch'] = ordinarySwitch;
+  var previousTargetLayout = initialTarget.firstContentLayout!;
+  final targetSelectionIds = <int>{previousTargetLayout.selectionId};
+  final targetGenerations = <int>{previousTargetLayout.generation};
+  final pid = report['pid']! as int;
+  for (var iteration = 1; iteration <= _switchSampleCount; iteration++) {
+    final sourceRestore = await _restore(driver, source, phase, coord);
+    final sourceViewport = await _switchViewport(
+      driver,
+      source,
+      project,
+      '$phase-$iteration-source',
+    );
+    final sourceTimeline = TimelineObservation.parse(sourceViewport);
+    final sourceLayout = sourceTimeline.firstContentLayout!;
+    if (sourceLayout.selectionId == previousTargetLayout.selectionId ||
+        sourceLayout.generation == previousTargetLayout.generation ||
+        sourceLayout.selectionStartedMicros <
+            previousTargetLayout.layoutCompletedMicros ||
+        !sourceTimeline.itemIds.contains(referenceOutputs.single.id)) {
+      throw StateError(
+        '$phase-$iteration did not leave A for the actual reference B: '
+        '${sourceLayout.toJson()}',
+      );
+    }
+
+    await driver.requestData('frame-start');
+    final storageBeforeOpen = await _storageSample(pid);
+    final openWatch = Stopwatch()..start();
+    final restore = await _restore(driver, target, phase, coord);
+    final selectedMillis = openWatch.elapsedMilliseconds;
+    final firstViewport = await _switchViewport(
+      driver,
+      target,
+      project,
+      '$phase-$iteration-target',
+    );
+    final viewportMillis = openWatch.elapsedMilliseconds;
+    final initial = TimelineObservation.parse(firstViewport);
+    requireTimelineHistory20kColdWindow(
+      loadedCount: initial.loadedCount,
+      itemCount: initial.itemCount,
+      hasOlder: initial.hasOlder,
+    );
+    final layout = initial.firstContentLayout!;
+    if (layout.selectionId == previousTargetLayout.selectionId ||
+        layout.selectionId == sourceLayout.selectionId ||
+        layout.generation == previousTargetLayout.generation ||
+        layout.generation == sourceLayout.generation ||
+        layout.selectionStartedMicros < sourceLayout.layoutCompletedMicros ||
+        !targetSelectionIds.add(layout.selectionId) ||
+        !targetGenerations.add(layout.generation)) {
+      throw StateError(
+        '$phase-$iteration reused a selection or lease instead of switching B to A: '
+        '${layout.toJson()}',
+      );
+    }
+    final frames = await _stopFrames(driver, '$phase-$iteration-open');
+    final storageAfterOpen = await _storageSample(pid);
+    samples.add(<String, Object?>{
+      'iteration': iteration,
+      'selectionId': layout.selectionId,
+      'generation': layout.generation,
+      'itemId': layout.itemId,
+      'selectionToFirstContentLayoutMillis': layout.elapsedMicros / 1000,
+      'firstContentLayout': layout.toJson(),
+      'contentLayoutMeasurement': 'application-selection-owner-monotonic-clock',
+      'source': <String, Object?>{
+        'identity': readOpenedTimelineIdentity(sourceViewport).toJson(),
+        'restore': sourceRestore,
+        'firstContentLayout': sourceLayout.toJson(),
+        'viewport': _timelineSummary(sourceViewport),
+      },
+      'targetIdentity': readOpenedTimelineIdentity(firstViewport).toJson(),
+      'restore': restore,
+      'previousTargetFirstContentLayout': previousTargetLayout.toJson(),
+      'hostRestoreToOpenedMillis': selectedMillis,
+      'hostRestoreToViewportSettledMillis': viewportMillis,
+      'partialLoadBudget': timelineHistory20kColdWindowBudget,
+      'initialLoadedCount': initial.loadedCount,
+      'initialCanonicalAtomsLoaded': initial.itemCount,
+      'hasOlder': initial.hasOlder,
+      'olderCursor': initial.olderCursor,
+      'withinPartialLoadBudget':
+          initial.itemCount <= timelineHistory20kColdWindowMaximumItems,
+      'viewport': _timelineSummary(firstViewport),
+      'frames': frames,
+      'storage': <String, Object?>{
+        'before': storageBeforeOpen,
+        'after': storageAfterOpen,
+        'delta': _storageDelta(storageBeforeOpen, storageAfterOpen),
+      },
+    });
+    ordinarySwitch['sampleCount'] = samples.length;
+    previousTargetLayout = layout;
+    await _stage(coord, phase, 'switch_sample_$iteration');
+  }
+  if (samples.length != _switchSampleCount) {
+    throw StateError(
+      '$phase has ${samples.length} valid samples, expected $_switchSampleCount',
+    );
+  }
+  await _waitFor(driver, _durable, '$phase final lifecycle durable');
+  report['persistence'] = await _persistenceQueue(driver);
+  // The last sample's FrameTiming and storage observations have already ended.
+  const screenshotName = 'timeline-history-20k-switch-first-content.png';
+  await File('${output.path}/$screenshotName')
+      .writeAsBytes(await driver.screenshot());
+  report['firstContentScreenshot'] = screenshotName;
+}
+
+Future<Map<String, dynamic>> _switchViewport(
+  FlutterDriverSession driver,
+  ColdStartIdentity identity,
+  String project,
+  String label,
+) async {
+  final stability = TimelineViewportStability();
+  final snapshot = await _waitFor(
+    driver,
+    (snapshot) =>
+        stability.accept(snapshot) &&
+        TimelineObservation.parse(snapshot).firstContentLayout != null,
+    '$label-first-viewport',
+    timeout: const Duration(minutes: 3),
+  );
+  final opened = readOpenedTimelineIdentity(snapshot);
+  if (!opened.consistent ||
+      opened.workspaceId != identity.workspaceId ||
+      opened.threadId != identity.threadId ||
+      opened.facts['projectPath'] != project) {
+    throw StateError('$label opened the wrong identity: ${opened.toJson()}');
+  }
+  // As in cold open, require actual Main Set acceptance and consistent IDs.
+  // The observation parser also verifies the witness generation, current item
+  // membership and elapsedMicros against the App owner's monotonic timestamps.
+  final timeline = TimelineObservation.parse(snapshot);
+  timeline.requireConsistentIds();
+  if (timeline.appliedSets == null || timeline.appliedSets! <= 0) {
+    throw StateError('$label first content has no actual Main Set acceptance');
+  }
+  if (!timeline.isLive) {
+    throw StateError(
+      '$label initial window is not partial: ${timeline.summary()}',
+    );
+  }
+  return snapshot;
 }
 
 Future<void> _runGrowth(
@@ -513,8 +811,8 @@ Future<Map<String, Object?>> _runGrowthBatch(
   var maxSampledPendingBytes = 0;
   var maxSampledInFlightBytes = 0;
   int? previousSampleMillis;
-  int? firstCompletedThrough;
-  int? lastCompletedThrough;
+  String? firstCompletedItemId;
+  String? lastCompletedItemId;
   Map<String, dynamic>? completed;
   while (accepted.elapsed < const Duration(minutes: 3)) {
     final snapshot = await driver.readSnapshot();
@@ -537,8 +835,9 @@ Future<Map<String, Object?>> _runGrowthBatch(
       maxSampledInFlightBytes,
       queueSample.inFlightBytes,
     );
-    firstCompletedThrough ??= timeline.completedThrough;
-    lastCompletedThrough = timeline.completedThrough;
+    final tailId = timeline.itemIds.lastOrNull;
+    firstCompletedItemId ??= tailId;
+    lastCompletedItemId = tailId;
     final sampleMillis = accepted.elapsedMilliseconds;
     final sampleIntervalMillis = previousSampleMillis == null
         ? null
@@ -549,7 +848,7 @@ Future<Map<String, Object?>> _runGrowthBatch(
       'sampleIntervalMillis': sampleIntervalMillis,
       'mode': timeline.mode,
       'loadedAtoms': timeline.itemCount,
-      'completedThrough': timeline.completedThrough,
+      'completedTailItemId': tailId,
       'hasNewOutput': timeline.hasNewOutput,
       ...queueSample.toJson(),
     });
@@ -611,9 +910,9 @@ Future<Map<String, Object?>> _runGrowthBatch(
   final durableTimeline = TimelineObservation.parse(durable);
   durableTimeline.requireConsistentIds();
   final durableScroll = TimelineScrollObservation.parse(durable);
-  final completedWatermarks = samples
-      .map((sample) => sample['completedThrough'])
-      .whereType<int>()
+  final completedTailIds = samples
+      .map((sample) => sample['completedTailItemId'])
+      .whereType<String>()
       .toSet();
   final admittedWatermarks = samples
       .map((sample) => sample['historyAdmitted'])
@@ -624,7 +923,7 @@ Future<Map<String, Object?>> _runGrowthBatch(
       .whereType<int>()
       .toSet();
   final multipleWatermarksObserved =
-      completedWatermarks.length > 1 ||
+      completedTailIds.length > 1 ||
       admittedWatermarks.length > 1 ||
       durableWatermarks.length > 1;
   final sampleIntervals = samples
@@ -683,10 +982,10 @@ Future<Map<String, Object?>> _runGrowthBatch(
       'maximumFieldsAreSampledPointsOnly': true,
       'continuousTruePeakClaimed': false,
     },
-    'completedThroughStart': firstCompletedThrough,
-    'completedThroughEnd': lastCompletedThrough,
+    'completedTailItemIdStart': firstCompletedItemId,
+    'completedTailItemIdEnd': lastCompletedItemId,
     'multipleCompletionWatermarksObserved': multipleWatermarksObserved,
-    'completedWatermarksObserved': completedWatermarks.length,
+    'completedTailIdentitiesObserved': completedTailIds.length,
     'admittedWatermarksObserved': admittedWatermarks.length,
     'durableWatermarksObserved': durableWatermarks.length,
     'readerPixelsBefore': beforeScroll.pixels,
@@ -725,14 +1024,13 @@ void _requireSameHistoryScope({
   if (!before.isHistory ||
       !after.isHistory ||
       after.threadId != before.threadId ||
-      after.generation != before.generation ||
-      after.timelineEpoch != before.timelineEpoch) {
+      after.generation != before.generation) {
     throw StateError(
       'growth batch $batch changed History scope at $stage: '
       'before=(mode=${before.mode}, threadId=${before.threadId}, '
-      'generation=${before.generation}, epoch=${before.timelineEpoch}) '
+      'generation=${before.generation}) '
       'after=(mode=${after.mode}, threadId=${after.threadId}, '
-      'generation=${after.generation}, epoch=${after.timelineEpoch})',
+      'generation=${after.generation})',
     );
   }
 }
@@ -763,8 +1061,8 @@ Map<String, Object?> _requireGrowthWindowWatermarks(
 ) {
   final completed =
       batches
-          .map((batch) => batch['completedThroughEnd'])
-          .whereType<int>()
+          .map((batch) => batch['completedTailItemIdEnd'])
+          .whereType<String>()
           .toSet()
           .toList()
         ..sort();
@@ -789,7 +1087,7 @@ Map<String, Object?> _requireGrowthWindowWatermarks(
     );
   }
   return <String, Object?>{
-    'completed': completed,
+    'completedTailItemIds': completed,
     'historyAdmitted': admitted,
     'historyDurable': durable,
     'multipleGrowthObserved': true,
@@ -826,6 +1124,7 @@ Future<List<Map<String, Object?>>> _scrollOlderPages(
     );
     final after = TimelineObservation.parse(afterState);
     after.requireConsistentIds();
+    after.requireAcceptedOperation(before, prepend: true);
     final delivered = after.itemCount - before.itemCount;
     final retained = before.itemIds.every(after.itemIds.contains);
     final cursorMoved =
@@ -833,7 +1132,7 @@ Future<List<Map<String, Object?>>> _scrollOlderPages(
     if (delivered < 1 ||
         delivered > 32 ||
         !retained ||
-        !after.appendSeqAscending ||
+        !after.retainsWindow(before, prepend: true) ||
         after.itemIds.toSet().length != after.itemIds.length ||
         !cursorMoved) {
       throw StateError('$phase page $page violated identity/order/cursor');
@@ -847,13 +1146,15 @@ Future<List<Map<String, Object?>>> _scrollOlderPages(
       'delivered': delivered,
       'identityRetained': retained,
       'unique': after.itemIds.toSet().length == after.itemIds.length,
-      'orderAscending': after.appendSeqAscending,
+      'previousWindowRetainedAsSuffix': after.retainsWindow(
+        before,
+        prepend: true,
+      ),
       'olderCursorBefore': before.olderCursor,
       'olderCursorAfter': after.olderCursor,
       'cursorMoved': cursorMoved,
       'hasOlderAfter': after.hasOlder,
       'generation': after.generation,
-      'timelineEpoch': after.timelineEpoch,
     });
   }
   return pages;
@@ -987,12 +1288,7 @@ bool _durable(Map<String, dynamic> snapshot) {
 Map<String, Object?> _timelineSummary(Map<String, dynamic> snapshot) {
   final timeline = TimelineObservation.parse(snapshot);
   final scroll = TimelineScrollObservation.parse(snapshot);
-  return <String, Object?>{
-    ...timeline.summary(),
-    'presentationGroups': timeline.presentationItems.length,
-    'hiddenPresentationGroups': timeline.hiddenPresentationItems.length,
-    'scroll': scroll.toJson(),
-  };
+  return <String, Object?>{...timeline.summary(), 'scroll': scroll.toJson()};
 }
 
 Future<Map<String, Object?>> _persistenceQueue(

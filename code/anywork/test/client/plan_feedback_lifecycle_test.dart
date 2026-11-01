@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/recording_demo_transport.dart';
 
 import 'support/test_statistics_feed.dart';
@@ -52,7 +53,11 @@ void main() {
       clientId: 'plan-feedback',
     );
     await graph.client.bootstrap();
-    await (graph..setConversationPageVisible(true)).client.directoryCommands
+    await (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(threadId);
     await graph.client.conversations
         .session(threadId)
@@ -268,7 +273,11 @@ void main() {
       clientId: 'plan-actions-layout',
     );
     await graph.client.bootstrap();
-    await (graph..setConversationPageVisible(true)).client.directoryCommands
+    await (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(threadId);
     await graph.client.conversations
         .session(threadId)

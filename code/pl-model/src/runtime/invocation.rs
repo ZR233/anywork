@@ -41,9 +41,17 @@ pub struct ModelInvocationContext {
     cancellation: Option<tokio_util::sync::CancellationToken>,
     prompt_cache_key: Option<String>,
     progress: Option<pl_core::model::ModelProgressSender>,
+    members: Option<pl_core::model::ModelMemberSender>,
 }
 
 impl ModelInvocationContext {
+    pub(super) fn with_members(
+        mut self,
+        members: Option<pl_core::model::ModelMemberSender>,
+    ) -> Self {
+        self.members = members;
+        self
+    }
     /// Binds core request identities for wire diagnostics without a parallel event sink.
     pub fn with_trace_metadata(mut self, trace: CompletionTraceContext) -> Self {
         self.trace = Some(trace);
@@ -87,6 +95,7 @@ impl ModelInvocationContext {
             cancellation: None,
             prompt_cache_key: None,
             progress: None,
+            members: None,
         }
     }
 
@@ -830,6 +839,12 @@ impl InvocationRunner {
                             cancellation: context.cancellation.clone(),
                             model_observation: Some(model_observation),
                             on_stream_end: &on_stream_end,
+                            members: context.members.clone(),
+                            generation: context
+                                .progress
+                                .as_ref()
+                                .map_or(0, |p| p.latest().observation().generation),
+                            member_admitted: Some(&replay_unsafe),
                         },
                         opened.idle_timeout,
                     )
@@ -1244,6 +1259,9 @@ mod timing_tests {
                     cancellation: Some(cancellation),
                     model_observation: None,
                     on_stream_end: &on_stream_end,
+                    members: None,
+                    generation: 0,
+                    member_admitted: None,
                 },
                 Some(Duration::from_millis(1)),
             )

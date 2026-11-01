@@ -3,17 +3,17 @@
 import 'dart:convert';
 
 const timelineHistory20kColdWindowBudget = <String, Object>{
-  'defaultPageItems': 32,
+  'scenarioMaximumPageItems': 32,
   'maximumAutoFillPages': 4,
   'maximumLoadedItems': 128,
   'windowWidthPixels': 1280,
   'windowHeightPixels': 720,
   'fixtureBodyBytesPerItem': 32,
   'basis':
-      'The production baseline/page default is 32. This fixture renders each '
-      'canonical output as an independent non-empty single-line text row in '
-      'the fixed 1280x720 Linux window; four pages allow conservative '
-      'automatic viewport filling without accepting a near-full history.',
+      'This fixture renders each completed output as an independent non-empty '
+      'single-line text row in the fixed 1280x720 Linux window. The GUI derives '
+      'its actual demand from viewport height; this conservative scenario cap '
+      'allows viewport filling without accepting a near-full history.',
   'scope':
       'scenario guardrail for this fixed short-text shape, not a production '
       'pagination limit',
@@ -75,16 +75,13 @@ void requireTimelineHistory20kAppendOnlyWindow({
   final beforeScope = _timelineHistory20kScope(before, 'before');
   final afterScope = _timelineHistory20kScope(after, 'after');
   if (afterScope.threadId != beforeScope.threadId ||
-      afterScope.generation != beforeScope.generation ||
-      afterScope.timelineEpoch != beforeScope.timelineEpoch) {
+      afterScope.generation != beforeScope.generation) {
     throw StateError(
       'History scope changed: '
       'before=(threadId=${beforeScope.threadId}, '
-      'generation=${beforeScope.generation}, '
-      'timelineEpoch=${beforeScope.timelineEpoch}) '
+      'generation=${beforeScope.generation}) '
       'after=(threadId=${afterScope.threadId}, '
-      'generation=${afterScope.generation}, '
-      'timelineEpoch=${afterScope.timelineEpoch})',
+      'generation=${afterScope.generation})',
     );
   }
 
@@ -107,17 +104,8 @@ void requireTimelineHistory20kAppendOnlyWindow({
       );
     }
   }
-  if (afterItems.length > beforeItems.length && beforeItems.isNotEmpty) {
-    final oldLastSequence = beforeItems.last['appendSeq']! as int;
-    final newFirstSequence =
-        afterItems[beforeItems.length]['appendSeq']! as int;
-    if (newFirstSequence <= oldLastSequence) {
-      throw StateError(
-        'History appended tail does not advance appendSeq: '
-        'oldLast=$oldLastSequence newFirst=$newFirstSequence',
-      );
-    }
-  }
+  // Strict prefix + unique actual identities proves append-only acceptance.
+  // Completion ordering and durable seq/H/D remain Rust/storage obligations.
 }
 
 int requireNonNegativeInteger(Object? value, String field) {
@@ -184,8 +172,10 @@ final class TimelineHistoryQueueSample {
   };
 }
 
-({String threadId, int generation, String timelineEpoch})
-_timelineHistory20kScope(Map<String, Object?> timeline, String context) {
+({String threadId, int generation}) _timelineHistory20kScope(
+  Map<String, Object?> timeline,
+  String context,
+) {
   final mode = timeline['mode'];
   if (mode != 'history') {
     throw StateError('$context.mode must be history, got $mode');
@@ -198,15 +188,7 @@ _timelineHistory20kScope(Map<String, Object?> timeline, String context) {
   if (generation is! int || generation < 1) {
     throw StateError('$context.generation must be a positive integer');
   }
-  final timelineEpoch = timeline['timelineEpoch'];
-  if (timelineEpoch is! String || timelineEpoch.isEmpty) {
-    throw StateError('$context.timelineEpoch must be a non-empty string');
-  }
-  return (
-    threadId: threadId,
-    generation: generation,
-    timelineEpoch: timelineEpoch,
-  );
+  return (threadId: threadId, generation: generation);
 }
 
 List<Map<String, Object?>> _timelineHistory20kItems(
@@ -231,7 +213,6 @@ List<Map<String, Object?>> _timelineHistory20kItems(
 
   final items = <Map<String, Object?>>[];
   final ids = <String>{};
-  int? previousSequence;
   for (var index = 0; index < rawItems.length; index++) {
     final rawItem = rawItems[index];
     final rawId = rawItemIds[index];
@@ -249,17 +230,6 @@ List<Map<String, Object?>> _timelineHistory20kItems(
     if (!ids.add(rawId)) {
       throw StateError('$context contains duplicate item id $rawId');
     }
-    final appendSeq = item['appendSeq'];
-    if (appendSeq is! int || appendSeq < 0) {
-      throw StateError('$context item $rawId has invalid appendSeq=$appendSeq');
-    }
-    if (previousSequence != null && appendSeq <= previousSequence) {
-      throw StateError(
-        '$context appendSeq is not strictly increasing at item $rawId: '
-        'previous=$previousSequence current=$appendSeq',
-      );
-    }
-    previousSequence = appendSeq;
     items.add(item);
   }
   return items;

@@ -332,25 +332,6 @@ ThreadWaitPresentationView _waitFromFrb(
   );
 }
 
-ThreadAttachmentView _attachmentFromFrb(frb_item.BridgeThreadAttachment value) {
-  return ThreadAttachmentView(
-    id: value.id,
-    modality: switch (value.modality) {
-      frb_attachment_types.BridgeAttachmentModality.image =>
-        AttachmentModalityView.image,
-      frb_attachment_types.BridgeAttachmentModality.video =>
-        AttachmentModalityView.video,
-      frb_attachment_types.BridgeAttachmentModality.file =>
-        AttachmentModalityView.file,
-    },
-    mediaType: value.mediaType,
-    filename: value.filename,
-    width: value.width,
-    height: value.height,
-    byteSize: _exactTimelineInt(value.byteSize, 'state counter'),
-  );
-}
-
 StudioTurnView _turnFromFrb(frb.BridgeTurn value) {
   return StudioTurnView(
     inputId: value.inputId,

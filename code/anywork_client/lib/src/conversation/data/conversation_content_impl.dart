@@ -5,14 +5,10 @@ import '../../../conversation_ports.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
-import '../domain/activity_content.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/content_state.dart';
 import '../domain/conversation_repository.dart';
-import 'activity_content_owner.dart';
 import 'conversation_read_scope.dart';
-import 'completion_budget.dart';
-import 'input_turn_facts.dart';
 
 /// Owns feed admission, delivery, ACK and actual retirement, but no history window.
 final class ConversationContentImpl implements ConversationContent {
@@ -20,34 +16,33 @@ final class ConversationContentImpl implements ConversationContent {
     required this.threadId,
     required ConversationTransport transport,
     required this.budget,
-    required this.inputFacts,
     required this.onState,
     required this.onFailure,
     required this.onAttempt,
-    int maxContentBytes = 64 * 1024 * 1024,
+    this.scope = const MainChatScope(),
+    this.initialDemand,
   }) : _transport = transport,
-       _activity = ActivityContentOwner(maxContentBytes: maxContentBytes),
        _state = LatestValue(ChatIdle<bool>(threadId));
   @override
   final String threadId;
   final ConversationTransport _transport;
   final ResourceBudget budget;
-  final InputFactRegistry inputFacts;
   final void Function(AttemptId, ThreadStreamFrame) onState;
   final void Function(AttemptId, Object, bool) onFailure;
   final void Function(AttemptId) onAttempt;
-  final ActivityContentOwner _activity;
+  final ChatScope scope;
+  final ReadDemand? initialDemand;
+  final LatestValue<CurrentProjection?> _projection = LatestValue(null);
   final LatestValue<ChatUiState<bool>> _state;
   @override
   ValueObservation<ChatUiState<bool>> get state => _state;
   @override
-  ValueObservation<CurrentActivity?> get currentActivity => _activity.source;
+  ValueObservation<CurrentProjection?> get current => _projection;
   final Map<AttemptId, _Attempt> _attempts = {};
   final Set<ConversationReadScope> _scopes = {};
   _Attempt? _current;
   _ConsumerLease? _consumer;
   Completer<void>? _consumerAvailable;
-  ConversationCompletionCursor? _cursor;
   int _nextAttempt = 0;
   bool _demand = false;
   bool _closed = false;
@@ -81,11 +76,14 @@ final class ConversationContentImpl implements ConversationContent {
   }
 
   @override
-  Observation attachConsumer(ConversationCompletionConsumer consumer) {
+  Observation attachConsumer(
+    ConversationBatchConsumer consumer, {
+    required ReadDemand demand,
+  }) {
     if (_closed) throw StateError('Conversation is closed');
     if (_consumer != null)
       throw StateError('Completion consumer already attached');
-    final lease = _ConsumerLease(this, consumer);
+    final lease = _ConsumerLease(this, consumer, demand);
     _consumer = lease;
     final waiter = _consumerAvailable;
     _consumerAvailable = null;
@@ -97,7 +95,6 @@ final class ConversationContentImpl implements ConversationContent {
   void _detach(_ConsumerLease lease) {
     if (!identical(_consumer, lease)) return;
     _consumer = null;
-    _cursor = null;
     _demandVersion++;
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -141,27 +138,46 @@ final class ConversationContentImpl implements ConversationContent {
   }
 
   @override
-  ConversationQueryScope openScope({
-    required String timelineEpoch,
-    required int generation,
-  }) {
+  ConversationQueryScope openScope({required int generation}) {
     if (_closed) throw StateError('Conversation is closed');
+    final attempt = _current;
+    final lease = _consumer;
+    if (attempt == null ||
+        attempt.feed == null ||
+        lease == null ||
+        !_live(attempt)) {
+      throw const StaleConversationScope();
+    }
     _scopes.removeWhere((scope) => scope.isSettled);
-    final scope = ConversationReadScope(
+    late final ConversationReadScope scope;
+    scope = ConversationReadScope(
       threadId: threadId,
-      timelineEpoch: timelineEpoch,
       generation: generation,
-      transport: _transport,
+      reader: attempt.feed!.reader,
       budget: budget,
+      isEligible: () => _eligible(attempt, lease),
+      applyOlder: (batch) => _enqueue(attempt, () async {
+        if (!scope.isActive || !_eligible(attempt, lease)) {
+          throw const StaleConversationScope();
+        }
+        await _deliver(attempt, lease, batch, queryScope: scope);
+        if (!scope.isActive || !_eligible(attempt, lease)) {
+          throw const StaleConversationScope();
+        }
+      }),
     );
     _scopes.add(scope);
+    attempt.scopes.add(scope);
     return scope;
   }
 
   bool _live(_Attempt a) =>
       !_closed && _demand && !a.retired && identical(_current, a);
+  bool _eligible(_Attempt a, _ConsumerLease lease) =>
+      _live(a) && identical(_consumer, lease) && !lease.isCancelled;
+
   void _open() {
-    if (_closed || !_demand || _current != null) return;
+    if (_closed || !_demand || _current != null || _consumer == null) return;
     final id = AttemptId(++_nextAttempt);
     final ResourcePermit permit;
     try {
@@ -179,7 +195,7 @@ final class ConversationContentImpl implements ConversationContent {
       _state.publish(ChatFailed<bool>(threadId, error: error));
       return;
     }
-    final a = _Attempt(id, permit, _demandVersion);
+    final a = _Attempt(id, permit, _demandVersion, _consumer!);
     _attempts[id] = a;
     _current = a;
     final done = Completer<void>();
@@ -193,10 +209,10 @@ final class ConversationContentImpl implements ConversationContent {
       if (!_live(a)) return;
       onAttempt(a.id);
       if (!_live(a)) return;
-      a.resumeAfter = _cursor;
       final feed = await _transport.openConversationFeed(
         threadId,
-        resumeAfter: a.resumeAfter,
+        scope: scope,
+        demand: initialDemand ?? a.consumer.demand,
       );
       a.feed = feed;
       if (!_live(a)) return;
@@ -246,16 +262,21 @@ final class ConversationContentImpl implements ConversationContent {
       );
       return;
     }
-    if (frame.event is ConversationFailureEvent) {
-      _failAttempt(a, (frame.event as ConversationFailureEvent).failure);
+    // Terminal frames reuse the last data sequence (including zero). They are
+    // qualification barriers, not duplicate data and never consume/return credit.
+    if (frame.event is ConversationFailureEvent ||
+        frame.event is ConversationClosedEvent) {
+      if (a.terminal) return;
+      a.terminal = true;
+      _failAttempt(a, switch (frame.event) {
+        ConversationFailureEvent(:final failure) => failure,
+        _ => const ConversationStreamEnded(),
+      });
       return;
     }
-    if (frame.event is ConversationClosedEvent) {
-      _failAttempt(a, const ConversationStreamEnded());
-      return;
-    }
+    if (a.terminal) return;
     if (frame.deliverySequence != a.received + 1 ||
-        a.ledger.length >= (a.acking ? 3 : 2)) {
+        a.ledger.length >= (a.acking ? 2 : 1)) {
       _failAttempt(
         a,
         const ConversationContinuityError(
@@ -266,199 +287,59 @@ final class ConversationContentImpl implements ConversationContent {
     }
     a.received = frame.deliverySequence;
     a.ledger[frame.deliverySequence] = false;
-    final event = frame.event;
-    Future<void> work;
-    if (event is ConversationStateEvent) {
-      work = Future<void>.sync(() {
-        onState(a.id, event.frame);
-      });
-    } else if (event is ConversationActivityContentEvent) {
-      final precedingCompletion = a.completionSerial;
-      work = a.activitySerial.then((_) async {
-        if (event.frame is ActivityCommit) await precedingCompletion;
-        await _process(a, event);
-      });
-      a.activitySerial = work;
-      if (event.frame is ActivityCommit) a.completionSerial = work;
-    } else {
-      work = a.completionSerial.then((_) => _process(a, event));
-      a.completionSerial = work;
-    }
-    a.pending.add(work);
+    final work = _enqueue(a, () async {
+      if (!_eligible(a, a.consumer)) return;
+      switch (frame.event) {
+        case ConversationStateEvent(:final frame):
+          onState(a.id, frame);
+        case ConversationChatEvent(:final batch):
+          await _deliver(a, a.consumer, batch);
+        case ConversationFailureEvent() || ConversationClosedEvent():
+          throw const ConversationContinuityError('unexpected terminal');
+      }
+      if (!_eligible(a, a.consumer)) return;
+      a.ledger[frame.deliverySequence] = true;
+      _flushAck(a);
+    });
     unawaited(
-      work.then(
-        (_) {
-          a.pending.remove(work);
-          if (!_live(a)) return;
-          a.ledger[frame.deliverySequence] = true;
-          _flushAck(a);
-        },
+      work.then<void>(
+        (_) {},
         onError: (Object error, StackTrace stack) {
-          a.pending.remove(work);
           if (_live(a)) _failAttempt(a, error);
         },
       ),
     );
   }
 
-  Future<void> _process(_Attempt a, ConversationEvent event) async {
-    if (!_live(a)) return;
-    var establishesReady = false;
-    switch (event) {
-      case ConversationBaselineEvent(:final baseline):
-        if (_cursor != null)
-          throw const ConversationContinuityError(
-            'unexpected baseline during resume',
-          );
-        await _deliver(a, ConversationBaselineFrame(baseline));
-        establishesReady = true;
-      case ConversationUpdateEvent(:final update):
-        await _deliver(a, _toFrame(update));
-        establishesReady = true;
-      case ConversationActivityContentEvent(:final frame, :final completed):
-        if (frame is! ActivityCommit) {
-          if (completed != null)
-            throw const ConversationContinuityError(
-              'completion on non-commit activity',
-            );
-          _activity.accept(frame);
-        } else {
-          final prepared = _activity.prepareCommit(frame);
-          if (completed != null) await _deliver(a, _toFrame(completed));
-          if (!_live(a)) return;
-          _activity.publish(prepared);
-          establishesReady = completed != null || a.resumeAfter != null;
-        }
-      case ConversationStateEvent() ||
-          ConversationFailureEvent() ||
-          ConversationClosedEvent():
-        throw const ConversationContinuityError('unexpected event');
+  /// The sole admission queue for State, streamed Chat and query Chat. Query IO
+  /// starts before entering this queue, so a consumer await never blocks reads.
+  Future<void> _enqueue(_Attempt a, Future<void> Function() operation) {
+    final work = a.serial.then((_) => operation());
+    // One failed operation must not leave unobserved errors on the queue tail.
+    a.serial = work.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    a.pending.add(work);
+    unawaited(a.serial.then((_) => a.pending.remove(work)));
+    return work;
+  }
+
+  Future<void> _deliver(
+    _Attempt a,
+    _ConsumerLease lease,
+    ChatBatch batch, {
+    ConversationReadScope? queryScope,
+  }) async {
+    bool eligible() => _eligible(a, lease) && (queryScope?.isActive ?? true);
+    if (!eligible()) return;
+    await lease.consumer.applyBatch(batch);
+    // Never consult a new selection/consumer after component acceptance.
+    if (!eligible()) return;
+    if (scope is MainChatScope && batch.current != null) {
+      _projection.publish(batch.current);
     }
-    if (establishesReady &&
-        _live(a) &&
-        _cursor != null &&
-        _consumer != null &&
-        _state.value is! ChatReady<bool>)
+    if (!eligible()) return;
+    if (batch.placement == ChatPlacement.set) {
+      _retries = 0;
       _state.publish(ChatReady<bool>(threadId, true));
-    if (establishesReady && _live(a)) _retries = 0;
-  }
-
-  ConversationContentFrame _toFrame(ConversationUpdate update) =>
-      switch (update) {
-        ConversationBatch() => ConversationCompletedBatchFrame(update),
-        ConversationReset(:final baseline) => ConversationResetFrame(baseline),
-      };
-  Future<void> _deliver(_Attempt a, ConversationContentFrame frame) async {
-    final ConversationCompletionCursor next;
-    switch (frame) {
-      case ConversationBaselineFrame(:final baseline):
-        _validateBaseline(a, baseline);
-        next = baseline.completedCursor;
-      case ConversationResetFrame(:final baseline):
-        _validateBaseline(a, baseline);
-        if (_cursor != null && _cursor!.timelineEpoch == baseline.timelineEpoch)
-          throw const ConversationContinuityError('reset did not change epoch');
-        next = baseline.completedCursor;
-      case ConversationCompletedBatchFrame(:final batch):
-        final old = _cursor;
-        if (old == null ||
-            batch.subscriptionId != a.feed!.subscriptionId ||
-            batch.timelineEpoch != old.timelineEpoch ||
-            batch.fromSeq != old.appendSeq ||
-            batch.throughSeq < batch.fromSeq)
-          throw const ConversationContinuityError('batch cursor mismatch');
-        _validateItems(
-          batch.items,
-          minExclusive: batch.fromSeq,
-          maxInclusive: batch.throughSeq,
-        );
-        if (batch.items.isEmpty ||
-            batch.items.last.header.appendSeq != batch.throughSeq)
-          throw const ConversationContinuityError('batch through mismatch');
-        next = ConversationCompletionCursor(
-          timelineEpoch: batch.timelineEpoch,
-          appendSeq: batch.throughSeq,
-        );
-    }
-    while (_consumer == null && _live(a)) {
-      final available = _consumerAvailable ??= Completer<void>();
-      await Future.any([available.future, a.stopped.future]);
-    }
-    if (!_live(a)) return;
-    final lease = _consumer!;
-    await Future<void>.sync(() => lease.consumer.accept(frame));
-    if (!_live(a) || !identical(_consumer, lease) || lease.isCancelled) return;
-    _cursor = next;
-    final items = switch (frame) {
-      ConversationBaselineFrame(:final baseline) => baseline.items,
-      ConversationResetFrame(:final baseline) => baseline.items,
-      ConversationCompletedBatchFrame(:final batch) => batch.items,
-    };
-    for (final item in items) {
-      final descriptor = item.descriptor;
-      if (descriptor is! ConversationTurnDescriptor ||
-          descriptor.inputId == null ||
-          !inputFacts.isWatching(descriptor.inputId!))
-        continue;
-      final status = switch (descriptor.outcome) {
-        ConversationTurnCompleted(:final value) => value.status,
-        ConversationTurnFailed(:final value) => value.status,
-        ConversationTurnCancelled(:final value) => value.status,
-        ConversationTurnBudgetLimited(:final value) => value.status,
-      };
-      inputFacts.publish(
-        InputTurnFact(
-          threadId: threadId,
-          inputId: descriptor.inputId!,
-          itemId: item.id,
-          turnId: item.header.turnId,
-          status: status,
-          saved: null,
-        ),
-      );
-    }
-  }
-
-  void _validateBaseline(_Attempt a, ConversationBaseline baseline) {
-    if (baseline.subscriptionId != a.feed!.subscriptionId ||
-        baseline.timelineEpoch != baseline.completedCursor.timelineEpoch ||
-        baseline.timelineEpoch.isEmpty ||
-        baseline.completedCursor.appendSeq < 0 ||
-        baseline.hasOlder != (baseline.before != null))
-      throw const ConversationContinuityError('baseline identity mismatch');
-    _validateItems(
-      baseline.items,
-      maxInclusive: baseline.completedCursor.appendSeq,
-    );
-  }
-
-  void _validateItems(
-    List<ConversationItem> items, {
-    int minExclusive = -1,
-    required int maxInclusive,
-  }) {
-    validateCompletionBudget(items);
-    var last = minExclusive;
-    final ids = <String>{};
-    for (final item in items) {
-      final h = item.header;
-      if (h.threadId != threadId ||
-          h.id.isEmpty ||
-          h.appendSeq <= last ||
-          h.appendSeq > maxInclusive ||
-          !ids.add(h.id))
-        throw const ConversationContinuityError(
-          'completion item identity or order mismatch',
-        );
-      final fields = <ThreadContentFieldView>{};
-      for (final field in item.fields) {
-        if (!fields.add(field.field) ||
-            field.totalBytes < 0 ||
-            field.previewBytes > field.totalBytes) {
-          throw const ConversationContinuityError('invalid completed field');
-        }
-      }
-      last = h.appendSeq;
     }
   }
 
@@ -524,7 +405,9 @@ final class ConversationContentImpl implements ConversationContent {
     a.retired = true;
     if (identical(_current, a)) _current = null;
     a.permit.mark(ResourcePhase.retiring);
-    _activity.cancelStaging();
+    for (final scope in a.scopes) {
+      scope.retire();
+    }
     try {
       a.feed?.requestClose();
     } catch (error) {
@@ -551,10 +434,6 @@ final class ConversationContentImpl implements ConversationContent {
         a.feedClosed = true;
       } catch (e) {
         error ??= e;
-        a.error = error;
-        a.cleanupFinished = true;
-        a.permit.mark(ResourcePhase.unresolved);
-        return;
       }
     }
     final subscription = a.subscription;
@@ -573,6 +452,10 @@ final class ConversationContentImpl implements ConversationContent {
         a.pending,
       ).map((f) => f.then<void>((_) {}, onError: (Object _, StackTrace __) {})),
     );
+    for (final scope in a.scopes) {
+      final report = await scope.close();
+      if (!report.complete) error ??= report;
+    }
     if (error != null) {
       a.error = error;
       a.cleanupFinished = true;
@@ -670,11 +553,12 @@ final class ConversationContentImpl implements ConversationContent {
 }
 
 final class _Attempt {
-  _Attempt(this.id, this.permit, this.demandVersion);
+  _Attempt(this.id, this.permit, this.demandVersion, this.consumer);
   final AttemptId id;
   final ResourcePermit permit;
   final int demandVersion;
-  ConversationCompletionCursor? resumeAfter;
+  final _ConsumerLease consumer;
+  final Set<ConversationReadScope> scopes = {};
   ConversationFeed? feed;
   // The attempt owns this subscription until _cleanup joins cancel.
   // ignore: cancel_subscriptions
@@ -685,8 +569,8 @@ final class _Attempt {
   final Completer<void> stopped = Completer<void>();
   final Map<int, bool> ledger = {};
   final Set<Future<void>> pending = {};
-  Future<void> activitySerial = Future.value();
-  Future<void> completionSerial = Future.value();
+  Future<void> serial = Future.value();
+  bool terminal = false;
   int received = 0;
   int acked = 0;
   bool acking = false;
@@ -697,9 +581,10 @@ final class _Attempt {
 }
 
 final class _ConsumerLease implements Observation {
-  _ConsumerLease(this.owner, this.consumer);
+  _ConsumerLease(this.owner, this.consumer, this.demand);
   final ConversationContentImpl owner;
-  final ConversationCompletionConsumer consumer;
+  final ConversationBatchConsumer consumer;
+  final ReadDemand demand;
   @override
   bool isCancelled = false;
   @override

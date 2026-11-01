@@ -4,9 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import '../types/attachment.dart';
 import '../types/chat.dart';
-import '../types/chat/descriptor.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/runtime.dart';
@@ -22,10 +20,12 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// Cancellation before publication drops the native feed through its own RAII boundary.
 Future<BridgeConversationFeed> openConversationFeed({
   required String threadId,
-  BridgeTimelineCompletionCursor? resumeAfter,
+  required BridgeChatScope scope,
+  required BridgeReadDemand demand,
 }) => RustLib.instance.api.crateApiStudioHandlersChatOpenConversationFeed(
   threadId: threadId,
-  resumeAfter: resumeAfter,
+  scope: scope,
+  demand: demand,
 );
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeConversationFeed>>
@@ -41,12 +41,49 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   /// failed closes retain the original owner and diagnostic in the opening registry.
   Future<void> close();
 
+  /// Cancels first, then joins the retained native watch before releasing its identity/capacity.
+  Future<void> closeContentWatch({required String watchId});
+
   /// Installs the sole producer and sink atomically with respect to close. A second consumer is a
   /// Conflict; a sealed handle always returns Cancelled first. Producer exit drops the sink.
   Stream<BridgeConversationFrame> events();
 
+  Future<BridgeContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required BridgeReadDemand demand,
+  });
+
+  /// Queries share the original read lease, never the producer's native receive/credit mutex.
+  Future<BridgeChatBatch> loadOlder({
+    required String before,
+    required BridgeReadDemand demand,
+  });
+
+  /// Pulls at most one window. Overlapping reads of the same watch are rejected, not queued.
+  Future<BridgeContentWindow?> nextContentWindow({required String watchId});
+
+  /// Registers one bounded range observation on this facade's original read lease.
+  Future<String> openContentWatch({
+    required BridgeContentRef reference,
+    required BridgeContentRange range,
+  });
+
+  Future<BridgeCurrentCollectionPage> pageCurrent({
+    required BridgeCurrentCollectionRef reference,
+    String? continuation,
+    required BridgeReadDemand demand,
+  });
+
+  Future<BridgeContentWindow> readContent({
+    required BridgeContentRef reference,
+    required BridgeContentRange range,
+  });
+
   /// Seals admission and wakes credit and receive waits without issuing business cancellation.
   void requestClose();
+
+  void requestCloseContentWatch({required String watchId});
 
   String subscriptionId();
 

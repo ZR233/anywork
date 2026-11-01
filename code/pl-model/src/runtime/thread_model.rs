@@ -23,6 +23,8 @@ pub use compaction::{
 };
 mod codec;
 mod media;
+pub(crate) mod member;
+pub use member::{ModelMemberReceipt, ModelMemberState, model_member_receipt};
 pub mod migration;
 pub(crate) mod progress;
 mod receipt;
@@ -290,6 +292,7 @@ impl CoreModelSession for ThreadModelSession {
             })
             .with_cancellation(Some(request.cancellation.clone()))
             .with_progress(request.progress.clone())
+            .with_members(request.members.clone())
             .with_prompt_cache_key(cache_key);
         let call = PreparedModelCall::new(async move {
             *observed

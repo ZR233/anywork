@@ -245,7 +245,7 @@ Future<void> main(List<String> args) async {
           duplicateIdentity = true;
         }
       }
-      if (!after.appendSeqAscending) orderViolation = true;
+      if (!after.retainsWindow(before, prepend: true)) orderViolation = true;
       final cursorMoved =
           after.olderCursor != before.olderCursor || after.hasOlder == false;
       if (!cursorMoved) cursorStalled = true;
@@ -275,11 +275,13 @@ Future<void> main(List<String> args) async {
         'hasOlder': after.hasOlder,
         'mode': after.mode,
         'generation': after.generation,
-        'timelineEpoch': after.timelineEpoch,
         'frozenFieldsRetained': true,
         'retained': retained,
         'prepended': prepended,
-        'orderAscending': after.appendSeqAscending,
+        'previousWindowRetainedAsSuffix': after.retainsWindow(
+          before,
+          prepend: true,
+        ),
         'cursorMoved': cursorMoved,
       });
       previous = after;
@@ -312,7 +314,6 @@ Future<void> main(List<String> args) async {
         pageGrowthViolations.isEmpty &&
         previous.mode == latest.mode &&
         previous.generation == latest.generation &&
-        previous.timelineEpoch == latest.timelineEpoch &&
         previous.hasOlder;
     report['pass'] = latestOk && (report['pagingOk'] == true);
     await File(
@@ -459,7 +460,6 @@ Future<void> _verifyCrossRestartBaseline(
           'page': page['page'],
           'itemIds': page['itemIds'],
           'delivered': page['delivered'],
-          'timelineEpoch': page['timelineEpoch'],
           'olderCursorAfter': page['olderCursorAfter'],
           'hasOlder': page['hasOlder'],
         },
@@ -530,14 +530,6 @@ Future<void> _compareWithFirstRun(
     final cold = pages[index];
     final firstIds = ids(first['itemIds']);
     final coldIds = ids(cold['itemIds']);
-    final firstEpoch = first['timelineEpoch'];
-    final coldEpoch = cold['timelineEpoch'];
-    final epochsValid =
-        firstEpoch is String &&
-        firstEpoch.isNotEmpty &&
-        coldEpoch is String &&
-        coldEpoch.isNotEmpty;
-    final cursorComparable = epochsValid && firstEpoch == coldEpoch;
     final firstCursor = first['olderCursorAfter'];
     final coldCursor = cold['olderCursorAfter'];
     final cursorBoundariesValid =
@@ -551,16 +543,9 @@ Future<void> _compareWithFirstRun(
       'baselineFirstId': firstIds.isEmpty ? null : firstIds.first,
       'baselineLastId': firstIds.isEmpty ? null : firstIds.last,
       'sameDelivered': first['delivered'] == cold['delivered'],
-      'baselineTimelineEpoch': firstEpoch,
-      'coldStartTimelineEpoch': coldEpoch,
-      'epochsValid': epochsValid,
-      'olderCursorComparable': cursorComparable,
-      'olderCursorComparison': !epochsValid
-          ? 'invalidEpoch'
-          : cursorComparable
-          ? 'sameEpochExactToken'
-          : 'differentEpochNotByteComparable',
-      'sameOlderCursor': cursorComparable ? firstCursor == coldCursor : null,
+      // Opaque tokens belong to different original read leases across restart.
+      // Stable ordered item identities, not token bytes, prove the same window.
+      'olderCursorComparison': 'differentReadLeasesNotByteComparable',
       'cursorBoundariesValid': cursorBoundariesValid,
       'sameHasOlder': first['hasOlder'] == cold['hasOlder'],
     });
@@ -578,10 +563,7 @@ Future<void> _compareWithFirstRun(
         (entry) =>
             entry['sameOrderedIds'] == true &&
             entry['sameDelivered'] == true &&
-            entry['epochsValid'] == true &&
             entry['cursorBoundariesValid'] == true &&
-            (entry['olderCursorComparable'] == false ||
-                entry['sameOlderCursor'] == true) &&
             entry['sameHasOlder'] == true,
       );
   report['restartComparison'] = <String, Object?>{
@@ -624,18 +606,7 @@ void _requireFrozenCoverage(
 ) {
   before.requireConsistentIds();
   after.requireConsistentIds();
-  final oldIds = before.itemIds.toSet();
-  if (before.timelineEpoch == null ||
-      after.threadId != before.threadId ||
-      after.generation != before.generation ||
-      after.timelineEpoch != before.timelineEpoch ||
-      oldIds.length != before.itemCount ||
-      after.itemIds.toSet().length != after.itemCount ||
-      !after.appendSeqAscending ||
-      !_sameIds(
-        before.itemIds,
-        after.itemIds.where(oldIds.contains).toList(),
-      )) {
+  if (!after.retainsWindow(before, prepend: true)) {
     throw StateError('Page replaced, duplicated or reordered completed atoms');
   }
   for (final item in before.items) {
@@ -685,9 +656,7 @@ Future<Map<String, Object?>> _reattachThroughSettings(
   }
   final current = TimelineObservation.parse(reopened);
   current.requireConsistentIds();
-  if (!current.hasOlder ||
-      current.olderCursor == null ||
-      current.timelineEpoch == null) {
+  if (!current.hasOlder || current.olderCursor == null) {
     throw StateError('Reattached baseline lacks a real older page boundary');
   }
   return <String, Object?>{
@@ -695,10 +664,6 @@ Future<Map<String, Object?>> _reattachThroughSettings(
     'before': previous.summary(),
     'detached': _snapshotSummary(detached),
     'after': current.summary(),
-    'hiddenOwners': [
-      for (final owner in current.hiddenPresentationItems)
-        <String, Object?>{'id': owner.id, 'memberIds': owner.memberIds},
-    ],
     'identity': currentIdentity.toJson(),
     'freshGeneration': true,
   };

@@ -1,447 +1,255 @@
-import 'support/conversation_fixtures.dart';
-
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
-// 展示工具（`show_image`）图片卡片的呈现契约。
-//
-// 覆盖工具条目到呈现项类型的映射、与会话内其它块的分离、typed 附件与展示文案的传递，
-// 以及没有图片附件时的错误态。像素、解码与布局细节由 Driver 人工证据覆盖
-// （design/24 §24.1、design/19 §19.9、design/25 §25.6）。
-import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_entry.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_detail_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import 'support/chat_fixtures.dart';
 import 'support/pump_client_future.dart';
-import 'support/mapped_conversation_feed.dart';
+
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=',
+);
+ChatItemPresentation imageItem(
+  String id, {
+  String? marker = 'generic@1',
+  bool attachment = true,
+}) => ChatItemPresentation.decode(
+  chatEnvelope(
+    id,
+    type: 'tool',
+    data: {
+      'invocation': {
+        'toolCallId': id,
+        'name': 'show_image',
+        'presentationContract': ?marker,
+      },
+      'state': {
+        'kind': 'succeeded',
+        'output': {
+          'attachments': [
+            if (attachment)
+              {
+                'id': 'shared-image',
+                'modality': 'image',
+                'mediaType': 'image/png',
+                'byteSize': _png.length,
+                'filename': 'terrace.png',
+              },
+          ],
+        },
+      },
+    },
+    bodies: [inlineBody('tool.arguments', '{"caption":"not a guessed card"}')],
+  ),
+);
+
+Widget imageApp(Widget child) => MaterialApp(
+  locale: const Locale('zh'),
+  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  supportedLocales: AppLocalizations.supportedLocales,
+  home: Scaffold(body: SingleChildScrollView(child: child)),
+);
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5);
-
-  const cardImage = ThreadAttachmentView(
-    id: 'card-image',
-    modality: AttachmentModalityView.image,
-    mediaType: 'image/png',
-    byteSize: 1024,
-    filename: 'terrace.png',
-    width: 800,
-    height: 450,
-  );
-
-  ConversationItem toolItem(
-    String id, {
-    required int appendSeq,
-    required String name,
-    String arguments = '{}',
-    List<ThreadAttachmentView> attachments = const [],
-  }) => conversationFixture(
-    id: id,
-    threadId: 'thread',
-    turnId: 'turn',
-    appendSeq: appendSeq,
-    descriptor: ConversationToolDescriptor(
-      invocation: ConversationToolInvocation(
-        toolCallId: 'call-$id',
-        callId: 'call-$id',
-        name: name,
-      ),
-      state: ConversationToolSucceeded(
-        completedAt: timestamp,
-        output: ConversationToolOutputDescriptor(attachments: attachments),
-      ),
-    ),
-    fields: {
-      const ThreadToolArgumentsFieldView(): arguments,
-      const ThreadToolResultFieldView(): 'ok',
+  testWidgets(
+    'two producer image messages keep distinct rows while sharing one authorized byte read',
+    (tester) async {
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      var reads = 0;
+      final items = [imageItem('first'), imageItem('second')];
+      await tester.pumpWidget(
+        imageApp(
+          Column(
+            children: [
+              for (final item in items)
+                ChatItemView(
+                  key: ValueKey(item.id),
+                  item: item,
+                  attachmentBuilder: (value) => TimelineAttachmentsConnector(
+                    item: value,
+                    resources: resources,
+                    readAttachment: (id) async {
+                      expect(id, 'shared-image');
+                      reads++;
+                      return _png;
+                    },
+                    isActive: () => true,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => find.byType(Image).evaluate().length == 2,
+        'two authorized image thumbnails',
+      );
+      expect(find.byType(ChatItemView), findsNWidgets(2));
+      expect(find.byType(TimelineImageConnector), findsNWidgets(2));
+      expect(reads, 1);
+      expect(
+        tester
+            .widgetList<TimelineImageConnector>(
+              find.byType(TimelineImageConnector),
+            )
+            .map((widget) => widget.itemId),
+        ['first', 'second'],
+      );
+      expect(
+        find.text('not a guessed card'),
+        findsNothing,
+        reason: 'generic marker never invokes a historical name-based caption parser',
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(() => resources.borrow('shared-image'), throwsStateError);
     },
   );
 
-  /// 一条展示工具卡片条目：参数只带 canonical 展示文案。
-  ConversationItem cardItem(
-    String id, {
-    required int appendSeq,
-    String arguments = '{"caption":"雨后的天台"}',
-    List<ThreadAttachmentView> attachments = const [cardImage],
-  }) => toolItem(
-    id,
-    appendSeq: appendSeq,
-    name: 'show_image',
-    arguments: arguments,
-    attachments: attachments,
-  );
-
-  Future<void> unmountTimeline(
-    WidgetTester tester,
-    TimelineDisplayLease lease,
-  ) async {
-    if (lease.isReleased) return;
-    final close = find.byKey(StudioDriverKeys.timelineDetailClose);
-    if (close.evaluate().isNotEmpty) {
-      await tester.tap(close);
-      await pumpClientUntil(
-        tester,
-        () => find
-            .byKey(StudioDriverKeys.timelineDetailDialog)
-            .evaluate()
-            .isEmpty,
-        'image detail actual close',
-      );
-    }
-    await tester.pumpWidget(const SizedBox.shrink());
-    await pumpClientFuture(
-      tester,
-      lease.retire(),
-      'image timeline stock operations done',
+  for (final marker in <String?>[null, 'unknown-image@7']) {
+    testWidgets(
+      'unknown marker $marker keeps its explicit attachment without guessing show_image contract',
+      (tester) async {
+        final resources = TimelineImageResources(threadId: 'thread');
+        addTearDown(resources.release);
+        var reads = 0;
+        await tester.pumpWidget(
+          imageApp(
+            ChatItemView(
+              item: imageItem('unknown', marker: marker),
+              attachmentBuilder: (value) => TimelineAttachmentsConnector(
+                item: value,
+                resources: resources,
+                readAttachment: (_) async {
+                  reads++;
+                  return _png;
+                },
+                isActive: () => true,
+              ),
+            ),
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () => find.byType(Image).evaluate().isNotEmpty,
+          'unknown-tool attachment',
+        );
+        expect(find.textContaining('未知展示格式'), findsOneWidget);
+        expect(reads, 1);
+        expect(find.text('not a guessed card'), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
     );
-    expect(lease.isReleased, isTrue, reason: '卸载后等待真实 stock operations done');
   }
 
-  Future<TimelineDisplayLease> leaseWith(
-    List<ConversationItem> items, {
-    WidgetTester? tester,
-  }) async {
-    final client = AnyworkClient(
-      transport: _ImageCardTransport(items),
-      clientId: 'image-card-owner',
-    );
-    final owner = TimelineSessionOwner(client: client);
-    client.conversations.setVisibleThread('thread');
-    owner.select('thread');
-    late TimelineDisplayLease lease;
-    addTearDown(() async {
-      client.conversations.setVisibleThread(null);
-      if (tester != null) await unmountTimeline(tester, lease);
-      final closing = owner.close();
-      final report = tester == null
-          ? await closing
-          : await pumpClientFuture(tester, closing, 'image owner close');
-      expect(report.complete, isTrue);
-      final closeClient = client.close();
-      expect(
-        (tester == null
-                ? await closeClient
-                : await pumpClientFuture(
-                    tester,
-                    closeClient,
-                    'image owner client close',
-                  ))
-            .complete,
-        isTrue,
-      );
-    });
-    final ready = client.conversations.session('thread').content.ready;
-    if (tester == null) {
-      await ready;
-    } else {
-      await pumpClientFuture(tester, ready, 'image owner acceptance');
-    }
-    lease = owner.lease('thread')!;
-    return lease;
-  }
-
-  TimelineSessionViewState viewState() => TimelineSessionViewState(
-    threadId: 'thread',
-    generation: 1,
-    mode: TimelineDisplayMode.live,
-    connection: TimelineConnectionPhase.ready,
-    connectionError: null,
-    olderCursor: null,
-    hasOlder: false,
-    isLoadingOlder: false,
-    olderError: null,
-    hasNewOutput: false,
-  );
-
-  final mediaTransports = <AnyworkClient, _CardMediaTransport>{};
-  AnyworkClient openClient(WidgetTester tester) {
-    final transport = _CardMediaTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'image-card');
-    mediaTransports[client] = transport;
-    // close 的原 Future 可能同时依赖真实队列和 FakeAsync；驱动两者后再校验报告。
-    addTearDown(() async {
-      final report = await pumpClientFuture(
-        tester,
-        client.close(deadline: DateTime.now().add(const Duration(seconds: 1))),
-        'image-card media client teardown close',
-      );
-      expect(report.complete, isTrue, reason: '展示客户端 teardown 必须真实关闭');
-    });
-    client.selection.markOpened();
-    return client;
-  }
-
-  Future<void> pumpTimeline(
-    WidgetTester tester,
-    TimelineDisplayLease lease, {
-    AnyworkClient? client,
-    Size size = const Size(900, 700),
-  }) async {
-    final mediaClient = client ?? openClient(tester);
-    await tester.binding.setSurfaceSize(size);
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [anyworkClientProvider.overrideWithValue(mediaClient)],
-        child: MaterialApp(
-          theme: pureStudioTheme(),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Builder(
-            builder: (context) {
-              final threadId = lease.threadId;
-              Future<Uint8List> readAttachment(String id) =>
-                  mediaClient.readAttachmentBytes(threadId, id);
-              void detail(String itemId, ThreadContentFieldView field) {
-                if (lease.isRetired || !context.mounted) return;
-                unawaited(
-                  openTimelineDetail(
-                    context,
-                    lease: lease,
-                    itemId: itemId,
-                    field: field,
-                  ).catchError((Object error) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(SnackBar(content: Text(error.toString())));
-                    }
-                  }),
-                );
-              }
-
-              return Scaffold(
-                body: TimelineView(
-                  threadId: 'thread',
-                  view: viewState(),
-                  controls: lease,
-                  onLoadOlder: () async {},
-                  onRetryOlder: () async {},
-                  onReturnLive: () async {},
-                  onEnterHistory: () {},
-                  onRetryConnection: () async {},
-                  onDetail: detail,
-                  onLink: (_) {},
-                  isSafeLink: (_) => false,
-                  imageBuilder: (_, message, index) => TimelineImageConnector(
-                    message: message,
-                    index: index,
-                    item: timelineEntryOf(message)!.first,
-                    resources: lease.imageResources,
-                    readBytes: () => readAttachment(
-                      (message.metadata!['attachment'] as ThreadAttachmentView)
-                          .id,
-                    ),
-                    isActive: () => !lease.isRetired,
-                    onDetail: detail,
-                  ),
-                  remoteImageBuilder: (_, _) => const SizedBox.shrink(),
-                  groupMediaBuilder: (item) => TimelineGroupMediaConnector(
-                    item: item,
-                    resources: lease.imageResources,
-                    readAttachment: readAttachment,
-                    isActive: () => !lease.isRetired,
-                    onDetail: detail,
-                  ),
-                ),
-              );
-            },
+  testWidgets(
+    'missing image attachment performs no byte read or fabricated thumbnail',
+    (tester) async {
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      var reads = 0;
+      await tester.pumpWidget(
+        imageApp(
+          ChatItemView(
+            item: imageItem('empty', attachment: false),
+            attachmentBuilder: (value) => TimelineAttachmentsConnector(
+              item: value,
+              resources: resources,
+              readAttachment: (_) async {
+                reads++;
+                return _png;
+              },
+              isActive: () => true,
+            ),
           ),
         ),
-      ),
-    );
-    // 卡片图片区是异步读取：给首帧与读取回调留出帧预算，不等待无限加载动画。
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-  }
-
-  /// 汇合原关闭 Future：同时驱动真实与 FakeAsync 队列，断言留在 helper 返回之后。
-  Future<void> closeClient(WidgetTester tester, AnyworkClient client) async {
-    final report = await pumpClientFuture(
-      tester,
-      client.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-      'image-card media client body close',
-    );
-    expect(report.complete, isTrue, reason: '展示客户端在用例内可完整收束');
-  }
-
-  group('展示工具的呈现分类', () {
-    test('show_image 载荷独立成图片卡片组，不并入普通工具活动组', () async {
-      final lease = await leaseWith([
-        toolItem('call-before', appendSeq: 1, name: 'stat_path'),
-        cardItem('card', appendSeq: 2),
-        toolItem('call-after', appendSeq: 3, name: 'stat_path'),
-        toolItem('read-image', appendSeq: 4, name: 'view_image'),
-      ]);
-
-      expect(
-        lease.presentationFor('call-before')!.kind,
-        TimelineEntryKind.activity,
       );
-      final card = lease.presentationFor('card')!;
-      expect(card, isA<TimelineEntry>());
-      expect(card.kind, TimelineEntryKind.single);
-      expect(card.memberIds, ['card']);
-      final message = lease.controller.messages.singleWhere(
-        (message) => identical(timelineEntryOf(message), card),
-      );
-      expect(message, isA<CustomMessage>());
-      expect(timelineAttachments(card.first), [cardImage]);
-      expect(lease.controller.messages, hasLength(4));
-      // 后续同一 Turn 的普通工具仍按既有规则成组，且不含卡片成员。
-      final after = lease.presentationFor('call-after')!;
-      expect(after.kind, TimelineEntryKind.activity);
-      expect(after.memberIds, ['call-after']);
-      // 读取图片的工具仍走既有图集，不与展示卡片共用呈现项。
-      expect(
-        lease.presentationFor('read-image')!.kind,
-        TimelineEntryKind.images,
-      );
-    });
+      expect(find.byType(TimelineImageConnector), findsNothing);
+      expect(reads, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-    test('同 Turn 的多条展示调用各自一张卡片，不合并成组', () async {
-      final lease = await leaseWith([
-        cardItem('card-a', appendSeq: 1),
-        cardItem('card-b', appendSeq: 2, arguments: '{"caption":"第二张"}'),
-      ]);
-      final first = lease.presentationFor('card-a')!;
-      final second = lease.presentationFor('card-b')!;
-      expect(first, isA<TimelineEntry>());
-      expect(second, isA<TimelineEntry>());
-      expect(identical(first, second), isFalse);
-      expect(first.memberIds, ['card-a']);
-      expect(second.memberIds, ['card-b']);
-    });
+  testWidgets(
+    'shared image failure is visible and explicit retry replaces the attempt for every mounted row',
+    (tester) async {
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      var reads = 0;
+      var fail = true;
+      Future<Uint8List> read(String id) async {
+        reads++;
+        if (fail) throw StateError('authorized read failed');
+        return _png;
+      }
 
-    test('没有图片附件的展示调用仍是卡片，不退回普通工具活动组', () async {
-      final lease = await leaseWith([
-        cardItem('card-empty', appendSeq: 1, attachments: const []),
-      ]);
-      expect(
-        lease.presentationFor('card-empty')!.kind,
-        TimelineEntryKind.single,
-      );
-    });
-  });
-
-  group('展示工具的图片卡片', () {
-    testWidgets('带 typed 图片附件与 caption 时渲染卡片', (tester) async {
-      final client = openClient(tester);
-      final lease = await leaseWith([
-        cardItem('card', appendSeq: 1),
-      ], tester: tester);
-      await pumpTimeline(tester, lease, client: client);
-
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is TimelineImageConnector &&
-              widget.message.id == 'card:attachment:card-image',
+      await tester.pumpWidget(
+        imageApp(
+          Column(
+            children: [
+              for (final item in [imageItem('a'), imageItem('b')])
+                TimelineAttachmentsConnector(
+                  item: item,
+                  resources: resources,
+                  readAttachment: read,
+                  isActive: () => true,
+                ),
+            ],
+          ),
         ),
-        findsOneWidget,
-        reason: '卡片身份由 owning 调用与附件身份合成',
       );
-      expect(find.text('雨后的天台'), findsOneWidget);
-      expect(find.text('Image card'), findsOneWidget);
+      await tester.pump();
+      expect(find.textContaining('authorized read failed'), findsNWidgets(2));
+      expect(reads, 1);
+      fail = false;
+      await tester.tap(find.textContaining('authorized read failed').first);
       await pumpClientUntil(
         tester,
-        () => mediaTransports[client]!.reads.isNotEmpty,
-        'typed image attachment authorized read',
+        () => find.byType(Image).evaluate().length == 2,
+        'shared explicit image retry',
       );
-      expect(mediaTransports[client]!.reads, [('thread', 'card-image')]);
-      expect(
-        lease.controller.messages,
-        hasLength(1),
-        reason: '附件在原子内展示，不新增兄弟消息',
-      );
-      expect(tester.takeException(), isNull);
-      await unmountTimeline(tester, lease);
-      await closeClient(tester, client);
-    });
+      expect(reads, 2);
+      expect(find.textContaining('authorized read failed'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
-    testWidgets('caption 非字符串或超长时按容错规则处理', (tester) async {
-      final client = openClient(tester);
-      final lease = await leaseWith([
-        cardItem('card-bad', appendSeq: 1, arguments: '{"caption":42}'),
-      ], tester: tester);
-      await pumpTimeline(tester, lease, client: client);
-
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is TimelineImageConnector &&
-              widget.message.id == 'card-bad:attachment:card-image',
+  testWidgets(
+    'retirement during an attachment await cannot publish a thumbnail or enable retry',
+    (tester) async {
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      var active = true;
+      final reply = Completer<Uint8List>();
+      final item = imageItem('retiring');
+      Widget build() => imageApp(
+        TimelineAttachmentsConnector(
+          item: item,
+          resources: resources,
+          readAttachment: (_) => reply.future,
+          isActive: () => active,
         ),
-        findsOneWidget,
       );
-      expect(find.text('42'), findsNothing, reason: '只有字符串才作为展示文案');
+      await tester.pumpWidget(build());
+      active = false;
+      resources.retire();
+      reply.complete(_png);
+      await tester.pumpWidget(build());
+      await tester.pump();
+      expect(find.byType(Image), findsNothing);
+      final retry = tester.widget<TextButton>(find.byType(TextButton));
+      expect(retry.onPressed, isNull);
       expect(tester.takeException(), isNull);
-      await unmountTimeline(tester, lease);
-      await closeClient(tester, client);
-    });
-
-    testWidgets('没有图片附件时渲染卡片错误态', (tester) async {
-      final client = openClient(tester);
-      final lease = await leaseWith([
-        cardItem('card-empty', appendSeq: 1, attachments: const []),
-      ], tester: tester);
-      await pumpTimeline(tester, lease, client: client);
-
-      expect(
-        find.text('This image is unavailable'),
-        findsOneWidget,
-        reason: '无 typed 图片附件时是错误态，不抛异常',
-      );
-      expect(find.text('Image card'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await unmountTimeline(tester, lease);
-      await closeClient(tester, client);
-    });
-  });
-}
-
-final class _CardMediaTransport extends RecordingDemoTransport {
-  final reads = <(String, String)>[];
-  @override
-  Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
-    reads.add((threadId, attachmentId));
-    return super.readThreadAttachment(threadId, attachmentId);
-  }
-}
-
-final class _ImageCardTransport extends Fake implements StudioTransport {
-  _ImageCardTransport(this.items);
-  final List<ConversationItem> items;
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    ConversationCompletionCursor? resumeAfter,
-  }) async => ScriptedConversationFeed(
-    threadId: threadId,
-    subscriptionId: 'cards',
-    baseline: () => ConversationBaseline(
-      subscriptionId: 'cards',
-      timelineEpoch: 'cards-epoch',
-      items: items,
-      before: null,
-      hasOlder: false,
-      completedCursor: ConversationCompletionCursor(
-        timelineEpoch: 'cards-epoch',
-        appendSeq: items.last.header.appendSeq,
-      ),
-    ),
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
   );
 }

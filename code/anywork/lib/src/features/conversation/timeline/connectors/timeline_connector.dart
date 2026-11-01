@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,17 +10,89 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../state/timeline_entry.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
-import 'timeline_detail_connector.dart';
 import 'timeline_media_connector.dart';
+import 'timeline_children_connector.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
 class TimelineConnector extends ConsumerWidget {
   const TimelineConnector({
     super.key,
+    required this.threadId,
+    this.planConfirmation,
+    this.planExpanded = true,
+    this.onPlanToggle,
+  });
+  final String threadId;
+  final PlanConfirmationView? planConfirmation;
+  final bool planExpanded;
+  final VoidCallback? onPlanToggle;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final owner = ref.watch(timelineSessionOwnerProvider);
+    return _TimelineDemandViewport(
+      ownerIdentity: owner,
+      onDemand: owner.updateReadDemand,
+      child: _TimelineConnectorBody(
+        threadId: threadId,
+        planConfirmation: planConfirmation,
+        planExpanded: planExpanded,
+        onPlanToggle: onPlanToggle,
+      ),
+    );
+  }
+}
+
+class _TimelineDemandViewport extends StatefulWidget {
+  const _TimelineDemandViewport({
+    required this.ownerIdentity,
+    required this.onDemand,
+    required this.child,
+  });
+  final Object ownerIdentity;
+  final ValueChanged<ReadDemand> onDemand;
+  final Widget child;
+  @override
+  State<_TimelineDemandViewport> createState() =>
+      _TimelineDemandViewportState();
+}
+
+class _TimelineDemandViewportState extends State<_TimelineDemandViewport> {
+  int? _items;
+  Object? _owner;
+  ReadDemand? _pending;
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final height = constraints.hasBoundedHeight
+          ? constraints.maxHeight
+          : MediaQuery.sizeOf(context).height;
+      if (height.isFinite && height > 0) {
+        final items = (height / 72).ceil();
+        if (_items != items || !identical(_owner, widget.ownerIdentity)) {
+          _items = items;
+          _owner = widget.ownerIdentity;
+          final demand = ReadDemand(maxItems: items, maxBytes: 256 * 1024);
+          _pending = demand;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted &&
+                identical(_pending, demand) &&
+                identical(_owner, widget.ownerIdentity)) {
+              widget.onDemand(demand);
+            }
+          });
+        }
+      }
+      return widget.child;
+    },
+  );
+}
+
+class _TimelineConnectorBody extends ConsumerWidget {
+  const _TimelineConnectorBody({
     required this.threadId,
     this.planConfirmation,
     this.planExpanded = true,
@@ -110,32 +182,17 @@ class TimelineConnector extends ConsumerWidget {
       );
     }
 
-    Future<Uint8List> readAttachment(String attachmentId) => ref
-        .read(anyworkClientProvider)
-        .readAttachmentBytes(threadId, attachmentId);
-    void detail(String itemId, ThreadContentFieldView field) {
-      if (!active()) return;
-      unawaited(
-        openTimelineDetail(
-          context,
-          lease: lease,
-          itemId: itemId,
-          field: field,
-        ).catchError((Object error) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text(error.toString())));
-          }
-        }),
-      );
-    }
-
     final plan = planConfirmation;
     return TimelineView(
       key: lease.chatKey,
       threadId: threadId,
       view: view,
       controls: lease,
+      monotonicMicros: () => owner.monotonicMicros,
+      isDisplayActive: active,
+      onContentLayout: (itemId, completedMicros) {
+        if (active()) owner.recordContentLayout(lease, itemId, completedMicros);
+      },
       onLoadOlder: () => active()
           ? owner.loadOlder(threadId, generation: lease.generation)
           : Future.value(),
@@ -152,30 +209,34 @@ class TimelineConnector extends ConsumerWidget {
       onRetryConnection: () {
         if (active()) retry();
       },
-      onDetail: detail,
-      onLink: link,
-      isSafeLink: (url) => safeExternalWebUrl(url) != null,
-      imageBuilder: (_, message, index) => TimelineImageConnector(
-        key: ValueKey((lease.generation, message.id)),
-        message: message,
-        index: index,
-        item: timelineEntryOf(message)!.first,
-        resources: lease.imageResources,
-        readBytes: () => readAttachment(
-          (message.metadata!['attachment'] as ThreadAttachmentView).id,
-        ),
-        isActive: active,
-        onDetail: detail,
+      readContent: (reference, range) {
+        final scope = lease.queries;
+        if (!active() || scope == null) {
+          return Future.error(const StaleConversationScope());
+        }
+        return scope.readContent(reference: reference, range: range);
+      },
+      childrenBuilder: (parentId) => TimelineChildrenConnector(
+        key: ValueKey((lease.generation, parentId)),
+        repository: ref.read(anyworkClientProvider).conversations,
+        threadId: threadId,
+        parentId: parentId,
+        registerDisplay: lease.registerChildrenDisplay,
+        isParentActive: active,
+        readAttachment: (id) =>
+            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
       ),
-      remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
-      groupMediaBuilder: (item) => TimelineGroupMediaConnector(
-        key: ValueKey(item.id),
+      attachmentBuilder: (item) => TimelineAttachmentsConnector(
+        key: ValueKey((lease.generation, item.id)),
         item: item,
         resources: lease.imageResources,
-        readAttachment: readAttachment,
+        readAttachment: (id) =>
+            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
         isActive: active,
-        onDetail: detail,
       ),
+      onLink: link,
+      isSafeLink: (url) => safeExternalWebUrl(url) != null,
+      remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
       pendingPlanInteractionId: plan?.interactionId,
       planSummary: plan == null
           ? null

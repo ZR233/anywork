@@ -2,20 +2,20 @@
 //
 // It drives the isolated GUI through Flutter Driver against the wait-events
 // fixture: real `sleep` / `exec` / `wait` / `spawn_agent` tools, screenshots of
-// live waiting and history cards, and typed timeline snapshots. Required wait
-// keys are `conversation-activity`, `conversation-activity-details`,
-// `wait-card:<itemId>`, `wait-details:<itemId>` and `wait-diagnostics:<itemId>`.
-// Missing or untappable required controls fail the journey.
+// live current tools JSON and completed history, with separate qualifications.
+// Live controls use the production currentCollection/Entry factories; completed
+// item controls below require their own actual Children Message identity.
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'current_tools_observation.dart';
+import 'current_tools_driver.dart';
 import 'tool_probe.dart';
 import 'realtime_journey.dart'
     show
-        conversationActivity,
         isBusy,
         isDurableSettled,
         timelineRows,
@@ -24,6 +24,8 @@ import 'realtime_journey.dart'
         turnStatus,
         workspaceOf;
 import 'timeline_observation.dart';
+import 'timeline_scope_driver.dart';
+import 'pointer_scroll.dart';
 import 'window_control.dart';
 
 const _markSleepFirst = '[[wait_sleep_first]]';
@@ -44,17 +46,8 @@ const _terminalToolStatuses = <String>{
   'interrupted',
 };
 
-const _liveToolStatuses = <String>{'started', 'streaming', 'running'};
-
 const _narrowWindowWidth = 640;
 const _narrowWindowHeight = 600;
-
-const _waitActivityTitles = <String>{
-  'Waiting for tools',
-  '等待工具完成',
-  'Waiting for a subagent or new message',
-  '等待子代理或新消息',
-};
 
 Future<void> main(List<String> args) async {
   if (args.length != 4) {
@@ -184,6 +177,37 @@ Future<void> _recordConnectFailure(
   } catch (_) {}
 }
 
+final class _WaitChildrenScope {
+  _WaitChildrenScope(CurrentToolsObservation current, this.generation)
+    : threadId = current.threadId,
+      mainGeneration = current.mainGeneration,
+      turnId = current.turnId!,
+      parentId = current.requireChildrenParentId(),
+      activityId = current.activityId;
+  final String threadId, turnId, parentId;
+  final String? activityId;
+  final int generation, mainGeneration;
+  Object get owner => (threadId, mainGeneration, turnId, parentId, activityId);
+
+  Map<String, Object?> evidence() => {
+    'threadId': threadId,
+    'mainGeneration': mainGeneration,
+    'turnId': turnId,
+    'childrenParentId': parentId,
+    'activityId': activityId,
+  };
+
+  void requireMain(
+    TimelineObservation timeline, {
+    bool originalGeneration = true,
+  }) {
+    if (timeline.threadId != threadId ||
+        (originalGeneration && timeline.generation != mainGeneration)) {
+      throw StaleCurrentTools('Original completed-member Main lease retired');
+    }
+  }
+}
+
 class WaitEventsJourney {
   WaitEventsJourney({
     required this.driver,
@@ -204,6 +228,163 @@ class WaitEventsJourney {
   final List<String> pendingEvidence = <String>[];
   String stage = 'created';
   String? shutdownError;
+  late final CurrentToolsDriver _currentTools = CurrentToolsDriver.session(
+    driver,
+  );
+  final Map<String, Map<String, Object?>> _liveWaitEvidence = {};
+  final Map<String, _WaitChildrenScope> _childrenByTurn = {};
+  final Map<String, String> _completedItemParents = {};
+
+  Duration _remaining(Stopwatch clock, Duration budget) {
+    final left = budget - clock.elapsed;
+    if (left <= Duration.zero) {
+      throw StateError('Original observation deadline expired');
+    }
+    return left;
+  }
+
+  TimelineChildrenObservation _qualifiedChildren(
+    Map<String, dynamic> snapshot,
+    _WaitChildrenScope scope, {
+    bool running = false,
+  }) {
+    final timeline = TimelineObservation.parse(snapshot);
+    scope.requireMain(timeline, originalGeneration: running);
+    if (running) {
+      final current = CurrentToolsObservation.optional(snapshot);
+      if (turnId(snapshot) != scope.turnId ||
+          turnStatus(snapshot) != 'running' ||
+          current == null ||
+          !current.expanded ||
+          current.owner != scope.owner) {
+        throw StaleCurrentTools(
+          'Original Running Turn/current parent retired before its result',
+        );
+      }
+    }
+    final child = timeline.childrenFor(scope.parentId);
+    if (child?.error != null) {
+      throw StateError('Original Children read failed: ${child!.error}');
+    }
+    if (child == null || !child.ready || child.appliedSets < 1) {
+      throw StaleCurrentTools('Original completed-member display is absent');
+    }
+    if (running && child.generation != scope.generation) {
+      throw StaleCurrentTools('Original Children display generation retired');
+    }
+    return child;
+  }
+
+  Future<_WaitChildrenScope> _openCurrentChildren(
+    String turn, {
+    required Duration timeout,
+  }) async {
+    final clock = Stopwatch()..start();
+    final before = await snapshot();
+    if (turnId(before) != turn || turnStatus(before) != 'running') {
+      throw StaleCurrentTools('No original Running Turn for completed members');
+    }
+    final original = CurrentToolsObservation.optional(before);
+    if (original == null || original.turnId != turn) {
+      throw StaleCurrentTools('Original current head is absent');
+    }
+    final parent = original.requireChildrenParentId();
+    final existing = _childrenByTurn[turn];
+    if (existing != null) {
+      _qualifiedChildren(before, existing, running: true);
+      return existing;
+    }
+    final opened = await _currentTools.openCompletedItems(
+      turnId: turn,
+      timeout: _remaining(clock, timeout),
+    );
+    if (opened.owner != original.owner) {
+      throw StaleCurrentTools('Current identity changed while opening members');
+    }
+    final scopes = TimelineScopeDriver.session(driver);
+    do {
+      final candidate = await scopes.read();
+      final current = CurrentToolsObservation.optional(candidate);
+      final timeline = TimelineObservation.parse(candidate);
+      if (turnId(candidate) != turn ||
+          turnStatus(candidate) != 'running' ||
+          current?.owner != original.owner ||
+          current?.expanded != true) {
+        throw StaleCurrentTools('Original parent retired before Children Set');
+      }
+      if (timeline.threadId != original.threadId ||
+          timeline.generation != original.mainGeneration) {
+        throw StaleCurrentTools('Main lease changed while opening members');
+      }
+      final child = timeline.childrenFor(parent);
+      if (child?.error != null) {
+        throw StateError('Original Children read failed: ${child!.error}');
+      }
+      if (child != null && child.ready && child.appliedSets > 0) {
+        _remaining(clock, timeout);
+        final scope = _WaitChildrenScope(opened, child.generation);
+        _childrenByTurn[turn] = scope;
+        observations['${turn}CompletedParent'] = {
+          ...opened.evidence(),
+          'childrenGeneration': child.generation,
+          'appliedSets': child.appliedSets,
+        };
+        return scope;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    } while (clock.elapsed < timeout);
+    throw StateError('Original current Children did not accept Set in time');
+  }
+
+  Future<Map<String, dynamic>> _waitForCompletedTool(
+    String turn,
+    String label, {
+    String? callId,
+    String? prefix,
+    required String contract,
+    required Duration timeout,
+  }) async {
+    if ((callId == null) == (prefix == null)) {
+      throw ArgumentError('Exactly one original call identity is required');
+    }
+    final clock = Stopwatch()..start();
+    final scope = await _openCurrentChildren(
+      turn,
+      timeout: _remaining(clock, timeout),
+    );
+    final returned = await waitFor(
+      (candidate) {
+        _qualifiedChildren(candidate, scope, running: true);
+        final tool = callId == null
+            ? _toolByCallPrefix(candidate, prefix!, parentId: scope.parentId)
+            : _toolByCallId(candidate, callId, parentId: scope.parentId);
+        if (tool == null) return false;
+        if (tool['presentationContract'] != contract) {
+          throw StateError('$label has an unexpected typed tool contract');
+        }
+        return tool['status'] == 'succeeded';
+      },
+      label,
+      timeout: _remaining(clock, timeout),
+      abort: turnFailed,
+    );
+    _remaining(clock, timeout);
+    final child = _qualifiedChildren(returned, scope, running: true);
+    final tool = callId == null
+        ? _toolByCallPrefix(returned, prefix!, parentId: scope.parentId)!
+        : _toolByCallId(returned, callId, parentId: scope.parentId)!;
+    observations['${label}CompletedReturn'] = {
+      ...scope.evidence(),
+      'childrenGeneration': child.generation,
+      'appliedSets': child.appliedSets,
+      'appliedAppends': child.appliedAppends,
+      'callId': tool['callId'],
+      'itemId': tool['itemId'],
+      'presentationContract': tool['presentationContract'],
+      'observedTurnStatus': turnStatus(returned),
+    };
+    return returned;
+  }
 
   File get stageFile => File('${coord.path}/wait-events-stage');
 
@@ -355,24 +536,213 @@ class WaitEventsJourney {
     );
   }
 
-  Future<Map<String, dynamic>> _awaitSettled(String turn, String label) {
-    return waitFor(
+  Future<Map<String, dynamic>> _awaitSettled(
+    String turn,
+    String label, {
+    Duration timeout = const Duration(seconds: 180),
+  }) async {
+    final clock = Stopwatch()..start();
+    final settled = await waitFor(
       (snapshot) => turnId(snapshot) == turn && isDurableSettled(snapshot),
       '${label}_settled',
-      timeout: const Duration(seconds: 180),
+      timeout: timeout,
       abort: (snapshot) =>
           turnFailed(snapshot) && turnId(snapshot) == turn && !isBusy(snapshot),
     );
+    final scope = _childrenByTurn[turn];
+    if (scope == null) return settled;
+    final shown = await _openHistoricalChildren(
+      scope,
+      timeout: _remaining(clock, timeout),
+    );
+    if (turnId(shown) != turn || !isDurableSettled(shown)) {
+      throw StateError(
+        'Original settled Turn changed during history expansion',
+      );
+    }
+    return shown;
   }
 
   /// Turn 已到达 completed。后台 sleep 可以继续 Running，不能要求整个 Thread idle。
-  Future<Map<String, dynamic>> _awaitTurnCompleted(String turn, String label) {
-    return waitFor(
+  Future<Map<String, dynamic>> _awaitTurnCompleted(
+    String turn,
+    String label,
+  ) async {
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 60);
+    final completed = await waitFor(
       (snapshot) =>
           turnId(snapshot) == turn && turnStatus(snapshot) == 'completed',
       '${label}_completed',
-      timeout: const Duration(seconds: 60),
+      timeout: budget,
       abort: turnFailed,
+    );
+    final scope = _childrenByTurn[turn];
+    if (scope == null) return completed;
+    return _openHistoricalChildren(scope, timeout: _remaining(clock, budget));
+  }
+
+  Future<Map<String, dynamic>> _openHistoricalChildren(
+    _WaitChildrenScope scope, {
+    required Duration timeout,
+  }) async {
+    final clock = Stopwatch()..start();
+    final scopes = TimelineScopeDriver.session(driver);
+    final before = TimelineObservation.parse(await scopes.read());
+    scope.requireMain(before, originalGeneration: false);
+    final shown = await scopes.setExpanded(scope.parentId, true);
+    final after = TimelineObservation.parse(shown);
+    scope.requireMain(after, originalGeneration: false);
+    if (after.generation != before.generation) {
+      throw StaleCurrentTools('Historical Main retired during expansion');
+    }
+    _remaining(clock, timeout);
+    _qualifiedChildren(shown, scope);
+    return shown;
+  }
+
+  Future<Map<String, dynamic>> _waitForCurrentTools(
+    bool Function(CurrentToolsObservation) predicate,
+    String label, {
+    required String turn,
+    required List<String> prefixes,
+    required Duration timeout,
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration actionBudget() {
+      final left = timeout - clock.elapsed;
+      return left < const Duration(seconds: 10)
+          ? left
+          : const Duration(seconds: 10);
+    }
+
+    Map<String, dynamic>? last;
+    while (clock.elapsed < timeout) {
+      last = await snapshot();
+      if (turnFailed(last)) {
+        throw StateError('$label aborted: ${_summarize(last)}');
+      }
+      final current = CurrentToolsObservation.optional(last);
+      if (current?.turnId == turn && current?.activityId != null) {
+        await _openCurrentChildren(turn, timeout: actionBudget());
+        try {
+          var page = await _currentTools.openTools(
+            turnId: turn,
+            timeout: actionBudget(),
+          );
+          while (clock.elapsed < timeout) {
+            var candidate = await snapshot();
+            last = candidate;
+            var fresh =
+                CurrentToolsObservation.optional(candidate) ??
+                (throw StaleCurrentTools(
+                  'Current tools retired before sampling',
+                ));
+            fresh.requireSame(page);
+            for (final entry in fresh.collection!.entries) {
+              if (entry.inline == null &&
+                  prefixes.any(entry.id.startsWith) &&
+                  fresh.decode(entry) == null) {
+                await _currentTools.inspect(
+                  fresh,
+                  entry,
+                  timeout: actionBudget(),
+                );
+                final afterWindow = await snapshot();
+                final admitted =
+                    CurrentToolsObservation.optional(afterWindow) ??
+                    (throw StaleCurrentTools(
+                      'Current entry retired after opening its window',
+                    ));
+                admitted.requireSame(fresh);
+                fresh = admitted;
+                candidate = afterWindow;
+                last = afterWindow;
+              }
+            }
+            if (predicate(fresh)) {
+              _remaining(clock, timeout);
+              return candidate;
+            }
+            if (fresh.collection!.continuation == null) break;
+            page = await _currentTools.next(fresh, timeout: actionBudget());
+          }
+        } on StaleCurrentTools catch (error) {
+          // A new public current identity may be sought within the original
+          // observation budget. No old entry/page/cursor is carried forward.
+          observations['${label}Requalification'] = error.toString();
+        } on CurrentToolsNotReady catch (error) {
+          observations['${label}CurrentPending'] = error.toString();
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+    throw StateError(
+      '$label has no qualified typed current observation: ${_summarize(last ?? {})}',
+    );
+  }
+
+  CurrentToolObservation _requireCurrentPrefix(
+    Map<String, dynamic> snapshot,
+    String prefix,
+  ) {
+    final current = CurrentToolsObservation.optional(snapshot);
+    final tool = current?.toolByPrefix(prefix);
+    if (tool == null) {
+      throw StateError('Current visible tools have no original call $prefix');
+    }
+    return tool;
+  }
+
+  String _currentTask(CurrentToolObservation tool) {
+    final task = tool.taskId;
+    if (task == null) {
+      throw StateError('Current call ${tool.callId} has no task identity');
+    }
+    return task;
+  }
+
+  void _requireWaitingTargets(
+    CurrentToolObservation wait,
+    List<CurrentToolObservation> selected,
+  ) {
+    final presentation = wait.wait;
+    final expected = [for (final tool in selected) _currentTask(tool)];
+    if (!wait.waiting || presentation?.targetsRunning(expected) != true) {
+      throw StateError(
+        'Typed Waiting does not name the exact running targets: ${wait.evidence()}',
+      );
+    }
+  }
+
+  Future<CurrentToolObservation> _readCurrentBackgroundCall(
+    String callId,
+    String taskId,
+  ) async {
+    final current = CurrentToolsObservation.optional(await snapshot());
+    if (current == null) {
+      throw StateError('Current background task $taskId is not observable');
+    }
+    final clock = Stopwatch()..start();
+    var visible = await _currentTools.openTools(turnId: current.turnId);
+    while (clock.elapsed < const Duration(seconds: 10)) {
+      final tool = visible.toolByCallId(callId);
+      if (tool != null) {
+        if (tool.taskId != taskId) {
+          throw StateError(
+            'Current call $callId has a different task identity',
+          );
+        }
+        return tool;
+      }
+      if (visible.collection!.continuation == null) break;
+      visible = await _currentTools.next(
+        visible,
+        timeout: const Duration(seconds: 10) - clock.elapsed,
+      );
+    }
+    throw StateError(
+      'Original background call $callId/$taskId is not on the current tools pages',
     );
   }
 
@@ -383,42 +753,46 @@ class WaitEventsJourney {
     );
     final running = await _awaitNewTurn(context, 'sleep_first');
     final turn = turnId(running)!;
-    final waiting = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallPrefix(snapshot, 'sleep-first-wait-t');
-        final sleep = _toolByCallPrefix(snapshot, 'sleep-first-sleep-t');
-        final exec = _toolByCallPrefix(snapshot, 'sleep-first-exec-t');
-        return wait != null &&
-            !_terminalToolStatuses.contains(wait['status']) &&
-            sleep != null &&
-            exec != null &&
-            _liveToolStatuses.contains(exec['status']);
+    final waiting = await _waitForCurrentTools(
+      (current) {
+        final wait = current.toolByPrefix('sleep-first-wait-t');
+        final sleep = current.toolByPrefix('sleep-first-sleep-t');
+        final exec = current.toolByPrefix('sleep-first-exec-t');
+        return wait?.waiting == true &&
+            wait?.wait?.kind == 'events' &&
+            sleep?.waiting == true &&
+            sleep?.wait?.kind == 'timer' &&
+            exec?.state == 'running' &&
+            wait?.wait?.targetsRunning([sleep?.taskId, exec?.taskId]) == true;
       },
       'sleep_first_waiting',
+      turn: turn,
+      prefixes: const [
+        'sleep-first-wait-t',
+        'sleep-first-sleep-t',
+        'sleep-first-exec-t',
+      ],
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
-    final firstWait = _requireCallPrefix(waiting, 'sleep-first-wait-t');
-    final firstWaitCallId = firstWait['callId'] as String;
-    final firstWaitItemId = firstWait['itemId'] as String;
-    final sleepCallId =
-        _requireCallPrefix(waiting, 'sleep-first-sleep-t')['callId'] as String;
-    final execCallId =
-        _requireCallPrefix(waiting, 'sleep-first-exec-t')['callId'] as String;
-    await _observeWaitUi(waiting, 'sleep-first-waiting', firstWaitItemId);
+    final firstWait = _requireCurrentPrefix(waiting, 'sleep-first-wait-t');
+    final liveSleep = _requireCurrentPrefix(waiting, 'sleep-first-sleep-t');
+    final liveExec = _requireCurrentPrefix(waiting, 'sleep-first-exec-t');
+    _requireWaitingTargets(firstWait, [liveSleep, liveExec]);
+    final firstWaitCallId = firstWait.callId;
+    final firstWaitEntryId = firstWait.entry.id;
+    final sleepCallId = liveSleep.callId;
+    final execCallId = liveExec.callId;
+    await _observeWaitUi(waiting, 'sleep-first-waiting', firstWaitEntryId);
     await capture('sleep-first-waiting', tree: true);
-    checks['sleepFirstWaitLive'] = true;
-    checks['sleepFirstExecStillRunning'] = _liveToolStatuses.contains(
-      _toolByCallPrefix(waiting, 'sleep-first-exec-t')?['status'],
-    );
-    final waitSucceeded = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallId(snapshot, firstWaitCallId);
-        return wait != null && wait['status'] == 'succeeded';
-      },
+    checks['sleepFirstWaitLive'] = firstWait.waiting;
+    checks['sleepFirstExecStillRunning'] =
+        firstWait.wait!.target(_currentTask(liveExec))?.status == 'running';
+    final waitSucceeded = await _waitForCompletedTool(
+      turn,
       'sleep_first_wait_succeeded',
+      callId: firstWaitCallId,
+      contract: 'builtin.wait@1',
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
     final waitAtReturn = _toolByCallId(waitSucceeded, firstWaitCallId)!;
     final waitResultAtReturn = _decodeWaitResult(
@@ -426,11 +800,11 @@ class WaitEventsJourney {
     );
     final sleepAtReturn = _requireWaitTask(
       waitResultAtReturn,
-      'task:$sleepCallId',
+      _currentTask(liveSleep),
     );
     final execAtReturn = _requireWaitTask(
       waitResultAtReturn,
-      'task:$execCallId',
+      _currentTask(liveExec),
     );
     checks['sleepFirstWaitReadyWhileExecRunning'] =
         waitResultAtReturn['timedOut'] == false &&
@@ -456,8 +830,16 @@ class WaitEventsJourney {
     final settled = await _awaitSettled(turn, 'sleep_first');
     await capture('sleep-first-settled');
     final followWait = _requireCallPrefix(settled, 'sleep-first-wait-exec-t');
-    final sleep = _requireCallPrefix(settled, 'sleep-first-sleep-t');
-    final exec = _requireCallPrefix(settled, 'sleep-first-exec-t');
+    final sleep = _requireCallPrefix(
+      settled,
+      'sleep-first-sleep-t',
+      contract: 'builtin.sleep@1',
+    );
+    final exec = _requireCallPrefix(
+      settled,
+      'sleep-first-exec-t',
+      contract: 'builtin.exec@2',
+    );
     final firstWaitSettled = _requireCallPrefix(settled, 'sleep-first-wait-t');
     final waitResultLater = _decodeWaitResult(
       firstWaitSettled['result'] as String?,
@@ -478,14 +860,17 @@ class WaitEventsJourney {
       'execCallId': execCallId,
       'sleepStatusLater': sleep['status'],
       'execStatusLater': exec['status'],
-      'waitItemId': firstWaitItemId,
+      'waitEntryId': firstWaitEntryId,
       'selectedTaskStatesAtReturn': {
         'sleep': sleepAtReturn,
         'exec': execAtReturn,
       },
     };
-    await _requirePreservedWaitExpansion(firstWaitItemId, 'sleepFirst');
-    await _expandHistoryWait(firstWaitItemId, 'sleep-first-history');
+    await _recordWaitDisplayTransition(firstWaitEntryId, 'sleepFirst');
+    await _expandHistoryWait(
+      firstWaitSettled['itemId'] as String?,
+      'sleep-first-history',
+    );
   }
 
   Future<void> _toolFirst() async {
@@ -495,42 +880,46 @@ class WaitEventsJourney {
     );
     final running = await _awaitNewTurn(context, 'tool_first');
     final turn = turnId(running)!;
-    final waiting = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallPrefix(snapshot, 'tool-first-wait-t');
-        final sleep = _toolByCallPrefix(snapshot, 'tool-first-sleep-t');
-        final exec = _toolByCallPrefix(snapshot, 'tool-first-exec-t');
-        return wait != null &&
-            !_terminalToolStatuses.contains(wait['status']) &&
-            sleep != null &&
-            !_terminalToolStatuses.contains(sleep['status']) &&
-            exec != null;
+    final waiting = await _waitForCurrentTools(
+      (current) {
+        final wait = current.toolByPrefix('tool-first-wait-t');
+        final sleep = current.toolByPrefix('tool-first-sleep-t');
+        final exec = current.toolByPrefix('tool-first-exec-t');
+        return wait?.waiting == true &&
+            wait?.wait?.kind == 'events' &&
+            sleep?.waiting == true &&
+            sleep?.wait?.kind == 'timer' &&
+            exec != null &&
+            wait?.wait?.targetsRunning([exec.taskId, sleep?.taskId]) == true;
       },
       'tool_first_waiting',
+      turn: turn,
+      prefixes: const [
+        'tool-first-wait-t',
+        'tool-first-sleep-t',
+        'tool-first-exec-t',
+      ],
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
-    final waitLive = _requireCallPrefix(waiting, 'tool-first-wait-t');
-    final waitCallId = waitLive['callId'] as String;
-    final waitItemId = waitLive['itemId'] as String;
-    final execCallId =
-        _requireCallPrefix(waiting, 'tool-first-exec-t')['callId'] as String;
-    final sleepCallId =
-        _requireCallPrefix(waiting, 'tool-first-sleep-t')['callId'] as String;
-    await _observeWaitUi(waiting, 'tool-first-waiting', waitItemId);
+    final waitLive = _requireCurrentPrefix(waiting, 'tool-first-wait-t');
+    final liveSleep = _requireCurrentPrefix(waiting, 'tool-first-sleep-t');
+    final liveExec = _requireCurrentPrefix(waiting, 'tool-first-exec-t');
+    _requireWaitingTargets(waitLive, [liveExec, liveSleep]);
+    final waitCallId = waitLive.callId;
+    final waitEntryId = waitLive.entry.id;
+    final execCallId = liveExec.callId;
+    final sleepCallId = liveSleep.callId;
+    await _observeWaitUi(waiting, 'tool-first-waiting', waitEntryId);
     await capture('tool-first-waiting');
-    checks['toolFirstWaitLive'] = true;
-    checks['toolFirstSleepStillRunning'] = !_terminalToolStatuses.contains(
-      _toolByCallPrefix(waiting, 'tool-first-sleep-t')?['status'],
-    );
-    final waitSucceeded = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallId(snapshot, waitCallId);
-        return wait != null && wait['status'] == 'succeeded';
-      },
+    checks['toolFirstWaitLive'] = waitLive.waiting;
+    checks['toolFirstSleepStillRunning'] =
+        waitLive.wait!.target(_currentTask(liveSleep))?.status == 'running';
+    final waitSucceeded = await _waitForCompletedTool(
+      turn,
       'tool_first_wait_succeeded',
+      callId: waitCallId,
+      contract: 'builtin.wait@1',
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
     final waitAtReturn = _toolByCallId(waitSucceeded, waitCallId)!;
     final waitResultAtReturn = _decodeWaitResult(
@@ -538,11 +927,11 @@ class WaitEventsJourney {
     );
     final execAtReturn = _requireWaitTask(
       waitResultAtReturn,
-      'task:$execCallId',
+      _currentTask(liveExec),
     );
     final sleepAtReturn = _requireWaitTask(
       waitResultAtReturn,
-      'task:$sleepCallId',
+      _currentTask(liveSleep),
     );
     checks['toolFirstWaitReadyWhileSleepRunning'] =
         waitResultAtReturn['timedOut'] == false &&
@@ -568,8 +957,16 @@ class WaitEventsJourney {
     final settled = await _awaitSettled(turn, 'tool_first');
     await capture('tool-first-settled');
     final wait = _requireCallPrefix(settled, 'tool-first-wait-t');
-    final exec = _requireCallPrefix(settled, 'tool-first-exec-t');
-    final sleep = _requireCallPrefix(settled, 'tool-first-sleep-t');
+    final exec = _requireCallPrefix(
+      settled,
+      'tool-first-exec-t',
+      contract: 'builtin.exec@2',
+    );
+    final sleep = _requireCallPrefix(
+      settled,
+      'tool-first-sleep-t',
+      contract: 'builtin.sleep@1',
+    );
     final waitResultLater = _decodeWaitResult(wait['result'] as String?);
     checks['toolFirstExecSucceeded'] = exec['status'] == 'succeeded';
     checks['toolFirstWaitReady'] =
@@ -582,14 +979,14 @@ class WaitEventsJourney {
       'sleepCallId': sleepCallId,
       'execStatusLater': exec['status'],
       'sleepStatusLater': sleep['status'],
-      'waitItemId': waitItemId,
+      'waitEntryId': waitEntryId,
       'selectedTaskStatesAtReturn': {
         'exec': execAtReturn,
         'sleep': sleepAtReturn,
       },
     };
-    await _requirePreservedWaitExpansion(waitItemId, 'toolFirst');
-    await _expandHistoryWait(waitItemId, 'tool-first-history');
+    await _recordWaitDisplayTransition(waitEntryId, 'toolFirst');
+    await _expandHistoryWait(wait['itemId'] as String?, 'tool-first-history');
   }
 
   Future<void> _childWake() async {
@@ -604,35 +1001,65 @@ class WaitEventsJourney {
     );
     final running = await _awaitNewTurn(context, 'child');
     final turn = turnId(running)!;
-    final waiting = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallPrefix(snapshot, 'child-wait-t');
-        final spawn = _toolByCallPrefix(snapshot, 'child-spawn-t');
-        final sleep = _toolByCallPrefix(snapshot, 'child-parent-sleep-t');
-        return wait != null &&
-            !_terminalToolStatuses.contains(wait['status']) &&
-            spawn != null &&
-            sleep != null;
+    final waiting = await _waitForCurrentTools(
+      (current) {
+        final wait = current.toolByPrefix('child-wait-t');
+        final sleep = current.toolByPrefix('child-parent-sleep-t');
+        return wait?.waiting == true &&
+            wait?.wait?.kind == 'events' &&
+            sleep?.waiting == true &&
+            sleep?.wait?.kind == 'timer' &&
+            wait?.wait?.targetsRunning([sleep?.taskId]) == true;
       },
       'child_waiting',
+      turn: turn,
+      prefixes: const ['child-wait-t', 'child-parent-sleep-t'],
       timeout: const Duration(seconds: 40),
-      abort: turnFailed,
     );
-    final waitLive = _requireCallPrefix(waiting, 'child-wait-t');
-    final waitCallId = waitLive['callId'] as String;
-    final waitItemId = waitLive['itemId'] as String;
-    final parentSleepCallId =
-        _requireCallPrefix(waiting, 'child-parent-sleep-t')['callId'] as String;
-    checks['childWaitLive'] = !_terminalToolStatuses.contains(
-      waitLive['status'],
-    );
+    final waitLive = _requireCurrentPrefix(waiting, 'child-wait-t');
+    final liveSleep = _requireCurrentPrefix(waiting, 'child-parent-sleep-t');
+    _requireWaitingTargets(waitLive, [liveSleep]);
+    final waitCallId = waitLive.callId;
+    final parentSleepCallId = liveSleep.callId;
+    checks['childWaitLive'] = waitLive.waiting;
     observations['childWaiting'] = {
-      'kind': 'liveSnapshotAtObservation',
-      'callId': waitCallId,
-      'itemId': waitItemId,
-      'status': waitLive['status'],
+      ...CurrentToolsObservation.optional(waiting)!.evidence(),
+      ...waitLive.evidence(),
     };
     await capture('child-wait-observed', tree: true);
+    final returnClock = Stopwatch()..start();
+    const returnBudget = Duration(seconds: 180);
+    final returned = await _waitForCompletedTool(
+      turn,
+      'child_wait_returned',
+      callId: waitCallId,
+      contract: 'builtin.wait@1',
+      timeout: returnBudget,
+    );
+    final wait = _toolByCallId(returned, waitCallId);
+    if (wait == null) {
+      throw StateError('child wait $waitCallId missing at original return');
+    }
+    final waitResultAtReturn = _decodeWaitResult(wait['result'] as String?);
+    final parentSleepAtReturn = _requireWaitTask(
+      waitResultAtReturn,
+      _currentTask(liveSleep),
+    );
+    checks['childWaitWokenByMessage'] =
+        wait['status'] == 'succeeded' &&
+        waitResultAtReturn['messagesReady'] == true &&
+        waitResultAtReturn['timedOut'] == false &&
+        parentSleepAtReturn['status'] == 'running' &&
+        parentSleepAtReturn['cancelRequested'] == false;
+    if (checks['childWaitWokenByMessage'] != true) {
+      throw StateError(
+        'child wait result at return did not show messagesReady with '
+        'parent sleep still running: $waitResultAtReturn',
+      );
+    }
+    // The separate child-discovery budget remains 60s; result observation and
+    // later settling share the original 180s settling budget.
+    final settleBudget = _remaining(returnClock, returnBudget);
     final spawned = await waitFor(
       (snapshot) =>
           _agents(snapshot).any((agent) => agent['threadId'] != rootThreadId),
@@ -651,31 +1078,13 @@ class WaitEventsJourney {
       'status': child['status'],
     };
     checks['childAgentCreated'] = child['id'] is String && child['id'] != '';
-    final settled = await _awaitSettled(turn, 'child');
+    await _awaitSettled(turn, 'child', timeout: settleBudget);
     await capture('child-settled');
-    final wait = _toolByCallId(settled, waitCallId);
-    if (wait == null) {
-      throw StateError('child wait $waitCallId missing after settle');
-    }
-    final waitResultAtReturn = _decodeWaitResult(wait['result'] as String?);
-    final parentSleepAtReturn = _requireWaitTask(
-      waitResultAtReturn,
-      'task:$parentSleepCallId',
+    final backgroundSleep = await _readCurrentBackgroundCall(
+      parentSleepCallId,
+      _currentTask(liveSleep),
     );
-    checks['childWaitWokenByMessage'] =
-        wait['status'] == 'succeeded' &&
-        waitResultAtReturn['messagesReady'] == true &&
-        waitResultAtReturn['timedOut'] == false &&
-        parentSleepAtReturn['status'] == 'running' &&
-        parentSleepAtReturn['cancelRequested'] == false;
-    if (checks['childWaitWokenByMessage'] != true) {
-      throw StateError(
-        'child wait result at return did not show messagesReady with '
-        'parent sleep still running: $waitResultAtReturn',
-      );
-    }
-    checks['childSleepStillVisible'] =
-        _toolByCallPrefix(settled, 'child-parent-sleep-t') != null;
+    checks['childSleepStillVisible'] = backgroundSleep.state == 'running';
     final childId = child['threadId'] as String;
     await _tap('agent-switcher');
     await _tap('agent-thread-$childId');
@@ -734,7 +1143,7 @@ class WaitEventsJourney {
       'confirmTurnId': confirmTurn,
       'reportMultiplicityVerifiedBy': 'fixture-model-request-boundary',
     };
-    await _expandHistoryWait(waitItemId, 'child-history');
+    await _expandHistoryWait(wait['itemId'] as String?, 'child-history');
   }
 
   Future<void> _alreadyReady() async {
@@ -744,9 +1153,16 @@ class WaitEventsJourney {
     );
     final running = await _awaitNewTurn(context, 'already_ready');
     final turn = turnId(running)!;
-    final settled = await _awaitSettled(turn, 'already_ready');
-    await capture('already-ready');
-    final wait = _requireCallPrefix(settled, 'already-ready-wait-t');
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 180);
+    final returned = await _waitForCompletedTool(
+      turn,
+      'already_ready_returned',
+      prefix: 'already-ready-wait-t',
+      contract: 'builtin.wait@1',
+      timeout: budget,
+    );
+    final wait = _requireCallPrefix(returned, 'already-ready-wait-t');
     final waitResult = _decodeWaitResult(wait['result'] as String?);
     checks['alreadyReadyImmediate'] =
         wait['status'] == 'succeeded' && waitResult['timedOut'] == false;
@@ -754,7 +1170,19 @@ class WaitEventsJourney {
       'wait': waitResult,
       'waitCallId': wait['callId'],
       'waitItemId': wait['itemId'],
+      'publicResultObservedWhileRunning': true,
+      'immediateReturnLatency': 'notObservable',
     };
+    pendingEvidence.add(
+      'already-ready: original Running-Turn result proves readiness without '
+      'timeout; UI sampling does not independently measure tool return latency',
+    );
+    await _awaitSettled(
+      turn,
+      'already_ready',
+      timeout: _remaining(clock, budget),
+    );
+    await capture('already-ready');
   }
 
   Future<void> _timeout() async {
@@ -764,38 +1192,45 @@ class WaitEventsJourney {
     );
     final running = await _awaitNewTurn(context, 'timeout');
     final turn = turnId(running)!;
-    final waiting = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallPrefix(snapshot, 'timeout-wait-t');
-        final sleep = _toolByCallPrefix(snapshot, 'timeout-sleep-t');
-        return wait != null &&
-            !_terminalToolStatuses.contains(wait['status']) &&
-            sleep != null;
+    final waiting = await _waitForCurrentTools(
+      (current) {
+        final wait = current.toolByPrefix('timeout-wait-t');
+        final sleep = current.toolByPrefix('timeout-sleep-t');
+        return wait?.waiting == true &&
+            wait?.wait?.kind == 'events' &&
+            sleep?.waiting == true &&
+            sleep?.wait?.kind == 'timer' &&
+            wait?.wait?.targetsRunning([sleep?.taskId]) == true;
       },
       'timeout_waiting',
+      turn: turn,
+      prefixes: const ['timeout-wait-t', 'timeout-sleep-t'],
       timeout: const Duration(seconds: 15),
-      abort: turnFailed,
     );
-    final waitLive = _requireCallPrefix(waiting, 'timeout-wait-t');
-    final waitCallId = waitLive['callId'] as String;
-    final waitItemId = waitLive['itemId'] as String;
-    final sleepCallId =
-        _requireCallPrefix(waiting, 'timeout-sleep-t')['callId'] as String;
-    checks['timeoutWaitLive'] = !_terminalToolStatuses.contains(
-      waitLive['status'],
-    );
+    final waitLive = _requireCurrentPrefix(waiting, 'timeout-wait-t');
+    final liveSleep = _requireCurrentPrefix(waiting, 'timeout-sleep-t');
+    _requireWaitingTargets(waitLive, [liveSleep]);
+    final waitCallId = waitLive.callId;
+    final waitEntryId = waitLive.entry.id;
+    final sleepCallId = liveSleep.callId;
+    checks['timeoutWaitLive'] = waitLive.waiting;
     observations['timeoutWaiting'] = {
-      'kind': 'liveSnapshotAtObservation',
-      'callId': waitCallId,
-      'itemId': waitItemId,
-      'status': waitLive['status'],
+      ...CurrentToolsObservation.optional(waiting)!.evidence(),
+      ...waitLive.evidence(),
     };
     await capture('timeout-wait-observed');
-    final settled = await _awaitSettled(turn, 'timeout');
-    await capture('timeout-settled');
-    final wait = _toolByCallId(settled, waitCallId);
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 180);
+    final returned = await _waitForCompletedTool(
+      turn,
+      'timeout_wait_returned',
+      callId: waitCallId,
+      contract: 'builtin.wait@1',
+      timeout: budget,
+    );
+    final wait = _toolByCallId(returned, waitCallId);
     if (wait == null) {
-      throw StateError('timeout wait $waitCallId missing after settle');
+      throw StateError('timeout wait $waitCallId missing at original return');
     }
     final waitResultAtReturn = _decodeWaitResult(wait['result'] as String?);
     if (wait['status'] != 'succeeded' ||
@@ -807,7 +1242,7 @@ class WaitEventsJourney {
     }
     final sleepAtReturn = _requireWaitTask(
       waitResultAtReturn,
-      'task:$sleepCallId',
+      _currentTask(liveSleep),
     );
     checks['timeoutIsNotFailure'] =
         wait['status'] == 'succeeded' &&
@@ -826,10 +1261,12 @@ class WaitEventsJourney {
       'waitResult': waitResultAtReturn,
       'waitCallId': waitCallId,
       'sleepCallId': sleepCallId,
-      'waitItemId': waitItemId,
+      'waitEntryId': waitEntryId,
       'selectedTaskStatesAtReturn': {'sleep': sleepAtReturn},
     };
-    await _expandHistoryWait(waitItemId, 'timeout-history');
+    await _awaitSettled(turn, 'timeout', timeout: _remaining(clock, budget));
+    await capture('timeout-settled');
+    await _expandHistoryWait(wait['itemId'] as String?, 'timeout-history');
   }
 
   Future<void> _cancelWait() async {
@@ -839,24 +1276,20 @@ class WaitEventsJourney {
     );
     final prepareRunning = await _awaitNewTurn(prepare, 'cancel_prepare');
     final prepareTurn = turnId(prepareRunning)!;
-    final prepareSleep = await waitFor(
-      (snapshot) {
-        final sleep = _toolByCallPrefix(snapshot, 'cancel-sleep-t');
-        return turnId(snapshot) == prepareTurn &&
-            sleep != null &&
-            _liveToolStatuses.contains(sleep['status']);
+    final prepareSleep = await _waitForCurrentTools(
+      (current) {
+        final sleep = current.toolByPrefix('cancel-sleep-t');
+        return sleep?.waiting == true &&
+            sleep?.wait?.kind == 'timer' &&
+            sleep?.taskId != null;
       },
       'cancel_prepare_sleep_running',
+      turn: prepareTurn,
+      prefixes: const ['cancel-sleep-t'],
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
-    final sleepCallId = _toolByCallPrefix(
-      prepareSleep,
-      'cancel-sleep-t',
-    )?['callId'];
-    if (sleepCallId is! String || sleepCallId.isEmpty) {
-      throw StateError('cancel prepare did not expose a cancel-sleep callId');
-    }
+    final liveSleep = _requireCurrentPrefix(prepareSleep, 'cancel-sleep-t');
+    final sleepCallId = liveSleep.callId;
     final prepareDone = await _awaitTurnCompleted(
       prepareTurn,
       'cancel_prepare',
@@ -864,9 +1297,13 @@ class WaitEventsJourney {
     await capture('cancel-prepare');
     checks['cancelPrepareTurnCompleted'] =
         turnStatus(prepareDone) == 'completed';
-    checks['cancelPrepareSleepStillRunning'] = _liveToolStatuses.contains(
-      _toolByCallId(prepareDone, sleepCallId)?['status'],
+    final backgroundSleep = await _readCurrentBackgroundCall(
+      sleepCallId,
+      _currentTask(liveSleep),
     );
+    checks['cancelPrepareSleepStillRunning'] =
+        backgroundSleep.state == 'running' &&
+        backgroundSleep.wait?.state == 'waiting';
 
     final observe = await _submit(
       '$_markCancel wait only the previous Turn timer so stop cancels wait',
@@ -875,22 +1312,23 @@ class WaitEventsJourney {
     final observeRunning = await _awaitNewTurn(observe, 'cancel_observe');
     final observeTurn = turnId(observeRunning)!;
     checks['cancelObserveDistinctTurn'] = observeTurn != prepareTurn;
-    final waiting = await waitFor(
-      (snapshot) {
-        final wait = _toolByCallPrefix(snapshot, 'cancel-wait-t');
-        return turnId(snapshot) == observeTurn &&
-            wait != null &&
-            !_terminalToolStatuses.contains(wait['status']);
+    final waiting = await _waitForCurrentTools(
+      (current) {
+        final wait = current.toolByPrefix('cancel-wait-t');
+        return wait?.waiting == true &&
+            wait?.wait?.targetsRunning([liveSleep.taskId]) == true;
       },
       'cancel_waiting',
+      turn: observeTurn,
+      prefixes: const ['cancel-wait-t'],
       timeout: const Duration(seconds: 20),
-      abort: turnFailed,
     );
-    final waitLive = _requireCallPrefix(waiting, 'cancel-wait-t');
-    final waitItemId = waitLive['itemId'] as String;
-    await _observeWaitUi(waiting, 'cancel-waiting', waitItemId);
+    final waitLive = _requireCurrentPrefix(waiting, 'cancel-wait-t');
+    _requireWaitingTargets(waitLive, [liveSleep]);
+    final waitEntryId = waitLive.entry.id;
+    await _observeWaitUi(waiting, 'cancel-waiting', waitEntryId);
     await capture('cancel-waiting');
-    checks['cancelWaitLive'] = true;
+    checks['cancelWaitLive'] = waitLive.waiting;
     await driver.waitFor(
       find.byValueKey('composer-stop'),
       timeout: const Duration(seconds: 15),
@@ -916,20 +1354,20 @@ class WaitEventsJourney {
     final queryTurn = turnId(queryRunning)!;
     checks['cancelQueryDistinctTurn'] =
         queryTurn != prepareTurn && queryTurn != observeTurn;
-    final queried = await waitFor(
-      (snapshot) {
-        final queryTool = _toolByCallPrefix(snapshot, 'cancel-query-t');
-        return turnId(snapshot) == queryTurn &&
-            queryTool != null &&
-            queryTool['status'] == 'succeeded';
-      },
+    final queried = await _waitForCompletedTool(
+      queryTurn,
       'cancel_query_succeeded',
+      prefix: 'cancel-query-t',
+      contract: 'generic@1',
       timeout: const Duration(seconds: 30),
-      abort: turnFailed,
     );
-    final queryTool = _requireCallPrefix(queried, 'cancel-query-t');
+    final queryTool = _requireCallPrefix(
+      queried,
+      'cancel-query-t',
+      contract: 'generic@1',
+    );
     final queryTask = _decodeTaskQuery(queryTool['result'] as String?);
-    final expectedTaskId = 'task:$sleepCallId';
+    final expectedTaskId = _currentTask(liveSleep);
     checks['cancelTargetQuerySucceeded'] = queryTool['status'] == 'succeeded';
     checks['cancelTargetTaskId'] = queryTask['taskId'] == expectedTaskId;
     checks['cancelTargetStillRunning'] = queryTask['status'] == 'running';
@@ -942,7 +1380,11 @@ class WaitEventsJourney {
         checks['cancelTargetNotCancelRequested'] == true;
     final settled = await _awaitTurnCompleted(queryTurn, 'cancel_query');
     await capture('cancel-query');
-    final cancelTool = _requireCallPrefix(settled, 'cancel-query-cancel-t');
+    final cancelTool = _requireCallPrefix(
+      settled,
+      'cancel-query-cancel-t',
+      contract: 'generic@1',
+    );
     checks['cancelTargetCancelledAfterQuery'] =
         cancelTool['status'] == 'succeeded';
     observations['cancelQuery'] = {
@@ -1000,178 +1442,67 @@ class WaitEventsJourney {
   Future<void> _observeWaitUi(
     Map<String, dynamic> waiting,
     String label,
-    String itemId,
+    String entryId,
   ) async {
-    observations['${label}IncomingActivity'] = conversationActivity(waiting);
-    await driver.waitFor(
-      find.byValueKey('conversation-activity'),
-      timeout: const Duration(seconds: 10),
-    );
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    final activityFinder = find.byValueKey('conversation-activity');
-    final detailsFinder = find.byValueKey('conversation-activity-details');
-    final titleFinder = find.descendant(
-      of: activityFinder,
-      matching: find.byType('Text'),
-      firstMatchOnly: true,
-    );
-    String? trackingIdentity;
-    var tappedThisIdentity = false;
-    Map<String, dynamic>? last;
-    while (DateTime.now().isBefore(deadline)) {
-      final remaining = deadline.difference(DateTime.now());
-      if (remaining <= Duration.zero) break;
-      final current = await snapshot();
-      last = current;
-      if (turnFailed(current)) {
-        throw StateError(
-          '${label}_activity_live_wait aborted: ${_summarize(current)}',
-        );
-      }
-      _requireLiveWait(current, itemId, label);
-      final view = conversationActivity(current);
-      if (view == null || view['expandable'] != true) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      checks['${label}ActivityExpandable'] = true;
-      final String title;
-      try {
-        await driver.waitFor(titleFinder, timeout: remaining);
-        title = await driver.getText(titleFinder);
-      } catch (_) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      if (!_waitActivityTitles.contains(title)) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      final afterTitle = await snapshot();
-      last = afterTitle;
-      if (turnFailed(afterTitle)) {
-        throw StateError(
-          '${label}_activity_live_wait aborted: ${_summarize(afterTitle)}',
-        );
-      }
-      _requireLiveWait(afterTitle, itemId, label);
-      final fresh = conversationActivity(afterTitle);
-      final identity = fresh?['identity'];
-      if (fresh == null ||
-          fresh['expandable'] != true ||
-          identity is! String ||
-          identity.isEmpty) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      if (trackingIdentity != identity) {
-        trackingIdentity = identity;
-        tappedThisIdentity = false;
-      }
-      if (fresh['expanded'] != true) {
-        if (!tappedThisIdentity) {
-          await _tap('conversation-activity');
-          tappedThisIdentity = true;
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      try {
-        await driver.waitFor(detailsFinder, timeout: remaining);
-      } catch (_) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      final beforeCapture = await snapshot();
-      last = beforeCapture;
-      _requireLiveWait(beforeCapture, itemId, label);
-      final beforeView = conversationActivity(beforeCapture);
-      if (beforeView?['identity'] != identity ||
-          beforeView?['expanded'] != true) {
-        trackingIdentity = beforeView?['identity'] as String?;
-        tappedThisIdentity = beforeView?['expanded'] == true;
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      observations['${label}Activity'] = beforeView;
-      observations['${label}ActivityTitle'] = title;
-      await capture('$label-activity-expanded');
-      final afterCapture = await snapshot();
-      last = afterCapture;
-      final capturedActivity = conversationActivity(afterCapture);
-      final waitStill = _toolByItemId(afterCapture, itemId);
-      final capturedLive =
-          waitStill != null &&
-          !_terminalToolStatuses.contains(waitStill['status']);
-      final capturedOk =
-          capturedActivity?['identity'] == identity &&
-          capturedActivity?['expanded'] == true &&
-          capturedLive;
-      checks['${label}ActivityExpanded'] = capturedOk;
-      if (!capturedOk) {
-        if (!capturedLive) {
-          throw StateError(
-            'wait $itemId was no longer waiting after $label capture: $waitStill',
-          );
-        }
-        trackingIdentity = capturedActivity?['identity'] as String?;
-        tappedThisIdentity = capturedActivity?['expanded'] == true;
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        continue;
-      }
-      if (capturedActivity?['identity'] == identity &&
-          capturedActivity?['expanded'] == true) {
-        await _tap('conversation-activity');
-      }
-      checks['${label}WaitItemId'] = true;
-      await _tryTapWaitCard(itemId, label);
-      return;
+    final original = CurrentToolsObservation.optional(waiting);
+    if (original == null) {
+      throw StaleCurrentTools('Waiting current display is absent');
     }
-    if (checks['${label}ActivityExpandable'] != true) {
-      checks['${label}ActivityExpandable'] = false;
-    }
-    throw StateError(
-      '$label timed out waiting for live wait activity: '
-      '${_summarize(last ?? const <String, dynamic>{})}',
+    original.requirePage();
+    final entry = original.collection!.entries.singleWhere(
+      (value) => value.id == entryId,
     );
+    final tool = original.decode(entry);
+    if (tool == null || !tool.waiting || tool.wait?.kind != 'events') {
+      throw StateError('$label has no original typed event Waiting');
+    }
+    final shown = await _currentTools.inspect(original, entry);
+    if (!shown.waiting) {
+      throw StateError('$label public JSON is no longer Waiting');
+    }
+    observations['${label}Current'] = {
+      ...original.evidence(),
+      ...shown.evidence(),
+    };
+    await capture('$label-current-json');
+    final current = CurrentToolsObservation.optional(await snapshot());
+    if (current == null) {
+      throw StaleCurrentTools('Waiting display retired during capture');
+    }
+    current.requireSame(original);
+    final captured = current.toolByCallId(tool.callId);
+    if (captured == null || captured.entry.id != entryId || !captured.waiting) {
+      throw StateError('$label has no typed Waiting at capture completion');
+    }
+    final proof = <String, Object?>{
+      ...current.evidence(),
+      ...captured.evidence(),
+      'publicJsonExpanded': true,
+    };
+    _liveWaitEvidence[entryId] = proof;
+    observations['${label}WaitingEvidence'] = proof;
+    checks['${label}TypedWaiting'] = captured.waiting;
+    checks['${label}CurrentToolsExpanded'] =
+        current.expanded && current.collection!.expanded;
+    checks['${label}PublicJsonExpanded'] = true;
   }
 
-  void _requireLiveWait(
-    Map<String, dynamic> snapshot,
-    String itemId,
-    String label,
-  ) {
-    final waitStill = _toolByItemId(snapshot, itemId);
-    if (waitStill == null ||
-        _terminalToolStatuses.contains(waitStill['status'])) {
-      throw StateError(
-        'wait $itemId was no longer waiting during $label: $waitStill',
-      );
-    }
-  }
-
-  /// Observe the completed widgets before any history collapse/reopen can
-  /// recreate them. ToolProbe observes real frames and the SDK controllers.
-  Future<void> _requirePreservedWaitExpansion(
-    String itemId,
+  /// Current and completed widgets are different resources. Keep the original
+  /// live expansion evidence, rather than requiring a deleted cross-layer tile.
+  Future<void> _recordWaitDisplayTransition(
+    String entryId,
     String label,
   ) async {
-    final panel = await _tileExpanded(
-      find.byValueKey('wait-expand:$itemId'),
-      '${label}_preserved_wait',
-    );
-    final diagnostics = await _tileExpanded(
-      find.byValueKey('wait-diagnostics:$itemId'),
-      '${label}_preserved_diagnostics',
-    );
-    checks['${label}WaitExpansionPreserved'] = panel;
-    checks['${label}DiagnosticsExpansionPreserved'] = diagnostics;
-    if (!panel || !diagnostics) {
-      throw StateError(
-        '$label completion reset expanded wait widgets: '
-        'panel=$panel, diagnostics=$diagnostics',
-      );
+    final proof = _liveWaitEvidence[entryId];
+    if (proof == null || proof['publicJsonExpanded'] != true) {
+      throw StateError('$label has no real current entry expansion evidence');
     }
+    observations['${label}ExpansionTransition'] = {
+      'currentEntryToCompletedPanelExpansion': 'notApplicable',
+      'reason': 'A current collection entry retires independently of the completed Children Message.',
+      'liveProof': proof,
+      'completedCoverage': 'The separate completed-item checks below require its actual item identity.',
+    };
   }
 
   Future<void> _expandHistoryWait(String? itemId, String label) async {
@@ -1184,205 +1515,119 @@ class WaitEventsJourney {
     await capture(label);
   }
 
-  /// Wait cards keep the original tool item identity. Ordinary tools may hide
-  /// inside a presentation group; expand that group before locating wait-card.
+  /// Completed wait calls are independent Children Messages. Open only their
+  /// actual parent Turn; no same-Turn GUI grouping or neighbor joining exists.
   Future<void> _revealWaitItem(String itemId, String label) async {
-    final timeline = TimelineObservation.parse(await snapshot());
-    timeline.requireConsistentIds();
-    final group = timeline.presentationFor(itemId);
-    observations['${label}Presentation'] = <String, Object?>{
-      'id': group.id,
-      'kind': group.kind,
-      'expanded': group.expanded,
-      'memberIds': group.memberIds,
-    };
-    _requireWaitJoinedWithAdjacentTools(timeline, itemId, label, group);
-    if (group.kind == 'activity') {
-      if (group.expanded) {
-        await _collapseActivityGroup(group.id, itemId, label);
-      }
-      await _captureCollapsedActivityIfNeeded(label);
-      final summary = 'timeline-activity-summary-${group.id}';
-      final summaryFinder = find.byValueKey(summary);
-      await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-      await _scrollHeaderIntoView(summaryFinder);
-      await driver.rawTap(summaryFinder);
-      await waitFor(
-        (snapshot) {
-          final current = TimelineObservation.optional(snapshot);
-          if (current == null) return false;
-          return current.presentationFor(itemId).expanded;
-        },
-        '${label}_presentation_expanded',
-        timeout: const Duration(seconds: 10),
-      );
-      await _captureExpandedActivityIfNeeded(label);
+    final scopes = TimelineScopeDriver.session(driver);
+    final parent = _completedItemParents[itemId];
+    if (parent == null) {
+      throw StateError('$label has no captured original item/parent identity');
     }
-    checks['${label}PresentationLocated'] = true;
-  }
-
-  void _requireWaitJoinedWithAdjacentTools(
-    TimelineObservation timeline,
-    String itemId,
-    String label,
-    TimelinePresentationObservation group,
-  ) {
-    if (group.kind != 'activity') {
-      throw StateError(
-        '$label wait $itemId is presented as ${group.kind} instead of an activity group: ${group.memberIds}',
-      );
-    }
-    if (!group.memberIds.contains(itemId)) {
-      throw StateError(
-        '$label activity ${group.id} lost wait identity $itemId: ${group.memberIds}',
-      );
-    }
-    final wait = timeline.item(itemId);
-    if (wait == null) {
-      throw StateError('$label wait $itemId is missing from canonical items');
-    }
-    final expected = _expectedVisibleActivityRun(timeline, wait);
-    if (!expected.contains(itemId)) {
-      throw StateError(
-        '$label visible activity run for $itemId is empty or lost the wait: $expected',
-      );
-    }
-    final missing = [
-      for (final id in expected)
-        if (!group.memberIds.contains(id)) id,
-    ];
-    if (missing.isNotEmpty) {
-      throw StateError(
-        '$label activity ${group.id} is missing visible same-turn neighbors $missing; expected $expected actual ${group.memberIds}',
-      );
-    }
-    final extras = [
-      for (final id in group.memberIds)
-        if (!expected.contains(id)) id,
-    ];
-    if (extras.isNotEmpty) {
-      throw StateError(
-        '$label activity ${group.id} joined unexpected members $extras; expected $expected actual ${group.memberIds}',
-      );
-    }
-    checks['${label}WaitJoinedAdjacentTools'] = true;
-    observations['${label}VisibleActivityRun'] = expected;
-    observations['${label}AdjacentJoinableNeighbors'] = [
-      for (final id in expected)
-        if (id != itemId) id,
-    ];
-  }
-
-  /// Canonical `itemIds` include hidden inference/file/healthy-turn rows.
-  /// Visible same-turn activity neighbors skip those bookkeeping items and
-  /// stop at body, userInput/plan, image groups, failed turns, or another turn.
-  List<String> _expectedVisibleActivityRun(
-    TimelineObservation timeline,
-    TimelineItemObservation wait,
-  ) {
-    final waitIndex = timeline.itemIds.indexOf(wait.id);
-    if (waitIndex < 0) {
-      throw StateError('wait ${wait.id} is missing from canonical itemIds');
-    }
-    final before = <String>[];
-    for (var index = waitIndex - 1; index >= 0; index--) {
-      final item = timeline.item(timeline.itemIds[index]);
-      if (item == null) {
-        throw StateError(
-          'canonical item ${timeline.itemIds[index]} is missing from items',
-        );
-      }
-      if (!_timelineItemIsVisible(item)) continue;
-      if (!_isSameTurnActivityNeighbor(item)) break;
-      before.add(item.id);
-    }
-    final after = <String>[];
-    for (var index = waitIndex + 1; index < timeline.itemIds.length; index++) {
-      final item = timeline.item(timeline.itemIds[index]);
-      if (item == null) {
-        throw StateError(
-          'canonical item ${timeline.itemIds[index]} is missing from items',
-        );
-      }
-      if (!_timelineItemIsVisible(item)) continue;
-      if (!_isSameTurnActivityNeighbor(item)) break;
-      after.add(item.id);
-    }
-    return [...before.reversed, wait.id, ...after];
-  }
-
-  bool _timelineItemIsVisible(TimelineItemObservation item) {
-    return switch (item.kind) {
-      'inference' || 'file' => false,
-      'turn' =>
-        const {
-              'completed',
-              'failed',
-              'cancelled',
-              'budgetLimited',
-            }.contains(item.status) &&
-            item.text.trim().isNotEmpty,
-      _ => true,
-    };
-  }
-
-  bool _isSameTurnActivityNeighbor(TimelineItemObservation item) {
-    if (item.kind == 'userMessage' ||
-        item.kind == 'parentAgentMessage' ||
-        item.kind == 'agentMessage' ||
-        item.kind == 'raw' ||
-        item.kind == 'turn') {
-      return false;
-    }
-    if (item.userInput != null) return false;
-    if (_isImageActivity(item)) return false;
-    if (item.kind == 'reasoning') return true;
-    if (item.kind == 'toolCall' && item.tool != null) return true;
-    return false;
-  }
-
-  bool _isImageActivity(TimelineItemObservation item) {
-    if (item.kind != 'toolCall') return false;
-    if (item.tool?.name == 'view_image') return true;
-    return item.tool?.attachments.any(
-          (attachment) => attachment.modality == 'image',
-        ) ??
-        false;
-  }
-
-  Future<void> _captureCollapsedActivityIfNeeded(String label) async {
-    if (checks['activityGroupCollapsedCaptured'] == true) return;
-    await capture('activity-group-collapsed');
-    checks['activityGroupCollapsedCaptured'] = true;
-    observations['activityGroupCollapsedFrom'] = label;
-  }
-
-  Future<void> _captureExpandedActivityIfNeeded(String label) async {
-    if (checks['activityGroupExpandedCaptured'] == true) return;
-    await capture('activity-group-expanded');
-    checks['activityGroupExpandedCaptured'] = true;
-    observations['activityGroupExpandedFrom'] = label;
-  }
-
-  Future<void> _collapseActivityGroup(
-    String groupId,
-    String itemId,
-    String label,
-  ) async {
-    final summary = 'timeline-activity-summary-$groupId';
-    final summaryFinder = find.byValueKey(summary);
-    await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
-    await _scrollHeaderIntoView(summaryFinder);
-    await driver.rawTap(summaryFinder);
-    await waitFor(
-      (snapshot) {
-        final current = TimelineObservation.optional(snapshot);
-        if (current == null) return false;
-        return !current.presentationFor(itemId).expanded;
-      },
-      '${label}_presentation_collapsed_for_screenshot',
-      timeout: const Duration(seconds: 10),
+    final scope = _childrenByTurn.values.singleWhere(
+      (scope) => scope.parentId == parent,
     );
+    final history = scopes.history(
+      loadMainOlder: () async {
+        scope.requireMain(
+          TimelineObservation.parse(await scopes.read()),
+          originalGeneration: false,
+        );
+        await driver.requestData('load-older');
+      },
+      scrollOlder: (target) async {
+        await driver.sendCommand(
+          PointerScroll(target, -1000000, timeout: const Duration(seconds: 30)),
+        );
+      },
+    );
+    var pages = 0;
+    var timeline = TimelineObservation.parse(await scopes.read());
+    scope.requireMain(timeline, originalGeneration: false);
+    final mainGeneration = timeline.generation;
+    while (!timeline.items.any((item) => item.childrenParentId == parent)) {
+      if (timeline.olderCursor == null || pages++ >= history.maxPages) {
+        throw StateError('$label original parent is absent within page budget');
+      }
+      final before = timeline;
+      await history.loadMainOlder();
+      final shown = await waitFor(
+        (candidate) {
+          final main = TimelineObservation.parse(candidate);
+          scope.requireMain(main, originalGeneration: false);
+          if (main.generation != mainGeneration) {
+            throw StaleCurrentTools('Historical Main retired during paging');
+          }
+          if (main.olderError != null) {
+            throw StateError('Main paging failed: ${main.olderError}');
+          }
+          return !main.loadingOlder && main.olderCursor != before.olderCursor;
+        },
+        '${label}_parent_page',
+        timeout: history.pageTimeout,
+      );
+      timeline = TimelineObservation.parse(shown);
+    }
+    final shown = await _openHistoricalChildren(
+      scope,
+      timeout: const Duration(seconds: 30),
+    );
+    timeline = TimelineObservation.parse(shown);
+    if (timeline.generation != mainGeneration) {
+      throw StaleCurrentTools('Historical Main retired before item paging');
+    }
+    final turn = timeline.items.singleWhere(
+      (item) => item.childrenParentId == parent,
+    );
+    var child = _qualifiedChildren(shown, scope);
+    while (!child.itemIds.contains(itemId)) {
+      if (child.olderCursor == null || pages++ >= history.maxPages) {
+        throw StateError('$label original wait is absent within page budget');
+      }
+      final before = child;
+      await history.loadChildrenOlder(turn, child);
+      final page = await waitFor(
+        (candidate) {
+          if (TimelineObservation.parse(candidate).generation !=
+              mainGeneration) {
+            throw StaleCurrentTools(
+              'Historical Main retired during item paging',
+            );
+          }
+          final current = _qualifiedChildren(candidate, scope);
+          if (current.generation != before.generation) {
+            throw StaleCurrentTools(
+              'Historical Children retired during paging',
+            );
+          }
+          return !current.loadingOlder &&
+              current.olderCursor != before.olderCursor;
+        },
+        '${label}_item_page',
+        timeout: history.pageTimeout,
+      );
+      child = _qualifiedChildren(page, scope);
+    }
+    final wait = child.items.singleWhere((item) => item.id == itemId);
+    if (wait.kind != 'tool' ||
+        wait.tool == null ||
+        wait.tool!.presentationContract != 'builtin.wait@1' ||
+        !_terminalToolStatuses.contains(wait.tool!.status) ||
+        child.appliedSets < 1) {
+      throw StateError(
+        '$label has no completed wait in its actual admitted Children scope',
+      );
+    }
+    await scopes.revealItem(itemId);
+    observations['${label}Children'] = {
+      'parentId': child.parentId,
+      'generation': child.generation,
+      'itemIds': child.itemIds,
+      'appliedSets': child.appliedSets,
+      'appliedPrepends': child.appliedPrepends,
+      'appliedAppends': child.appliedAppends,
+      'obsoleteGroupJoin': 'notApplicable',
+    };
+    checks['${label}ChildrenLocated'] = true;
   }
 
   /// Activity summary keys identify the real InkWell control. Wait-card
@@ -1402,38 +1647,21 @@ class WaitEventsJourney {
     }
   }
 
-  /// Group contents use a nested 320px scrollable. Outer timeline scrolling
-  /// cannot reveal a wait card that remains clipped inside the group.
+  /// Each real Children Chat owns its own 320px viewport. Reveal the target
+  /// inside that list as well as inside the outer Main timeline.
   Future<void> _scrollNestedUntilVisible(SerializableFinder item) async {
     final nested = find.ancestor(
       of: item,
       matching: find.byType('Scrollable'),
       firstMatchOnly: true,
     );
-    // Groups with <=5 members keep a nested 320px scrollable. Larger lazy
-    // lists are out of this fixture; missing ancestor is a layout precondition,
-    // not a retry/fallback.
-    try {
-      await driver.waitFor(nested, timeout: const Duration(seconds: 2));
-    } on DriverError catch (error) {
-      if (_isMissingFinder(error)) return;
-      throw StateError('nested group Scrollable lookup failed: $error');
-    } catch (error) {
-      throw StateError('nested group Scrollable lookup failed: $error');
-    }
+    await driver.waitFor(nested, timeout: const Duration(seconds: 2));
     await driver.scrollUntilVisible(
       nested,
       item,
       dyScroll: -80,
       timeout: const Duration(seconds: 15),
     );
-  }
-
-  bool _isMissingFinder(DriverError error) {
-    final message = error.message.toLowerCase();
-    return message.contains('timeout') ||
-        message.contains('not found') ||
-        message.contains('no matching');
   }
 
   Future<void> _tryTapWaitCard(String itemId, String label) async {
@@ -1469,7 +1697,7 @@ class WaitEventsJourney {
     try {
       await driver.waitFor(detailsFinder, timeout: const Duration(seconds: 10));
       await _scrollHeaderIntoView(detailsFinder);
-      await _requireInTimelineViewport(detailsFinder, details);
+      await _requireInTimelineViewport(detailsFinder, details, itemId);
       checks['${label}WaitDetailsPresent'] = true;
     } catch (error) {
       checks['${label}WaitDetailsPresent'] = false;
@@ -1549,52 +1777,64 @@ class WaitEventsJourney {
   Future<void> _requireInTimelineViewport(
     SerializableFinder finder,
     String label,
+    String itemId,
   ) async {
+    final parent = _completedItemParents[itemId];
+    if (parent == null) throw StateError('Missing original viewport parent');
+    final scope = _childrenByTurn.values.singleWhere(
+      (scope) => scope.parentId == parent,
+    );
+    final before = await snapshot();
+    final originalChild = _qualifiedChildren(before, scope);
+    final timeline = TimelineObservation.parse(before);
+    final turn = timeline.items.singleWhere(
+      (item) => item.childrenParentId == parent,
+    );
+    final childViewport = find.descendant(
+      of: find.byValueKey('chat-item:${turn.id}'),
+      matching: find.byType('Scrollable'),
+      firstMatchOnly: true,
+    );
     final top = await driver.getTopLeft(finder);
     final bottom = await driver.getBottomRight(finder);
     if (bottom.dy - top.dy <= 0 || bottom.dx - top.dx <= 0) {
       throw StateError('$label geometry is empty');
     }
-    final viewport = find.byValueKey('timeline-scrollable');
-    final viewportTop = await driver.getTopLeft(viewport);
-    final viewportBottom = await driver.getBottomRight(viewport);
-    final overlapTop = top.dy > viewportTop.dy ? top.dy : viewportTop.dy;
-    final overlapBottom = bottom.dy < viewportBottom.dy
-        ? bottom.dy
-        : viewportBottom.dy;
-    if (overlapBottom - overlapTop <= 0) {
-      throw StateError('$label is outside the timeline viewport');
-    }
-  }
-
-  Map<String, dynamic>? _toolByItemId(
-    Map<String, dynamic> snapshot,
-    String itemId,
-  ) {
-    for (final row in timelineRows(snapshot)) {
-      final tools = row['tools'];
-      if (tools is! List) continue;
-      for (final tool in tools) {
-        if (tool is Map && tool['itemId'] == itemId) {
-          return tool.cast<String, dynamic>();
-        }
+    var left = top.dx, right = bottom.dx, upper = top.dy, lower = bottom.dy;
+    for (final viewport in [
+      find.byValueKey('timeline-scrollable'),
+      childViewport,
+    ]) {
+      final a = await driver.getTopLeft(viewport);
+      final b = await driver.getBottomRight(viewport);
+      if (b.dx <= a.dx || b.dy <= a.dy) {
+        throw StateError('$label has an empty actual viewport');
       }
+      if (a.dx > left) left = a.dx;
+      if (b.dx < right) right = b.dx;
+      if (a.dy > upper) upper = a.dy;
+      if (b.dy < lower) lower = b.dy;
     }
-    return null;
+    if (right <= left || lower <= upper) {
+      throw StateError('$label is clipped by Main or its actual Children Chat');
+    }
+    final after = await snapshot();
+    if (TimelineObservation.parse(after).generation != timeline.generation) {
+      throw StaleCurrentTools('Main viewport retired during measurement');
+    }
+    final currentChild = _qualifiedChildren(after, scope);
+    if (currentChild.generation != originalChild.generation) {
+      throw StaleCurrentTools('Children viewport retired during measurement');
+    }
   }
 
   Map<String, dynamic>? _toolByCallId(
     Map<String, dynamic> snapshot,
-    String callId,
-  ) {
-    for (final row in timelineRows(snapshot)) {
-      final tools = row['tools'];
-      if (tools is! List) continue;
-      for (final tool in tools) {
-        if (tool is Map && tool['callId'] == callId) {
-          return tool.cast<String, dynamic>();
-        }
-      }
+    String callId, {
+    String? parentId,
+  }) {
+    for (final tool in _completedTools(snapshot, parentId: parentId)) {
+      if (tool['callId'] == callId) return tool;
     }
     return null;
   }
@@ -1603,31 +1843,63 @@ class WaitEventsJourney {
   /// a unique slug; generation stays 0 for these one-shot parent Turns.
   Map<String, dynamic>? _toolByCallPrefix(
     Map<String, dynamic> snapshot,
-    String prefix,
-  ) {
-    for (final row in timelineRows(snapshot)) {
-      final tools = row['tools'];
-      if (tools is! List) continue;
-      for (final tool in tools) {
-        if (tool is Map &&
-            tool['callId'] is String &&
-            (tool['callId'] as String).startsWith(prefix)) {
-          return tool.cast<String, dynamic>();
-        }
+    String prefix, {
+    String? parentId,
+  }) {
+    Map<String, dynamic>? match;
+    for (final tool in _completedTools(snapshot, parentId: parentId)) {
+      if (tool['callId'] is String &&
+          (tool['callId'] as String).startsWith(prefix)) {
+        if (match != null) throw StateError('Ambiguous original call $prefix');
+        match = tool;
       }
     }
-    return null;
+    return match;
+  }
+
+  /// Completed records are visible only in explicitly opened Children.
+  /// These records are never used by the live current Waiting predicates.
+  Iterable<Map<String, dynamic>> _completedTools(
+    Map<String, dynamic> snapshot, {
+    String? parentId,
+  }) sync* {
+    final timeline = TimelineObservation.parse(snapshot);
+    final scope = parentId == null
+        ? _childrenByTurn[turnId(snapshot)]
+        : _childrenByTurn.values
+              .where((scope) => scope.parentId == parentId)
+              .singleOrNull;
+    if (scope == null) {
+      throw StateError('No captured original completed-member parent');
+    }
+    scope.requireMain(timeline, originalGeneration: false);
+    final child = timeline.childrenFor(scope.parentId);
+    if (child?.error != null) {
+      throw StateError('Original Children read failed: ${child!.error}');
+    }
+    if (child == null || !child.ready || child.appliedSets < 1) return;
+    for (final item in child.items) {
+      final tool = item.frozenFields()['tool'];
+      if (tool is Map) {
+        _completedItemParents[item.id] = scope.parentId;
+        yield {...tool.cast<String, dynamic>(), 'itemId': item.id};
+      }
+    }
   }
 
   Map<String, dynamic> _requireCallPrefix(
     Map<String, dynamic> snapshot,
-    String prefix,
-  ) {
+    String prefix, {
+    String contract = 'builtin.wait@1',
+  }) {
     final tool = _toolByCallPrefix(snapshot, prefix);
     if (tool == null) {
       throw StateError(
         'missing tool callId prefix $prefix in ${_summarize(snapshot)}',
       );
+    }
+    if (tool['presentationContract'] != contract) {
+      throw StateError('$prefix has an unexpected typed tool contract');
     }
     return tool;
   }
@@ -1709,7 +1981,7 @@ class WaitEventsJourney {
       'turnId': turnId(snapshot),
       'turnStatus': turnStatus(snapshot),
       'isBusy': isBusy(snapshot),
-      'activity': conversationActivity(snapshot)?['summary'],
+      'current': CurrentToolsObservation.optional(snapshot)?.evidence(),
       'tools': tools,
       'itemCount': TimelineObservation.optional(snapshot)?.itemCount,
     };

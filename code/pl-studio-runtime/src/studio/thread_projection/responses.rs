@@ -314,15 +314,18 @@ pub(super) fn project_attempt(
     let terminates_live_channels = !matches!(attempt.outcome, AttemptOutcome::Running);
     if !response.presentation_items.is_empty() {
         items.extend(project_presentation_items(
-            thread_id,
-            attempt,
-            ordinal,
-            created_at,
-            revision,
-            updated_at,
+            PresentationStamp {
+                thread_id,
+                turn_id: &attempt.turn_id,
+                attempt_id: &attempt.attempt_id,
+                ordinal,
+                created_at,
+                revision,
+                updated_at,
+                generation: response.observation.generation,
+                lifecycle: &lifecycle,
+            },
             &response.presentation_items,
-            response.observation.generation,
-            &lifecycle,
         )?);
         // The legacy preview has only two aggregate identities. When one was already started,
         // finalize it without repeating the provider's aggregate text or reasoning.
@@ -446,18 +449,67 @@ pub(super) fn project_attempt(
     Ok(items)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_presentation_items(
-    thread_id: &str,
-    attempt: &pl_core::thread::journal::AttemptUpdate,
+struct PresentationStamp<'a> {
+    thread_id: &'a str,
+    turn_id: &'a str,
+    attempt_id: &'a str,
     ordinal: u64,
     created_at: i64,
     revision: u64,
     updated_at: i64,
-    presentation_items: &[CompletionPresentationItem],
     generation: u32,
-    lifecycle: &ThreadContentLifecycle,
+    lifecycle: &'a ThreadContentLifecycle,
+}
+
+/// The reliable member port supplies its own terminal fact; it is not an attempt outcome.
+pub(super) fn project_model_member(
+    thread_id: &str,
+    member: &pl_core::model::ModelCompletedMember,
+    revision: u64,
+    committed_at: i64,
 ) -> Result<Vec<ThreadItem>, ProjectionError> {
+    let receipt = pl_model::runtime::model_member_receipt(member)
+        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
+    let lifecycle = match receipt.state {
+        pl_model::runtime::ModelMemberState::Completed => {
+            ThreadContentLifecycle::completed(committed_at)
+        }
+        pl_model::runtime::ModelMemberState::Interrupted => ThreadContentLifecycle::cancelled(
+            committed_at,
+            "Provider marked this output member as interrupted".into(),
+        ),
+    };
+    project_presentation_items(
+        PresentationStamp {
+            thread_id,
+            turn_id: &member.turn_id,
+            attempt_id: &member.attempt_id,
+            ordinal: 0,
+            created_at: committed_at,
+            revision,
+            updated_at: committed_at,
+            generation: member.generation,
+            lifecycle: &lifecycle,
+        },
+        std::slice::from_ref(&receipt.item),
+    )
+}
+
+fn project_presentation_items(
+    stamp: PresentationStamp<'_>,
+    presentation_items: &[CompletionPresentationItem],
+) -> Result<Vec<ThreadItem>, ProjectionError> {
+    let PresentationStamp {
+        thread_id,
+        turn_id,
+        attempt_id,
+        ordinal,
+        created_at,
+        revision,
+        updated_at,
+        generation,
+        lifecycle,
+    } = stamp;
     let mut projected = Vec::new();
     let mut ids = BTreeSet::new();
     for item in presentation_items {
@@ -468,7 +520,7 @@ fn project_presentation_items(
             .chain(item.parts.is_empty().then_some(None))
         {
             let id = super::order::presentation_id(
-                &attempt.attempt_id,
+                attempt_id,
                 generation,
                 &item.provider_item_id,
                 part.map(super::order::presentation_part),
@@ -534,7 +586,7 @@ fn project_presentation_items(
             projected.push(ThreadItem::new(
                 id,
                 thread_id.into(),
-                attempt.turn_id.clone(),
+                turn_id.into(),
                 ordinal,
                 revision,
                 created_at,
@@ -622,7 +674,7 @@ fn project_recovery(
                 ThreadItemState::Thinking(_) => {
                     let (summary, reasoning) = if matches!(
                         field,
-                        pl_core::chat::ChatField::Part(
+                        crate::studio::runtime::chat_item::BodyKey::Part(
                             pl_core::chat::PresentationPart::SummaryText(_)
                         )
                     ) {

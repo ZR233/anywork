@@ -5,9 +5,6 @@ use crate::api::studio::types::{
     BridgeError, BridgeListThreadsPageRequest, BridgeThreadDirectoryPage, BridgeThreadSnapshot,
 };
 
-pub mod timeline_reader;
-pub use timeline_reader::{BridgeTimelineReader, open_timeline_reader};
-
 /// 从内存目录索引按 `(updatedAt, id)` 倒序 keyset 分页；GUI 触底加载使用。
 pub async fn list_threads_page(
     request: BridgeListThreadsPageRequest,

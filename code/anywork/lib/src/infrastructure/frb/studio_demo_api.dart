@@ -706,7 +706,7 @@ class DemoStudioTransport extends StudioTransport
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
   final Map<String, Set<_DemoConversationFeed>> _conversationFeeds = {};
-  final Set<_DemoHistoryReader> _ownedHistoryReaders = {};
+  final Set<_DemoReader> _ownedHistoryReaders = {};
   // 受管句柄不等于 GUI demand：未监听句柄和迟到 factory 也有真实关闭责任。
   final Set<ConversationFeed> _ownedConversationFeeds =
       Set<ConversationFeed>.identity();
@@ -803,6 +803,8 @@ class DemoStudioTransport extends StudioTransport
   >
   _resolvedInteractions = {};
   final Map<String, _DemoPlanRequest> _demoPlanRequests = {};
+  final Map<String, (PendingInteraction, _DemoInvocation)>
+  _demoUserInputInvocations = {};
 
   void _freezeDemoPlanRequest(
     PendingInteraction interaction, {
@@ -1590,14 +1592,13 @@ class DemoStudioTransport extends StudioTransport
         turnId: 'turn-demo',
         updatedAt: agentCreatedAt,
         content: _demoTool(
-          invocation: const ConversationToolInvocation(
+          invocation: const _DemoInvocation(
             toolCallId: 'turn-demo:tool-call',
-            name: 'cargo test -p pl-studio-bridge',
+            name: 'exec',
+            presentationContract: 'builtin.exec@2',
           ),
-          outcome: ConversationToolSucceeded(
-            completedAt: agentCreatedAt,
-            output: ConversationToolOutputDescriptor(attachments: []),
-          ),
+          arguments: '{"command":"cargo test -p pl-studio-bridge"}',
+          outcome: _demoToolSucceeded(agentCreatedAt),
           result: '1 passed; bridge envelope uses typed payload.',
         ),
       ),
@@ -3929,7 +3930,8 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     _ensureDemoRunning();
     if (!_workspaces.containsKey(threadId)) {
@@ -3944,7 +3946,8 @@ class DemoStudioTransport extends StudioTransport
       this,
       threadId,
       _historyOf(threadId),
-      resumeAfter,
+      scope,
+      demand,
     );
     _ownedConversationFeeds.add(connection);
     final factory = _conversationFeedFactory;
@@ -3991,37 +3994,21 @@ class DemoStudioTransport extends StudioTransport
     _conversationFeedFactory = factory;
   }
 
-  /// 测试夹具：把 demo 的 canonical 内存条目写成给定内容。
-  ///
-  /// 真实运行时这些条目由脚本化的 prompt 流程写入；这里只准备内存条目，内容仍然只经
-  /// [openConversationFeed] 的完成尾部或 [openHistoryReader] 交付。
+  /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
+  /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
   @visibleForTesting
-  void seedConversationItems(
+  void seedChatMessages(
     String threadId,
-    Iterable<ConversationItem> items,
-  ) {
-    for (final item in items) {
-      if (item.header.threadId != threadId) throw _conversationQueryFailure;
-      if (_historyOf(threadId).accept(item, _sameDemoFacts)) {
-        _publishContent(threadId);
-      }
-    }
-  }
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) async {
+    Iterable<ChatMessage> messages, {
+    ChatScope scope = const MainChatScope(),
+  }) {
     _ensureDemoRunning();
-    if (!_workspaces.containsKey(threadId)) {
-      throw const StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'Unknown Demo conversation',
-        retryable: false,
-        correlationId: 'demo-history-not-found',
-      );
+    _demoWorkspace(threadId);
+    var changed = false;
+    for (final message in messages) {
+      changed = _historyOf(threadId).accept(message, scope) || changed;
     }
-    final reader = _DemoHistoryReader(this, threadId, _historyOf(threadId));
-    _ownedHistoryReaders.add(reader);
-    return reader;
+    if (changed) _publishContent(threadId);
   }
 
   /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
@@ -4234,7 +4221,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      field: const ThreadThinkingSummaryFieldView(0),
+      field: 'part.summaryText.0',
       text: '## Inspecting',
     );
     await _waitDemo(promptActivityDelay);
@@ -4242,13 +4229,13 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      field: const ThreadThinkingSummaryFieldView(0),
+      field: 'part.summaryText.0',
       text: ' the request\n\nChecking the live ThreadItem projection.',
     );
     _appendChatContent(
       threadId,
       itemId: reasoningId,
-      field: const ThreadThinkingContentFieldView(0),
+      field: 'part.reasoningText.0',
       text: reasoningContent,
     );
     // 脚本化活动：reasoning 已有内容时显示“思考中”+最新非空逻辑行。
@@ -4293,7 +4280,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: commentaryId,
-      field: const ThreadTextFieldView(),
+      field: 'body',
       text: '正在逐段核对 Timeline',
     );
     await _waitDemo(promptActivityDelay);
@@ -4301,7 +4288,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: commentaryId,
-      field: const ThreadTextFieldView(),
+      field: 'body',
       text: ' 的 typed delta。',
     );
     final commentaryCompletedAt = DateTime.now();
@@ -4352,9 +4339,10 @@ class DemoStudioTransport extends StudioTransport
         turnId: turnId,
         updatedAt: startedAt,
         content: _demoTool(
-          invocation: ConversationToolInvocation(
+          invocation: _DemoInvocation(
             toolCallId: '$turnId:tool-call',
             name: 'exec',
+            presentationContract: 'builtin.exec@2',
           ),
         ),
       ),
@@ -4362,7 +4350,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: toolId,
-      field: const ThreadToolArgumentsFieldView(),
+      field: 'tool.arguments',
       text: '{"command":"cargo test -p pl-model ',
     );
     await _waitDemo(promptActivityDelay);
@@ -4370,7 +4358,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: toolId,
-      field: const ThreadToolArgumentsFieldView(),
+      field: 'tool.arguments',
       text: '--test provider_wire"}',
     );
     final streamedTool = _pendingItemsOf(threadId)
@@ -4383,16 +4371,14 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: DateTime.now(),
         content: _demoTool(
           invocation: streamedToolState,
-          arguments: streamedTool.textFor(
-            const ThreadToolArgumentsFieldView(),
-          )!,
+          arguments: streamedTool.textFor('tool.arguments')!,
         ),
       ),
     );
     _appendChatContent(
       threadId,
       itemId: toolId,
-      field: const ThreadToolResultFieldView(),
+      field: 'tool.result',
       text: 'running widget tests...\n',
     );
     await _waitDemo(promptToolDelay);
@@ -4400,7 +4386,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: toolId,
-      field: const ThreadToolResultFieldView(),
+      field: 'tool.result',
       text: '[stderr] analyzer warnings: 0\n',
     );
     final runningTool = _pendingItemsOf(threadId)
@@ -4414,11 +4400,8 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: toolCompletedAt,
         content: _demoTool(
           invocation: runningToolState,
-          outcome: ConversationToolSucceeded(
-            completedAt: toolCompletedAt,
-            output: ConversationToolOutputDescriptor(attachments: []),
-          ),
-          arguments: runningTool.textFor(const ThreadToolArgumentsFieldView())!,
+          outcome: _demoToolSucceeded(toolCompletedAt),
+          arguments: runningTool.textFor('tool.arguments')!,
           result: 'running widget tests...\n[stderr] analyzer warnings: 0\nAll widget tests passed.',
         ),
       ),
@@ -4448,7 +4431,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: finalId,
-      field: const ThreadTextFieldView(),
+      field: 'body',
       text: 'Demo response for: **$trimmedPrompt**',
     );
     await _waitDemo(promptActivityDelay);
@@ -4457,7 +4440,7 @@ class DemoStudioTransport extends StudioTransport
     _appendChatContent(
       threadId,
       itemId: finalId,
-      field: const ThreadTextFieldView(),
+      field: 'body',
       text: finalSuffix,
     );
     final finalCompletedAt = DateTime.now();
@@ -5042,7 +5025,7 @@ class DemoStudioTransport extends StudioTransport
         runtime: workspace.runtime.copyWith(
           plan: plan.copyWith(
             revision: plan.revision + 1,
-            state: planDecision.decision == ConversationPlanDecision.approved
+            state: planDecision.decision == _DemoPlanDecisionKind.approved
                 ? PlanRuntimePhase.approved
                 : PlanRuntimePhase.revisionRequested,
             updatedAt: completedAt,
@@ -5082,35 +5065,27 @@ class DemoStudioTransport extends StudioTransport
       for (final answer in resolution.answers)
         answer.questionId: answer.answers,
     };
-    final fields = <ThreadContentFieldView, String>{};
+    final fields = <String, String>{};
     for (var i = 0; i < payload.questions.length; i++) {
       final question = payload.questions[i];
       if (question.isSecret) continue;
-      void put(ThreadUserInputFieldPartView part, String text) {
-        fields[ThreadToolUserInputFieldView(questionIndex: i, part: part)] =
-            text;
-      }
-
-      put(const ThreadUserInputHeaderFieldPartView(), question.header);
-      put(const ThreadUserInputQuestionFieldPartView(), question.question);
+      final prefix = 'tool.user-input.question.$i';
+      fields['$prefix.header'] = question.header;
+      fields['$prefix.body'] = question.question;
       for (var j = 0; j < question.options.length; j++) {
-        put(
-          ThreadUserInputOptionLabelFieldPartView(j),
-          question.options[j].label,
-        );
-        put(
-          ThreadUserInputOptionDescriptionFieldPartView(j),
-          question.options[j].description,
-        );
+        fields['$prefix.option.$j.label'] = question.options[j].label;
+        fields['$prefix.option.$j.description'] =
+            question.options[j].description;
       }
       final values = answers[question.id] ?? const <String>[];
       for (var j = 0; j < values.length; j++) {
-        put(ThreadUserInputAnswerFieldPartView(j), values[j]);
+        fields['tool.user-input.answer.$i.$j'] = values[j];
       }
     }
     final now = DateTime.now();
-    _upsertChatItem(
-      interaction.threadId,
+    // Publication follows the same command's removal of the pending interaction.
+    // Do not expose completion with a pre-retirement current snapshot.
+    _completeDemoItem(
       _demoItem(
         id: 'demo-user-input:${interaction.id}',
         threadId: interaction.threadId,
@@ -5118,38 +5093,48 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: now,
         content: (
           kind: _DemoContentKind.completed,
-          descriptor: ConversationToolDescriptor(
-            invocation: ConversationToolInvocation(
-              toolCallId: 'demo-user-input:${interaction.id}',
-              name: 'request_user_input',
-            ),
-            state: ConversationToolSucceeded(
-              completedAt: now,
-              output: ConversationToolOutputDescriptor(attachments: const []),
-            ),
-            userInput: ConversationUserInputDescriptor(
-              interactionId: interaction.id,
-              questions: [
-                for (final question in payload.questions)
-                  ConversationQuestionDescriptor(
-                    id: question.id,
-                    isOther: question.isOther,
-                    isSecret: question.isSecret,
-                    optionCount: question.options.length,
-                  ),
-              ],
-              state: ConversationUserInputResolved(
-                answers: [
+          textChannel: null,
+          descriptor: {
+            'type': 'tool',
+            'data': {
+              'invocation':
+                  (identical(
+                            _demoUserInputInvocations[interaction.id]?.$1,
+                            interaction,
+                          )
+                          ? _demoUserInputInvocations[interaction.id]!.$2
+                          : _DemoInvocation(
+                              toolCallId: 'demo-user-input:${interaction.id}',
+                              name: 'request_user_input',
+                            ))
+                      .toJson(),
+              'state': _demoToolSucceeded(now),
+              'wait': null,
+              'userInput': {
+                'interactionId': interaction.id,
+                'questions': [
                   for (final question in payload.questions)
-                    ConversationAnswerDescriptor(
-                      questionId: question.id,
-                      answerCount: answers[question.id]?.length ?? 0,
-                      redacted: question.isSecret,
-                    ),
+                    {
+                      'id': question.id,
+                      'isOther': question.isOther,
+                      'isSecret': question.isSecret,
+                      'optionCount': question.options.length,
+                    },
                 ],
-              ),
-            ),
-          ),
+                'state': {
+                  'kind': 'resolved',
+                  'answers': [
+                    for (final question in payload.questions)
+                      {
+                        'questionId': question.id,
+                        'answerCount': answers[question.id]?.length ?? 0,
+                        'redacted': question.isSecret,
+                      },
+                  ],
+                },
+              },
+            },
+          },
           fields: fields,
           invocation: null,
         ),
@@ -5980,6 +5965,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   void _publishContent(String threadId) {
+    _historyOf(threadId).changed(_demoWorkspace(threadId));
     for (final feed in [...?_conversationFeeds[threadId]]) {
       feed._contentChanged();
     }
@@ -6038,6 +6024,7 @@ class DemoStudioTransport extends StudioTransport
         _demoUpdateInteraction(workspace, revision, interaction, pending),
     };
     _workspaces[threadId] = updated;
+    _historyOf(threadId).changed(updated);
     // 子会话的交互事实变化同时刷新宿主主会话的待决集合投影。
     if (update is ThreadInteractionUpdate) {
       final host = updated.thread.parentThreadId;
@@ -6053,10 +6040,10 @@ class DemoStudioTransport extends StudioTransport
           content: _demoTurn(turn.state, inputId: turn.inputId),
         ),
       );
-      _pendingItems.remove(threadId);
+      _retirePendingItems(threadId);
       _workspaces[threadId] = updated.copyWith(activity: null);
       // Capture completion and live exit together; a consumer sees the new
-      // activity only after accepting the completion attached to its Commit.
+      // activity only after accepting the completion attached to the same Chat batch.
       _publishContent(threadId);
     }
     final receivers = _conversationFeeds[threadId];
@@ -6099,6 +6086,7 @@ class DemoStudioTransport extends StudioTransport
       if (_historyOf(threadId).byId.containsKey(item.id)) {
         throw StateError('Completed Demo member cannot resume streaming');
       }
+      _historyOf(threadId).sync(item);
       pending[item.id] = item;
     } else {
       _completeDemoItem(item);
@@ -6110,6 +6098,17 @@ class DemoStudioTransport extends StudioTransport
   Iterable<_DemoItem> _pendingItemsOf(String threadId) =>
       _pendingItems[threadId]?.values ?? const <_DemoItem>[];
 
+  void _retirePendingItems(String threadId) {
+    final pending = _pendingItems.remove(threadId);
+    final history = _historyOf(threadId);
+    for (final id in pending?.keys ?? const <String>[]) {
+      if (!history.byId.containsKey(id)) {
+        history.bodies.remove(id);
+        history.positions.remove(('member', id));
+      }
+    }
+  }
+
   void _installDemoHistory(String threadId, List<_DemoItem> items) {
     for (final item in items) {
       if (item.threadId != threadId) throw _conversationQueryFailure;
@@ -6120,50 +6119,21 @@ class DemoStudioTransport extends StudioTransport
   void _completeDemoItem(_DemoItem item) {
     final descriptor = item.content.descriptor;
     if (descriptor == null) throw StateError('Demo member has not completed');
-    _historyOf(item.threadId).accept(
-      ConversationItem(
-        header: ConversationItemHeader(
-          id: item.id,
-          threadId: item.threadId,
-          turnId: item.turnId,
-          appendSeq: 0,
-          sealedAt: item.updatedAt.millisecondsSinceEpoch ~/ 1000,
-        ),
-        descriptor: descriptor,
-        source: const ConversationContentSource(),
-        fields: [
-          for (final entry in item.content.fields.entries)
-            ConversationFieldPreview(
-              field: entry.key,
-              text: entry.value,
-              totalBytes: utf8.encode(entry.value).length,
-            ),
-        ],
-      ),
-      _sameDemoFacts,
-    );
+    _historyOf(item.threadId).complete(item);
   }
 
   /// 单字段 append 的便捷入口（demo 脚本只追加正文）。
   void _appendChatContent(
     String threadId, {
     required String itemId,
-    required ThreadContentFieldView field,
+    required String field,
     required String text,
   }) {
     final item = _pendingItems[threadId]?[itemId];
     if (item == null) throw StateError('No active Demo member $itemId');
-    if (field is ThreadToolResultFieldView) {
-      final parts = item.outputParts ??= [];
-      parts.add(
-        ThreadActivityToolOutputPart(
-          partId: '$itemId:output:${parts.length}',
-          text: text,
-        ),
-      );
-    } else {
-      item.content.fields[field] = (item.content.fields[field] ?? '') + text;
-    }
+    item.content.fields[field] = (item.content.fields[field] ?? '') + text;
+    final bodies = _historyOf(threadId).bodies.putIfAbsent(itemId, () => {});
+    (bodies[field] ??= _DemoBody()).append(utf8.encode(text));
     _publishContent(threadId);
   }
 
@@ -6196,7 +6166,7 @@ class DemoStudioTransport extends StudioTransport
   void _clearActivity(String threadId) {
     // Generation cancellation ends the script, not each partially produced
     // member. Only individually completed members are eligible for history.
-    _pendingItems.remove(threadId);
+    _retirePendingItems(threadId);
     _emitThreadUpdate(threadId, const ThreadActivityUpdate(activity: null));
   }
 }
@@ -6659,7 +6629,7 @@ final theme = pureStudioTheme();
         planRevision: plan.revision,
       );
     }
-    return workspace.copyWith(
+    final prepared = workspace.copyWith(
       runtime: workspace.runtime.copyWith(plan: plan),
       todo: _themeScenario
           ? const TimelineTodoListUpdate(
@@ -6730,6 +6700,22 @@ final theme = pureStudioTheme();
               ),
             ],
     );
+    // Freeze the marker with the actual scripted request. State seeded by a
+    // caller never gains a contract merely because its name or fields match.
+    for (final request in prepared.interactions) {
+      if (request.kind == InteractionKind.userInput &&
+          _demoPlanQuestion(request) == null) {
+        _demoUserInputInvocations[request.id] = (
+          request,
+          _DemoInvocation(
+            toolCallId: 'demo-user-input:${request.id}',
+            name: 'request_user_input',
+            presentationContract: 'builtin.request_user_input@1',
+          ),
+        );
+      }
+    }
+    return prepared;
   }
 }
 

@@ -1,6 +1,4 @@
-mod activity;
-mod activity_delivery;
-pub(crate) use activity_delivery::activity_content as bridge_activity_content;
+pub(super) mod activity;
 mod interaction;
 mod usage;
 
@@ -11,12 +9,12 @@ use anyhow::Result;
 use pl_protocol::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
-    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadAttachment,
-    ThreadNotification, ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot,
-    ThreadRuntimeUsage, ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus,
-    ThreadSubscriptionUpdate, TodoItem, TodoListSnapshot, TodoStatus, TokenUsageSnapshot, Turn,
-    TurnCancellationCause, TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
-    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
+    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadNotification,
+    ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
+    ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus, ThreadSubscriptionUpdate, TodoItem,
+    TodoListSnapshot, TodoStatus, Turn, TurnCancellationCause, TurnCompletion, TurnPhase,
+    TurnRolloverOutcome, TurnState, WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot,
+    WorkflowRuntimeSnapshot,
 };
 
 use crate::api::studio::types::*;
@@ -245,7 +243,7 @@ pub(super) fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurn
     }
 }
 
-fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
+pub(super) fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
     match value {
         TurnPhase::Preparing => BridgeTurnPhase::Preparing,
         TurnPhase::Thinking => BridgeTurnPhase::Thinking,
@@ -253,22 +251,6 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
         TurnPhase::Planning => BridgeTurnPhase::Planning,
         TurnPhase::RunningTool => BridgeTurnPhase::RunningTool,
         TurnPhase::Persisting => BridgeTurnPhase::Persisting,
-    }
-}
-
-pub(super) fn attachment(value: &ThreadAttachment) -> BridgeThreadAttachment {
-    BridgeThreadAttachment {
-        id: value.id.clone(),
-        modality: match value.modality {
-            pl_protocol::AttachmentModality::Image => BridgeAttachmentModality::Image,
-            pl_protocol::AttachmentModality::Video => BridgeAttachmentModality::Video,
-            pl_protocol::AttachmentModality::File => BridgeAttachmentModality::File,
-        },
-        media_type: value.media_type.clone(),
-        filename: value.filename.clone(),
-        width: value.width,
-        height: value.height,
-        byte_size: value.byte_size,
     }
 }
 
@@ -431,7 +413,7 @@ fn plan_document(value: AgentSessionPlanDocument) -> BridgePlanDocument {
     }
 }
 
-fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
+pub(super) fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
     match value {
         AgentSessionPlanPhase::Drafting => BridgePlanPhase::Drafting,
         AgentSessionPlanPhase::AwaitingConfirmation => BridgePlanPhase::AwaitingConfirmation,
@@ -560,15 +542,6 @@ fn runtime_cost(value: RuntimeCostAmount) -> BridgeRuntimeCostAmount {
     BridgeRuntimeCostAmount {
         currency: value.currency,
         amount: value.amount,
-    }
-}
-
-pub(super) fn token_usage(value: TokenUsageSnapshot) -> BridgeTokenUsageSnapshot {
-    BridgeTokenUsageSnapshot {
-        prompt_tokens: value.prompt_tokens,
-        completion_tokens: value.completion_tokens,
-        cached_prompt_tokens: value.cached_prompt_tokens,
-        total_tokens: value.total_tokens,
     }
 }
 

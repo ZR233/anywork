@@ -88,6 +88,8 @@ pub enum ModelStreamEvent {
     },
     PresentationItem {
         item: CompletionPresentationItem,
+        /// None is a contradictory provider terminal status, rejected by the accumulator.
+        state: Option<crate::runtime::ModelMemberState>,
     },
     Replay(super::replay::ReplayUpdate),
     WebSearchStarted {

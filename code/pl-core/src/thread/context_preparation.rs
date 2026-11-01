@@ -183,6 +183,7 @@ impl Owner {
                 resources: self.resources.clone(),
                 cancellation: input.cancellation.clone(),
                 progress: None,
+                members: None,
             },
             committed_context: self.state.context.clone(),
             current_facts: self.state.runtime_facts.clone(),

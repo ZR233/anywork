@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
 use pl_protocol::{
-    InteractionRequest, InteractionStatus, ThreadNotification, ThreadSnapshot,
-    ThreadSubscriptionUpdate,
+    ChatBatch, ChatPlacement, ChatScope, InteractionRequest, InteractionStatus, ReadDemand,
+    ThreadNotification, ThreadSnapshot, ThreadSubscriptionUpdate,
 };
 use reqwest::redirect::Policy as RedirectPolicy;
 use std::sync::Arc;
@@ -22,6 +22,10 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EVENTS: u32 = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HEADER_BUDGET: Duration = Duration::from_secs(5);
+const CHAT_DEMAND: ReadDemand = ReadDemand {
+    max_items: 100,
+    max_bytes: 256 * 1024,
+};
 
 type SseItem = Result<Event, EventStreamError<anyhow::Error>>;
 
@@ -33,6 +37,7 @@ pub(crate) struct ThreadWatch {
     interactions: Vec<InteractionRequest>,
     revision: Option<u64>,
     saw_snapshot: bool,
+    saw_chat: bool,
 }
 
 impl ThreadWatch {
@@ -49,8 +54,13 @@ impl ThreadWatch {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .context("failed to build thread SSE client")?;
+        let mut url = reqwest::Url::parse(&format!("{origin}/api/v1/threads/{thread_id}/events"))
+            .context("invalid thread SSE URL")?;
+        url.query_pairs_mut()
+            .append_pair("maxItems", &CHAT_DEMAND.max_items.to_string())
+            .append_pair("maxBytes", &CHAT_DEMAND.max_bytes.to_string());
         let request = client
-            .get(format!("{origin}/api/v1/threads/{thread_id}/events"))
+            .get(url)
             .header(reqwest::header::ACCEPT, "text/event-stream");
         let response = match tokio::time::timeout(HEADER_BUDGET, request.send()).await {
             Ok(Ok(response)) => response,
@@ -90,6 +100,7 @@ impl ThreadWatch {
             interactions: Vec::new(),
             revision: None,
             saw_snapshot: false,
+            saw_chat: false,
         })
     }
 
@@ -190,10 +201,21 @@ impl ThreadWatch {
                     );
                     self.saw_snapshot = true;
                     self.revision = Some(snapshot.revision);
+                    ensure!(
+                        snapshot
+                            .interactions
+                            .iter()
+                            .all(|interaction| { interaction.scope.thread_id == self.thread_id }),
+                        "thread SSE snapshot interaction belonged to another Thread"
+                    );
                     self.interactions = snapshot.interactions.clone();
                     return Ok(WatchFrame::Snapshot(snapshot));
                 }
                 "notification" | "lagged" => {
+                    ensure!(
+                        self.saw_snapshot,
+                        "thread SSE delivered a notification before the snapshot"
+                    );
                     let lagged = event.event.as_str() == "lagged";
                     let update: ThreadSubscriptionUpdate = decode(&event.data, "notification")?;
                     let ThreadSubscriptionUpdate::Notification { notification } = update else {
@@ -234,6 +256,31 @@ impl ThreadWatch {
                         }
                         _ => continue,
                     }
+                }
+                "chat" => {
+                    ensure!(
+                        self.saw_snapshot,
+                        "thread SSE delivered Chat before snapshot"
+                    );
+                    let batch: ChatBatch = decode(&event.data, "chat")?;
+                    batch.validate_for(&ChatScope::Main)?;
+                    ensure!(
+                        batch.messages.len() <= CHAT_DEMAND.max_items as usize
+                            && batch.encoded_len()? <= CHAT_DEMAND.max_bytes as usize,
+                        "thread SSE Chat exceeded its explicit demand"
+                    );
+                    ensure!(
+                        batch.placement
+                            == if self.saw_chat {
+                                ChatPlacement::Append
+                            } else {
+                                ChatPlacement::Set
+                            },
+                        "thread SSE requires first Chat Set and subsequent Chat Append"
+                    );
+                    self.saw_chat = true;
+                    // Chat is validated but never substitutes for adopted State.
+                    continue;
                 }
                 "stale" => bail!(
                     "thread {} SSE delivered stale although no Last-Event-ID was sent",

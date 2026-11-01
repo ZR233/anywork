@@ -4,9 +4,11 @@ import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../../conversation_ports.dart';
+import '../../../models.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
 import 'conversation_session_impl.dart';
+import 'conversation_content_impl.dart';
 import 'input_turn_facts.dart';
 
 final class ConversationRepositoryImpl
@@ -32,6 +34,7 @@ final class ConversationRepositoryImpl
   // 各自的共享 future 由 `_retiring` 持有到真实终态。
   final Set<ConversationSessionImpl> _retiringOwners = {};
   final Map<String, CloseReport> _reports = {};
+  final Set<ConversationContentImpl> _children = {};
   final LatestValue<String?> _visibleThreadId = LatestValue(null);
   String? _visibleThread;
   String? _requestedVisibleThread;
@@ -46,6 +49,34 @@ final class ConversationRepositoryImpl
       }
     },
   );
+
+  @override
+  Future<ConversationContent> openChildren({
+    required String threadId,
+    required String parentId,
+    required ReadDemand demand,
+  }) async {
+    if (_closed) throw StateError('Conversation repository is closed');
+    _children.removeWhere(
+      (owner) => owner.isClosed && owner.ownedAttemptCount == 0,
+    );
+    final owner = ConversationContentImpl(
+      threadId: threadId,
+      scope: ChildrenChatScope(parentId: parentId),
+      initialDemand: demand,
+      transport: transport,
+      budget: budget,
+      // Children have independent qualification and never publish Main state.
+      onState: (_, _) {},
+      onAttempt: (_) {},
+      onFailure: (_, _, _) {},
+    );
+    _children.add(owner);
+    owner.setDemand(true);
+    // Opening is passive until its actual component consumer supplies demand;
+    // ready still means that consumer has accepted the first Set.
+    return owner;
+  }
 
   @override
   Observation watchInputFacts({
@@ -246,9 +277,15 @@ final class ConversationRepositoryImpl
         entry.key: entry.value.close(deadline: deadline),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
+    final children = await Future.wait([
+      for (final owner in _children) owner.close(deadline: deadline),
+    ]);
     _releaseResolved();
     return CloseReport(
-      unresolved: [for (final r in _reports.values) ...r.unresolved],
+      unresolved: [
+        for (final r in _reports.values) ...r.unresolved,
+        for (final r in children) ...r.unresolved,
+      ],
     );
   }
 
@@ -259,9 +296,15 @@ final class ConversationRepositoryImpl
         entry.key: entry.value.retryCleanup(deadline: deadline),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
+    final children = await Future.wait([
+      for (final owner in _children) owner.retryCleanup(deadline: deadline),
+    ]);
     _releaseResolved();
     return CloseReport(
-      unresolved: [for (final r in _reports.values) ...r.unresolved],
+      unresolved: [
+        for (final r in _reports.values) ...r.unresolved,
+        for (final r in children) ...r.unresolved,
+      ],
     );
   }
 

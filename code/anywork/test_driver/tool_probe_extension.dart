@@ -127,6 +127,12 @@ class ToolProbeExtension extends CommandExtension {
           'visibleHeight': _visibleInViewports(box).height
               .clamp(0.0, double.infinity),
           'texts': [
+            for (final element in find
+                .descendant(of: target, matching: find.byType(SelectableText))
+                .evaluate())
+              (element.widget as SelectableText).data ??
+                  (element.widget as SelectableText).textSpan?.toPlainText() ??
+                  '',
             for (final e
                 in find
                     .descendant(of: target, matching: find.byType(Text))

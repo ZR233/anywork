@@ -54,15 +54,15 @@ void main() {
     }, context: 'test'),
   );
   final beforeAppend = _timeline(<Map<String, Object?>>[
-    _item('a', 1, text: 'old-a'),
-    _item('b', 2, text: 'old-b'),
+    _item('a', text: 'old-a'),
+    _item('b', text: 'old-b'),
   ]);
   requireTimelineHistory20kAppendOnlyWindow(
     before: beforeAppend,
     after: _timeline(<Map<String, Object?>>[
-      _item('a', 1, text: 'old-a'),
-      _item('b', 2, text: 'old-b'),
-      _item('c', 3, text: 'new-c'),
+      _item('a', text: 'old-a'),
+      _item('b', text: 'old-b'),
+      _item('c', text: 'new-c'),
     ]),
   );
   _expectStateError(
@@ -70,8 +70,8 @@ void main() {
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('a', 1, text: 'old-a'),
-        _item('b', 2, text: 'rewritten-b'),
+        _item('a', text: 'old-a'),
+        _item('b', text: 'rewritten-b'),
       ]),
     ),
   );
@@ -80,9 +80,9 @@ void main() {
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('a', 1, text: 'old-a'),
-        _item('c', 3, text: 'new-c'),
-        _item('d', 4, text: 'new-d'),
+        _item('a', text: 'old-a'),
+        _item('c', text: 'new-c'),
+        _item('d', text: 'new-d'),
       ]),
     ),
   );
@@ -91,20 +91,20 @@ void main() {
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('b', 1, text: 'old-b'),
-        _item('a', 2, text: 'old-a'),
-        _item('c', 3, text: 'new-c'),
+        _item('b', text: 'old-b'),
+        _item('a', text: 'old-a'),
+        _item('c', text: 'new-c'),
       ]),
     ),
   );
   _expectStateError(
-    'appended sequence does not advance',
+    'new item prepended instead of appended',
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('a', 1, text: 'old-a'),
-        _item('b', 2, text: 'old-b'),
-        _item('c', 2, text: 'new-c'),
+        _item('c', text: 'new-c'),
+        _item('a', text: 'old-a'),
+        _item('b', text: 'old-b'),
       ]),
     ),
   );
@@ -113,9 +113,9 @@ void main() {
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('a', 1, text: 'old-a'),
-        _item('b', 2, text: 'old-b'),
-        _item('a', 3, text: 'new-a'),
+        _item('a', text: 'old-a'),
+        _item('b', text: 'old-b'),
+        _item('a', text: 'new-a'),
       ]),
     ),
   );
@@ -124,9 +124,9 @@ void main() {
     () => requireTimelineHistory20kAppendOnlyWindow(
       before: beforeAppend,
       after: _timeline(<Map<String, Object?>>[
-        _item('a', 1, text: 'old-a'),
-        _item('b', 2, text: 'old-b'),
-        _item('c', 3, text: 'new-c'),
+        _item('a', text: 'old-a'),
+        _item('b', text: 'old-b'),
+        _item('c', text: 'new-c'),
       ], generation: 8),
     ),
   );
@@ -153,16 +153,14 @@ Map<String, Object?> _timeline(
   'mode': 'history',
   'threadId': 'thread-20k',
   'generation': generation,
-  'timelineEpoch': 'epoch-20k',
   'itemCount': items.length,
   'itemIds': [for (final item in items) item['id']! as String],
   'items': items,
 };
 
-Map<String, Object?> _item(String id, int appendSeq, {required String text}) =>
+Map<String, Object?> _item(String id, {required String text}) =>
     <String, Object?>{
       'id': id,
-      'appendSeq': appendSeq,
       'kind': 'text',
       'status': 'completed',
       'text': text,

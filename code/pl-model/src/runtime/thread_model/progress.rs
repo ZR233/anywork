@@ -250,7 +250,7 @@ impl ProgressProjection {
                 }
                 None => {}
             },
-            ModelStreamEvent::PresentationItem { item } => {
+            ModelStreamEvent::PresentationItem { item, .. } => {
                 self.edit(|edit| edit.observe_item(item))?;
             }
             ModelStreamEvent::Completed { .. } => {

@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
-import 'driver_read_commands.dart';
+import 'content_window_driver.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
 import 'page_switch.dart';
@@ -190,7 +190,7 @@ Future<void> main(List<String> args) async {
       final truncated = timeline.items
           .where((item) => item.textTruncated)
           .length;
-      final detail = body?.detail('text');
+      final detail = body?.detail('body');
       final record = <String, Object?>{
         'ordinal': ordinal,
         'threadId': id,
@@ -243,7 +243,7 @@ Future<void> main(List<String> args) async {
             '${detail.previewBytes} bytes / ${body.textBytes} delivered',
           );
         }
-        final copy = await _copyDetailBody(
+        final copy = await _readExplicitBodyWindows(
           driver,
           body.id,
           _largeSessionPrefix + 'content ' * _largeRepeats,
@@ -409,87 +409,17 @@ Future<void> main(List<String> args) async {
 ///
 /// 只读 Driver 观察（`timeline-detail-text` / `clipboard-text`），不写剪贴板、不等固定
 /// sleep；关闭后必须观察到查看器消失。
-Future<Map<String, Object?>> _copyDetailBody(
+Future<Map<String, Object?>> _readExplicitBodyWindows(
   FlutterDriverSession driver,
   String itemId,
   String canonicalBody,
 ) async {
-  final expectedHash = _fnv1a64(canonicalBody).toRadixString(16);
-  final openKey = 'timeline-detail-open-$itemId-text';
-  await driver.waitFor(
-    find.byValueKey(openKey),
-    timeout: const Duration(seconds: 30),
+  final evidence = await ContentWindowDriver.session(driver).readAllExplicitly(
+    itemId,
+    'body',
+    expectedBytes: utf8.encode(canonicalBody).length,
+    expectedText: canonicalBody,
   );
-  await driver.rawTap(
-    find.byValueKey(openKey),
-    timeout: const Duration(seconds: 30),
-  );
-  final deadline = DateTime.now().add(const Duration(seconds: 90));
-  DetailViewerRead? progress;
-  var sawPartial = false;
-  var viewerOpened = false;
-  while (DateTime.now().isBefore(deadline)) {
-    progress = await DetailViewerRead.read(driver.requestData);
-    if (progress.open) viewerOpened = true;
-    final characters = progress.characters;
-    if (characters > 0 && characters < canonicalBody.length) sawPartial = true;
-    if (characters >= canonicalBody.length) break;
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
-  final loadedCharacters = progress?.characters ?? 0;
-  final loadedHash = progress?.hash;
-  await driver.waitFor(
-    find.byValueKey('timeline-detail-copy'),
-    timeout: const Duration(seconds: 15),
-  );
-  await driver.rawTap(
-    find.byValueKey('timeline-detail-copy'),
-    timeout: const Duration(seconds: 30),
-  );
-  final clipboard = await ClipboardRead.read(driver.requestData);
-  await driver.rawTap(
-    find.byValueKey('timeline-detail-close'),
-    timeout: const Duration(seconds: 30),
-  );
-  final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
-  var closed = false;
-  while (DateTime.now().isBefore(closeDeadline)) {
-    final decoded = await DetailViewerRead.read(driver.requestData);
-    if (!decoded.open) {
-      closed = true;
-      break;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-  }
-  return <String, Object?>{
-    'itemId': itemId,
-    'expectedCharacters': canonicalBody.length,
-    'expectedHash': expectedHash,
-    // 理论块数（ceil(bytes/64KiB)），不是实际读了几块。
-    'theoreticalChunks': (canonicalBody.length / (64 * 1024)).ceil(),
-    'loadedCharacters': loadedCharacters,
-    'loadedHash': loadedHash,
-    'sawPartialChunk': sawPartial,
-    'viewerOpened': viewerOpened,
-    'clipboardCharacters': clipboard.characters,
-    'clipboardHash': clipboard.hash,
-    'viewerClosed': closed,
-    'pass':
-        viewerOpened &&
-        loadedCharacters == canonicalBody.length &&
-        loadedHash == expectedHash &&
-        clipboard.characters == canonicalBody.length &&
-        clipboard.hash == expectedHash &&
-        closed,
-  };
-}
-
-/// FNV-1a over the code units. Must stay identical to the Driver-side helper.
-int _fnv1a64(String text) {
-  var hash = 0xcbf29ce484222325;
-  for (var index = 0; index < text.length; index += 1) {
-    hash ^= text.codeUnitAt(index);
-    hash = hash * 0x100000001b3;
-  }
-  return hash;
+  evidence.remove('text');
+  return evidence;
 }

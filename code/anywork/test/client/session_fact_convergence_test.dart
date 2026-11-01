@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/recording_demo_transport.dart';
 
 import 'support/test_statistics_feed.dart';
@@ -45,7 +46,11 @@ void main() {
       overrides: [appGraphProvider.overrideWithValue(graph)],
     );
     await graph.client.bootstrap();
-    await (graph..setConversationPageVisible(true)).client.directoryCommands
+    await (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(threadId);
     sessionHold = container.listen(
       threadSessionStoreProvider(threadId),

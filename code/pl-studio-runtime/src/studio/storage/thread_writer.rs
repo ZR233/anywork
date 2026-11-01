@@ -5,9 +5,9 @@
 //! transfer state it arrived with. The matching checkpoint is not scheduled on its own: the writer
 //! holds `write.checkpoint` as the candidate for exactly that effect and commits it together with
 //! the effect's history facts, the latest context increment and the history watermark in one
-//! `history.sqlite` transaction (`design/15` §15.5). There is no coalescing interval and no second
-//! in-flight checkpoint, so no revision can be observed as dirty without its effect, and the
-//! published revision always moves with the durable effect sequence.
+//! `history.sqlite` transaction (`design/15` §15.5). A bounded coalescing window selects only the
+//! prepared prefix of the original queue. A failed transaction keeps that prefix frozen for retry;
+//! no second obligation queue or independently scheduled checkpoint exists.
 //!
 //! Publication order is fixed: every blob the checkpoint names must be durable first, and only then
 //! is the transaction that writes the pruned checkpoint and advances the watermark committed. The
@@ -41,6 +41,10 @@ use crate::studio::storage::history::{
 };
 use crate::studio::thread_projection::PreparedEffect;
 
+mod batch;
+
+#[cfg(test)]
+mod batch_tests;
 #[cfg(feature = "benchmarks")]
 pub(crate) mod benchmark;
 #[cfg(feature = "benchmarks")]
@@ -808,6 +812,8 @@ impl Drop for RuntimeOrderIndex {
 #[derive(Debug)]
 struct QueuedEffect {
     sequence: u64,
+    /// Starts the private batching deadline; later arrivals never reset it.
+    admitted_at: Instant,
     write: Arc<ThreadWrite>,
     /// Encoded size of `write.effect`, measured once at admission.
     bytes: u64,
@@ -836,6 +842,10 @@ struct Progress {
     /// live projection owner took it over, so this queue is the one reliable handoff between a core
     /// commit and both durable history and the live product.
     effects: VecDeque<QueuedEffect>,
+    /// Identity and usage baseline of the original queue's frozen transaction prefix.
+    in_flight: Option<batch::FrozenBatch>,
+    /// Highest fixed barrier target; cancelling a waiter does not retract its request.
+    flush_target: u64,
     effect_bytes: u64,
     pending_accounting: Option<PendingAccounting>,
     /// Retained bytes of the prepared batches the queue still holds.
@@ -927,6 +937,8 @@ enum Step {
     /// Nothing to do yet; every admitted effect already carries its own checkpoint, so the loop
     /// just waits for the next admission or retry notification.
     Idle,
+    /// Coalesce until the oldest obligation's fixed deadline, or until notified.
+    Coalescing(Instant),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1335,6 +1347,7 @@ impl HistoryChannel {
             sequence <= self.handoff_ticket(),
             "history wait precedes reliable handoff"
         );
+        self.request_flush(sequence);
         let mut status = self.subscribe();
         loop {
             {
@@ -1353,6 +1366,16 @@ impl HistoryChannel {
                 .await
                 .context("Thread history progress channel closed")?;
         }
+    }
+
+    fn request_flush(&self, sequence: u64) {
+        let mut progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        progress.flush_target = progress.flush_target.max(sequence);
+        drop(progress);
+        self.changed.notify_one();
     }
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.is_cancelled()
@@ -1560,9 +1583,13 @@ impl HistoryChannel {
         progress.projection_pending = retention.pending;
         self.commit_residents(&progress, &index);
         let result = self.check_residents(Self::other_resident_bytes(&progress), 0);
+        let newly_blocked = result.is_err() && !index.resident_blocked;
         index.resident_blocked = result.is_err();
         drop(index);
         self.report(&progress);
+        if newly_blocked {
+            self.changed.notify_one();
+        }
         result
     }
 
@@ -1651,7 +1678,11 @@ impl HistoryChannel {
                 .check_residents(other.saturating_add(bytes - transferred), 0)
                 .is_err()
         {
+            let newly_blocked = !order_index.resident_blocked;
             order_index.resident_blocked = true;
+            if newly_blocked {
+                self.changed.notify_one();
+            }
             return false;
         }
         if transferred > 0 || progress.projection_pending.is_some() {
@@ -2141,6 +2172,9 @@ impl ThreadStorageSink {
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
         let history = store.history(&thread.id).await?;
+        // Execution owns schema/identity preparation. The first projection must already have a
+        // real database identity, without making Chat opens or individual effects create one.
+        history.prepare_write().await?;
         let durable = history.watermark().await?;
         // Seed the Runtime's execution-order index from the same durable store this writer owns:
         // `history_items`'s maximum ordinal is the ceiling no new execution identity may reuse.
@@ -2302,9 +2336,17 @@ impl ThreadStorageSink {
                         continue;
                     }
                     Ok(Step::Idle) => {
-                        // 无合并窗口：空闲只等下一次受理或重试通知，周期性醒来只为检测停顿。
+                        // No prepared work: periodic wake-up only detects a stalled producer.
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            () = inner.changed.notified() => {}
+                            () = accounting_retry_due(&inner) => {}
+                            () = inner.channel.stopping.cancelled() => {}
+                        }
+                    }
+                    Ok(Step::Coalescing(deadline)) => {
+                        tokio::select! {
+                            () = tokio::time::sleep_until(deadline) => {}
                             () = inner.changed.notified() => {}
                             () = accounting_retry_due(&inner) => {}
                             () = inner.channel.stopping.cancelled() => {}
@@ -2370,27 +2412,33 @@ async fn step(inner: &Inner) -> Result<Step> {
             return Ok(Step::Idle);
         }
     }
-    // 每个 effect 与它自己的候选 checkpoint 在同一次事务落盘：队列顺序即提交顺序，不再有单独的
-    // checkpoint 选择、合并窗口或发布步骤。
-    let next_effect = lock_progress(inner).effects.front().map(|queued| {
-        (
-            queued.sequence,
-            queued.write.clone(),
-            queued.prepared.clone(),
-            queued.bytes,
-        )
-    });
-    let Some((sequence, write, prepared, bytes)) = next_effect else {
-        return Ok(Step::Idle);
+    let selected = {
+        let mut progress = lock_progress(inner);
+        let resident_pressure = {
+            let index = inner
+                .channel
+                .order_index
+                .inner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            index.resident_blocked
+                || HistoryChannel::other_resident_bytes(&progress)
+                    .saturating_add(inner.channel.order_index.retained_bytes())
+                    .saturating_add(inner.channel.delivery_bytes.load(Ordering::Acquire))
+                    >= MAX_HISTORY_THREAD_BYTES
+        };
+        match batch::select(
+            &mut progress,
+            Instant::now(),
+            inner.channel.process_bytes.load(Ordering::Acquire),
+            resident_pressure,
+        ) {
+            batch::Selection::Idle => return Ok(Step::Idle),
+            batch::Selection::Wait(deadline) => return Ok(Step::Coalescing(deadline)),
+            batch::Selection::Ready(selected) => selected,
+        }
     };
-    // The Thread's live projection owner consumed this fact before the durable store may write it:
-    // the writer commits the content that owner published instead of projecting the effect again, so
-    // live and durable history can never disagree and durability never advances past a commit the
-    // product has not published.
-    let Some(prepared) = prepared else {
-        return Ok(Step::Idle);
-    };
-    persist_effect(inner, sequence, &write, &prepared, bytes).await?;
+    batch::persist(inner, &selected).await?;
     let mut progress = lock_progress(inner);
     let index = inner
         .channel
@@ -2399,19 +2447,26 @@ async fn step(inner: &Inner) -> Result<Step> {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let mut released_bytes = 0;
-    if let Some(committed) = progress.effects.pop_front() {
-        let bytes = committed.bytes;
-        let prepared_bytes = committed.prepared_bytes;
+    for candidate in &selected {
         ensure!(
-            committed.sequence == sequence,
+            progress
+                .effects
+                .front()
+                .is_some_and(|head| head.sequence == candidate.sequence),
             "history queue head changed before acknowledgement"
         );
+        let committed = progress.effects.pop_front().expect("checked queue head");
+        let bytes = committed.bytes;
+        let prepared_bytes = committed.prepared_bytes;
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
         progress.effect_bytes -= bytes;
-        released_bytes = bytes;
-        progress.durable = progress.durable.max(sequence);
-        progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
+        released_bytes += bytes;
+        progress.durable = committed.sequence;
     }
+    progress.in_flight = None;
+    progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
+    #[cfg(test)]
+    let sequence = progress.durable;
     inner.channel.commit_residents(&progress, &index);
     drop(index);
     clear_recovered_fault(&mut progress);
@@ -2423,8 +2478,7 @@ async fn step(inner: &Inner) -> Result<Step> {
     {
         // Publish only after the writer's own local and queued handles were both released.
         // A terminal producer may still pin them; the history test distinguishes that owner.
-        drop(write);
-        drop(prepared);
+        drop(selected);
         inner.channel.effects_released.send_replace(sequence);
     }
     Ok(Step::Progressed)
@@ -2534,6 +2588,7 @@ async fn accounting_retry_due(inner: &Inner) {
 /// The writer consumes the same prepared completions and accounting as the live owner, without
 /// projecting or extracting them again. Only this batch's persisted completion prefix is confirmed;
 /// committed usage and compact accounting are published only after the transaction succeeds.
+#[cfg(test)]
 async fn persist_effect(
     inner: &Inner,
     sequence: u64,
@@ -2541,108 +2596,7 @@ async fn persist_effect(
     projected: &PreparedEffect,
     encoded_effect_bytes: u64,
 ) -> Result<()> {
-    ensure!(
-        projected.sequence == sequence
-            && projected.accounting.sequence == sequence
-            && projected.accounting.thread_id == inner.thread.id,
-        "prepared history batch {sequence} was handed over as {}",
-        projected.sequence
-    );
-    // 累计摘要按 effect 顺序折叠一次：从 writer 的运行值 clone，折叠本 effect 的绝对增量，放进该
-    // effect 自己的 checkpoint，与它的历史事实在同一事务落盘。折叠只作用于 clone，事务失败时运行
-    // 值不变，因此热读看到的总量绝不领先于已落库的 checkpoint。
-    let (summary, accounting_changed) = {
-        let progress = lock_progress(inner);
-        let mut summary = progress.usage.clone();
-        projected.accounting.fold_into(&mut summary);
-        let changed = summary.pricing != progress.usage.pricing;
-        (summary, changed)
-    };
-    let mut checkpoint = write.checkpoint.clone();
-    checkpoint.state.usage_summary = summary.clone();
-    // 统一 blob fence：checkpoint 引用的附件 blob 必须已经 durable，才允许提交引用它们的事务。
-    let referenced = crate::studio::thread_projection::referenced_attachment_ids(&checkpoint.state);
-    {
-        let mut progress = lock_progress(inner);
-        progress.in_flight_bytes = encoded_effect_bytes;
-        progress.saving_revision = checkpoint.state_revision;
-        report(inner, &progress);
-    }
-    inner
-        .store
-        .blob_fence(&inner.thread.id, &referenced)
-        .await
-        .map_err(|error| classified(pl_protocol::studio::HistoryFault::BlobFailed, error))?;
-    let history = history_store(inner).await?;
-    // 一个事务同时写：effect 的历史事实（含重放身份索引）、effect.context 增量对应的最新上下文、
-    // pruned checkpoint 以及 history watermark。任一步失败即整体回滚，绝不会出现"历史已推进但
-    // checkpoint 未落盘"或反过来的半提交状态。
-    let completions: Vec<_> = projected
-        .completions
-        .iter()
-        .map(|item| (**item).clone())
-        .collect();
-    let committed = history
-        .commit_checkpoint_effect(
-            &checkpoint,
-            &write.effect,
-            EffectCommit {
-                items: &projected.items,
-                completions: &completions,
-                rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
-                identities: &durable_input_identities(&inner.thread.id, &write.checkpoint.state),
-                messages: &admitted_message_identities(&write.effect),
-                receipts: &{
-                    #[cfg(feature = "benchmarks")]
-                    inner
-                        .store
-                        .calls()
-                        .observation()
-                        .increment(BenchMetric::ReceiptExtraction);
-                    fact_receipts(&write.effect, projected)?
-                },
-                tasks: &write.effect.tasks,
-                deliveries: &write.effect.deliveries,
-                delivery_repairs: &write.effect.delivery_repairs,
-                attempt: write.effect.attempt.as_ref(),
-            },
-            AccountingCommit {
-                facts: &projected.accounting,
-                material_changed: accounting_changed,
-            },
-        )
-        .await;
-    {
-        let mut progress = lock_progress(inner);
-        progress.saving_revision = 0;
-    }
-    let committed_accounting = committed?;
-    inner.channel.order_index.confirm_saved(sequence);
-    super::state::clear_checkpoint_recovery(&inner.thread.id);
-    if let Some(accounting) = committed_accounting {
-        submit_accounting(inner, accounting);
-    }
-    // Only this batch's actual persisted prefix may leave pending. A later effect can already
-    // have published more records; acknowledging the Session head would falsely save those.
-    if let Some(last) = projected.completions.last() {
-        inner.chat.confirm_durable(last.append_seq)?;
-    }
-    // 调用统计始终是独立的 best-effort：它与历史/checkpoint 事务无关，失败只影响可丢诊断。
-    inner.store.calls().record_effect(&write.effect);
-    // 事务成功后才发布运行值、已落库 revision 和用量累计。
-    inner
-        .store
-        .thread_persistence()
-        .set_usage(&inner.thread.id, summary.clone());
-    {
-        let mut progress = lock_progress(inner);
-        progress.usage = summary;
-        progress.published_revision = progress.published_revision.max(checkpoint.state_revision);
-        progress.in_flight_bytes = 0;
-        progress.pressure_paused = write.checkpoint.state.persistence.pressure_paused;
-        report(inner, &progress);
-    }
-    Ok(())
+    batch::persist_one(inner, sequence, write, projected, encoded_effect_bytes).await
 }
 
 /// Minimal durable identities of the messages one effect admitted.
@@ -2748,6 +2702,7 @@ fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message:
         // A failed publication is no longer being serialized; the retained checkpoint stays queued
         // for retry, and the metric must not keep reporting it as actively saving.
         progress.saving_revision = 0;
+        progress.in_flight_bytes = 0;
         report(inner, &progress);
     }
     inner.changed.notify_one();
@@ -2978,6 +2933,7 @@ impl ColdStore for ThreadStorageSink {
                 progress.fault_recovered = false;
                 drop(index);
                 report(&self.0, &progress);
+                self.0.changed.notify_one();
                 return Err(cold_error(&message));
             }
             if let Err(error) = self.0.channel.order_index.reserve_boundaries_locked(
@@ -3005,6 +2961,7 @@ impl ColdStore for ThreadStorageSink {
                 progress.fault_recovered = false;
                 drop(index);
                 report(&self.0, &progress);
+                self.0.changed.notify_one();
                 return Err(cold_error(&message));
             }
             #[cfg(test)]
@@ -3016,6 +2973,7 @@ impl ColdStore for ThreadStorageSink {
             }
             progress.effects.push_back(QueuedEffect {
                 sequence,
+                admitted_at: Instant::now(),
                 write: Arc::new(write.clone()),
                 bytes,
                 // The projection owner takes this entry over from the same queue, in this order.
@@ -3048,7 +3006,7 @@ impl ColdStore for ThreadStorageSink {
         }
         // 固定目标只需等待它自己的 effect durable：checkpoint 与该 effect 在同一事务落盘，所以
         // durable 前进即意味着目标 checkpoint 也已提交，不再有独立的发布水位要等。
-        self.0.changed.notify_one();
+        self.0.channel.request_flush(sequence);
         let coordinator = self.0.store.thread_persistence().clone();
         let mut progress = coordinator.subscribe();
         // 第二个失败来源是可靠受理通道自己的状态：一个投影无法完成的事实永远到不了协调器的
@@ -3262,6 +3220,7 @@ pub(crate) mod storage_fault_tests {
                         .into_iter()
                         .map(|id| ModelToolCall {
                             rejection: None,
+                            presentation_contract: None,
                             call_id: id.to_owned(),
                             tool_id: id.to_owned(),
                             arguments: OpaquePayload::text(id),
@@ -3356,7 +3315,7 @@ pub(crate) mod storage_fault_tests {
         Ok(write)
     }
 
-    fn test_thread(thread_id: &str) -> pl_protocol::Thread {
+    pub(super) fn test_thread(thread_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
@@ -5109,7 +5068,7 @@ pub(crate) mod storage_fault_tests {
 
     /// The projection an observation worker would own: empty until the test hands it the admitted
     /// facts, which it folds and hands back to the reliable channel exactly like the production owner.
-    async fn live_projection(
+    pub(super) async fn live_projection(
         sink: &ThreadStorageSink,
     ) -> Result<crate::studio::thread_projection::LiveProjection> {
         let mut projection = crate::studio::thread_projection::LiveProjection::new();
@@ -5376,9 +5335,6 @@ pub(crate) mod storage_fault_tests {
                 index.inner.lock().unwrap().assigned["racing-identity"].effect,
                 Some(3)
             );
-            // The later fact has also left the live window; only its new unsaved obligation
-            // must keep the reconstructed identity resident until the writer reaches it.
-            index.retain(&Default::default(), &Default::default());
             assert!(index.pending("racing-identity"));
             assert_eq!(chat.durable_seq(), 1);
             let mut next_write = visible_input_ticket(id, 3, "racing-identity")?;
@@ -5392,8 +5348,20 @@ pub(crate) mod storage_fault_tests {
                 revision: input.revision,
                 state: input.state.clone(),
             }]);
+            let next_current = projection
+                .prepare_committed(
+                    &sink.0.thread,
+                    &next_write.effect,
+                    &next_write.checkpoint.state,
+                )
+                .await?;
+            // The later fact has also left the live window; only its new unsaved obligation
+            // must keep the reconstructed identity resident until the writer reaches it.
+            index.retain(&Default::default(), &Default::default());
             let mut next_prepared = old_prepared.clone();
             next_prepared.sequence = 3;
+            next_prepared.current = next_current.current.clone();
+            next_prepared.current_state = next_current.current_state.clone();
             next_prepared.accounting = Arc::new(
                 crate::studio::thread_projection::PreparedAccounting::prepare(&next_write.effect)?,
             );
@@ -5543,7 +5511,7 @@ pub(crate) mod storage_fault_tests {
         let original = pl_core::chat::ChatHistory::item(&history, "late-input")
             .await?
             .unwrap();
-        assert_eq!(original.turn_id, None);
+        assert_eq!(original.header.parent_id, None);
         let checkpoint = history.checkpoint().await?.unwrap();
         sink.0.channel.stop_and_join().await?;
         drop(projection);
@@ -5872,7 +5840,11 @@ pub(crate) mod storage_fault_tests {
 
     /// One ticket whose effect commits a visible prompt item, i.e. the shortest effect that projects
     /// a durable body the writer must confirm.
-    fn visible_input_ticket(thread_id: &str, sequence: u64, input_id: &str) -> Result<ThreadWrite> {
+    pub(super) fn visible_input_ticket(
+        thread_id: &str,
+        sequence: u64,
+        input_id: &str,
+    ) -> Result<ThreadWrite> {
         let mut write = ticket(thread_id, sequence);
         let input = InputRecord {
             continuation: None,
@@ -7011,7 +6983,7 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(index.inner.lock().unwrap().ceiling, 3);
         assert_eq!(prepared.completions.len(), 3);
         for (offset, completion) in prepared.completions.iter().enumerate() {
-            assert_eq!(completion.append_seq, offset as u64 + 1);
+            assert_eq!(completion.header.append_seq, offset as u64 + 1);
         }
         let published = prepared.clone();
         projection.publish_prepared(&chat, &mut prepared).await?;
@@ -8306,6 +8278,7 @@ pub(crate) mod storage_fault_tests {
                         content: vec![],
                         tool_calls: vec![ModelToolCall {
                             rejection: None,
+                            presentation_contract: None,
                             call_id: call_id.into(),
                             tool_id: tool_id.into(),
                             arguments: OpaquePayload::text("background arguments"),
@@ -8345,15 +8318,11 @@ pub(crate) mod storage_fault_tests {
                 .await?
                 .context("the matching context fact must really save its background ACK")?;
             assert_eq!(first.completions.len(), 1);
-            assert_eq!(original_ack.append_seq, 1);
+            assert_eq!(original_ack.header.append_seq, 1);
             assert_eq!(chat.durable_seq(), 1);
-            let meta = crate::studio::runtime::timeline_content::meta::TimelineMeta::for_item(
-                &original_ack,
-            )?;
-            assert!(
-                matches!(meta.descriptor, pl_protocol::TimelineDescriptor::Tool(tool)
-                if matches!(tool.state, pl_protocol::TimelineToolState::BackgroundStarted { .. }))
-            );
+            let payload: serde_json::Value = serde_json::from_slice(&original_ack.payload)?;
+            assert_eq!(payload["type"], "tool");
+            assert_eq!(payload["data"]["state"]["kind"], "backgroundStarted");
             assert_eq!(
                 index.assigned(&ack_id),
                 None,
@@ -8481,13 +8450,13 @@ pub(crate) mod storage_fault_tests {
                 prepared
                     .completions
                     .iter()
-                    .map(|item| item.item_id.clone())
+                    .map(|item| item.header.item_id.clone())
                     .collect::<std::collections::BTreeSet<_>>(),
                 new_ids
             );
             for (offset, item) in prepared.completions.iter().enumerate() {
-                assert_eq!(item.append_seq, before_head + offset as u64 + 1);
-                assert_ne!(item.item_id, ack_id);
+                assert_eq!(item.header.append_seq, before_head + offset as u64 + 1);
+                assert_ne!(item.header.item_id, ack_id);
             }
             sink.0
                 .channel
@@ -8596,18 +8565,12 @@ pub(crate) mod storage_fault_tests {
             let receipt = pl_core::chat::ChatHistory::item(&history, &receipt_id)
                 .await?
                 .context("acknowledged background call must publish its own completion")?;
-            let meta =
-                crate::studio::runtime::timeline_content::meta::TimelineMeta::for_item(&receipt)?;
-            let pl_protocol::TimelineDescriptor::Tool(tool) = meta.descriptor else {
-                anyhow::bail!("background receipt lost its tool descriptor");
-            };
-            assert!(matches!(
-                tool.state,
-                pl_protocol::TimelineToolState::BackgroundStarted { .. }
-            ));
+            let payload: serde_json::Value = serde_json::from_slice(&receipt.payload)?;
+            assert_eq!(payload["type"], "tool");
+            assert_eq!(payload["data"]["state"]["kind"], "backgroundStarted");
             assert_eq!(
-                tool.invocation.task_id.as_deref(),
-                Some(format!("task:{call_id}").as_str())
+                payload["data"]["invocation"]["taskId"],
+                format!("task:{call_id}")
             );
             assert!(
                 pl_core::chat::ChatHistory::item(
@@ -8707,7 +8670,7 @@ pub(crate) mod storage_fault_tests {
             )
             .await?
             .context("finished background call must publish its separate final result")?;
-            assert!(completion.append_seq > started_head);
+            assert!(completion.header.append_seq > started_head);
         }
         assert_eq!(requests.load(Ordering::Relaxed), 1);
         assert_eq!(executions.lock().unwrap().len(), 2);
@@ -8839,12 +8802,20 @@ pub(crate) mod storage_fault_tests {
                 .await?
                 .is_none()
         );
-        let visible = chat.page(pl_core::chat::ChatPageRequest::latest()).await?;
+        let visible = chat
+            .page(
+                pl_core::chat::ChatPageRequest::latest(
+                    pl_core::chat::ChatQuery::new("conversation", None),
+                    pl_core::chat::ReadDemand::new(10, 1024 * 1024),
+                ),
+                &super::batch_tests::Budget,
+            )
+            .await?;
         assert_eq!(
             visible
                 .items
                 .iter()
-                .map(|item| item.item_id.as_str())
+                .map(|item| item.header.item_id.as_str())
                 .collect::<Vec<_>>(),
             ["first-completion", "later-completion"],
             "a later published completion stays queryable while only the first is durable"
@@ -9523,7 +9494,7 @@ pub(crate) mod storage_fault_tests {
             "a content version is the item's own fact, never the commit sequence"
         );
         assert_eq!(prepared.completions.len(), 1);
-        assert_eq!(prepared.completions[0].item_id, "revision-input");
+        assert_eq!(prepared.completions[0].header.item_id, "revision-input");
 
         let path = store
             .session_paths("project-test", "revision-fence")?
@@ -9666,6 +9637,7 @@ pub(crate) mod storage_fault_tests {
                     }],
                     tool_calls: vec![ModelToolCall {
                         rejection: None,
+                        presentation_contract: None,
                         call_id: "capture-1".to_owned(),
                         tool_id: "capture".to_owned(),
                         arguments: OpaquePayload::text("capture"),
@@ -9945,6 +9917,35 @@ pub(crate) mod storage_fault_tests {
             "archive-repair",
         )
         .await?;
+        history.prepare_model_access().await?;
+        let fixture_db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &temp.path().join("off-window.sqlite"),
+                crate::studio::paths::SqliteFileMode::ReadOnly,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        let database_id: String = fixture_db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT database_id FROM history_meta WHERE id=1",
+            ))
+            .await?
+            .context("off-window history identity")?
+            .try_get("", "database_id")?;
+        let off_write = ticket("archive-repair", 1_000_000);
+        let mut current_owner = crate::studio::thread_projection::LiveProjection::new();
+        let current_channel = HistoryChannel::new(Arc::new(AtomicU64::new(0)));
+        current_owner.bind_execution_history(current_channel.order_index(), history.clone())?;
+        let frozen_current = current_owner
+            .prepare_committed(
+                &test_thread("archive-repair"),
+                &off_write.effect,
+                &off_write.checkpoint.state,
+            )
+            .await?;
         let off_window_id = format!("tool:{}:capture-2", "capture-2".len());
         let off_window_item = pl_protocol::ThreadItem::new(
             off_window_id.clone(),
@@ -9979,18 +9980,16 @@ pub(crate) mod storage_fault_tests {
             .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                 &off_window_item,
                 1_000_000,
+                &database_id,
             )?])
             .await?;
-        let completions: Vec<_> = original_completion
-            .iter()
-            .map(|item| (**item).clone())
-            .collect();
         history
             .commit_effect(
                 1_000_000,
                 EffectCommit {
                     items: std::slice::from_ref(&off_window_item),
-                    completions: &completions,
+                    completions: &original_completion,
+                    current: &frozen_current.current,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -10002,7 +10001,7 @@ pub(crate) mod storage_fault_tests {
                 },
             )
             .await?;
-        cold_chat.confirm_durable(original_completion.last().unwrap().append_seq)?;
+        cold_chat.confirm_durable(original_completion.last().unwrap().header.append_seq)?;
         let repair_only = ThreadEffectBatch {
             thread_id: "archive-repair".to_owned(),
             sequence: 1_000_001,

@@ -418,11 +418,16 @@ impl Owner {
             output_budget.clone(),
         );
         self.model_progress = Some((input.attempt_id.clone(), observations));
+        let (members, member_receiver) =
+            crate::model::ModelMemberSender::channel(&input.turn_id, &input.attempt_id);
+        let members = members.with_output(output_budget.clone());
+        let member_registry = members.registry();
         let mut tools = plan.declarations();
         let mut request = ModelRequest {
             tool_call_mode: plan.call_mode(),
             solo_tool_ids: plan.solo_tool_ids(),
             progress: Some(progress),
+            members: Some(members),
             thread_id: self.id.clone(),
             turn_id: input.turn_id.clone(),
             attempt_id: input.attempt_id.clone(),
@@ -568,10 +573,16 @@ impl Owner {
         // The attempt's own "running" row is part of what this call's reliable output ceiling funds.
         self.claim_output(input.attempt_id.clone());
         self.publish();
+        self.model_members = Some(super::model_members::MemberCall::new(
+            member_receiver,
+            &input,
+            member_registry,
+        ));
         let result = self
             .await_with_mailbox(prepared.execute())
             .await
             .map_err(Arc::new);
+        let member_error = self.finish_model_members();
         if input.cancellation.is_cancelled()
             && self.interrupted_turn.as_deref() == Some(&input.turn_id)
             && let Err(error) = &result
@@ -665,10 +676,31 @@ impl Owner {
         // attempt's live receiver attached to the next snapshot, even though publish_snapshot also
         // filters non-running attempts defensively.
         self.model_progress = None;
-        // This commit carries the answer the attempt reserved its reliable output budget for, so the
-        // store transfers that reservation onto the fact instead of charging the same output twice.
-        self.pending_output_claim = Some(input.attempt_id.clone());
+        // Independently admitted members still have live call-local opaque allocations until the
+        // terminal handoff below completes. Their resident reservation is not transferable funding
+        // for this terminal effect: use ordinary reliable admission for that encoded copy instead.
+        // Calls without retained members keep their original output transfer.
+        self.pending_output_claim = if self
+            .model_members
+            .as_ref()
+            .is_some_and(super::model_members::MemberCall::retains_members)
+        {
+            None
+        } else {
+            Some(input.attempt_id.clone())
+        };
         self.publish();
-        result
+        // Keep bounded member validation through the final output checks and terminal handoff.
+        // Closing ingress above is not permission to release its identity/metadata obligation early.
+        self.model_members = None;
+        match member_error {
+            Some(error) => Err(ThreadError::Model(Arc::new(crate::model::ModelError {
+                kind: crate::model::ModelFailureKind::InvalidResponse,
+                source: Some(Box::new(error)),
+                details: None,
+                usage: Box::default(),
+            }))),
+            None => result,
+        }
     }
 }

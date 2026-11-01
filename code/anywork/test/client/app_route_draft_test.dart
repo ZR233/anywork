@@ -21,7 +21,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 import 'support/recording_demo_transport.dart';
-import 'support/conversation_fixtures.dart';
+import 'support/chat_fixtures.dart';
+import 'support/mapped_conversation_feed.dart';
+
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+
 import 'support/pump_client_future.dart';
 
 import 'package:anywork/src/app/routing/app_route.dart';
@@ -120,13 +124,8 @@ void main() {
         reason: 'Settings navigation does not create a Thread',
       );
 
-      transport.seedConversationItems('thread-main', [
-        for (var i = 0; i < 40; i++)
-          conversationFixture(
-            id: 'route-item-$i',
-            threadId: 'thread-main',
-            appendSeq: 100 + i,
-          ),
+      transport.seedChatMessages('thread-main', [
+        for (var i = 0; i < 40; i++) chatMessage('route-item-$i'),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
@@ -185,7 +184,19 @@ void main() {
 
       // Turn/执行事实可能伴随内容重同步；分页属于此刻实际挂载的展示代次。
       final oldLease = graph.timeline.lease('thread-main')!;
-      final oldPage = Completer<ConversationPage>();
+      expect(
+        oldLease.hasOlder,
+        isTrue,
+        reason:
+            'route fixture must leave older content: loaded=${oldLease.loadedCount}, reads=${transport.pageCalls}, demand=${oldLease.demand.maxItems}',
+      );
+      final previousPageCalls = transport.pageCalls;
+      final oldPage = Completer<ChatBatch>();
+      addTearDown(() {
+        if (!oldPage.isCompleted) {
+          oldPage.complete(chatBatch([], placement: ChatPlacement.prepend));
+        }
+      });
       transport.scriptedPage = oldPage;
       final loading = graph.timeline.loadOlder(
         'thread-main',
@@ -193,7 +204,7 @@ void main() {
       );
       await pumpClientUntil(
         tester,
-        () => transport.pageCalls == 1,
+        () => transport.pageCalls == previousPageCalls + 1,
         'old page entered',
       );
       var hiddenFrames = 0;
@@ -269,26 +280,21 @@ void main() {
       expect(newConnection.subscriptionId, isNot(connection.subscriptionId));
       expect(newLease, isNot(same(oldLease)));
       final currentMessages = [...newLease.controller.messages];
-      final currentCursor = newLease.completedCursor;
+      final currentBefore = newLease.olderCursor;
       oldPage.complete(
-        ConversationPage(
-          threadId: 'thread-main',
-          timelineEpoch: oldLease.timelineEpoch,
-          items: [
-            conversationFixture(
-              id: 'late-old-page',
-              threadId: 'thread-main',
-              appendSeq: 1,
-            ),
-          ],
-          before: null,
-          hasOlder: false,
-        ),
+        chatBatch([
+          chatMessage('late-old-page'),
+        ], placement: ChatPlacement.prepend),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
       expect(newLease.controller.messages, currentMessages);
-      expect(newLease.completedCursor, currentCursor);
-      expect(newLease.itemOf('late-old-page'), isNull);
+      expect(newLease.olderCursor, currentBefore);
+      expect(
+        newLease.controller.messages.any(
+          (message) => message.id == 'late-old-page',
+        ),
+        isFalse,
+      );
 
       expect(graph.client.drafts.composer('thread-main'), same(composer));
       expect(composer.stamp, composerStamp);
@@ -296,12 +302,17 @@ void main() {
       expect(_composerText(tester), 'Thread draft entered before Settings');
       expect(session.state.activeTurn, isNull);
       expect(
-        newLease.items
-            .where((item) => item.descriptor is ConversationTurnDescriptor)
+        newLease.controller.messages
             .map(
-              (item) => (item.descriptor as ConversationTurnDescriptor).outcome,
+              (message) =>
+                  message.metadata![chatItemPresentationKey]
+                      as ChatItemPresentation,
             )
-            .whereType<ConversationTurnCompleted>(),
+            .where(
+              (item) =>
+                  item.type == 'turn' &&
+                  (item.data['outcome'] as Map)['kind'] == 'completed',
+            ),
         isNotEmpty,
         reason: '新内容基线包含隐藏期间真正提交的终态事实',
       );
@@ -688,16 +699,19 @@ DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 
 /// 只选择权威发布时点；状态与正文均由 Demo 自身发布点生成，不向旧 feed 注入事实。
 final class _RouteTurnTransport extends RecordingDemoTransport {
+  _RouteTurnTransport() {
+    conversationFeedFactory = (threadId, inner) async => MappedConversationFeed(
+      inner,
+      (frame) => frame,
+      reader: _RouteReader(inner.reader, this),
+    );
+  }
   int _turnUpdates = 0;
   int runtimeSubscriptions = 0;
   int runtimeCancellations = 0;
   late String botProjectId;
-  Completer<ConversationPage>? scriptedPage;
+  Completer<ChatBatch>? scriptedPage;
   int pageCalls = 0;
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) async =>
-      _RouteHistoryReader(await super.openHistoryReader(threadId), this);
 
   @override
   Future<BotConversationPage> listBotConversations(
@@ -725,11 +739,13 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final feed = await super.openConversationFeed(
       threadId,
-      resumeAfter: resumeAfter,
+      scope: scope,
+      demand: demand,
     );
     if (threadId != 'thread-main') return feed;
     final owner = feed as RecordingConversationFeed;
@@ -770,28 +786,53 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   }
 }
 
-final class _RouteHistoryReader implements ConversationHistoryReader {
-  _RouteHistoryReader(this.inner, this.transport);
-  final ConversationHistoryReader inner;
+final class _RouteReader implements ConversationReader {
+  _RouteReader(this.inner, this.transport);
+  final ConversationReader inner;
   final _RouteTurnTransport transport;
-
   @override
   String get threadId => inner.threadId;
   @override
-  String get timelineEpoch => inner.timelineEpoch;
-  @override
-  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
     transport.pageCalls++;
     final gate = transport.scriptedPage;
     transport.scriptedPage = null;
-    return gate?.future ?? inner.page(before: before, limit: limit);
+    return gate?.future ?? inner.loadOlder(before: before, demand: demand);
   }
 
   @override
-  Future<ConversationDetailChunk> readDetail({
+  Future<ContentManifestPage> listContents({
     required String itemId,
-    required ConversationDetailQuery query,
-  }) => inner.readDetail(itemId: itemId, query: query);
+    String? continuation,
+    required ReadDemand demand,
+  }) => inner.listContents(
+    itemId: itemId,
+    continuation: continuation,
+    demand: demand,
+  );
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) => inner.readContent(reference: reference, range: range);
+  @override
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) => inner.watchContent(reference: reference, range: range);
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) => inner.pageCurrent(
+    reference: reference,
+    continuation: continuation,
+    demand: demand,
+  );
   @override
   void requestClose() => inner.requestClose();
   @override

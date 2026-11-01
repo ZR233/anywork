@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -166,7 +168,11 @@ Future<_Composer> _composer(WidgetTester tester) async {
   );
   await pumpClientFuture(
     tester,
-    (graph..setConversationPageVisible(true)).client.directoryCommands
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(_threadId),
     'select composer thread',
   );

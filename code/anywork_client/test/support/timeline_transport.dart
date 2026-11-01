@@ -3,62 +3,71 @@ import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 
-ConversationItem timelineItem(
-  int appendSeq, {
+ChatMessage chatMessage({
   String id = 'item',
   String body = 'body',
-  String threadId = 'thread',
-  int? totalBytes,
-}) => ConversationItem(
-  header: ConversationItemHeader(
+  String? turnId = 'turn',
+  String channel = 'final',
+}) {
+  final inline = utf8.encode(body);
+  return ChatMessage(
     id: id,
-    threadId: threadId,
-    turnId: 'turn',
-    appendSeq: appendSeq,
-  ),
-  descriptor: ConversationTextDescriptor(
-    channel: ThreadTextChannel.finalAnswer,
-    attachments: const [],
-    outcome: ConversationContentCompleted(
-      CompletedThreadContentView(DateTime.utc(2026)),
+    payload: InlinePayload(
+      bytes: utf8.encode(
+        jsonEncode({
+          'contract': 'anywork.chat/1',
+          'type': 'text',
+          if (turnId != null) 'turnId': turnId,
+          'data': {
+            'channel': channel,
+            'attachments': <Object?>[],
+            'outcome': {
+              'kind': 'completed',
+              'data': {'completedAt': 0},
+            },
+          },
+          'bodies': [
+            {'key': 'body', 'byteLength': inline.length, 'inline': inline},
+          ],
+        }),
+      ),
     ),
-  ),
-  source: const ConversationContentSource(),
-  fields: [
-    ConversationFieldPreview(
-      field: const ThreadTextFieldView(),
-      text: body,
-      totalBytes: totalBytes ?? utf8.encode(body).length,
-    ),
-  ],
+  );
+}
+
+CurrentProjection emptyCurrent() => CurrentProjection(
+  sourceEffectSeq: 0,
+  logicalStatus: ThreadStatusView.idle,
+  executionPresent: false,
+  previews: const [],
+  collections: const [],
 );
-ConversationBaseline baseline(
-  int appendSeq, {
-  String subscriptionId = 'sub',
-  String timelineEpoch = 'epoch',
-  List<ConversationItem>? items,
-  ConversationQueryCursor? before,
-  bool hasOlder = false,
-}) => ConversationBaseline(
-  subscriptionId: subscriptionId,
-  timelineEpoch: timelineEpoch,
-  completedCursor: ConversationCompletionCursor(
-    timelineEpoch: timelineEpoch,
-    appendSeq: appendSeq,
-  ),
-  items: items ?? [timelineItem(appendSeq)],
+
+ChatBatch chatSet({
+  List<ChatMessage>? messages,
+  String? before,
+  CurrentProjection? current,
+}) => ChatBatch(
+  placement: ChatPlacement.set,
+  messages: messages ?? [chatMessage()],
   before: before,
-  hasOlder: hasOlder,
+  current: current ?? emptyCurrent(),
 );
 
 /// A scripted external source, never an alternate reducer. It allows malformed
 /// envelopes for rejection tests. Normal producers wait for acknowledgement.
 class TestConversationFeed implements ConversationFeed {
-  TestConversationFeed({this.threadId = 'thread', this.subscriptionId = 'sub'});
+  TestConversationFeed({
+    this.threadId = 'thread',
+    this.subscriptionId = 'sub',
+    TestConversationReader? reader,
+  }) : reader = reader ?? TestConversationReader(threadId: threadId);
   @override
   final String threadId;
   @override
   final String subscriptionId;
+  @override
+  final TestConversationReader reader;
   final StreamController<ConversationFrame> _events = StreamController(
     sync: true,
   );
@@ -140,6 +149,7 @@ class TestConversationFeed implements ConversationFeed {
   @override
   void requestClose() {
     requestCloseCalls++;
+    reader.requestClose();
     if (_requested) return;
     _requested = true;
     if (!requestCloseStarted.isCompleted) requestCloseStarted.complete();
@@ -151,47 +161,234 @@ class TestConversationFeed implements ConversationFeed {
     closeCalls++;
     requestClose();
     if (!closeStarted.isCompleted) closeStarted.complete();
+    Object? feedError;
+    try {
+      await closeGate?.future;
+      if (closeFailure case final failure?) throw failure;
+    } catch (error) {
+      feedError = error;
+    }
+    Object? readerError;
+    try {
+      await reader.close();
+    } catch (error) {
+      readerError = error;
+    }
+    if (feedError == null && readerError == null) {
+      if (!closeCompleted.isCompleted) closeCompleted.complete();
+    }
+    if (feedError != null) throw feedError;
+    if (readerError != null) throw readerError;
+  }
+}
+
+class TestConversationReader implements ConversationReader {
+  TestConversationReader({this.threadId = 'thread'});
+  @override
+  final String threadId;
+  Future<ChatBatch> Function(String before, ReadDemand demand)? onOlder;
+  Future<ContentManifestPage> Function(
+    String itemId,
+    String? continuation,
+    ReadDemand demand,
+  )?
+  onManifest;
+  Future<ContentWindow> Function(ContentRef reference, ContentRange range)?
+  onContent;
+  Stream<ContentWindow> Function(ContentRef reference, ContentRange range)?
+  onWatch;
+  ConversationContentWatch Function(ContentRef reference, ContentRange range)?
+  onWatchHandle;
+  Future<CurrentCollectionPage> Function(
+    CurrentCollectionRef reference,
+    String? continuation,
+    ReadDemand demand,
+  )?
+  onCurrent;
+  int closeCalls = 0;
+  int requestCloseCalls = 0;
+  bool requested = false;
+  Completer<void>? closeGate;
+  Object? closeFailure;
+
+  @override
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) =>
+      onOlder?.call(before, demand) ??
+      Future.error(UnsupportedError('Unscripted loadOlder'));
+
+  @override
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  }) =>
+      onManifest?.call(itemId, continuation, demand) ??
+      Future.error(UnsupportedError('Unscripted listContents'));
+
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) =>
+      onContent?.call(reference, range) ??
+      Future.error(UnsupportedError('Unscripted readContent'));
+
+  @override
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    final injected = onWatchHandle;
+    if (injected != null) return injected(reference, range);
+    final callback = onWatch;
+    if (callback == null) {
+      throw UnsupportedError('Unscripted watchContent');
+    }
+    return TestContentWatch(source: callback(reference, range));
+  }
+
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) =>
+      onCurrent?.call(reference, continuation, demand) ??
+      Future.error(UnsupportedError('Unscripted pageCurrent'));
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+    requested = true;
+  }
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
     await closeGate?.future;
     if (closeFailure case final failure?) throw failure;
-    if (!closeCompleted.isCompleted) closeCompleted.complete();
+  }
+}
+
+/// Scripted transport watch handle. Cancelling [windows] only stops local
+/// delivery and requests cancellation; [close] joins and may be retried.
+class TestContentWatch implements ConversationContentWatch {
+  TestContentWatch({Stream<ContentWindow>? source})
+    : _source = source ?? const Stream.empty();
+  final Stream<ContentWindow> _source;
+  StreamController<ContentWindow>? _output;
+  StreamSubscription<ContentWindow>? _subscription;
+  Future<void>? _stopping;
+  bool _requested = false;
+  int closeCalls = 0;
+  int requestCloseCalls = 0;
+  Completer<void>? closeGate;
+  Object? closeFailure;
+
+  @override
+  Stream<ContentWindow> get windows {
+    return (_output ??= StreamController<ContentWindow>(
+      onListen: _listen,
+      onPause: () => _subscription?.pause(),
+      onResume: () => _subscription?.resume(),
+      onCancel: () {
+        requestClose();
+      },
+    )).stream;
+  }
+
+  void _listen() {
+    final output = _output;
+    if (output == null || output.isClosed) return;
+    if (_requested) {
+      unawaited(output.close());
+      return;
+    }
+    _subscription ??= _source.listen(
+      output.add,
+      onError: output.addError,
+      onDone: () {
+        if (!output.isClosed) unawaited(output.close());
+      },
+    );
+  }
+
+  Future<void> _stopDelivery() {
+    return _stopping ??= Future<void>.sync(() async {
+      final subscription = _subscription;
+      _subscription = null;
+      if (subscription != null) await subscription.cancel();
+    });
+  }
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+    if (_requested) return;
+    _requested = true;
+    final work = _stopDelivery();
+    unawaited(work.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+  }
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
+    requestClose();
+    Object? joinError;
+    try {
+      await closeGate?.future;
+      if (closeFailure case final failure?) throw failure;
+    } catch (error) {
+      joinError = error;
+    }
+    Object? cancelError;
+    try {
+      await _stopDelivery();
+    } catch (error) {
+      cancelError = error;
+    }
+    if (_output?.isClosed == false) {
+      try {
+        await _output!.close();
+      } catch (error) {
+        cancelError ??= error;
+      }
+    }
+    if (joinError != null) throw joinError;
+    if (cancelError != null) throw cancelError;
   }
 }
 
 class TestConversationTransport implements StudioTransport {
-  final List<({String threadId, Completer<ConversationFeed> result})> opens =
-      [];
+  final List<
+    ({
+      String threadId,
+      ChatScope scope,
+      ReadDemand demand,
+      Completer<ConversationFeed> result,
+    })
+  >
+  opens = [];
   final Map<int, Completer<void>> _opening = {};
-  final List<ConversationCompletionCursor?> resumes = [];
-  Future<ConversationPage> Function(String, ConversationQueryCursor?, int?)?
-  onPage;
-  Future<ConversationDetailChunk> Function(
-    String,
-    String,
-    ConversationDetailQuery,
-  )?
-  onDetail;
-  final List<TestHistoryReader> readers = [];
-  Future<ConversationHistoryReader> Function(String)? onOpenReader;
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) {
-    resumes.add(resumeAfter);
     final result = Completer<ConversationFeed>();
     final index = opens.length;
-    opens.add((threadId: threadId, result: result));
+    opens.add((
+      threadId: threadId,
+      scope: scope,
+      demand: demand,
+      result: result,
+    ));
     _opening.remove(index)?.complete();
     return result.future;
-  }
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) {
-    final custom = onOpenReader;
-    if (custom != null) return custom(threadId);
-    final reader = TestHistoryReader(this, threadId);
-    readers.add(reader);
-    return Future.value(reader);
   }
 
   Future<void> opened(int index) => opens.length > index
@@ -204,48 +401,6 @@ class TestConversationTransport implements StudioTransport {
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unscripted transport capability: ${invocation.memberName}',
   );
-}
-
-final class TestHistoryReader implements ConversationHistoryReader {
-  TestHistoryReader(
-    this.transport,
-    this.threadId, {
-    this.timelineEpoch = 'epoch',
-  });
-  final TestConversationTransport transport;
-  @override
-  final String threadId;
-  @override
-  final String timelineEpoch;
-  int closeCalls = 0;
-  bool requested = false;
-  Completer<void>? closeGate;
-  Object? closeFailure;
-  @override
-  Future<ConversationPage> page({
-    ConversationQueryCursor? before,
-    int? limit,
-  }) =>
-      transport.onPage?.call(threadId, before, limit) ??
-      Future.error(UnsupportedError('Unscripted page'));
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
-  }) =>
-      transport.onDetail?.call(threadId, itemId, query) ??
-      Future.error(UnsupportedError('Unscripted detail'));
-  @override
-  void requestClose() {
-    requested = true;
-  }
-
-  @override
-  Future<void> close() async {
-    closeCalls++;
-    await closeGate?.future;
-    if (closeFailure case final failure?) throw failure;
-  }
 }
 
 class ConversationFixture {
@@ -264,27 +419,28 @@ class ConversationFixture {
   final Map<String, TestCompletionConsumer> consumers = {};
   ConversationRepository get repository => client.conversations;
   ConversationSession session([String id = 'thread']) => repository.session(id);
-  TestCompletionConsumer attach(String id) => consumers.putIfAbsent(id, () {
-    final consumer = TestCompletionConsumer();
-    session(id).content.attachConsumer(consumer);
-    return consumer;
-  });
+  TestCompletionConsumer attach(String id, {required ReadDemand demand}) =>
+      consumers.putIfAbsent(id, () {
+        final consumer = TestCompletionConsumer();
+        session(id).content.attachConsumer(consumer, demand: demand);
+        return consumer;
+      });
   Future<TestConversationFeed> open({
     String threadId = 'thread',
-    ConversationBaseline? initial,
+    ChatBatch? initial,
+    String subscriptionId = 'sub',
     int index = 0,
+    required ReadDemand demand,
   }) async {
-    attach(threadId);
+    attach(threadId, demand: demand);
     repository.setVisibleThread(threadId);
     await transport.opened(index);
     final feed = TestConversationFeed(
       threadId: threadId,
-      subscriptionId: initial?.subscriptionId ?? 'sub',
+      subscriptionId: subscriptionId,
     );
     transport.opens[index].result.complete(feed);
-    await feed.deliver(
-      ConversationBaselineEvent(baseline: initial ?? baseline(1)),
-    );
+    await feed.deliver(ConversationChatEvent(batch: initial ?? chatSet()));
     return feed;
   }
 
@@ -292,15 +448,15 @@ class ConversationFixture {
       client.close(deadline: deadline);
 }
 
-final class TestCompletionConsumer implements ConversationCompletionConsumer {
-  final List<ConversationContentFrame> frames = [];
+final class TestCompletionConsumer implements ConversationBatchConsumer {
+  final List<ChatBatch> batches = [];
   final Map<int, Completer<void>> _waiters = {};
-  Future<void> waitForCount(int count) => frames.length >= count
+  Future<void> waitForCount(int count) => batches.length >= count
       ? Future.value()
       : (_waiters[count] ??= Completer<void>()).future;
   @override
-  Future<void> accept(ConversationContentFrame frame) async {
-    frames.add(frame);
-    _waiters.remove(frames.length)?.complete();
+  Future<void> applyBatch(ChatBatch batch) async {
+    batches.add(batch);
+    _waiters.remove(batches.length)?.complete();
   }
 }

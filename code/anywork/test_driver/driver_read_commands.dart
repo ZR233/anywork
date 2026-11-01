@@ -1,6 +1,6 @@
 // 宿主侧只读详情/剪贴板读命令的唯一入口。
 //
-// `timeline-detail-text` 与 `clipboard-text` 只在 Driver 的 JSON 命令分支注册
+// `timeline-content-window` 与 `clipboard-text` 只在 Driver 的 JSON 命令分支注册
 // （`driver_main.dart` 的 `_handleJsonDriverCommand`）。发纯字符串会落到
 // `unsupported driver request` 默认分支，把真实正文静默读成 0/null，看起来像
 // “查看器不支持”。这里统一构造 JSON 命令并严格校验 typed 响应：形状不符、`ok`
@@ -15,61 +15,68 @@ typedef DriverReadRequest = Future<String> Function(
   Duration? timeout,
 });
 
-/// 详情查看器当前已加载正文（`timeline-detail-text`）的只读事实。
-///
-/// 关闭后 Driver 返回 `{ok: true, open: false}`：此时没有正文事实，不能当成 0 字符的
-/// 成功读取。
-final class DetailViewerRead {
-  const DetailViewerRead._({
-    required this.open,
-    required this.characters,
-    required this.hash,
-    required this.head,
-    required this.tail,
-  });
-
-  static Future<DetailViewerRead> read(
+/// Exactly one displayed range with its actual controller qualification.
+final class ContentWindowRead {
+  ContentWindowRead._(this.fact);
+  final Map<String, dynamic> fact;
+  bool get open => fact['open'] as bool;
+  String get text => _string(fact, 'text', 'content window');
+  int get offset => _int(fact, 'offset', 'content window');
+  int get end => _int(fact, 'end', 'content window');
+  int get availableThrough => _int(fact, 'availableThrough', 'content window');
+  int get characters => _int(fact, 'characters', 'content window');
+  String get hash => _string(fact, 'hash', 'content window');
+  Object get qualification => (
+    fact['threadId'],
+    fact['generation'],
+    fact['parentId'],
+    fact['scopeGeneration'],
+    fact['itemId'],
+    fact['field'],
+  );
+  static Future<ContentWindowRead> read(
     DriverReadRequest request, {
-    Duration timeout = const Duration(seconds: 60),
+    required String itemId,
+    required String field,
+    Duration timeout = const Duration(seconds: 30),
   }) async {
     final map = _decodeObject(
-      await request('{"cmd":"timeline-detail-text"}', timeout: timeout),
-      'timeline-detail-text',
+      await request(
+        jsonEncode({
+          'cmd': 'timeline-content-window',
+          'itemId': itemId,
+          'field': field,
+        }),
+        timeout: timeout,
+      ),
+      'timeline-content-window',
     );
-    _requireOk(map, 'timeline-detail-text');
-    final open = map['open'];
-    if (open is! bool) {
-      throw StateError(
-        'timeline-detail-text response has no boolean open: ${_raw(map)}',
-      );
+    _requireOk(map, 'timeline-content-window');
+    if (map['open'] is! bool ||
+        map['itemId'] != itemId ||
+        map['field'] != field) {
+      throw StateError('content window source or open state disagrees');
     }
-    if (!open) {
-      return const DetailViewerRead._(
-        open: false,
-        characters: 0,
-        hash: null,
-        head: null,
-        tail: null,
-      );
+    final result = ContentWindowRead._(map);
+    _string(map, 'threadId', 'content window');
+    _int(map, 'generation', 'content window');
+    _int(map, 'scopeGeneration', 'content window');
+    final parent = map['parentId'];
+    if (!map.containsKey('parentId') ||
+        (parent != null && (parent is! String || parent.isEmpty)) ||
+        (parent == null && map['scopeGeneration'] != map['generation'])) {
+      throw StateError('content window scope qualification is invalid');
     }
-    return DetailViewerRead._(
-      open: true,
-      characters: _int(map, 'characters', 'timeline-detail-text'),
-      hash: _string(map, 'hash', 'timeline-detail-text'),
-      head: _stringOrNull(map, 'head', 'timeline-detail-text'),
-      tail: _stringOrNull(map, 'tail', 'timeline-detail-text'),
-    );
+    if (result.open &&
+        (result.offset < 0 ||
+            result.end < result.offset ||
+            result.end > result.availableThrough ||
+            result.end - result.offset > 64 * 1024 ||
+            result.characters != result.text.length)) {
+      throw StateError('invalid displayed content range');
+    }
+    return result;
   }
-
-  final bool open;
-
-  /// 打开着的查看器已加载的字符数；关闭时为 0。
-  final int characters;
-
-  /// 已加载正文的 FNV-1a 十六进制摘要；关闭时为 null。
-  final String? hash;
-  final String? head;
-  final String? tail;
 }
 
 /// 平台剪贴板当前内容（`clipboard-text`）的只读事实。
@@ -142,15 +149,6 @@ int _int(Map<String, dynamic> map, String field, String label) {
 
 String _string(Map<String, dynamic> map, String field, String label) {
   final value = map[field];
-  if (value is! String) {
-    throw StateError('$label.$field is not a string: ${_raw(map)}');
-  }
-  return value;
-}
-
-String? _stringOrNull(Map<String, dynamic> map, String field, String label) {
-  final value = map[field];
-  if (value == null) return null;
   if (value is! String) {
     throw StateError('$label.$field is not a string: ${_raw(map)}');
   }

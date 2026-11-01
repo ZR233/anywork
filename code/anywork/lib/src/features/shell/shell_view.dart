@@ -270,12 +270,12 @@ AgentWorkspaceView? conversationWorkspace(
 /// 只读当前活动与独立领域状态，不拥有 feed 或第二正文镜像。
 class ConversationActivityInput {
   const ConversationActivityInput({
-    required this.currentActivity,
+    required this.current,
     required this.storage,
     required this.interaction,
   });
 
-  final CurrentActivity? currentActivity;
+  final CurrentProjection? current;
   final ThreadStorageStateView? storage;
   final PendingInteraction? interaction;
 
@@ -283,12 +283,12 @@ class ConversationActivityInput {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ConversationActivityInput &&
-          currentActivity == other.currentActivity &&
+          current == other.current &&
           storage == other.storage &&
           interaction == other.interaction;
 
   @override
-  int get hashCode => Object.hash(currentActivity, storage, interaction);
+  int get hashCode => Object.hash(current, storage, interaction);
 }
 
 @riverpod
@@ -304,12 +304,12 @@ ConversationActivityInput? conversationActivityInput(Ref ref, String threadId) {
       .existingSession(threadId);
   final current = owner == null
       ? null
-      : observeClient(ref, owner.currentActivity, (_) => ref.invalidateSelf());
+      : observeClient(ref, owner.current, (_) => ref.invalidateSelf());
   if (session.workspace == null && !session.hasSnapshot && current == null) {
     return null;
   }
   return ConversationActivityInput(
-    currentActivity: current,
+    current: current,
     storage: session.storage,
     interaction: primaryInteraction(session.interactions),
   );

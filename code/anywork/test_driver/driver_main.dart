@@ -38,7 +38,6 @@ import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -54,6 +53,7 @@ import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
 import 'runtime_event_evidence.dart';
 import 'conversation_credit_probe.dart';
+import 'frame_timing_observation.dart';
 import 'page_switch_extension.dart';
 import 'pointer_hover_extension.dart';
 
@@ -226,20 +226,13 @@ final List<Map<String, num>> _frameSamples = [];
 
 void _recordFrameTimings(List<FrameTiming> timings) {
   if (!_recordingFrames) return;
-  final completedAt = DateTime.now().millisecondsSinceEpoch;
   for (final timing in timings) {
     final elapsed = timing.totalSpan.inMicroseconds;
     _frameCount++;
     if (elapsed > 16667) _slowFrames++;
     if (elapsed > 33333) _verySlowFrames++;
     if (elapsed > _maxFrameMicros) _maxFrameMicros = elapsed;
-    _frameSamples.add({
-      'completedUnixMillis': completedAt,
-      'totalMillis': elapsed / 1000,
-      'vsyncOverheadMillis': timing.vsyncOverhead.inMicroseconds / 1000,
-      'buildMillis': timing.buildDuration.inMicroseconds / 1000,
-      'rasterMillis': timing.rasterDuration.inMicroseconds / 1000,
-    });
+    _frameSamples.add(frameTimingSample(timing));
   }
   if (_frameSamples.length > 8192) _frameSamples.removeRange(0, 4096);
 }
@@ -622,14 +615,26 @@ Future<String> _handleJsonDriverCommand(String raw) async {
         throw StateError('credit probe requires the selected real Thread');
       }
       final probe = ConversationCreditProbe(
-        await _client.transport.openConversationFeed(threadId),
+        await _client.transport.openConversationFeed(
+          threadId,
+          scope: const MainChatScope(),
+          demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
+        ),
       );
       _conversationCreditProbe = probe;
       return jsonEncode(await probe.holdTwo());
     case 'conversation-credit-query':
       final probe = _conversationCreditProbe;
       if (probe == null) throw StateError('credit probe is not open');
-      return jsonEncode(await probe.query(_client.transport));
+      final facts = StudioDriverState.readFacts();
+      final timeline = facts.timeline;
+      if (timeline == null || timeline.threadId != probe.feed.threadId) {
+        throw StateError('credit query requires the original visible Thread');
+      }
+      final target = timeline.items.lastWhere(
+        (item) => item.kind == 'text' && item.channel == 'final',
+      );
+      return jsonEncode(await probe.query(itemId: target.id));
     case 'conversation-credit-ack-one':
       final probe = _conversationCreditProbe;
       if (probe == null) throw StateError('credit probe is not open');
@@ -653,10 +658,10 @@ Future<String> _handleJsonDriverCommand(String raw) async {
               : <String>[for (final id in rowIds) '$id'],
         ),
       );
-    case 'timeline-detail-text':
-      // 打开着的详情查看器实际已加载到的正文：只读当前挂载子树，不触发读取、
-      // 不改变查看器状态。用于证明逐块读取累计与关闭后停止。
-      return jsonEncode(_timelineDetailText());
+    case 'timeline-content-window':
+      return jsonEncode(
+        _timelineContentWindow(decoded.cast<String, dynamic>()),
+      );
     case 'load-older-overlap':
       // 分页在途 + 滚轮交叠：在**同一个 Driver 操作**里调用产品自己的分页动作、
       // 直接读取应用发布的真实 loading 事实，再经标准指针信号路由派发输入，
@@ -1136,28 +1141,81 @@ Future<Map<String, Object?>> _loadOlderOverlap({
   }
 }
 
-/// 只读取挂载的 `timeline-detail-text`（`SelectableText`）与其所在对话框，不触发任何
-/// 读取、不缓存正文；关闭后自然返回 `{open: false}`。
-Map<String, Object?> _timelineDetailText() {
+/// Reads only the exact, already displayed range Text and its rendered bounds.
+Map<String, Object?> _timelineContentWindow(Map<String, dynamic> request) {
+  final itemId = request['itemId'];
+  final field = request['field'];
+  if (itemId is! String || field is! String) {
+    throw StateError('content window requires actual itemId and body key');
+  }
+  final timeline = StudioDriverState.readFacts().timeline;
+  if (timeline == null) {
+    throw StateError('content window has no current Main lease');
+  }
+  TimelineItemFacts? item;
+  String? parentId;
+  var scopeGeneration = timeline.generation;
+  for (final value in timeline.items) {
+    if (value.id == itemId) item = value;
+  }
+  for (final child in timeline.children) {
+    for (final value in child.items) {
+      if (value.id != itemId) continue;
+      if (item != null) {
+        throw StateError('ambiguous displayed content identity');
+      }
+      item = value;
+      parentId = child.parentId;
+      scopeGeneration = child.generation;
+    }
+  }
+  if (item == null) {
+    throw StateError('content item is not in a current displayed controller');
+  }
   final root = WidgetsBinding.instance.rootElement;
   if (root == null) return <String, Object?>{'ok': false, 'error': 'noRoot'};
-  final dialogKey = StudioDriverKeyValues.timelineDetailDialog;
-  final textKey = StudioDriverKeyValues.timelineDetailText;
-  var dialog = false;
+  final textKey = StudioDriverKeyValues.timelineContentWindow(itemId, field);
   String? text;
+  RegExpMatch? range;
   _visitElements(root, (element) {
     final key = element.widget.key;
-    if (key is! ValueKey<String>) return;
-    if (key.value == dialogKey) dialog = true;
-    if (key.value == textKey && element.widget is SelectableText) {
-      text = (element.widget as SelectableText).data;
+    if (key is! ValueKey<String> || key.value != textKey) return;
+    final widget = element.widget;
+    if (widget is! Text || widget.data == null) {
+      throw StateError('displayed content window is not a standard Text');
     }
+    text = widget.data;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget is! Column) return true;
+      _visitElements(ancestor, (descendant) {
+        if (descendant.widget case Text(:final data?)) {
+          range ??= RegExp(r'^字节 (\d+)–(\d+) / (\d+)$').firstMatch(data);
+        }
+      });
+      return false;
+    });
   });
-  if (!dialog) return <String, Object?>{'ok': true, 'open': false};
-  final body = text ?? '';
+  final identity = <String, Object?>{
+    'itemId': itemId,
+    'field': field,
+    'threadId': timeline.threadId,
+    'generation': timeline.generation,
+    'parentId': parentId,
+    'scopeGeneration': scopeGeneration,
+  };
+  if (text == null) return {'ok': true, 'open': false, ...identity};
+  if (range == null) {
+    throw StateError('displayed window has no actual range label');
+  }
+  final body = text!;
   return <String, Object?>{
+    ...identity,
     'ok': true,
     'open': true,
+    'offset': int.parse(range!.group(1)!),
+    'end': int.parse(range!.group(2)!),
+    'availableThrough': int.parse(range!.group(3)!),
+    'text': body,
     'characters': body.length,
     'bytes': utf8.encode(body).length,
     'hash': _fnv1a64Hex(body),
@@ -1802,9 +1860,6 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'observationSequence': metricsAvailable
           ? observedUsage.observationSequence
           : null,
-      // 当前展示代次已完成的 append 水位；没有 lease/cursor 时保持未知。
-      'timelineEpoch': facts.timeline?.timelineEpoch,
-      'completedThrough': facts.timeline?.completedThrough,
       'contextTokens': contextTokens,
       'contextWindow': contextWindow,
       'totalTokens': totalTokens,

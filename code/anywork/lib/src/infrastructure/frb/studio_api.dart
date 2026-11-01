@@ -11,10 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
 import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
-
-import '../../rust/api/studio/types/chat/descriptor.dart' as frb_descriptor;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -31,8 +28,6 @@ import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
-import '../../rust/api/studio/handlers/history/timeline_reader.dart'
-    as frb_history_reader;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/command.dart' as frb_command;
@@ -58,7 +53,7 @@ part 'studio_thread_stream.dart';
 part 'studio_thread_preparation.dart';
 part 'studio_conversation.dart';
 part 'studio_conversation_descriptor.dart';
-part 'studio_conversation_tool.dart';
+part 'studio_conversation_content_watch.dart';
 part 'studio_demo_conversation.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';

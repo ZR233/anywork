@@ -33,20 +33,8 @@ Future<Map<String, Object?>> observeStreamingHistory(
   void retainCompleted(TimelineObservation current) {
     current.requireConsistentIds();
     final previous = lastContent;
-    if (current.timelineEpoch == null ||
-        current.itemIds.toSet().length != current.itemCount ||
-        !current.appendSeqAscending) {
-      throw StateError(
-        'Completed timeline lacks epoch or unique ordered atoms',
-      );
-    }
     if (previous != null) {
-      final oldIds = previous.itemIds.toSet();
-      final retainedOrder = current.itemIds.where(oldIds.contains).toList();
-      if (current.threadId != previous.threadId ||
-          current.generation != previous.generation ||
-          current.timelineEpoch != previous.timelineEpoch ||
-          jsonEncode(retainedOrder) != jsonEncode(previous.itemIds)) {
+      if (!current.retainsContiguousWindow(previous)) {
         throw StateError('Streaming/page update replaced frozen coverage');
       }
       for (final item in previous.items) {
@@ -190,12 +178,10 @@ Future<Map<String, Object?>> observeStreamingHistory(
         }
         // 在已有窗口内部操作；发生分页就不能把前插造成的像素变化当作拖动证据。
         if (current.threadId != before.threadId ||
-            current.timelineEpoch != before.timelineEpoch ||
             current.generation != before.generation ||
             current.loadingOlder ||
             current.olderCursor != before.olderCursor ||
             current.hasOlder != before.hasOlder ||
-            current.completedThrough != before.completedThrough ||
             jsonEncode(current.itemIds) != jsonEncode(before.itemIds)) {
           throw StateError('$stage changed the loaded History window');
         }
@@ -282,7 +268,6 @@ Future<Map<String, Object?>> observeStreamingHistory(
   );
   final returnedLive = TimelineObservation.parse(returned);
   if (returnedLive.generation != beforeReturn.generation ||
-      returnedLive.timelineEpoch != beforeReturn.timelineEpoch ||
       returnedLive.olderCursor != beforeReturn.olderCursor ||
       returnedLive.hasOlder != beforeReturn.hasOlder ||
       returnedLive.hasNewOutput) {
@@ -322,6 +307,7 @@ Future<Map<String, Object?>> observeStreamingHistory(
           progress.text.length > beforeActivity.text.length;
     });
     final after = TimelineObservation.parse(afterState);
+    after.requireAcceptedOperation(before, prepend: true);
     final afterActivity = readProgress(afterState)!;
     final delivered = after.itemCount - before.itemCount;
     if (!after.isHistory ||
@@ -380,17 +366,15 @@ Future<Map<String, Object?>> observeStreamingHistory(
         persistence?['pendingCommits'] == 0;
   });
   final end = TimelineObservation.parse(completed);
+  end.requireAcceptedOperation(start, prepend: false);
   if (!end.isHistory ||
       !end.hasNewOutput ||
       end.itemCount <= start.itemCount ||
-      end.items.last.appendSeq <= start.items.last.appendSeq) {
+      !end.retainsWindow(start, prepend: false)) {
     throw StateError('History did not retain and append completed live output');
   }
   final responses = end.items
-      .where(
-        (item) =>
-            item.appendSeq > start.items.last.appendSeq && item.isFinalAnswer,
-      )
+      .where((item) => !start.itemIds.contains(item.id) && item.isFinalAnswer)
       .toList();
   if (responses.length != 1) {
     throw StateError('Single response did not become one completed final atom');
@@ -418,7 +402,6 @@ Future<Map<String, Object?>> observeStreamingHistory(
   );
   final live = TimelineObservation.parse(latest);
   if (live.generation != end.generation ||
-      live.timelineEpoch != end.timelineEpoch ||
       jsonEncode(live.itemIds) != jsonEncode(end.itemIds) ||
       live.olderCursor != end.olderCursor ||
       live.hasOlder != end.hasOlder ||

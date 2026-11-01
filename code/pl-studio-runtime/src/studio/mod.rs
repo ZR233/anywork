@@ -4,6 +4,7 @@ mod agent_host;
 #[doc(hidden)]
 pub mod benchmark;
 pub(crate) mod catalog;
+mod conversation_identity;
 pub(crate) mod delegation;
 pub(crate) mod entity;
 mod ids;

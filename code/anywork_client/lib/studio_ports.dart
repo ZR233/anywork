@@ -8,7 +8,6 @@ import 'src/studio/bootstrap.dart';
 
 export 'src/modes/modes_ports.dart';
 export 'src/studio/thread_frames.dart';
-export 'src/conversation/domain/conversation_models.dart';
 export 'src/studio/bootstrap.dart';
 
 abstract interface class RuntimeTransport {

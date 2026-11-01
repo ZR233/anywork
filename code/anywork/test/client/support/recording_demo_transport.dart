@@ -41,14 +41,16 @@ class RecordingDemoTransport extends DemoStudioTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final failure = failNextInitial;
     failNextInitial = null;
     final feed = RecordingConversationFeed(
       inner: await super.openConversationFeed(
         threadId,
-        resumeAfter: resumeAfter,
+        scope: scope,
+        demand: demand,
       ),
       initialFailure: failure,
     );
@@ -67,6 +69,8 @@ class RecordingConversationFeed implements ConversationFeed {
   String get threadId => inner.threadId;
   @override
   String get subscriptionId => inner.subscriptionId;
+  @override
+  ConversationReader get reader => inner.reader;
   Object? initialFailure;
   void Function(ThreadStreamFrame)? onState;
   void Function()? onClosed;
@@ -82,7 +86,6 @@ class RecordingConversationFeed implements ConversationFeed {
   int closeCalls = 0;
   final acknowledgements = <int>[];
   bool scriptFrames = false;
-  Completer<ConversationPage>? scriptedPage;
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
@@ -141,7 +144,9 @@ class RecordingConversationFeed implements ConversationFeed {
   Future<void> _forward(ConversationFrame frame) async {
     final event = frame.event;
     if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
-    if (event is ConversationBaselineEvent) {
+    if (event case ConversationChatEvent(
+      batch: ChatBatch(placement: ChatPlacement.set),
+    )) {
       initialCalls++;
       if (!initialEntered.isCompleted) initialEntered.complete();
       await initialGate?.future;
@@ -153,7 +158,11 @@ class RecordingConversationFeed implements ConversationFeed {
       nextCalls++;
       if (!nextEntered.isCompleted) nextEntered.complete();
     }
-    if (scriptFrames && event is ConversationUpdateEvent) return;
+    if (scriptFrames &&
+        event is ConversationChatEvent &&
+        event.batch.placement == ChatPlacement.append) {
+      return;
+    }
     final terminal =
         event is ConversationClosedEvent || event is ConversationFailureEvent;
     final sequence = terminal ? _sequence : ++_sequence;
@@ -171,9 +180,9 @@ class RecordingConversationFeed implements ConversationFeed {
   }
 
   /// An explicit scripted transport fault/value, not a second business reducer.
-  void emit(ConversationUpdate? update) {
+  void emit(ChatBatch? batch) {
     if (_closed) return;
-    if (update == null) {
+    if (batch == null) {
       _events.add(
         ConversationFrame(
           threadId: threadId,
@@ -189,7 +198,7 @@ class RecordingConversationFeed implements ConversationFeed {
         threadId: threadId,
         subscriptionId: subscriptionId,
         deliverySequence: ++_sequence,
-        event: ConversationUpdateEvent(update: update),
+        event: ConversationChatEvent(batch: batch),
       ),
     );
   }

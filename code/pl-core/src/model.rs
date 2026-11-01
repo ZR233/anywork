@@ -13,6 +13,10 @@ pub use tokio_util::sync::CancellationToken;
 use crate::chat::PresentationPart;
 use crate::context::{ContextContent, ContextSnapshot, OpaquePayload};
 
+mod member;
+pub(crate) use member::{MemberRegistry, ModelMemberAdmission, encoded_member_bytes};
+pub use member::{ModelCompletedMember, ModelMemberError, ModelMemberSender};
+
 /// Factory for independent Thread sessions. Clients may share pools, but never mutable history.
 pub trait Model: Send + Sync + 'static {
     /// Opens a fresh session; the returned owner must be closed before its Thread is released.
@@ -110,6 +114,8 @@ pub enum ToolCallMode {
 pub struct ModelRequest {
     /// Optional coalescing live observation; never commits canonical content.
     pub progress: Option<ModelProgressSender>,
+    /// Reliable, independently ended members of this call; never a progress snapshot.
+    pub members: Option<ModelMemberSender>,
     pub thread_id: String,
     pub turn_id: String,
     pub attempt_id: String,
@@ -1656,7 +1662,7 @@ pub(crate) struct OutputBudget {
     thread_id: String,
     operation_id: String,
     limit: u64,
-    charged: std::sync::Mutex<u64>,
+    charged: std::sync::Mutex<OutputCharges>,
     refused: std::sync::Mutex<Option<(u64, u64)>>,
     /// Owner-owned wakeup the first refusal is reported through.
     ///
@@ -1667,6 +1673,16 @@ pub(crate) struct OutputBudget {
     /// the fault and the admission block invisible for as long as it takes to wrap up. The owner is
     /// the single reader and publisher of the fault, so this is not a second source of truth.
     refusal: Option<OutputRefusalNotice>,
+}
+
+#[derive(Debug, Default)]
+struct OutputCharges {
+    producer: u64,
+    members: u64,
+    /// Complete encoding of every claim published for a member-capable operation, including
+    /// claims created before its first member. None leaves non-member producer accounting alone.
+    claims: Option<u64>,
+    high_water: u64,
 }
 
 /// Timely, owner-owned notification that one in-flight operation exceeded its reliable output quota.
@@ -1726,7 +1742,7 @@ impl OutputBudget {
             thread_id: thread_id.to_owned(),
             operation_id: operation_id.to_owned(),
             limit: limit.min(max_bytes),
-            charged: std::sync::Mutex::new(0),
+            charged: std::sync::Mutex::new(OutputCharges::default()),
             refused: std::sync::Mutex::new(None),
             refusal,
         })
@@ -1751,22 +1767,137 @@ impl OutputBudget {
             .charged
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if accepted_bytes <= *charged {
+        if accepted_bytes <= charged.producer {
             return Ok(());
         }
-        if accepted_bytes > self.limit {
-            self.note_refusal(*charged);
-            return Err(self.budget_error(*charged, accepted_bytes - *charged));
+        let claims = if charged.members > 0 {
+            charged.claims.unwrap_or_default()
+        } else {
+            0
+        };
+        let total = accepted_bytes
+            .saturating_add(charged.members)
+            .saturating_add(claims);
+        self.charge_total(&mut charged, total)?;
+        charged.producer = accepted_bytes;
+        Ok(())
+    }
+
+    fn charge_total(
+        &self,
+        charged: &mut OutputCharges,
+        total: u64,
+    ) -> Result<(), crate::thread::cold::ColdStoreError> {
+        if total <= charged.high_water {
+            return Ok(());
+        }
+        if total > self.limit {
+            self.note_refusal(charged.high_water);
+            return Err(self.budget_error(charged.high_water, total - charged.high_water));
         }
         if let Some(store) = &self.store
             && let Err(error) =
-                store.charge_operation_output(&self.thread_id, &self.operation_id, accepted_bytes)
+                store.charge_operation_output(&self.thread_id, &self.operation_id, total)
         {
-            self.note_refusal(*charged);
+            self.note_refusal(charged.high_water);
             return Err(error);
         }
-        *charged = accepted_bytes;
+        charged.high_water = total;
         Ok(())
+    }
+
+    pub(crate) fn retain_member(
+        self: &Arc<Self>,
+        bytes: u64,
+    ) -> Result<member::MemberCharge, crate::thread::cold::ColdStoreError> {
+        let mut charged = self
+            .charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let claims = charged.claims.unwrap_or_default();
+        if charged.members == 0 && bytes > 0 {
+            // Settle all earlier claims before admitting the first resident member. A refused
+            // Running write may still be pending and can draw from this operation on its retry.
+            let preceding = charged.producer.saturating_add(claims);
+            self.charge_total(&mut charged, preceding)?;
+        }
+        let members = charged.members.saturating_add(bytes);
+        let total = charged
+            .producer
+            .saturating_add(members)
+            .saturating_add(claims);
+        self.charge_total(&mut charged, total)?;
+        charged.members = members;
+        Ok(member::MemberCharge {
+            budget: self.clone(),
+            bytes,
+        })
+    }
+
+    pub(crate) fn fund_member_effect(
+        &self,
+        encoded: u64,
+    ) -> Result<(), crate::thread::cold::ColdStoreError> {
+        let mut charged = self
+            .charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Reserve the next member claim before publishing it. The owner records that claim exactly
+        // once when it creates the actual ThreadWrite; retrying admission never records it again.
+        let claims = charged.claims.unwrap_or_default().saturating_add(encoded);
+        let total = charged
+            .producer
+            .saturating_add(charged.members)
+            .saturating_add(claims);
+        self.charge_total(&mut charged, total)?;
+        Ok(())
+    }
+
+    pub(crate) fn track_member_claims(&self) {
+        self.charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .claims
+            .get_or_insert(0);
+    }
+
+    pub(crate) fn tracks_member_claims(&self) -> bool {
+        self.charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .claims
+            .is_some()
+    }
+
+    pub(crate) fn register_output_claim(
+        &self,
+        encoded: u64,
+    ) -> Result<(), crate::thread::cold::ColdStoreError> {
+        let mut charged = self
+            .charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(previous) = charged.claims else {
+            return Ok(());
+        };
+        let claims = previous.saturating_add(encoded);
+        if charged.members > 0 {
+            let total = charged
+                .producer
+                .saturating_add(charged.members)
+                .saturating_add(claims);
+            self.charge_total(&mut charged, total)?;
+        }
+        charged.claims = Some(claims);
+        Ok(())
+    }
+
+    pub(crate) fn release_member(&self, bytes: u64) {
+        let mut charged = self
+            .charged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        charged.members -= bytes;
     }
 
     /// Reports the accepted/limit pair of a refused charge, if the operation was truncated.
@@ -1821,7 +1952,7 @@ impl ModelProgressSender {
             thread_id: String::new(),
             operation_id: String::new(),
             limit: output_limit,
-            charged: std::sync::Mutex::new(0),
+            charged: std::sync::Mutex::new(OutputCharges::default()),
             refused: std::sync::Mutex::new(None),
             refusal: None,
         };
@@ -1835,10 +1966,11 @@ impl ModelProgressSender {
     /// Output already charged by this call, including abandoned generations.
     pub fn charged_output(&self) -> u64 {
         self.output.as_ref().map_or(0, |output| {
-            *output
+            output
                 .charged
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .producer
         })
     }
 

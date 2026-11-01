@@ -197,17 +197,17 @@ Future<Map<String, Object?>> observeTimelineScrolling(
     final state = await snapshot();
     final current = TimelineObservation.parse(state);
     current.requireConsistentIds();
-    if (current.presentationItems.isEmpty) {
-      throw StateError('Timeline exposes no presentation row to observe');
+    if (current.items.isEmpty) {
+      throw StateError('Timeline exposes no controller Message to observe');
     }
-    final lastPresentationId = current.presentationItems.last.id;
+    final lastItemId = current.items.last.id;
     final view = await driver.sendCommand(ToolProbe(timelineFinder, 'observe'));
     final last = await driver.sendCommand(
-      ToolProbe(find.byValueKey('timeline-row-$lastPresentationId'), 'observe'),
+      ToolProbe(find.byValueKey('timeline-row-$lastItemId'), 'observe'),
     );
     final viewport = (view['samples'] as List).last as Map;
     final tail = (last['samples'] as List).last as Map;
-    observations['latestRowId'] = lastPresentationId;
+    observations['latestRowId'] = lastItemId;
     observations['latestRowGeometry'] = tail;
     observations['wheelLastLineVisible'] =
         tail['mounted'] != false &&
@@ -239,15 +239,12 @@ Future<Map<String, Object?>> observeTimelineScrolling(
         !beforeReturn.ready ||
         beforeReturn.connection != 'ready' ||
         beforeReturn.generation < 1 ||
-        beforeReturn.timelineEpoch == null ||
         beforeReturn.items.isEmpty ||
-        !beforeReturn.appendSeqAscending ||
-        beforeReturn.loadedCount != beforeReturn.itemCount ||
-        beforeReturn.completedThrough != beforeReturn.items.last.appendSeq) {
+        beforeReturn.loadedCount != beforeReturn.itemCount) {
       throw StateError('Return to live lacks a valid loaded History lease');
     }
     await driver.sendCommand(RawTap(find.byValueKey('timeline-return-live')));
-    // generation 就是当前 lease 的身份；几何与内容必须仍属于同一 Thread/epoch/lease。
+    // generation 就是当前 lease 的身份；几何与内容必须仍属于同一 Thread/lease。
     final returnDeadline = DateTime.now().add(const Duration(seconds: 30));
     late TimelineScrollObservation returnedLive;
     late TimelineObservation liveTimeline;
@@ -258,7 +255,6 @@ Future<Map<String, Object?>> observeTimelineScrolling(
           timeline.ready &&
           timeline.connection == 'ready' &&
           timeline.threadId == beforeReturn.threadId &&
-          timeline.timelineEpoch == beforeReturn.timelineEpoch &&
           timeline.generation == beforeReturn.generation &&
           settledScroll.threadId == timeline.threadId &&
           settledScroll.generation == timeline.generation &&
@@ -283,20 +279,13 @@ Future<Map<String, Object?>> observeTimelineScrolling(
     liveTimeline.requireConsistentIds();
     final firstKept = liveTimeline.itemIds.indexOf(beforeReturn.itemIds.first);
     final retainedEnd = firstKept + beforeReturn.items.length;
-    // 只有返回前已在途的分页可前插；前缀必须为正序号且无缺口地接到旧首项。
-    final prefixAuthorizedAndContinuous =
-        firstKept == 0 ||
-        (firstKept > 0 &&
-            beforeReturn.loadingOlder &&
-            List.generate(firstKept, (index) {
-              final sequence = liveTimeline.items[index].appendSeq;
-              return sequence > 0 &&
-                  sequence ==
-                      beforeReturn.items.first.appendSeq - firstKept + index;
-            }).every((continuous) => continuous));
+    // 只有返回前已在途的分页可前插。完成序号连续性由 Rust 证明；
+    // Driver 证明真实旧身份仍为不可变连续窗口，而不从 ID 猜 seq。
+    final prefixAuthorized =
+        firstKept == 0 || (firstKept > 0 && beforeReturn.loadingOlder);
     final windowPreserved =
-        firstKept >= 0 &&
-        prefixAuthorizedAndContinuous &&
+        liveTimeline.retainsContiguousWindow(beforeReturn) &&
+        prefixAuthorized &&
         retainedEnd <= liveTimeline.items.length &&
         jsonEncode([
               for (final item in beforeReturn.items) item.frozenFields(),
@@ -308,60 +297,14 @@ Future<Map<String, Object?>> observeTimelineScrolling(
               ))
                 item.frozenFields(),
             ]);
-    final beforeH = beforeReturn.completedThrough!;
-    final afterH = liveTimeline.completedThrough;
-    final appended = liveTimeline.items
-        .where((item) => item.appendSeq > beforeH)
-        .toList();
-    // 旧窗口可因已发起的分页前插而右移；尾部只能接纳 H 后的连续完成项。
-    final completionContinuous =
-        afterH != null &&
-        afterH >= beforeH &&
-        liveTimeline.appendSeqAscending &&
-        liveTimeline.loadedCount == liveTimeline.itemCount &&
-        liveTimeline.items.isNotEmpty &&
-        liveTimeline.items.last.appendSeq == afterH &&
-        appended.length == afterH - beforeH &&
-        List.generate(
-          appended.length,
-          (index) => appended[index].appendSeq == beforeH + index + 1,
-        ).every((continuous) => continuous);
-    final keptIds = beforeReturn.itemIds.toSet();
-    final presentationPositionsValid = [beforeReturn, liveTimeline].every(
-      (timeline) =>
-          [
-            ...timeline.presentationItems,
-            ...timeline.hiddenPresentationItems,
-          ].every(
-            (group) =>
-                group.firstAppendSeq ==
-                timeline.item(group.memberIds.first)?.appendSeq,
-          ),
-    );
-    // 投影回原窗口后，展示 owner 的身份、顺序和完整成员关系必须原样保留；
-    // 新分页或完成项可扩展边界组，但不能把旧成员移到另一组或另造 owner。
-    // visibleMemberIds/skillPairs 随完整组扩展派生，不在此冻结或重验配对算法。
-    List<Map<String, Object?>> membership(
-      List<TimelinePresentationObservation> groups,
-    ) => [
-      for (final group in groups)
-        if (group.memberIds.any(keptIds.contains))
-          <String, Object?>{
-            'id': group.id,
-            'kind': group.kind,
-            'memberIds': group.memberIds.where(keptIds.contains).toList(),
-            'expanded': group.expanded,
-          },
-    ];
-    final presentationPreserved =
-        jsonEncode(membership(beforeReturn.presentationItems)) ==
-            jsonEncode(membership(liveTimeline.presentationItems)) &&
-        jsonEncode(membership(beforeReturn.hiddenPresentationItems)) ==
-            jsonEncode(membership(liveTimeline.hiddenPresentationItems));
+    final appended = windowPreserved
+        ? liveTimeline.items.sublist(retainedEnd)
+        : const <TimelineItemObservation>[];
+    final newIdsAreDistinct =
+        liveTimeline.itemIds.toSet().length == liveTimeline.itemCount;
     observations['returnLivePreservesLoadedWindow'] =
         liveTimeline.isLive &&
         liveTimeline.threadId == beforeReturn.threadId &&
-        liveTimeline.timelineEpoch == beforeReturn.timelineEpoch &&
         liveTimeline.generation == beforeReturn.generation &&
         returnedLive.threadId == liveTimeline.threadId &&
         returnedLive.generation == liveTimeline.generation &&
@@ -369,29 +312,19 @@ Future<Map<String, Object?>> observeTimelineScrolling(
         (returnedLive.pixels ?? 1).abs() <= 0.5 &&
         !liveTimeline.hasNewOutput &&
         windowPreserved &&
-        presentationPositionsValid &&
-        presentationPreserved &&
-        completionContinuous;
+        liveTimeline.loadedCount == liveTimeline.itemCount &&
+        newIdsAreDistinct;
     observations['returnLivePreservation'] = <String, Object?>{
       'before': beforeReturn.summary(),
       'after': liveTimeline.summary(),
       'scrollGeneration': returnedLive.generation,
       'beforeItemIds': beforeReturn.itemIds,
       'afterItemIds': liveTimeline.itemIds,
-      'prefixAuthorizedAndContinuous': prefixAuthorizedAndContinuous,
+      'prefixAuthorizedByInFlightPage': prefixAuthorized,
       'windowPreserved': windowPreserved,
-      'presentationPositionsValid': presentationPositionsValid,
-      'presentationPreserved': presentationPreserved,
-      'beforePresentationMembership': membership(
-        beforeReturn.presentationItems,
-      ),
-      'afterPresentationMembership': membership(liveTimeline.presentationItems),
-      'beforeHiddenMembership': membership(
-        beforeReturn.hiddenPresentationItems,
-      ),
-      'afterHiddenMembership': membership(liveTimeline.hiddenPresentationItems),
-      'completionContinuous': completionContinuous,
-      'appendedSequences': [for (final item in appended) item.appendSeq],
+      'uniqueMessageIdentities': newIdsAreDistinct,
+      'appendedItemIds': [for (final item in appended) item.id],
+      'completionSequenceProof': 'Rust owner; no synthetic Dart cursor',
     };
     observations['pass'] = [
       'wheelViewportStable',

@@ -1,46 +1,116 @@
-//! Canonical `ThreadItem` → typed `ChatItem`/`ChatDraft` 适配。
-//!
-//! core 的内容条目是「静态结构 + 若干共享 `ContentBlock` 内容域」。宿主把 canonical 条目的**静态部分**
-//! （身份、kind、时间戳、附件、工具身份……）编码一次进 `meta`，把**动态正文**按 [`ChatField`] 放进
-//! `fields`：流式热路径只克隆 `Arc`/共享链，不 JSON、不逐 token 复制全文。
-//!
-//! 完成草稿经 `Session::publish_batch` 冻结为不可变完成记录；读取 DTO 直接解码头部与描述并遍历
-//! 有界字段。完成记录不携带执行 ordinal/revision/时间戳——它们是 Runtime 的内部执行事实，因此这里
-//! 不存在“从完成记录重建 canonical ThreadItem”的方向；实时预览的权威重建由 live 投影用自身
-//! 的运行事实直接完成，不经过完成 meta。
-//! `static_state` 仅服务投影判等，不是内存 meta 或读取 DTO。
+//! 执行事实在可靠完成边界冻结为 opaque JSON 与显式内容所有权。
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use anyhow::Result;
-use pl_core::chat::{ChatDraft, ChatField, PresentationPart};
-use pl_core::model::ContentBlock;
-
+use anyhow::{Result, ensure};
+use pl_core::{
+    chat::{
+        ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatKey, ContentData,
+        ContentDescriptor, PresentationPart,
+    },
+    model::ContentBlock,
+};
 use pl_protocol::{
-    ResolvedThreadToolUserInput, ThreadItem, ThreadItemState, ThreadRawItem, ThreadRawPayload,
-    ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem, ThreadToolState,
-    ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
+    ContentOwner, ContentRef, ContentTarget, ResolvedThreadToolUserInput, ThreadItem,
+    ThreadItemState, ThreadRawItem, ThreadRawPayload, ThreadTextItem, ThreadThinkingItem,
+    ThreadToolInvocation, ThreadToolItem, ThreadToolState, ThreadToolUserInput,
+    ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
 };
+use std::{collections::BTreeMap, sync::Arc};
 
-use super::timeline_content::meta::{
-    PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, TimelineMeta, count, plan_completion, validate_counts,
+mod descriptor;
+mod payload;
+use descriptor::{
+    PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,
 };
-
-mod record;
-pub(crate) use record::{decode_record, encode_record};
-mod legacy;
-pub(crate) use legacy::legacy_completion_drafts;
 #[cfg(test)]
 mod tests;
 
-/// Freeze only the acknowledged background handoff, not the still-running final result.
+/// 仅用于执行投影的正文位置比较；不进入 Core、存储记录或产品 DTO。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum BodyKey {
+    Body,
+    Part(PresentationPart),
+    Host(String),
+}
+impl BodyKey {
+    pub(crate) fn host(key: impl Into<String>) -> Self {
+        Self::Host(key.into())
+    }
+    pub(crate) fn as_key(&self) -> String {
+        match self {
+            Self::Body => "body".into(),
+            Self::Host(key) => key.clone(),
+            Self::Part(PresentationPart::OutputText(index)) => format!("part.outputText.{index}"),
+            Self::Part(PresentationPart::ReasoningText(index)) => {
+                format!("part.reasoningText.{index}")
+            }
+            Self::Part(PresentationPart::SummaryText(index)) => format!("part.summaryText.{index}"),
+        }
+    }
+}
+
+pub(crate) const TOOL_ARGUMENTS_FIELD: &str = "tool.arguments";
+pub(crate) const TOOL_RESULT_FIELD: &str = "tool.result";
+pub(crate) const TOOL_OUTPUT_ARTIFACTS_FIELD: &str = "tool.output-artifacts";
+pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
+pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
+const INLINE_BODY_BYTES: usize = 4096;
+
+/// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
+#[cfg(test)]
+pub(crate) fn completion_draft(
+    item: &ThreadItem,
+    source_effect_seq: u64,
+    database_id: &str,
+) -> Result<ChatDraft> {
+    completion_draft_reusing(item, source_effect_seq, database_id, &ChatContents::new())
+}
+
+pub(crate) fn completion_draft_reusing(
+    item: &ThreadItem,
+    source_effect_seq: u64,
+    database_id: &str,
+    previous: &ChatContents,
+) -> Result<ChatDraft> {
+    let descriptor = descriptor::item_descriptor(item)?;
+    let mut bodies = if let Some(plan) = plan_completion(item)? {
+        let mut bodies = BTreeMap::new();
+        if let Some(document) = plan.document {
+            bodies.insert(
+                BodyKey::host(PLAN_DOCUMENT_FIELD),
+                ContentBlock::from_text(&document),
+            );
+        }
+        if let Some(feedback) = plan.feedback {
+            bodies.insert(
+                BodyKey::host(PLAN_FEEDBACK_FIELD),
+                ContentBlock::from_text(&feedback),
+            );
+        }
+        bodies
+    } else {
+        content_fields(item.state())?
+    };
+    freeze(
+        item,
+        CompletionStamp {
+            id: &item.id,
+            source_effect_seq,
+            sealed_at: item.updated_at,
+        },
+        database_id,
+        serde_json::to_value(descriptor)?,
+        &mut bodies,
+        previous,
+    )
+}
+
 pub(crate) fn background_started_draft(
     item: &ThreadItem,
     task_id: &str,
     receipt: &str,
     source_effect_seq: u64,
     started_at: i64,
+    database_id: &str,
 ) -> Result<ChatDraft> {
     let ThreadItemState::Tool(tool) = item.state() else {
         anyhow::bail!("background acknowledgement has no tool invocation");
@@ -49,94 +119,183 @@ pub(crate) fn background_started_draft(
     let id = crate::studio::thread_projection::order::tool_background_started_id(
         invocation.tool_call_id(),
     );
-    let turn_id = (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
-    let meta = TimelineMeta {
-        id: id.clone(),
-        thread_id: item.thread_id.clone(),
-        turn_id: turn_id.clone(),
-        descriptor: pl_protocol::TimelineDescriptor::Tool(pl_protocol::TimelineToolDescriptor {
-            invocation: pl_protocol::TimelineToolInvocation {
-                tool_call_id: invocation.tool_call_id().to_owned(),
-                call_id: invocation.call_id().map(str::to_owned),
-                provider_item_id: invocation.provider_item_id().map(str::to_owned),
-                name: invocation.name().to_owned(),
-                working_directory: invocation.working_directory().map(str::to_owned),
-                task_id: Some(task_id.to_owned()),
-            },
-            state: pl_protocol::TimelineToolState::BackgroundStarted { started_at },
-            user_input: None,
-            wait: None,
-        }),
-    };
-    Ok(ChatDraft {
-        item_id: id,
-        turn_id,
-        source_effect_seq: Some(source_effect_seq),
-        sealed_at: Some(started_at),
-        fields: BTreeMap::from([
-            (
-                ChatField::host(TOOL_ARGUMENTS_FIELD),
-                ContentBlock::from_text(invocation.arguments()),
-            ),
-            (
-                ChatField::host(TOOL_RESULT_FIELD),
-                ContentBlock::from_text(receipt),
-            ),
-        ]),
-        meta: Arc::from(serde_json::to_vec(&meta)?),
-    })
-}
-
-/// 工具参数、工具结果与工具开放产物各自的宿主字段域 key（稳定身份，不是内容推断）。
-pub(crate) const TOOL_ARGUMENTS_FIELD: &str = "tool.arguments";
-pub(crate) const TOOL_RESULT_FIELD: &str = "tool.result";
-pub(crate) const TOOL_OUTPUT_ARTIFACTS_FIELD: &str = "tool.output-artifacts";
-/// 普通问答投影的正文域 key 前缀（见 [`user_input_question_field`] / [`user_input_answer_field`]）。
-pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
-/// 原始记录正文域 key 前缀：一段原始 payload 的正文按它在记录里的顺序寻址。
-pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
-
-/// 把一条 canonical 条目冻结为完成草稿：静态结构进 `meta`，动态正文进 `fields`。
-///
-/// 调用方只在该条目的可靠完成边界构造一次草稿：`sealed_at` 取执行事实的落章时间，`turn_id`
-/// 为空表示发布时消费 Turn 未知（之后不得回补修改已发布原子）。执行 ordinal/revision 不进入
-/// 完成记录——它们是 Runtime 的内部执行索引。
-pub(crate) fn completion_draft(item: &ThreadItem, source_effect_seq: u64) -> Result<ChatDraft> {
-    let meta = static_meta(item)?;
-    let fields = if let Some(plan) = plan_completion(item)? {
-        let mut fields = BTreeMap::new();
-        if let Some(document) = plan.document {
-            fields.insert(
-                ChatField::host(PLAN_DOCUMENT_FIELD),
-                ContentBlock::from_text(&document),
-            );
-        }
-        if let Some(feedback) = plan.feedback {
-            fields.insert(
-                ChatField::host(PLAN_FEEDBACK_FIELD),
-                ContentBlock::from_text(&feedback),
-            );
-        }
-        fields
-    } else {
-        content_fields(item.state())?
-    };
-    let turn_id = (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
-    Ok(ChatDraft {
-        item_id: item.id.clone(),
-        turn_id,
-        source_effect_seq: Some(source_effect_seq),
-        sealed_at: Some(item.updated_at),
-        fields,
-        meta,
-    })
-}
-
-/// 仅编码完成身份与独立描述；执行 revision 不进入完成记录。
-pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
-    Ok(Arc::from(serde_json::to_vec(&TimelineMeta::from_item(
+    let value = serde_json::json!({"kind":"tool", "data":{
+        "invocation": { "toolCallId": invocation.tool_call_id(), "callId": invocation.call_id(),
+            "providerItemId": invocation.provider_item_id(), "name": invocation.name(),
+            "workingDirectory": invocation.working_directory(), "taskId": task_id,
+            "presentationContract":invocation.presentation_contract() },
+        "state": { "kind":"backgroundStarted", "startedAt": started_at },
+        "userInput": null, "wait": null
+    }});
+    let mut bodies = BTreeMap::from([
+        (
+            BodyKey::host(TOOL_ARGUMENTS_FIELD),
+            ContentBlock::from_text(invocation.arguments()),
+        ),
+        (
+            BodyKey::host(TOOL_RESULT_FIELD),
+            ContentBlock::from_text(receipt),
+        ),
+    ]);
+    freeze(
         item,
-    )?)?))
+        CompletionStamp {
+            id: &id,
+            source_effect_seq,
+            sealed_at: started_at,
+        },
+        database_id,
+        value,
+        &mut bodies,
+        &ChatContents::new(),
+    )
+}
+
+struct CompletionStamp<'a> {
+    id: &'a str,
+    source_effect_seq: u64,
+    sealed_at: i64,
+}
+
+fn freeze(
+    item: &ThreadItem,
+    stamp: CompletionStamp<'_>,
+    database_id: &str,
+    descriptor: serde_json::Value,
+    bodies: &mut BTreeMap<BodyKey, Arc<ContentBlock>>,
+    previous: &ChatContents,
+) -> Result<ChatDraft> {
+    let CompletionStamp {
+        id,
+        source_effect_seq,
+        sealed_at,
+    } = stamp;
+    ensure!(
+        !database_id.is_empty(),
+        "completion requires its database identity"
+    );
+    let kind = descriptor
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("descriptor has no kind"))?;
+    let mut data = descriptor
+        .get("data")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("descriptor has no data"))?;
+    let conversation = matches!(kind, "text" | "raw" | "contextCompaction" | "plan" | "turn")
+        || matches!(item.state(), ThreadItemState::Tool(tool) if tool.user_input().is_some_and(
+            |input| !matches!(input.state(), ThreadToolUserInputState::Pending)));
+    if let ThreadItemState::Tool(tool) = item.state()
+        && let Some(invocation) = data
+            .get_mut("invocation")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        invocation.insert(
+            "presentationContract".into(),
+            serde_json::to_value(tool.invocation().presentation_contract())?,
+        );
+    }
+    let parent_id = (!item.turn_id.is_empty())
+        .then(|| ChatKey::new("turn", &item.turn_id))
+        .transpose()?;
+    if kind == "turn" {
+        let parent = parent_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal turn has no real Turn identity"))?;
+        data.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("turn descriptor data is not an object"))?
+            .insert("childrenParentId".into(), parent.as_str().into());
+    }
+    let owner = ContentOwner::Item {
+        item_id: id.to_owned(),
+    };
+    let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)?;
+    let mut contents = ChatContents::new();
+    let mut body_envelopes = Vec::with_capacity(bodies.len());
+    for (position, block) in bodies.iter() {
+        let key = position.as_key();
+        let byte_length = block.len() as u64;
+        // Index once at ownership handoff. Large bodies never flatten to encode the envelope.
+        let content_key = ChatContentKey {
+            owner: owner_key.clone(),
+            key: key.clone(),
+        };
+        let old = previous.get(&content_key);
+        let mut generation = old.map_or(1, |content| content.descriptor.generation);
+        let mut body_block = block.clone();
+        let shared = old.filter(|content| {
+            matches!(&content.data, ContentData::Text(text) if ContentBlock::text_eq(text.block(), block))
+        });
+        if let Some(old) = old.filter(|_| shared.is_none()) {
+            let candidate = ContentData::text(block.clone());
+            let old_bytes = old.data.len();
+            let prefix_matches = old_bytes <= block.len()
+                && (0..old_bytes).step_by(4096).all(|offset| {
+                    old.data
+                        .range(offset as u64, 4096.min(old_bytes - offset))
+                        .ok()
+                        .zip(
+                            candidate
+                                .range(offset as u64, 4096.min(old_bytes - offset))
+                                .ok(),
+                        )
+                        .is_some_and(|(left, right)| left.as_bytes() == right.as_bytes())
+                });
+            if prefix_matches {
+                if let ContentData::Text(text) = &old.data
+                    && let Some(suffix) = block.suffix_since(old_bytes)
+                {
+                    body_block = ContentBlock::append(text.block(), &suffix);
+                }
+            } else {
+                generation = generation
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("content generation exhausted"))?;
+            }
+        }
+        let content = shared.cloned().unwrap_or_else(|| {
+            Arc::new(ChatContent {
+                descriptor: ContentDescriptor {
+                    key: content_key,
+                    byte_length,
+                    generation,
+                    media_type: Some("text/plain; charset=utf-8".into()),
+                },
+                data: ContentData::text(body_block),
+            })
+        });
+        let mut body = serde_json::json!({"key":key, "byteLength":byte_length});
+        if block.len() <= INLINE_BODY_BYTES {
+            body["inline"] = serde_json::to_value(content.data.range(0, block.len())?.as_bytes())?;
+        } else {
+            body["reference"] = serde_json::to_value(ContentRef {
+                database_id: database_id.into(),
+                target: ContentTarget::Body {
+                    owner: owner.clone(),
+                    key,
+                },
+            })?;
+        }
+        contents.insert(content.descriptor.key.clone(), content);
+        body_envelopes.push(body);
+    }
+    let mut envelope = serde_json::json!({"contract":"anywork.chat/1", "type":kind,
+        "data":data, "sourceEffectSeq":source_effect_seq, "sealedAt":sealed_at, "bodies":body_envelopes});
+    if !item.turn_id.is_empty() {
+        envelope["turnId"] = item.turn_id.clone().into();
+    }
+    Ok(ChatDraft {
+        item_id: id.into(),
+        query_class: if conversation {
+            "conversation"
+        } else {
+            "activity"
+        }
+        .into(),
+        parent_id,
+        payload: Arc::from(serde_json::to_vec(&envelope)?),
+        contents: Arc::new(contents),
+    })
 }
 
 /// 动态正文域：只由条目自己的动态事实派生，正文块与生产者共享。
@@ -144,35 +303,35 @@ pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
 /// 超出 u32 的位置/数量返回 Overloaded；问答关联缺失明确失败，不静默丢弃答案。
 pub(crate) fn content_fields(
     state: &ThreadItemState,
-) -> Result<BTreeMap<ChatField, Arc<ContentBlock>>> {
+) -> Result<BTreeMap<BodyKey, Arc<ContentBlock>>> {
     validate_counts(state)?;
     let mut fields = BTreeMap::new();
     match state {
         ThreadItemState::Text(text) => {
-            fields.insert(ChatField::Body, ContentBlock::from_text(text.text()));
+            fields.insert(BodyKey::Body, ContentBlock::from_text(text.text()));
         }
         ThreadItemState::Thinking(thinking) => {
             for (index, chunk) in thinking.summary().iter().enumerate() {
                 fields.insert(
-                    ChatField::Part(PresentationPart::SummaryText(count(index)?)),
+                    BodyKey::Part(PresentationPart::SummaryText(count(index)?)),
                     ContentBlock::from_text(chunk),
                 );
             }
             for (index, chunk) in thinking.content().iter().enumerate() {
                 fields.insert(
-                    ChatField::Part(PresentationPart::ReasoningText(count(index)?)),
+                    BodyKey::Part(PresentationPart::ReasoningText(count(index)?)),
                     ContentBlock::from_text(chunk),
                 );
             }
         }
         ThreadItemState::Tool(tool) => {
             fields.insert(
-                ChatField::host(TOOL_ARGUMENTS_FIELD),
+                BodyKey::host(TOOL_ARGUMENTS_FIELD),
                 ContentBlock::from_text(tool.invocation().arguments()),
             );
             if let Some(output) = streamed_output(tool.state()) {
                 fields.insert(
-                    ChatField::host(TOOL_RESULT_FIELD),
+                    BodyKey::host(TOOL_RESULT_FIELD),
                     ContentBlock::from_text(output),
                 );
             }
@@ -181,7 +340,7 @@ pub(crate) fn content_fields(
             // the static metadata where no budget could ever reach them.
             if let Some(output) = tool.terminal_output() {
                 fields.insert(
-                    ChatField::host(TOOL_RESULT_FIELD),
+                    BodyKey::host(TOOL_RESULT_FIELD),
                     ContentBlock::from_text(output.result()),
                 );
                 if !output.output_artifacts().is_empty() {
@@ -190,7 +349,7 @@ pub(crate) fn content_fields(
                     let encoded =
                         serde_json::Value::Array(output.output_artifacts().to_vec()).to_string();
                     fields.insert(
-                        ChatField::host(TOOL_OUTPUT_ARTIFACTS_FIELD),
+                        BodyKey::host(TOOL_OUTPUT_ARTIFACTS_FIELD),
                         ContentBlock::from_text(&encoded),
                     );
                 }
@@ -288,25 +447,22 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
 }
 
 /// 一个问题标题的内容域身份。
-pub(crate) fn user_input_header_field(question_index: usize) -> ChatField {
-    ChatField::host(format!(
+pub(crate) fn user_input_header_field(question_index: usize) -> BodyKey {
+    BodyKey::host(format!(
         "{TOOL_USER_INPUT_FIELD}question.{question_index}.header"
     ))
 }
 
 /// 一个原问题正文的内容域身份：索引是它在原问题顺序里的位置。
-pub(crate) fn user_input_question_field(question_index: usize) -> ChatField {
-    ChatField::host(format!(
+pub(crate) fn user_input_question_field(question_index: usize) -> BodyKey {
+    BodyKey::host(format!(
         "{TOOL_USER_INPUT_FIELD}question.{question_index}.body"
     ))
 }
 
 /// 一个问题选项标签的内容域身份。
-pub(crate) fn user_input_option_label_field(
-    question_index: usize,
-    option_index: usize,
-) -> ChatField {
-    ChatField::host(format!(
+pub(crate) fn user_input_option_label_field(question_index: usize, option_index: usize) -> BodyKey {
+    BodyKey::host(format!(
         "{TOOL_USER_INPUT_FIELD}question.{question_index}.option.{option_index}.label"
     ))
 }
@@ -315,15 +471,15 @@ pub(crate) fn user_input_option_label_field(
 pub(crate) fn user_input_option_description_field(
     question_index: usize,
     option_index: usize,
-) -> ChatField {
-    ChatField::host(format!(
+) -> BodyKey {
+    BodyKey::host(format!(
         "{TOOL_USER_INPUT_FIELD}question.{question_index}.option.{option_index}.description"
     ))
 }
 
 /// 一个已接受答案值的内容域身份：问题位置 + 该问题答案列表内的序号。
-pub(crate) fn user_input_answer_field(question_index: usize, answer_index: usize) -> ChatField {
-    ChatField::host(format!(
+pub(crate) fn user_input_answer_field(question_index: usize, answer_index: usize) -> BodyKey {
+    BodyKey::host(format!(
         "{TOOL_USER_INPUT_FIELD}answer.{question_index}.{answer_index}"
     ))
 }
@@ -332,7 +488,7 @@ pub(crate) fn user_input_answer_field(question_index: usize, answer_index: usize
 fn user_input_question_fields(
     question_index: usize,
     question: &UserQuestion,
-) -> Vec<(ChatField, &str)> {
+) -> Vec<(BodyKey, &str)> {
     let mut fields = vec![
         (
             user_input_header_field(question_index),
@@ -427,8 +583,8 @@ fn streamed_output(state: &ThreadToolState) -> Option<&str> {
 }
 
 /// 原始记录一段正文的内容域身份。
-fn raw_payload_field(payload_index: usize) -> ChatField {
-    ChatField::host(format!("{RAW_PAYLOAD_FIELD}{payload_index}"))
+fn raw_payload_field(payload_index: usize) -> BodyKey {
+    BodyKey::host(format!("{RAW_PAYLOAD_FIELD}{payload_index}"))
 }
 
 /// 只有正文被清空的终态工具输出，其余结构（附件、退出码、失败原因）保持不变。
@@ -483,7 +639,8 @@ fn clear_arguments(invocation: &ThreadToolInvocation) -> ThreadToolInvocation {
         invocation.call_id().map(str::to_owned),
         invocation.provider_item_id().map(str::to_owned),
     )
-    .with_working_directory(invocation.working_directory().map(str::to_owned));
+    .with_working_directory(invocation.working_directory().map(str::to_owned))
+    .with_presentation_contract(invocation.presentation_contract().map(str::to_owned));
     match invocation.task_id() {
         Some(task_id) => rebuilt.with_task_id(task_id.to_owned()),
         None => rebuilt,

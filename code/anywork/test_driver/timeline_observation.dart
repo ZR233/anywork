@@ -244,7 +244,7 @@ final class TimelineViewportStability {
     final stamp = (
       timeline.threadId,
       timeline.generation,
-      timeline.timelineEpoch,
+      timeline.itemIds.join('\u0000'),
       timeline.itemCount,
       timeline.olderCursor,
       timeline.hasOlder,
@@ -266,8 +266,6 @@ final class TimelineObservation {
     required this.ready,
     required this.mode,
     required this.connection,
-    required this.timelineEpoch,
-    required this.completedThrough,
     required this.loadedCount,
     required this.itemCount,
     required this.itemIds,
@@ -275,10 +273,15 @@ final class TimelineObservation {
     required this.hasOlder,
     required this.loadingOlder,
     required this.olderError,
+    required this.olderErrorCode,
+    required this.olderErrorCorrelationId,
     required this.hasNewOutput,
     required this.items,
-    required this.presentationItems,
-    required this.hiddenPresentationItems,
+    required this.children,
+    required this.appliedSets,
+    required this.appliedPrepends,
+    required this.appliedAppends,
+    required this.firstContentLayout,
   });
 
   /// 当前快照里的展示事实；`timeline` 为 null（没有展示）时返回 null。
@@ -313,30 +316,12 @@ final class TimelineObservation {
       }
       itemIds.add(id);
     }
-    List<TimelinePresentationObservation> presentations(String field) {
-      final rawPresentation = map[field];
-      if (rawPresentation is! List) {
-        throw StateError('timeline.$field is missing');
-      }
-      return List.unmodifiable([
-        for (final value in rawPresentation)
-          if (value is Map)
-            TimelinePresentationObservation.parse(value.cast<String, dynamic>())
-          else
-            throw StateError('timeline.$field item is not an object'),
-      ]);
-    }
-
     return TimelineObservation._(
-      presentationItems: presentations('presentationItems'),
-      hiddenPresentationItems: presentations('hiddenPresentationItems'),
       threadId: _string(map, 'threadId', 'timeline'),
       generation: _int(map, 'generation', 'timeline'),
       ready: _bool(map, 'ready', 'timeline'),
       mode: _string(map, 'mode', 'timeline'),
       connection: _string(map, 'connection', 'timeline'),
-      timelineEpoch: _stringOrNull(map, 'timelineEpoch', 'timeline'),
-      completedThrough: _intOrNull(map, 'completedThrough', 'timeline'),
       loadedCount: _intOrNull(map, 'loadedCount', 'timeline'),
       itemCount: _int(map, 'itemCount', 'timeline'),
       itemIds: List.unmodifiable(itemIds),
@@ -344,8 +329,30 @@ final class TimelineObservation {
       hasOlder: _bool(map, 'hasOlder', 'timeline'),
       loadingOlder: _bool(map, 'loadingOlder', 'timeline'),
       olderError: _stringOrNull(map, 'olderError', 'timeline'),
+      olderErrorCode: _stringOrNull(map, 'olderErrorCode', 'timeline'),
+      olderErrorCorrelationId: _stringOrNull(
+        map,
+        'olderErrorCorrelationId',
+        'timeline',
+      ),
       hasNewOutput: _bool(map, 'hasNewOutput', 'timeline'),
       items: List.unmodifiable(items),
+      children: [
+        for (final child in _requiredList(map, 'children', 'timeline'))
+          TimelineChildrenObservation.parse(
+            (child as Map).cast<String, dynamic>(),
+          ),
+      ],
+      appliedSets: _intOrNull(map, 'appliedSets', 'timeline'),
+      appliedPrepends: _intOrNull(map, 'appliedPrepends', 'timeline'),
+      appliedAppends: _intOrNull(map, 'appliedAppends', 'timeline'),
+      firstContentLayout: map['firstContentLayout'] == null
+          ? null
+          : TimelineContentLayoutObservation.parse(
+              (map['firstContentLayout'] as Map).cast<String, dynamic>(),
+              generation: _int(map, 'generation', 'timeline'),
+              itemIds: itemIds,
+            ),
     );
   }
 
@@ -365,8 +372,6 @@ final class TimelineObservation {
   /// `live` 或 `history`；这是内容发布策略，不是滚动 owner。
   final String mode;
   final String connection;
-  final String? timelineEpoch;
-  final int? completedThrough;
   final int? loadedCount;
   final int itemCount;
   final List<String> itemIds;
@@ -374,22 +379,37 @@ final class TimelineObservation {
   final bool hasOlder;
   final bool loadingOlder;
   final String? olderError;
+  final String? olderErrorCode;
+  final String? olderErrorCorrelationId;
   final bool hasNewOutput;
   final List<TimelineItemObservation> items;
-  final List<TimelinePresentationObservation> presentationItems;
-  final List<TimelinePresentationObservation> hiddenPresentationItems;
+  final List<TimelineChildrenObservation> children;
+  final int? appliedSets;
+  final int? appliedPrepends;
+  final int? appliedAppends;
+  final TimelineContentLayoutObservation? firstContentLayout;
 
-  TimelinePresentationObservation presentationFor(String sourceId) =>
-      presentationItems.singleWhere(
-        (item) => item.memberIds.contains(sourceId),
-      );
-
-  int? appendSeqOfIdentity(String id) {
-    for (final item in items) {
-      if (item.id == id) return item.appendSeq;
+  /// Search only already expanded displays; this never flattens their ordering into Main.
+  Iterable<TimelineItemObservation> get expandedItems sync* {
+    yield* items;
+    for (final child in children) {
+      yield* child.items;
     }
-    for (final item in presentationItems) {
-      if (item.id == id) return item.firstAppendSeq;
+  }
+
+  TimelineChildrenObservation? childrenFor(String parentId) {
+    for (final child in children) {
+      if (child.parentId == parentId) return child;
+    }
+    return null;
+  }
+
+  TimelineChildrenObservation childrenContaining(String itemId) =>
+      children.singleWhere((child) => child.itemIds.contains(itemId));
+
+  TimelineItemObservation? expandedItem(String itemId) {
+    for (final item in expandedItems) {
+      if (item.id == itemId) return item;
     }
     return null;
   }
@@ -424,46 +444,66 @@ final class TimelineObservation {
         );
       }
     }
-    final sourcePositions = {
-      for (var index = 0; index < itemIds.length; index++)
-        itemIds[index]: index,
-    };
-    final assigned = <String>{};
-    final presentationIds = <String>{};
-    if (presentationItems.any((group) => group.kind == 'hidden') ||
-        hiddenPresentationItems.any((group) => group.kind != 'hidden')) {
-      throw StateError('Visible and hidden presentation owners are mixed');
-    }
-    for (final group in [...presentationItems, ...hiddenPresentationItems]) {
-      if (!presentationIds.add(group.id) || group.memberIds.isEmpty) {
-        throw StateError(
-          'Duplicate or empty timeline presentation: ${group.id}',
-        );
-      }
-      var previous = -1;
-      for (final id in group.memberIds) {
-        final position = sourcePositions[id];
-        if (position == null || position <= previous || !assigned.add(id)) {
-          throw StateError(
-            'Presentation lost, reordered or duplicated original item: $id',
-          );
-        }
-        previous = position;
-      }
-    }
-    if (assigned.length != itemCount) {
-      throw StateError(
-        'Presentation does not cover every original timeline item',
-      );
+    if (itemIds.toSet().length != itemIds.length) {
+      throw StateError('Controller contains duplicate Message identities');
     }
   }
 
-  /// canonical 完成项顺序（appendSeq 升序）；用于证明分页前插没有错序。
-  bool get appendSeqAscending {
-    for (var index = 1; index < items.length; index++) {
-      if (items[index].appendSeq <= items[index - 1].appendSeq) return false;
+  /// 原窗口必须作为连续片段保留；前插或追加不能重排／替换旧消息。
+  bool retainsWindow(TimelineObservation previous, {required bool prepend}) {
+    requireConsistentIds();
+    previous.requireConsistentIds();
+    if (threadId != previous.threadId ||
+        generation != previous.generation ||
+        itemIds.length < previous.itemIds.length) {
+      return false;
+    }
+    final offset = prepend ? itemIds.length - previous.itemIds.length : 0;
+    for (var index = 0; index < previous.itemIds.length; index++) {
+      if (itemIds[offset + index] != previous.itemIds[index]) return false;
     }
     return true;
+  }
+
+  /// 分页前插和实时追加可同时发生；旧窗口仍须是完整、连续的原始身份片段。
+  bool retainsContiguousWindow(TimelineObservation previous) {
+    requireConsistentIds();
+    previous.requireConsistentIds();
+    if (threadId != previous.threadId || generation != previous.generation) {
+      return false;
+    }
+    if (previous.itemIds.isEmpty) return true;
+    final start = itemIds.indexOf(previous.itemIds.first);
+    if (start < 0 || start + previous.itemCount > itemCount) return false;
+    for (var index = 0; index < previous.itemCount; index++) {
+      if (itemIds[start + index] != previous.itemIds[index]) return false;
+    }
+    return true;
+  }
+
+  /// Identity retention alone cannot prove which controller operation completed.
+  /// These counters are recorded by the real lease after successful application.
+  void requireAcceptedOperation(
+    TimelineObservation previous, {
+    required bool prepend,
+  }) {
+    final beforeCount = prepend
+        ? previous.appliedPrepends
+        : previous.appliedAppends;
+    final afterCount = prepend ? appliedPrepends : appliedAppends;
+    if (!retainsContiguousWindow(previous) ||
+        previous.appliedSets == null ||
+        previous.appliedSets! <= 0 ||
+        appliedSets != previous.appliedSets ||
+        beforeCount == null ||
+        beforeCount < 0 ||
+        afterCount == null ||
+        afterCount <= beforeCount) {
+      throw StateError(
+        'No qualified ${prepend ? 'Prepend' : 'Append'} acceptance: '
+        'before=${previous.summary()} after=${summary()}',
+      );
+    }
   }
 
   Map<String, Object?> summary() => <String, Object?>{
@@ -472,8 +512,6 @@ final class TimelineObservation {
     'ready': ready,
     'mode': mode,
     'connection': connection,
-    'timelineEpoch': timelineEpoch,
-    'completedThrough': completedThrough,
     'loadedCount': loadedCount,
     'itemCount': itemCount,
     'firstId': itemIds.isEmpty ? null : itemIds.first,
@@ -482,76 +520,148 @@ final class TimelineObservation {
     'hasOlder': hasOlder,
     'loadingOlder': loadingOlder,
     'olderError': olderError,
+    'olderErrorCode': olderErrorCode,
+    'olderErrorCorrelationId': olderErrorCorrelationId,
     'hasNewOutput': hasNewOutput,
+    'appliedSets': appliedSets,
+    'appliedPrepends': appliedPrepends,
+    'appliedAppends': appliedAppends,
+    'firstContentLayout': firstContentLayout?.toJson(),
   };
 }
 
-/// 当前 lease 的只读 GUI 组，不承载正文副本。
-final class TimelinePresentationObservation {
-  TimelinePresentationObservation({
-    required this.id,
-    required this.kind,
-    required this.firstAppendSeq,
-    required this.memberIds,
-    required this.visibleMemberIds,
-    required this.skillPairs,
-    required this.expanded,
+List<dynamic> _requiredList(
+  Map<String, dynamic> map,
+  String key,
+  String owner,
+) {
+  final value = map[key];
+  if (value is! List) throw StateError('$owner.$key is not a list');
+  return value;
+}
+
+final class TimelineChildrenObservation {
+  TimelineChildrenObservation._({
+    required this.parentId,
+    required this.generation,
+    required this.ready,
+    required this.loadedCount,
+    required this.olderCursor,
+    required this.loadingOlder,
+    required this.error,
+    required this.appliedSets,
+    required this.appliedPrepends,
+    required this.appliedAppends,
+    required this.itemIds,
+    required this.items,
   });
-  factory TimelinePresentationObservation.parse(Map<String, dynamic> map) {
-    final ids = map['memberIds'];
-    if (ids is! List || ids.any((value) => value is! String)) {
-      throw StateError('Invalid presentation member identities: $map');
+  factory TimelineChildrenObservation.parse(Map<String, dynamic> map) {
+    final items = [
+      for (final value in _requiredList(map, 'items', 'Children'))
+        TimelineItemObservation._parse((value as Map).cast<String, dynamic>()),
+    ];
+    final ids = _requiredList(map, 'itemIds', 'Children').cast<String>();
+    final count = _int(map, 'loadedCount', 'Children');
+    if (count != items.length ||
+        ids.length != count ||
+        ids.toSet().length != count ||
+        List.generate(
+          count,
+          (index) => items[index].id != ids[index],
+        ).any((bad) => bad)) {
+      throw StateError(
+        'Children controller identity/order/cardinality disagrees',
+      );
     }
-    final visible = map['visibleMemberIds'];
-    if (visible is! List || visible.any((value) => value is! String)) {
-      throw StateError('Invalid presentation visible member identities: $map');
-    }
-    final pairs = map['skillPairs'];
-    if (pairs is! Map) {
-      throw StateError('Presentation skillPairs is missing: $map');
-    }
-    final skillPairs = <String, String>{};
-    for (final entry in pairs.entries) {
-      final key = entry.key;
-      final value = entry.value;
-      if (key is! String || value is! String) {
-        throw StateError('Invalid presentation skill pair: $map');
-      }
-      skillPairs[key] = value;
-    }
-    return TimelinePresentationObservation(
-      id: _string(map, 'id', 'presentation'),
-      kind: _string(map, 'kind', 'presentation'),
-      firstAppendSeq: _int(map, 'firstAppendSeq', 'presentation'),
-      memberIds: List<String>.unmodifiable(ids.cast<String>()),
-      visibleMemberIds: List<String>.unmodifiable(visible.cast<String>()),
-      skillPairs: Map<String, String>.unmodifiable(skillPairs),
-      expanded: _bool(map, 'expanded', 'presentation'),
+    return TimelineChildrenObservation._(
+      parentId: _string(map, 'parentId', 'Children'),
+      generation: _int(map, 'generation', 'Children'),
+      ready: _bool(map, 'ready', 'Children'),
+      loadedCount: count,
+      olderCursor: _stringOrNull(map, 'olderCursor', 'Children'),
+      loadingOlder: _bool(map, 'loadingOlder', 'Children'),
+      error: _stringOrNull(map, 'error', 'Children'),
+      appliedSets: _int(map, 'appliedSets', 'Children'),
+      appliedPrepends: _int(map, 'appliedPrepends', 'Children'),
+      appliedAppends: _int(map, 'appliedAppends', 'Children'),
+      itemIds: List.unmodifiable(ids),
+      items: List.unmodifiable(items),
     );
   }
-  final String id;
-  final String kind;
-  final int firstAppendSeq;
-  final List<String> memberIds;
+  final String parentId;
+  final int generation;
+  final bool ready;
+  final int loadedCount;
+  final String? olderCursor;
+  final bool loadingOlder;
+  final String? error;
+  final int appliedSets;
+  final int appliedPrepends;
+  final int appliedAppends;
+  final List<String> itemIds;
+  final List<TimelineItemObservation> items;
+}
 
-  /// 当前组内可见活动行的成员身份，按 canonical 顺序。
-  ///
-  /// 与 [memberIds] 的差异只有一处派生：成功主技能读取接管的原调用不再单独成行；
-  /// 原始成员仍按自己的身份保留（design/26 §26.8）。
-  final List<String> visibleMemberIds;
-
-  /// 可见技能行接管的原调用：技能成员身份 → `skill_view` 调用条目身份。
-  final Map<String, String> skillPairs;
-  final bool expanded;
+final class TimelineContentLayoutObservation {
+  TimelineContentLayoutObservation._(
+    this.selectionId,
+    this.generation,
+    this.itemId,
+    this.selectionStartedMicros,
+    this.layoutCompletedMicros,
+    this.elapsedMicros,
+  );
+  factory TimelineContentLayoutObservation.parse(
+    Map<String, dynamic> map, {
+    required int generation,
+    required List<String> itemIds,
+  }) {
+    final value = TimelineContentLayoutObservation._(
+      _int(map, 'selectionId', 'layout'),
+      _int(map, 'generation', 'layout'),
+      _string(map, 'itemId', 'layout'),
+      _int(map, 'selectionStartedMicros', 'layout'),
+      _int(map, 'layoutCompletedMicros', 'layout'),
+      _int(map, 'elapsedMicros', 'layout'),
+    );
+    if (value.generation != generation ||
+        !itemIds.contains(value.itemId) ||
+        value.selectionStartedMicros < 0 ||
+        value.elapsedMicros < 0 ||
+        value.elapsedMicros !=
+            value.layoutCompletedMicros - value.selectionStartedMicros) {
+      throw StateError(
+        'firstContentLayout has stale identity or inconsistent same-clock timing',
+      );
+    }
+    return value;
+  }
+  final int selectionId,
+      generation,
+      selectionStartedMicros,
+      layoutCompletedMicros,
+      elapsedMicros;
+  final String itemId;
+  Map<String, Object?> toJson() => {
+    'selectionId': selectionId,
+    'generation': generation,
+    'itemId': itemId,
+    'selectionStartedMicros': selectionStartedMicros,
+    'layoutCompletedMicros': layoutCompletedMicros,
+    'elapsedMicros': elapsedMicros,
+  };
 }
 
 /// 一条 canonical item 的轻量 typed 预览（有界，不是全文）。
 final class TimelineItemObservation {
   TimelineItemObservation._({
     required this.id,
-    required this.appendSeq,
-    required this.sourceEffectSeq,
     required this.sealedAt,
+    required this.compatibility,
+    required this.payloadByteLength,
+    required this.presentationContract,
+    required this.childrenParentId,
+    required this.diagnostic,
     required this.omittedBytes,
     required this.kind,
     required this.status,
@@ -598,18 +708,21 @@ final class TimelineItemObservation {
     final plan = map['plan'];
     final kind = _string(map, 'kind', 'timeline item');
     final channel = _requiredStringOrNull(map, 'channel', 'timeline item');
-    // 频道必须与 canonical kind 对应：文本条目的权威频道不能缺失或被猜成
-    // finalAnswer，非文本条目不允许带频道；未知 kind 直接拒绝而不是放行。
-    _requireChannelForKind(kind, channel);
-    if ((kind == 'plan') != (plan is Map)) {
-      throw StateError('timeline Plan facts do not match the typed item kind');
-    }
+    // Future/invalid/deferred payloads remain observable local diagnostics.
+    // A kind is the current payload type, never a guessed legacy DTO variant.
     return TimelineItemObservation._(
       id: _string(map, 'id', 'timeline item'),
-      appendSeq: _int(map, 'appendSeq', 'timeline item'),
-      sourceEffectSeq: _intOrNull(map, 'sourceEffectSeq', 'timeline item'),
       sealedAt: _intOrNull(map, 'sealedAt', 'timeline item'),
-      omittedBytes: _int(map, 'omittedBytes', 'timeline item'),
+      compatibility: _string(map, 'compatibility', 'timeline item'),
+      payloadByteLength: _intOrNull(map, 'payloadByteLength', 'timeline item'),
+      presentationContract: _stringOrNull(
+        map,
+        'presentationContract',
+        'timeline item',
+      ),
+      childrenParentId: _stringOrNull(map, 'childrenParentId', 'timeline item'),
+      diagnostic: _stringOrNull(map, 'diagnostic', 'timeline item'),
+      omittedBytes: _intOrNull(map, 'omittedBytes', 'timeline item'),
       kind: kind,
       status: _string(map, 'status', 'timeline item'),
       text: _string(map, 'text', 'timeline item'),
@@ -631,19 +744,20 @@ final class TimelineItemObservation {
   }
 
   final String id;
-  final int appendSeq;
-  final int? sourceEffectSeq;
   final int? sealedAt;
-  final int omittedBytes;
+  final String compatibility;
+  final int? payloadByteLength;
+  final String? presentationContract;
+  final String? childrenParentId;
+  final String? diagnostic;
+  final int? omittedBytes;
   final String kind;
   final String status;
 
   /// 已脱敏的有界正文预览；完整字段走详情查看器。
   final String text;
 
-  /// 文本条目的权威频道（`user`/`parentAgent`/`commentary`/`finalAnswer`）；
-  /// 非文本条目为 null。`agentMessage` 同时覆盖 commentary 与 finalAnswer，
-  /// 因此不能用 kind 推断回答。
+  /// 当前 payload 的明确频道；不从作者、名称或类型推断。
   final String? channel;
   final List<TimelineDetailObservation> details;
   final List<TimelineAttachmentObservation> attachments;
@@ -653,10 +767,12 @@ final class TimelineItemObservation {
 
   int get textBytes => utf8.encode(text).length;
 
-  bool get isCommentary => kind == 'agentMessage' && channel == 'commentary';
+  bool get isCommentary => kind == 'text' && channel == 'commentary';
 
-  /// 真正的最终回答：`agentMessage` 且权威频道是 finalAnswer。
-  bool get isFinalAnswer => kind == 'agentMessage' && channel == 'finalAnswer';
+  /// 真正的最终回答：当前 text payload 且明确频道是 final。
+  bool get isFinalAnswer => kind == 'text' && channel == 'final';
+
+  bool get isUserMessage => kind == 'text' && channel == 'user';
 
   TimelineDetailObservation? detail(String field) {
     for (final detail in details) {
@@ -667,18 +783,21 @@ final class TimelineItemObservation {
 
   /// 正文预览是否被截断（存在 text 详情引用且预览短于真实总字节）。
   bool get textTruncated {
-    final ref = detail('text');
+    final ref = detail('body');
     return ref != null && ref.previewBytes < ref.totalBytes;
   }
 
-  int? get textTotalBytes => detail('text')?.totalBytes;
+  int? get textTotalBytes => detail('body')?.totalBytes;
 
   /// The complete immutable Driver-published fields for epoch-stability checks.
   Map<String, Object?> frozenFields() => <String, Object?>{
     'id': id,
-    'appendSeq': appendSeq,
-    'sourceEffectSeq': sourceEffectSeq,
     'sealedAt': sealedAt,
+    'compatibility': compatibility,
+    'payloadByteLength': payloadByteLength,
+    'presentationContract': presentationContract,
+    'childrenParentId': childrenParentId,
+    'diagnostic': diagnostic,
     'omittedBytes': omittedBytes,
     'kind': kind,
     'status': status,
@@ -704,7 +823,7 @@ final class TimelineItemObservation {
             'arguments': tool!.arguments,
             'result': tool!.result,
             'progressBytes': tool!.progressBytes,
-            'appendSeq': tool!.appendSeq,
+            'presentationContract': tool!.presentationContract,
             'denialReason': tool!.denialReason,
             'workingDirectory': tool!.workingDirectory,
             'exitCode': tool!.exitCode,
@@ -838,7 +957,7 @@ final class TimelineToolObservation {
     required this.arguments,
     required this.result,
     required this.progressBytes,
-    required this.appendSeq,
+    required this.presentationContract,
     required this.denialReason,
     required this.workingDirectory,
     required this.exitCode,
@@ -866,7 +985,11 @@ final class TimelineToolObservation {
       arguments: _string(map, 'arguments', 'timeline tool'),
       result: _stringOrNull(map, 'result', 'timeline tool'),
       progressBytes: _int(map, 'progressBytes', 'timeline tool'),
-      appendSeq: _int(map, 'appendSeq', 'timeline tool'),
+      presentationContract: _string(
+        map,
+        'presentationContract',
+        'timeline tool',
+      ),
       denialReason: _stringOrNull(map, 'denialReason', 'timeline tool'),
       workingDirectory: _stringOrNull(map, 'workingDirectory', 'timeline tool'),
       exitCode: _intOrNull(map, 'exitCode', 'timeline tool'),
@@ -882,7 +1005,7 @@ final class TimelineToolObservation {
 
   /// 预览结果字节数：逐次增长即在途真实产出。
   final int progressBytes;
-  final int appendSeq;
+  final String presentationContract;
   final String? denialReason;
   final String? workingDirectory;
   final int? exitCode;
@@ -1237,46 +1360,6 @@ final class VisibleRowDisplacement {
   };
 }
 
-/// canonical kind 与文本频道必须一一对应。
-///
-/// `agentMessage` 同时覆盖 commentary 与 finalAnswer，所以不能只看 kind；反过来，
-/// 推理/工具/Turn 等非文本条目不允许携带频道。未知 kind 视为契约不符而拒绝。
-void _requireChannelForKind(String kind, String? channel) {
-  switch (kind) {
-    case 'userMessage':
-      _requireChannel(kind, channel, const {'user'});
-    case 'parentAgentMessage':
-      _requireChannel(kind, channel, const {'parentAgent'});
-    case 'agentMessage':
-      _requireChannel(kind, channel, const {'commentary', 'finalAnswer'});
-    case 'raw':
-    case 'reasoning':
-    case 'toolCall':
-    case 'agent':
-    case 'turn':
-    case 'plan':
-    case 'inference':
-    case 'skill':
-    case 'file':
-    case 'contextCompaction':
-      if (channel != null) {
-        throw StateError(
-          'timeline item kind $kind must not carry channel $channel',
-        );
-      }
-    default:
-      throw StateError('timeline item kind is not a canonical kind: $kind');
-  }
-}
-
-void _requireChannel(String kind, String? channel, Set<String> allowed) {
-  if (channel == null || !allowed.contains(channel)) {
-    throw StateError(
-      'timeline item kind $kind requires channel in $allowed, got $channel',
-    );
-  }
-}
-
 /// 键必须存在；值为 null 是合法事实，缺失是观测失败。
 String? _requiredStringOrNull(
   Map<String, dynamic> map,
@@ -1316,15 +1399,15 @@ String? _stringOrNull(Map<String, dynamic> map, String key, String owner) {
 
 int _int(Map<String, dynamic> map, String key, String owner) {
   final value = map[key];
-  if (value is! num) throw StateError('$owner.$key is not a number: $value');
-  return value.toInt();
+  if (value is! int) throw StateError('$owner.$key is not an integer: $value');
+  return value;
 }
 
 int? _intOrNull(Map<String, dynamic> map, String key, String owner) {
   final value = map[key];
   if (value == null) return null;
-  if (value is! num) throw StateError('$owner.$key is not a number: $value');
-  return value.toInt();
+  if (value is! int) throw StateError('$owner.$key is not an integer: $value');
+  return value;
 }
 
 bool _bool(Map<String, dynamic> map, String key, String owner) {

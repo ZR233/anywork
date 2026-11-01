@@ -477,12 +477,11 @@ pub struct ThreadTurnHistory {
     pub context_disposition: ThreadContextDisposition,
 }
 
-/// 版本化、自校验的 Timeline 游标。
+/// 版本化、自校验的 Turn durable 历史游标。
 ///
 /// Turn 历史沿用这套 durable 游标：它绑定 Thread 身份、history 数据库身份、条目 ordinal、
-/// 条目 identity 与读取时的 applied write sequence。Timeline 正文本身改用
-/// [`crate::timeline_content::TimelinePageCursor`]，后者只表达严格 `(ordinal, identity)` 边界，
-/// 不要求该条目已落盘。
+/// 条目 identity 与读取时的 applied write sequence。聊天完成记录则使用
+/// [`crate::ChatBatch::before`] 的不透明续页资格，不使用此执行历史游标，也不要求完成项已落盘。
 ///
 /// 游标绑定 Thread 身份、history 数据库身份、条目 ordinal、条目 identity 与读取时的
 /// applied write sequence。任何一项在当前数据库上不成立（Thread 不符、数据库被重建、

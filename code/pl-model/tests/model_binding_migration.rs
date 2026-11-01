@@ -661,6 +661,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     assert!(
         model

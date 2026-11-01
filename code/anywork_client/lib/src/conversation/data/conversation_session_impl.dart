@@ -9,7 +9,6 @@ import '../../studio/stores/thread_directory_store.dart';
 import '../../studio/stores/domain_sync.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
-import '../domain/activity_content.dart';
 import 'conversation_content_impl.dart';
 import 'state_reducer.dart';
 import 'thread_stream_gate.dart';
@@ -30,7 +29,6 @@ final class ConversationSessionImpl implements ConversationSession {
       threadId: threadId,
       transport: transport,
       budget: budget,
-      inputFacts: inputFacts,
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,
@@ -55,8 +53,7 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   ConversationContent get content => _content;
   @override
-  ValueObservation<CurrentActivity?> get currentActivity =>
-      _content.currentActivity;
+  ValueObservation<CurrentProjection?> get current => _content.current;
   @override
   bool get isActive => _content.hasDemand;
   @override

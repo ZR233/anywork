@@ -148,6 +148,8 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 会话 feed、read lease、呈现 owner 和 UI controller 是不同资源。公开 feed facade 组合自己的 feed 与私有 read lease；SDK owner 负责连接、机械批次交付、current 和其他领域发布及操作。Flutter 仅组件 ChatController 持已加载 Message，现有呈现 owner 保留游标、选择代次和资源控制，不另存历史 item/分组集合；资源不跨 AppGraph 共享。
 
+范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
+
 首次 await 前冻结 thread/incarnation、attempt、operationId、草稿/附件版本并登记原始 open Future、取消、consumer、sink 与预算责任。A→B→A 迟到页、命令结果或 finally 只结算原请求，不能覆盖新会话、清新草稿或解除新请求 busy。命令回执与事件观察各自结算，UnknownOutcome 保留冻结意图，不自动重放；权威命令快照仍进入所属 Repository 同一入口。
 
 观察注册与初值读取同一同步边界；可替代快照可合并，可靠完成不能丢中间事实。Provider 构建只读，导航已提交页面身份声明可见需求，不从地址字符串或平行栈猜测。页面仅 detach 自己租约，短暂 observer 重建不销毁仍有所有者的资源；真正释放后以新 handle 的 Set 建展示，不跨会话缓存旧 controller，SDK 不替离屏呈现保存历史。
@@ -364,7 +366,7 @@ provider 销毁仅解绑自身观察、计时器和 UI helper，不关闭业务�
 
 生产列表、详情、编辑、模型资料和每个有独立职责的公共呈现组件必须能通过独立的纯视图入口直接用于官方 Widget Previewer，并具有可发现的预览；私有布局辅助随父组件验证。该入口不连带依赖 Connector、Provider、AppGraph、FRB 或平台业务服务。薄预览包装复用生产主题、本地化与品牌资源，仅注入合成不可变展示值及本地动作，不装配 Client/Repository，不依赖 ProviderScope，不复制 UI 或加入生产业务假分支。复用场景工厂、统一 host 与官方多预览能力表达语义变体、宽窄及文字缩放，避免逐供应商复制组件树或建立平行预览应用。
 
-官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件（如账号模块视图、时间线思考／工具活动组独立组件 `TimelineActivityGroupBlock` 以及输入框上方实时状态栏组件 `ConversationActivityBar`）注册为官方预览；原生工作区与完整时间线列表的装配继续通过既有 demo/Driver 观察，不保留依赖原生壳却无法独立编译的预览注册及无消费者的合成壳。
+官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件（如账号模块视图以及输入框上方实时状态栏组件 `ConversationActivityBar`）注册为官方预览；原生工作区与完整聊天列表的装配继续通过既有 demo/Driver 观察，不保留退役的历史分组组件、依赖原生壳却无法独立编译的预览注册或无消费者的合成壳。
 
 预览交互仅改变本地展示状态或记录动作，不访问真实凭据、文件、账号或网络。Web 预览的编译、热更新与截图可证明呈现解耦和布局，不能证明原生插件、真实数据与关闭行为（见 [24](./24-testing.md)）。官方组件可满足时不增设预览框架或平行应用；常规操作入口归工程文档维护。
 

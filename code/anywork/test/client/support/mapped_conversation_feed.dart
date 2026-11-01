@@ -2,16 +2,23 @@ import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 /// A test-only typed frame projection around a real feed. Identity, ACK and close stay native-owned.
 final class MappedConversationFeed implements ConversationFeed {
-  MappedConversationFeed(this.inner, this.mapState);
+  MappedConversationFeed(
+    this.inner,
+    this.mapState, {
+    ConversationReader? reader,
+  }) : reader = reader ?? inner.reader;
   final ConversationFeed inner;
   final ThreadStreamFrame Function(ThreadStreamFrame frame) mapState;
   @override
   String get threadId => inner.threadId;
   @override
   String get subscriptionId => inner.subscriptionId;
+  @override
+  final ConversationReader reader;
   @override
   Stream<ConversationFrame> get events => inner.events.map(
     (frame) => ConversationFrame(
@@ -40,16 +47,22 @@ class ScriptedConversationFeed implements ConversationFeed {
   ScriptedConversationFeed({
     required this.threadId,
     required this.subscriptionId,
-    required this.baseline,
+    required this.initial,
+    ConversationReader? reader,
     ThreadStreamFrame Function()? state,
-  }) {
+  }) : reader = reader ?? _UnusedReader(threadId) {
     _events = StreamController<ConversationFrame>(
       onListen: () {
         listenCalls++;
         scheduleMicrotask(() {
           if (closed) return;
-          if (state != null) emitState(state());
-          publish(ConversationBaselineEvent(baseline: baseline()));
+          unawaited(() async {
+            if (state != null) {
+              emitState(state());
+              await Future.any([accepted(deliveredFrames), _stopped.future]);
+            }
+            if (!closed) publish(ConversationChatEvent(batch: initial()));
+          }());
         });
       },
       onCancel: requestClose,
@@ -59,10 +72,17 @@ class ScriptedConversationFeed implements ConversationFeed {
   final String threadId;
   @override
   final String subscriptionId;
-  final ConversationBaseline Function() baseline;
+  final ChatBatch Function() initial;
+  @override
+  final ConversationReader reader;
   late final StreamController<ConversationFrame> _events;
   final Set<int> _unacknowledged = {};
   final List<int> acknowledgements = [];
+  final Map<int, Completer<void>> _accepted = {};
+  final _stopped = Completer<void>();
+  Future<void> accepted(int sequence) => acknowledgements.contains(sequence)
+      ? Future.value()
+      : (_accepted[sequence] ??= Completer<void>()).future;
   int listenCalls = 0;
   int deliveredFrames = 0;
   int closeCalls = 0;
@@ -88,8 +108,8 @@ class ScriptedConversationFeed implements ConversationFeed {
     }
     if (terminal) _terminalSent = true;
     if (!terminal) {
-      if (_unacknowledged.length == 2) {
-        throw StateError('Both data credits are owned');
+      if (_unacknowledged.isNotEmpty) {
+        throw StateError('The single data credit is owned');
       }
       _unacknowledged.add(++deliveredFrames);
     }
@@ -109,10 +129,10 @@ class ScriptedConversationFeed implements ConversationFeed {
       throw StateError('ACK does not own a credit');
     }
     acknowledgements.add(deliverySequence);
+    _accepted.remove(deliverySequence)?.complete();
   }
 
-  void emit(ConversationUpdate update) =>
-      publish(ConversationUpdateEvent(update: update));
+  void emit(ChatBatch batch) => publish(ConversationChatEvent(batch: batch));
   void emitState(ThreadStreamFrame frame) =>
       publish(ConversationStateEvent(frame: frame));
 
@@ -122,6 +142,8 @@ class ScriptedConversationFeed implements ConversationFeed {
     // 终帧不获取 credit，也不等待 ACK。
     publish(const ConversationClosedEvent());
     closed = true;
+    _stopped.complete();
+    reader.requestClose();
   }
 
   @override
@@ -132,5 +154,21 @@ class ScriptedConversationFeed implements ConversationFeed {
     // 发送端已真实停止；不能把 public consumer 的 done 当作 native join，
     // 否则 SDK 在 close 之后才取消 iterator 时会与暂停的 consumer 自等待。
     unawaited(_events.close());
+    try {
+      await reader.close();
+    } catch (_) {
+      _closing = null;
+      rethrow;
+    }
   }
+}
+
+final class _UnusedReader extends Fake implements ConversationReader {
+  _UnusedReader(this.threadId);
+  @override
+  final String threadId;
+  @override
+  void requestClose() {}
+  @override
+  Future<void> close() async {}
 }

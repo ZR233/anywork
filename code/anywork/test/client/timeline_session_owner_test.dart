@@ -6,11 +6,28 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/chat_fixtures.dart';
+
 // These tests exercise the presentation owner with the real Flyer controller.
 // SDK transport/ACK and native-reader lifecycles have their own integration tests;
 // the doubles here only expose explicit completion and page handoff barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('selection alone does not attach; first viewport demand attaches only the latest selection', () async {
+    final h = _Harness(viewport: false);
+    h.owner.select('a');
+    h.owner.select('b');
+    expect(h.a.consumer, isNull);
+    expect(h.b.consumer, isNull);
+    expect(h.a.attaches + h.b.attaches, 0);
+    h.owner.updateReadDemand(chatDemand);
+    expect(h.a.consumer, isNull);
+    expect(h.b.consumer, isNotNull);
+    await h.b.deliver(chatBatch([_text('b', 1)]));
+    expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
+    await h.owner.close();
+  });
 
   for (final phase in [
     TimelineConnectionPhase.idle,
@@ -40,10 +57,8 @@ void main() {
         h.owner.select(null);
         expect(h.b.consumer, isNull);
         h.owner.select('b');
-        await h.b.deliver(
-          ConversationBaselineFrame(_baseline('b', [_text('b', 1)])),
-        );
-        expect(h.owner.lease('b')!.items.single.id, 'b-1');
+        await h.b.deliver(chatBatch([_text('b', 1)]));
+        expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
         expect((await h.owner.close()).complete, isTrue);
         expect(h.a.consumer, isNull);
         expect(h.b.consumer, isNull);
@@ -66,10 +81,8 @@ void main() {
       expect(h.owner.source.value?.connectionError, isNull);
       expect(h.a.consumer, isNotNull);
       expect(h.b.consumer, isNull);
-      await h.a.deliver(
-        ConversationBaselineFrame(_baseline('a', [_text('a', 1)])),
-      );
-      expect(h.owner.lease('a')!.items.single.id, 'a-1');
+      await h.a.deliver(chatBatch([_text('a', 1)]));
+      expect(h.owner.lease('a')!.controller.messages.single.id, 'a-1');
       expect((await h.owner.close()).complete, isTrue);
       expect(h.a.consumer, isNull);
       expect(h.b.consumer, isNull);
@@ -89,10 +102,8 @@ void main() {
     expect(h.owner.source.value?.threadId, 'b');
     expect(h.a.consumer, isNull);
     expect(h.b.consumer, isNotNull);
-    await h.b.deliver(
-      ConversationBaselineFrame(_baseline('b', [_text('b', 1)])),
-    );
-    expect(h.owner.lease('b')!.items.single.id, 'b-1');
+    await h.b.deliver(chatBatch([_text('b', 1)]));
+    expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
     await previous.released;
     expect((await h.owner.close()).complete, isTrue);
     expect(h.a.consumer, isNull);
@@ -159,22 +170,18 @@ void main() {
     expect((await h.owner.close()).complete, isTrue);
   });
 
-  test(
-    'unknown seal time is still a completed atom and establishes its cursor',
-    () async {
-      final h = _Harness();
-      h.owner.select('a');
-      final atom = _text('a', 1);
-      await h.a.deliver(ConversationBaselineFrame(_baseline('a', [atom])));
-      final lease = h.owner.lease('a')!;
-      expect(lease.items.single, same(atom));
-      expect(lease.completedCursor?.appendSeq, 1);
-      expect(lease.controller.messages, hasLength(1));
-      expect(h.a.attaches, 1);
-      expect(h.a.refreshes, 0);
-      expect((await h.owner.close()).complete, isTrue);
-    },
-  );
+  test('Set admits a message without synthesizing timestamps or a completion cursor', () async {
+    final h = _Harness();
+    h.owner.select('a');
+    final atom = _text('a', 1);
+    await h.a.deliver(chatBatch([atom]));
+    final lease = h.owner.lease('a')!;
+    expect(lease.controller.messages.single.id, atom.id);
+    expect(lease.controller.messages, hasLength(1));
+    expect(h.a.attaches, 1);
+    expect(h.a.refreshes, 0);
+    expect((await h.owner.close()).complete, isTrue);
+  });
 
   test(
     'reading and return-to-latest preserve the consumer and loaded window',
@@ -184,11 +191,10 @@ void main() {
       final lease = h.owner.lease('a')!;
       await h.owner.dispatch('a', const TimelineEnterHistory());
       await h.a.deliver(
-        ConversationCompletedBatchFrame(_batch('a', [_text('a', 2)])),
+        chatBatch([_text('a', 2)], placement: ChatPlacement.append),
       );
       expect(h.owner.lease('a'), same(lease));
       expect(lease.loadedCount, 2);
-      expect(lease.completedCursor?.appendSeq, 2);
       expect(h.owner.source.value?.hasNewOutput, isTrue);
       await h.owner.returnToLive('a');
       expect(h.owner.lease('a'), same(lease));
@@ -214,7 +220,6 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(operations, isEmpty);
       expect(lease.loadedCount, 1);
-      expect(lease.completedCursor?.appendSeq, 1);
       await observed.cancel();
       await h.owner.close();
     },
@@ -222,31 +227,31 @@ void main() {
 
   test('pending older read does not hold completion acceptance or require a ready feed', () async {
     final h = _Harness();
-    await h.openA([_thinking('a', 3)], hasOlder: true);
+    await h.openA([_text('a', 3)], hasOlder: true);
     final lease = h.owner.lease('a')!;
     h.a.state.publish(const ChatFailed('a', error: 'offline'));
     final loading = h.owner.loadOlder('a', generation: lease.generation);
     final scope = h.a.scopes.single;
     await scope.requested.future;
     await h.a.deliver(
-      ConversationCompletedBatchFrame(_batch('a', [_thinking('a', 4)])),
+      chatBatch([_text('a', 4)], placement: ChatPlacement.append),
     );
     expect(lease.loadedCount, 2);
-    expect(lease.completedCursor?.appendSeq, 4);
     scope.reply.complete(
-      ConversationPage(
-        threadId: 'a',
-        timelineEpoch: 'epoch',
-        items: [_thinking('a', 1), _thinking('a', 2)],
-        before: const ConversationQueryCursor('before-1'),
-        hasOlder: true,
+      ChatBatch(
+        placement: ChatPlacement.prepend,
+        messages: [_text('a', 1), _text('a', 2)],
+        before: 'before-1',
       ),
     );
     await loading;
     expect(lease.loadedCount, 4);
-    expect(lease.controller.messages, hasLength(1));
-    expect(lease.presentationFor('a-1')?.anchorItemId, 'a-3');
-    expect(lease.completedCursor?.appendSeq, 4);
+    expect(lease.controller.messages.map((message) => message.id), [
+      'a-1',
+      'a-2',
+      'a-3',
+      'a-4',
+    ]);
     expect(lease.olderCursor, 'before-1');
     expect(h.owner.source.value?.isLoadingOlder, isFalse);
     expect(h.a.attaches, 1);
@@ -261,73 +266,145 @@ void main() {
     final scope = h.a.scopes.single;
     await scope.requested.future;
     h.owner.select('b');
-    await h.b.deliver(
-      ConversationBaselineFrame(_baseline('b', [_text('b', 1)])),
-    );
+    await h.b.deliver(chatBatch([_text('b', 1)]));
     h.owner.select('a');
-    await h.a.deliver(
-      ConversationBaselineFrame(_baseline('a', [_text('a', 10)])),
-    );
+    await h.a.deliver(chatBatch([_text('a', 10)]));
     final latest = h.owner.lease('a')!;
     expect(latest, isNot(same(first)));
     scope.reply.complete(
-      ConversationPage(
-        threadId: 'a',
-        timelineEpoch: 'epoch',
-        items: [_text('a', 1)],
+      ChatBatch(
+        placement: ChatPlacement.prepend,
+        messages: [_text('a', 1)],
         before: null,
-        hasOlder: false,
       ),
     );
     await oldPage;
     expect(h.owner.lease('a'), same(latest));
-    expect(latest.items.single.id, 'a-10');
-    expect(latest.completedCursor?.appendSeq, 10);
+    expect(latest.controller.messages.single.id, 'a-10');
     await first.released;
     await h.owner.close();
   });
 
-  test(
-    'epoch reset retires only the old presentation and its query scopes',
-    () async {
-      final h = _Harness();
-      await h.openA([_text('a', 1)]);
-      final first = h.owner.lease('a')!;
-      final scope = first.openDetailQueries()!;
-      await h.a.deliver(
-        ConversationResetFrame(
-          _baseline('a', [_text('a', 7)], epoch: 'next-epoch'),
-        ),
-      );
-      expect(scope.isActive, isFalse);
-      final next = h.owner.lease('a')!;
-      expect(next.timelineEpoch, 'next-epoch');
-      expect(next.completedCursor?.appendSeq, 7);
-      expect(next.items.single.id, 'a-7');
-      expect(h.a.attaches, 1);
-      expect(h.a.refreshes, 0);
-      await first.released;
-      await h.owner.close();
-    },
-  );
+  test('new Set retires the old display and its query scopes', () async {
+    final h = _Harness();
+    await h.openA([_text('a', 1)]);
+    final first = h.owner.lease('a')!;
+    final scope = first.openDetailQueries()!;
+    await h.a.deliver(chatBatch([_text('a', 7)]));
+    expect(scope.isActive, isFalse);
+    final next = h.owner.lease('a')!;
+    expect(next.generation, greaterThan(first.generation));
+    expect(next.controller.messages.single.id, 'a-7');
+    expect(h.a.attaches, 1);
+    expect(h.a.refreshes, 0);
+    await first.released;
+    await h.owner.close();
+  });
 
-  test(
-    'a discontinuous completion is rejected without advancing the cursor',
-    () async {
-      final h = _Harness();
-      await h.openA([_text('a', 1)]);
-      final lease = h.owner.lease('a')!;
-      await expectLater(
-        h.a.deliver(
-          ConversationCompletedBatchFrame(_batch('a', [_text('a', 3)])),
-        ),
-        throwsA(isA<ConversationContinuityError>()),
-      );
-      expect(lease.completedCursor?.appendSeq, 1);
-      expect(lease.loadedCount, 1);
-      await h.owner.close();
-    },
-  );
+  for (final returnToA in [false, true]) {
+    test(
+      'component await selection ${returnToA ? 'A-B-A' : 'A-B'} never publishes old Append state',
+      () async {
+        final h = _Harness();
+        await h.openA([_text('a', 1)]);
+        await h.owner.dispatch('a', const TimelineEnterHistory());
+        final old = h.owner.lease('a')!..bind();
+        var switched = false;
+        final operations = old.controller.operationsStream.listen((_) {
+          if (switched) return;
+          switched = true;
+          h.owner.select('b');
+          if (returnToA) h.owner.select('a');
+        });
+        addTearDown(operations.cancel);
+        await h.a.deliver(
+          chatBatch([_text('a', 2)], placement: ChatPlacement.append),
+        );
+        expect(
+          switched,
+          isTrue,
+          reason:
+              'selection must run from the real controller operation stream',
+        );
+        expect(old.isRetired, isTrue);
+        expect(
+          old.isReleased,
+          isFalse,
+          reason: 'mounted subtree still owns the old controller',
+        );
+        expect(h.owner.source.value?.threadId, returnToA ? 'a' : 'b');
+        expect(h.owner.source.value?.hasNewOutput, isFalse);
+        final target = returnToA ? h.a : h.b;
+        await target.deliver(chatBatch([_text(returnToA ? 'a' : 'b', 10)]));
+        final next = h.owner.lease(returnToA ? 'a' : 'b')!;
+        expect(next, isNot(same(old)));
+        expect(next.controller.messages.single.id, returnToA ? 'a-10' : 'b-10');
+        await old.unbind();
+        expect(old.isReleased, isTrue);
+        await h.owner.close();
+      },
+    );
+  }
+
+  for (final failOld in [false, true]) {
+    test(
+      'late old ${failOld ? 'error' : 'success'} and finally preserve new A loading state',
+      () async {
+        final h = _Harness();
+        await h.openA([_text('a', 3)], hasOlder: true);
+        final old = h.owner.lease('a')!;
+        final oldLoad = h.owner.loadOlder('a', generation: old.generation);
+        final oldScope = h.a.scopes.single;
+        await oldScope.requested.future;
+        h.owner.select('b');
+        h.owner.select('a');
+        await h.a.deliver(chatBatch([_text('a', 10)], before: 'new-before'));
+        final next = h.owner.lease('a')!;
+        final newLoad = h.owner.loadOlder('a', generation: next.generation);
+        final newScope = h.a.scopes.last;
+        await newScope.requested.future;
+        if (failOld) {
+          oldScope.reply.completeError(StateError('old failure'));
+        } else {
+          oldScope.reply.complete(
+            chatBatch([_text('a', 1)], placement: ChatPlacement.prepend),
+          );
+        }
+        await oldLoad;
+        expect(h.owner.lease('a'), same(next));
+        expect(next.controller.messages.single.id, 'a-10');
+        expect(next.olderCursor, 'new-before');
+        expect(h.owner.source.value?.olderError, isNull);
+        expect(
+          h.owner.source.value?.isLoadingOlder,
+          isTrue,
+          reason: 'old finally cannot clear the new request',
+        );
+        newScope.reply.complete(
+          chatBatch([_text('a', 9)], placement: ChatPlacement.prepend),
+        );
+        await newLoad;
+        expect(next.controller.messages.map((message) => message.id), [
+          'a-9',
+          'a-10',
+        ]);
+        expect(h.owner.source.value?.isLoadingOlder, isFalse);
+        await old.released;
+        await h.owner.close();
+      },
+    );
+  }
+
+  test('Append without an active Set is rejected', () async {
+    final h = _Harness();
+    h.owner.select('a');
+    await expectLater(
+      h.a.deliver(chatBatch([_text('a', 3)], placement: ChatPlacement.append)),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    expect(h.owner.lease('a'), isNull);
+    await h.owner.close();
+  });
 
   test(
     'page failures preserve the display and retry the same atomic boundary',
@@ -342,15 +419,13 @@ void main() {
       expect(h.owner.source.value?.olderError, isA<StateError>());
       expect(lease.olderCursor, 'before-3');
       expect(lease.loadedCount, 1);
-      scope.reply = Completer<ConversationPage>();
+      scope.reply = Completer<ChatBatch>();
       final retry = h.owner.retryOlder('a', generation: lease.generation);
       scope.reply.complete(
-        ConversationPage(
-          threadId: 'a',
-          timelineEpoch: 'epoch',
-          items: [_text('a', 2)],
+        ChatBatch(
+          placement: ChatPlacement.prepend,
+          messages: [_text('a', 2)],
           before: null,
-          hasOlder: false,
         ),
       );
       await retry;
@@ -379,13 +454,7 @@ void main() {
     expect(lease.isReleased, isFalse);
     expect(scope.isActive, isFalse);
     scope.reply.complete(
-      ConversationPage(
-        threadId: 'a',
-        timelineEpoch: 'epoch',
-        items: [],
-        before: null,
-        hasOlder: false,
-      ),
+      ChatBatch(placement: ChatPlacement.prepend, messages: [], before: null),
     );
     await loading;
     await lease.unbind();
@@ -414,90 +483,23 @@ void main() {
   );
 }
 
-ConversationItem _text(String thread, int seq) => ConversationItem(
-  header: ConversationItemHeader(
-    id: '$thread-$seq',
-    threadId: thread,
-    turnId: 'turn',
-    appendSeq: seq,
-  ),
-  descriptor: ConversationTextDescriptor(
-    channel: ThreadTextChannel.finalAnswer,
-    attachments: const [],
-    outcome: _completed(),
-  ),
-  source: const ConversationContentSource(),
-  fields: [
-    ConversationFieldPreview(
-      field: const ThreadTextFieldView(),
-      text: 'body-$seq',
-      totalBytes: 'body-$seq'.length,
-    ),
-  ],
-);
-
-ConversationItem _thinking(String thread, int seq) => ConversationItem(
-  header: ConversationItemHeader(
-    id: '$thread-$seq',
-    threadId: thread,
-    turnId: 'turn',
-    appendSeq: seq,
-  ),
-  descriptor: ConversationThinkingDescriptor(outcome: _completed()),
-  source: const ConversationContentSource(),
-  fields: const [],
-);
-
-ConversationContentCompleted _completed() => ConversationContentCompleted(
-  CompletedThreadContentView(DateTime.utc(2026)),
-);
-
-ConversationBaseline _baseline(
-  String thread,
-  List<ConversationItem> items, {
-  String epoch = 'epoch',
-  bool hasOlder = false,
-}) => ConversationBaseline(
-  subscriptionId: 'subscription',
-  timelineEpoch: epoch,
-  items: items,
-  before: hasOlder
-      ? ConversationQueryCursor('before-${items.first.header.appendSeq}')
-      : null,
-  hasOlder: hasOlder,
-  completedCursor: ConversationCompletionCursor(
-    timelineEpoch: epoch,
-    appendSeq: items.isEmpty ? 0 : items.last.header.appendSeq,
-  ),
-);
-
-ConversationBatch _batch(String thread, List<ConversationItem> items) =>
-    ConversationBatch(
-      subscriptionId: 'subscription',
-      timelineEpoch: 'epoch',
-      fromSeq: items.first.header.appendSeq - 1,
-      throughSeq: items.last.header.appendSeq,
-      items: items,
-    );
+ChatMessage _text(String thread, int seq) =>
+    chatMessage('$thread-$seq', body: 'body-$seq');
 
 final class _Harness {
-  _Harness() {
+  _Harness({bool viewport = true}) {
     repository.sessions['a'] = _Session('a', a);
     repository.sessions['b'] = _Session('b', b);
     owner = TimelineSessionOwner(client: _Client(repository));
+    if (viewport) owner.updateReadDemand(chatDemand);
   }
   final a = _Content('a');
   final b = _Content('b');
   final repository = _Repository();
   late final TimelineSessionOwner owner;
-  Future<void> openA(
-    List<ConversationItem> items, {
-    bool hasOlder = false,
-  }) async {
+  Future<void> openA(List<ChatMessage> items, {bool hasOlder = false}) async {
     owner.select('a');
-    await a.deliver(
-      ConversationBaselineFrame(_baseline('a', items, hasOlder: hasOlder)),
-    );
+    await a.deliver(chatBatch(items, before: hasOlder ? 'before-3' : null));
   }
 }
 
@@ -527,14 +529,17 @@ final class _Content extends Fake implements ConversationContent {
   final String threadId;
   @override
   final LatestValue<ChatUiState<bool>> state;
-  ConversationCompletionConsumer? consumer;
+  ConversationBatchConsumer? consumer;
   void Function()? onAttach;
   void Function()? onDetach;
   int attaches = 0;
   int refreshes = 0;
   final scopes = <_Scope>[];
   @override
-  Observation attachConsumer(ConversationCompletionConsumer value) {
+  Observation attachConsumer(
+    ConversationBatchConsumer value, {
+    required ReadDemand demand,
+  }) {
     if (consumer != null) throw StateError('duplicate consumer');
     attaches++;
     consumer = value;
@@ -545,16 +550,12 @@ final class _Content extends Fake implements ConversationContent {
     });
   }
 
-  Future<void> deliver(ConversationContentFrame frame) =>
-      consumer!.accept(frame);
+  Future<void> deliver(ChatBatch batch) => consumer!.applyBatch(batch);
   @override
   void refresh() => refreshes++;
   @override
-  ConversationQueryScope openScope({
-    required String timelineEpoch,
-    required int generation,
-  }) {
-    final scope = _Scope(threadId, timelineEpoch, generation);
+  ConversationQueryScope openScope({required int generation}) {
+    final scope = _Scope(threadId, generation, consumer!);
     scopes.add(scope);
     return scope;
   }
@@ -580,25 +581,32 @@ final class _Observation implements Observation {
 }
 
 final class _Scope extends Fake implements ConversationQueryScope {
-  _Scope(this.threadId, this.timelineEpoch, this.generation);
+  _Scope(this.threadId, this.generation, this.consumer);
+  final ConversationBatchConsumer consumer;
   @override
   final String threadId;
-  @override
-  final String timelineEpoch;
   @override
   final int generation;
   @override
   bool isActive = true;
   bool failClose = false;
   final requested = Completer<void>();
-  Completer<ConversationPage> reply = Completer<ConversationPage>();
+  Completer<ChatBatch> reply = Completer<ChatBatch>();
   Future<void>? _reading;
   final boundaries = <String?>[];
   @override
-  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
-    boundaries.add(before?.token);
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    boundaries.add(before);
     if (!requested.isCompleted) requested.complete();
-    final result = reply.future;
+    // Match the SDK boundary: resolve only after the captured consumer admits
+    // the batch. Retired scopes never redirect a page into a later consumer.
+    final result = reply.future.then((batch) async {
+      if (isActive) await consumer.applyBatch(batch);
+      return batch;
+    });
     _reading = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }

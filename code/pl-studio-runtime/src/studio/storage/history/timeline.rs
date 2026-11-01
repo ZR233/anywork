@@ -1,12 +1,19 @@
-//! Immutable completion storage. Execution ordinals are consulted only at the migration boundary.
+//! Published pre-schema-12 conversion and validation only. Normal history uses conversation.rs.
 
 use super::*;
-use crate::studio::runtime::{
-    chat_item::{decode_record, encode_record, legacy_completion_drafts},
-    timeline_content::meta::TimelineMeta,
-};
-use pl_core::chat::ChatItemParts;
-use pl_protocol::TimelineDescriptor;
+#[path = "timeline/codec.rs"]
+pub(super) mod codec;
+#[path = "timeline/descriptor.rs"]
+pub(super) mod descriptor;
+#[path = "timeline/frozen.rs"]
+pub(super) mod frozen;
+use codec::{TimelineMeta, decode_record, encode_record, legacy_completion_drafts};
+use descriptor::TimelineDescriptor;
+use frozen::{ChatItem, ChatItemParts};
+pub(super) struct ChatHistoryPage {
+    pub(super) items: Vec<ChatItem>,
+    pub(super) has_more: bool,
+}
 
 /// The indexed facts and the canonical, current-codec payload of one immutable completion.
 /// All columns are checked against the decoded record before it leaves storage.
@@ -185,59 +192,10 @@ pub(super) async fn read_item(
 pub(super) fn validate_page(ceiling: u64, limit: usize) -> Result<()> {
     integer(ceiling)?;
     ensure!(
-        (1..=pl_core::chat::MAX_PAGE_ITEMS).contains(&limit),
+        (1..=100).contains(&limit),
         ChatError::InvalidArgument("timeline page limit must be in 1..=100".into())
     );
     Ok(())
-}
-
-pub(super) async fn page(
-    db: &impl ConnectionTrait,
-    thread_id: &str,
-    before: Option<&ChatCursor>,
-    ceiling: u64,
-    limit: usize,
-) -> Result<ChatHistoryPage> {
-    validate_page(ceiling, limit)?;
-    if let Some(cursor) = before {
-        ensure!(
-            cursor.append_seq > 0 && !cursor.item_id.is_empty(),
-            ChatError::InvalidArgument(
-                "timeline cursor requires a positive sequence and identity".into()
-            )
-        );
-        if let Some(row) = db
-            .query_one_raw(statement(
-                "SELECT record_id FROM timeline_records WHERE append_seq=?",
-                vec![integer(cursor.append_seq)?.into()],
-            ))
-            .await?
-        {
-            ensure!(
-                row.try_get::<String>("", "record_id")? == cursor.item_id,
-                ChatError::InvalidArgument(
-                    "timeline cursor sequence names a different identity".into()
-                )
-            );
-        }
-    }
-    let (sql, values) = match before {
-        Some(cursor) => (
-            "SELECT append_seq,record_id FROM timeline_records
-             WHERE append_seq<=? AND append_seq<? ORDER BY append_seq DESC LIMIT ?",
-            vec![
-                integer(ceiling)?.into(),
-                integer(cursor.append_seq)?.into(),
-                integer(limit + 1)?.into(),
-            ],
-        ),
-        None => (
-            "SELECT append_seq,record_id FROM timeline_records
-             WHERE append_seq<=? ORDER BY append_seq DESC LIMIT ?",
-            vec![integer(ceiling)?.into(), integer(limit + 1)?.into()],
-        ),
-    };
-    read_page(db, thread_id, sql, values, limit, true).await
 }
 
 pub(super) async fn page_after(
@@ -370,4 +328,70 @@ pub(super) async fn migrate(db: &impl ConnectionTrait, thread_id: &str) -> Resul
         "atomic timeline backfill count does not match its completed prefix"
     );
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) async fn page(
+    db: &impl ConnectionTrait,
+    thread_id: &str,
+    before: Option<&ChatCursor>,
+    ceiling: u64,
+    limit: usize,
+) -> Result<ChatHistoryPage> {
+    validate_page(ceiling, limit)?;
+    if let Some(cursor) = before {
+        ensure!(
+            cursor.append_seq > 0 && !cursor.item_id.is_empty(),
+            ChatError::InvalidArgument(
+                "timeline cursor requires a positive sequence and identity".into()
+            )
+        );
+        if let Some(row) = db
+            .query_one_raw(statement(
+                "SELECT record_id FROM timeline_records WHERE append_seq=?",
+                vec![integer(cursor.append_seq)?.into()],
+            ))
+            .await?
+        {
+            ensure!(
+                row.try_get::<String>("", "record_id")? == cursor.item_id,
+                ChatError::InvalidArgument(
+                    "timeline cursor sequence names a different identity".into()
+                )
+            );
+        }
+    }
+    let (sql, values) = match before {
+        Some(cursor) => (
+            "SELECT append_seq,record_id FROM timeline_records
+             WHERE append_seq<=? AND append_seq<? ORDER BY append_seq DESC LIMIT ?",
+            vec![
+                integer(ceiling)?.into(),
+                integer(cursor.append_seq)?.into(),
+                integer(limit + 1)?.into(),
+            ],
+        ),
+        None => (
+            "SELECT append_seq,record_id FROM timeline_records
+             WHERE append_seq<=? ORDER BY append_seq DESC LIMIT ?",
+            vec![integer(ceiling)?.into(), integer(limit + 1)?.into()],
+        ),
+    };
+    read_page(db, thread_id, sql, values, limit, true).await
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct ChatCursor {
+    pub append_seq: u64,
+    pub item_id: String,
+}
+#[cfg(test)]
+impl ChatCursor {
+    pub(super) fn of(_: &pl_core::chat::TimelineEpoch, item: &ChatItem) -> Self {
+        Self {
+            append_seq: item.append_seq,
+            item_id: item.item_id.clone(),
+        }
+    }
 }

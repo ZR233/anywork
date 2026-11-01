@@ -424,6 +424,11 @@ impl LiveSubscription {
                     });
                 }
             }
+            ThreadLiveEvent::UnframedCommit { sequence } => {
+                if sequence > self.applied {
+                    self.lagged(1);
+                }
+            }
             ThreadLiveEvent::Rebase { dropped } => self.lagged(dropped),
         }
     }
@@ -1056,6 +1061,11 @@ mod storage_fault_tests {
             .context("history observer shutdown")?;
 
         let runtime = StudioRuntime::initialize(options()).await?;
+        // Isolate the catalog-to-State projection before creating its execution owner.
+        // Independent model/tool refresh legitimately enqueues Core updates on settings changes;
+        // join those producers so the unchanged-revision assertion measures only this projection.
+        runtime.stop_model_refresh().await?;
+        runtime.stop_tool_refresh().await?;
         let mut subscription = runtime
             .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
                 thread_id: thread.id.clone(),
@@ -1179,6 +1189,27 @@ mod storage_fault_tests {
         })
         .await
         .context("delayed baseline frames")??;
+        if let SubscriptionSource::Live(live) = &mut subscription.source {
+            let revision = live.revision;
+            let epoch = live.epoch;
+            let pending = live.pending.len();
+            live.apply(ThreadLiveEvent::UnframedCommit {
+                sequence: live.applied,
+            });
+            assert_eq!(live.revision, revision);
+            assert_eq!(live.epoch, epoch);
+            assert_eq!(live.pending.len(), pending);
+            live.apply(ThreadLiveEvent::UnframedCommit {
+                sequence: live.applied + 1,
+            });
+            assert_eq!(live.epoch, epoch + 1);
+            assert_eq!(live.pending.len(), 1);
+            assert!(matches!(
+                live.pending.front(),
+                Some(ThreadSubscriptionUpdate::Notification { notification })
+                    if matches!(&notification.notification, ThreadNotification::Lagged { dropped: 1 })
+            ));
+        }
         // Restore the real owner feed retained throughout the injection.
         if let SubscriptionSource::Live(live) = &mut subscription.source {
             live.feed = original_feed;

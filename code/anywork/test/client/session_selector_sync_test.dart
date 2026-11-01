@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/mapped_conversation_feed.dart';
 
 import 'package:anywork_client/conversation_ports.dart';
@@ -481,7 +482,9 @@ void main() {
   });
 
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
-    final workspaceId = container.read(selectionStoreProvider).selectedProjectId!;
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
 
     await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
     await tester.pumpAndSettle();
@@ -492,7 +495,10 @@ void main() {
     await tester.enterText(input, '新会话正文');
     await tester.pumpAndSettle();
     expect(
-      container.read(startSessionControllerProvider).forProject(workspaceId).text,
+      container
+          .read(startSessionControllerProvider)
+          .forProject(workspaceId)
+          .text,
       '新会话正文',
     );
 
@@ -524,7 +530,9 @@ void main() {
   });
 
   testWidgets('起始页Recovery诊断完整可滚动且附件错误不被遮蔽', (tester) async {
-    final workspaceId = container.read(selectionStoreProvider).selectedProjectId!;
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
     final current = graph.client.recovery.state.value;
     final detail = List.filled(12, '项目工作区需要检查').join('，');
     graph.client.recovery.apply(
@@ -652,6 +660,7 @@ void main() {
       // The engine translates Enter into the field's text input action; sending
       // that action is the real Enter submission path shared with the button.
       // 模拟提交后仍可见的会话宿主：创建前没有选中会话，不会提前产生 feed。
+      graph.timeline.updateReadDemand(chatDemand);
       graph.setConversationPageVisible(true);
       await tester.testTextInput.receiveAction(TextInputAction.send);
       await tester.pump();
@@ -726,7 +735,11 @@ void main() {
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
       await graph.client.bootstrap();
-      await (graph..setConversationPageVisible(true)).client.directoryCommands
+      await (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread(threadId);
       // ComposerDockConnector 只在 Client 已持有该会话草稿时渲染输入区。
       graph.client.drafts.composer(threadId);
@@ -1159,10 +1172,11 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     return MappedConversationFeed(
-      await super.openConversationFeed(threadId, resumeAfter: resumeAfter),
+      await super.openConversationFeed(threadId, scope: scope, demand: demand),
       (frame) => switch (frame) {
         ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
           workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),

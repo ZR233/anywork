@@ -62,15 +62,9 @@ final class _DynamicSkillActivity {
           ['failed', 'cancelled'].contains(turnStatus(snapshot)),
     );
     turn = turnId(settled)!;
-    timeline = journey._timeline(settled);
-    final start = timeline.itemIds.indexOf(inputId);
-    if (start < 0) throw StateError('dynamic input $inputId is not canonical');
-    window = [
-      for (final id in timeline.itemIds.skip(start)) timeline.item(id)!,
-    ];
-    if (window.where((item) => item.kind == 'userMessage').length != 1) {
-      throw StateError('dynamic calls crossed an input/Turn boundary');
-    }
+    await journey._readExpandedLatest();
+    timeline = journey._timeline(await journey.snapshot());
+    window = journey._latestTurnItems(timeline);
     final calls = [
       for (final item in window)
         if (item.tool != null) item,
@@ -151,7 +145,7 @@ final class _DynamicSkillActivity {
     final skill = journey._single(
       journey._windowSkillItems(window, _dynamicViewedName),
     );
-    final group = journey._activityGroupFor(timeline, skill.id, 'dynamic Turn');
+    final group = journey._childrenFor(timeline, skill.id, 'dynamic Turn');
     final paired = journey._requirePairing(
       timeline,
       group,
@@ -183,7 +177,7 @@ final class _DynamicSkillActivity {
       },
     };
 
-    await journey._expandTimelineGroup(group);
+    await journey._openChildren(group);
     await _captureDetail(view, 'dynamic-view-new', skill: skill);
     await _captureDetail(
       _call('skill-dynamic-added-call', 'skills_list', 'succeeded'),
@@ -198,7 +192,7 @@ final class _DynamicSkillActivity {
       'dynamic-view-deleted',
     );
     journey.checks['dynamicCanonicalDetailsReadable'] = true;
-    await journey._collapseTimelineGroup(skill.id);
+    await journey._closeChildren(skill.id);
     await journey._returnToLiveEdge();
   }
 
@@ -343,38 +337,17 @@ final class _DynamicSkillActivity {
     // Optional waits can take this activity past the lazy-list threshold. Find
     // the group's own scrollable first, without requiring the target member to
     // be mounted before a real scroll can reveal it.
-    final group = journey
+    final child = journey
         ._timeline(await journey.snapshot())
-        .presentationFor(call.id);
-    await journey._expandTimelineGroup(group);
-    await journey._scrollHeaderIntoView(
-      find.byValueKey('timeline-activity-summary-${group.id}'),
-      label,
+        .childrenContaining(call.id);
+    await journey._openChildren(child);
+    await journey._scopes.revealItem(call.id);
+    final header = find.descendant(
+      of: find.byValueKey('timeline-tool-details:${call.id}'),
+      matching: find.byType('TimelineActivityRow'),
+      firstMatchOnly: true,
     );
-    final header = skill == null
-        ? find.descendant(
-            of: find.byValueKey('timeline-tool-details:${call.id}'),
-            matching: find.byType('TimelineActivityRow'),
-            firstMatchOnly: true,
-          )
-        : find.byValueKey('timeline-skill-activation-${skill.id}');
-    final tile = skill == null
-        ? find.byValueKey('timeline-tool-details:${call.id}')
-        : find.ancestor(
-            of: header,
-            matching: find.byType('ExpansionTile'),
-            firstMatchOnly: true,
-          );
-    await journey.driver.scrollUntilVisible(
-      find.descendant(
-        of: find.byValueKey('timeline-row-${group.id}'),
-        matching: find.byType('Scrollable'),
-        firstMatchOnly: true,
-      ),
-      header,
-      dyScroll: -80,
-      timeout: const Duration(seconds: 20),
-    );
+    final tile = find.byValueKey('timeline-tool-details:${call.id}');
     await journey._scrollHeaderIntoView(header, label);
     final before = await journey.driver.sendCommand(ToolProbe(tile, 'observe'));
     final sample = (before['samples'] as List).last as Map;

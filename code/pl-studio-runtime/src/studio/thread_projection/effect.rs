@@ -171,6 +171,17 @@ pub(in crate::studio) fn project_effect_items(
         }
     }
 
+    for member in effect.model_members.iter() {
+        let mut projected = super::responses::project_model_member(
+            &thread.id,
+            member,
+            effect.sequence,
+            effect.committed_at,
+        )?;
+        canonicalize(&mut projected, existing, reserved, effect.committed_at);
+        items.extend(projected);
+    }
+
     if let Some(attempt) = &effect.attempt {
         turn_ids.insert(attempt.turn_id.as_str());
         let current = attempt;

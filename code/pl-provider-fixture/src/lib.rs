@@ -2551,6 +2551,14 @@ pub fn gui_timeline_history_20k_script() -> Vec<Step> {
             0,
         );
     }
+    push_timeline_history_20k_batch(
+        &mut steps,
+        "switch",
+        1,
+        "Prepare timeline switch reference session".into(),
+        1,
+        0,
+    );
     for batch in 1..=GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES {
         push_timeline_history_20k_batch(
             &mut steps,
@@ -5299,7 +5307,7 @@ mod timeline_history_20k_tests {
         let required: Vec<&Step> = script.iter().filter(|step| !step.optional).collect();
         assert_eq!(
             required.len(),
-            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES + GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES
+            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES + 1 + GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES
         );
         assert_eq!(GUI_TIMELINE_HISTORY_20K_TEXT.len(), 32);
 
@@ -5310,10 +5318,12 @@ mod timeline_history_20k_tests {
             let (phase, batch, expected_items, expected_step_millis) =
                 if index < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
                     ("seed", index + 1, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS, 0)
+                } else if index == GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+                    ("switch", 1, 1, 0)
                 } else {
                     (
                         "growth",
-                        index - GUI_TIMELINE_HISTORY_20K_SEED_BATCHES + 1,
+                        index - GUI_TIMELINE_HISTORY_20K_SEED_BATCHES,
                         GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS,
                         GUI_TIMELINE_HISTORY_20K_GROWTH_STEP_MILLIS,
                     )
@@ -5342,6 +5352,7 @@ mod timeline_history_20k_tests {
         assert_eq!(
             completed_text_items,
             GUI_TIMELINE_HISTORY_20K_SEED_BATCHES * GUI_TIMELINE_HISTORY_20K_SEED_ITEMS
+                + 1
                 + GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES * GUI_TIMELINE_HISTORY_20K_GROWTH_ITEMS
         );
     }

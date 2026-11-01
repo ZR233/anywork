@@ -234,6 +234,8 @@ impl CurrentProjection {
 pub struct CurrentTurnHead {
     pub id: String,
     pub phase: TurnPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children_parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -266,6 +268,9 @@ pub enum CurrentContentRole {
 pub struct CurrentContentPreview {
     pub id: String,
     pub role: CurrentContentRole,
+    /// Original canonical text channel; display role alone never grants outbound eligibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_channel: Option<crate::ThreadTextChannel>,
     pub text: String,
     pub reference: ContentRef,
 }

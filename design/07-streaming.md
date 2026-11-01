@@ -65,6 +65,22 @@ FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，�
 - **快照点查与技能激活通知**：FRB 的 `readThreadSnapshot` 与 HTTP 的 `GET /api/v1/threads/{thread_id}` 调用同一快照查询入口，返回不含历史条目的当前线程完整状态。技能（`Skill`）激活通过常规的终态技能条目与 `threadRuntimeUpdated` 通知表达，激活来源为强类型的 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置为类型化资源基址（resource base），时间线据此区分“智能体调用激活”与“用户手动激活”（压缩重置与冷恢复语义见 [10](./10-skills.md) §10.6）。
 - **滞后重同步与心跳**：产品流发生滞后或收到客户端携带 `Last-Event-ID` 的重连请求时，立即下发 `stale` 事件要求客户端重读 `/api/v1/state`。SSE 连接每 15 秒发送一次注释行心跳（comment heartbeat），心跳不占用业务序号，且 FRB 与 HTTP 各自的传输缓冲区互不共享序号或取消句柄。会话标题的自动生成与提交统一通过 `ThreadDirectoryChanged` 增量事件发布（见 [18](./18-studio-state.md)），不设平行的标题通知帧。
 
+### HTTP 读取资格的传递
+
+会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选 `parentId` 选择 Children，省略时选择 Main。成功打开后，响应头 `X-Anywork-Conversation` 返回该原生 feed 的订阅身份。后续独立查询必须在同名请求头携带它，并与路径中的 Thread 一起校验；它只定位原 feed 持有的 read lease，不替代调用方的访问授权，也不作为完成游标。
+
+HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
+
+| 方法与 Thread 内路径 | 请求内容 | 返回内容 |
+| --- | --- | --- |
+| `POST /chat/older` | before、demand | Prepend ChatBatch |
+| `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
+| `POST /contents/read` | reference、range | ContentWindow |
+| `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |
+| `POST /current/page` | reference、continuation、demand | CurrentCollectionPage |
+
+这些路径均以 `/api/v1/threads/{thread_id}` 为前缀，复用 [26](./26-timeline-content.md) 的同形请求字段和产品结果。它们直接借原 read lease，等待不会占用会话 SSE 的发送位置或信用；内容 watch 结束只关闭自身观察。会话 SSE 发送继续使用有界单帧背压，独立查询不确认会话流的数据帧。
+
 ## 7.7 实时运行事实与前端细粒度投影
 
 会话各领域版本独立，执行相关轮次、活动与交互由所属 owner 维护一致提交；前端按字段选择不可变当前切片。统计、上下文、配置、创作不共享一个触发全工作区重建的全局 revision，完成历史也不随 token 或计时更新。
@@ -104,5 +120,11 @@ FRB 保留单 producer，每句柄最多一个未确认普通数据批次（包�
 SDK feed owner 唯一发送 ACK：Chat 在 applyBatch 完成并复核原 lease 后 ready，State 在所属 Repository 提交后 ready，只确认同一句柄连续前缀，后 State 不越过未接纳 Chat。终态先分类，不进入普通连续序号/重复过滤，作为同一消费链的资格屏障，其后不公开旧数据。重复旧 ACK 幂等，未发送/其他句柄 ACK 明确拒绝；转投无界队列不是接纳。
 
 公开 facade 组合 feed 与私有 read lease，loadOlder 锁外直接查询，不获取 producer 挂起 recv/credit 所持 native feed 锁，不排进其命令队列、不带 delivery sequence 或 ACK。打开前登记取消与汇合责任，尚未启动 events 就退役也要回收。producer 终止只关闭自己的 feed，已准入 query 仍由 read owner 收束；显式 requestClose 同步封闭二者新准入，close 分别等待，任一侧失败仍收束另一侧并保留 unresolved 责任。外部另开的 reader 和共享执行不因此关闭；取消一次等待、Stream.cancel 或丢句柄不等于 join。
+
+正文 watch 沿用领域当前态的按需领取方式，不用裸 StreamSink 承担取消或背压证明。FRB facade 内登记不透明 watch 身份，`openContentWatch(reference,range)` 建立原 read lease 的范围观察，`nextContentWindow(watchId)` 至多一个 Future 在途，返回当前有界 ContentWindow 或 EOF；只有消费当前结果后才领取后继。同一 watch 的重叠领取明确拒绝，源变化唤醒等待，允许合并中间窗口，不定时轮询、不推原始文本 delta，也不占聊天流信用或增加 ACK。
+
+`requestCloseContentWatch(watchId)` 同步封闭并取消该 watch，`closeContentWatch(watchId)` 等待在途领取和原生观察真实结束后才移除；失败保留原身份供重试。SDK `watchContent` 将这一能力映射为单消费者 Stream，暂停时停止领取，取消／折叠／原显示租约退役时先请求取消再 join。facade 显式关闭覆盖所有自有 watch 及 feed/read 两侧，但单独关闭 watch 不关闭原 read lease 或共享执行。每个 watch 只保留一个待取最新来源及一个在途窗口，range 与实际传输编码受内容窗口上限约束，活跃 watch 数受有界资源准入。
+
+传输端 `ConversationReader.watchContent` 返回显式 `ConversationContentWatch`，只提供 `windows` 单消费者 Stream、同步 `requestClose()` 与可重试 `close()`；SDK read scope 持有这个原观察句柄，页面侧 `ConversationQueryScope.watchContent` 仍只暴露 Stream。它复用现有显式观察资源模式，不增加内容来源或缓存。窗口流的取消先停止交付并请求取消，原生 join 由句柄的 `close()` 负责；SDK 收束订阅和原句柄两侧，任一失败仍尝试另一侧。不能用重复 `StreamSubscription.cancel()` 代替重试原 watch 的 join，也不能仅因 Stream done、取消 Future 结束或 facade 的其他侧成功就释放该观察预算。EOF、错误和退役均须收束原句柄；失败保留原身份与未决责任，后续明确重试 `close()`，不重开观察来冒充回收。
 
 页面销毁只解除自己的观察租约；最后观察退出才由领域 owner 收束共享 feed，不停止 Session、Turn、writer、后台任务或其他消费者。presentation detach 取消未接纳交付并退出对应观察，不提前 ACK。应用退出仍由唯一协调器负责，机器人发送确认遵循 [27](./27-bots.md)。

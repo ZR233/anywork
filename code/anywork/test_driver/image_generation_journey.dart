@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
+import 'timeline_scope_driver.dart';
 
 /// Real-provider journey for the asynchronous image tools.
 ///
@@ -61,7 +63,7 @@ Future<void> main(List<String> args) async {
       return;
     }
     if (captureExisting) {
-      final snapshot = await driver.readSnapshot();
+      final snapshot = await TimelineScopeDriver.session(driver).openLatest();
       final generated = _generatedFromSnapshot(snapshot);
       final card = _cardFromSnapshot(snapshot);
       if (generated == null || card == null) {
@@ -235,8 +237,12 @@ Future<_GeneratedImage> _waitForGeneratedImage(
   final deadline = DateTime.now().add(const Duration(minutes: 8));
   Map<String, dynamic>? last;
   while (DateTime.now().isBefore(deadline)) {
-    final snapshot = await driver.readSnapshot();
+    var snapshot = await driver.readSnapshot();
     last = snapshot;
+    if (_workspaceIdle(snapshot)) {
+      snapshot = await TimelineScopeDriver.session(driver).openLatest();
+      last = snapshot;
+    }
     final generated = _generatedFromSnapshot(snapshot);
     if (generated != null && _workspaceIdle(snapshot)) {
       await _writeJson('${output.path}/snapshot.json', snapshot);
@@ -257,8 +263,12 @@ Future<_ImageCard> _waitForCard(
   final deadline = DateTime.now().add(const Duration(minutes: 8));
   Map<String, dynamic>? last;
   while (DateTime.now().isBefore(deadline)) {
-    final snapshot = await driver.readSnapshot();
+    var snapshot = await driver.readSnapshot();
     last = snapshot;
+    if (_workspaceIdle(snapshot)) {
+      snapshot = await TimelineScopeDriver.session(driver).openLatest();
+      last = snapshot;
+    }
     final card = _cardFromSnapshot(snapshot);
     if (card != null && _workspaceIdle(snapshot)) {
       await _writeJson('${output.path}/card-snapshot.json', snapshot);
@@ -302,48 +312,41 @@ _GeneratedImage? _generatedFromSnapshot(Map<String, dynamic> snapshot) {
 }
 
 _ImageCard? _cardFromSnapshot(Map<String, dynamic> snapshot) {
-  final timeline = snapshot['timeline'];
-  if (timeline is! Map) return null;
-  final presentations = timeline['presentationItems'];
-  if (presentations is! List) return null;
-  final items = {
-    for (final item in _timelineItems(snapshot)) '${item['id']}': item,
-  };
-  for (final presentation in presentations) {
-    if (presentation is! Map || presentation['kind'] != 'imageCard') continue;
-    final members = presentation['memberIds'];
-    if (members is! List) continue;
-    for (final member in members) {
-      final item = items['$member'];
-      if (item == null) continue;
-      final tool = item['tool'];
-      if (tool is! Map || tool['name'] != 'show_image') continue;
-      final attachments = item['attachments'];
-      if (tool['status'] != 'succeeded' ||
-          attachments is! List ||
-          attachments.isEmpty) {
-        continue;
-      }
-      return _ImageCard(
-        presentationId: '${presentation['id']}',
-        tool: tool,
-        attachments: attachments,
-      );
+  for (final item in _timelineItems(snapshot)) {
+    final tool = item['tool'];
+    // `tool` exists only when the current renderer decoded the actual marker.
+    if (tool is! Map || tool['name'] != 'show_image') continue;
+    final attachments = item['attachments'];
+    if (tool['status'] != 'succeeded' ||
+        attachments is! List ||
+        attachments.isEmpty) {
+      continue;
     }
+    return _ImageCard(
+      itemId: item['id'] as String,
+      tool: tool,
+      attachments: attachments,
+    );
   }
   return null;
 }
 
-/// Canonical preview items of the current display generation.
+/// Only the current, explicitly opened Children; no implicit history query.
 Iterable<Map<dynamic, dynamic>> _timelineItems(
   Map<String, dynamic> snapshot,
 ) sync* {
-  final timeline = snapshot['timeline'];
-  if (timeline is! Map) return;
-  final items = timeline['items'];
-  if (items is! List) return;
-  for (final item in items) {
-    if (item is Map) yield item;
+  final timeline = TimelineObservation.parse(snapshot);
+  final turn = timeline.items.lastWhere(
+    (item) => item.kind == 'turn' && item.childrenParentId != null,
+  );
+  final child = timeline.childrenFor(turn.childrenParentId!);
+  if (child == null || !child.ready || child.appliedSets == 0) {
+    throw StateError(
+      'Latest completed image Turn has no ready expanded Children',
+    );
+  }
+  for (final item in child.items) {
+    yield item.frozenFields();
   }
 }
 
@@ -355,20 +358,15 @@ Future<void> _captureCard(
 ) async {
   final attachments = card.attachments;
   final first = attachments.first as Map;
-  final callId = card.tool['callId'] ?? card.tool['toolCallId'];
+  final callId = card.tool['callId'];
   final attachmentId = '${first['id']}';
-  // Both keys use the documented entry identity: owning call id plus the
-  // content-addressed attachment id.
-  final entryId = '$callId:$attachmentId';
-  final cardKey = find.byValueKey('image-card-$entryId');
-  final imageKey = find.byValueKey('image-card-image-$entryId');
-  var cardMounted = await _isMounted(driver, cardKey);
-  if (!cardMounted) {
-    await driver
-        .waitFor(imageKey, timeout: const Duration(seconds: 20))
-        .timeout(const Duration(seconds: 20));
-    cardMounted = await _isMounted(driver, cardKey);
-  }
+  await TimelineScopeDriver.session(driver).revealItem(card.itemId);
+  // The actual connector binds the item identity and the attachment identity.
+  final entryId = '${card.itemId}:$attachmentId';
+  final cardKey = find.byValueKey('chat-item:${card.itemId}');
+  final imageKey = find.byValueKey('view-image-thumbnail-$entryId');
+  await driver.waitFor(imageKey, timeout: const Duration(seconds: 20));
+  final cardMounted = await _isMounted(driver, cardKey);
   // The timeline follows the newest content; nudge it up so the screenshot also
   // shows the card header and its status pill.
   try {
@@ -387,34 +385,25 @@ Future<void> _captureCard(
   } on Object {
     // The primary card screenshot already records the image and header.
   }
-  var dialogOpened = false;
-  try {
-    await driver.rawTap(imageKey);
-    await driver
-        .waitFor(
-          find.byValueKey('timeline-image-dialog-$attachmentId'),
-          timeout: const Duration(seconds: 20),
-        )
-        .timeout(const Duration(seconds: 20));
-    dialogOpened = true;
-    await _screenshot(driver, '${output.path}/card-dialog.png');
-    await driver.tap(find.byValueKey('timeline-image-close'));
-  } on Object {
-    // The dialog is supplementary; the card screenshot already proves the
-    // generated image reached the timeline.
-  }
+  await driver.rawTap(imageKey);
+  await driver.waitFor(
+    find.byValueKey('view-image-dialog-$entryId'),
+    timeout: const Duration(seconds: 20),
+  );
+  await _screenshot(driver, '${output.path}/card-dialog.png');
+  await driver.tap(find.byValueKey('timeline-image-close'));
   await _writeJson('${output.path}/evidence.json', {
     'generateTool': '${generated.tool['name']}',
     'generateCallId': generated.tool['callId'],
     'generateItemId': generated.itemId,
     'cardTool': '${card.tool['name']}',
     'cardCallId': callId,
-    'cardPresentationId': card.presentationId,
+    'cardItemId': card.itemId,
     'status': card.tool['status'],
     'attachments': attachments,
     'caption': _arguments(card.tool['arguments'])?['caption'],
     'cardMounted': cardMounted,
-    'dialogOpened': dialogOpened,
+    'dialogOpened': true,
     'capturedAt': DateTime.now().toUtc().toIso8601String(),
   });
 }
@@ -485,12 +474,12 @@ class _GeneratedImage {
 
 class _ImageCard {
   const _ImageCard({
-    required this.presentationId,
+    required this.itemId,
     required this.tool,
     required this.attachments,
   });
 
-  final String presentationId;
+  final String itemId;
   final Map<dynamic, dynamic> tool;
   final List<dynamic> attachments;
 }

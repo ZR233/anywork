@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/mapped_conversation_feed.dart';
 
 import 'support/test_statistics_feed.dart';
@@ -268,9 +269,13 @@ void main() {
       activation.complete();
       expect(await draftNavigation, isNull);
       await newer;
+      fixture.graph.timeline.updateReadDemand(chatDemand);
       fixture.graph.setConversationPageVisible(true);
       await client.conversations.session(fixture.other.id).content.ready;
-      expect(client.selection.state.selectedProjectId, fixture.other.workspaceId);
+      expect(
+        client.selection.state.selectedProjectId,
+        fixture.other.workspaceId,
+      );
       expect(client.selection.state.selectedThreadId, fixture.other.id);
       expect(
         client.conversations.sessionStates.map((state) => state.threadId),
@@ -350,6 +355,7 @@ void main() {
     expect(client.conversations.sessionStates, isEmpty);
     newReply.complete(sibling);
     await newer;
+    fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
     await client.conversations.session(sibling.id).content.ready;
     expect(client.selection.state.selectedThreadId, sibling.id);
@@ -604,6 +610,7 @@ Future<void> _expectLatestQueuedColdSelection({
   } else {
     newReply.complete(sibling);
     expect(await newNavigation, isNull);
+    fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
     final session = client.conversations.existingSession(sibling.id)!;
     await session.source.waitFor((state) => state.workspace != null);
@@ -672,6 +679,7 @@ StudioThread _secondColdChild(_ColdFixture fixture) {
 Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final client = fixture.graph.client;
   expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
+  fixture.graph.timeline.updateReadDemand(chatDemand);
   fixture.graph.setConversationPageVisible(true);
   final session = client.conversations.existingSession(fixture.child.id)!;
   await session.source.waitFor((state) => state.workspace != null);
@@ -858,13 +866,14 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
     final saved =
         savedThreadOverrides[threadId] ?? (threadId == child.id ? child : null);
     return MappedConversationFeed(
-      await super.openConversationFeed(threadId, resumeAfter: resumeAfter),
+      await super.openConversationFeed(threadId, scope: scope, demand: demand),
       (frame) => switch (frame) {
         ThreadSnapshotFrame(:final workspace) when saved != null =>
           ThreadSnapshotFrame(workspace: workspace.copyWith(thread: saved)),

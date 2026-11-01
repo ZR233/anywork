@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
@@ -15,9 +17,7 @@ import 'support/test_statistics_feed.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('要求修订且现有文档时只读详情显示真实状态，不是已批准', (
-    tester,
-  ) async {
+  testWidgets('要求修订且现有文档时只读详情显示真实状态，不是已批准', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() {
@@ -34,7 +34,11 @@ void main() {
     await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
     await pumpClientFuture(
       tester,
-      (graph..setConversationPageVisible(true)).client.directoryCommands
+      (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread('thread-main'),
       'select thread',
     );

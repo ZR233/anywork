@@ -4,7 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
-import 'driver_read_commands.dart';
+import 'content_window_driver.dart';
 import 'flutter_driver_session.dart';
 import 'scrolling_journey.dart';
 import 'timeline_observation.dart';
@@ -224,7 +224,9 @@ Future<void> main(List<String> args) async {
     report['settledOutputTokens'] = _outputTokens(settledSnapshot);
     final settledTimeline = TimelineObservation.parse(settledSnapshot);
     settledTimeline.requireConsistentIds();
-    report['answerItemCount'] = settledTimeline.ofKind('agentMessage').length;
+    report['answerItemCount'] = settledTimeline.items
+        .where((item) => item.isFinalAnswer)
+        .length;
     stage = 'settled';
     await mark(stage);
     // Hold (bounded) until the assistant item's true body length is known before
@@ -246,7 +248,7 @@ Future<void> main(List<String> args) async {
     final bodyText = longBody?.text;
     final bodyCharacters = bodyText?.length;
     final bodyBytes = bodyText == null ? null : utf8.encode(bodyText).length;
-    final detail = longBody?.detail('text');
+    final detail = longBody?.detail('body');
     final prefixOk = bodyText != null && bodyText.startsWith('body-00000 ');
     final suffixOk =
         bodyText != null && bodyText.endsWith(_expectedBodySuffix(largeBody));
@@ -271,8 +273,7 @@ Future<void> main(List<String> args) async {
       'deliveredBytes': bodyBytes,
       'detailTotalBytes': totalBytes,
       'previewBytes': detail?.previewBytes,
-      'timelineEpoch': settledTimeline.timelineEpoch,
-      'appendSeq': longBody?.appendSeq,
+      'generation': settledTimeline.generation,
       'truncated': longBody?.textTruncated,
       'largeBody': largeBody,
       'prefixOk': prefixOk,
@@ -322,7 +323,7 @@ Future<void> main(List<String> args) async {
     // 证据（有界，不当全文）。
     stage = 'detail_copy';
     await mark(stage);
-    final detailCopy = await _copyThroughDetailViewer(
+    final detailCopy = await _readAndCopyExplicitWindows(
       driver,
       output,
       expectedBodyCharacters,
@@ -330,7 +331,7 @@ Future<void> main(List<String> args) async {
       longBodyId,
     );
     report['detailCopy'] = detailCopy;
-    checks['detailViewerFullBody'] = detailCopy['pass'] == true;
+    checks['explicitRangeBodyIntegrity'] = detailCopy['pass'] == true;
     stage = 'preview_selection_copy';
     await mark(stage);
     final previewCopy = await _selectAndCopyPreview(
@@ -403,7 +404,7 @@ Future<void> main(List<String> args) async {
       '${const JsonEncoder.withIndent('  ').convert(reopenLayout)}\n',
     );
     final reopenedBody = _longBodyItem(reopened);
-    final reopenedDetail = reopenedBody?.detail('text');
+    final reopenedDetail = reopenedBody?.detail('body');
     final generationAdvanced =
         reopenedTimeline.generation != settledTimeline.generation;
     // 重开从最新端开始并按视口补齐：offset 0、Live 模式，不恢复像素。
@@ -699,14 +700,16 @@ bool _settled(Map<String, dynamic> snapshot) {
       timeline.connection == 'ready';
 }
 
-/// 当前展示的助手正文条目：已加载 agentMessage 中正文预览最长的一条。
+/// 当前展示的 Final：按真实 body manifest 大小选取，不把缺失 inline 当作空正文。
 TimelineItemObservation? _longBodyItem(Map<String, dynamic> snapshot) {
   final timeline = TimelineObservation.optional(snapshot);
   if (timeline == null) return null;
   TimelineItemObservation? best;
   for (final item in timeline.items) {
-    if (item.kind != 'agentMessage') continue;
-    if (best == null || item.text.length > best.text.length) best = item;
+    if (!item.isFinalAnswer) continue;
+    final byteLength = item.textTotalBytes;
+    if (byteLength == null) continue;
+    if (best == null || byteLength > best.textTotalBytes!) best = item;
   }
   return best;
 }
@@ -945,7 +948,7 @@ Future<Map<String, Object?>> _readIntoLongBody(
   try {
     if (item == null ||
         target == null ||
-        item.kind != 'agentMessage' ||
+        !item.isFinalAnswer ||
         !item.text.startsWith('body-00000 ')) {
       throw StateError(
         'No canonical assistant fixture body is available to read',
@@ -953,8 +956,8 @@ Future<Map<String, Object?>> _readIntoLongBody(
     }
     final initial = TimelineObservation.parse(settledSnapshot);
     initial.requireConsistentIds();
-    final presentationId = initial.presentationFor(target).id;
-    evidence['presentationId'] = presentationId;
+    final presentationId = target;
+    evidence['itemId'] = presentationId;
     var scrolled = false;
     var mode = initial.mode;
     var detached = false;
@@ -989,11 +992,10 @@ Future<Map<String, Object?>> _readIntoLongBody(
       final scroll = TimelineScrollObservation.parse(state);
       timeline.requireConsistentIds();
       if (timeline.threadId != initial.threadId ||
-          timeline.timelineEpoch != initial.timelineEpoch ||
           timeline.generation != initial.generation ||
           scroll.threadId != timeline.threadId ||
           scroll.generation != timeline.generation ||
-          timeline.presentationFor(target).id != presentationId ||
+          timeline.item(target)?.id != presentationId ||
           jsonEncode(timeline.item(target)?.frozenFields()) !=
               jsonEncode(item.frozenFields())) {
         throw StateError('Reading changed the canonical body or its owner');
@@ -1062,9 +1064,8 @@ Future<Map<String, Object?>> _readIntoLongBody(
         insideLongBody &&
         finalTimeline.isHistory &&
         finalTimeline.threadId == initial.threadId &&
-        finalTimeline.timelineEpoch == initial.timelineEpoch &&
         finalTimeline.generation == initial.generation &&
-        finalTimeline.presentationFor(target).id == presentationId &&
+        finalTimeline.item(target)?.id == presentationId &&
         jsonEncode(finalTimeline.item(target)?.frozenFields()) ==
             jsonEncode(item.frozenFields()) &&
         finalScroll.threadId == initial.threadId &&
@@ -1383,119 +1384,42 @@ Future<Map<String, Object?>> _selectAndCopyPreview(
   return evidence;
 }
 
-/// Copies the complete body through the explicit detail viewer.
-///
-/// 历史行本身不会因后台补齐而升级：完整正文只来自用户打开的查看器，逐块累计到真实
-/// 总长后由产品自己的复制按钮写入剪贴板，再与 canonical fixture 正文比对。关闭后
-/// 查看器消失，行内预览长度保持不变。
-Future<Map<String, Object?>> _copyThroughDetailViewer(
+/// Reads every explicit range, validates the canonical body, and copies only each displayed window.
+Future<Map<String, Object?>> _readAndCopyExplicitWindows(
   FlutterDriverSession driver,
   Directory output,
   int expectedBodyCharacters,
   bool largeBody,
   String? itemId,
 ) async {
-  final expectedBody = _canonicalBody(largeBody);
-  final expectedHash = _fnv1a64(expectedBody).toRadixString(16);
-  final before = TimelineObservation.parse(await driver.readSnapshot());
-  final rowBefore = itemId == null ? null : before.item(itemId);
-  final evidence = <String, Object?>{};
   if (itemId == null) {
-    evidence['reason'] = 'no assistant body identity for the detail viewer';
-    evidence['pass'] = false;
-    return evidence;
+    throw StateError('range proof requires a real Final item');
   }
-  final openKey = 'timeline-detail-open-$itemId-text';
-  await driver.waitFor(
-    find.byValueKey(openKey),
-    timeout: const Duration(seconds: 30),
-  );
-  await driver.rawTap(
-    find.byValueKey(openKey),
-    timeout: const Duration(seconds: 30),
-  );
-  // 逐块累计：等待查看器报告的真实字符数达到条目声明的总长。
-  final deadline = DateTime.now().add(const Duration(seconds: 90));
-  DetailViewerRead? progress;
-  var sawPartial = false;
-  var viewerOpened = false;
-  while (DateTime.now().isBefore(deadline)) {
-    progress = await DetailViewerRead.read(driver.requestData);
-    if (progress.open) viewerOpened = true;
-    final characters = progress.characters;
-    if (characters > 0 && characters < expectedBodyCharacters) {
-      sawPartial = true;
-    }
-    if (characters >= expectedBodyCharacters) break;
-    await Future<void>.delayed(const Duration(milliseconds: 10));
+  final expected = _canonicalBody(largeBody);
+  if (expected.length != expectedBodyCharacters) {
+    throw StateError('fixture length disagrees');
   }
-  final loadedCharacters = progress?.characters ?? 0;
-  final loadedHash = progress?.hash;
-  await File('${output.path}/stress-body-detail-viewer.png')
-      .writeAsBytes(await driver.screenshot());
-  await driver.waitFor(
-    find.byValueKey('timeline-detail-copy'),
-    timeout: const Duration(seconds: 15),
+  final before = TimelineObservation.parse(await driver.readSnapshot());
+  final item = before.item(itemId);
+  final evidence = await ContentWindowDriver.session(driver).readAllExplicitly(
+    itemId,
+    'body',
+    expectedBytes: utf8.encode(expected).length,
+    expectedText: expected,
   );
-  await driver.rawTap(
-    find.byValueKey('timeline-detail-copy'),
-    timeout: const Duration(seconds: 30),
-  );
-  final clipboard = await ClipboardRead.read(driver.requestData);
-  final clipboardHash = clipboard.hash;
-  final clipboardCharacters = clipboard.characters;
-  await driver.rawTap(
-    find.byValueKey('timeline-detail-close'),
-    timeout: const Duration(seconds: 30),
-  );
-  // 关闭后查看器消失；等待显式的关闭事实，不用固定 sleep。
-  final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
-  var closed = false;
-  while (DateTime.now().isBefore(closeDeadline)) {
-    final state = await DetailViewerRead.read(driver.requestData);
-    if (!state.open) {
-      closed = true;
-      break;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-  }
+  evidence.remove('text');
   final after = TimelineObservation.parse(await driver.readSnapshot());
-  final rowAfter = after.item(itemId);
-  final previewUnchanged =
-      rowBefore != null &&
-      rowAfter != null &&
-      before.timelineEpoch == after.timelineEpoch &&
-      rowBefore.id == rowAfter.id &&
-      rowBefore.appendSeq == rowAfter.appendSeq &&
-      jsonEncode(rowBefore.frozenFields()) ==
-          jsonEncode(rowAfter.frozenFields());
-  evidence.addAll(<String, Object?>{
-    'itemId': itemId,
-    'expectedCharacters': expectedBodyCharacters,
-    'expectedHash': expectedHash,
-    'loadedCharacters': loadedCharacters,
-    'loadedHash': loadedHash,
-    'clipboardCharacters': clipboardCharacters,
-    'clipboardHash': clipboardHash,
-    'viewerOpened': viewerOpened,
-    'viewerClosed': closed,
-    'rowPreviewUnchanged': previewUnchanged,
-    // 理论块数只是结构推算（ceil(bytes/64KiB)）；实际读了几块不要求被帧采样到，
-    // 快速多块读取允许在一次轮询前完成。`sawPartialChunk` 仅记录。
-    'theoreticalChunks': (expectedBodyCharacters / (64 * 1024)).ceil(),
-    'sawPartialChunk': sawPartial,
-    // 完整字节 + fixture 原文 hash + 真实查看器/剪贴板一致 + 关闭即证明保真。
-    'pass':
-        viewerOpened &&
-        loadedCharacters == expectedBodyCharacters &&
-        loadedHash == expectedHash &&
-        clipboardCharacters == expectedBodyCharacters &&
-        clipboardHash == expectedHash &&
-        closed &&
-        previewUnchanged,
-  });
+  if (before.generation != after.generation ||
+      item == null ||
+      jsonEncode(item.frozenFields()) !=
+          jsonEncode(after.item(itemId)?.frozenFields())) {
+    throw StateError(
+      'range reading mutated or retired the original history item',
+    );
+  }
+  evidence['rowPreviewUnchanged'] = true;
   await File(
-    '${output.path}/stress-body-detail-copy.json',
+    '${output.path}/stress-body-content-windows.json',
   ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
   return evidence;
 }

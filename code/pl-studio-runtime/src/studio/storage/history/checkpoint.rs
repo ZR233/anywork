@@ -223,6 +223,7 @@ impl HistoryStore {
             }
             // read() proved that no checkpoint exists while this write transaction is held.
             write(&tx, &checkpoint, None, None).await?;
+            super::schema::seed_current(&tx, &self.state.thread_id).await?;
             tx.execute_unprepared("UPDATE session_checkpoint SET legacy_cleanup=1 WHERE id=1")
                 .await?;
         }

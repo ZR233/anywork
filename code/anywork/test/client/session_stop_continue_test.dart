@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,6 +32,7 @@ void main() {
     await client.bootstrap();
     // Demo's root session; bootstrap only loads the directory and settings.
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
@@ -118,6 +121,7 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
@@ -179,6 +183,7 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
@@ -235,6 +240,7 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);

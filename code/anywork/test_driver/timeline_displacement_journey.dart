@@ -331,7 +331,7 @@ Future<void> main(List<String> args) async {
     final candidates = <(String, TimelineRect)>[];
     for (final row in rows.visible) {
       final item = timeline.item(row.id);
-      if (item == null || item.kind == 'toolCall') continue;
+      if (item == null || item.kind == 'tool') continue;
       final rect = row.rect;
       if (rect == null) continue;
       if (rect.top < 70) continue;

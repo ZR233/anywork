@@ -28,6 +28,8 @@ pub(super) struct Owner {
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
     pub(super) compacting_progress: Option<watch::Receiver<bool>>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
+    pub(super) model_members: Option<super::model_members::MemberCall>,
+    pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
@@ -780,14 +782,41 @@ impl Owner {
                     .is_some_and(|task| task.status == task::TaskStatus::Running)
         });
         let sequence = self.state.commit_sequence.saturating_add(1);
-        let Some(effect) =
-            ThreadEffectBatch::between(&self.id, &self.published, &self.state, sequence)
-        else {
+        let Some(effect) = ThreadEffectBatch::between(
+            &self.id,
+            &self.published,
+            &self.state,
+            sequence,
+            std::mem::take(&mut self.pending_model_members).into(),
+        ) else {
             // Nothing was committed, so no fact can take a reservation over: the claim is dropped
             // and the operation's own boundary releases its ceiling instead.
             self.pending_output_claim = None;
             return;
         };
+        let mut output_claim = self.pending_output_claim.take();
+        let mut encoded_bytes = None;
+        if let Some(budget) = output_claim
+            .as_ref()
+            .and_then(|operation| self.operation_budgets.get(operation))
+            .filter(|budget| budget.tracks_member_claims())
+        {
+            // Register every claim before it enters the pending queue, not just member writes.
+            // Earlier refused claims can otherwise consume later members' resident allocation.
+            let funded = crate::model::encoded_member_bytes(&effect)
+                .map_err(|source| cold::ColdStoreError {
+                    source: Box::new(source),
+                })
+                .and_then(|bytes| {
+                    encoded_bytes = Some(bytes);
+                    budget.register_output_claim(bytes)
+                });
+            if funded.is_err() {
+                // A claim that lacks separate funding must use ordinary reliable admission; it
+                // must never transfer the operation's still-live resident member funds.
+                output_claim = None;
+            }
+        }
         let effect = Arc::new(effect);
         self.state.commit_sequence = sequence;
         if let Some(store) = &self.cold {
@@ -803,14 +832,13 @@ impl Owner {
         // The operation about to see its result committed names the reservation that funds it; a
         // publish that commits no effect (handled above) drops the claim, so the operation's own
         // boundary releases its still-untransferred ceiling instead.
-        let output_claim = self.pending_output_claim.take();
         self.pending_effects.push_back(PendingEffect {
             write: cold::ThreadWrite {
                 effect: effect.clone(),
                 checkpoint,
                 output_claim,
             },
-            encoded_bytes: None,
+            encoded_bytes,
         });
         self.effect_window.push(effect);
         self.admit_cold();

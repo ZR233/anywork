@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -388,7 +389,11 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        (graph..setConversationPageVisible(true)).client.directoryCommands
+        (graph
+              ..timeline.updateReadDemand(chatDemand)
+              ..setConversationPageVisible(true))
+            .client
+            .directoryCommands
             .selectThread('thread-main'),
         'select closing thread',
       );

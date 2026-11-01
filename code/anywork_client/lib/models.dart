@@ -1,12 +1,11 @@
 /// Canonical, SDK-only models shared by the Client and platform adapters.
 library;
 
-export 'src/conversation/domain/conversation_models.dart';
-export 'src/conversation/domain/conversation_descriptor.dart';
 export 'src/models/agent_models.dart';
 export 'src/models/agent_profile_models.dart';
 export 'src/models/attachment_models.dart';
 export 'src/models/bot_models.dart';
+export 'src/models/chat_models.dart';
 export 'src/models/collection_extensions.dart';
 export 'src/models/command_receipts.dart';
 export 'src/models/composer_models.dart';

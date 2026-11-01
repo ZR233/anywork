@@ -1,26 +1,34 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:anywork/src/infrastructure/frb/studio_api.dart'
+    show DemoStudioTransport;
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import 'support/chat_fixtures.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('late A1 retirement cannot erase A2 unresolved close ownership', () async {
-    final transport = RecordingDemoTransport();
+    final transport = _RetirementTransport();
     final releaseFirst = Completer<void>();
-    final firstCreated = Completer<RecordingConversationFeed>();
+    final firstCreated = Completer<_SetAcknowledgedConnection>();
+    final alternateCreated = Completer<_SetAcknowledgedConnection>();
     final secondCreated = Completer<_FailingCloseConnection>();
     var mainOpens = 0;
     transport.conversationFeedFactory = (threadId, inner) async {
-      if (threadId != 'thread-main') return inner;
+      if (threadId != 'thread-main') {
+        final alternate = _SetAcknowledgedConnection(inner: inner);
+        alternateCreated.complete(alternate);
+        return alternate;
+      }
       mainOpens++;
       if (mainOpens == 1) {
-        final first = RecordingConversationFeed(inner: inner);
+        final first = _SetAcknowledgedConnection(inner: inner);
         firstCreated.complete(first);
         await releaseFirst.future;
         return first;
@@ -45,7 +53,8 @@ void main() {
         },
       ),
     );
-    final timeline = TimelineSessionOwner(client: client);
+    final timeline = TimelineSessionOwner(client: client)
+      ..updateReadDemand(chatDemand);
     final displays = <TimelineDisplayLease>{};
     void diagnose(String stage, {CloseReport? report}) {
       printOnFailure(
@@ -113,16 +122,14 @@ void main() {
     await client.directoryCommands.selectThread('thread-alt');
     client.conversations.setVisibleThread('thread-alt');
     timeline.select('thread-alt');
-    await client.conversations
-        .existingSession('thread-alt')!
-        .content
-        .state
-        .waitFor((state) => state.snapshot == true);
+    await client.conversations.existingSession('thread-alt')!.content.ready;
+    await (await alternateCreated.future).firstSetAcknowledged.future;
     await client.directoryCommands.selectThread('thread-main');
     client.conversations.setVisibleThread('thread-main');
     timeline.select('thread-main');
     final second = await secondCreated.future;
-    await second.nextEntered.future;
+    await owner.content.ready;
+    await second.firstSetAcknowledged.future;
     final secondAttempt = owner.content.currentAttemptId!;
     diagnose('A2 opened');
     expect(secondAttempt, isNot(firstAttempt));
@@ -186,11 +193,18 @@ void main() {
 
   test('cleanup retry leaves a healthy active timeline out of unresolved', () async {
     final transport = RecordingDemoTransport();
+    final opened = Completer<_SetAcknowledgedConnection>();
+    transport.conversationFeedFactory = (_, inner) async {
+      final connection = _SetAcknowledgedConnection(inner: inner);
+      opened.complete(connection);
+      return connection;
+    };
     final client = AnyworkClient(
       transport: transport,
       clientId: 'healthy-cleanup',
     );
-    final timeline = TimelineSessionOwner(client: client);
+    final timeline = TimelineSessionOwner(client: client)
+      ..updateReadDemand(chatDemand);
     addTearDown(() async {
       await timeline.close(deadline: _deadline());
       await client.close(deadline: _deadline());
@@ -200,9 +214,9 @@ void main() {
     client.conversations.setVisibleThread('thread-main');
     timeline.select('thread-main');
     final owner = client.conversations.existingSession('thread-main')!;
-    await owner.content.state.waitFor((state) => state.snapshot == true);
+    await owner.content.ready;
+    await (await opened.future).firstSetAcknowledged.future;
     final connection = transport.feeds.single;
-    await connection.nextEntered.future;
     final attempt = owner.content.currentAttemptId;
     final display = timeline.lease('thread-main')!;
 
@@ -230,20 +244,99 @@ void main() {
   });
 }
 
-final class _FailingCloseConnection extends RecordingConversationFeed {
-  _FailingCloseConnection({required super.inner});
+/// Keep the failed acknowledgement on the original facade boundary, without an
+/// extra RecordingDemoTransport stream whose onCancel owns another close.
+final class _RetirementTransport extends DemoStudioTransport {
+  @override
+  Duration get shutdownPhaseDelay => Duration.zero;
+}
 
+/// Observe the real first Set and ACK; entering transport forwarding is not
+/// component acceptance and does not establish the healthy/retiring cut.
+final class _SetAcknowledgedConnection extends RecordingConversationFeed {
+  _SetAcknowledgedConnection({required super.inner});
+
+  int? _firstSetSequence;
+  final firstSetAcknowledged = Completer<void>();
+
+  @override
+  Stream<ConversationFrame> get events => super.events.map((frame) {
+    if (frame.event case ConversationChatEvent(
+      batch: ChatBatch(placement: ChatPlacement.set),
+    )) {
+      _firstSetSequence ??= frame.deliverySequence;
+    }
+    return frame;
+  });
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    await super.acknowledge(deliverySequence);
+    final firstSet = _firstSetSequence;
+    if (firstSet != null &&
+        deliverySequence >= firstSet &&
+        !firstSetAcknowledged.isCompleted) {
+      firstSetAcknowledged.complete();
+    }
+  }
+}
+
+/// Inject only a failed facade close acknowledgement. Reusing Recording's
+/// stream onCancel -> close here would also fail subscription cancellation,
+/// whose cached failed Future cannot be retried by a later facade close.
+final class _FailingCloseConnection implements ConversationFeed {
+  _FailingCloseConnection({required this.inner});
+
+  final ConversationFeed inner;
   Object? failure;
+  int closeCalls = 0;
+  int? _firstSetSequence;
+  final firstSetAcknowledged = Completer<void>();
   final closeFailed = Completer<void>();
+  final joined = Completer<void>();
+
+  @override
+  String get threadId => inner.threadId;
+
+  @override
+  String get subscriptionId => inner.subscriptionId;
+
+  @override
+  ConversationReader get reader => inner.reader;
+
+  @override
+  Stream<ConversationFrame> get events => inner.events.map((frame) {
+    if (frame.event case ConversationChatEvent(
+      batch: ChatBatch(placement: ChatPlacement.set),
+    )) {
+      _firstSetSequence ??= frame.deliverySequence;
+    }
+    return frame;
+  });
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    await inner.acknowledge(deliverySequence);
+    final firstSet = _firstSetSequence;
+    if (firstSet != null &&
+        deliverySequence >= firstSet &&
+        !firstSetAcknowledged.isCompleted) {
+      firstSetAcknowledged.complete();
+    }
+  }
+
+  @override
+  void requestClose() => inner.requestClose();
 
   @override
   Future<void> close() async {
-    final error = failure;
-    if (error == null) return super.close();
     closeCalls++;
     await inner.close();
-    if (!closeFailed.isCompleted) closeFailed.complete();
-    throw error;
+    if (failure case final error?) {
+      if (!closeFailed.isCompleted) closeFailed.complete();
+      throw error;
+    }
+    if (!joined.isCompleted) joined.complete();
   }
 }
 

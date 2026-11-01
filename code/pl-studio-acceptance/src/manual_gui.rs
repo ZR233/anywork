@@ -62,6 +62,7 @@ pub(crate) struct ManualGuiOptions {
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
     /// Retain a successfully closed synthetic environment for release visual review.
+    /// Failed timeline-history-20k samples are retained for diagnosis even without this flag.
     #[arg(long)]
     pub(crate) retain_environment: bool,
     /// Run tool-scroll against an explicitly supplied SSH test host (user@host).
@@ -1598,8 +1599,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
-        if result.is_ok() && options.retain_environment {
-            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed timeline-history-20k environment also failed: {retain_error:#}"
+                ))),
+            };
         }
         return result;
     }

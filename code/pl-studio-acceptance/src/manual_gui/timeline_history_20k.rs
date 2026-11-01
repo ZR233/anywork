@@ -27,6 +27,8 @@ const TIMELINE_HISTORY_20K_GROWTH_RECORD_GLOB: &str = concat!(
     "model:*:presentation:item:*:",
     "timeline-history-20k-growth-[0-9][0-9]-item-[0-9][0-9][0-9][0-9]:text:0"
 );
+const OPEN_SAMPLES: usize = 20;
+const FIRST_CONTENT_P95_MILLIS: f64 = 500.0;
 
 pub(super) struct Scenario<'a> {
     pub(super) workspace: &'a Path,
@@ -56,7 +58,11 @@ struct HistoryAudit {
     database_bytes: u64,
     wal_bytes: Option<u64>,
     #[serde(skip)]
-    timeline_records: Vec<String>,
+    conversation_records: Vec<String>,
+    #[serde(skip)]
+    content_manifests: Vec<String>,
+    #[serde(skip)]
+    content_chunks: Vec<String>,
     #[serde(skip)]
     history_item_records: Vec<String>,
     #[serde(skip)]
@@ -79,7 +85,9 @@ impl fmt::Debug for HistoryAudit {
             .field("applied_write_seq", &self.applied_write_seq)
             .field("database_bytes", &self.database_bytes)
             .field("wal_bytes", &self.wal_bytes)
-            .field("timeline_record_rows", &self.timeline_records.len())
+            .field("conversation_record_rows", &self.conversation_records.len())
+            .field("content_manifest_rows", &self.content_manifests.len())
+            .field("content_chunk_rows", &self.content_chunks.len())
             .field("history_item_rows", &self.history_item_records.len())
             .field("history_turn_rows", &self.history_turn_records.len())
             .finish()
@@ -133,6 +141,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
     let mut seed_audit = None;
     let mut cold_audits = Vec::new();
     let mut cold_lifecycle_checks = Vec::new();
+    let mut switch_audit = None;
+    let mut opening_performance = None;
     let mut growth_before = None;
     let mut growth_after = None;
     let journey = (|| -> Result<()> {
@@ -147,7 +157,11 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
         );
 
         let mut database: Option<PathBuf> = None;
-        for phase in ["seed", "cold-1", "cold-2", "cold-3", "growth"] {
+        let phase_names = std::iter::once("seed".to_owned())
+            .chain((1..=OPEN_SAMPLES).map(|sample| format!("cold-{sample}")))
+            .chain(["switch".to_owned(), "growth".to_owned()]);
+        for phase in phase_names {
+            let phase = phase.as_str();
             if phase == "growth" {
                 growth_before = Some(history_audit(
                     database
@@ -175,7 +189,7 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                     );
                     seed_audit = Some(audit);
                 }
-                "cold-1" | "cold-2" | "cold-3" => {
+                phase if phase.starts_with("cold-") => {
                     let seed = seed_audit
                         .as_ref()
                         .context("cold phase has no seed audit")?;
@@ -193,6 +207,18 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                     )?);
                     cold_audits.push(audit);
                 }
+                "switch" => {
+                    ensure!(
+                        same_persisted_inventory(
+                            seed_audit
+                                .as_ref()
+                                .context("switch phase has no seed audit")?,
+                            &audit,
+                        ),
+                        "ordinary switching changed the original 20,000-item inventory"
+                    );
+                    switch_audit = Some(audit);
+                }
                 "growth" => {
                     ensure!(
                         audit.seed_text_items == 20_000
@@ -207,6 +233,13 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                 _ => unreachable!(),
             }
         }
+        let performance = opening_latency_report(context.output)?;
+        let passed = performance["pass"] == true;
+        opening_performance = Some(performance);
+        ensure!(
+            passed,
+            "selection-to-first-content p95 exceeded {FIRST_CONTENT_P95_MILLIS} ms; see openingPerformance"
+        );
         Ok(())
     })();
 
@@ -254,7 +287,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
     let aggregate = json!({
         "scenario": "timeline-history-20k",
         "platform": "linux",
-        "processCold": true,
+        "coldOpenProcess": "a fresh GUI process for each cold-N phase",
+        "ordinarySwitchProcess": "one warm GUI process with real reference-session switches",
         "osPageCacheControlled": false,
         "osPageCacheNote": "GUI processes are cold; host Linux page cache is not cleared or controlled",
         "profile": "Flutter profile; release-profile Rust bridge",
@@ -262,6 +296,9 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
             "seedBatches": 10,
             "seedTextItemsPerBatch": 2_000,
             "seedTextItems": 20_000,
+            "coldOpenSamples": OPEN_SAMPLES,
+            "ordinarySwitchSamples": OPEN_SAMPLES,
+            "referenceSessionTextItems": 1,
             "growthBatches": 20,
             "growthTextItemsPerBatch": 100,
             "growthTextItems": 2_000,
@@ -284,6 +321,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
         "seedAudit": seed_audit,
         "coldAudits": cold_audits,
         "coldLifecycleChecks": cold_lifecycle_checks,
+        "switchAudit": switch_audit,
+        "openingPerformance": opening_performance,
         "growthBefore": growth_before,
         "growthAfter": growth_after,
         "fixture": {
@@ -353,7 +392,7 @@ fn final_verdict(gate: &FinalGate<'_>) -> Result<()> {
             .unwrap_or("unknown request evidence failure")
     );
     ensure!(
-        gate.rejected == 0 && gate.accepted >= 30,
+        gate.rejected == 0 && gate.accepted >= 31,
         "timeline-history-20k fixture requests were incomplete: accepted={} rejected={}",
         gate.accepted,
         gate.rejected
@@ -798,16 +837,16 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         let row: (String, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sea_orm::sqlx::query_as(
             "SELECT
                     (SELECT thread_id FROM history_meta WHERE id=1),
-                    (SELECT COUNT(*) FROM timeline_records),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records),
-                    (SELECT COUNT(*) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(*) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records
-                       WHERE record_id GLOB ?),
+                    (SELECT COUNT(*) FROM conversation_items),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items),
+                    (SELECT COUNT(*) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(*) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
+                       WHERE item_id GLOB ?),
                     (SELECT COUNT(*) FROM history_items),
                     (SELECT COUNT(*) FROM history_turns),
                     (SELECT applied_write_seq FROM history_meta WHERE id=1)",
@@ -819,13 +858,29 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         .fetch_one(&mut connection)
         .await
         .with_context(|| format!("failed to audit {}", display.display()))?;
-        let timeline_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload)
-             FROM timeline_records ORDER BY append_seq",
+        let conversation_records = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload))
+             FROM conversation_items ORDER BY seq",
         )
         .fetch_all(&mut connection)
         .await
         .with_context(|| format!("failed to read exact timeline inventory from {}", display.display()))?;
+        // A completed envelope can reference external bodies. Compare their
+        // exact persisted manifests/chunks too; equal item counts or previews
+        // cannot prove preservation. `4:item` is the canonical ChatKey("item", id)
+        // storage prefix; mutable Current bodies are intentionally excluded.
+        let content_manifests = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(c.owner_key,c.content_key,hex(c.payload))
+             FROM conversation_contents c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
+             ORDER BY c.owner_key,c.content_key",
+        ).fetch_all(&mut connection).await
+            .context("failed to audit completed content manifests")?;
+        let content_chunks = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(c.owner_key,c.content_key,c.byte_offset,hex(c.data))
+             FROM conversation_content_chunks c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
+             ORDER BY c.owner_key,c.content_key,c.byte_offset",
+        ).fetch_all(&mut connection).await
+            .context("failed to audit completed content chunks")?;
         let history_item_records = sea_orm::sqlx::query_scalar::<_, String>(
             "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq)
              FROM history_items ORDER BY ordinal",
@@ -853,7 +908,9 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
             applied_write_seq: row.9,
             database_bytes: 0,
             wal_bytes: None,
-            timeline_records,
+            conversation_records,
+            content_manifests,
+            content_chunks,
             history_item_records,
             history_turn_records,
         })
@@ -877,9 +934,94 @@ fn same_persisted_inventory(seed: &HistoryAudit, cold: &HistoryAudit) -> bool {
         && seed.distinct_growth_text_ids == cold.distinct_growth_text_ids
         && seed.history_items == cold.history_items
         && seed.history_turns == cold.history_turns
-        && seed.timeline_records == cold.timeline_records
+        && seed.conversation_records == cold.conversation_records
+        && seed.content_manifests == cold.content_manifests
+        && seed.content_chunks == cold.content_chunks
         && seed.history_item_records == cold.history_item_records
         && seed.history_turn_records == cold.history_turn_records
+}
+
+fn opening_latency_report(output: &Path) -> Result<Value> {
+    let mut cold = Vec::with_capacity(OPEN_SAMPLES);
+    for sample in 1..=OPEN_SAMPLES {
+        let path = output.join(format!("timeline-history-20k-cold-{sample}.json"));
+        let report: Value = serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+        )?;
+        cold.push(layout_millis(
+            &report["coldLoad"]["selectionToFirstContentLayoutMillis"],
+        )?);
+    }
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("timeline-history-20k-switch.json"))?)?;
+    let switch = &report["ordinarySwitch"];
+    ensure!(
+        switch["processCold"] == false
+            && switch["osPageCacheControlled"] == false
+            && switch["sampleCount"].as_u64() == Some(OPEN_SAMPLES as u64),
+        "ordinary-switch report has no complete warm-process sample set"
+    );
+    let source = switch["sourceThreadId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("ordinary-switch source Thread is missing")?;
+    let target = switch["targetThreadId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("ordinary-switch target Thread is missing")?;
+    ensure!(
+        source != target,
+        "ordinary switching reused the same Thread"
+    );
+    let samples = switch["samples"]
+        .as_array()
+        .context("ordinary-switch layout samples are missing")?;
+    let warm = samples
+        .iter()
+        .map(|sample| layout_millis(&sample["selectionToFirstContentLayoutMillis"]))
+        .collect::<Result<Vec<_>>>()?;
+    let cold = layout_distribution(cold)?;
+    let warm = layout_distribution(warm)?;
+    let passed = cold["p95Millis"].as_f64().context("cold p95 is missing")?
+        <= FIRST_CONTENT_P95_MILLIS
+        && warm["p95Millis"]
+            .as_f64()
+            .context("switch p95 is missing")?
+            <= FIRST_CONTENT_P95_MILLIS;
+    Ok(json!({
+        "measurement": "application-selection-owner-monotonic-clock",
+        "percentileMethod": "nearest-rank",
+        "thresholdP95Millis": FIRST_CONTENT_P95_MILLIS,
+        "coldOpen": cold,
+        "ordinarySwitch": warm,
+        "pass": passed,
+    }))
+}
+
+fn layout_millis(value: &Value) -> Result<f64> {
+    let millis = value
+        .as_f64()
+        .context("first-content layout time is missing")?;
+    ensure!(
+        millis.is_finite() && millis >= 0.0,
+        "first-content layout time is invalid"
+    );
+    Ok(millis)
+}
+
+fn layout_distribution(mut samples: Vec<f64>) -> Result<Value> {
+    ensure!(
+        samples.len() == OPEN_SAMPLES,
+        "expected {OPEN_SAMPLES} real first-content samples, got {}",
+        samples.len()
+    );
+    samples.sort_by(f64::total_cmp);
+    Ok(json!({
+        "sampleCount": samples.len(),
+        "p50Millis": samples[(samples.len() * 50).div_ceil(100) - 1],
+        "p95Millis": samples[(samples.len() * 95).div_ceil(100) - 1],
+        "samplesMillis": samples,
+    }))
 }
 
 fn cold_phase_observation(report: &Value, phase: &str) -> Result<ColdPhaseObservation> {
@@ -1101,13 +1243,27 @@ fn linux_process_age_millis(pid: u64) -> Result<u128> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn opening_distribution_requires_twenty_layout_samples_and_uses_nearest_rank() -> Result<()> {
+        ensure!(layout_distribution(vec![1.0, 2.0, 3.0]).is_err());
+        let mut samples = (1..=19).rev().map(f64::from).collect::<Vec<_>>();
+        samples.push(2_000.0);
+        let report = layout_distribution(samples)?;
+        assert_eq!(report["sampleCount"], 20);
+        assert_eq!(report["p50Millis"], 10.0);
+        assert_eq!(report["p95Millis"], 19.0);
+        ensure!(layout_millis(&Value::Null).is_err());
+        ensure!(layout_millis(&json!(-1.0)).is_err());
+        Ok(())
+    }
+
     fn complete_status() -> FixtureLiveStatus {
         FixtureLiveStatus {
-            accepted: 30,
+            accepted: 31,
             rejected: 0,
-            total: 30,
-            consumed_steps: 30,
-            expected_steps: 30,
+            total: 31,
+            consumed_steps: 31,
+            expected_steps: 31,
             remaining_optional: true,
         }
     }
@@ -1119,7 +1275,7 @@ mod tests {
             fixture_stopped_cleanly: true,
             fixture_log_failure: None,
             requests_failure: None,
-            accepted: 30,
+            accepted: 31,
             rejected: 0,
             status_failure: None,
             status,
@@ -1155,10 +1311,12 @@ mod tests {
             applied_write_seq,
             database_bytes: 100,
             wal_bytes: Some(0),
-            timeline_records: vec![
+            conversation_records: vec![
                 r#"[1,"item-1",null,1,null,"text",{"value":"a"}]"#.into(),
                 r#"[2,"turn-1","turn-1",1,10,"turn",{"state":"completed"}]"#.into(),
             ],
+            content_manifests: vec![r#"["4:itemitem-1","body","manifest"]"#.into()],
+            content_chunks: vec![r#"["4:itemitem-1","body",0,"61"]"#.into()],
             history_item_records: vec![
                 r#"[1,"item-1","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into(),
                 r#"[2,"turn-1","turn-1","turn",0,"terminal",1,1,{"state":"completed"},1]"#.into(),
@@ -1260,7 +1418,7 @@ mod tests {
         let seed = audit(10);
 
         let mut changed_payload = seed.clone();
-        changed_payload.timeline_records[0] =
+        changed_payload.conversation_records[0] =
             r#"[1,"item-1",null,1,null,"text",{"value":"changed"}]"#.into();
         assert!(!same_persisted_inventory(&seed, &changed_payload));
 
@@ -1270,8 +1428,16 @@ mod tests {
         assert!(!same_persisted_inventory(&seed, &changed_identity));
 
         let mut changed_order = seed.clone();
-        changed_order.timeline_records.reverse();
+        changed_order.conversation_records.reverse();
         assert!(!same_persisted_inventory(&seed, &changed_order));
+
+        let mut changed_body = seed.clone();
+        changed_body.content_chunks[0] = r#"["4:itemitem-1","body",0,"62"]"#.into();
+        assert!(!same_persisted_inventory(&seed, &changed_body));
+
+        let mut changed_manifest = seed.clone();
+        changed_manifest.content_manifests.clear();
+        assert!(!same_persisted_inventory(&seed, &changed_manifest));
     }
 
     #[test]

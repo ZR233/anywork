@@ -1,228 +1,300 @@
 part of 'studio_api.dart';
 
-ConversationDescriptor _descriptorFromFrb(
-  frb_descriptor.BridgeTimelineDescriptor value,
-) => value.when(
-  text: (value) => ConversationTextDescriptor(
-    channel: switch (value.channel) {
-      frb_item.BridgeThreadTextChannel.user => ThreadTextChannel.user,
-      frb_item.BridgeThreadTextChannel.parentAgent =>
-        ThreadTextChannel.parentAgent,
-      frb_item.BridgeThreadTextChannel.commentary =>
-        ThreadTextChannel.commentary,
-      frb_item.BridgeThreadTextChannel.final_ => ThreadTextChannel.finalAnswer,
-    },
-    attachments: List.unmodifiable(value.attachments.map(_attachmentFromFrb)),
-    outcome: _conversationContentOutcome(value.outcome),
-  ),
-  thinking: (value) => ConversationThinkingDescriptor(
-    outcome: _conversationContentOutcome(value.outcome),
-  ),
-  tool: _toolDescriptorFromFrb,
-  raw: (value) => ConversationRawDescriptor(
-    origin: switch (value.origin) {
-      frb_item.BridgeRawItemOrigin.stored => ThreadRawItemOrigin.stored,
-      frb_item.BridgeRawItemOrigin.runtimeControl =>
-        ThreadRawItemOrigin.runtimeControl,
-    },
-    payloads: List.unmodifiable(
-      value.payloads.map(
-        (payload) => ConversationRawPayloadDescriptor(
-          format: payload.format,
-          version: payload.version,
-        ),
-      ),
-    ),
-    notice: value.notice,
-    recordedAt: _dateFromUnix(value.recordedAt),
-  ),
-  agent: (identity, outcome) => ConversationAgentDescriptor(
-    identity: ThreadAgentIdentityView(
-      id: identity.id,
-      path: identity.path,
-      parentPath: identity.parentPath,
-      role: identity.role,
-      task: identity.task,
-      depth: identity.depth,
-    ),
-    outcome: outcome.when(
-      succeeded: (at, summary) => ConversationAgentSucceeded(
-        SucceededThreadAgentView(_dateFromUnix(at), summary),
-      ),
-      denied: (at, reason) => ConversationAgentDenied(
-        DeniedThreadAgentView(_dateFromUnix(at), reason),
-      ),
-      failed: (at, error) => ConversationAgentFailed(
-        FailedThreadAgentView(_dateFromUnix(at), error),
-      ),
-      cancelled: (at, reason) => ConversationAgentCancelled(
-        CancelledThreadAgentView(_dateFromUnix(at), reason),
-      ),
-    ),
-  ),
-  turn: (outcome, inputId) => ConversationTurnDescriptor(
-    inputId: inputId,
-    outcome: outcome.when(
-      completed: (startedAt, completedAt, completion) =>
-          ConversationTurnCompleted(
-            CompletedStudioTurnState(
-              startedAt: _exactNullableSignedTimelineInt(startedAt),
-              completedAt: _exactSignedTimelineInt(completedAt),
-              completion: switch (completion) {
-                frb.BridgeTurnCompletion.normal => StudioTurnCompletion.normal,
-                frb.BridgeTurnCompletion.interactionRequested =>
-                  StudioTurnCompletion.interactionRequested,
-              },
-            ),
-          ),
-      cancelled: (startedAt, requestedAt, completedAt, cause) =>
-          ConversationTurnCancelled(
-            CancelledStudioTurnState(
-              startedAt: _exactNullableSignedTimelineInt(startedAt),
-              requestedAt: _exactSignedTimelineInt(requestedAt),
-              completedAt: _exactSignedTimelineInt(completedAt),
-              cause: _turnCancellationCauseFromFrb(cause),
-            ),
-          ),
-      failed: (startedAt, completedAt, failure) => ConversationTurnFailed(
-        FailedStudioTurnState(
-          startedAt: _exactNullableSignedTimelineInt(startedAt),
-          completedAt: _exactSignedTimelineInt(completedAt),
-          failure: _turnFailureFromFrb(failure),
-        ),
-      ),
-      budgetLimited: (startedAt, completedAt, limit, rollover) =>
-          ConversationTurnBudgetLimited(
-            BudgetLimitedStudioTurnState(
-              startedAt: _exactNullableSignedTimelineInt(startedAt),
-              completedAt: _exactSignedTimelineInt(completedAt),
-              limit: StudioTurnBudgetLimit(
-                kind: StudioTurnBudgetLimitKind.values.byName(limit.kind.name),
-                usage: StudioTurnBudgetUsage(
-                  modelSteps: limit.usage.modelSteps,
-                  toolCalls: limit.usage.toolCalls,
-                  waitCalls: limit.usage.waitCalls,
-                  elapsedMs: _exactTimelineInt(
-                    limit.usage.elapsedMs,
-                    'elapsed ms',
-                  ),
-                ),
-              ),
-              rollover: rollover.when(
-                notAttempted: () => const RolloverNotAttempted(),
-                succeeded: () => const RolloverSucceeded(),
-                failed: (error) => RolloverFailed(error: error),
-              ),
-            ),
-          ),
-    ),
-  ),
-  inference: (inferenceId, model, outcome) => ConversationInferenceDescriptor(
-    inferenceId: inferenceId,
-    model: model,
-    outcome: outcome.when(
-      completed: (at, usage) => ConversationInferenceCompleted(
-        CompletedThreadInferenceView(
-          _dateFromUnix(at),
-          ThreadInferenceUsageView(
-            promptTokens: _exactTimelineInt(
-              usage.promptTokens,
-              'prompt tokens',
-            ),
-            completionTokens: _exactTimelineInt(
-              usage.completionTokens,
-              'completion tokens',
-            ),
-            cachedPromptTokens: _exactTimelineInt(
-              usage.cachedPromptTokens,
-              'cached tokens',
-            ),
-            totalTokens: _exactTimelineInt(usage.totalTokens, 'total tokens'),
-          ),
-        ),
-      ),
-      failed: (at, error) => ConversationInferenceFailed(
-        FailedThreadInferenceView(_dateFromUnix(at), error),
-      ),
-      cancelled: (at, reason) => ConversationInferenceCancelled(
-        CancelledThreadInferenceView(_dateFromUnix(at), reason),
-      ),
-    ),
-  ),
-  skill: (name, source, providerId, resourceBase, cause, activatedAt) =>
-      ConversationSkillDescriptor(
-        ThreadSkillItemStateView(
-          name: name,
-          source: source,
-          providerId: providerId,
-          resourceBase: resourceBase.when(
-            directory: (path) =>
-                SkillResourceBaseView(SkillResourceBaseKind.directory, path),
-            url: (url) => SkillResourceBaseView(SkillResourceBaseKind.url, url),
-            opaque: (description) => SkillResourceBaseView(
-              SkillResourceBaseKind.opaque,
-              description,
-            ),
-          ),
-          cause: cause.when(
-            tool: (toolCallId) => SkillActivationCauseView(
-              SkillActivationCauseKind.tool,
-              toolCallId,
-            ),
-            userGesture: (invocationId) => SkillActivationCauseView(
-              SkillActivationCauseKind.userGesture,
-              invocationId,
-            ),
-          ),
-          activatedAt: _dateFromUnix(activatedAt),
-        ),
-      ),
-  file: (path, mediaType, completedAt) => ConversationFileDescriptor(
-    ThreadFileItemStateView(path, mediaType, _dateFromUnix(completedAt)),
-  ),
-  contextCompaction: (beforeTokens, afterTokens, compactedAt) =>
-      ConversationContextCompactionDescriptor(
-        ThreadContextCompactionItemStateView(
-          beforeTokens == null
-              ? null
-              : _exactTimelineInt(beforeTokens, 'before tokens'),
-          afterTokens == null
-              ? null
-              : _exactTimelineInt(afterTokens, 'after tokens'),
-          _dateFromUnix(compactedAt),
-        ),
-      ),
-  plan: (interactionId, documentVersion, contentHash, decision) =>
-      ConversationPlanDescriptor(
-        interactionId: interactionId,
-        documentVersion: _exactNullableTimelineInt(
-          documentVersion,
-          'plan version',
-        ),
-        contentHash: contentHash,
-        decision: switch (decision) {
-          frb_descriptor.BridgeTimelinePlanDecision.approved =>
-            ConversationPlanDecision.approved,
-          frb_descriptor.BridgeTimelinePlanDecision.revisionRequested =>
-            ConversationPlanDecision.revisionRequested,
-          frb_descriptor.BridgeTimelinePlanDecision.cancelled =>
-            ConversationPlanDecision.cancelled,
-          frb_descriptor.BridgeTimelinePlanDecision.resolved =>
-            ConversationPlanDecision.resolved,
-        },
-      ),
+frb_chat_types.BridgeReadDemand _readDemandToFrb(ReadDemand value) =>
+    frb_chat_types.BridgeReadDemand(
+      maxItems: value.maxItems,
+      maxBytes: value.maxBytes,
+    );
+
+ChatBatch _chatBatchFromFrb(frb_chat_types.BridgeChatBatch value) => ChatBatch(
+  placement: switch (value.placement) {
+    frb_chat_types.BridgeChatPlacement.set_ => ChatPlacement.set,
+    frb_chat_types.BridgeChatPlacement.prepend => ChatPlacement.prepend,
+    frb_chat_types.BridgeChatPlacement.append => ChatPlacement.append,
+  },
+  messages: value.messages
+      .map(
+        (item) =>
+            ChatMessage(id: item.id, payload: _payloadFromFrb(item.payload)),
+      )
+      .toList(),
+  before: value.before,
+  current: value.current == null ? null : _currentFromFrb(value.current!),
 );
 
-ConversationContentOutcome _conversationContentOutcome(
-  frb_descriptor.BridgeTimelineContentOutcome value,
-) => value.when(
-  completed: (at) => ConversationContentCompleted(
-    CompletedThreadContentView(_dateFromUnix(at)),
-  ),
-  failed: (at, error) => ConversationContentFailed(
-    FailedThreadContentView(_dateFromUnix(at), error),
-  ),
-  cancelled: (at, reason) => ConversationContentCancelled(
-    CancelledThreadContentView(_dateFromUnix(at), reason),
-  ),
+PayloadData _payloadFromFrb(frb_chat_types.BridgePayloadData value) =>
+    switch (value) {
+      frb_chat_types.BridgePayloadData_Inline(:final bytes) => InlinePayload(
+        bytes: bytes,
+      ),
+      frb_chat_types.BridgePayloadData_Deferred(
+        :final reference,
+        :final byteLength,
+      ) =>
+        DeferredPayload(
+          reference: _contentRefFromFrb(reference),
+          byteLength: _exactTimelineInt(byteLength, 'payload bytes'),
+        ),
+    };
+
+ContentRef _contentRefFromFrb(frb_chat_types.BridgeContentRef value) =>
+    ContentRef(
+      databaseId: value.databaseId,
+      target: switch (value.target) {
+        frb_chat_types.BridgeContentTarget_ItemPayload(:final itemId) =>
+          ItemPayloadTarget(itemId: itemId),
+        frb_chat_types.BridgeContentTarget_Body(:final owner, :final key) =>
+          BodyContentTarget(
+            key: key,
+            owner: switch (owner) {
+              frb_chat_types.BridgeContentOwner_Item(:final itemId) =>
+                ItemContentOwner(itemId: itemId),
+              frb_chat_types.BridgeContentOwner_Current(
+                :final domain,
+                :final id,
+                :final revision,
+              ) =>
+                CurrentContentOwner(
+                  domain: domain,
+                  id: id,
+                  revision: _exactTimelineInt(revision, 'content revision'),
+                ),
+            },
+          ),
+      },
+    );
+
+frb_chat_types.BridgeContentRef _contentRefToFrb(ContentRef value) =>
+    frb_chat_types.BridgeContentRef(
+      databaseId: value.databaseId,
+      target: switch (value.target) {
+        ItemPayloadTarget(:final itemId) =>
+          frb_chat_types.BridgeContentTarget.itemPayload(itemId: itemId),
+        BodyContentTarget(:final owner, :final key) =>
+          frb_chat_types.BridgeContentTarget.body(
+            key: key,
+            owner: switch (owner) {
+              ItemContentOwner(:final itemId) =>
+                frb_chat_types.BridgeContentOwner.item(itemId: itemId),
+              CurrentContentOwner(:final domain, :final id, :final revision) =>
+                frb_chat_types.BridgeContentOwner.current(
+                  domain: domain,
+                  id: id,
+                  revision: BigInt.from(revision),
+                ),
+            },
+          ),
+      },
+    );
+
+CurrentCollectionRef _collectionFromFrb(
+  frb_chat_types.BridgeCurrentCollectionRef value,
+) => CurrentCollectionRef(
+  databaseId: value.databaseId,
+  collection: value.collection,
+  revision: _exactTimelineInt(value.revision, 'collection revision'),
 );
+
+frb_chat_types.BridgeCurrentCollectionRef _collectionToFrb(
+  CurrentCollectionRef value,
+) => frb_chat_types.BridgeCurrentCollectionRef(
+  databaseId: value.databaseId,
+  collection: value.collection,
+  revision: BigInt.from(value.revision),
+);
+
+CurrentProjection _currentFromFrb(
+  frb_chat_types.BridgeCurrentProjection value,
+) => CurrentProjection(
+  sourceEffectSeq: _exactTimelineInt(value.sourceEffectSeq, 'source effect'),
+  logicalStatus: ThreadStatusView.values.byName(value.logicalStatus.name),
+  executionPresent: value.executionPresent,
+  active: value.active == null ? null : _currentActivityFromFrb(value.active!),
+  activeTurn: value.activeTurn == null
+      ? null
+      : CurrentTurnHead(
+          id: value.activeTurn!.id,
+          phase: StudioTurnActivity.values.byName(value.activeTurn!.phase.name),
+          childrenParentId: value.activeTurn!.childrenParentId,
+        ),
+  plan: value.plan == null
+      ? null
+      : CurrentPlanHead(
+          revision: _exactTimelineInt(value.plan!.revision, 'plan revision'),
+          phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
+          document: value.plan!.document == null
+              ? null
+              : _contentRefFromFrb(value.plan!.document!),
+        ),
+  interactions: value.interactions == null
+      ? null
+      : _collectionFromFrb(value.interactions!),
+  previews: value.previews
+      .map(
+        (preview) => CurrentContentPreview(
+          id: preview.id,
+          role: CurrentContentRole.values.byName(preview.role.name),
+          textChannel: preview.textChannel == null
+              ? null
+              : ThreadTextChannel.values.byName(preview.textChannel!.name),
+          text: preview.text,
+          reference: _contentRefFromFrb(preview.reference),
+        ),
+      )
+      .toList(),
+  collections: value.collections.map(_collectionFromFrb).toList(),
+);
+
+CurrentActivityHead _currentActivityFromFrb(
+  frb_chat_types.BridgeCurrentActivityHead value,
+) => CurrentActivityHead(
+  id: value.id,
+  kind: ThreadActivityKind.values.byName(value.kind.name),
+  summary: value.summary,
+  thinkingSummary: value.thinkingSummary,
+  thinkingSeconds: _exactNullableTimelineInt(
+    value.thinkingSeconds,
+    'thinking seconds',
+  ),
+  toolCount: value.toolCount,
+  backgroundToolCount: value.backgroundToolCount,
+  latestTool: value.latestTool == null
+      ? null
+      : CurrentToolHead(
+          callId: value.latestTool!.callId,
+          name: value.latestTool!.name,
+          state: _activityToolStateFromFrb(value.latestTool!.state),
+        ),
+);
+
+ContentWindow _contentWindowFromFrb(frb_chat_types.BridgeContentWindow value) =>
+    ContentWindow(
+      offset: _exactTimelineInt(value.offset, 'content offset'),
+      bytes: value.bytes,
+      generation: value.generation,
+      availableThrough: _exactTimelineInt(
+        value.availableThrough,
+        'available bytes',
+      ),
+      sealed: value.sealed,
+    );
+
+/// No separately opened native reader. All operations use the facade's captured
+/// lease, independently of events/ACK and its producer receive lock.
+final class _FrbConversationReader implements ConversationReader {
+  _FrbConversationReader(this._feed);
+  final FrbConversationFeed _feed;
+  @override
+  String get threadId => _feed.threadId;
+  void _checkOpen() {
+    if (_feed._admissionsClosed) throw _conversationClosedFailure;
+  }
+
+  @override
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _chatBatchFromFrb(
+        await _feed._native.loadOlder(
+          before: before,
+          demand: _readDemandToFrb(demand),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(() async {
+      final value = await _feed._native.listContents(
+        itemId: itemId,
+        continuation: continuation,
+        demand: _readDemandToFrb(demand),
+      );
+      return ContentManifestPage(
+        continuation: value.continuation,
+        entries: value.entries
+            .map(
+              (entry) => ContentManifestEntry(
+                key: entry.key,
+                payload: entry.payload,
+                reference: _contentRefFromFrb(entry.reference),
+              ),
+            )
+            .toList(),
+      );
+    });
+  }
+
+  frb_chat_types.BridgeContentRange _range(ContentRange range) =>
+      frb_chat_types.BridgeContentRange(
+        offset: BigInt.from(range.offset),
+        maxBytes: range.maxBytes,
+      );
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _contentWindowFromFrb(
+        await _feed._native.readContent(
+          reference: _contentRefToFrb(reference),
+          range: _range(range),
+        ),
+      ),
+    );
+  }
+
+  @override
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    _checkOpen();
+    return _FrbContentWatch(_feed, reference, range);
+  }
+
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(() async {
+      final value = await _feed._native.pageCurrent(
+        reference: _collectionToFrb(reference),
+        continuation: continuation,
+        demand: _readDemandToFrb(demand),
+      );
+      return CurrentCollectionPage(
+        revision: _exactTimelineInt(value.revision, 'current revision'),
+        entries: value.entries
+            .map(
+              (entry) => CurrentCollectionEntry(
+                id: entry.id,
+                position: _exactSignedTimelineInt(entry.position),
+                payload: _payloadFromFrb(entry.payload),
+              ),
+            )
+            .toList(),
+        continuation: value.continuation,
+      );
+    });
+  }
+
+  @override
+  void requestClose() => _feed.requestClose();
+  @override
+  Future<void> close() => _feed.close();
+}

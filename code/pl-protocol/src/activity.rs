@@ -1,12 +1,9 @@
-//! 当前执行活动的 typed 实时投影契约。
+//! 当前执行活动的轻量语义摘要。
 //!
-//! 活动拥有当前正文与工具进度；Timeline 只接收不可变完成事实。活动内容通过有界事件帧交付，
-//! SDK 在所属 Repository 唯一归约。首次观察和恢复使用分块 snapshot，不通过 revision 后查询正文。
+//! 正文与集合通过 Main Chat 的 CurrentProjection 及原读取资格按需交付；
+//! 这里不再定义独立的 Begin/Text/Commit 正文传输或 SDK staging。
 
 use serde::{Deserialize, Serialize};
-
-mod delivery;
-pub use delivery::*;
 
 /// 活动摘要保留的最大字符数（按字符边界截断，保留行首）。
 ///

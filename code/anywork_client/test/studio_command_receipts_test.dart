@@ -11,6 +11,8 @@ import 'package:test/test.dart';
 import 'support/accounts_test_runtime.dart';
 import 'support/timeline_transport.dart';
 
+const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
+
 // The native fixture identity used before the SDK conversation migration.
 const _epoch = 'native-runtime-one';
 
@@ -168,15 +170,12 @@ final class _Transport extends AccountsTestTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
     threadBindings.add(states);
-    return ScriptedConversationFeed(
-      threadId: threadId,
-      states: states.stream,
-      resumeAfter: resumeAfter,
-    );
+    return ScriptedConversationFeed(threadId: threadId, states: states.stream);
   }
 
   @override
@@ -328,9 +327,10 @@ final class _Transport extends AccountsTestTransport {
 final class _RouteConflictFeed extends ScriptedConversationFeed {
   _RouteConflictFeed({
     required super.threadId,
+    required super.subscriptionId,
     required super.initial,
     required super.states,
-    super.resumeAfter,
+
     required this.onClose,
   });
 
@@ -365,7 +365,8 @@ final class _RouteConflictTransport extends _Transport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final index = bindings.length;
     // Frames may have no consumer when opening is retired immediately.
@@ -374,17 +375,19 @@ final class _RouteConflictTransport extends _Transport {
     windowOpens++;
     final feed = _RouteConflictFeed(
       threadId: threadId,
-      initial: baseline(
-        300,
-        subscriptionId: 'route-conflict-$index',
-        items: const [],
-      ),
+      subscriptionId: 'route-conflict-$index',
+      initial: chatSet(messages: const []),
       states: binding.stream,
-      resumeAfter: resumeAfter,
+
       onClose: () => onFeedClose?.call(index) ?? Future<void>.value(),
     );
-    if (bindings.length == 2 && !refreshEntered.isCompleted)
-      refreshEntered.complete();
+    if (bindings.length == 2) {
+      unawaited(
+        feed.acknowledged(1).then((_) {
+          if (!refreshEntered.isCompleted) refreshEntered.complete();
+        }),
+      );
+    }
     return feed;
   }
 
@@ -782,9 +785,14 @@ Future<AnyworkClient> _client(
     needsOpen: true,
   );
   final consumer = TestCompletionConsumer();
-  client.conversations.session('thread').content.attachConsumer(consumer);
+  client.conversations
+      .session('thread')
+      .content
+      .attachConsumer(consumer, demand: _demand);
   _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
+  final feed = await scriptedFeed('thread');
+  await feed.acknowledged(1);
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
@@ -2130,13 +2138,12 @@ void main() {
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    final delivered = _completionConsumers[client]!.frames.single;
+    final delivered = _completionConsumers[client]!.batches;
+    expect(delivered, hasLength(2));
     expect(
-      (delivered as ConversationBaselineFrame)
-          .baseline
-          .completedCursor
-          .appendSeq,
-      300,
+      delivered.map((batch) => batch.placement),
+      [ChatPlacement.set, ChatPlacement.set],
+      reason: 'A replacement feed always owns a fresh Set, never cursor replay',
     );
     expect(transport.windowOpens, 2);
     expect(transport.bindings, hasLength(2));
@@ -2254,6 +2261,7 @@ void main() {
       );
       final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
       await cancelEntered.future;
+      await transport.refreshEntered.future;
       expect(transport.bindings, hasLength(2));
       expect(transport.refreshEntered.isCompleted, isTrue);
       final closing = client.close();
@@ -3433,8 +3441,10 @@ void main() {
     client.conversations
         .session('thread')
         .content
-        .attachConsumer(TestCompletionConsumer());
+        .attachConsumer(TestCompletionConsumer(), demand: _demand);
     client.conversations.setVisibleThread('thread');
+    final feed = await scriptedFeed('thread');
+    await feed.acknowledged(1);
     await client.conversations
         .session('thread')
         .deliverWorkspace(

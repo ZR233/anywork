@@ -273,8 +273,8 @@ impl StreamLifecycle {
             ModelStreamEvent::ResponsesContextItem { item } => {
                 vec![ModelStreamEvent::ResponsesContextItem { item }]
             }
-            ModelStreamEvent::PresentationItem { item } => {
-                vec![ModelStreamEvent::PresentationItem { item }]
+            ModelStreamEvent::PresentationItem { item, state } => {
+                vec![ModelStreamEvent::PresentationItem { item, state }]
             }
             ModelStreamEvent::Replay(update) => vec![ModelStreamEvent::Replay(update)],
             ModelStreamEvent::Usage(usage) => vec![ModelStreamEvent::Usage(usage)],
