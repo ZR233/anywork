@@ -295,39 +295,7 @@ pub(crate) async fn for_history(database: &Path, thread_id: &str) -> Result<Opti
     );
     let mut result = None;
     for item in record.bot_roots {
-        crate::bots::validate_bot_id(&item.bot_id)?;
-        ensure!(
-            Path::new(&item.new_root) == paths.bot_dir(&item.bot_id).join("workspace"),
-            "bot migration destination identity mismatch"
-        );
-        let expected = [
-            paths
-                .home()
-                .join("v2/bots")
-                .join(&item.bot_id)
-                .join("workspace"),
-            paths
-                .home()
-                .join("studio/v2/bots")
-                .join(&item.bot_id)
-                .join("workspace"),
-        ];
-        ensure!(
-            expected.iter().any(|old| old == Path::new(&item.old_root)),
-            "bot migration source identity mismatch"
-        );
-        ensure!(
-            item.blocked
-                .keys()
-                .all(|thread| item.threads.contains_key(thread)),
-            "bot migration diagnostic has no proven owner"
-        );
-        ensure!(
-            item.threads
-                .values()
-                .all(|proof| proof.proven_local_root == proof.diagnostic.is_none()),
-            "bot root migration proof/diagnostic conflict"
-        );
+        item.validate(&paths)?;
         if item.threads.contains_key(thread_id) {
             ensure!(
                 paths
@@ -343,7 +311,96 @@ pub(crate) async fn for_history(database: &Path, thread_id: &str) -> Result<Opti
     Ok(result)
 }
 
+/// The physical files may still be in staging; their recorded addresses are final paths.
+pub(super) async fn migrate_workspace_completions(
+    paths: &StudioPaths,
+    target: &StudioPaths,
+    mappings: &[BotRootMove],
+) -> Result<()> {
+    let mut bots = BTreeSet::new();
+    let mut threads = BTreeSet::new();
+    // Validate all ownership evidence before the first file is changed.
+    for mapping in mappings {
+        mapping.validate(paths)?;
+        ensure!(bots.insert(&mapping.bot_id), "duplicate bot root mapping");
+        for thread in mapping.threads.keys() {
+            ensure!(threads.insert(thread), "duplicate bot Thread mapping");
+        }
+    }
+    for mapping in mappings {
+        for (thread, proof) in &mapping.threads {
+            if !proof.proven_local_root || mapping.blocked.contains_key(thread) {
+                continue;
+            }
+            let files = pl_tool::workspace::SessionFiles::new(thread);
+            let marker = target
+                .bot_dir(&mapping.bot_id)
+                .join("workspace")
+                .join(files.root())
+                .join(".migration-complete");
+            session_layout::safe_path(target, &marker).await?;
+            let content = match tokio::fs::read(&marker).await {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read bot workspace completion for {thread}"));
+                }
+            };
+            let old = Path::new(&mapping.old_root).join(files.root());
+            let current = Path::new(&mapping.new_root).join(files.root());
+            if content == old.to_string_lossy().as_bytes()
+                || content == current.to_string_lossy().as_bytes()
+            {
+                // A prior atomic replacement may have applied before its sync failed.
+                // Reconfirm that write before advancing the layout version on a retry.
+                session_layout::write_manifest(&marker, &current.to_string_lossy())
+                    .await
+                    .with_context(|| format!("relocate bot workspace completion for {thread}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl BotRootMove {
+    fn validate(&self, paths: &StudioPaths) -> Result<()> {
+        crate::bots::validate_bot_id(&self.bot_id)?;
+        ensure!(
+            Path::new(&self.new_root) == paths.bot_dir(&self.bot_id).join("workspace"),
+            "bot migration destination identity mismatch"
+        );
+        let expected = [
+            paths
+                .home()
+                .join("v2/bots")
+                .join(&self.bot_id)
+                .join("workspace"),
+            paths
+                .home()
+                .join("studio/v2/bots")
+                .join(&self.bot_id)
+                .join("workspace"),
+        ];
+        ensure!(
+            expected.iter().any(|old| old == Path::new(&self.old_root)),
+            "bot migration source identity mismatch"
+        );
+        ensure!(
+            self.blocked
+                .keys()
+                .all(|thread| self.threads.contains_key(thread)),
+            "bot migration diagnostic has no proven owner"
+        );
+        ensure!(
+            self.threads
+                .values()
+                .all(|proof| proof.proven_local_root == proof.diagnostic.is_none()),
+            "bot root migration proof/diagnostic conflict"
+        );
+        Ok(())
+    }
+
     pub(crate) fn require_convertible(&self, thread_id: &str) -> Result<()> {
         let proof = self
             .threads

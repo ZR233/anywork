@@ -1067,11 +1067,63 @@ async fn frozen_workspace_identity(home: &Path, root: &str) -> Result<()> {
     Ok(())
 }
 
+fn bot_completion_path(root: &Path, thread: &str) -> PathBuf {
+    root.join(pl_tool::workspace::SessionFiles::new(thread).root())
+        .join(".migration-complete")
+}
+
+async fn associate_managed_bot_project(paths: &StudioPaths, old_root: &str) -> Result<()> {
+    let legacy = paths.home().join("v2");
+    let workspace_file = legacy.join("workspaces.toml");
+    let mut workspaces: toml::Table =
+        toml::from_str(&tokio::fs::read_to_string(&workspace_file).await?)?;
+    workspaces["workspaces"][0]["path"] = old_root.into();
+    tokio::fs::write(workspace_file, toml::to_string(&workspaces)?).await?;
+    let manifest_file = legacy
+        .join("projects")
+        .join(storage_key(OWNER, "Workspace")?)
+        .join("project.toml");
+    let mut manifest: toml::Table =
+        toml::from_str(&tokio::fs::read_to_string(&manifest_file).await?)?;
+    manifest["path"] = old_root.into();
+    tokio::fs::write(manifest_file, toml::to_string(&manifest)?).await?;
+    Ok(())
+}
+
+async fn bot_workspace_completion(paths: &StudioPaths, thread: &str) -> Result<bool> {
+    let store = StudioStore::prepare_database(&paths.database()).await?;
+    let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+    let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
+    let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
+        crate::config::ConfigPaths::from_config_dir(paths.home()),
+    ))?;
+    let bots = crate::bots::BotRuntime::new(paths.clone(), config, events)?;
+    let config = crate::bots::load_config(&paths.bot_dir("bot-test-one").join("config.toml"))?;
+    let associated = store
+        .workspaces()
+        .get(&config.workspace_id)
+        .context("associated workspace")?;
+    let result = bots
+        .workspace_migration_complete(&config, thread, &associated.path)
+        .await;
+    bots.shutdown().await?;
+    writer.shutdown().await?;
+    store.close().await?;
+    Ok(result?)
+}
+
 #[tokio::test]
 async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+    associate_managed_bot_project(&paths, &old_root).await?;
     frozen_workspace_identity(temp.path(), &old_root).await?;
+    for thread in [THREAD, "bot-child"] {
+        let marker = bot_completion_path(Path::new(&old_root), thread);
+        tokio::fs::create_dir_all(marker.parent().context("completion parent")?).await?;
+        let source = marker.parent().context("completion source")?;
+        tokio::fs::write(&marker, source.to_string_lossy().as_bytes()).await?;
+    }
     prepare(&paths).await?;
     let mapping = bot_roots::for_history(
         &paths.session_paths(OWNER, THREAD)?.history_database(),
@@ -1096,6 +1148,30 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
         .to_str()
         .context("new root")?
         .to_owned();
+    for thread in [THREAD, "bot-child"] {
+        let marker = bot_completion_path(Path::new(&new_root), thread);
+        assert_eq!(
+            tokio::fs::read_to_string(&marker).await?,
+            marker
+                .parent()
+                .context("current completion source")?
+                .to_string_lossy(),
+            "the completion must follow the same proven root relocation"
+        );
+        assert!(bot_workspace_completion(&paths, thread).await?);
+    }
+    let journal = decode_journal(&tokio::fs::read_to_string(paths.home().join(JOURNAL)).await?)?;
+    let preserved_root = backup_root(&paths, &journal).join("v2/bots/bot-test-one/workspace");
+    for thread in [THREAD, "bot-child"] {
+        assert_eq!(
+            tokio::fs::read_to_string(bot_completion_path(&preserved_root, thread)).await?,
+            bot_completion_path(Path::new(&old_root), thread)
+                .parent()
+                .context("original completion source")?
+                .to_string_lossy(),
+            "the original completion in the migration backup must remain unchanged"
+        );
+    }
     let catalog: toml::Table =
         toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
     assert_eq!(
@@ -1107,8 +1183,8 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
         toml::from_str(&tokio::fs::read_to_string(paths.workspaces_file()).await?)?;
     assert_eq!(
         workspace["workspaces"][0]["path"].as_str(),
-        Some("/isolated-workspace"),
-        "real business project is not the managed root"
+        Some(new_root.as_str()),
+        "the bot-owned project and completion use the same relocated source"
     );
     let store = StudioStore::prepare_database(&paths.database()).await?;
     assert_eq!(
@@ -1172,6 +1248,126 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
         );
     }
     store.close().await?;
+    Ok(())
+}
+
+async fn upgrade_bot_completions_at_publication_boundary(published: bool) -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+    associate_managed_bot_project(&paths, &old_root).await?;
+    prepare(&paths).await?;
+    let new_root = paths.bot_dir("bot-test-one").join("workspace");
+    let marker = bot_completion_path(&new_root, THREAD);
+    tokio::fs::create_dir_all(marker.parent().context("completion parent")?).await?;
+    let original = bot_completion_path(Path::new(&old_root), THREAD)
+        .parent()
+        .context("old completion source")?
+        .to_string_lossy()
+        .into_owned();
+    tokio::fs::write(&marker, &original).await?;
+    let child_marker = bot_completion_path(&new_root, "bot-child");
+    tokio::fs::create_dir_all(child_marker.parent().context("child completion parent")?).await?;
+    let created = r#"{"schemaVersion":1,"threadId":"bot-child"}"#;
+    tokio::fs::write(&child_marker, created).await?;
+    let unowned = bot_completion_path(&new_root, "not-a-bound-thread");
+    tokio::fs::create_dir_all(unowned.parent().context("unowned parent")?).await?;
+    tokio::fs::write(&unowned, &original).await?;
+    let mut layout: Layout =
+        toml::from_str(&tokio::fs::read_to_string(paths.layout_file()).await?)?;
+    // An installation already published by the old application has an authoritative v1 layout.
+    layout.schema_version = 1;
+    persist(&paths.layout_file(), &layout).await?;
+    let mut journal =
+        decode_journal(&tokio::fs::read_to_string(paths.home().join(JOURNAL)).await?)?;
+    journal.phase = Phase::Publishing;
+    persist(&paths.home().join(JOURNAL), &journal).await?;
+    let preserved = backup_root(&paths, &journal);
+    if published {
+        tokio::fs::rename(&preserved, paths.home().join("preserved-offline")).await?;
+    } else {
+        managed_move(paths.data_dir(), staging(&paths, &journal).data_dir()).await?;
+    }
+
+    prepare(&paths).await?;
+    assert!(bot_workspace_completion(&paths, THREAD).await?);
+    assert!(bot_workspace_completion(&paths, "bot-child").await?);
+    assert_eq!(tokio::fs::read_to_string(&child_marker).await?, created);
+    assert_eq!(tokio::fs::read_to_string(&unowned).await?, original);
+    let upgraded = tokio::fs::read(paths.layout_file()).await?;
+    assert_eq!(
+        toml::from_str::<Layout>(std::str::from_utf8(&upgraded)?)?.schema_version,
+        2
+    );
+    assert_eq!(
+        decode_journal(&tokio::fs::read_to_string(paths.home().join(JOURNAL)).await?)?.phase,
+        Phase::Completed
+    );
+    prepare(&paths).await?;
+    assert_eq!(tokio::fs::read(paths.layout_file()).await?, upgraded);
+    assert_eq!(
+        tokio::fs::read_to_string(&marker).await?,
+        marker
+            .parent()
+            .context("current completion source")?
+            .to_string_lossy()
+    );
+
+    if published {
+        // The child is converted before an IO failure at the root. Keep v1 until every write
+        // succeeds, then resume without revisiting the unavailable source or undoing the child.
+        let old_child = bot_completion_path(Path::new(&old_root), "bot-child");
+        tokio::fs::write(
+            &child_marker,
+            old_child
+                .parent()
+                .context("old child source")?
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .await?;
+        tokio::fs::remove_file(&marker).await?;
+        tokio::fs::create_dir(&marker).await?;
+        prepare(&paths).await?; // Current startup does not re-enumerate the completion files.
+        persist(&paths.layout_file(), &layout).await?;
+        assert!(prepare(&paths).await.is_err());
+        assert_eq!(
+            toml::from_str::<Layout>(&tokio::fs::read_to_string(paths.layout_file()).await?)?
+                .schema_version,
+            1
+        );
+        assert!(bot_workspace_completion(&paths, "bot-child").await?);
+        tokio::fs::remove_dir(&marker).await?;
+        tokio::fs::write(&marker, &original).await?;
+        prepare(&paths).await?;
+        assert!(bot_workspace_completion(&paths, THREAD).await?);
+    }
+
+    // Missing and foreign receipts cannot acquire completion authority during a retry.
+    tokio::fs::remove_file(&marker).await?;
+    tokio::fs::remove_dir(marker.parent().context("empty completion directory")?).await?;
+    let foreign = b"another-source\xff";
+    tokio::fs::write(&child_marker, foreign).await?;
+    persist(&paths.layout_file(), &layout).await?;
+    prepare(&paths).await?;
+    assert!(!marker.exists());
+    assert!(
+        !marker
+            .parent()
+            .context("missing completion directory")?
+            .exists()
+    );
+    assert!(!bot_workspace_completion(&paths, THREAD).await?);
+    assert!(bot_workspace_completion(&paths, "bot-child").await.is_err());
+    assert_eq!(tokio::fs::read(&child_marker).await?, foreign);
+    assert_eq!(tokio::fs::read_to_string(&unowned).await?, original);
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_bot_completions_upgrade_at_either_publication_boundary() -> Result<()> {
+    for published in [false, true] {
+        upgrade_bot_completions_at_publication_boundary(published).await?;
+    }
     Ok(())
 }
 
@@ -1406,7 +1602,15 @@ async fn prepared_history_toml_window_rejects_unknown_or_conflicting_evidence() 
 async fn nonmanaged_identity_is_preserved_with_execution_diagnostic_and_readable_history()
 -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let (paths, _) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+    let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
+    let marker = bot_completion_path(Path::new(&old_root), THREAD);
+    tokio::fs::create_dir_all(marker.parent().context("completion parent")?).await?;
+    let completion = marker
+        .parent()
+        .context("old completion source")?
+        .to_string_lossy()
+        .into_owned();
+    tokio::fs::write(&marker, &completion).await?;
     let business_root = temp.path().join("business-project-not-owned-by-bot");
     tokio::fs::create_dir_all(&business_root).await?;
     let business_root = dunce::canonicalize(&business_root)?
@@ -1415,7 +1619,25 @@ async fn nonmanaged_identity_is_preserved_with_execution_diagnostic_and_readable
         .to_owned();
     frozen_workspace_identity(temp.path(), &business_root).await?;
     prepare(&paths).await?;
+    assert_eq!(
+        tokio::fs::read_to_string(bot_completion_path(
+            &paths.bot_dir("bot-test-one").join("workspace"),
+            THREAD,
+        ))
+        .await?,
+        completion,
+        "a blocked physical identity cannot grant a migrated completion"
+    );
     let store = StudioStore::prepare_database(&paths.database()).await?;
+    assert_eq!(
+        store
+            .workspaces()
+            .get(OWNER)
+            .context("business project")?
+            .path,
+        "/isolated-workspace",
+        "the unrelated business project must retain its original address"
+    );
     assert_eq!(
         store
             .workspace_identity(THREAD)
