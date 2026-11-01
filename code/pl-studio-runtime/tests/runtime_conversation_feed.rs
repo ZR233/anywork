@@ -153,9 +153,8 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
                         attachment_draft_ids: vec![],
                     },
                     expected_model_route_revision: snapshot
-                        .runtime
+                        .model_route
                         .as_ref()
-                        .and_then(|runtime| runtime.model_route.as_ref())
                         .context("model route")?
                         .revision,
                 },
@@ -313,7 +312,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let snapshot = env.runtime.thread_snapshot(id).await?;
                 env.runtime.submit_prompt_command(id.clone(), SubmitPromptRequest {
                     input: StudioPromptInput { input_id: "input-member-next".into(), text: "member-next".into(), attachment_draft_ids: vec![] },
-                    expected_model_route_revision: snapshot.runtime.as_ref().and_then(|runtime| runtime.model_route.as_ref()).context("model route")?.revision,
+                    expected_model_route_revision: snapshot.model_route.as_ref().context("model route")?.revision,
                 }).await?;
                 reached(&stage).await?;
                 let completed_id = loop {

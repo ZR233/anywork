@@ -13,6 +13,754 @@ part of 'product_topic.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$BridgeChildInteractionsResource {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeChildInteractionsResourceCopyWith<$Res>  {
+$BridgeChildInteractionsResourceCopyWith(BridgeChildInteractionsResource _, $Res Function(BridgeChildInteractionsResource) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeChildInteractionsResource].
+extension BridgeChildInteractionsResourcePatterns on BridgeChildInteractionsResource {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChildInteractionsResource_Uninitialized value)?  uninitialized,TResult Function( BridgeChildInteractionsResource_Loading value)?  loading,TResult Function( BridgeChildInteractionsResource_Ready value)?  ready,TResult Function( BridgeChildInteractionsResource_Refreshing value)?  refreshing,TResult Function( BridgeChildInteractionsResource_Stale value)?  stale,TResult Function( BridgeChildInteractionsResource_Degraded value)?  degraded,TResult Function( BridgeChildInteractionsResource_Failed value)?  failed,TResult Function( BridgeChildInteractionsResource_Stopped value)?  stopped,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized() when uninitialized != null:
+return uninitialized(_that);case BridgeChildInteractionsResource_Loading() when loading != null:
+return loading(_that);case BridgeChildInteractionsResource_Ready() when ready != null:
+return ready(_that);case BridgeChildInteractionsResource_Refreshing() when refreshing != null:
+return refreshing(_that);case BridgeChildInteractionsResource_Stale() when stale != null:
+return stale(_that);case BridgeChildInteractionsResource_Degraded() when degraded != null:
+return degraded(_that);case BridgeChildInteractionsResource_Failed() when failed != null:
+return failed(_that);case BridgeChildInteractionsResource_Stopped() when stopped != null:
+return stopped(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChildInteractionsResource_Uninitialized value)  uninitialized,required TResult Function( BridgeChildInteractionsResource_Loading value)  loading,required TResult Function( BridgeChildInteractionsResource_Ready value)  ready,required TResult Function( BridgeChildInteractionsResource_Refreshing value)  refreshing,required TResult Function( BridgeChildInteractionsResource_Stale value)  stale,required TResult Function( BridgeChildInteractionsResource_Degraded value)  degraded,required TResult Function( BridgeChildInteractionsResource_Failed value)  failed,required TResult Function( BridgeChildInteractionsResource_Stopped value)  stopped,}){
+final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized():
+return uninitialized(_that);case BridgeChildInteractionsResource_Loading():
+return loading(_that);case BridgeChildInteractionsResource_Ready():
+return ready(_that);case BridgeChildInteractionsResource_Refreshing():
+return refreshing(_that);case BridgeChildInteractionsResource_Stale():
+return stale(_that);case BridgeChildInteractionsResource_Degraded():
+return degraded(_that);case BridgeChildInteractionsResource_Failed():
+return failed(_that);case BridgeChildInteractionsResource_Stopped():
+return stopped(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChildInteractionsResource_Uninitialized value)?  uninitialized,TResult? Function( BridgeChildInteractionsResource_Loading value)?  loading,TResult? Function( BridgeChildInteractionsResource_Ready value)?  ready,TResult? Function( BridgeChildInteractionsResource_Refreshing value)?  refreshing,TResult? Function( BridgeChildInteractionsResource_Stale value)?  stale,TResult? Function( BridgeChildInteractionsResource_Degraded value)?  degraded,TResult? Function( BridgeChildInteractionsResource_Failed value)?  failed,TResult? Function( BridgeChildInteractionsResource_Stopped value)?  stopped,}){
+final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized() when uninitialized != null:
+return uninitialized(_that);case BridgeChildInteractionsResource_Loading() when loading != null:
+return loading(_that);case BridgeChildInteractionsResource_Ready() when ready != null:
+return ready(_that);case BridgeChildInteractionsResource_Refreshing() when refreshing != null:
+return refreshing(_that);case BridgeChildInteractionsResource_Stale() when stale != null:
+return stale(_that);case BridgeChildInteractionsResource_Degraded() when degraded != null:
+return degraded(_that);case BridgeChildInteractionsResource_Failed() when failed != null:
+return failed(_that);case BridgeChildInteractionsResource_Stopped() when stopped != null:
+return stopped(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeUninitializedResource field0)?  uninitialized,TResult Function( BridgeLoadingResource field0)?  loading,TResult Function( BridgeReadyResource resource,  BridgeChildInteractionsData value)?  ready,TResult Function( BridgeRefreshingResource resource,  BridgeChildInteractionsData value)?  refreshing,TResult Function( BridgeStaleResource resource,  BridgeChildInteractionsData value)?  stale,TResult Function( BridgeDegradedResource resource,  BridgeChildInteractionsData value)?  degraded,TResult Function( BridgeFailedResource field0)?  failed,TResult Function( BridgeStoppedResource field0)?  stopped,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized() when uninitialized != null:
+return uninitialized(_that.field0);case BridgeChildInteractionsResource_Loading() when loading != null:
+return loading(_that.field0);case BridgeChildInteractionsResource_Ready() when ready != null:
+return ready(_that.resource,_that.value);case BridgeChildInteractionsResource_Refreshing() when refreshing != null:
+return refreshing(_that.resource,_that.value);case BridgeChildInteractionsResource_Stale() when stale != null:
+return stale(_that.resource,_that.value);case BridgeChildInteractionsResource_Degraded() when degraded != null:
+return degraded(_that.resource,_that.value);case BridgeChildInteractionsResource_Failed() when failed != null:
+return failed(_that.field0);case BridgeChildInteractionsResource_Stopped() when stopped != null:
+return stopped(_that.field0);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeUninitializedResource field0)  uninitialized,required TResult Function( BridgeLoadingResource field0)  loading,required TResult Function( BridgeReadyResource resource,  BridgeChildInteractionsData value)  ready,required TResult Function( BridgeRefreshingResource resource,  BridgeChildInteractionsData value)  refreshing,required TResult Function( BridgeStaleResource resource,  BridgeChildInteractionsData value)  stale,required TResult Function( BridgeDegradedResource resource,  BridgeChildInteractionsData value)  degraded,required TResult Function( BridgeFailedResource field0)  failed,required TResult Function( BridgeStoppedResource field0)  stopped,}) {final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized():
+return uninitialized(_that.field0);case BridgeChildInteractionsResource_Loading():
+return loading(_that.field0);case BridgeChildInteractionsResource_Ready():
+return ready(_that.resource,_that.value);case BridgeChildInteractionsResource_Refreshing():
+return refreshing(_that.resource,_that.value);case BridgeChildInteractionsResource_Stale():
+return stale(_that.resource,_that.value);case BridgeChildInteractionsResource_Degraded():
+return degraded(_that.resource,_that.value);case BridgeChildInteractionsResource_Failed():
+return failed(_that.field0);case BridgeChildInteractionsResource_Stopped():
+return stopped(_that.field0);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeUninitializedResource field0)?  uninitialized,TResult? Function( BridgeLoadingResource field0)?  loading,TResult? Function( BridgeReadyResource resource,  BridgeChildInteractionsData value)?  ready,TResult? Function( BridgeRefreshingResource resource,  BridgeChildInteractionsData value)?  refreshing,TResult? Function( BridgeStaleResource resource,  BridgeChildInteractionsData value)?  stale,TResult? Function( BridgeDegradedResource resource,  BridgeChildInteractionsData value)?  degraded,TResult? Function( BridgeFailedResource field0)?  failed,TResult? Function( BridgeStoppedResource field0)?  stopped,}) {final _that = this;
+switch (_that) {
+case BridgeChildInteractionsResource_Uninitialized() when uninitialized != null:
+return uninitialized(_that.field0);case BridgeChildInteractionsResource_Loading() when loading != null:
+return loading(_that.field0);case BridgeChildInteractionsResource_Ready() when ready != null:
+return ready(_that.resource,_that.value);case BridgeChildInteractionsResource_Refreshing() when refreshing != null:
+return refreshing(_that.resource,_that.value);case BridgeChildInteractionsResource_Stale() when stale != null:
+return stale(_that.resource,_that.value);case BridgeChildInteractionsResource_Degraded() when degraded != null:
+return degraded(_that.resource,_that.value);case BridgeChildInteractionsResource_Failed() when failed != null:
+return failed(_that.field0);case BridgeChildInteractionsResource_Stopped() when stopped != null:
+return stopped(_that.field0);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Uninitialized extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Uninitialized(this.field0): super._();
+
+
+ final  BridgeUninitializedResource field0;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_UninitializedCopyWith<BridgeChildInteractionsResource_Uninitialized> get copyWith => _$BridgeChildInteractionsResource_UninitializedCopyWithImpl<BridgeChildInteractionsResource_Uninitialized>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Uninitialized&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.uninitialized(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_UninitializedCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_UninitializedCopyWith(BridgeChildInteractionsResource_Uninitialized value, $Res Function(BridgeChildInteractionsResource_Uninitialized) _then) = _$BridgeChildInteractionsResource_UninitializedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeUninitializedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_UninitializedCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_UninitializedCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_UninitializedCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Uninitialized _self;
+  final $Res Function(BridgeChildInteractionsResource_Uninitialized) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeChildInteractionsResource_Uninitialized(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeUninitializedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Loading extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Loading(this.field0): super._();
+
+
+ final  BridgeLoadingResource field0;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_LoadingCopyWith<BridgeChildInteractionsResource_Loading> get copyWith => _$BridgeChildInteractionsResource_LoadingCopyWithImpl<BridgeChildInteractionsResource_Loading>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Loading&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.loading(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_LoadingCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_LoadingCopyWith(BridgeChildInteractionsResource_Loading value, $Res Function(BridgeChildInteractionsResource_Loading) _then) = _$BridgeChildInteractionsResource_LoadingCopyWithImpl;
+@useResult
+$Res call({
+ BridgeLoadingResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_LoadingCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_LoadingCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_LoadingCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Loading _self;
+  final $Res Function(BridgeChildInteractionsResource_Loading) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeChildInteractionsResource_Loading(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeLoadingResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Ready extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Ready({required this.resource, required this.value}): super._();
+
+
+ final  BridgeReadyResource resource;
+ final  BridgeChildInteractionsData value;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_ReadyCopyWith<BridgeChildInteractionsResource_Ready> get copyWith => _$BridgeChildInteractionsResource_ReadyCopyWithImpl<BridgeChildInteractionsResource_Ready>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Ready&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.ready(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_ReadyCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_ReadyCopyWith(BridgeChildInteractionsResource_Ready value, $Res Function(BridgeChildInteractionsResource_Ready) _then) = _$BridgeChildInteractionsResource_ReadyCopyWithImpl;
+@useResult
+$Res call({
+ BridgeReadyResource resource, BridgeChildInteractionsData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_ReadyCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_ReadyCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_ReadyCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Ready _self;
+  final $Res Function(BridgeChildInteractionsResource_Ready) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeChildInteractionsResource_Ready(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeReadyResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeChildInteractionsData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Refreshing extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Refreshing({required this.resource, required this.value}): super._();
+
+
+ final  BridgeRefreshingResource resource;
+ final  BridgeChildInteractionsData value;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_RefreshingCopyWith<BridgeChildInteractionsResource_Refreshing> get copyWith => _$BridgeChildInteractionsResource_RefreshingCopyWithImpl<BridgeChildInteractionsResource_Refreshing>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Refreshing&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.refreshing(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_RefreshingCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_RefreshingCopyWith(BridgeChildInteractionsResource_Refreshing value, $Res Function(BridgeChildInteractionsResource_Refreshing) _then) = _$BridgeChildInteractionsResource_RefreshingCopyWithImpl;
+@useResult
+$Res call({
+ BridgeRefreshingResource resource, BridgeChildInteractionsData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_RefreshingCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_RefreshingCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_RefreshingCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Refreshing _self;
+  final $Res Function(BridgeChildInteractionsResource_Refreshing) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeChildInteractionsResource_Refreshing(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeRefreshingResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeChildInteractionsData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Stale extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Stale({required this.resource, required this.value}): super._();
+
+
+ final  BridgeStaleResource resource;
+ final  BridgeChildInteractionsData value;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_StaleCopyWith<BridgeChildInteractionsResource_Stale> get copyWith => _$BridgeChildInteractionsResource_StaleCopyWithImpl<BridgeChildInteractionsResource_Stale>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Stale&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.stale(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_StaleCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_StaleCopyWith(BridgeChildInteractionsResource_Stale value, $Res Function(BridgeChildInteractionsResource_Stale) _then) = _$BridgeChildInteractionsResource_StaleCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStaleResource resource, BridgeChildInteractionsData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_StaleCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_StaleCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_StaleCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Stale _self;
+  final $Res Function(BridgeChildInteractionsResource_Stale) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeChildInteractionsResource_Stale(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeStaleResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeChildInteractionsData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Degraded extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Degraded({required this.resource, required this.value}): super._();
+
+
+ final  BridgeDegradedResource resource;
+ final  BridgeChildInteractionsData value;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_DegradedCopyWith<BridgeChildInteractionsResource_Degraded> get copyWith => _$BridgeChildInteractionsResource_DegradedCopyWithImpl<BridgeChildInteractionsResource_Degraded>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Degraded&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.degraded(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_DegradedCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_DegradedCopyWith(BridgeChildInteractionsResource_Degraded value, $Res Function(BridgeChildInteractionsResource_Degraded) _then) = _$BridgeChildInteractionsResource_DegradedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeDegradedResource resource, BridgeChildInteractionsData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_DegradedCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_DegradedCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_DegradedCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Degraded _self;
+  final $Res Function(BridgeChildInteractionsResource_Degraded) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeChildInteractionsResource_Degraded(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeDegradedResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeChildInteractionsData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Failed extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Failed(this.field0): super._();
+
+
+ final  BridgeFailedResource field0;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_FailedCopyWith<BridgeChildInteractionsResource_Failed> get copyWith => _$BridgeChildInteractionsResource_FailedCopyWithImpl<BridgeChildInteractionsResource_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Failed&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.failed(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_FailedCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_FailedCopyWith(BridgeChildInteractionsResource_Failed value, $Res Function(BridgeChildInteractionsResource_Failed) _then) = _$BridgeChildInteractionsResource_FailedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeFailedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_FailedCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_FailedCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Failed _self;
+  final $Res Function(BridgeChildInteractionsResource_Failed) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeChildInteractionsResource_Failed(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeFailedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChildInteractionsResource_Stopped extends BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource_Stopped(this.field0): super._();
+
+
+ final  BridgeStoppedResource field0;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChildInteractionsResource_StoppedCopyWith<BridgeChildInteractionsResource_Stopped> get copyWith => _$BridgeChildInteractionsResource_StoppedCopyWithImpl<BridgeChildInteractionsResource_Stopped>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChildInteractionsResource_Stopped&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeChildInteractionsResource.stopped(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChildInteractionsResource_StoppedCopyWith<$Res> implements $BridgeChildInteractionsResourceCopyWith<$Res> {
+  factory $BridgeChildInteractionsResource_StoppedCopyWith(BridgeChildInteractionsResource_Stopped value, $Res Function(BridgeChildInteractionsResource_Stopped) _then) = _$BridgeChildInteractionsResource_StoppedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStoppedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChildInteractionsResource_StoppedCopyWithImpl<$Res>
+    implements $BridgeChildInteractionsResource_StoppedCopyWith<$Res> {
+  _$BridgeChildInteractionsResource_StoppedCopyWithImpl(this._self, this._then);
+
+  final BridgeChildInteractionsResource_Stopped _self;
+  final $Res Function(BridgeChildInteractionsResource_Stopped) _then;
+
+/// Create a copy of BridgeChildInteractionsResource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeChildInteractionsResource_Stopped(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeStoppedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeProductBaseline {
 
  Object get field0;

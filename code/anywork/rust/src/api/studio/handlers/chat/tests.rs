@@ -199,9 +199,8 @@ impl Environment {
                         attachment_draft_ids: Vec::new(),
                     },
                     expected_model_route_revision: snapshot
-                        .runtime
+                        .model_route
                         .as_ref()
-                        .and_then(|runtime| runtime.model_route.as_ref())
                         .context("fixture model route")?
                         .revision,
                 },

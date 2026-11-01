@@ -46,7 +46,7 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
             pending: _interactionIsPending(interaction),
           ),
         ),
-        threadRuntimeUpdated: (runtime) => ThreadNotificationFrame(
+        threadRuntimeUpdated: (runtime, modelRoute) => ThreadNotificationFrame(
           threadId: threadId,
           revision: revision,
           epoch: epoch,
@@ -54,6 +54,7 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
           update: ThreadRuntimeUpdate(
             runtime: _threadRuntimeFromFrb(runtime),
             todo: _todoFromFrb(runtime.todo),
+            modelRoute: _threadModelRouteFromFrb(modelRoute),
           ),
         ),
         activityChanged: (activity) => ThreadNotificationFrame(
@@ -99,6 +100,7 @@ ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
     runtime: value.runtime == null
         ? _emptyRuntimeView()
         : _threadRuntimeFromFrb(value.runtime!),
+    modelRoute: _threadModelRouteFromFrb(value.modelRoute),
     activeTurn: value.activeTurn == null
         ? null
         : _turnFromFrb(value.activeTurn!),
@@ -444,20 +446,6 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
   return ThreadRuntimeView(
     usageDiagnostics: threadUsageDiagnosticsFromFrb(usage.diagnostics),
     modelId: usage.modelId,
-    modelRoute: value.modelRoute == null
-        ? null
-        : ThreadModelRouteView(
-            botId: value.modelRoute!.botId,
-            accountId: value.modelRoute!.accountId,
-            modelId: value.modelRoute!.modelId,
-            effort: value.modelRoute!.effort,
-            revision: _exactTimelineInt(
-              value.modelRoute!.revision,
-              'state counter',
-            ),
-            available: value.modelRoute!.available,
-            unavailableReason: value.modelRoute!.unavailableReason,
-          ),
     liveUsage: value.liveUsage == null
         ? null
         : ThreadRuntimeLiveUsageView(
@@ -565,6 +553,21 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     continuation: value.continuation == null
         ? null
         : _continuationFromFrb(value.continuation!),
+  );
+}
+
+ThreadModelRouteView? _threadModelRouteFromFrb(
+  frb.BridgeThreadModelRouteSnapshot? value,
+) {
+  if (value == null) return null;
+  return ThreadModelRouteView(
+    botId: value.botId,
+    accountId: value.accountId,
+    modelId: value.modelId,
+    effort: value.effort,
+    revision: _exactTimelineInt(value.revision, 'state counter'),
+    available: value.available,
+    unavailableReason: value.unavailableReason,
   );
 }
 

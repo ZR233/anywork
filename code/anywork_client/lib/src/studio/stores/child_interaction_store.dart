@@ -45,7 +45,7 @@ class ChildInteractionStore extends ReadModel<ChildInteractionState> {
 
   final String hostThreadId;
 
-  /// 接纳一帧本代完整基线或完整集合事件。
+  /// 接纳本代资源基线或事件；只有带真实集合的资源才给予完整集合资格。
   ///
   /// incoming >= canonical.revision 才能确认本代资格：更旧帧的内容与资格
   /// 都不变；相等时只确认资格、不重写 canonical 对象；更新时按唯一时钟
@@ -53,27 +53,34 @@ class ChildInteractionStore extends ReadModel<ChildInteractionState> {
   void accept(ChildInteractionsStateView next) {
     if (next.hostThreadId != hostThreadId) return;
     final canonical = state.canonical;
-    if (canonical.loaded && next.revision < canonical.revision) return;
+    final revision = next.state.revision;
+    if (canonical.loaded && revision < canonical.revision) return;
     final CanonicalClockState<ChildInteractionsStateView> canonicalNext;
-    if (!canonical.loaded || next.revision > canonical.revision) {
-      canonicalNext = canonical.applyRevision(next, next.revision);
+    if (!canonical.loaded || revision > canonical.revision) {
+      canonicalNext = canonical.applyRevision(next, revision);
+    } else if (canonical.value?.state.value == null &&
+        next.state.value != null) {
+      // Uninitialized can precede the first committed collection at the same domain watermark.
+      // This supplies the previously unknown value; it never overwrites a known collection.
+      canonicalNext = CanonicalClockState(
+        value: next,
+        revision: revision,
+        loaded: true,
+        sync: canonical.sync.connected(),
+      );
     } else {
       // Equal watermark: confirm qualification without rewriting canonical.
       canonicalNext = canonical;
     }
-    if (!state.hasCurrentBaseline) {
-      state = ChildInteractionState(
-        canonical: canonicalNext,
-        observationGeneration: state.observationGeneration,
-        hasCurrentBaseline: true,
-      );
+    final qualified = next.state.value != null;
+    if (identical(canonicalNext, canonical) &&
+        qualified == state.hasCurrentBaseline) {
       return;
     }
-    if (identical(canonicalNext, canonical)) return;
     state = ChildInteractionState(
       canonical: canonicalNext,
       observationGeneration: state.observationGeneration,
-      hasCurrentBaseline: true,
+      hasCurrentBaseline: qualified,
     );
   }
 

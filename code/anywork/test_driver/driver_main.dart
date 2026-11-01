@@ -35,6 +35,7 @@ import 'package:anywork/src/l10n/studio_l10n.dart';
 
 import 'package:anywork/src/platform/error_log.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
@@ -1807,6 +1808,19 @@ Iterable<Map<String, Object?>> _observedReadouts(AccountDisplayKey key) sync* {
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final facts = observed ?? StudioDriverState.readFacts();
   final workspace = facts.workspace;
+  final composerThreadId = _client.conversations.visibleThreadId.value;
+  final composerSession = composerThreadId == null
+      ? null
+      : _client.conversations.existingSession(composerThreadId);
+  final root = WidgetsBinding.instance.rootElement;
+  var composerInputCount = 0;
+  if (root != null) {
+    _visitElements(root, (element) {
+      if (element.widget.key == StudioDriverKeys.composerInput) {
+        composerInputCount++;
+      }
+    });
+  }
   final session = workspace == null
       ? null
       : _client.conversations.existingSession(workspace.thread.id)?.state;
@@ -1898,6 +1912,13 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
     },
     'skills': _driverSkillsDiagnostics(),
     'composer': <String, Object?>{
+      // Borrow existing owners and the mounted tree only; never create a draft.
+      'threadId': composerThreadId,
+      'ownerPresent':
+          composerThreadId != null &&
+          _client.drafts.existingComposer(composerThreadId) != null,
+      'workspacePresent': composerSession?.state.workspace != null,
+      'inputCount': root == null ? null : composerInputCount,
       'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
       'thread': _driverComposerDiagnostics(facts.threadComposer),
     },

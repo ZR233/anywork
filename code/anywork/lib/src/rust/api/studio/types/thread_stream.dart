@@ -609,6 +609,7 @@ sealed class BridgeThreadNotification with _$BridgeThreadNotification {
   }) = BridgeThreadNotification_InteractionChanged;
   const factory BridgeThreadNotification.threadRuntimeUpdated({
     required BridgeThreadRuntimeSnapshot runtime,
+    BridgeThreadModelRouteSnapshot? modelRoute,
   }) = BridgeThreadNotification_ThreadRuntimeUpdated;
 
   /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
@@ -714,7 +715,6 @@ class BridgeThreadRuntimeLiveUsage {
 
 class BridgeThreadRuntimeSnapshot {
   final String threadId;
-  final BridgeThreadModelRouteSnapshot? modelRoute;
   final BridgeThreadRuntimeUsage usage;
   final BridgeThreadRuntimeLiveUsage? liveUsage;
   final BigInt turnCompletionTokens;
@@ -737,7 +737,6 @@ class BridgeThreadRuntimeSnapshot {
 
   const BridgeThreadRuntimeSnapshot({
     required this.threadId,
-    this.modelRoute,
     required this.usage,
     this.liveUsage,
     required this.turnCompletionTokens,
@@ -758,7 +757,6 @@ class BridgeThreadRuntimeSnapshot {
   @override
   int get hashCode =>
       threadId.hashCode ^
-      modelRoute.hashCode ^
       usage.hashCode ^
       liveUsage.hashCode ^
       turnCompletionTokens.hashCode ^
@@ -781,7 +779,6 @@ class BridgeThreadRuntimeSnapshot {
       other is BridgeThreadRuntimeSnapshot &&
           runtimeType == other.runtimeType &&
           threadId == other.threadId &&
-          modelRoute == other.modelRoute &&
           usage == other.usage &&
           liveUsage == other.liveUsage &&
           turnCompletionTokens == other.turnCompletionTokens &&
@@ -910,6 +907,7 @@ class BridgeThreadSnapshot {
   final BridgeThread thread;
   final BridgeTurn? activeTurn;
   final List<BridgeInteractionRequest> interactions;
+  final BridgeThreadModelRouteSnapshot? modelRoute;
   final BridgeThreadRuntimeSnapshot? runtime;
 
   /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
@@ -925,6 +923,7 @@ class BridgeThreadSnapshot {
     required this.thread,
     this.activeTurn,
     required this.interactions,
+    this.modelRoute,
     this.runtime,
     this.activity,
     this.storage,
@@ -938,6 +937,7 @@ class BridgeThreadSnapshot {
       thread.hashCode ^
       activeTurn.hashCode ^
       interactions.hashCode ^
+      modelRoute.hashCode ^
       runtime.hashCode ^
       activity.hashCode ^
       storage.hashCode ^
@@ -953,6 +953,7 @@ class BridgeThreadSnapshot {
           thread == other.thread &&
           activeTurn == other.activeTurn &&
           interactions == other.interactions &&
+          modelRoute == other.modelRoute &&
           runtime == other.runtime &&
           activity == other.activity &&
           storage == other.storage &&

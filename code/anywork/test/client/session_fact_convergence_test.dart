@@ -17,7 +17,7 @@ import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 
 /// AppGraph/Riverpod 适配契约：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
-/// canonical 事实流收敛**——mode 走目录增量，运行时 route 走 Thread 有序流。
+/// canonical 事实流收敛**——mode 走目录增量，Thread route 走 Thread 有序流。
 ///
 /// 这里用 AppGraph/Client owner 与只读 Riverpod adapter，只把
 /// transport 换成 Demo；它不证明 native FRB，但 Demo
@@ -97,7 +97,7 @@ void main() {
   AccountModelView? modelFor(String accountId, String model) =>
       _modelFor(container, accountId, model);
 
-  test('任务模式由目录增量交付，运行时 route 由 Thread 帧交付', () async {
+  test('任务模式由目录增量交付，Thread route 由状态帧交付', () async {
     expect(
       container
           .read(composerDockViewModelProvider(threadId))
@@ -120,9 +120,7 @@ void main() {
     await graph.client.conversations
         .session(threadId)
         .source
-        .waitFor(
-          (s) => s.runtime?.modelRoute?.revision == routeRevisionBefore + 1,
-        );
+        .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
     await graph.client.threadDirectory.source.waitFor(
       (state) => state.window.threads.any(
         (thread) => thread.id == threadId && thread.mode == ThreadModeId.task,
@@ -137,7 +135,7 @@ void main() {
       routeRevision(),
       routeRevisionBefore + 1,
       reason:
-          'mode 默认 route 是 Thread 运行时事实，必须由有序流帧交付；'
+          'mode 默认 route 是 Thread 状态事实，必须由有序流帧交付；'
           '命令后重新读取会掩盖这里缺帧',
     );
   });
@@ -173,16 +171,12 @@ void main() {
         .source
         .waitFor(
           (state) =>
-              state.runtime?.modelRoute?.revision == routeRevisionBefore + 1 &&
-              state.runtime?.modelRoute?.effort == target,
+              state.modelRoute?.revision == routeRevisionBefore + 1 &&
+              state.modelRoute?.effort == target,
         );
 
     expect(
-      container
-          .read(threadSessionStoreProvider(threadId))
-          .runtime
-          ?.modelRoute
-          ?.effort,
+      container.read(threadSessionStoreProvider(threadId)).modelRoute?.effort,
       target,
       reason: 'canonical 事实必须经 Thread 帧收敛，不能停留在乐观目标值',
     );

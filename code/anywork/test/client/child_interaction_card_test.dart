@@ -242,9 +242,12 @@ final class _ChildCardTransport extends RecordingDemoTransport {
       state: ChildInteractionsBaseline(
         ChildInteractionsStateView(
           hostThreadId: hostThreadId,
-          revision: revision,
-          updatedAt: DateTime.now(),
-          items: List.unmodifiable(summaries),
+          state: ReadyObservedResource(
+            revision: revision,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+            lastCheckedAt: null,
+            value: ChildInteractionsData(items: summaries),
+          ),
         ),
       ),
     );
@@ -271,9 +274,12 @@ final class _ChildCardTransport extends RecordingDemoTransport {
           payload: ChildInteractionsChangedPayload(
             ChildInteractionsStateView(
               hostThreadId: hostThreadId,
-              revision: revision,
-              updatedAt: DateTime.now(),
-              items: List.unmodifiable(summaries),
+              state: ReadyObservedResource(
+                revision: revision,
+                updatedAt: DateTime.now().millisecondsSinceEpoch,
+                lastCheckedAt: null,
+                value: ChildInteractionsData(items: summaries),
+              ),
             ),
           ),
         ),
@@ -1235,10 +1241,13 @@ void main() {
       expect(await frames.moveNext(), isTrue);
       final baseline = frames.current as ProductTopicBaselineFrame;
       final before = (baseline.state as ChildInteractionsBaseline).state;
-      expect(before.items.single.interactionId, 'driver-child-approval');
+      expect(
+        before.state.value!.items.single.interactionId,
+        'driver-child-approval',
+      );
       expect(
         (await transport.readChildInteractions(_rootId)).single.interactionId,
-        before.items.single.interactionId,
+        before.state.value!.items.single.interactionId,
       );
 
       await transport.archiveThread(
@@ -1249,8 +1258,8 @@ void main() {
       final payload =
           (frames.current as ProductTopicDataFrame).event.payload
               as ChildInteractionsChangedPayload;
-      expect(payload.state.items, isEmpty);
-      expect(payload.state.revision, greaterThan(before.revision));
+      expect(payload.state.state.value!.items, isEmpty);
+      expect(payload.state.state.revision, greaterThan(before.state.revision));
       expect(await transport.readChildInteractions(_rootId), isEmpty);
     } finally {
       await frames.cancel();

@@ -138,8 +138,12 @@ ProductTopicDataFrame _childEvent(
     payload: ChildInteractionsChangedPayload(
       ChildInteractionsStateView(
         hostThreadId: hostThreadId,
-        revision: revision,
-        items: items,
+        state: ReadyObservedResource(
+          revision: revision,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+          lastCheckedAt: null,
+          value: ChildInteractionsData(items: items),
+        ),
       ),
     ),
   ),
@@ -226,7 +230,7 @@ void main() {
       final storeA = client.existingChildInteractions('host-a')!;
       expect(storeA.state.canonical.loaded, isFalse);
       final sourceA = await transport.opened(0);
-      // 非空首帧基线在首个原生回调前已有自己的宿主镜像。
+      // 无值基线只建立资源观察，不代表完整集合，也不能确认决议消失。
       sourceA.emit(
         ProductTopicBaselineFrame(
           topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
@@ -234,17 +238,47 @@ void main() {
           state: ChildInteractionsBaseline(
             ChildInteractionsStateView(
               hostThreadId: 'host-a',
-              revision: 2,
-              items: [_hostedChildSummary('host-a', 'child-1', 5)],
+              state: const UninitializedObservedResource(
+                revision: 2,
+                updatedAt: 123,
+              ),
             ),
           ),
         ),
       );
       expect(storeA.state.canonical.loaded, isTrue);
+      expect(storeA.state.hasCurrentBaseline, isFalse);
+      expect(storeA.state.canonical.value?.state.value, isNull);
+      expect(
+        storeA.state.canonical.value!.confirmsDecision(
+          childThreadId: 'child-1',
+          interactionId: 'interaction-child-1',
+          revision: 5,
+        ),
+        isFalse,
+      );
+      final decisionSummary = _hostedChildSummary('host-a', 'child-1', 5);
+      sourceA.emit(
+        ProductTopicBaselineFrame(
+          topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
+          revision: 2,
+          state: ChildInteractionsBaseline(
+            ChildInteractionsStateView(
+              hostThreadId: 'host-a',
+              state: ReadyObservedResource(
+                revision: 2,
+                updatedAt: 456,
+                lastCheckedAt: null,
+                value: ChildInteractionsData(items: [decisionSummary]),
+              ),
+            ),
+          ),
+        ),
+      );
       expect(storeA.state.hasCurrentBaseline, isTrue);
       expect(storeA.state.canonical.revision, 2);
       expect(
-        storeA.state.canonical.value?.items.single.interactionId,
+        storeA.state.canonical.value?.state.value?.items.single.interactionId,
         'interaction-child-1',
       );
 
@@ -257,22 +291,42 @@ void main() {
           topic: const ChildInteractionsTopic(hostThreadId: 'host-b'),
           revision: 7,
           state: ChildInteractionsBaseline(
-            ChildInteractionsStateView(hostThreadId: 'host-b', revision: 7),
+            ChildInteractionsStateView(
+              hostThreadId: 'host-b',
+              state: ReadyObservedResource(
+                revision: 7,
+                updatedAt: 789,
+                lastCheckedAt: null,
+                value: ChildInteractionsData(items: []),
+              ),
+            ),
           ),
         ),
       );
       expect(storeB.state.canonical.revision, 7);
       expect(storeB.state.hasCurrentBaseline, isTrue);
-      expect(storeB.state.canonical.value?.items, isEmpty);
+      expect(storeB.state.canonical.value?.state.value?.items, isEmpty);
+      expect(
+        storeB.state.canonical.value!.confirmsDecision(
+          childThreadId: 'child-1',
+          interactionId: 'interaction-child-1',
+          revision: 5,
+        ),
+        isTrue,
+        reason: '只有已知 Ready 空集合可以确认交互消失',
+      );
       expect(storeA.state.canonical.revision, 2);
 
       // 旧 revision 事件被拒；新 revision 事件替换集合。
       sourceA.emit(
         _childEvent('host-a', 2, [_hostedChildSummary('host-a', 'child-1', 9)]),
       );
-      expect(storeA.state.canonical.value?.items.single.revision, 5);
+      expect(
+        storeA.state.canonical.value?.state.value?.items.single.revision,
+        5,
+      );
       sourceA.emit(_childEvent('host-a', 3, const []));
-      expect(storeA.state.canonical.value?.items, isEmpty);
+      expect(storeA.state.canonical.value?.state.value?.items, isEmpty);
       expect(storeA.state.canonical.revision, 3);
 
       // 同租约内的短暂滞后/重连只更新 sync：资格与集合身份保持不变。
@@ -319,21 +373,35 @@ void main() {
           state: ChildInteractionsBaseline(
             ChildInteractionsStateView(
               hostThreadId: 'host-a',
-              revision: 1,
-              items: [_hostedChildSummary('host-a', 'child-9', 1)],
+              state: ReadyObservedResource(
+                revision: 1,
+                updatedAt: 1001,
+                lastCheckedAt: null,
+                value: ChildInteractionsData(
+                  items: [_hostedChildSummary('host-a', 'child-9', 1)],
+                ),
+              ),
             ),
           ),
         ),
       );
       expect(storeA.state.hasCurrentBaseline, isFalse);
       expect(storeA.state.canonical.revision, 3);
-      expect(storeA.state.canonical.value?.items, isEmpty);
+      expect(storeA.state.canonical.value?.state.value?.items, isEmpty);
       thirdSourceA.emit(
         ProductTopicBaselineFrame(
           topic: const ChildInteractionsTopic(hostThreadId: 'host-a'),
           revision: 3,
           state: ChildInteractionsBaseline(
-            ChildInteractionsStateView(hostThreadId: 'host-a', revision: 3),
+            ChildInteractionsStateView(
+              hostThreadId: 'host-a',
+              state: ReadyObservedResource(
+                revision: 3,
+                updatedAt: 1002,
+                lastCheckedAt: null,
+                value: ChildInteractionsData(items: []),
+              ),
+            ),
           ),
         ),
       );
@@ -350,24 +418,28 @@ void main() {
     },
   );
 
-  test('child interactions state view freezes its items', () {
+  test('child interactions data freezes its items', () {
     final input = <ChildInteractionSummary>[
       _hostedChildSummary('host-a', 'child-1', 5),
     ];
     final view = ChildInteractionsStateView(
       hostThreadId: 'host-a',
-      revision: 1,
-      items: input,
+      state: ReadyObservedResource(
+        revision: 1,
+        updatedAt: 123,
+        lastCheckedAt: null,
+        value: ChildInteractionsData(items: input),
+      ),
     );
     input.clear();
-    expect(view.items, hasLength(1), reason: '构造边界复制输入列表');
+    expect(view.state.value!.items, hasLength(1), reason: '数据构造边界复制输入列表');
     expect(
-      () => view.items.clear(),
+      () => view.state.value!.items.clear(),
       throwsUnsupportedError,
       reason: '读取到的列表不可变异',
     );
     expect(view.hostThreadId, 'host-a');
-    expect(view.revision, 1);
+    expect(view.state.revision, 1);
   });
 
   test('child observation released before baseline advances once', () {

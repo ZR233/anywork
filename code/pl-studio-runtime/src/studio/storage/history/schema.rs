@@ -2,6 +2,7 @@
 use super::*;
 mod conversion;
 mod demand_conversation;
+mod model_route_head;
 mod sqlite_metadata;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
@@ -12,6 +13,44 @@ use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf,
 
 #[cfg(test)]
 mod atomic_tests;
+
+/// Frozen pre-head fixture encoder, not an alternate production checkpoint writer.
+#[cfg(test)]
+async fn write_published_checkpoint(
+    db: &impl ConnectionTrait,
+    checkpoint: &pl_core::thread::ThreadCheckpoint,
+) -> Result<()> {
+    use pl_core::context::content_hash;
+    for (ordinal, record) in checkpoint.state.context.records.iter().enumerate() {
+        let payload = serde_json::to_string(record)?;
+        db.execute_raw(statement(
+            "INSERT INTO current_context(ordinal,record_id,payload,payload_hash) VALUES(?,?,?,?)",
+            vec![
+                integer(ordinal)?.into(),
+                record.id.clone().into(),
+                payload.clone().into(),
+                content_hash(payload.as_bytes()).into(),
+            ],
+        ))
+        .await?;
+    }
+    let mut metadata = checkpoint.pruned();
+    metadata.state.context.records = Default::default();
+    let payload = serde_json::to_string(&metadata)?;
+    db.execute_raw(statement(
+        "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash)
+         VALUES(1,?,?,?,?,?)",
+        vec![
+            integer(checkpoint.state_revision)?.into(),
+            integer(checkpoint.state.context.revision)?.into(),
+            integer(checkpoint.state.context.records.len())?.into(),
+            payload.clone().into(),
+            content_hash(payload.as_bytes()).into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
 
 struct Migrator {
     thread_id: String,
@@ -64,6 +103,9 @@ impl MigratorTraitSelf for Migrator {
             Box::new(demand_conversation::DemandConversation {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(model_route_head::RootModelRouteHead {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -105,6 +147,7 @@ const ATOMIC_TIMELINE: &str = "m20261027_000004_history_atomic_timeline";
 const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
 const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
 const DEMAND_CONVERSATION: &str = "m20261029_000001_history_demand_conversation";
+const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -257,32 +300,34 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let demand_pending = pending
         .iter()
         .any(|step| step.name() == DEMAND_CONVERSATION);
+    let model_route_head_pending = pending.iter().any(|step| step.name() == MODEL_ROUTE_HEAD);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
-        match version {
-            1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
-            9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
-            10 => !retire_pending && (!atomic_pending || !metering_pending) && combined_pending,
-            11 => {
-                !retire_pending
-                    && !atomic_pending
-                    && !metering_pending
-                    && !combined_pending
-                    && demand_pending
-            }
-            HISTORY_SCHEMA_VERSION => {
-                !retire_pending
-                    && !atomic_pending
-                    && !metering_pending
-                    && !combined_pending
-                    && !demand_pending
-            }
-            _ => false,
-        },
+        model_route_head_pending == (version < 13)
+            && match version {
+                1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
+                9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
+                10 => !retire_pending && (!atomic_pending || !metering_pending) && combined_pending,
+                11 => {
+                    !retire_pending
+                        && !atomic_pending
+                        && !metering_pending
+                        && !combined_pending
+                        && demand_pending
+                }
+                12 | 13 => {
+                    !retire_pending
+                        && !atomic_pending
+                        && !metering_pending
+                        && !combined_pending
+                        && !demand_pending
+                }
+                _ => false,
+            },
         "history format conflicts with completed migrations; existing data preserved"
     );
-    if version == HISTORY_SCHEMA_VERSION {
+    if version >= 12 {
         ensure!(
             row.try_get::<String>("", "thread_id")? == thread_id,
             "history database belongs to another Thread"
@@ -292,7 +337,18 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
             "empty history database identity"
         );
         validate_identity_collations(db).await?;
-        validate_current(db, thread_id).await?;
+        if version == HISTORY_SCHEMA_VERSION {
+            validate_current(db, thread_id).await?;
+        } else {
+            demand_conversation::validate_tables(db).await?;
+            model_route_head::validate_source(db).await?;
+            ensure!(
+                pending.iter().all(|step| {
+                    step.name() == MODEL_ROUTE_HEAD || is_lifecycle_migration(step.name())
+                }),
+                "schema 12 has pending earlier content migrations; existing data preserved"
+            );
+        }
         return Ok(());
     }
     for table in [
@@ -467,6 +523,8 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
         "history format is not current; existing data preserved"
     );
     demand_conversation::validate_tables(db).await?;
+    model_route_head::validate_tables(db).await?;
+    checkpoint::read_model_route_head(db).await?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
         execution_identity: None,
@@ -1277,7 +1335,6 @@ impl MigrationTrait for ModelAccess {
         let mut migrated = original.clone();
         // Absence of explicit close remains absence; core Closed never invents Studio intent.
         crate::studio::agent_close::is_explicitly_closed(&migrated.state).map_err(conversion)?;
-        crate::studio::model_route::migration::upgrade(&mut migrated.state).map_err(conversion)?;
         crate::studio::delegation::migrate(&mut migrated.state).map_err(conversion)?;
         checkpoint::write_representation(db, &original, &migrated)
             .await

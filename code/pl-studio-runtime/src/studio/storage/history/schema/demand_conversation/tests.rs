@@ -14,9 +14,37 @@ impl MigratorTraitSelf for Published11 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != DEMAND_CONVERSATION)
+        .filter(|step| !matches!(step.name(), DEMAND_CONVERSATION | MODEL_ROUTE_HEAD))
         .collect()
     }
+}
+
+/// Exercise the published 11→12 transition without silently replacing its target with 13.
+struct Published12;
+impl MigratorTraitSelf for Published12 {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        Migrator {
+            thread_id: THREAD.into(),
+            execution_identity: None,
+            bot_root: None,
+        }
+        .migrations()
+        .into_iter()
+        .filter(|step| step.name() != MODEL_ROUTE_HEAD)
+        .collect()
+    }
+}
+
+async fn prepare_published12(db: &DatabaseConnection) -> Result<()> {
+    preflight(db, THREAD).await?;
+    let steps = Published12
+        .get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .take_while(|step| !is_lifecycle_migration(step.name()))
+        .count();
+    Published12.up(db, Some(u32::try_from(steps)?)).await?;
+    Ok(())
 }
 
 async fn source() -> Result<(tempfile::TempDir, DatabaseConnection)> {
@@ -80,7 +108,7 @@ async fn formal_schema12_preserves_nonempty_unknown_records_and_identity() -> Re
         .await?
         .unwrap()
         .try_get("", "database_id")?;
-    prepare(&db, THREAD, Preparation::Schema, None).await?;
+    prepare_published12(&db).await?;
     assert_eq!(version(&db).await?, 12);
     let item = conversation::read_item(&db, "old-tool").await?.unwrap();
     assert_eq!(item.header.append_seq, 1);
@@ -121,7 +149,7 @@ async fn formal_schema12_preserves_nonempty_unknown_records_and_identity() -> Re
         before
     );
     assert!(!conversation::current::read(&db).await?.execution_present);
-    prepare(&db, THREAD, Preparation::Schema, None).await?;
+    prepare_published12(&db).await?;
     assert_eq!(conversation::latest_append_seq(&db).await?, 3);
     Ok(())
 }
@@ -132,11 +160,7 @@ async fn formal_migration_rolls_back_all_outputs_and_bookkeeping_then_retries() 
     let first = record("one", 1, "text")?;
     insert(&db, "one", 1, "text", &first).await?;
     insert(&db, "wrong-index", 2, "tool", &record("two", 2, "tool")?).await?;
-    assert!(
-        prepare(&db, THREAD, Preparation::Schema, None)
-            .await
-            .is_err()
-    );
+    assert!(prepare_published12(&db).await.is_err());
     assert_eq!(version(&db).await?, 11);
     for table in [
         "conversation_items",
@@ -167,7 +191,7 @@ async fn formal_migration_rolls_back_all_outputs_and_bookkeeping_then_retries() 
     );
     db.execute_unprepared("UPDATE timeline_records SET record_id='two' WHERE append_seq=2")
         .await?;
-    prepare(&db, THREAD, Preparation::Schema, None).await?;
+    prepare_published12(&db).await?;
     assert_eq!(version(&db).await?, 12);
     assert_eq!(conversation::latest_append_seq(&db).await?, 2);
     Ok(())
@@ -227,7 +251,7 @@ async fn formal_migration_rejects_malformed_nullable_provenance_and_retries() ->
             .map(|row| row.try_get::<String>("", "version"))
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let error = prepare(&db, THREAD, Preparation::Schema, None)
+        let error = prepare_published12(&db)
             .await
             .expect_err("malformed optional provenance must not compare equal to a NULL index");
         let diagnostic = format!("{error:#}");
@@ -290,7 +314,7 @@ async fn formal_migration_rejects_malformed_nullable_provenance_and_retries() ->
             vec![corrected.clone().into()],
         ))
         .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare_published12(&db).await?;
         assert_eq!(version(&db).await?, 12);
         assert_eq!(conversation::latest_append_seq(&db).await?, 2);
         assert!(
@@ -327,7 +351,7 @@ async fn formal_current_entries_validate_one_ordered_composite_unique_constraint
     let db = &store.writer().await?.db;
     assert_eq!(
         version(db).await?,
-        12,
+        HISTORY_SCHEMA_VERSION,
         "the real new-store migration must finish"
     );
     for (collection, position, id) in [("a", 1i64, "same"), ("a", 2, "other"), ("b", 1, "same")] {
@@ -480,6 +504,23 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
     };
     let mut first = ThreadCheckpoint::capture(THREAD.into(), 1, first_state);
     let mut second = ThreadCheckpoint::capture(THREAD.into(), 2, second_state);
+    for (checkpoint, revision, model) in [
+        (&mut first, 1, "first-model"),
+        (&mut second, 2, "second-model"),
+    ] {
+        checkpoint.state.extensions.insert(
+            crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
+            pl_core::thread::extensions::ExtensionRecord {
+                revision,
+                payload: crate::studio::model_route::encode(&pl_model::config::ModelRouteConfig {
+                    account_id: pl_model::config::AccountId::new("batch-account")?,
+                    model_id: model.into(),
+                    effort: None,
+                })?,
+            },
+        );
+        checkpoint.state.extension_sequence = revision;
+    }
     let e1 = ThreadEffectBatch {
         thread_id: THREAD.into(),
         sequence: 1,
@@ -561,6 +602,11 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
     assert_eq!(store.watermark().await?, 0);
     assert_eq!(store.latest_append_seq().await?, 0);
     assert!(store.checkpoint().await?.is_none());
+    assert!(
+        checkpoint::read_model_route_head(&store.reader().await?.unwrap().db)
+            .await?
+            .is_none()
+    );
     assert_eq!(
         conversation::current::read(&store.reader().await?.unwrap().db)
             .await?
@@ -575,6 +621,11 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         .await?;
     assert_eq!(store.commit_checkpoint_effects(&effects).await?.len(), 2);
     assert_eq!(store.watermark().await?, 2);
+    let head = checkpoint::read_model_route_head(&store.reader().await?.unwrap().db)
+        .await?
+        .unwrap();
+    assert_eq!(head.revision, 2);
+    assert_eq!(head.route.model_id, "second-model");
     assert_eq!(store.latest_append_seq().await?, 2);
     assert_eq!(
         store

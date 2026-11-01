@@ -7999,6 +7999,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsData
+  dco_decode_box_autoadd_bridge_child_interactions_data(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_child_interactions_data(raw);
+  }
+
+  @protected
   BridgeClosedAgent dco_decode_box_autoadd_bridge_closed_agent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_closed_agent(raw);
@@ -11333,18 +11340,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsData dco_decode_bridge_child_interactions_data(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return BridgeChildInteractionsData(
+      items: dco_decode_list_bridge_child_interaction_summary(arr[0]),
+    );
+  }
+
+  @protected
+  BridgeChildInteractionsResource dco_decode_bridge_child_interactions_resource(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeChildInteractionsResource_Uninitialized(
+          dco_decode_box_autoadd_bridge_uninitialized_resource(raw[1]),
+        );
+      case 1:
+        return BridgeChildInteractionsResource_Loading(
+          dco_decode_box_autoadd_bridge_loading_resource(raw[1]),
+        );
+      case 2:
+        return BridgeChildInteractionsResource_Ready(
+          resource: dco_decode_box_autoadd_bridge_ready_resource(raw[1]),
+          value: dco_decode_box_autoadd_bridge_child_interactions_data(raw[2]),
+        );
+      case 3:
+        return BridgeChildInteractionsResource_Refreshing(
+          resource: dco_decode_box_autoadd_bridge_refreshing_resource(raw[1]),
+          value: dco_decode_box_autoadd_bridge_child_interactions_data(raw[2]),
+        );
+      case 4:
+        return BridgeChildInteractionsResource_Stale(
+          resource: dco_decode_box_autoadd_bridge_stale_resource(raw[1]),
+          value: dco_decode_box_autoadd_bridge_child_interactions_data(raw[2]),
+        );
+      case 5:
+        return BridgeChildInteractionsResource_Degraded(
+          resource: dco_decode_box_autoadd_bridge_degraded_resource(raw[1]),
+          value: dco_decode_box_autoadd_bridge_child_interactions_data(raw[2]),
+        );
+      case 6:
+        return BridgeChildInteractionsResource_Failed(
+          dco_decode_box_autoadd_bridge_failed_resource(raw[1]),
+        );
+      case 7:
+        return BridgeChildInteractionsResource_Stopped(
+          dco_decode_box_autoadd_bridge_stopped_resource(raw[1]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
   BridgeChildInteractionsState dco_decode_bridge_child_interactions_state(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
     return BridgeChildInteractionsState(
       hostThreadId: dco_decode_String(arr[0]),
-      revision: dco_decode_u_64(arr[1]),
-      updatedAt: dco_decode_i_64(arr[2]),
-      items: dco_decode_list_bridge_child_interaction_summary(arr[3]),
+      state: dco_decode_bridge_child_interactions_resource(arr[1]),
     );
   }
 
@@ -15287,6 +15352,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 4:
         return BridgeThreadNotification_ThreadRuntimeUpdated(
           runtime: dco_decode_box_bridge_thread_runtime_snapshot(raw[1]),
+          modelRoute:
+              dco_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
+                raw[2],
+              ),
         );
       case 5:
         return BridgeThreadNotification_ActivityChanged(
@@ -15406,36 +15475,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 17)
-      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return BridgeThreadRuntimeSnapshot(
       threadId: dco_decode_String(arr[0]),
-      modelRoute: dco_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
-        arr[1],
-      ),
-      usage: dco_decode_bridge_thread_runtime_usage(arr[2]),
+      usage: dco_decode_bridge_thread_runtime_usage(arr[1]),
       liveUsage: dco_decode_opt_box_autoadd_bridge_thread_runtime_live_usage(
-        arr[3],
+        arr[2],
       ),
-      turnCompletionTokens: dco_decode_u_64(arr[4]),
-      turnResponseMillis: dco_decode_u_64(arr[5]),
-      todo: dco_decode_opt_box_autoadd_bridge_todo_list_snapshot(arr[6]),
-      activeSkills: dco_decode_list_String(arr[7]),
-      activeMcpServers: dco_decode_list_String(arr[8]),
-      activeLspServers: dco_decode_list_String(arr[9]),
-      progress: dco_decode_opt_String(arr[10]),
+      turnCompletionTokens: dco_decode_u_64(arr[3]),
+      turnResponseMillis: dco_decode_u_64(arr[4]),
+      todo: dco_decode_opt_box_autoadd_bridge_todo_list_snapshot(arr[5]),
+      activeSkills: dco_decode_list_String(arr[6]),
+      activeMcpServers: dco_decode_list_String(arr[7]),
+      activeLspServers: dco_decode_list_String(arr[8]),
+      progress: dco_decode_opt_String(arr[9]),
       mcpHealth: dco_decode_opt_box_autoadd_bridge_thread_mcp_health_snapshot(
-        arr[11],
+        arr[10],
       ),
       workflow: dco_decode_opt_box_autoadd_bridge_workflow_runtime_snapshot(
-        arr[12],
+        arr[11],
       ),
-      plan: dco_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(arr[13]),
-      execution: dco_decode_opt_box_autoadd_bridge_agent_execution(arr[14]),
+      plan: dco_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(arr[12]),
+      execution: dco_decode_opt_box_autoadd_bridge_agent_execution(arr[13]),
       continuation: dco_decode_opt_box_autoadd_bridge_continuation_view(
-        arr[15],
+        arr[14],
       ),
-      updatedAt: dco_decode_i_64(arr[16]),
+      updatedAt: dco_decode_i_64(arr[15]),
     );
   }
 
@@ -15488,21 +15554,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeThreadSnapshot dco_decode_bridge_thread_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return BridgeThreadSnapshot(
       schemaVersion: dco_decode_u_32(arr[0]),
       revision: dco_decode_u_64(arr[1]),
       thread: dco_decode_bridge_thread(arr[2]),
       activeTurn: dco_decode_opt_box_autoadd_bridge_turn(arr[3]),
       interactions: dco_decode_list_bridge_interaction_request(arr[4]),
-      runtime: dco_decode_opt_box_autoadd_bridge_thread_runtime_snapshot(
+      modelRoute: dco_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
         arr[5],
       ),
-      activity: dco_decode_opt_box_autoadd_bridge_thread_activity(arr[6]),
-      storage: dco_decode_opt_box_autoadd_bridge_thread_storage_state(arr[7]),
+      runtime: dco_decode_opt_box_autoadd_bridge_thread_runtime_snapshot(
+        arr[6],
+      ),
+      activity: dco_decode_opt_box_autoadd_bridge_thread_activity(arr[7]),
+      storage: dco_decode_opt_box_autoadd_bridge_thread_storage_state(arr[8]),
       runtimeAvailability: dco_decode_bridge_thread_runtime_availability(
-        arr[8],
+        arr[9],
       ),
     );
   }
@@ -19415,6 +19484,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_checking_updater_state(deserializer));
+  }
+
+  @protected
+  BridgeChildInteractionsData
+  sse_decode_box_autoadd_bridge_child_interactions_data(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_child_interactions_data(deserializer));
   }
 
   @protected
@@ -23593,21 +23671,103 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChildInteractionsData sse_decode_bridge_child_interactions_data(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_items = sse_decode_list_bridge_child_interaction_summary(
+      deserializer,
+    );
+    return BridgeChildInteractionsData(items: var_items);
+  }
+
+  @protected
+  BridgeChildInteractionsResource sse_decode_bridge_child_interactions_resource(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        var var_field0 = sse_decode_box_autoadd_bridge_uninitialized_resource(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Uninitialized(var_field0);
+      case 1:
+        var var_field0 = sse_decode_box_autoadd_bridge_loading_resource(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Loading(var_field0);
+      case 2:
+        var var_resource = sse_decode_box_autoadd_bridge_ready_resource(
+          deserializer,
+        );
+        var var_value = sse_decode_box_autoadd_bridge_child_interactions_data(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Ready(
+          resource: var_resource,
+          value: var_value,
+        );
+      case 3:
+        var var_resource = sse_decode_box_autoadd_bridge_refreshing_resource(
+          deserializer,
+        );
+        var var_value = sse_decode_box_autoadd_bridge_child_interactions_data(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Refreshing(
+          resource: var_resource,
+          value: var_value,
+        );
+      case 4:
+        var var_resource = sse_decode_box_autoadd_bridge_stale_resource(
+          deserializer,
+        );
+        var var_value = sse_decode_box_autoadd_bridge_child_interactions_data(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Stale(
+          resource: var_resource,
+          value: var_value,
+        );
+      case 5:
+        var var_resource = sse_decode_box_autoadd_bridge_degraded_resource(
+          deserializer,
+        );
+        var var_value = sse_decode_box_autoadd_bridge_child_interactions_data(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Degraded(
+          resource: var_resource,
+          value: var_value,
+        );
+      case 6:
+        var var_field0 = sse_decode_box_autoadd_bridge_failed_resource(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Failed(var_field0);
+      case 7:
+        var var_field0 = sse_decode_box_autoadd_bridge_stopped_resource(
+          deserializer,
+        );
+        return BridgeChildInteractionsResource_Stopped(var_field0);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
   BridgeChildInteractionsState sse_decode_bridge_child_interactions_state(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_hostThreadId = sse_decode_String(deserializer);
-    var var_revision = sse_decode_u_64(deserializer);
-    var var_updatedAt = sse_decode_i_64(deserializer);
-    var var_items = sse_decode_list_bridge_child_interaction_summary(
-      deserializer,
-    );
+    var var_state = sse_decode_bridge_child_interactions_resource(deserializer);
     return BridgeChildInteractionsState(
       hostThreadId: var_hostThreadId,
-      revision: var_revision,
-      updatedAt: var_updatedAt,
-      items: var_items,
+      state: var_state,
     );
   }
 
@@ -28599,8 +28759,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_runtime = sse_decode_box_bridge_thread_runtime_snapshot(
           deserializer,
         );
+        var var_modelRoute =
+            sse_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
+              deserializer,
+            );
         return BridgeThreadNotification_ThreadRuntimeUpdated(
           runtime: var_runtime,
+          modelRoute: var_modelRoute,
         );
       case 5:
         var var_activity = sse_decode_opt_box_bridge_thread_activity(
@@ -28751,10 +28916,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_threadId = sse_decode_String(deserializer);
-    var var_modelRoute =
-        sse_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
-          deserializer,
-        );
     var var_usage = sse_decode_bridge_thread_runtime_usage(deserializer);
     var var_liveUsage =
         sse_decode_opt_box_autoadd_bridge_thread_runtime_live_usage(
@@ -28789,7 +28950,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_updatedAt = sse_decode_i_64(deserializer);
     return BridgeThreadRuntimeSnapshot(
       threadId: var_threadId,
-      modelRoute: var_modelRoute,
       usage: var_usage,
       liveUsage: var_liveUsage,
       turnCompletionTokens: var_turnCompletionTokens,
@@ -28891,6 +29051,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_interactions = sse_decode_list_bridge_interaction_request(
       deserializer,
     );
+    var var_modelRoute =
+        sse_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
+          deserializer,
+        );
     var var_runtime = sse_decode_opt_box_autoadd_bridge_thread_runtime_snapshot(
       deserializer,
     );
@@ -28909,6 +29073,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       thread: var_thread,
       activeTurn: var_activeTurn,
       interactions: var_interactions,
+      modelRoute: var_modelRoute,
       runtime: var_runtime,
       activity: var_activity,
       storage: var_storage,
@@ -34149,6 +34314,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_child_interactions_data(
+    BridgeChildInteractionsData self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_child_interactions_data(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_closed_agent(
     BridgeClosedAgent self,
     SseSerializer serializer,
@@ -37826,15 +38000,87 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_child_interactions_data(
+    BridgeChildInteractionsData self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_bridge_child_interaction_summary(self.items, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_child_interactions_resource(
+    BridgeChildInteractionsResource self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeChildInteractionsResource_Uninitialized(field0: final field0):
+        sse_encode_i_32(0, serializer);
+        sse_encode_box_autoadd_bridge_uninitialized_resource(
+          field0,
+          serializer,
+        );
+      case BridgeChildInteractionsResource_Loading(field0: final field0):
+        sse_encode_i_32(1, serializer);
+        sse_encode_box_autoadd_bridge_loading_resource(field0, serializer);
+      case BridgeChildInteractionsResource_Ready(
+        resource: final resource,
+        value: final value,
+      ):
+        sse_encode_i_32(2, serializer);
+        sse_encode_box_autoadd_bridge_ready_resource(resource, serializer);
+        sse_encode_box_autoadd_bridge_child_interactions_data(
+          value,
+          serializer,
+        );
+      case BridgeChildInteractionsResource_Refreshing(
+        resource: final resource,
+        value: final value,
+      ):
+        sse_encode_i_32(3, serializer);
+        sse_encode_box_autoadd_bridge_refreshing_resource(resource, serializer);
+        sse_encode_box_autoadd_bridge_child_interactions_data(
+          value,
+          serializer,
+        );
+      case BridgeChildInteractionsResource_Stale(
+        resource: final resource,
+        value: final value,
+      ):
+        sse_encode_i_32(4, serializer);
+        sse_encode_box_autoadd_bridge_stale_resource(resource, serializer);
+        sse_encode_box_autoadd_bridge_child_interactions_data(
+          value,
+          serializer,
+        );
+      case BridgeChildInteractionsResource_Degraded(
+        resource: final resource,
+        value: final value,
+      ):
+        sse_encode_i_32(5, serializer);
+        sse_encode_box_autoadd_bridge_degraded_resource(resource, serializer);
+        sse_encode_box_autoadd_bridge_child_interactions_data(
+          value,
+          serializer,
+        );
+      case BridgeChildInteractionsResource_Failed(field0: final field0):
+        sse_encode_i_32(6, serializer);
+        sse_encode_box_autoadd_bridge_failed_resource(field0, serializer);
+      case BridgeChildInteractionsResource_Stopped(field0: final field0):
+        sse_encode_i_32(7, serializer);
+        sse_encode_box_autoadd_bridge_stopped_resource(field0, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_bridge_child_interactions_state(
     BridgeChildInteractionsState self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.hostThreadId, serializer);
-    sse_encode_u_64(self.revision, serializer);
-    sse_encode_i_64(self.updatedAt, serializer);
-    sse_encode_list_bridge_child_interaction_summary(self.items, serializer);
+    sse_encode_bridge_child_interactions_resource(self.state, serializer);
   }
 
   @protected
@@ -41641,9 +41887,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_box_bridge_interaction_request(interaction, serializer);
       case BridgeThreadNotification_ThreadRuntimeUpdated(
         runtime: final runtime,
+        modelRoute: final modelRoute,
       ):
         sse_encode_i_32(4, serializer);
         sse_encode_box_bridge_thread_runtime_snapshot(runtime, serializer);
+        sse_encode_opt_box_autoadd_bridge_thread_model_route_snapshot(
+          modelRoute,
+          serializer,
+        );
       case BridgeThreadNotification_ActivityChanged(activity: final activity):
         sse_encode_i_32(5, serializer);
         sse_encode_opt_box_bridge_thread_activity(activity, serializer);
@@ -41745,10 +41996,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.threadId, serializer);
-    sse_encode_opt_box_autoadd_bridge_thread_model_route_snapshot(
-      self.modelRoute,
-      serializer,
-    );
     sse_encode_bridge_thread_runtime_usage(self.usage, serializer);
     sse_encode_opt_box_autoadd_bridge_thread_runtime_live_usage(
       self.liveUsage,
@@ -41840,6 +42087,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_thread(self.thread, serializer);
     sse_encode_opt_box_autoadd_bridge_turn(self.activeTurn, serializer);
     sse_encode_list_bridge_interaction_request(self.interactions, serializer);
+    sse_encode_opt_box_autoadd_bridge_thread_model_route_snapshot(
+      self.modelRoute,
+      serializer,
+    );
     sse_encode_opt_box_autoadd_bridge_thread_runtime_snapshot(
       self.runtime,
       serializer,

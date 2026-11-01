@@ -774,10 +774,7 @@ async fn sample_member(
 }
 
 fn record_root_snapshot(manifest: &mut Manifest, snapshot: &ThreadSnapshot) {
-    manifest.root_model_route = snapshot
-        .runtime
-        .as_ref()
-        .and_then(|runtime| runtime.model_route.clone());
+    manifest.root_model_route = snapshot.model_route.clone();
     manifest.root_workflow = snapshot
         .runtime
         .as_ref()

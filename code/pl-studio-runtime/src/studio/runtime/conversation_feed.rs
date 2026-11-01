@@ -86,6 +86,7 @@ impl StudioRuntime {
         let mut storage = None;
         let mut last_turn = None;
         let mut cold_terminal = None;
+        let mut model_route = None;
         let mut initial_serial = 0;
         let mut state_effect_floor = 0;
         let mut initial_turn = None;
@@ -201,6 +202,7 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
                     state_effect_floor = current.source_effect_seq;
                     current.execution_present = false;
@@ -254,10 +256,21 @@ impl StudioRuntime {
         let mut pending = VecDeque::new();
         // Other domains remain State. Current bodies and activity are exclusively Chat.current.
         let runtime_source = position.source.as_ref().and_then(|source| source.runtime());
-        let runtime_floor = runtime_source
-            .as_ref()
-            .map_or((0, 0), |(observation, catalog, _)| (*observation, *catalog));
-        let runtime = runtime_source.map(|(_, _, runtime)| (*runtime).clone());
+        let runtime_floor = runtime_source.as_ref().map_or((0, 0), |cut| {
+            (cut.observation_revision, cut.catalog_revision)
+        });
+        let runtime = if let Some(cut) = runtime_source {
+            model_route = cut.model_route;
+            Some((*cut.runtime).clone())
+        } else {
+            let (config, _) = self.config_runtime.read_with_catalog()?;
+            crate::studio::model_route::annotate_availability(
+                model_route.as_mut(),
+                &thread,
+                &config.config,
+            )?;
+            None
+        };
         let active_turn = initial_turn.as_ref().map(|turn| turn.id.clone());
         let snapshot = pl_protocol::ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
@@ -266,6 +279,7 @@ impl StudioRuntime {
                 .map_or(0, |current| current.source_effect_seq),
             thread,
             runtime,
+            model_route,
             active_turn: initial_turn,
             interactions: Vec::new(),
             activity: None,
@@ -437,6 +451,7 @@ impl ConversationFeed {
             }
             ThreadLiveEvent::Runtime {
                 runtime,
+                model_route,
                 observation_revision,
                 catalog_revision,
             } => {
@@ -453,6 +468,7 @@ impl ConversationFeed {
                 self.runtime_floor = (observation_revision, catalog_revision);
                 self.notification(ThreadNotification::ThreadRuntimeUpdated {
                     runtime: Box::new((*runtime).clone()),
+                    model_route,
                 })?
             }
             ThreadLiveEvent::Activity { .. } => {}

@@ -114,7 +114,7 @@ final class ConversationRepositoryImpl
       _observations[threadId] = owner.source.watch((value) {
         if (value.hasSnapshot)
           onRevision('thread-state:$threadId', value.revision);
-        final route = value.runtime?.modelRoute;
+        final route = value.modelRoute;
         if (route != null) onRevision('thread-route:$threadId', route.revision);
       });
       return owner;

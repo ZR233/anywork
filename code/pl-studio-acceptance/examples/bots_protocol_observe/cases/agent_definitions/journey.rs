@@ -534,9 +534,8 @@ impl Observation<'_> {
             "submit {phase:?} while previous Turn is active"
         );
         let route = snapshot
-            .runtime
+            .model_route
             .as_ref()
-            .and_then(|runtime| runtime.model_route.as_ref())
             .context("public root route revision missing")?;
         let reply = self
             .session

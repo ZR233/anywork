@@ -64,9 +64,42 @@ pub(crate) const AGENT_PROFILE_FORMAT: &str = "pl.studio.agent-profile";
 const FORMAT_VERSION: u32 = 2;
 pub(crate) mod migration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SavedModelRoute {
     pub route: ModelRouteConfig,
+    pub revision: u64,
+    pub bot_id: Option<String>,
+}
+
+impl SavedModelRoute {
+    pub(crate) fn snapshot(self, available: bool) -> pl_protocol::ThreadModelRouteSnapshot {
+        pl_protocol::ThreadModelRouteSnapshot {
+            bot_id: self.bot_id,
+            account_id: self.route.account_id.into_string(),
+            model_id: self.route.model_id,
+            effort: self.route.effort.map(|effort| effort.as_str().to_owned()),
+            revision: self.revision,
+            available,
+            unavailable_reason: (!available)
+                .then(|| "the selected model binding is unavailable".to_owned()),
+        }
+    }
+}
+
+pub(crate) fn projected(
+    state: &ThreadSnapshot,
+) -> Result<Option<pl_protocol::ThreadModelRouteSnapshot>> {
+    let child = state.extensions.contains_key(AGENT_PROFILE_EXTENSION);
+    let bot_id = bot_owner(state)?;
+    Ok(route_record(state, child)?.map(|(record, route)| {
+        SavedModelRoute {
+            route,
+            revision: record.revision,
+            bot_id,
+        }
+        .snapshot(state.model_available)
+    }))
 }
 
 pub(crate) fn encode(route: &ModelRouteConfig) -> Result<OpaquePayload> {
@@ -88,6 +121,8 @@ pub(crate) fn saved(state: &ThreadSnapshot) -> Result<Option<SavedModelRoute>> {
         .map(|record| {
             Ok(SavedModelRoute {
                 route: decode(&record.payload)?,
+                revision: record.revision,
+                bot_id: bot_owner(state)?,
             })
         })
         .transpose()
@@ -203,11 +238,11 @@ pub(crate) fn route_record(
 /// Availability describes next admission, not whether an old in-flight session is still resident.
 /// This never changes the saved selector or tears down a running model.
 pub(crate) fn annotate_availability(
-    runtime: &mut pl_protocol::ThreadRuntimeSnapshot,
+    route: Option<&mut pl_protocol::ThreadModelRouteSnapshot>,
     thread: &pl_protocol::Thread,
     config: &crate::StudioConfig,
 ) -> Result<()> {
-    let Some(route) = runtime.model_route.as_mut() else {
+    let Some(route) = route else {
         return Ok(());
     };
     let selector = ModelRouteConfig {

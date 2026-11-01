@@ -99,6 +99,7 @@ struct LiveSubscription {
     /// Last runtime snapshot already represented by this subscriber, including the authoritative
     /// first snapshot. Identical owner frames are dropped at this boundary.
     runtime: Option<pl_protocol::ThreadRuntimeSnapshot>,
+    model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
     /// The projection owner's typed storage state, mirrored instead of recomputed per frame.
     ///
     /// The Thread's observation owner is the one place that derives the state from the owner
@@ -171,6 +172,7 @@ impl LiveSubscription {
         // subscriber never has to recompute the state from its own copies.
         self.activity = snapshot.activity.clone();
         self.runtime = snapshot.runtime.clone();
+        self.model_route = snapshot.model_route.clone();
         self.storage = match self.storage_feed.as_mut() {
             Some(watch) => {
                 let observed = watch.borrow_and_update().clone();
@@ -393,6 +395,7 @@ impl LiveSubscription {
                 observation_revision,
                 catalog_revision,
                 runtime,
+                model_route,
             } => {
                 // A newer catalog may change availability without a new owner
                 // publication, but old owner facts must never overwrite the baseline.
@@ -402,12 +405,16 @@ impl LiveSubscription {
                 {
                     return;
                 }
-                if self.runtime.as_ref() == Some(runtime.as_ref()) {
+                if self.runtime.as_ref() == Some(runtime.as_ref())
+                    && self.model_route == model_route
+                {
                     return;
                 }
                 self.runtime = Some((*runtime).clone());
+                self.model_route.clone_from(&model_route);
                 self.enqueue(ThreadNotification::ThreadRuntimeUpdated {
                     runtime: Box::new((*runtime).clone()),
+                    model_route,
                 });
             }
             ThreadLiveEvent::Activity {
@@ -523,10 +530,10 @@ impl LiveSubscription {
                         == activity.as_ref().map(|activity| activity.identity.as_str())
                 )
             }
-            ThreadNotification::ThreadRuntimeUpdated { runtime } => {
+            ThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
                 matches!(
                     &last.notification,
-                    ThreadNotification::ThreadRuntimeUpdated { runtime: old }
+                    ThreadNotification::ThreadRuntimeUpdated { runtime: old, .. }
                     if same_live_runtime_identity(runtime, old)
                 )
             }
@@ -567,7 +574,7 @@ impl LiveSubscription {
                 ThreadNotification::ActivityChanged { .. } | ThreadNotification::StorageChanged { .. }
             ) || matches!(
                 notification.notification,
-                ThreadNotification::ThreadRuntimeUpdated { ref runtime }
+                ThreadNotification::ThreadRuntimeUpdated { ref runtime, .. }
                 if runtime.live_usage.as_ref().is_some_and(|usage| {
                     usage.state == pl_protocol::ThreadRuntimeUsageState::Live
         })
@@ -683,8 +690,9 @@ impl StudioThreadSubscription {
                 live.ready_frames -= 1;
                 let mut update = live.pending.pop_front();
                 if let Some(ThreadSubscriptionUpdate::Notification { notification }) = &mut update
-                    && let ThreadNotification::ThreadRuntimeUpdated { runtime: observed } =
-                        &mut notification.notification
+                    && let ThreadNotification::ThreadRuntimeUpdated {
+                        runtime: observed, ..
+                    } = &mut notification.notification
                 {
                     runtime.annotate_runtime_mode_availability(observed);
                 }
@@ -813,6 +821,7 @@ impl StudioRuntime {
                     thread_id: request.thread_id.clone(),
                     activity: None,
                     runtime: None,
+                    model_route: None,
                     storage_feed,
                     storage: None,
                     last_turn,
@@ -982,13 +991,11 @@ impl StudioRuntime {
 
     fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<u64> {
         let (config, catalog) = self.config_runtime.read_with_catalog()?;
-        if let Some(runtime) = snapshot.runtime.as_mut() {
-            crate::studio::model_route::annotate_availability(
-                runtime,
-                &snapshot.thread,
-                &config.config,
-            )?;
-        }
+        crate::studio::model_route::annotate_availability(
+            snapshot.model_route.as_mut(),
+            &snapshot.thread,
+            &config.config,
+        )?;
         Ok(catalog.revision)
     }
 }
@@ -1098,6 +1105,7 @@ mod storage_fault_tests {
             observation_revision: baseline_revision,
             catalog_revision,
             runtime: Arc::new(obsolete),
+            model_route: crate::studio::model_route::projected(&baseline)?,
         })?;
         events.send(ThreadLiveEvent::Activity {
             observation_revision: baseline_revision,
@@ -1126,7 +1134,7 @@ mod storage_fault_tests {
         };
         let initial = snapshot.runtime.context("runtime in first frame")?;
         assert!(
-            initial
+            snapshot
                 .model_route
                 .as_ref()
                 .context("cold saved route")?
@@ -1160,13 +1168,14 @@ mod storage_fault_tests {
             observation_revision: after.observation_revision,
             catalog_revision,
             runtime: Arc::new(current),
+            model_route: crate::studio::model_route::projected(&baseline)?,
         })?;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let frame = subscription.recv().await?.context("status stream ended")?;
                 if let ThreadSubscriptionUpdate::Notification { notification } = frame {
                     match notification.notification {
-                        ThreadNotification::ThreadRuntimeUpdated { runtime } => {
+                        ThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
                             assert_ne!(
                                 runtime.progress.as_deref(),
                                 Some("obsolete before baseline")
@@ -1235,14 +1244,8 @@ mod storage_fault_tests {
         let ThreadSubscriptionUpdate::Snapshot { snapshot } = first else {
             anyhow::bail!("reconnect baseline missing");
         };
-        assert!(
-            snapshot
-                .runtime
-                .context("reconnected runtime")?
-                .model_route
-                .context("saved route")?
-                .available
-        );
+        snapshot.runtime.as_ref().context("reconnected runtime")?;
+        assert!(snapshot.model_route.context("saved route")?.available);
         assert_eq!(handle.snapshot().observation_revision, owner_revision);
         let configured = runtime.config_runtime.read()?;
         runtime.set_account_model_enabled(pl_protocol::studio::SetAccountModelEnabledRequest {
@@ -1257,12 +1260,9 @@ mod storage_fault_tests {
             loop {
                 if let Some(ThreadSubscriptionUpdate::Notification { notification }) =
                     subscription.recv().await?
-                    && let ThreadNotification::ThreadRuntimeUpdated { runtime } =
+                    && let ThreadNotification::ThreadRuntimeUpdated { model_route, .. } =
                         notification.notification
-                    && runtime
-                        .model_route
-                        .as_ref()
-                        .is_some_and(|route| !route.available)
+                    && model_route.as_ref().is_some_and(|route| !route.available)
                 {
                     break;
                 }

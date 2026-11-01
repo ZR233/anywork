@@ -531,9 +531,8 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
                             attachment_draft_ids: vec![],
                         },
                         expected_model_route_revision: parent
-                            .runtime
+                            .model_route
                             .as_ref()
-                            .and_then(|runtime| runtime.model_route.as_ref())
                             .context("saved parent model route")?
                             .revision,
                     },
@@ -910,9 +909,8 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                         attachment_draft_ids: vec![],
                     },
                     expected_model_route_revision: snapshot
-                        .runtime
+                        .model_route
                         .as_ref()
-                        .and_then(|runtime| runtime.model_route.as_ref())
                         .context("original saved model route is missing")?
                         .revision,
                 },

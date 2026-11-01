@@ -200,7 +200,7 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       threadId: threadId,
     );
     final routeCommand = settings.commands['thread-route:$threadId'];
-    final canonicalRoute = session.runtime?.modelRoute;
+    final canonicalRoute = session.modelRoute;
     final client = ref.read(anyworkClientProvider);
     final lifecycle = Object();
     _lifecycle = lifecycle;
@@ -255,8 +255,9 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
           childInteractions != null &&
               childInteractions.hasCurrentBaseline &&
               childInteractions.canonical.loaded &&
-              childInteractions.canonical.value?.hostThreadId == threadId
-          ? childInteractions.canonical.value!.items
+              childInteractions.canonical.value?.hostThreadId == threadId &&
+              childInteractions.canonical.value?.state.value != null
+          ? childInteractions.canonical.value!.state.value!.items
           : const [],
       childInteractionSync: childInteractions?.canonical.sync,
       childInteractionSources: {

@@ -7,11 +7,14 @@ use super::event::BridgeProductEventEnvelope;
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
-    BridgeChildInteractionSummary, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
+    BridgeChildInteractionSummary, BridgeDegradedResource, BridgeFailedResource,
+    BridgeLoadingResource, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
     BridgeModelCatalogStateSnapshot, BridgePersistenceQueueStateSnapshot,
-    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
-    BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
-    BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeReadyResource,
+    BridgeRecoveryStateSnapshot, BridgeRefreshingResource, BridgeSessionCostsState,
+    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeStaleResource,
+    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot,
+    BridgeUninitializedResource, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -115,13 +118,42 @@ pub enum BridgeProductBaseline {
     Bots(Box<BridgeBotsStateSnapshot>),
 }
 
-/// One host's committed pending-child projection; revision belongs to this domain only.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One host's pending-child resource; absent values are not committed empty collections.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeChildInteractionsState {
     pub host_thread_id: String,
-    pub revision: u64,
-    pub updated_at: i64,
+    pub state: BridgeChildInteractionsResource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
+pub enum BridgeChildInteractionsResource {
+    Uninitialized(BridgeUninitializedResource),
+    Loading(BridgeLoadingResource),
+    Ready {
+        resource: BridgeReadyResource,
+        value: BridgeChildInteractionsData,
+    },
+    Refreshing {
+        resource: BridgeRefreshingResource,
+        value: BridgeChildInteractionsData,
+    },
+    Stale {
+        resource: BridgeStaleResource,
+        value: BridgeChildInteractionsData,
+    },
+    Degraded {
+        resource: BridgeDegradedResource,
+        value: BridgeChildInteractionsData,
+    },
+    Failed(BridgeFailedResource),
+    Stopped(BridgeStoppedResource),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeChildInteractionsData {
     pub items: Vec<BridgeChildInteractionSummary>,
 }
 

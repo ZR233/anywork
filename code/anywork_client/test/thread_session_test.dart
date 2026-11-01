@@ -10,6 +10,7 @@ const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 ThreadWorkspace _workspace({
   int revision = 1,
   ThreadRuntimeView? runtime,
+  ThreadModelRouteView? modelRoute,
   StudioTurnView? latestTurn,
   StudioTurnView? activeTurn,
 }) {
@@ -27,6 +28,7 @@ ThreadWorkspace _workspace({
     thread: thread,
     revision: revision,
     interactions: const [],
+    modelRoute: modelRoute,
     activeTurn: activeTurn,
     latestTurn: latestTurn,
     runtime:
@@ -43,6 +45,14 @@ ThreadWorkspace _workspace({
         ),
   );
 }
+
+ThreadModelRouteView _route(int revision) => ThreadModelRouteView(
+  accountId: 'account',
+  modelId: 'model',
+  effort: 'medium',
+  revision: revision,
+  available: true,
+);
 
 StudioTurnView _turnView({
   String turnId = 'turn',
@@ -102,6 +112,75 @@ ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
 );
 
 void main() {
+  test('model route is independent of cold runtime and clears without stale resurrection', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open(demand: _demand);
+    final session = fixture.session();
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadSnapshotFrame(
+          workspace: _workspace(revision: 1, modelRoute: _route(4)),
+        ),
+      ),
+    );
+    expect(session.state.runtime, isNotNull);
+    expect(session.state.runtime!.execution, isNull);
+    expect(session.state.modelRoute, _route(4));
+
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 2,
+          baseRevision: 1,
+          epoch: 7,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(1),
+            todo: null,
+            modelRoute: _route(5),
+          ),
+        ),
+      ),
+    );
+    expect(session.state.modelRoute, _route(5));
+
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 3,
+          baseRevision: 2,
+          epoch: 7,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(2),
+            todo: null,
+            modelRoute: null,
+          ),
+        ),
+      ),
+    );
+    expect(session.state.modelRoute, isNull);
+
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 3,
+          baseRevision: 2,
+          epoch: 6,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(99),
+            todo: null,
+            modelRoute: _route(99),
+          ),
+        ),
+      ),
+    );
+    expect(session.state.modelRoute, isNull);
+    expect(session.state.runtime!.completionTokens, 2);
+    await fixture.close();
+  });
+
   test('combined feed preserves approved plan and independently advances state/content clocks', () async {
     final fixture = ConversationFixture();
     final diagnostics = ThreadUsageDiagnostics(
@@ -169,6 +248,7 @@ void main() {
                   ),
                 ),
             todo: null,
+            modelRoute: null,
           ),
         ),
       ),
@@ -201,7 +281,11 @@ void main() {
           revision: 3,
           baseRevision: 2,
           epoch: 7,
-          update: ThreadRuntimeUpdate(runtime: _runtimeUsage(2), todo: null),
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(2),
+            todo: null,
+            modelRoute: null,
+          ),
         ),
       ),
     );
@@ -230,7 +314,11 @@ void main() {
             revision: 6,
             baseRevision: 5,
             epoch: 1,
-            update: ThreadRuntimeUpdate(runtime: _runtimeUsage(99), todo: null),
+            update: ThreadRuntimeUpdate(
+              runtime: _runtimeUsage(99),
+              todo: null,
+              modelRoute: null,
+            ),
           ),
         ),
       );
@@ -348,7 +436,11 @@ void main() {
           revision: 6,
           baseRevision: 5,
           epoch: 1,
-          update: ThreadRuntimeUpdate(runtime: _runtimeUsage(99), todo: null),
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(99),
+            todo: null,
+            modelRoute: null,
+          ),
         ),
       ),
     );

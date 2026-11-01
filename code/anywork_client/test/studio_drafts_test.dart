@@ -353,14 +353,25 @@ ThreadWorkspace _workspace({
     activeSkills: [],
     activeMcpServers: [],
     activeLspServers: [],
-    modelRoute: ThreadModelRouteView(
-      accountId: 'account',
-      modelId: 'alpha',
-      effort: 'medium',
-      revision: 1,
-      available: true,
-    ),
   ),
+  modelRoute: const ThreadModelRouteView(
+    accountId: 'account',
+    modelId: 'alpha',
+    effort: 'medium',
+    revision: 1,
+    available: true,
+  ),
+);
+
+const _coldRuntime = ThreadRuntimeView(
+  modelId: '',
+  contextTokens: 0,
+  contextWindow: 0,
+  totalTokens: 0,
+  costLabel: '',
+  activeSkills: [],
+  activeMcpServers: [],
+  activeLspServers: [],
 );
 
 StudioRecoveryIssue _recoveryIssue({
@@ -1923,7 +1934,11 @@ void main() {
     final transport = _DraftTransport();
     final client = await _client(transport);
     final session = client.conversations.session('thread');
-    await session.deliverWorkspace(_workspace());
+    await session.deliverWorkspace(
+      _workspace().copyWith(runtime: _coldRuntime),
+    );
+    expect(session.state.runtime!.execution, isNull);
+    expect(session.state.modelRoute?.revision, 1);
     const blockerInput = StudioPromptInput(
       inputId: 'earlier-input',
       text: 'earlier command',
@@ -1943,14 +1958,12 @@ void main() {
     final changed = _workspace(revision: 2);
     await session.deliverWorkspace(
       changed.copyWith(
-        runtime: changed.runtime.copyWith(
-          modelRoute: const ThreadModelRouteView(
-            accountId: 'account',
-            modelId: 'beta',
-            effort: 'high',
-            revision: 2,
-            available: true,
-          ),
+        modelRoute: const ThreadModelRouteView(
+          accountId: 'account',
+          modelId: 'beta',
+          effort: 'high',
+          revision: 2,
+          available: true,
         ),
       ),
     );

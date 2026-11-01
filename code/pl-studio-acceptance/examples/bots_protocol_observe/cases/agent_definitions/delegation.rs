@@ -181,9 +181,8 @@ impl Observation<'_> {
             "child direct-parent/root/role association changed"
         );
         let route = snapshot
-            .runtime
+            .model_route
             .as_ref()
-            .and_then(|runtime| runtime.model_route.as_ref())
             .context("child public route missing")?;
         ensure!(
             route.available

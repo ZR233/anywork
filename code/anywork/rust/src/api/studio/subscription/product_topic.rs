@@ -40,43 +40,57 @@ pub async fn create_product_topic_subscription(
                 _ = producer_cancel.cancelled() => break,
                 frame = events.recv() => match frame {
                     Ok(Some(frame)) => frame,
-                    Ok(None) | Err(_) => break,
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = send_or_cancel(
+                            &producer_cancel,
+                            &sender,
+                            BridgeProductTopicStreamEnvelope::Failure {
+                                error: BridgeError::from(error),
+                            },
+                        ).await;
+                        break;
+                    }
                 },
             };
-            let envelope = match frame {
+            let converted = match frame {
                 StudioProductFrame::Baseline(baseline) => {
-                    match bridge_product_baseline(*baseline) {
-                        Ok((revision, state)) => BridgeProductTopicStreamEnvelope::Baseline {
+                    bridge_product_baseline(*baseline).map(|(revision, state)| {
+                        BridgeProductTopicStreamEnvelope::Baseline {
                             topic: topic.clone(),
                             revision,
                             state: Box::new(state),
-                        },
-                        Err(error) => {
-                            tracing::warn!(
-                                error_bytes = error.to_string().len(),
-                                "failed to convert Studio product baseline"
-                            );
-                            continue;
                         }
-                    }
+                    })
                 }
-                StudioProductFrame::Event(event) => match bridge_product_event(*event) {
-                    Ok(event) => BridgeProductTopicStreamEnvelope::Data {
+                StudioProductFrame::Event(event) => bridge_product_event(*event).map(|event| {
+                    BridgeProductTopicStreamEnvelope::Data {
                         event: Box::new(event),
-                    },
-                    Err(error) => {
-                        tracing::warn!(
-                            error_bytes = error.to_string().len(),
-                            "failed to convert Studio product event"
-                        );
-                        continue;
                     }
-                },
+                }),
                 StudioProductFrame::Lagged { dropped, .. } => {
-                    BridgeProductTopicStreamEnvelope::Lagged {
+                    Ok(BridgeProductTopicStreamEnvelope::Lagged {
                         topic: topic.clone(),
                         dropped,
-                    }
+                    })
+                }
+            };
+            let envelope = match converted {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    let error = BridgeError::from(error);
+                    tracing::warn!(
+                        code = ?error.code,
+                        correlation_id = %error.correlation_id,
+                        "failed to convert Studio product frame"
+                    );
+                    let _ = send_or_cancel(
+                        &producer_cancel,
+                        &sender,
+                        BridgeProductTopicStreamEnvelope::Failure { error },
+                    )
+                    .await;
+                    break;
                 }
             };
             if !send_or_cancel(&producer_cancel, &sender, envelope).await {

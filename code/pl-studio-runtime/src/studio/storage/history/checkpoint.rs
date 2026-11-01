@@ -117,6 +117,7 @@ impl HistoryStore {
         // Normalize at this import boundary as well, using exactly the SQLite conversion rules.
         let mut normalized = checkpoint.clone();
         crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        crate::studio::model_route::migration::upgrade(&mut normalized.state)?;
         if let Some(mapping) = crate::studio::startup::storage_layout::bot_roots::for_history(
             &self.state.path,
             &self.state.thread_id,
@@ -362,7 +363,69 @@ pub(super) async fn write_representation(
         vec![payload.into(), hash.into()],
     ))
     .await?;
+    // Only explicit representation maintenance can run before the head's schema step.
+    // Ordinary writers always require the current columns, never a missing-column fallback.
+    if super::schema::version(tx).await? == super::HISTORY_SCHEMA_VERSION {
+        write_model_route_head(tx, &migrated.state).await?;
+    }
     Ok(())
+}
+
+fn model_route_head(
+    state: &pl_core::thread::ThreadSnapshot,
+) -> Result<(Option<String>, Option<String>)> {
+    let json = crate::studio::model_route::saved(state)?
+        .map(|route| serde_json::to_string(&route))
+        .transpose()?;
+    let hash = json.as_ref().map(|json| content_hash(json.as_bytes()));
+    Ok((json, hash))
+}
+
+/// Mechanical projection used only inside the original checkpoint/migration transaction.
+pub(super) async fn write_model_route_head(
+    db: &impl ConnectionTrait,
+    state: &pl_core::thread::ThreadSnapshot,
+) -> Result<()> {
+    let (json, hash) = model_route_head(state)?;
+    let result = db
+        .execute_raw(statement(
+            "UPDATE history_meta SET model_route_json=?,model_route_hash=? WHERE id=1",
+            vec![json.into(), hash.into()],
+        ))
+        .await?;
+    ensure!(
+        result.rows_affected() == 1,
+        "history metadata is missing while writing model route head"
+    );
+    Ok(())
+}
+
+/// Cold reads validate only the narrow header; recovery payload/context are not selected.
+pub(super) async fn read_model_route_head(
+    db: &impl ConnectionTrait,
+) -> Result<Option<crate::studio::model_route::SavedModelRoute>> {
+    let Some(row) = db
+        .query_one_raw(statement(
+            "SELECT model_route_json,model_route_hash FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+    else {
+        anyhow::bail!("history metadata is missing while reading model route head");
+    };
+    let json: Option<String> = row.try_get("", "model_route_json")?;
+    let hash: Option<String> = row.try_get("", "model_route_hash")?;
+    match (json, hash) {
+        (None, None) => Ok(None),
+        (Some(json), Some(hash)) => {
+            ensure!(
+                content_hash(json.as_bytes()) == hash,
+                "checkpoint model route head hash mismatch"
+            );
+            Ok(Some(serde_json::from_str(&json)?))
+        }
+        _ => anyhow::bail!("checkpoint model route head/hash must be paired"),
+    }
 }
 
 /// The transaction's singleton headers, shared by ordered history and context persistence.
@@ -478,6 +541,7 @@ pub(super) async fn write(
         vec![integer(checkpoint.state_revision)?.into(), integer(checkpoint.state.context.revision)?.into(),
             integer(records.len())?.into(), payload.into(), hash.into()],
     )).await?;
+    write_model_route_head(tx, &checkpoint.state).await?;
     Ok(())
 }
 

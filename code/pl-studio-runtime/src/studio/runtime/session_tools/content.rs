@@ -423,7 +423,7 @@ pub(super) async fn get(
         output(&serde_json::json!({"thread":snapshot.thread,"activeTurn":current.active_turn,"activity":current.active,
             "logicalStatus":current.logical_status,"executionPresent":current.execution_present,
             "plan":current.plan.map(|plan|serde_json::json!({"revision":plan.revision,"phase":plan.phase})),
-            "model":snapshot.runtime.and_then(|runtime|runtime.model_route),"storage":snapshot.storage,
+            "model":snapshot.model_route,"storage":snapshot.storage,
             "pending":pending,"pendingHasMore":pending_more,"recentExecution":execution}))
     }.await;
     owners.close(reader.subscription_id()).await?;

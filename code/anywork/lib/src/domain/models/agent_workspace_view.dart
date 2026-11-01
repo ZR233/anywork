@@ -17,6 +17,7 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     String? loadError,
     required TimelineTodoListUpdate? todo,
     required ThreadRuntimeView runtime,
+    ThreadModelRouteView? modelRoute,
     required StudioTurnView? turn,
     StudioTurnView? lastTurn,
     required PendingInteraction? activeInteraction,

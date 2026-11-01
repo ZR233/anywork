@@ -68,6 +68,7 @@ pub(in crate::studio) enum ThreadLiveEvent {
         observation_revision: u64,
         catalog_revision: u64,
         runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
+        model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
     },
     /// Current execution activity of the Thread; `None` means no activity.
     ///
@@ -80,6 +81,14 @@ pub(in crate::studio) enum ThreadLiveEvent {
         observation_revision: u64,
         activity: Option<Arc<pl_protocol::ThreadActivity>>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RuntimeStateCut {
+    pub(super) observation_revision: u64,
+    pub(super) catalog_revision: u64,
+    pub(super) runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
+    pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
 }
 
 /// The realtime projection feed of one Thread.
@@ -115,7 +124,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     owner_progress: watch::Receiver<Progress>,
     #[cfg(test)]
     first_open_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    latest_runtime: Mutex<Option<(u64, u64, Arc<pl_protocol::ThreadRuntimeSnapshot>)>>,
+    latest_runtime: Mutex<Option<RuntimeStateCut>>,
 }
 
 impl ThreadLiveFeed {
@@ -172,7 +181,7 @@ impl ThreadLiveFeed {
         self.conversation.content_changes()
     }
 
-    pub(super) fn runtime(&self) -> Option<(u64, u64, Arc<pl_protocol::ThreadRuntimeSnapshot>)> {
+    pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
         self.latest_runtime
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -235,6 +244,7 @@ impl ThreadLiveFeed {
         let event = event();
         if let ThreadLiveEvent::Runtime {
             runtime,
+            model_route,
             observation_revision,
             catalog_revision,
         } = &event
@@ -242,8 +252,12 @@ impl ThreadLiveFeed {
             *self
                 .latest_runtime
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((*observation_revision, *catalog_revision, runtime.clone()));
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RuntimeStateCut {
+                observation_revision: *observation_revision,
+                catalog_revision: *catalog_revision,
+                runtime: runtime.clone(),
+                model_route: model_route.clone(),
+            });
         }
         if self.has_subscribers() {
             let _ = self.events.send(event);
@@ -833,6 +847,7 @@ struct LiveOwner {
     /// Last activity already broadcast, so an unchanged projection does not produce a frame.
     activity_published: Option<pl_protocol::ThreadActivity>,
     runtime_published: Option<pl_protocol::ThreadRuntimeSnapshot>,
+    model_route_published: Option<pl_protocol::ThreadModelRouteSnapshot>,
     /// Last typed storage state this owner published to its feed.
     ///
     /// The owner derives it from the owner snapshot plus the coordinator's typed watch, so a
@@ -1035,20 +1050,27 @@ impl LiveOwner {
         // A subscriber may already have an older catalog baseline while this
         // owner initializes. Publish the initial qualification too; its source
         // stamps let a current subscriber discard it without manufacturing a gap.
-        let mut runtime = crate::studio::thread_projection::project_runtime(
+        let runtime = crate::studio::thread_projection::project_runtime(
             id,
             snapshot,
             thread.updated_at,
             &usage,
         )?;
+        let mut model_route = crate::studio::model_route::projected(snapshot)?;
         let (config, catalog) = projector.config.read_with_catalog()?;
-        crate::studio::model_route::annotate_availability(&mut runtime, &thread, &config.config)?;
+        crate::studio::model_route::annotate_availability(
+            model_route.as_mut(),
+            &thread,
+            &config.config,
+        )?;
         feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: catalog.revision,
             runtime: Arc::new(runtime.clone()),
+            model_route: model_route.clone(),
         });
         let runtime_published = Some(runtime);
+        let model_route_published = model_route;
         feed.publish_storage(storage_published.clone());
         let owner = Self {
             terminal_transfer: state.terminal_transfer.clone(),
@@ -1060,6 +1082,7 @@ impl LiveOwner {
             projection,
             activity_published,
             runtime_published,
+            model_route_published,
             storage_published,
             channel,
             chat,
@@ -1188,14 +1211,16 @@ impl LiveOwner {
         write: &Arc<ThreadWrite>,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let effect = &write.effect;
-        let deliver = self.feed.has_subscribers();
         anyhow::ensure!(
             self.pending.is_none(),
             "a retained handoff must finish before projecting another effect"
         );
+        // A receiver may register while this effect is being prepared or retained before handoff.
+        // Freeze its typed State facts in the original charged slot regardless of current demand;
+        // only the outward envelope is optional. Otherwise that receiver loses a reliable commit.
         let projected = self
             .projection
-            .prepare(&self.thread, effect, &write.checkpoint.state, deliver)
+            .prepare(&self.thread, effect, &write.checkpoint.state, true)
             .await;
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
@@ -1633,12 +1658,8 @@ impl LiveOwner {
             at,
             &self.usage,
         )?;
-        let same_identity = match (
-            self.runtime_published
-                .as_ref()
-                .and_then(|runtime| runtime.model_route.as_ref()),
-            runtime.model_route.as_ref(),
-        ) {
+        let mut model_route = crate::studio::model_route::projected(snapshot)?;
+        let same_identity = match (self.model_route_published.as_ref(), model_route.as_ref()) {
             (Some(previous), Some(current)) => {
                 previous.account_id == current.account_id
                     && previous.model_id == current.model_id
@@ -1649,34 +1670,35 @@ impl LiveOwner {
             _ => false,
         };
         if self.config.model_catalog_revision()? == self.qualification_revision && same_identity {
-            if let (Some(previous), Some(current)) = (
-                self.runtime_published
-                    .as_ref()
-                    .and_then(|runtime| runtime.model_route.as_ref()),
-                runtime.model_route.as_mut(),
-            ) {
+            if let (Some(previous), Some(current)) =
+                (self.model_route_published.as_ref(), model_route.as_mut())
+            {
                 current.available = previous.available;
                 current.unavailable_reason = previous.unavailable_reason.clone();
             }
         } else {
             let (config, catalog) = self.config.read_with_catalog()?;
             crate::studio::model_route::annotate_availability(
-                &mut runtime,
+                model_route.as_mut(),
                 &self.thread,
                 &config.config,
             )?;
             self.qualification_revision = catalog.revision;
         }
-        if self.runtime_published.as_ref() == Some(&runtime) {
+        if self.runtime_published.as_ref() == Some(&runtime)
+            && self.model_route_published == model_route
+        {
             return Ok(());
         }
         runtime.updated_at = crate::studio::unix_seconds();
         runtime.usage.updated_at = runtime.updated_at;
+        self.model_route_published.clone_from(&model_route);
         let runtime = self.runtime_published.insert(runtime);
         self.feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: self.qualification_revision,
             runtime: Arc::new(runtime.clone()),
+            model_route,
         });
         Ok(())
     }

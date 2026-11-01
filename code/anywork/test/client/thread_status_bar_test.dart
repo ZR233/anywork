@@ -59,16 +59,18 @@ void main() {
       final frozen = initial.runtime.copyWith(
         modelId: model.modelId,
         autoCompactLimit: 922000,
-        modelRoute: ThreadModelRouteView(
-          accountId: account.id,
-          modelId: model.modelId,
-          effort: null,
-          revision: 1,
-          available: true,
-        ),
       );
       await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
-        initial.copyWith(runtime: frozen),
+        initial.copyWith(
+          runtime: frozen,
+          modelRoute: ThreadModelRouteView(
+            accountId: account.id,
+            modelId: model.modelId,
+            effort: null,
+            revision: 1,
+            available: true,
+          ),
+        ),
       );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -123,6 +125,7 @@ void main() {
       final running = StudioContextProjection.fromRuntime(
         'thread-main',
         frozen,
+        modelRoute: initial.modelRoute,
         accounts: accounts,
         isBusy: true,
       );
@@ -366,10 +369,8 @@ void main() {
 
 final class _StatusTransport extends RecordingDemoTransport {
   _StatusTransport() {
-    conversationFeedFactory = (_, inner) async => _SetAcknowledgedFeed(
-      inner: inner,
-      acknowledged: firstSetAcknowledged,
-    );
+    conversationFeedFactory = (_, inner) async =>
+        _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
   }
 
   final firstSetAcknowledged = Completer<void>();
@@ -414,7 +415,11 @@ ThreadNotificationFrame _runtimeFrame(
     epoch: session.state.streamEpoch ?? 1,
     baseRevision: session.state.revision,
     revision: session.state.revision + 1,
-    update: ThreadRuntimeUpdate(runtime: runtime, todo: null),
+    update: ThreadRuntimeUpdate(
+      runtime: runtime,
+      todo: null,
+      modelRoute: session.state.modelRoute,
+    ),
   );
 }
 

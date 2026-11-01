@@ -424,7 +424,7 @@ final class _RouteConflictTransport extends _Transport {
       );
     }
     return ThreadModelRouteCommandReply(
-      runtime: _runtime(routeRevision: 4),
+      runtime: _runtime(),
       settings: _settings(2),
       modeDefaultSaved: true,
       receipt: _receipt(operationId, [
@@ -477,7 +477,6 @@ AgentExecutionView? _execution({
 
 ThreadRuntimeView _runtime({
   String modelId = 'alpha',
-  int routeRevision = 1,
   AgentExecutionView? execution,
   ContinuationView? continuation,
 }) => ThreadRuntimeView(
@@ -489,13 +488,6 @@ ThreadRuntimeView _runtime({
   activeSkills: const [],
   activeMcpServers: const [],
   activeLspServers: const [],
-  modelRoute: ThreadModelRouteView(
-    accountId: 'account',
-    modelId: modelId,
-    effort: 'medium',
-    revision: routeRevision,
-    available: true,
-  ),
   execution: execution,
   continuation: continuation,
 );
@@ -515,9 +507,15 @@ ThreadWorkspace _workspace({
   interactions: interactions,
   runtime: _runtime(
     modelId: modelId,
-    routeRevision: routeRevision,
     execution: execution,
     continuation: continuation,
+  ),
+  modelRoute: ThreadModelRouteView(
+    accountId: 'account',
+    modelId: modelId,
+    effort: 'medium',
+    revision: routeRevision,
+    available: true,
   ),
   activeTurn: activeTurn,
   storage: storage,
@@ -635,9 +633,12 @@ void _emitChildBaseline(
       state: ChildInteractionsBaseline(
         ChildInteractionsStateView(
           hostThreadId: hostThreadId,
-          revision: revision,
-          updatedAt: DateTime.now(),
-          items: items,
+          state: ReadyObservedResource(
+            revision: revision,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+            lastCheckedAt: null,
+            value: ChildInteractionsData(items: items),
+          ),
         ),
       ),
     ),
@@ -650,9 +651,12 @@ ChildInteractionsStateView _childState(
   List<ChildInteractionSummary> items,
 ) => ChildInteractionsStateView(
   hostThreadId: hostThreadId,
-  revision: revision,
-  updatedAt: DateTime.now(),
-  items: items,
+  state: ReadyObservedResource(
+    revision: revision,
+    updatedAt: DateTime.now().millisecondsSinceEpoch,
+    lastCheckedAt: null,
+    value: ChildInteractionsData(items: items),
+  ),
 );
 
 /// The canonical continuation projection the UI freezes before continuing.
@@ -1067,7 +1071,7 @@ void main() {
             id = call.operationId;
             complete = () => call.reply.complete(
               ThreadModelRouteCommandReply(
-                runtime: _runtime(routeRevision: 4),
+                runtime: _runtime(),
                 settings: _settings(100),
                 modeDefaultSaved: true,
                 receipt: StudioCommandReceipt(
@@ -1636,7 +1640,7 @@ void main() {
     expect(closed, isFalse);
     call.reply.complete(
       ThreadModelRouteCommandReply(
-        runtime: _runtime(routeRevision: 4),
+        runtime: _runtime(),
         settings: _settings(100),
         modeDefaultSaved: true,
         warning: 'old-owner-warning',
@@ -2083,8 +2087,9 @@ void main() {
         baseRevision: 40,
         revision: 41,
         update: ThreadRuntimeUpdate(
-          runtime: _runtime(routeRevision: 3),
+          runtime: _runtime(),
           todo: null,
+          modelRoute: _route(3),
         ),
       ),
     );
@@ -2119,6 +2124,7 @@ void main() {
         update: ThreadRuntimeUpdate(
           runtime: _runtime(modelId: 'obsolete'),
           todo: null,
+          modelRoute: _route(3),
         ),
       ),
     );
@@ -2129,8 +2135,9 @@ void main() {
         baseRevision: 7,
         revision: 8,
         update: ThreadRuntimeUpdate(
-          runtime: _runtime(routeRevision: 4),
+          runtime: _runtime(),
           todo: null,
+          modelRoute: _route(4),
         ),
       ),
     );
@@ -2440,6 +2447,10 @@ void main() {
               ThreadRuntimeUpdate(
                 runtime: _runtime(execution: _execution()),
                 todo: null,
+                modelRoute: client.conversations
+                    .session('thread')
+                    .state
+                    .modelRoute,
               ),
             );
             expect(
@@ -2810,7 +2821,7 @@ void main() {
           .deliverWorkspace(_workspace(revision: 2, routeRevision: 2));
       x.reply.complete(
         ThreadModelRouteCommandReply(
-          runtime: _runtime(routeRevision: 2),
+          runtime: _runtime(),
           settings: _settings(2),
           modeDefaultSaved: true,
           receipt: _receipt(x.operationId, [
@@ -2835,7 +2846,7 @@ void main() {
 
       y.reply.complete(
         ThreadModelRouteCommandReply(
-          runtime: _runtime(modelId: 'beta', routeRevision: 3),
+          runtime: _runtime(modelId: 'beta'),
           settings: _settings(3),
           modeDefaultSaved: true,
           receipt: _receipt(y.operationId, [
@@ -2854,12 +2865,7 @@ void main() {
         'beta',
       );
       expect(
-        client.conversations
-            .session('thread')
-            .state
-            .runtime
-            ?.modelRoute
-            ?.modelId,
+        client.conversations.session('thread').state.modelRoute?.modelId,
         'alpha',
         reason: 'A control response does not write the Thread mirror',
       );
@@ -4683,6 +4689,7 @@ void main() {
         update: ThreadRuntimeUpdate(
           runtime: _runtime(continuation: _continuation(id: 'obsolete')),
           todo: null,
+          modelRoute: session.state.modelRoute,
         ),
       ),
     );
@@ -4753,7 +4760,7 @@ void main() {
       _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
       expect(store.state.canonical.loaded, isTrue);
       expect(store.state.hasCurrentBaseline, isTrue);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
 
       // An explicit read is a plain query: its result never writes the mirror.
       transport.childInteractions = [_childSummary(revision: 9)];
@@ -4761,7 +4768,7 @@ void main() {
         'thread',
       );
       expect(queried.single.revision, 9);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       expect(store.state.canonical.revision, 1);
 
       // Old domain revisions are rejected; newer ones replace the collection.
@@ -4770,13 +4777,16 @@ void main() {
         'thread',
         _childState('thread', 1, [_childSummary(revision: 4)]),
       );
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       _emitChildTopicFrame(
         transport,
         'thread',
         _childState('thread', 2, [_childSummary(revision: 4)]),
       );
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
 
       // Leaving the page releases the page share; the domain mirror keeps the
       // last known facts, and returning re-arms the topic without a query.
@@ -4788,7 +4798,10 @@ void main() {
         0,
         reason: 'Leaving the page withdraws its topic share immediately',
       );
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
       final readsBeforeReturn = transport.childInteractionReads;
       client.conversations.setVisibleThread('thread');
       expect(
@@ -4803,9 +4816,12 @@ void main() {
       // A returning baseline must still advance the domain revision; an
       // unchanged watermark stays idempotent and a newer one replaces it.
       _emitChildBaseline(transport, 'thread', revision: 2, items: []);
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
       _emitChildBaseline(transport, 'thread', revision: 3, items: []);
-      expect(store.state.canonical.value?.items, isEmpty);
+      expect(store.state.canonical.value?.state.value?.items, isEmpty);
       expect(store.state.canonical.revision, 3);
     },
   );
@@ -4887,7 +4903,7 @@ void main() {
             0,
         0,
       );
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       client.conversations.setVisibleThread(null);
       await Future<void>.value();
       expect(closed, isFalse);
@@ -4897,7 +4913,7 @@ void main() {
       expect(commandsClosed, isTrue);
       await closing;
       expect(closed, isTrue);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
     },
   );
 
@@ -5040,13 +5056,13 @@ void main() {
         }
         final store = client.existingChildInteractions('thread')!;
         expect(
-          store.state.canonical.value?.items,
+          store.state.canonical.value?.state.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         client.conversations.setVisibleThread('other');
         client.conversations.setVisibleThread('thread');
         expect(
-          store.state.canonical.value?.items,
+          store.state.canonical.value?.state.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         expect(

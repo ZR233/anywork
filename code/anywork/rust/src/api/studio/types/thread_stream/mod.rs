@@ -53,6 +53,7 @@ pub enum BridgeThreadNotification {
     },
     ThreadRuntimeUpdated {
         runtime: Box<BridgeThreadRuntimeSnapshot>,
+        model_route: Option<BridgeThreadModelRouteSnapshot>,
     },
     /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
     ActivityChanged {
@@ -74,6 +75,7 @@ pub struct BridgeThreadSnapshot {
     pub thread: BridgeThread,
     pub active_turn: Option<BridgeTurn>,
     pub interactions: Vec<BridgeInteractionRequest>,
+    pub model_route: Option<BridgeThreadModelRouteSnapshot>,
     pub runtime: Option<BridgeThreadRuntimeSnapshot>,
     /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
     pub activity: Option<BridgeThreadActivity>,
@@ -245,7 +247,6 @@ pub struct BridgeTurnBudgetUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadRuntimeSnapshot {
     pub thread_id: String,
-    pub model_route: Option<BridgeThreadModelRouteSnapshot>,
     pub usage: BridgeThreadRuntimeUsage,
     pub live_usage: Option<BridgeThreadRuntimeLiveUsage>,
     pub turn_completion_tokens: u64,

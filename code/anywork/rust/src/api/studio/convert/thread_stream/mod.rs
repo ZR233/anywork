@@ -56,11 +56,13 @@ fn thread_notification(
                 interaction: Box::new(interaction::interaction(*value)?),
             }
         }
-        ThreadNotification::ThreadRuntimeUpdated { runtime: value } => {
-            BridgeThreadNotification::ThreadRuntimeUpdated {
-                runtime: Box::new(runtime_snapshot(*value)),
-            }
-        }
+        ThreadNotification::ThreadRuntimeUpdated {
+            runtime: value,
+            model_route,
+        } => BridgeThreadNotification::ThreadRuntimeUpdated {
+            runtime: Box::new(runtime_snapshot(*value)),
+            model_route: model_route.map(model_route_snapshot),
+        },
         ThreadNotification::ActivityChanged { activity: value } => {
             BridgeThreadNotification::ActivityChanged {
                 activity: value.map(|current| Box::new(activity::activity(*current))),
@@ -100,6 +102,7 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
             .map(interaction::interaction)
             .collect::<Result<Vec<_>>>()?,
         runtime: value.runtime.map(runtime_snapshot),
+        model_route: value.model_route.map(model_route_snapshot),
         activity: value.activity.map(activity::activity),
         storage: value.storage.map(activity::storage),
         runtime_availability,
@@ -306,20 +309,23 @@ fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget 
 }
 
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
+fn model_route_snapshot(
+    route: pl_protocol::ThreadModelRouteSnapshot,
+) -> BridgeThreadModelRouteSnapshot {
+    BridgeThreadModelRouteSnapshot {
+        bot_id: route.bot_id,
+        account_id: route.account_id,
+        model_id: route.model_id,
+        effort: route.effort,
+        revision: route.revision,
+        available: route.available,
+        unavailable_reason: route.unavailable_reason,
+    }
+}
+
 pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRuntimeSnapshot {
     BridgeThreadRuntimeSnapshot {
         thread_id: value.thread_id,
-        model_route: value
-            .model_route
-            .map(|route| BridgeThreadModelRouteSnapshot {
-                bot_id: route.bot_id,
-                account_id: route.account_id,
-                model_id: route.model_id,
-                effort: route.effort,
-                revision: route.revision,
-                available: route.available,
-                unavailable_reason: route.unavailable_reason,
-            }),
         usage: runtime_usage(value.usage),
         live_usage: value.live_usage.map(runtime_live_usage),
         turn_completion_tokens: value.turn_completion_tokens,

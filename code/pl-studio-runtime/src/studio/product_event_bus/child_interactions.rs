@@ -20,10 +20,7 @@ impl ProductEventBus {
             .child_interactions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = match projection.hosts.get(host_thread_id) {
-            Some(host) => ObservedResource::ready(host.revision, host.updated_at, flatten(host)),
-            None => ObservedResource::uninitialized(0),
-        };
+        let state = resource_state(&projection, host_thread_id);
         StudioChildInteractionsState {
             host_thread_id: host_thread_id.to_owned(),
             state,
@@ -93,11 +90,10 @@ impl ProductEventBus {
     }
 }
 
-fn prepare_entries(projection: &mut ChildInteractionsProjection, entries: &[Thread]) {
+pub(super) fn prepare_entries(projection: &mut ChildInteractionsProjection, entries: &[Thread]) {
     for thread in entries {
-        if thread.parent_thread_id.is_none() && !thread.archived {
-            initialize_host(projection, &thread.id);
-        }
+        // A root directory row does not prove that its children's pending facts were loaded.
+        // The host is established by actual child membership/facts, never by a fabricated empty set.
         let direct_host = thread
             .parent_thread_id
             .as_deref()
@@ -126,6 +122,7 @@ fn remove_entries(
     let mut changed_hosts = std::collections::BTreeSet::new();
     for id in removed {
         if projection.hosts.contains_key(id) {
+            let was_ready = host_ready(projection, id);
             let member_ids = projection
                 .members
                 .iter()
@@ -141,26 +138,32 @@ fn remove_entries(
                 .hosts
                 .get_mut(id)
                 .is_some_and(|host| !std::mem::take(&mut host.children).is_empty())
+                || !was_ready
             {
                 changed_hosts.insert(id.clone());
             }
         }
         if let Some(member) = projection.members.get_mut(id) {
+            let was_unprepared = member.active && member.commit_sequence.is_none();
             member.active = false;
             let host_thread_id = member.host_thread_id.clone();
             if projection
                 .hosts
                 .get_mut(&host_thread_id)
                 .is_some_and(|host| host.children.remove(id).is_some())
+                || was_unprepared
             {
                 changed_hosts.insert(host_thread_id);
             }
         }
     }
-    changed_hosts
-        .into_iter()
-        .map(|host_thread_id| changed_state(projection, &host_thread_id))
-        .collect()
+    let mut changed = Vec::new();
+    for host_thread_id in changed_hosts {
+        if host_ready(projection, &host_thread_id) {
+            changed.push(changed_state(projection, &host_thread_id));
+        }
+    }
+    changed
 }
 
 fn update_member(
@@ -174,15 +177,10 @@ fn update_member(
     if host_thread_id != thread.root_thread_id {
         return None;
     }
-    initialize_host(projection, host_thread_id);
-    let member = projection
-        .members
-        .entry(thread.id.clone())
-        .or_insert_with(|| ChildInteractionsMember {
-            host_thread_id: host_thread_id.to_owned(),
-            commit_sequence: None,
-            active: eligible,
-        });
+    let was_ready = host_ready(projection, host_thread_id);
+    // Only the authoritative directory establishes membership. A snapshot alone cannot prove
+    // that the host's complete roster was registered.
+    let member = projection.members.get_mut(&thread.id)?;
     if !eligible
         || !member.active
         || member.host_thread_id != host_thread_id
@@ -205,7 +203,29 @@ fn update_member(
         host.children.insert(thread.id.clone(), summaries);
         true
     };
-    changed.then(|| changed_state(projection, host_thread_id))
+    (host_ready(projection, host_thread_id) && (changed || !was_ready))
+        .then(|| changed_state(projection, host_thread_id))
+}
+
+fn host_ready(projection: &ChildInteractionsProjection, host_thread_id: &str) -> bool {
+    projection.hosts.contains_key(host_thread_id)
+        && !projection.members.values().any(|member| {
+            member.active
+                && member.host_thread_id == host_thread_id
+                && member.commit_sequence.is_none()
+        })
+}
+
+fn resource_state(
+    projection: &ChildInteractionsProjection,
+    host_thread_id: &str,
+) -> ObservedResource<Vec<ChildInteractionSummary>> {
+    match projection.hosts.get(host_thread_id) {
+        Some(host) if host_ready(projection, host_thread_id) => {
+            ObservedResource::ready(host.revision, host.updated_at, flatten(host))
+        }
+        _ => ObservedResource::uninitialized(0),
+    }
 }
 
 fn initialize_host(projection: &mut ChildInteractionsProjection, host_thread_id: &str) {
@@ -243,4 +263,66 @@ fn flatten(host: &ChildInteractionsHost) -> Vec<ChildInteractionSummary> {
         .values()
         .flat_map(|summaries| summaries.iter().cloned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn child(id: &str, host: &str) -> Thread {
+        let mut thread = Thread::placeholder(id);
+        thread.root_thread_id = host.to_owned();
+        thread.parent_thread_id = Some(host.to_owned());
+        thread
+    }
+
+    #[test]
+    fn directory_membership_does_not_publish_an_unprepared_empty_collection() {
+        let mut projection = ChildInteractionsProjection::default();
+        prepare_entries(&mut projection, &[Thread::placeholder("root")]);
+        assert!(matches!(
+            resource_state(&projection, "root"),
+            ObservedResource::Uninitialized(_)
+        ));
+
+        let first = child("first", "root");
+        let second = child("second", "root");
+        prepare_entries(&mut projection, &[first.clone(), second.clone()]);
+        assert!(matches!(
+            resource_state(&projection, "root"),
+            ObservedResource::Uninitialized(_)
+        ));
+        assert!(update_member(&mut projection, &first, 7, vec![], true).is_none());
+        assert!(matches!(
+            resource_state(&projection, "root"),
+            ObservedResource::Uninitialized(_)
+        ));
+
+        let ready = update_member(&mut projection, &second, 9, vec![], true)
+            .expect("the last authoritative member establishes the complete empty set");
+        assert!(matches!(&ready.state, ObservedResource::Ready(_)));
+        assert!(ready.state.value().unwrap().is_empty());
+        let revision = ready.state.revision();
+        assert!(update_member(&mut projection, &first, 8, vec![], true).is_none());
+        assert_eq!(resource_state(&projection, "root").revision(), revision);
+    }
+
+    #[test]
+    fn removing_an_unprepared_member_can_establish_only_its_hosts_empty_collection() {
+        let mut projection = ChildInteractionsProjection::default();
+        let first = child("first", "root");
+        let second = child("second", "root");
+        let other = child("other", "another-root");
+        prepare_entries(&mut projection, &[first.clone(), second.clone(), other]);
+        assert!(update_member(&mut projection, &first, 3, vec![], true).is_none());
+        let changed = remove_entries(&mut projection, &[second.id]);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].host_thread_id, "root");
+        assert!(matches!(&changed[0].state, ObservedResource::Ready(_)));
+        assert!(changed[0].state.value().unwrap().is_empty());
+        assert!(matches!(
+            resource_state(&projection, "another-root"),
+            ObservedResource::Uninitialized(_)
+        ));
+    }
 }

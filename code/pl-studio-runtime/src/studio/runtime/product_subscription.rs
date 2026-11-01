@@ -235,13 +235,14 @@ mod tests {
         let mut subscription = runtime.subscribe_product_topic(topic.clone()).await?;
         let empty = baseline_state(subscription.recv().await?)?;
         assert_eq!(empty.host_thread_id, root.id);
-        assert_eq!(empty.state.revision(), 1);
+        assert_eq!(empty.state.revision(), 0);
+        assert!(matches!(
+            &empty.state,
+            pl_protocol::ObservedResource::Uninitialized(_)
+        ));
         assert!(
-            empty
-                .state
-                .value()
-                .context("ready empty baseline")?
-                .is_empty()
+            empty.state.value().is_none(),
+            "directory registration alone cannot publish a committed empty collection"
         );
 
         let mut child = root.clone();

@@ -8,7 +8,7 @@ use crate::{
     TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 15;
+pub const THREAD_SCHEMA_VERSION: u32 = 16;
 
 /// Timeline 游标 token 的版本号。
 ///
@@ -165,6 +165,9 @@ pub struct ThreadSnapshot {
     pub active_turn: Option<Turn>,
     #[serde(default)]
     pub interactions: Vec<InteractionRequest>,
+    /// Saved selector and original extension revision, independent of execution residency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<ThreadModelRouteSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ThreadRuntimeSnapshot>,
     /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
@@ -186,6 +189,7 @@ impl ThreadSnapshot {
             thread: Thread::placeholder(thread_id),
             active_turn: None,
             interactions: Vec::new(),
+            model_route: None,
             runtime: None,
             activity: None,
             storage: None,
@@ -197,8 +201,6 @@ impl ThreadSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRuntimeSnapshot {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_route: Option<ThreadModelRouteSnapshot>,
     pub usage: ThreadRuntimeUsage,
     /// Best-effort usage for the currently running attempt. Durable totals remain in `usage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -374,6 +376,7 @@ pub enum ThreadNotification {
     },
     ThreadRuntimeUpdated {
         runtime: Box<ThreadRuntimeSnapshot>,
+        model_route: Option<ThreadModelRouteSnapshot>,
     },
     /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
     ///

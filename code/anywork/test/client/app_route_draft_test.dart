@@ -804,7 +804,11 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
     final next = current.copyWith(execution: execution);
     return seedConversationState(
       'thread-main',
-      ThreadRuntimeUpdate(runtime: next, todo: null),
+      ThreadRuntimeUpdate(
+        runtime: next,
+        todo: null,
+        modelRoute: workspace.modelRoute,
+      ),
     ).runtime;
   }
 }

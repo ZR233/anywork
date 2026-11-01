@@ -1182,7 +1182,7 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
           workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
         ),
         ThreadNotificationFrame() => switch (frame.update) {
-          ThreadRuntimeUpdate(:final runtime, :final todo) =>
+          ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
             ThreadNotificationFrame(
               threadId: frame.threadId,
               revision: frame.revision,
@@ -1191,6 +1191,7 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
               update: ThreadRuntimeUpdate(
                 runtime: _runtime(runtime),
                 todo: todo,
+                modelRoute: modelRoute,
               ),
             ),
           _ => frame,

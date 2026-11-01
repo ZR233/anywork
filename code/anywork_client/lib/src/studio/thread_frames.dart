@@ -81,8 +81,13 @@ final class ThreadInteractionUpdate extends ThreadWorkspaceUpdate {
 }
 
 final class ThreadRuntimeUpdate extends ThreadWorkspaceUpdate {
-  const ThreadRuntimeUpdate({required this.runtime, required this.todo});
+  const ThreadRuntimeUpdate({
+    required this.runtime,
+    required this.todo,
+    required this.modelRoute,
+  });
 
   final ThreadRuntimeView runtime;
   final TimelineTodoListUpdate? todo;
+  final ThreadModelRouteView? modelRoute;
 }

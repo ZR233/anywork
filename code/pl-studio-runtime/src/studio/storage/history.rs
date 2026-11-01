@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 12;
+const HISTORY_SCHEMA_VERSION: i64 = 13;
 
 pub(in crate::studio) mod conversation;
 
@@ -227,6 +227,7 @@ pub(crate) struct CheckpointEffect<'a> {
 pub(in crate::studio) struct ColdConversation {
     pub database_id: String,
     pub head: u64,
+    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
     pub current: pl_protocol::CurrentProjection,
     pub terminal_turn: Option<pl_protocol::Turn>,
     pub page: ChatHistoryPage,
@@ -1420,6 +1421,7 @@ impl HistoryStore {
         let tx = connection.db.begin().await?;
         let head = conversation::latest_append_seq(&tx).await?;
         let current = conversation::current::read(&tx).await?;
+        let model_route = checkpoint::read_model_route_head(&tx).await?;
         let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
         // Cold callers budget an envelope with current=None. Main replaces its JSON null with
@@ -1465,6 +1467,7 @@ impl HistoryStore {
             database_id: connection.database_id.clone(),
             head,
             current,
+            model_route,
             terminal_turn,
             page,
         }))
@@ -2777,8 +2780,11 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
+         ALTER TABLE history_meta DROP COLUMN model_route_hash;
          DELETE FROM seaql_migrations
-         WHERE version='m20261029_000001_history_demand_conversation'",
+         WHERE version IN ('m20261029_000001_history_demand_conversation',
+                           'm20261101_000010_history_model_route_head')",
     )
     .await?;
     Ok(())

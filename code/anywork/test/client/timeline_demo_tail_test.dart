@@ -513,7 +513,11 @@ void main() {
         );
         transport.seedConversationState(
           'thread-main',
-          ThreadRuntimeUpdate(runtime: changedRuntime, todo: workspace.todo),
+          ThreadRuntimeUpdate(
+            runtime: changedRuntime,
+            todo: workspace.todo,
+            modelRoute: workspace.modelRoute,
+          ),
         );
         workspace = await latestWorkspace(transport);
         expect(workspace.runtime.plan!.document, changedDocument);

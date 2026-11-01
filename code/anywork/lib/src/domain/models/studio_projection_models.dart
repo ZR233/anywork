@@ -159,7 +159,7 @@ abstract class StatusBarView with _$StatusBarView {
       accounts: workspace.accounts,
       roles: workspace.roles,
       isBusy: workspace.isBusy,
-      modelRoute: runtime.modelRoute,
+      modelRoute: workspace.modelRoute,
       workflowRun: runtime.workflow?.currentRun,
       activeSkills: runtime.activeSkills,
       activeMcpServers: runtime.activeMcpServers,

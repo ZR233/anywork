@@ -123,7 +123,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     if (storage?.blocksContinuation == true) {
       throw threadStorageContinuationFailure(storage!);
     }
-    final route = session.runtime?.modelRoute;
+    final route = session.modelRoute;
     if (route == null || !route.available)
       throw StateError('Thread model route is unavailable');
     final frozenStamp = stamp;

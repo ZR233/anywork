@@ -113,6 +113,16 @@ impl ProductEventBus {
     }
     pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
         let (internal, _) = broadcast::channel(256);
+        // The catalog is already loaded. Register every persisted direct child before any
+        // observation can publish a host collection; activation ancestry can omit siblings.
+        let mut child_interactions = ChildInteractionsProjection::default();
+        let directory = store
+            .catalog()
+            .entries()
+            .into_iter()
+            .map(|entry| entry.to_thread())
+            .collect::<Vec<_>>();
+        child_interactions::prepare_entries(&mut child_interactions, &directory);
         Self {
             store,
             writer,
@@ -130,9 +140,7 @@ impl ProductEventBus {
             agents: Arc::new(Mutex::new(BTreeMap::new())),
             thread_index: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
-            child_interactions: Arc::new(std::sync::Mutex::new(
-                ChildInteractionsProjection::default(),
-            )),
+            child_interactions: Arc::new(std::sync::Mutex::new(child_interactions)),
         }
     }
 

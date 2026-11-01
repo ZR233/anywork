@@ -38,6 +38,7 @@ class StudioContextProjection {
     return StudioContextProjection.fromRuntime(
       state.selectedThreadId,
       state.runtime,
+      modelRoute: state.modelRoute,
       accounts: state.accounts,
       isBusy: state.isBusy,
     );
@@ -46,11 +47,12 @@ class StudioContextProjection {
   factory StudioContextProjection.fromRuntime(
     String? threadId,
     ThreadRuntimeView runtime, {
+    required ThreadModelRouteView? modelRoute,
     required List<ModelSelectionAccount> accounts,
     required bool isBusy,
   }) {
     final live = runtime.liveUsage;
-    final route = runtime.modelRoute;
+    final route = modelRoute;
     // Idle status follows the backend's current directory. Running requests and history
     // retain their frozen binding; this projection never calculates a capacity or limit.
     final currentModel = isBusy || route == null
@@ -344,7 +346,7 @@ class StudioComposerProjection {
       roles: state.roles,
       activeInteraction: state.activeInteraction,
       turn: state.turn,
-      modelRoute: runtime.modelRoute,
+      modelRoute: state.modelRoute,
       workflow: runtime.workflow,
       targetDiagnostic: state.composerDiagnostic(thread.workspaceId, thread.id),
     );
@@ -363,7 +365,7 @@ class StudioComposerProjection {
       roles: workspace.roles,
       activeInteraction: workspace.activeInteraction,
       turn: workspace.turn,
-      modelRoute: workspace.runtime.modelRoute,
+      modelRoute: workspace.modelRoute,
       workflow: workspace.runtime.workflow,
       targetDiagnostic: null,
     );
@@ -391,7 +393,7 @@ class StudioComposerProjection {
 
   /// Compatibility projection for callers that still accept
   /// [AgentWorkspaceView]. It has no timeline/history payload and a runtime
-  /// containing only composer-relevant route/workflow fields.
+  /// containing only composer-relevant workflow fields; the route stays independent.
   AgentWorkspaceView get legacyWorkspace {
     final thread = this.thread;
     final rootThread = this.rootThread;
@@ -401,6 +403,7 @@ class StudioComposerProjection {
       syncState: syncState,
       loadError: loadError,
       todo: null,
+      modelRoute: modelRoute,
       runtime: ThreadRuntimeView(
         modelId: modelRoute?.modelId ?? '',
         contextTokens: 0,
@@ -411,7 +414,6 @@ class StudioComposerProjection {
         activeMcpServers: const [],
         activeLspServers: const [],
         workflow: workflow,
-        modelRoute: modelRoute,
       ),
       turn: turn,
       lastTurn: null,

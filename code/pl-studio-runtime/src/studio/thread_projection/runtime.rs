@@ -139,26 +139,8 @@ pub(in crate::studio) fn project_runtime(
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?
         .into_iter()
         .collect();
-    let child = state
-        .extensions
-        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION);
-    let bot_id = crate::studio::model_route::bot_owner(state)
-        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
-    let model_route = crate::studio::model_route::route_record(state, child)
-        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?
-        .map(|(record, route)| pl_protocol::ThreadModelRouteSnapshot {
-            bot_id,
-            account_id: route.account_id.into_string(),
-            model_id: route.model_id,
-            effort: route.effort.map(|effort| effort.as_str().to_owned()),
-            revision: record.revision,
-            available: state.model_available,
-            unavailable_reason: (!state.model_available)
-                .then(|| "the selected model binding is unavailable".to_string()),
-        });
     Ok(ThreadRuntimeSnapshot {
         thread_id: thread_id.into(),
-        model_route,
         // The execution identity is a fact of this Thread's own state, so the same per-Thread
         // projection that publishes usage also publishes what a precise stop would target.
         execution: state.execution.as_ref().map(|execution| {

@@ -1427,8 +1427,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
-        if result.is_ok() && options.retain_environment {
-            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed wait-events environment also failed: {retain_error:#}"
+                ))),
+            };
         }
         return result;
     }

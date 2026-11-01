@@ -1617,15 +1617,15 @@ class DemoStudioTransport extends StudioTransport
       thread: thread,
       revision: 1,
       interactions: const [],
+      modelRoute: ThreadModelRouteView(
+        accountId: route.accountId,
+        modelId: route.modelId,
+        effort: route.effort,
+        revision: 1,
+        available: true,
+      ),
       runtime: ThreadRuntimeView(
         modelId: 'planner/local-responses',
-        modelRoute: ThreadModelRouteView(
-          accountId: route.accountId,
-          modelId: route.modelId,
-          effort: route.effort,
-          revision: 1,
-          available: true,
-        ),
         contextTokens: 18342,
         contextWindow: 96000,
         maxContextWindow: 128000,
@@ -1677,15 +1677,15 @@ class DemoStudioTransport extends StudioTransport
       thread: thread,
       revision: 1,
       interactions: const [],
+      modelRoute: ThreadModelRouteView(
+        accountId: _demoModeRoute(thread.mode).accountId,
+        modelId: modelId,
+        effort: null,
+        revision: 1,
+        available: true,
+      ),
       runtime: ThreadRuntimeView(
         modelId: modelId,
-        modelRoute: ThreadModelRouteView(
-          accountId: _demoModeRoute(thread.mode).accountId,
-          modelId: modelId,
-          effort: null,
-          revision: 1,
-          available: true,
-        ),
         contextTokens: 320,
         contextWindow: 128000,
         maxContextWindow: 128000,
@@ -2390,15 +2390,13 @@ class DemoStudioTransport extends StudioTransport
       _selectedThreadId = thread.id;
       final workspace = _workspaces[thread.id]!;
       _workspaces[thread.id] = workspace.copyWith(
-        runtime: workspace.runtime.copyWith(
+        runtime: workspace.runtime.copyWith(modelId: route.modelId),
+        modelRoute: ThreadModelRouteView(
+          accountId: route.accountId,
           modelId: route.modelId,
-          modelRoute: ThreadModelRouteView(
-            accountId: route.accountId,
-            modelId: route.modelId,
-            effort: route.effort,
-            revision: 1,
-            available: true,
-          ),
+          effort: route.effort,
+          revision: 1,
+          available: true,
         ),
       );
       yield NewThreadStartProgress(
@@ -3252,7 +3250,7 @@ class DemoStudioTransport extends StudioTransport
     if (thread == null || !thread.isRoot || workspace == null) {
       throw StateError('unknown root demo thread $threadId');
     }
-    final previousRoute = workspace.runtime.modelRoute;
+    final previousRoute = workspace.modelRoute;
     if (previousRoute == null) {
       throw StateError('demo thread has no saved model route');
     }
@@ -3277,21 +3275,22 @@ class DemoStudioTransport extends StudioTransport
       ),
     ];
     _settingsRevision += 1;
-    final runtime = workspace.runtime.copyWith(
-      modelRoute: ThreadModelRouteView(
-        accountId: accountId,
-        modelId: modelId,
-        effort: selectedEffort,
-        revision: previousRoute.revision + 1,
-        available: true,
-      ),
+    final route = ThreadModelRouteView(
+      accountId: accountId,
+      modelId: modelId,
+      effort: selectedEffort,
+      revision: previousRoute.revision + 1,
+      available: true,
     );
-    _workspaces[threadId] = workspace.copyWith(runtime: runtime);
-    // 与生产一致：route 变更作为 Thread 运行时状态流事实交付（revision 单调）。
-    // 只写内存 workspace 会让选择器在乐观值被清除后回落到旧 canonical route。
+    _workspaces[threadId] = workspace.copyWith(modelRoute: route);
+    // route remains an independent Thread fact in the typed update.
     _emitThreadUpdate(
       threadId,
-      ThreadRuntimeUpdate(runtime: runtime, todo: workspace.todo),
+      ThreadRuntimeUpdate(
+        runtime: workspace.runtime,
+        todo: workspace.todo,
+        modelRoute: route,
+      ),
     );
     final settings = _settingsWriteResult();
     return ThreadModelRouteCommandReply(
@@ -3306,12 +3305,12 @@ class DemoStudioTransport extends StudioTransport
               _demoSettingsFacts(settings),
             ),
         targets: [
-          _demoStamp('thread-route:$threadId', runtime.modelRoute!.revision),
+          _demoStamp('thread-route:$threadId', route.revision),
           _demoStamp('settings', settings.revision),
         ],
         effect: EffectPoint.nextTurn,
       ),
-      runtime: runtime,
+      runtime: workspace.runtime,
       settings: settings,
       modeDefaultSaved: true,
       warning: null,
@@ -3363,26 +3362,21 @@ class DemoStudioTransport extends StudioTransport
         mode: mode,
         role: thread.isRoot ? 'planner' : thread.role,
       );
-      // 与生产一致：mode 变更同时交付两条 canonical 事实。
-      //
-      // 其一，运行时事实：native `set_thread_mode` 经 reconfigure 改写 mode 默认
-      // route 扩展并发布 Thread 帧。demo 若只改内存 workspace 而不出这一帧，客户端
-      // 的 threadSession 就只能在显式重读下看到新 route，验收无法发现帧丢失。
+      final modelRoute = route == null || workspace.modelRoute == null
+          ? workspace.modelRoute
+          : ThreadModelRouteView(
+              accountId: route.accountId,
+              modelId: route.modelId,
+              effort: route.effort,
+              revision: workspace.modelRoute!.revision + 1,
+              available: true,
+            );
       _emitThreadUpdate(
         threadId,
         ThreadRuntimeUpdate(
-          runtime: route == null
-              ? workspace.runtime
-              : workspace.runtime.copyWith(
-                  modelRoute: ThreadModelRouteView(
-                    accountId: route.accountId,
-                    modelId: route.modelId,
-                    effort: route.effort,
-                    revision: (workspace.runtime.modelRoute?.revision ?? 0) + 1,
-                    available: true,
-                  ),
-                ),
+          runtime: workspace.runtime,
           todo: workspace.todo,
+          modelRoute: modelRoute,
         ),
       );
       _workspaces[threadId] = _workspaces[threadId]!.copyWith(
@@ -3894,7 +3888,7 @@ class DemoStudioTransport extends StudioTransport
       AcpAuthBaseline(:final state) => state.revision,
       AcpInstallBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
-      ChildInteractionsBaseline(:final state) => state.revision,
+      ChildInteractionsBaseline(:final state) => state.state.revision,
     };
     return ProductTopicBaselineFrame(
       topic: topic,
@@ -4079,7 +4073,7 @@ class DemoStudioTransport extends StudioTransport
     }
     final workspace = _workspaces[threadId];
     if (workspace == null) throw StateError('unknown demo thread $threadId');
-    final route = workspace.runtime.modelRoute;
+    final route = workspace.modelRoute;
     if (expectedModelRouteRevision != null &&
         route?.revision != expectedModelRouteRevision) {
       throw const StudioFailure(
@@ -4108,6 +4102,7 @@ class DemoStudioTransport extends StudioTransport
       ThreadRuntimeUpdate(
         runtime: workspace.runtime.copyWith(modelId: route.modelId),
         todo: null,
+        modelRoute: workspace.modelRoute,
       ),
     );
     final generation = _promptGenerations.update(
@@ -4612,7 +4607,7 @@ class DemoStudioTransport extends StudioTransport
         reason: StudioFailureReason.staleContinuation,
       );
     }
-    if (workspace.runtime.modelRoute?.revision != expectedModelRouteRevision) {
+    if (workspace.modelRoute?.revision != expectedModelRouteRevision) {
       throw const StudioFailure(
         code: StudioFailureCode.staleRevision,
         message: 'The Thread model route changed before continuation admission',
@@ -4700,6 +4695,7 @@ class DemoStudioTransport extends StudioTransport
         ThreadRuntimeUpdate(
           runtime: current.runtime.copyWith(continuation: null),
           todo: current.todo,
+          modelRoute: current.modelRoute,
         ),
       );
     }
@@ -4791,9 +4787,12 @@ class DemoStudioTransport extends StudioTransport
         );
     return ChildInteractionsStateView(
       hostThreadId: hostThreadId,
-      revision: _childInteractionRevisions[hostThreadId] ?? 0,
-      updatedAt: DateTime.now(),
-      items: items,
+      state: ReadyObservedResource(
+        revision: _childInteractionRevisions[hostThreadId] ?? 0,
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        lastCheckedAt: null,
+        value: ChildInteractionsData(items: items),
+      ),
     );
   }
 
@@ -4811,9 +4810,12 @@ class DemoStudioTransport extends StudioTransport
       ChildInteractionsChangedPayload(
         ChildInteractionsStateView(
           hostThreadId: hostThreadId,
-          revision: revision,
-          updatedAt: DateTime.now(),
-          items: current,
+          state: ReadyObservedResource(
+            revision: revision,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+            lastCheckedAt: null,
+            value: ChildInteractionsData(items: current),
+          ),
         ),
       ),
     );
@@ -6011,11 +6013,13 @@ class DemoStudioTransport extends StudioTransport
         revision: revision,
         activity: activity,
       ),
-      ThreadRuntimeUpdate(:final runtime, :final todo) => workspace.copyWith(
-        revision: revision,
-        runtime: runtime,
-        todo: todo,
-      ),
+      ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
+        workspace.copyWith(
+          revision: revision,
+          runtime: runtime,
+          todo: todo,
+          modelRoute: modelRoute,
+        ),
       // 存储状态与生产一样只从 typed 事实进入状态。
       ThreadStorageUpdate(:final storage) => workspace.copyWith(
         revision: revision,
@@ -6073,6 +6077,7 @@ class DemoStudioTransport extends StudioTransport
             continuation: continuation,
           ),
           todo: updated.todo,
+          modelRoute: updated.modelRoute,
         ),
       );
     }

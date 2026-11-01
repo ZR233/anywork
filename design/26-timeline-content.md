@@ -99,6 +99,8 @@ open 在 Rust 内完成观察登记、切点捕获和有界基线准备，events
 
 冷读在同一短快照中取得轻量完成水位、current 与初始页，不读/校验/解码完整 checkpoint/current_context，不激活模型、工具、SSH 或执行 owner。current 表示最后已提交的逻辑状态，是否真有执行 source 由 registry 判定，重启前 running 不冒充当前运行。
 
+无执行 source 的目录状态投影可恢复性，不复用旧进程的资源关闭状态：root 与 child 的非显式 Closed/Closing 均沿既有目录规则投影为 Idle；显式关闭封口、旧 retirement、归档准入及热 owner 的真实关闭阻塞仍有效。输入所需原模型路由与扩展修订号是独立于运行资源的 State 事实，其轻量保存与交付分别见 [17](./17-studio-storage.md) 与 [18](./18-studio-state.md)，不得为补齐它们激活执行或伪造 runtime。
+
 复用 ThreadObservations 的稳定 observation slot 登记并捕获单调 epoch/位置；冷读后复核，覆盖 absent→live→absent 的 ABA。来源判断看 resident/pending，不只看业务 running；idle 也可有未落库尾段。源退役先安全交接 pending/writer。可连续接续由 Rust 完成握手，否则以现有 Failure 明确要求 ConversationResyncRequired，旧分页资格同时失效，不能返回空页或吞错。
 
 slot 已安装而首次 publication 尚未就绪时，open 同时借用该 owner 原有的 retained progress 结果：先登记接收资格，再检查已保留错误及完成状态，并等待同一结果或来源代次变化。不能另建 readiness 镜像、只等 broadcast 或借执行激活/flush 补救。原失败按原共享错误与 typed 分类传出，不将其格式化成新字符串而丢失 code、reason 或可重试性；无错误但 owner 已结束且仍无 source 时明确要求重同步。工具停止还必须能打断该窗口中的 open 和首批接收，不能被 opens 读写锁互相阻塞。
@@ -106,6 +108,8 @@ slot 已安装而首次 publication 尚未就绪时，open 同时借用该 owner
 对 Main，本 scope 的完成消息先进入可查询集合，Append 同时携带该项和退役后的 current；先交组件，再发布同批 current。scope 外完成不为补 seq 混入 Main，只更新必要摘要，成员按 Children 读取。current 可合并中间状态，但不能越过尚未交付的本 scope 完成转换；无法在总预算内保持边界则明确重同步。
 
 保留现役 Frame 的 thread/subscription/delivery sequence 和 State/Failure/Closed，只把 ContentBaseline/ContentUpdate/ActivityContent 合为 Chat。State 继续同步输入、workspace、元数据等其他领域，但不拼正文、推断 terminal 或覆盖 Main Chat.current；Children 不倒灌 Main current。
+
+原可靠 pending handoff 必须冻结同一 effect 的类型化 State 变化，不以准备当刻有无订阅者决定是否保留。订阅者可在准备与可靠交接之间登记；该窗口不能丢失 Turn/交互事实，也不能仅因当刻无订阅者而制造正常流的连续性失败。冻结变化仍计入原 handoff 预算，交接成功才发布，不增加队列或上限；外层传输信封仍按实际订阅需求构造。确实缺少未被基线覆盖的可靠 State 事实时，继续明确重同步，不从 current、progress 或完成正文重建。
 
 ## 26.7 内容与 current 集合按需读取
 

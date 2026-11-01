@@ -249,6 +249,7 @@ AgentWorkspaceView? conversationWorkspace(
         : null,
     todo: session?.workspace?.todo,
     runtime: session?.runtime ?? shellEmptyRuntime,
+    modelRoute: session?.modelRoute,
     turn: session?.activeTurn,
     lastTurn: session?.workspace?.lastTurn,
     activeInteraction: primaryInteraction(session?.interactions ?? const []),

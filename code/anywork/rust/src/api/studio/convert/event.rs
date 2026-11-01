@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pl_studio_runtime::{
     StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
     StudioProductEventKind,
@@ -11,7 +11,7 @@ use super::runtime::{
     bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
     bridge_thread_mode_catalog, bridge_update_state,
 };
-use super::thread_stream::{bridge_child_interaction, bridge_thread};
+use super::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
 
 pub(crate) fn bridge_product_event(
@@ -204,20 +204,9 @@ pub(crate) fn bridge_product_baseline(
 fn bridge_child_interactions_state(
     value: pl_studio_runtime::StudioChildInteractionsState,
 ) -> Result<BridgeChildInteractionsState> {
-    let revision = value.state.revision();
-    let updated_at = value.state.updated_at();
-    let items = value
-        .state
-        .into_value()
-        .context("child interactions projection has no committed baseline")?
-        .into_iter()
-        .map(bridge_child_interaction)
-        .collect::<Result<Vec<_>>>()?;
     Ok(BridgeChildInteractionsState {
         host_thread_id: value.host_thread_id,
-        revision,
-        updated_at,
-        items,
+        state: super::runtime::bridge_child_interactions_resource(value.state)?,
     })
 }
 
@@ -281,9 +270,12 @@ mod tests {
         };
         assert_eq!(baseline, *payload);
         assert_eq!(payload.host_thread_id, "root");
-        assert_eq!(payload.revision, 7);
-        assert_eq!(payload.updated_at, 43);
-        let item = &payload.items[0];
+        let BridgeChildInteractionsResource::Ready { resource, value } = &payload.state else {
+            anyhow::bail!("committed pending collection lost its Ready state");
+        };
+        assert_eq!(resource.revision, 7);
+        assert_eq!(resource.updated_at, 43);
+        let item = &value.items[0];
         assert_eq!(item.child_thread_id, "child-1");
         assert_eq!(item.interaction_id, "interaction-1");
         assert_eq!(item.revision, 23);
@@ -310,21 +302,30 @@ mod tests {
             host_thread_id: "root".into(),
             state: pl_protocol::ObservedResource::ready(8, 49, vec![]),
         })?;
-        assert_eq!(empty.revision, 8);
-        assert!(empty.items.is_empty());
+        let BridgeChildInteractionsResource::Ready { resource, value } = empty.state else {
+            anyhow::bail!("committed empty collection lost its Ready state");
+        };
+        assert_eq!(resource.revision, 8);
+        assert!(value.items.is_empty());
         Ok(())
     }
 
     #[test]
-    fn child_interactions_without_committed_state_cannot_masquerade_as_empty() {
+    fn child_interactions_without_committed_state_cannot_masquerade_as_empty() -> Result<()> {
         let result = bridge_child_interactions_state(StudioChildInteractionsState {
             host_thread_id: "root".into(),
             state: pl_protocol::ObservedResource::uninitialized(0),
         });
-        assert!(result.is_err());
+        let result = result?;
+        assert_eq!(result.host_thread_id, "root");
+        let BridgeChildInteractionsResource::Uninitialized(resource) = result.state else {
+            anyhow::bail!("uninitialized resource was not preserved");
+        };
+        assert_eq!(resource.revision, 0);
         let invalid = BridgeProductTopic::ChildInteractions {
             host_thread_id: " ".into(),
         };
         assert!(invalid.validate_scope().is_err());
+        Ok(())
     }
 }

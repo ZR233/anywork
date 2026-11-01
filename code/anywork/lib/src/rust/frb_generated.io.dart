@@ -480,6 +480,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_checking_updater_state(dynamic raw);
 
   @protected
+  BridgeChildInteractionsData
+  dco_decode_box_autoadd_bridge_child_interactions_data(dynamic raw);
+
+  @protected
   BridgeClosedAgent dco_decode_box_autoadd_bridge_closed_agent(dynamic raw);
 
   @protected
@@ -1614,6 +1618,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChildInteractionSummary dco_decode_bridge_child_interaction_summary(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChildInteractionsData dco_decode_bridge_child_interactions_data(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChildInteractionsResource dco_decode_bridge_child_interactions_resource(
     dynamic raw,
   );
 
@@ -4102,6 +4116,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChildInteractionsData
+  sse_decode_box_autoadd_bridge_child_interactions_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeClosedAgent sse_decode_box_autoadd_bridge_closed_agent(
     SseDeserializer deserializer,
   );
@@ -5590,6 +5610,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChildInteractionSummary sse_decode_bridge_child_interaction_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChildInteractionsData sse_decode_bridge_child_interactions_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChildInteractionsResource sse_decode_bridge_child_interactions_resource(
     SseDeserializer deserializer,
   );
 
@@ -8647,6 +8677,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_child_interactions_data(
+    BridgeChildInteractionsData self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_closed_agent(
     BridgeClosedAgent self,
     SseSerializer serializer,
@@ -10380,6 +10416,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_child_interaction_summary(
     BridgeChildInteractionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_child_interactions_data(
+    BridgeChildInteractionsData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_child_interactions_resource(
+    BridgeChildInteractionsResource self,
     SseSerializer serializer,
   );
 

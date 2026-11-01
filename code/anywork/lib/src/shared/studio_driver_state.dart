@@ -960,16 +960,16 @@ abstract final class StudioDriverState {
               'threadStatus': workspace.thread.status.name,
               'isBusy': workspace.isBusy,
               'model': workspace.runtime.modelId,
-              'modelRoute': workspace.runtime.modelRoute == null
+              'modelRoute': workspace.modelRoute == null
                   ? null
                   : {
-                      'accountId': workspace.runtime.modelRoute!.accountId,
-                      'modelId': workspace.runtime.modelRoute!.modelId,
-                      'effort': workspace.runtime.modelRoute!.effort,
-                      'revision': workspace.runtime.modelRoute!.revision,
-                      'available': workspace.runtime.modelRoute!.available,
+                      'accountId': workspace.modelRoute!.accountId,
+                      'modelId': workspace.modelRoute!.modelId,
+                      'effort': workspace.modelRoute!.effort,
+                      'revision': workspace.modelRoute!.revision,
+                      'available': workspace.modelRoute!.available,
                       'unavailableReason':
-                          workspace.runtime.modelRoute!.unavailableReason,
+                          workspace.modelRoute!.unavailableReason,
                     },
               'usage': {
                 'inputTokens': workspace.runtime.promptTokens,
@@ -1181,7 +1181,7 @@ abstract final class StudioDriverState {
   /// 该账号目录不含此模型时返回 `null` 保持 unknown，不按 model id 猜另一个账号。
   static ({ModelSelectionAccount account, AccountModelView model})?
   _routedAccountModel(AgentWorkspaceView workspace) {
-    final route = workspace.runtime.modelRoute;
+    final route = workspace.modelRoute;
     if (route == null) return null;
     for (final account in workspace.accounts) {
       if (account.id != route.accountId) continue;

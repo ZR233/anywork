@@ -15,7 +15,7 @@ impl MigratorTraitSelf for PublishedV11 {
         }
         .migrations()
         .into_iter()
-        .filter(|migration| migration.name() != DEMAND_CONVERSATION)
+        .filter(|migration| !matches!(migration.name(), DEMAND_CONVERSATION | MODEL_ROUTE_HEAD))
         .collect()
     }
 }
@@ -39,7 +39,11 @@ impl MigratorTraitSelf for PublishedV9 {
         .filter(|migration| {
             !matches!(
                 migration.name(),
-                ATOMIC_TIMELINE | METERING_FACTS | COMBINED_CONTENT | DEMAND_CONVERSATION
+                ATOMIC_TIMELINE
+                    | METERING_FACTS
+                    | COMBINED_CONTENT
+                    | DEMAND_CONVERSATION
+                    | MODEL_ROUTE_HEAD
             )
         })
         .collect()
@@ -64,6 +68,7 @@ impl MigratorTraitSelf for PublishedV10 {
         .filter(|migration| {
             migration.name() != COMBINED_CONTENT
                 && migration.name() != DEMAND_CONVERSATION
+                && migration.name() != MODEL_ROUTE_HEAD
                 && migration.name()
                     != if self.atomic {
                         METERING_FACTS
@@ -92,7 +97,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
             0,
             pl_core::thread::ThreadSnapshot::default(),
         );
-        checkpoint::write(&db, &checkpoint, None, None).await?;
+        write_published_checkpoint(&db, &checkpoint).await?;
         // Lifecycle preparation may normalize the checkpoint before execution identity recovery.
         // Supply the actual post-preparation representation as the explicit recovery candidate.
         let lifecycle_steps = published
@@ -948,7 +953,7 @@ async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_
                 amount: 1.25,
             });
         let saved = pl_core::thread::ThreadCheckpoint::capture(THREAD.into(), 7, state);
-        checkpoint::write(&db, &saved, None, None).await?;
+        write_published_checkpoint(&db, &saved).await?;
         db.execute_unprepared(
             "UPDATE history_meta SET applied_write_seq=7;
              INSERT INTO session_costs VALUES('main','USD',1.25)",

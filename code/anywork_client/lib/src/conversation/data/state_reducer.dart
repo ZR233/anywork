@@ -20,6 +20,7 @@ ThreadSessionState applyThreadSnapshotState(
     activeTurn: snapshot.activeTurn,
     interactions: snapshot.interactions,
     runtime: snapshot.runtime,
+    modelRoute: snapshot.modelRoute,
     todo: snapshot.todo,
     activity: snapshot.activity,
     storage: snapshot.storage,
@@ -64,11 +65,13 @@ ThreadSessionState applyThreadNotificationState(
     ),
     ThreadInteractionUpdate(:final interaction, :final pending) =>
       _applyInteraction(workspace, frame.revision, interaction, pending),
-    ThreadRuntimeUpdate(:final runtime, :final todo) => workspace.copyWith(
-      revision: frame.revision,
-      runtime: runtime,
-      todo: todo,
-    ),
+    ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
+      workspace.copyWith(
+        revision: frame.revision,
+        runtime: runtime,
+        todo: todo,
+        modelRoute: modelRoute,
+      ),
     ThreadStorageUpdate(:final storage) => workspace.copyWith(
       revision: frame.revision,
       storage: storage,
