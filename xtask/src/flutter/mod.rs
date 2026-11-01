@@ -150,6 +150,7 @@ pub(crate) fn verify_gui() -> Result<()> {
             "--set-exit-if-changed",
             "lib",
             "test_driver",
+            "integration_test",
         ],
         &app_dir,
     )?;
@@ -253,14 +254,40 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
             ))
         })
         .transpose()?;
-    let run_args = run_gui_args(
-        target,
-        &version_define,
-        options.driver,
-        options.profile,
-        driver_attachment_define.as_deref(),
-    );
-    let process_mode = if options.driver {
+    let integration_target = options
+        .integration_test
+        .as_ref()
+        .map(|path| {
+            let root = app_dir.join("integration_test").canonicalize()?;
+            let path = app_dir.join(path).canonicalize()?;
+            ensure!(
+                path.starts_with(&root),
+                "integration test target must be inside {}",
+                root.display()
+            );
+            Ok::<_, anyhow::Error>(path.to_string_lossy().into_owned())
+        })
+        .transpose()?;
+    let run_args = if let Some(path) = integration_target.as_deref() {
+        vec![
+            "test",
+            path,
+            "-d",
+            target.flutter_name(),
+            "--no-pub",
+            "--reporter=expanded",
+            &version_define,
+        ]
+    } else {
+        run_gui_args(
+            target,
+            &version_define,
+            options.driver,
+            options.profile,
+            driver_attachment_define.as_deref(),
+        )
+    };
+    let process_mode = if options.driver || integration_target.is_some() {
         FlutterProcessMode::ResidentDriver
     } else {
         FlutterProcessMode::Batch

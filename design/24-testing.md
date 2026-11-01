@@ -24,6 +24,25 @@
 
 `verify-client` 当前组合依赖与导入边界检查、格式和静态分析、纯 Dart 测试以及应用侧 Client 套件。其组成由工程工具维护，本节不复制执行清单。
 
+### 24.1.2 Waiting 的分层集成证据
+
+Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、展示资源与窗口布局。替换旧测试时保留业务覆盖，而不是保留脚本阶段数；专属观察镜像、状态机和仅测试这些辅助实现的用例随旧入口一起删除，共享 Driver 与独立性能入口不受此替换影响。
+
+| 行为 | 最小充分的观察边界 |
+| --- | --- |
+| 任一目标完成而另一目标仍运行、already-ready、空目标只等消息、固定超时、取消等待不取消目标 | 真实 Core/Runtime 公开 API；用受控工具、Tokio 虚拟时钟与显式进入/释放屏障断言返回快照，不以 GUI 读取速度证明交错 |
+| 取消请求受理与物理完成/join、工具与 Thread 身份及错误传播 | 真实任务所有者；取消回执后继续观察原任务终态，错误不转成超时或空结果 |
+| child 消息唤醒、报告唯一交付、后续请求不重复投递 | 真实 Runtime 调度与 provider 请求边界；消息文字出现不单独替代报告身份和次数 |
+| Waiting、完成、超时、取消的呈现，当前集合与完成历史分离、启动收据与终态不同身份、代次失效 | 真实生产 widget、展示 owner 与串行接纳链的组件集成；只控制输入事实，不重写产品状态机 |
+| 展开/收起、公开 JSON、滚动与窄窗口几何 | `WidgetTester` 操作真实控件并读取已布局子树；业务 ready 与帧推进分别等待，无限动画期间不调用 `pumpAndSettle` 等待业务结束 |
+| FRB、SDK、持久化到实际生产界面的关键路径 | Flutter 官方 `integration_test` 的独立场景；保留真实 `AppGraph`，不注入业务状态、不建立第二订阅或消息镜像 |
+
+原生测试通过 `cargo xtask run-gui --integration-test <应用内路径>` 复用现有 bridge/helper 准备和进程树所有权，再调用官方桌面 `flutter test -d <当前平台>`。它与 demo、旧 Driver、profile/native-launch 和已有 release 运行模式互斥；不是性能采样入口。隔离配置、模拟 provider、私有凭据环境与失败日志仍由 `manual-gui --scenario wait-events` 的既有 harness 持有。各场景独立发现、单独报告失败和收束，不因前一条断言失败而将后续场景全部当作已覆盖。
+
+测试 binding 唯一负责测试断言与异步错误，不能通过生产入口替换其错误处理器来吞掉失败；应用与原生资源仍经生产关闭所有者收束。场景输入使用官方 `TestTextInput` 的配对注册/注销，避免 `enterText` 注入与真实 IME 同时修改编辑状态；这不替换产品草稿或提交链路，也不构成原生输入法兼容性证据。必要的观察窗口由测试 provider 的下一响应屏障或受控工具提供，记录到达后才释放；不放慢生产路径、不延长超时制造成功。工具返回时的快照、UI 后来读取的不可变结果、保存完成是不同证据，后续 Turn 已结束不使已取得的早返回证据失效，也不能事后补造早返回事实。
+
+官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。

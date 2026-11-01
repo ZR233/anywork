@@ -71,6 +71,9 @@ pub(crate) struct RunGuiOptions {
     /// Enable Flutter Driver through test_driver/driver_main.dart.
     #[arg(long)]
     pub(crate) driver: bool,
+    /// Run official integration_test files through the native desktop test runner.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["release", "demo", "driver", "profile", "native_launch"])]
+    pub(crate) integration_test: Option<std::path::PathBuf>,
     /// Run the Driver in profile/AOT mode for representative frame timings.
     #[arg(long, requires = "driver")]
     pub(crate) profile: bool,
