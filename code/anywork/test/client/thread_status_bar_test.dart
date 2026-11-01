@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -17,19 +20,22 @@ void main() {
   test(
     'idle context follows canonical catalog while running binding stays frozen',
     () async {
+      final transport = _StatusTransport();
       final graph = AppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
-        transport: RecordingDemoTransport(),
+        transport: transport,
         clientId: 'context-policy',
       );
       addTearDown(() => graph.close(deadline: _deadline()));
       await graph.client.bootstrap();
+      graph.timeline.updateReadDemand(chatDemand);
       await (graph..setConversationPageVisible(true)).client.directoryCommands
           .selectThread('thread-main');
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
       await session.content.ready;
+      await transport.firstSetAcknowledged.future;
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
       addTearDown(summaries.release);
@@ -53,16 +59,18 @@ void main() {
       final frozen = initial.runtime.copyWith(
         modelId: model.modelId,
         autoCompactLimit: 922000,
-        modelRoute: ThreadModelRouteView(
-          accountId: account.id,
-          modelId: model.modelId,
-          effort: null,
-          revision: 1,
-          available: true,
-        ),
       );
       await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
-        initial.copyWith(runtime: frozen),
+        initial.copyWith(
+          runtime: frozen,
+          modelRoute: ThreadModelRouteView(
+            accountId: account.id,
+            modelId: model.modelId,
+            effort: null,
+            revision: 1,
+            available: true,
+          ),
+        ),
       );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -117,6 +125,7 @@ void main() {
       final running = StudioContextProjection.fromRuntime(
         'thread-main',
         frozen,
+        modelRoute: initial.modelRoute,
         accounts: accounts,
         isBusy: true,
       );
@@ -150,7 +159,7 @@ void main() {
   );
 
   test('status projections isolate throughput from context, chrome, and unrelated facts', () async {
-    final transport = RecordingDemoTransport();
+    final transport = _StatusTransport();
     final graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
@@ -158,10 +167,12 @@ void main() {
     );
     addTearDown(() => graph.close(deadline: _deadline()));
     await graph.client.bootstrap();
+    graph.timeline.updateReadDemand(chatDemand);
     await (graph..setConversationPageVisible(true)).client.directoryCommands
         .selectThread('thread-main');
     final session = graph.client.conversations.existingSession('thread-main')!;
     await session.content.ready;
+    await transport.firstSetAcknowledged.future;
     final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
     final initial = session.state.workspace!;
@@ -356,6 +367,45 @@ void main() {
   });
 }
 
+final class _StatusTransport extends RecordingDemoTransport {
+  _StatusTransport() {
+    conversationFeedFactory = (_, inner) async =>
+        _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
+  }
+
+  final firstSetAcknowledged = Completer<void>();
+}
+
+/// Wait for the actual Set ACK before injecting State frames into the same feed.
+/// This observes transport ownership; it never publishes or reduces a projection.
+final class _SetAcknowledgedFeed extends RecordingConversationFeed {
+  _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
+
+  final Completer<void> acknowledged;
+  int? _firstSetSequence;
+
+  @override
+  Stream<ConversationFrame> get events => super.events.map((frame) {
+    if (frame.event case ConversationChatEvent(
+      batch: ChatBatch(placement: ChatPlacement.set),
+    )) {
+      _firstSetSequence ??= frame.deliverySequence;
+    }
+    return frame;
+  });
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    await super.acknowledge(deliverySequence);
+    final firstSet = _firstSetSequence;
+    if (firstSet != null &&
+        deliverySequence >= firstSet &&
+        !acknowledged.isCompleted) {
+      acknowledged.complete();
+    }
+  }
+}
+
 ThreadNotificationFrame _runtimeFrame(
   ConversationSession session,
   ThreadRuntimeView runtime,
@@ -365,7 +415,11 @@ ThreadNotificationFrame _runtimeFrame(
     epoch: session.state.streamEpoch ?? 1,
     baseRevision: session.state.revision,
     revision: session.state.revision + 1,
-    update: ThreadRuntimeUpdate(runtime: runtime, todo: null),
+    update: ThreadRuntimeUpdate(
+      runtime: runtime,
+      todo: null,
+      modelRoute: session.state.modelRoute,
+    ),
   );
 }
 

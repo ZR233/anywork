@@ -92,6 +92,9 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> ThreadViewImageTool<B,
         let authorization = self.authorization.clone();
         Ok(
             Registration::new(TOOL_VIEW_IMAGE.into(), declaration, self)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.view_image@1",
+                ))
                 .with_authorization(authorization),
         )
     }

@@ -534,6 +534,7 @@ class ThreadWorkspace {
     required this.revision,
     required this.interactions,
     required this.runtime,
+    this.modelRoute,
     this.activeTurn,
     this.latestTurn,
     this.todo,
@@ -549,6 +550,9 @@ class ThreadWorkspace {
 
   final List<PendingInteraction> interactions;
   final ThreadRuntimeView runtime;
+
+  /// Original selector and extension revision; available even without a live execution owner.
+  final ThreadModelRouteView? modelRoute;
 
   /// 当前执行中的 Turn；Terminal Turn 不留在当前状态里。
   final StudioTurnView? activeTurn;
@@ -572,6 +576,7 @@ class ThreadWorkspace {
     int? revision,
     List<PendingInteraction>? interactions,
     ThreadRuntimeView? runtime,
+    Object? modelRoute = _workspaceUnset,
     Object? activeTurn = _workspaceUnset,
     Object? latestTurn = _workspaceUnset,
     Object? todo = _workspaceUnset,
@@ -583,6 +588,9 @@ class ThreadWorkspace {
       revision: revision ?? this.revision,
       interactions: interactions ?? this.interactions,
       runtime: runtime ?? this.runtime,
+      modelRoute: identical(modelRoute, _workspaceUnset)
+          ? this.modelRoute
+          : modelRoute as ThreadModelRouteView?,
       activeTurn: identical(activeTurn, _workspaceUnset)
           ? this.activeTurn
           : activeTurn as StudioTurnView?,

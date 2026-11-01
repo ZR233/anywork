@@ -33,7 +33,7 @@ pub(crate) fn activity(value: ThreadActivity) -> BridgeThreadActivity {
     }
 }
 
-fn activity_kind(value: ThreadActivityKind) -> BridgeThreadActivityKind {
+pub(crate) fn activity_kind(value: ThreadActivityKind) -> BridgeThreadActivityKind {
     match value {
         ThreadActivityKind::Preparing => BridgeThreadActivityKind::Preparing,
         ThreadActivityKind::Compacting => BridgeThreadActivityKind::Compacting,
@@ -57,7 +57,7 @@ fn activity_arguments(value: ThreadActivityArguments) -> BridgeThreadActivityArg
     }
 }
 
-pub(super) fn tool_state(value: ThreadActivityToolState) -> BridgeThreadActivityToolState {
+pub(crate) fn tool_state(value: ThreadActivityToolState) -> BridgeThreadActivityToolState {
     match value {
         ThreadActivityToolState::Running => BridgeThreadActivityToolState::Running,
         ThreadActivityToolState::AwaitingApproval => {

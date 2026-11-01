@@ -29,12 +29,12 @@ use pl_protocol::{
     ListDelegationModelsRequest,
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
-use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
 use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::AppState;
+use crate::conversation;
 use crate::error::ApiError;
 use crate::sse;
 use pl_protocol::studio::{
@@ -264,8 +264,11 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(preview_thread_mode_workflow))
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
-        .routes(routes!(list_thread_timeline))
-        .routes(routes!(read_thread_timeline_detail))
+        .routes(routes!(conversation::older))
+        .routes(routes!(conversation::manifest))
+        .routes(routes!(conversation::read))
+        .routes(routes!(conversation::current))
+        .routes(routes!(sse::watch_content))
         .routes(routes!(submit_prompt))
         .routes(routes!(admit_attachment_drafts))
         .routes(routes!(remove_attachment_draft))
@@ -324,7 +327,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(check_update))
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
-        .routes(routes!(sse::thread_timeline_events))
         .merge(crate::bots::bot_routes())
         .merge(attachment_upload)
 }
@@ -668,44 +670,6 @@ async fn list_thread_turns(
         state
             .runtime
             .list_thread_turns(&thread_id, query.cursor.as_deref(), query.limit())
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
-/// 一页 Timeline 内容：升序轻量预览、真实更旧边界与 `hasOlder`。
-///
-/// 读取的是共享会话的同一内容源（已落盘行 + 尚未落盘的已成立事实），因此实时与冷历史没有两套入口。
-/// `before` 必须是上一页返回的不透明 token；旧 `kind`/`itemId`/`anchor`/`cursor` 参数一律拒绝。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/timeline", operation_id = "thread.listTimeline", params(("thread_id" = String, Path), ("before" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn list_thread_timeline(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<TimelinePageQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .timeline_page(&thread_id, &query)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
-/// 按 `item`／`field`／`timelineEpoch` 分块读取不可变完整正文。
-///
-/// typed 查询绑定完成窗口的 epoch、字段身份、不透明 continuation 与块大小；
-/// 不把执行 revision 当正文版本，跨 epoch 拒绝拼接，也不读取运行中的活动正文。
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/items/{item_id}/detail", operation_id = "thread.readTimelineDetail", params(("thread_id" = String, Path), ("item_id" = String, Path)), request_body = TimelineDetailQuery, responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_timeline_detail(
-    State(state): State<AppState>,
-    Path((thread_id, item_id)): Path<(String, String)>,
-    Json(query): Json<TimelineDetailQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .read_timeline_detail(&thread_id, &item_id, &query)
             .await
             .map_err(ApiError::from)?,
     ))

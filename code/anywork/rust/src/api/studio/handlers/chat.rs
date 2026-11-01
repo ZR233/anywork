@@ -1,12 +1,19 @@
 //! One combined conversation observation, a single FRB push consumer, and independent read queries.
+mod close_failures;
+mod content_watch;
 mod owner;
 mod producer;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 
 use crate::api::studio::bridge_runtime::active_bridge;
+use crate::api::studio::convert::chat;
 use crate::api::studio::types::{
-    BridgeConversationFrame, BridgeError, BridgeTimelineCompletionCursor,
+    BridgeChatBatch, BridgeChatScope, BridgeContentManifestPage, BridgeContentRange,
+    BridgeContentRef, BridgeContentWindow, BridgeConversationFrame, BridgeCurrentCollectionPage,
+    BridgeCurrentCollectionRef, BridgeError, BridgeReadDemand,
 };
 use crate::frb_generated::StreamSink;
 
@@ -23,7 +30,8 @@ pub struct BridgeConversationFeed {
 /// Cancellation before publication drops the native feed through its own RAII boundary.
 pub async fn open_conversation_feed(
     thread_id: String,
-    resume_after: Option<BridgeTimelineCompletionCursor>,
+    scope: BridgeChatScope,
+    demand: BridgeReadDemand,
 ) -> Result<BridgeConversationFeed, BridgeError> {
     let bridge = active_bridge().await?;
     let cancel = bridge.shutdown.child_token();
@@ -32,7 +40,8 @@ pub async fn open_conversation_feed(
         () = cancel.cancelled() => return Err(closed()),
         feed = bridge.studio.open_conversation_feed(
             &thread_id,
-            resume_after.map(crate::api::studio::convert::timeline_content::protocol_completion_cursor),
+            chat::scope(scope),
+            chat::demand(demand),
         ) => feed?,
     };
     let inner = Arc::new(ConversationOwner::new(feed, cancel));
@@ -47,6 +56,123 @@ pub async fn open_conversation_feed(
 }
 
 impl BridgeConversationFeed {
+    /// Registers one bounded range observation on this facade's original read lease.
+    pub async fn open_content_watch(
+        &self,
+        reference: BridgeContentRef,
+        range: BridgeContentRange,
+    ) -> Result<String, BridgeError> {
+        self.inner.ensure_read_open()?;
+        self.inner
+            .watches
+            .open(
+                &self.inner.reader,
+                &self.inner.cancel,
+                chat::protocol_content_ref(reference),
+                chat::range(range),
+            )
+            .await
+    }
+
+    /// Pulls at most one window. Overlapping reads of the same watch are rejected, not queued.
+    pub async fn next_content_window(
+        &self,
+        watch_id: String,
+    ) -> Result<Option<BridgeContentWindow>, BridgeError> {
+        self.inner.watches.next(&watch_id).await
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_close_content_watch(&self, watch_id: String) -> Result<(), BridgeError> {
+        self.inner.watches.request_close(&watch_id)
+    }
+
+    /// Cancels first, then joins the retained native watch before releasing its identity/capacity.
+    pub async fn close_content_watch(&self, watch_id: String) -> Result<(), BridgeError> {
+        self.inner.watches.close(&watch_id).await
+    }
+
+    /// Queries share the original read lease, never the producer's native receive/credit mutex.
+    pub async fn load_older(
+        &self,
+        before: String,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeChatBatch, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let batch = self
+            .inner
+            .reader
+            .load_older(&before, chat::demand(demand))
+            .await?;
+        self.inner.ensure_read_open()?;
+        let batch = chat::batch(batch);
+        if tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+            use crate::frb_generated::SseEncode as _;
+            let mut serializer = flutter_rust_bridge::for_generated::SseSerializer::new();
+            batch.clone().sse_encode(&mut serializer);
+            tracing::debug!(
+                target: "conversation_work",
+                thread_id = %self.inner.thread_id,
+                trace_id = %self.inner.subscription_id,
+                // A normal success uses the same SSE action byte as StreamSink::add.
+                frb_encoded_bytes = serializer.cursor.get_ref().len() + 1,
+                "FRB page returned"
+            );
+        }
+        Ok(batch)
+    }
+
+    pub async fn list_contents(
+        &self,
+        item_id: String,
+        continuation: Option<String>,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeContentManifestPage, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let page = self
+            .inner
+            .reader
+            .list_contents(&item_id, continuation.as_deref(), chat::demand(demand))
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::manifest(page))
+    }
+
+    pub async fn read_content(
+        &self,
+        reference: BridgeContentRef,
+        range: BridgeContentRange,
+    ) -> Result<BridgeContentWindow, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let window = self
+            .inner
+            .reader
+            .read_content(&chat::protocol_content_ref(reference), chat::range(range))
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::window(window))
+    }
+
+    pub async fn page_current(
+        &self,
+        reference: BridgeCurrentCollectionRef,
+        continuation: Option<String>,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeCurrentCollectionPage, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let page = self
+            .inner
+            .reader
+            .page_current(
+                &chat::protocol_collection_ref(reference),
+                continuation.as_deref(),
+                chat::demand(demand),
+            )
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::collection_page(page))
+    }
+
     #[flutter_rust_bridge::frb(sync)]
     pub fn thread_id(&self) -> String {
         self.inner.thread_id.clone()

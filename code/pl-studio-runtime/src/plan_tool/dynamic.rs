@@ -11,6 +11,7 @@ use crate::plan_tool::state::{
 use crate::thread_assembler::ThreadAssemblyError;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
+    model::ToolPresentationContract,
     thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
@@ -256,11 +257,19 @@ pub fn plan_registrations(
     .into_iter()
     .map(|kind| {
         let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+        let contract = match kind {
+            PlanOperation::Current => "builtin.plan_current@1",
+            PlanOperation::Next => "builtin.plan_next@1",
+            PlanOperation::History => "builtin.plan_history@1",
+            PlanOperation::Submit => "builtin.plan_submit@1",
+            PlanOperation::Restart => "builtin.plan_restart@1",
+        };
         let registration = Registration::new(
             kind.name().into(),
             declaration,
             ThreadPlanTool { kind, options },
-        )?;
+        )?
+        .with_presentation_contract(ToolPresentationContract::new(contract));
         Ok(match kind {
             PlanOperation::Submit => registration.with_extension_updates().with_interactions(),
             PlanOperation::Restart => registration.with_extension_updates(),

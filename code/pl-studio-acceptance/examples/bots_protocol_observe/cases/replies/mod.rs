@@ -13,7 +13,8 @@ mod runtime_stop;
 mod send_outcomes;
 
 use super::Session;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use pl_protocol::{ChatBatch, ChatScope, ContentRange, ContentRef, PayloadData, ReadDemand};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
 
@@ -111,7 +112,7 @@ pub(super) async fn delivered_counts(
 
 /// Waits for one named Turn to be canonically cancelled.
 ///
-/// The timeline item carries its own `turn_id`, so the match is by identity: an
+/// The Chat payload carries its own `turnId`, so the match is by identity: an
 /// older or newer cancelled Turn must never satisfy this wait. A truncated page
 /// that does not contain the Turn is an explicit error instead of a silent
 /// fallback to another Turn.
@@ -121,30 +122,194 @@ pub(super) async fn wait_cancelled_turn(
     turn_id: &str,
 ) -> Result<pl_protocol::CancelledTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
-    loop {
-        let page = session.http()?.read_timeline(thread_id, 100).await?;
-        let mut present = false;
-        for item in page.items.iter().rev() {
-            if item.header.turn_id.as_deref() != Some(turn_id) {
-                continue;
+    tokio::time::timeout_at(deadline.into(), async {
+        let mut remaining = CHAT_OBSERVATION_BYTES;
+        loop {
+            let (read, page) = session
+                .http()?
+                .open_chat(thread_id, ChatScope::Main, CHAT_DEMAND)
+                .await?;
+            charge_chat_batch(&page, &mut remaining)?;
+            for item in page.messages.iter().rev() {
+                let payload = chat_payload(&read, &item.payload, &mut remaining, deadline).await?;
+                if payload["type"] != "turn" || payload["turnId"].as_str() != Some(turn_id) {
+                    continue;
+                }
+                match chat_turn_outcome(&payload)? {
+                    pl_protocol::TurnState::Cancelled(state) => return Ok(state),
+                    outcome => {
+                        anyhow::bail!("Turn {turn_id} ended without cancellation: {outcome:?}")
+                    }
+                }
             }
-            present = true;
-            if let pl_protocol::TimelineDescriptor::Turn(turn) = &item.descriptor
-                && let pl_protocol::TimelineTurnOutcome::Cancelled(state) = &turn.outcome
-            {
-                return Ok(state.clone());
+            if page.before.is_some() {
+                anyhow::bail!(
+                    "the Main Chat cut is truncated and does not contain terminal Turn {turn_id}"
+                );
             }
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("Turn {turn_id} never reached a canonical cancelled state");
+            }
+            tokio::time::sleep(crate::http::POLL).await;
         }
-        if !present && page.has_older {
-            anyhow::bail!(
-                "the timeline page is truncated (hasOlder) and does not contain Turn {turn_id}"
-            );
-        }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!("Turn {turn_id} never reached a canonical cancelled state");
-        }
-        tokio::time::sleep(crate::http::POLL).await;
+    })
+    .await
+    .context("cancelled Turn observation exceeded its deadline")?
+}
+
+// These observe consumers share only bounded transport decoding, not a history
+// mirror or a second product model. Each caller owns its assertion and read lease.
+pub(super) const CHAT_DEMAND: ReadDemand = ReadDemand {
+    max_items: 100,
+    max_bytes: 256 * 1024,
+};
+pub(super) const CHAT_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
+
+pub(super) fn charge_chat_batch(batch: &ChatBatch, remaining: &mut usize) -> Result<()> {
+    ensure!(
+        batch.messages.len() <= CHAT_DEMAND.max_items as usize,
+        "Chat exceeded item demand"
+    );
+    let bytes = batch.encoded_len()?;
+    ensure!(
+        bytes <= CHAT_DEMAND.max_bytes as usize,
+        "Chat exceeded byte demand"
+    );
+    charge_chat_bytes(bytes, remaining)
+}
+
+pub(super) fn charge_chat_bytes(bytes: usize, remaining: &mut usize) -> Result<()> {
+    *remaining = remaining
+        .checked_sub(bytes)
+        .context("Chat observation exceeded its cumulative 4MiB budget")?;
+    Ok(())
+}
+
+pub(super) async fn payload_bytes(
+    read: &crate::http::ChatRead,
+    payload: &PayloadData,
+    remaining: &mut usize,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>> {
+    match payload {
+        PayloadData::Inline { bytes } => Ok(bytes.clone()),
+        PayloadData::Deferred {
+            reference,
+            byte_length,
+        } => content_bytes(read, reference, *byte_length, remaining, deadline).await,
     }
+}
+
+pub(super) async fn content_bytes(
+    read: &crate::http::ChatRead,
+    reference: &ContentRef,
+    length: u64,
+    remaining: &mut usize,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>> {
+    ensure!(
+        length <= *remaining as u64,
+        "Deferred content exceeds remaining observation budget"
+    );
+    let mut bytes = Vec::new();
+    let mut generation = None;
+    while (bytes.len() as u64) < length {
+        let offset = bytes.len() as u64;
+        let max_bytes = (length - offset).min(64 * 1024) as u32;
+        let window = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            read.read_content(reference, ContentRange { offset, max_bytes }),
+        )
+        .await
+        .context("Chat content read exceeded observation deadline")??;
+        ensure!(
+            window.offset == offset
+                && !window.bytes.is_empty()
+                && window.bytes.len() <= max_bytes as usize
+                && window.available_through == length,
+            "Chat content range did not advance within its declared length"
+        );
+        charge_chat_bytes(serde_json::to_vec(&window)?.len(), remaining)?;
+        if let Some(expected) = &generation {
+            ensure!(
+                &window.generation == expected,
+                "Chat content generation changed mid-read"
+            );
+        } else {
+            generation = Some(window.generation);
+        }
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+pub(super) async fn chat_payload(
+    read: &crate::http::ChatRead,
+    payload: &PayloadData,
+    remaining: &mut usize,
+    deadline: std::time::Instant,
+) -> Result<serde_json::Value> {
+    let bytes = payload_bytes(read, payload, remaining, deadline).await?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("invalid Chat payload JSON")?;
+    ensure!(
+        value["contract"] == "anywork.chat/1"
+            && matches!(
+                value["type"].as_str(),
+                Some(
+                    "text"
+                        | "thinking"
+                        | "tool"
+                        | "raw"
+                        | "agent"
+                        | "turn"
+                        | "inference"
+                        | "skill"
+                        | "file"
+                        | "contextCompaction"
+                        | "plan"
+                )
+            )
+            && value["data"].is_object()
+            && value["bodies"].is_array(),
+        "Chat payload omitted its current contract, type, metadata or bodies"
+    );
+    if value["type"] == "turn" {
+        chat_turn_outcome(&value)?;
+    }
+    Ok(value)
+}
+
+pub(super) fn chat_turn_outcome(payload: &serde_json::Value) -> Result<pl_protocol::TurnState> {
+    ensure!(payload["type"] == "turn", "expected a Turn payload");
+    ensure!(
+        payload["turnId"].as_str().is_some_and(|id| !id.is_empty()),
+        "terminal Chat Turn omitted its identity"
+    );
+    let input = payload["data"]
+        .get("inputId")
+        .context("Chat Turn omitted inputId")?;
+    ensure!(
+        input.is_null() || input.is_string(),
+        "Chat Turn has invalid inputId"
+    );
+    let state = serde_json::from_value(
+        payload["data"]
+            .get("outcome")
+            .context("Chat Turn omitted outcome")?
+            .clone(),
+    )?;
+    ensure!(
+        matches!(
+            state,
+            pl_protocol::TurnState::Completed(_)
+                | pl_protocol::TurnState::Failed(_)
+                | pl_protocol::TurnState::Cancelled(_)
+                | pl_protocol::TurnState::BudgetLimited(_)
+        ),
+        "completed Chat contains a nonterminal Turn"
+    );
+    Ok(state)
 }
 
 /// Waits until one named Turn is canonically running.

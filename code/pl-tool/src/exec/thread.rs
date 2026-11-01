@@ -90,7 +90,10 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
         };
         Ok(vec![
             self.registration(exec)?,
-            Registration::new(super::TOOL_WRITE_STDIN.into(), stdin, input)?,
+            Registration::new(super::TOOL_WRITE_STDIN.into(), stdin, input)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.write_stdin@1",
+                )),
         ])
     }
 
@@ -99,7 +102,12 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
     /// # Errors
     /// Returns an invalid tool identity error before registration.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new(super::TOOL_EXEC.into(), declaration, self)
+        Ok(
+            Registration::new(super::TOOL_EXEC.into(), declaration, self)?
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.exec@2",
+                )),
+        )
     }
 }
 

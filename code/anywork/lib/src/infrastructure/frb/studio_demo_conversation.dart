@@ -9,10 +9,7 @@ typedef _DemoPlanRequest = ({
   int? planRevision,
 });
 
-typedef _DemoPlanDecision = ({
-  ConversationPlanDecision decision,
-  String feedback,
-});
+typedef _DemoPlanDecision = ({_DemoPlanDecisionKind decision, String feedback});
 
 UserQuestionView? _demoPlanQuestion(PendingInteraction interaction) {
   final payload = interaction.payload;
@@ -55,7 +52,7 @@ _DemoPlanDecision _demoPlanDecision(InteractionResolutionCommand command) {
     );
   }
   if (approved) {
-    return (decision: ConversationPlanDecision.approved, feedback: '');
+    return (decision: _DemoPlanDecisionKind.approved, feedback: '');
   }
   final feedback = answers
       .where((answer) => answer != agentSessionPlanReviseAnswer)
@@ -64,12 +61,237 @@ _DemoPlanDecision _demoPlanDecision(InteractionResolutionCommand command) {
       .join('\n');
   if (revision || feedback.isNotEmpty) {
     return (
-      decision: ConversationPlanDecision.revisionRequested,
+      decision: _DemoPlanDecisionKind.revisionRequested,
       feedback: feedback,
     );
   }
   throw _demoInvalidPlanAnswer(
     'Plan confirmation must select Approve, Revise, or provide revision feedback',
+  );
+}
+
+// Demo script facts are private. Only the frozen UTF-8 envelope crosses the port.
+enum _DemoContentKind { text, thinking, tool, completed }
+
+enum _DemoPlanDecisionKind { approved, revisionRequested }
+
+typedef _DemoContent = ({
+  _DemoContentKind kind,
+  ThreadTextChannel? textChannel,
+  Map<String, Object?>? descriptor,
+  Map<String, String> fields,
+  _DemoInvocation? invocation,
+});
+
+final class _DemoInvocation {
+  const _DemoInvocation({
+    required this.toolCallId,
+    required this.name,
+    this.presentationContract,
+  });
+  final String toolCallId;
+  final String name;
+  final String? presentationContract;
+  Map<String, Object?> toJson() => {
+    'toolCallId': toolCallId,
+    'name': name,
+    'callId': null,
+    'providerItemId': null,
+    'workingDirectory': null,
+    'taskId': null,
+    'presentationContract': presentationContract,
+  };
+}
+
+int _demoSeconds(DateTime value) => value.millisecondsSinceEpoch ~/ 1000;
+Map<String, Object?>? _demoOutcome(ThreadContentLifecycleView value) =>
+    switch (value) {
+      StreamingThreadContentView() => null,
+      CompletedThreadContentView(:final completedAt) => {
+        'kind': 'completed',
+        'data': {'completedAt': _demoSeconds(completedAt)},
+      },
+      FailedThreadContentView(:final failedAt, :final error) => {
+        'kind': 'failed',
+        'data': {'failedAt': _demoSeconds(failedAt), 'error': error},
+      },
+      CancelledThreadContentView(:final cancelledAt, :final reason) => {
+        'kind': 'cancelled',
+        'data': {'cancelledAt': _demoSeconds(cancelledAt), 'reason': reason},
+      },
+    };
+
+_DemoContent _demoText({
+  required ThreadTextChannel channel,
+  required String text,
+  required List<ThreadAttachmentView> attachments,
+  required ThreadContentLifecycleView lifecycle,
+}) {
+  final outcome = _demoOutcome(lifecycle);
+  return (
+    kind: _DemoContentKind.text,
+    textChannel: channel,
+    descriptor: outcome == null
+        ? null
+        : {
+            'type': 'text',
+            'data': {
+              'channel': channel.name,
+              'attachments': [
+                for (final a in attachments)
+                  {
+                    'id': a.id,
+                    'modality': a.modality.name,
+                    'mediaType': a.mediaType,
+                    'filename': a.filename,
+                    'byteSize': a.byteSize,
+                    'width': a.width,
+                    'height': a.height,
+                  },
+              ],
+              'outcome': outcome,
+            },
+          },
+    fields: {'body': text},
+    invocation: null,
+  );
+}
+
+_DemoContent _demoThinking({
+  required List<String> summary,
+  required List<String> content,
+  required ThreadContentLifecycleView lifecycle,
+}) {
+  final outcome = _demoOutcome(lifecycle);
+  return (
+    kind: _DemoContentKind.thinking,
+    textChannel: null,
+    descriptor: outcome == null
+        ? null
+        : {
+            'type': 'thinking',
+            'data': {'outcome': outcome},
+          },
+    fields: {
+      for (var i = 0; i < summary.length; i++)
+        'part.summaryText.$i': summary[i],
+      for (var i = 0; i < content.length; i++)
+        'part.reasoningText.$i': content[i],
+    },
+    invocation: null,
+  );
+}
+
+Map<String, Object?> _demoToolSucceeded(DateTime at) => {
+  'kind': 'succeeded',
+  'completedAt': _demoSeconds(at),
+  'output': {'attachments': <Object?>[], 'exitCode': null},
+};
+
+_DemoContent _demoTool({
+  required _DemoInvocation invocation,
+  Map<String, Object?>? outcome,
+  String arguments = '',
+  String? result,
+}) => (
+  kind: _DemoContentKind.tool,
+  textChannel: null,
+  descriptor: outcome == null
+      ? null
+      : {
+          'type': 'tool',
+          'data': {
+            'invocation': invocation.toJson(),
+            'state': outcome,
+            'userInput': null,
+            'wait': null,
+          },
+        },
+  fields: {'tool.arguments': arguments, 'tool.result': ?result},
+  invocation: invocation,
+);
+
+_DemoContent _demoTurn(StudioTurnState state, {String? inputId}) {
+  final Map<String, Object?> data;
+  switch (state) {
+    case CompletedStudioTurnState():
+      data = {
+        'startedAt': state.startedAt,
+        'completedAt': state.completedAt,
+        'completion': state.completion.name,
+      };
+    case FailedStudioTurnState():
+      final f = state.failure;
+      data = {
+        'startedAt': state.startedAt,
+        'completedAt': state.completedAt,
+        'failure': {
+          'category': f.category,
+          'providerKind': f.providerKind,
+          'code': f.code,
+          'httpStatus': f.httpStatus,
+          'message': f.message,
+          'retryable': f.retryable,
+          'retryAfterMs': f.retryAfterMs,
+        },
+      };
+    case CancelledStudioTurnState():
+      final cause = switch (state.cause) {
+        UnspecifiedTurnCancellation() => {'kind': 'unspecified'},
+        UserRequestedTurnCancellation() => {'kind': 'userRequested'},
+        RuntimeShutdownTurnCancellation() => {'kind': 'runtimeShutdown'},
+        AgentClosedTurnCancellation() => {'kind': 'agentClosed'},
+        InterruptedTurnCancellation() => {'kind': 'interrupted'},
+        RecoveryTurnCancellation() => {'kind': 'recovery'},
+        CoalescedTurnCancellation(:final targetTurnId) => {
+          'kind': 'coalesced',
+          'data': {'target_turn_id': targetTurnId},
+        },
+      };
+      data = {
+        'startedAt': state.startedAt,
+        'completedAt': state.completedAt,
+        'requestedAt': state.requestedAt,
+        'cause': cause,
+      };
+    case BudgetLimitedStudioTurnState():
+      final u = state.limit.usage;
+      data = {
+        'startedAt': state.startedAt,
+        'completedAt': state.completedAt,
+        'limit': {
+          'kind': state.limit.kind.name,
+          'usage': {
+            'modelSteps': u.modelSteps,
+            'toolCalls': u.toolCalls,
+            'waitCalls': u.waitCalls,
+            'elapsedMs': u.elapsedMs,
+          },
+        },
+        'rollover': switch (state.rollover) {
+          RolloverNotAttempted() => {'kind': 'notAttempted'},
+          RolloverSucceeded() => {'kind': 'succeeded'},
+          RolloverFailed(:final error) => {
+            'kind': 'failed',
+            'data': {'error': error},
+          },
+        },
+      };
+    case QueuedStudioTurnState() || RunningStudioTurnState():
+      throw StateError('An active Turn is not a completed message');
+  }
+  return (
+    kind: _DemoContentKind.completed,
+    textChannel: null,
+    descriptor: {
+      'type': 'turn',
+      'data': {
+        'inputId': inputId,
+        'outcome': {'kind': state.status.name, 'data': data},
+      },
+    },
+    fields: {},
+    invocation: null,
   );
 }
 
@@ -84,115 +306,22 @@ _DemoItem _demoPlanCompletion(
   updatedAt: completedAt,
   content: (
     kind: _DemoContentKind.completed,
-    descriptor: ConversationPlanDescriptor(
-      interactionId: request.interaction.id,
-      documentVersion: request.document?.version,
-      contentHash: request.document?.contentHash,
-      decision: decision.decision,
-    ),
+    textChannel: null,
+    descriptor: {
+      'type': 'plan',
+      'data': {
+        'interactionId': request.interaction.id,
+        'documentVersion': request.document?.version,
+        'contentHash': request.document?.contentHash,
+        'decision': decision.decision.name,
+      },
+    },
     fields: {
-      const ThreadPlanDocumentFieldView(): request.markdown,
-      if (decision.feedback.isNotEmpty)
-        const ThreadPlanFeedbackFieldView(): decision.feedback,
+      'plan.document': request.markdown,
+      if (decision.feedback.isNotEmpty) 'plan.feedback': decision.feedback,
     },
     invocation: null,
   ),
-);
-
-// These are Demo's private script facts, never public timeline items. A null
-// descriptor means that the member has not reached its own reliable completion.
-enum _DemoContentKind { text, thinking, tool, completed }
-
-typedef _DemoContent = ({
-  _DemoContentKind kind,
-  ConversationDescriptor? descriptor,
-  Map<ThreadContentFieldView, String> fields,
-  ConversationToolInvocation? invocation,
-});
-
-ConversationContentOutcome? _demoOutcome(ThreadContentLifecycleView value) =>
-    switch (value) {
-      StreamingThreadContentView() => null,
-      CompletedThreadContentView() => ConversationContentCompleted(value),
-      FailedThreadContentView() => ConversationContentFailed(value),
-      CancelledThreadContentView() => ConversationContentCancelled(value),
-    };
-
-_DemoContent _demoText({
-  required ThreadTextChannel channel,
-  required String text,
-  required List<ThreadAttachmentView> attachments,
-  required ThreadContentLifecycleView lifecycle,
-}) {
-  final outcome = _demoOutcome(lifecycle);
-  return (
-    kind: _DemoContentKind.text,
-    descriptor: outcome == null
-        ? null
-        : ConversationTextDescriptor(
-            channel: channel,
-            attachments: attachments,
-            outcome: outcome,
-          ),
-    fields: {const ThreadTextFieldView(): text},
-    invocation: null,
-  );
-}
-
-_DemoContent _demoThinking({
-  required List<String> summary,
-  required List<String> content,
-  required ThreadContentLifecycleView lifecycle,
-}) {
-  final outcome = _demoOutcome(lifecycle);
-  return (
-    kind: _DemoContentKind.thinking,
-    descriptor: outcome == null
-        ? null
-        : ConversationThinkingDescriptor(outcome: outcome),
-    fields: {
-      for (var i = 0; i < summary.length; i++)
-        ThreadThinkingSummaryFieldView(i): summary[i],
-      for (var i = 0; i < content.length; i++)
-        ThreadThinkingContentFieldView(i): content[i],
-    },
-    invocation: null,
-  );
-}
-
-_DemoContent _demoTool({
-  required ConversationToolInvocation invocation,
-  ConversationToolState? outcome,
-  String arguments = '',
-  String? result,
-}) => (
-  kind: _DemoContentKind.tool,
-  descriptor: outcome == null
-      ? null
-      : ConversationToolDescriptor(invocation: invocation, state: outcome),
-  fields: {
-    const ThreadToolArgumentsFieldView(): arguments,
-    const ThreadToolResultFieldView(): ?result,
-  },
-  invocation: invocation,
-);
-
-_DemoContent _demoTurn(StudioTurnState state, {String? inputId}) => (
-  kind: _DemoContentKind.completed,
-  descriptor: ConversationTurnDescriptor(
-    inputId: inputId,
-    outcome: switch (state) {
-      CompletedStudioTurnState() => ConversationTurnCompleted(state),
-      FailedStudioTurnState() => ConversationTurnFailed(state),
-      CancelledStudioTurnState() => ConversationTurnCancelled(state),
-      BudgetLimitedStudioTurnState() => ConversationTurnBudgetLimited(state),
-      QueuedStudioTurnState() || RunningStudioTurnState() => throw StateError(
-        'An active Turn is not a completed conversation item',
-      ),
-    },
-  ),
-  fields: {},
-  invocation: null,
 );
 
 final class _DemoItem {
@@ -202,23 +331,13 @@ final class _DemoItem {
     required this.turnId,
     required this.updatedAt,
     required this.content,
-  }) {
-    final result = content.fields[const ThreadToolResultFieldView()];
-    if (content.kind == _DemoContentKind.tool && result != null) {
-      outputParts = [
-        if (result.isNotEmpty)
-          ThreadActivityToolOutputPart(partId: '$id:output:0', text: result),
-      ];
-    }
-  }
+  });
   final String id;
   final String threadId;
   final String? turnId;
   final DateTime updatedAt;
   final _DemoContent content;
-  // null means no output observation; [] means an observed empty output.
-  List<ThreadActivityToolOutputPart>? outputParts;
-  String? textFor(ThreadContentFieldView field) => content.fields[field];
+  String? textFor(String key) => content.fields[key];
 }
 
 _DemoItem _demoItem({
@@ -234,489 +353,350 @@ _DemoItem _demoItem({
   updatedAt: updatedAt,
   content: content,
 );
-
 _DemoItem _demoRevise(
   _DemoItem item, {
   DateTime? updatedAt,
   required _DemoContent content,
-}) {
-  final next = _demoItem(
-    id: item.id,
-    threadId: item.threadId,
-    turnId: item.turnId,
-    updatedAt: updatedAt ?? item.updatedAt,
-    content: content,
-  );
-  if (content.kind == _DemoContentKind.tool &&
-      content.descriptor == null &&
-      next.outputParts == null) {
-    next.outputParts = item.outputParts == null
-        ? null
-        : List.of(item.outputParts!);
+}) => _demoItem(
+  id: item.id,
+  threadId: item.threadId,
+  turnId: item.turnId,
+  updatedAt: updatedAt ?? item.updatedAt,
+  content: content,
+);
+
+const _demoMaxBytes = 256 * 1024;
+const _demoInlineBodyBytes = 4096;
+StudioFailure _demoQueryFailure(String message) => StudioFailure(
+  code: StudioFailureCode.invalidArgument,
+  message: message,
+  retryable: false,
+  correlationId: 'demo-chat-query',
+);
+StudioFailure _demoStale() => const StudioFailure(
+  code: StudioFailureCode.staleRevision,
+  message: 'The Demo current revision has retired',
+  retryable: false,
+  correlationId: 'demo-stale-content',
+  detailsJson: '{"reason":"staleContent"}',
+);
+StudioFailure _demoMissing() => const StudioFailure(
+  code: StudioFailureCode.notFound,
+  message: 'The Demo content is unavailable',
+  retryable: false,
+  correlationId: 'demo-content-not-found',
+);
+void _demoDemand(ReadDemand d) {
+  if (d.maxItems < 1 ||
+      d.maxItems > 4096 ||
+      d.maxBytes < 1 ||
+      d.maxBytes > _demoMaxBytes) {
+    throw _demoQueryFailure(
+      'InvalidDemand: items must be 1..4096 and bytes 1..262144',
+    );
   }
-  return next;
 }
 
-const _demoItemPreviewLimitBytes = 256 * 1024;
-const _demoPageLimitBytes = 2 * 1024 * 1024;
-const _demoBodyPreviewBytes = 32 * 1024;
-const _demoToolPreviewBytes = 4 * 1024;
-const _demoActivityTextBytes = 64 * 1024;
+String _demoScopeKey(ChatScope scope) => switch (scope) {
+  MainChatScope() => 'main',
+  ChildrenChatScope(:final parentId) => 'children:$parentId',
+};
+String _demoParent(String turnId) => '4:turn$turnId';
+Map<String, Object?> _demoRefJson(ContentRef ref) => {
+  'databaseId': ref.databaseId,
+  'target': switch (ref.target) {
+    ItemPayloadTarget(:final itemId) => {
+      'kind': 'itemPayload',
+      'itemId': itemId,
+    },
+    BodyContentTarget(:final owner, :final key) => {
+      'kind': 'body',
+      'key': key,
+      'owner': switch (owner) {
+        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
+        CurrentContentOwner(:final domain, :final id, :final revision) => {
+          'kind': 'current',
+          'domain': domain,
+          'id': id,
+          'revision': revision,
+        },
+      },
+    },
+  },
+};
+Map<String, Object?> _demoPayloadJson(PayloadData payload) => switch (payload) {
+  InlinePayload(:final bytes) => {'kind': 'inline', 'bytes': bytes},
+  DeferredPayload(:final reference, :final byteLength) => {
+    'kind': 'deferred',
+    'reference': _demoRefJson(reference),
+    'byteLength': byteLength,
+  },
+};
+Map<String, Object?> _demoMessageJson(ChatMessage m) => {
+  'id': m.id,
+  'payload': _demoPayloadJson(m.payload),
+};
+int _demoEncoded(Object? value) => utf8.encode(jsonEncode(value)).length;
 
-/// Full completed facts live here once. Preview delivery and query scopes both
-/// read this same epoch; neither owns a mutable public timeline.
-final class _DemoHistory {
-  _DemoHistory() : epoch = 'demo-history:${newStudioCorrelationId()}';
-  final String epoch;
-  final List<ConversationItem> items = [];
-  final Map<String, ConversationItem> byId = {};
-  int get head => items.length;
-
-  bool accept(
-    ConversationItem candidate,
-    bool Function(Object?, Object?) sameFacts,
-  ) {
-    if (candidate.id.isEmpty ||
-        candidate.header.threadId.isEmpty ||
-        candidate.fields.map((f) => f.field).toSet().length !=
-            candidate.fields.length ||
-        candidate.fields.any((f) => f.totalBytes != f.previewBytes)) {
-      throw _conversationQueryFailure;
+// Chunked authoritative bytes: range reads visit only intersecting chunks, never
+// concatenate a body before slicing. Append keeps generation; replacement changes it.
+final class _DemoBody {
+  final List<Uint8List> _chunks = [];
+  final List<int> _ends = [];
+  int length = 0;
+  int generation = 1;
+  bool sealed = false;
+  void append(List<int> bytes) {
+    if (sealed) throw StateError('Cannot append sealed Demo content');
+    for (var start = 0; start < bytes.length; start += 4096) {
+      final end = (start + 4096).clamp(0, bytes.length);
+      final chunk = Uint8List.fromList(bytes.sublist(start, end));
+      _chunks.add(chunk);
+      length += chunk.length;
+      _ends.add(length);
     }
-    final previous = byId[candidate.id];
-    if (previous != null) {
-      if (!sameFacts(_demoItemFacts(previous), _demoItemFacts(candidate))) {
+  }
+
+  Uint8List range(int offset, int maxBytes) {
+    if (offset < 0 || maxBytes < 1 || maxBytes > _demoMaxBytes) {
+      throw _demoQueryFailure('Invalid content range');
+    }
+    if (offset > length) {
+      throw _demoQueryFailure('Content offset exceeds length');
+    }
+    final end = (offset + maxBytes).clamp(0, length);
+    if (offset >= end) return Uint8List(0);
+    final out = Uint8List(end - offset);
+    var low = 0, high = _ends.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (_ends[mid] <= offset) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    for (var i = low; i < _chunks.length; i++) {
+      final start = i == 0 ? 0 : _ends[i - 1];
+      if (start >= end) break;
+      final from = (offset - start).clamp(0, _chunks[i].length);
+      final through = (end - start).clamp(0, _chunks[i].length);
+      out.setRange(
+        start + from - offset,
+        start + through - offset,
+        _chunks[i],
+        from,
+      );
+    }
+    return out;
+  }
+
+  void update(String text) {
+    final bytes = utf8.encode(text);
+    var prefix = bytes.length >= length;
+    var pos = 0;
+    for (final chunk in _chunks) {
+      if (!prefix) break;
+      for (var i = 0; i < chunk.length; i++) {
+        if (bytes[pos + i] != chunk[i]) {
+          prefix = false;
+          break;
+        }
+      }
+      pos += chunk.length;
+    }
+    if (!prefix) {
+      if (sealed) throw StateError('Cannot replace sealed Demo content');
+      generation++;
+      _chunks.clear();
+      _ends.clear();
+      length = 0;
+    }
+    if (bytes.length > length) append(bytes.sublist(length));
+  }
+}
+
+final class _DemoFrozen {
+  const _DemoFrozen(this.message, this.order, this.scope);
+  final ChatMessage message;
+  final int order;
+  final String scope;
+}
+
+final class _DemoHistory {
+  final String epoch = 'demo-chat:${newStudioCorrelationId()}';
+  final List<_DemoFrozen> items = [];
+  final Map<String, _DemoFrozen> byId = {};
+  final Map<String, List<_DemoFrozen>> _indices = {};
+  final Map<String, Map<String, _DemoBody>> bodies = {};
+  final Map<String, _DemoBody> payloads = {};
+  final Map<(String, String, String), _DemoBody> currentBodies = {};
+  final Map<(String, String), int> positions = {};
+  int _nextPosition = 0;
+  _DemoBody? planDocument;
+  int? planRevision;
+  final Set<void Function()> changes = {};
+  int revision = 0;
+  int get head => items.length;
+  void prepareCurrent(ThreadWorkspace workspace) {
+    final plan = workspace.runtime.plan;
+    if (plan?.document == null) {
+      planDocument = null;
+    } else if (planRevision != plan!.revision) {
+      planDocument = _DemoBody()..update(plan.document!.markdown);
+    }
+    planRevision = plan?.revision;
+    for (final interaction in workspace.interactions) {
+      positions.putIfAbsent((
+        'interaction',
+        interaction.id,
+      ), () => _nextPosition++);
+    }
+  }
+
+  void changed(ThreadWorkspace workspace) {
+    revision++;
+    currentBodies.clear();
+    prepareCurrent(workspace);
+    for (final wake in changes.toList()) {
+      wake();
+    }
+  }
+
+  List<_DemoFrozen> index(ChatScope scope) =>
+      _indices[_demoScopeKey(scope)] ?? const [];
+  bool accept(ChatMessage message, ChatScope scope) {
+    if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
+    final key = _demoScopeKey(scope);
+    final old = byId[message.id];
+    if (old != null) {
+      if (old.scope != key ||
+          jsonEncode(_demoMessageJson(old.message)) !=
+              jsonEncode(_demoMessageJson(message))) {
         throw const StudioFailure(
           code: StudioFailureCode.conflict,
-          message: 'A completed Demo item cannot be changed',
+          message: 'A completed Demo message cannot be changed',
           retryable: false,
           correlationId: 'demo-completion-conflict',
         );
       }
       return false;
     }
-    // Allocate only at canonical insertion, independently of script/effect order.
-    final item = ConversationItem(
-      header: ConversationItemHeader(
-        id: candidate.id,
-        threadId: candidate.header.threadId,
-        turnId: candidate.header.turnId,
-        appendSeq: head + 1,
-        sourceEffectSeq: candidate.header.sourceEffectSeq,
-        sealedAt: candidate.header.sealedAt,
-      ),
-      descriptor: candidate.descriptor,
-      source: candidate.source,
-      fields: _demoPublicFields(candidate),
-    );
-    _demoPreview(
-      item,
-    ); // Reject inadmissible structure before assigning sequence.
-    items.add(item);
-    byId[item.id] = item;
+    final record = _DemoFrozen(message, head + 1, key);
+    if (message.payload case InlinePayload(:final bytes)) {
+      payloads[message.id] = _DemoBody()
+        ..append(bytes)
+        ..sealed = true;
+    }
+    items.add(record);
+    byId[message.id] = record;
+    (_indices[key] ??= []).add(record);
     return true;
   }
-}
 
-final class _DemoConversationFeed implements ConversationFeed {
-  _DemoConversationFeed(this._api, this.threadId, this._history, this._resume)
-    : subscriptionId = 'demo-${newStudioCorrelationId()}';
-  final DemoStudioTransport _api;
-  final _DemoHistory _history;
-  final ConversationCompletionCursor? _resume;
-  @override
-  final String threadId;
-  @override
-  final String subscriptionId;
-  int _sent = 0;
-  int _acked = 0;
-  int _completedSeq = 0;
-  int _activityRevision = 0;
-  bool _initialized = false;
-  bool _pendingState = true;
-  bool _pendingActivity = true;
-  bool _closed = false;
-  bool _claimed = false;
-  bool _started = false;
-  bool _terminal = false;
-  Future<void>? _closing;
-  Iterator<ConversationEvent>? _activityDelivery;
-  late final StreamController<ConversationFrame> _controller = StreamController(
-    onListen: _start,
-    onCancel: () {
-      requestClose();
-      return close();
-    },
-  );
-  bool get _credit => _sent - _acked < 2;
-
-  @override
-  Stream<ConversationFrame> get events {
-    if (_closed) throw _conversationClosedFailure;
-    if (_claimed) {
-      throw const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'Conversation events already have a consumer',
-        retryable: false,
-        correlationId: 'demo-conversation-consumer',
-      );
+  void sync(_DemoItem item) {
+    positions.putIfAbsent(('member', item.id), () => _nextPosition++);
+    final contents = bodies.putIfAbsent(item.id, () => {});
+    for (final entry in item.content.fields.entries) {
+      (contents[entry.key] ??= _DemoBody()).update(entry.value);
     }
-    _claimed = true;
-    return _controller.stream;
   }
 
-  void _start() {
-    if (_closed || _api._runtimeExiting) {
-      requestClose();
-      unawaited(_controller.close());
-      return;
-    }
-    _started = true;
-    (_api._conversationFeeds[threadId] ??= {}).add(this);
-    _flush();
-  }
-
-  void _send(ConversationEvent event, {bool terminal = false}) {
-    if (!_started || _terminal) return;
-    if (!terminal && !_credit) {
-      throw StateError('Demo delivery credit exhausted');
-    }
-    _sent++;
-    _controller.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: _sent,
-        event: event,
-      ),
+  void complete(_DemoItem item) {
+    final descriptor = item.content.descriptor!;
+    final type = descriptor['type'] as String;
+    final data = Map<String, Object?>.of(
+      descriptor['data'] as Map<String, Object?>,
     );
-    if (terminal) _terminal = true;
-  }
-
-  void _flush() {
-    if (_closed || !_started) return;
-    try {
-      while (_credit && !_closed) {
-        // A staged activity publication must reach Commit before another Begin.
-        final delivery = _activityDelivery;
-        if (delivery != null) {
-          if (delivery.moveNext()) {
-            _send(delivery.current);
-          } else {
-            _activityDelivery = null;
-          }
-          continue;
-        }
-        if (_pendingState) {
-          _pendingState = false;
-          _send(
-            ConversationStateEvent(
-              frame: ThreadSnapshotFrame(
-                workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-              ),
-            ),
-          );
-          continue;
-        }
-        if (!_initialized) {
-          _initialized = true;
-          final resume = _resume;
-          if (resume != null && resume.timelineEpoch == _history.epoch) {
-            if (resume.appendSeq < 0 || resume.appendSeq > _history.head) {
-              throw _conversationQueryFailure;
-            }
-            _completedSeq = resume.appendSeq;
-          } else {
-            final baseline = _baseline();
-            _completedSeq = baseline.completedCursor.appendSeq;
-            _send(
-              resume == null
-                  ? ConversationBaselineEvent(baseline: baseline)
-                  : ConversationUpdateEvent(
-                      update: ConversationReset(baseline),
+    final parent = item.turnId == null ? null : _demoParent(item.turnId!);
+    if (type == 'turn') data['childrenParentId'] = parent;
+    final main =
+        type == 'text' ||
+        type == 'plan' ||
+        type == 'turn' ||
+        (type == 'tool' && data['userInput'] != null);
+    final scope = main
+        ? const MainChatScope()
+        : ChildrenChatScope(parentId: parent ?? '');
+    if (!main && parent == null) {
+      throw StateError('Activity has no real parent');
+    }
+    sync(item);
+    final contents = bodies[item.id]!;
+    final message = ChatMessage(
+      id: item.id,
+      payload: InlinePayload(
+        bytes: utf8.encode(
+          jsonEncode({
+            'contract': 'anywork.chat/1',
+            'type': type,
+            'data': data,
+            if (item.turnId != null) 'turnId': item.turnId,
+            'sealedAt': _demoSeconds(item.updatedAt),
+            'bodies': [
+              for (final entry in contents.entries)
+                {
+                  'key': entry.key,
+                  'byteLength': entry.value.length,
+                  if (entry.value.length <= _demoInlineBodyBytes)
+                    'inline': entry.value.range(0, _demoInlineBodyBytes)
+                  else
+                    'reference': _demoRefJson(
+                      ContentRef(
+                        databaseId: epoch,
+                        target: BodyContentTarget(
+                          owner: ItemContentOwner(itemId: item.id),
+                          key: entry.key,
+                        ),
+                      ),
                     ),
-            );
-            continue;
-          }
-        }
-        if (_completedSeq < _history.head || _pendingActivity) {
-          final batch = _nextBatch();
-          // Catch up from the oldest debt. Never replace the missing prefix by head.
-          if (batch != null && batch.throughSeq < _history.head) {
-            _completedSeq = batch.throughSeq;
-            _send(ConversationUpdateEvent(update: batch));
-            continue;
-          }
-          _pendingActivity = false;
-          _activityDelivery = _activityEvents(batch).iterator;
-          continue;
-        }
-        break;
-      }
-    } catch (error) {
-      _send(
-        ConversationFailureEvent(
-          failure: _studioFailure(error) as StudioFailure,
-        ),
-        terminal: true,
-      );
-      requestClose();
-    }
-  }
-
-  ConversationBaseline _baseline() {
-    final page = _demoPage(_history, threadId);
-    return ConversationBaseline(
-      subscriptionId: subscriptionId,
-      timelineEpoch: _history.epoch,
-      items: page.items,
-      before: page.before,
-      hasOlder: page.hasOlder,
-      completedCursor: ConversationCompletionCursor(
-        timelineEpoch: _history.epoch,
-        appendSeq: _history.head,
-      ),
-    );
-  }
-
-  ConversationBatch? _nextBatch() {
-    if (_completedSeq == _history.head) return null;
-    final items = <ConversationItem>[];
-    var bytes = 128;
-    for (
-      var i = _completedSeq;
-      i < _history.items.length && items.length < conversationPageDefaultLimit;
-      i++
-    ) {
-      final preview = _demoPreview(_history.items[i]);
-      if (items.isNotEmpty && bytes + preview.bytes > _demoPageLimitBytes) {
-        break;
-      }
-      bytes += preview.bytes;
-      items.add(preview.item);
-    }
-    return ConversationBatch(
-      subscriptionId: subscriptionId,
-      timelineEpoch: _history.epoch,
-      fromSeq: _completedSeq,
-      throughSeq: items.last.header.appendSeq,
-      items: items,
-    );
-  }
-
-  /// Capture one coherent live/completed boundary. The iterator holds only this
-  /// bounded transaction and emits text blocks on credit; it is not an event queue.
-  Iterable<ConversationEvent> _activityEvents(ConversationBatch? batch) sync* {
-    final revision = ++_activityRevision;
-    final generation = subscriptionId;
-    final activity = _api._demoWorkspace(threadId).activity;
-    final pending = _api._pendingItemsOf(threadId).toList(growable: false);
-    final reasoning = <ActivityPartMetadata>[];
-    final response = <ActivityPartMetadata>[];
-    final tools = <ActivityToolMetadata>[];
-    final regions = <(ActivityRegion, String)>[];
-    var totalBytes = 0;
-    void add(ActivityRegion region, String text) {
-      totalBytes += utf8.encode(text).length;
-      regions.add((region, text));
-    }
-
-    for (final item in pending) {
-      switch (item.content.kind) {
-        case _DemoContentKind.thinking:
-          // Preserve original segments; summary is only the small activity label.
-          for (final field in item.content.fields.entries) {
-            if (field.key case ThreadThinkingContentFieldView(
-              :final chunkIndex,
-            )) {
-              final id = '${item.id}:$chunkIndex';
-              reasoning.add(
-                ActivityPartMetadata(
-                  itemId: id,
-                  complete: false,
-                  totalBytes: utf8.encode(field.value).length,
-                ),
-              );
-              add(
-                ActivityRegion(ActivityRegionKind.reasoning, id),
-                field.value,
-              );
-            }
-          }
-        case _DemoContentKind.text:
-          final text = item.textFor(const ThreadTextFieldView()) ?? '';
-          response.add(
-            ActivityPartMetadata(
-              itemId: item.id,
-              complete: false,
-              totalBytes: utf8.encode(text).length,
-            ),
-          );
-          add(ActivityRegion(ActivityRegionKind.response, item.id), text);
-        case _DemoContentKind.tool:
-          final invocation = item.content.invocation!;
-          final arguments = item.textFor(const ThreadToolArgumentsFieldView());
-          final parts = item.outputParts;
-          tools.add(
-            ActivityToolMetadata(
-              callId: invocation.toolCallId,
-              name: invocation.name,
-              taskId: invocation.taskId,
-              state: ThreadActivityToolState.running,
-              argumentsBytes: arguments == null
-                  ? null
-                  : utf8.encode(arguments).length,
-              outputBytes: parts?.fold<int>(
-                0,
-                (n, p) => n + utf8.encode(p.text).length,
-              ),
-              outputParts: [
-                for (final part
-                    in parts ?? const <ThreadActivityToolOutputPart>[])
-                  ActivityToolOutputMetadata(
-                    partId: part.partId,
-                    totalBytes: utf8.encode(part.text).length,
-                  ),
-              ],
-            ),
-          );
-          if (arguments != null) {
-            add(
-              ActivityRegion(
-                ActivityRegionKind.toolArguments,
-                invocation.toolCallId,
-              ),
-              arguments,
-            );
-          }
-          for (final part in parts ?? const <ThreadActivityToolOutputPart>[]) {
-            add(
-              ActivityRegion.toolOutput(
-                callId: invocation.toolCallId,
-                partId: part.partId,
-              ),
-              part.text,
-            );
-          }
-        case _DemoContentKind.completed:
-          throw StateError('Completed item remained active');
-      }
-    }
-    yield ConversationActivityContentEvent(
-      frame: ActivityBegin(
-        generation: generation,
-        revision: revision,
-        baseRevision: null,
-        activity: activity,
-        reasoning: reasoning,
-        response: response,
-        tools: tools,
-        totalBytes: totalBytes,
-      ),
-    );
-    for (final (region, text) in regions) {
-      final bytes = utf8.encode(text);
-      var start = 0;
-      // Empty observed regions need an explicit replace as well.
-      var first = true;
-      do {
-        var end = start + _demoActivityTextBytes;
-        if (end > bytes.length) end = bytes.length;
-        while (end < bytes.length &&
-            end > start &&
-            (bytes[end] & 0xc0) == 0x80) {
-          end--;
-        }
-        final block = utf8.decode(bytes.sublist(start, end));
-        yield ConversationActivityContentEvent(
-          frame: ActivityText(
-            generation: generation,
-            revision: revision,
-            operations: [
-              first
-                  ? ActivityReplace(region, block)
-                  : ActivityAppend(region, block),
+                },
             ],
-          ),
-        );
-        start = end;
-        first = false;
-      } while (start < bytes.length);
-    }
-    // Completion acceptance precedes live publication in the SDK Commit path.
-    yield ConversationActivityContentEvent(
-      frame: ActivityCommit(generation: generation, revision: revision),
-      completed: batch,
+          }),
+        ),
+      ),
     );
-    if (batch != null) _completedSeq = batch.throughSeq;
-  }
-
-  void _stateChanged(ThreadStreamFrame frame) {
-    if (_closed) return;
-    if (frame case ThreadNotificationFrame(update: ThreadActivityUpdate())) {
-      _pendingActivity = true;
-    } else {
-      _pendingState = true;
+    accept(message, scope);
+    for (final body in contents.values) {
+      body.sealed = true;
     }
-    _flush();
   }
-
-  void _contentChanged() {
-    if (_closed) return;
-    _pendingActivity = true;
-    _flush();
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    if (_closed) throw _conversationClosedFailure;
-    if (deliverySequence < 0 || deliverySequence > _sent) {
-      throw _conversationQueryFailure;
-    }
-    if (deliverySequence <= _acked) return;
-    _acked = deliverySequence;
-    _flush();
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    if (_credit) _send(const ConversationClosedEvent(), terminal: true);
-    _closed = true;
-    _activityDelivery = null;
-    _api._conversationFeeds[threadId]?.remove(this);
-    if (_api._conversationFeeds[threadId]?.isEmpty ?? false) {
-      _api._conversationFeeds.remove(threadId);
-    }
-    if (_claimed) unawaited(_controller.close());
-  }
-
-  @override
-  Future<void> close() => _closing ??= Future<void>.sync(() {
-    requestClose();
-    // No asynchronous producer task survives this boundary. A paused consumer's
-    // stream.done is not the producer's termination signal.
-    _api._ownedConversationFeeds.remove(this);
-  });
 }
 
-final class _DemoHistoryReader implements ConversationHistoryReader {
-  _DemoHistoryReader(this._api, this.threadId, this._history);
+// All cursors are issued by this original reader and bind its fixed initial cut.
+// Tokens are opaque to callers; retaining only issued boundaries is not history caching.
+final class _DemoReader implements ConversationReader {
+  _DemoReader(this._api, this.threadId, this._history, this.scope)
+    : h0 = _history.head;
   final DemoStudioTransport _api;
   final _DemoHistory _history;
+  final ChatScope scope;
+  final int h0;
   @override
   final String threadId;
-  @override
-  String get timelineEpoch => _history.epoch;
-  bool _closed = false;
+  final Map<String, (String, int, int)> _cursors = {};
   final Set<Future<void>> _accepted = {};
+  final Set<_DemoContentWatch> _watches = {};
+  bool _closed = false;
   Future<void>? _closing;
+  String cursor(String kind, int revision, int boundary) {
+    final token = 'demo:${newStudioCorrelationId()}';
+    _cursors[token] = (kind, revision, boundary);
+    return token;
+  }
+
+  int boundary(String token, String kind, int revision) {
+    final c = _cursors[token];
+    if (c == null || c.$1 != kind || c.$2 != revision) {
+      throw _demoQueryFailure('Invalid original read cursor');
+    }
+    return c.$3;
+  }
 
   Future<T> _read<T>(T Function() query) {
     if (_closed || _api._runtimeExiting) {
       return Future.error(_conversationClosedFailure);
     }
-    // Synchronous admission and registration; close cannot race past accepted work.
     final result = Future<T>.microtask(query);
     final settled = result.then<void>(
       (_) {},
@@ -727,626 +707,969 @@ final class _DemoHistoryReader implements ConversationHistoryReader {
     return result;
   }
 
-  @override
-  Future<ConversationPage> page({
-    ConversationQueryCursor? before,
-    int? limit,
-  }) =>
-      _read(() => _demoPage(_history, threadId, before: before, limit: limit));
+  ChatMessage fit(ChatMessage message, int budget) {
+    if (message.payload is DeferredPayload) return message;
+    if (_demoEncoded(_demoMessageJson(message)) <= budget) return message;
+    final length = switch (message.payload) {
+      InlinePayload(:final bytes) => bytes.length,
+      DeferredPayload(:final byteLength) => byteLength,
+    };
+    return ChatMessage(
+      id: message.id,
+      payload: DeferredPayload(
+        reference: ContentRef(
+          databaseId: _history.epoch,
+          target: ItemPayloadTarget(itemId: message.id),
+        ),
+        byteLength: length,
+      ),
+    );
+  }
+
+  ChatBatch page(
+    ReadDemand demand, {
+    String? before,
+    CurrentProjection? current,
+  }) {
+    _demoDemand(demand);
+    final end = before == null ? h0 + 1 : boundary(before, 'history', h0);
+    final source = _history.index(scope);
+    var low = 0, high = source.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (source[mid].order < end) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    final selected = <ChatMessage>[];
+    String? next;
+    for (var i = low - 1; i >= 0 && selected.length < demand.maxItems; i--) {
+      final candidate = fit(source[i].message, demand.maxBytes);
+      final staged = [candidate, ...selected];
+      final token = cursor('history', h0, source[i].order);
+      final trial = ChatBatch(
+        placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
+        messages: staged,
+        before: token,
+        current: current,
+      );
+      if (_demoBatchBytes(trial) > demand.maxBytes) {
+        // Try deferring even a medium payload when the remaining page is smaller.
+        final compact = fit(source[i].message, 0);
+        final smaller = ChatBatch(
+          placement: trial.placement,
+          messages: [compact, ...selected],
+          before: token,
+          current: current,
+        );
+        if (_demoBatchBytes(smaller) > demand.maxBytes) {
+          if (selected.isEmpty) {
+            throw _demoQueryFailure('InvalidDemand: envelope does not fit');
+          }
+          break;
+        }
+        selected.insert(0, compact);
+      } else {
+        selected.insert(0, candidate);
+      }
+      next = token;
+      if (i == 0) next = null;
+    }
+    final batch = ChatBatch(
+      placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
+      messages: selected,
+      before: next,
+      current: current,
+    );
+    if (_demoBatchBytes(batch) > demand.maxBytes) {
+      throw _demoQueryFailure('InvalidDemand: current envelope does not fit');
+    }
+    return batch;
+  }
 
   @override
-  Future<ConversationDetailChunk> readDetail({
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => _read(() => page(demand, before: before));
+  // Scope selects chat members, not the lifetime of already issued Item refs.
+  // A Main current tool ref remains readable after sealing into Children.
+  bool _ownsItem(String id) =>
+      _history.byId.containsKey(id) ||
+      _api._pendingItems[threadId]?.containsKey(id) == true;
+
+  Map<String, _DemoBody> _itemBodies(String id) {
+    if (!_ownsItem(id)) throw _demoMissing();
+    return _history.bodies[id] ?? const {};
+  }
+
+  @override
+  Future<ContentManifestPage> listContents({
     required String itemId,
-    required ConversationDetailQuery query,
+    String? continuation,
+    required ReadDemand demand,
   }) => _read(() {
-    if (query.timelineEpoch != timelineEpoch) throw _conversationQueryFailure;
-    _validateConversationField(query.field);
-    final maxBytes = query.maxBytes ?? 64 * 1024;
-    if (maxBytes < conversationDetailMinBytes ||
-        maxBytes > conversationDetailMaxBytes) {
-      throw _conversationQueryFailure;
+    _demoDemand(demand);
+    final bodies = _itemBodies(itemId);
+    final entries = bodies.entries.toList();
+    final start = continuation == null
+        ? 0
+        : boundary(continuation, 'manifest:$itemId', 0);
+    final out = <ContentManifestEntry>[];
+    String? next;
+    if (_demoEncoded({'entries': [], 'continuation': null}) > demand.maxBytes) {
+      throw _demoQueryFailure('InvalidDemand: manifest envelope does not fit');
     }
-    final item = _history.byId[itemId];
-    final field = item?.fieldFor(query.field);
-    if (item == null || field == null) {
-      throw const StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'The completed Demo field is unavailable',
-        retryable: false,
-        correlationId: 'demo-history-detail-not-found',
+    var at = start;
+    for (; at < entries.length && out.length < demand.maxItems; at++) {
+      final entry = entries[at];
+      final ref = ContentRef(
+        databaseId: _history.epoch,
+        target: BodyContentTarget(
+          owner: ItemContentOwner(itemId: itemId),
+          key: entry.key,
+        ),
       );
-    }
-    final bytes = utf8.encode(field.text);
-    var start = 0;
-    if (query.continuation case final cursor?) {
-      final data = _demoDecodeCursor(cursor);
-      if (data.length != 6 ||
-          data[0] != 'detail' ||
-          data[1] != threadId ||
-          data[2] != timelineEpoch ||
-          data[3] != itemId ||
-          !_api._sameDemoFacts(data[4], _demoFieldToken(query.field)) ||
-          data[5] is! int) {
-        throw _conversationQueryFailure;
+      final payload = utf8.encode(
+        jsonEncode({
+          'key': entry.key,
+          'byteLength': entry.value.length,
+          'generation': '${entry.value.generation}',
+          'mediaType': 'text/plain; charset=utf-8',
+        }),
+      );
+      final candidate = ContentManifestEntry(
+        key: entry.key,
+        payload: payload,
+        reference: ref,
+      );
+      final token = cursor('manifest:$itemId', 0, at + 1);
+      final bytes = _demoEncoded({
+        'entries': [
+          for (final e in [...out, candidate])
+            {
+              'key': e.key,
+              'payload': e.payload,
+              'reference': _demoRefJson(e.reference),
+            },
+        ],
+        'continuation': token,
+      });
+      if (bytes > demand.maxBytes) {
+        if (out.isEmpty) {
+          throw _demoQueryFailure('InvalidDemand: manifest entry does not fit');
+        }
+        break;
       }
-      start = data[5] as int;
-      if (start < 0 ||
-          start > bytes.length ||
-          (start < bytes.length && (bytes[start] & 0xc0) == 0x80)) {
-        throw _conversationQueryFailure;
-      }
+      out.add(candidate);
+      next = token;
     }
-    var end = start + maxBytes;
-    if (end > bytes.length) end = bytes.length;
-    while (end < bytes.length && end > start && (bytes[end] & 0xc0) == 0x80) {
-      end--;
-    }
-    return ConversationDetailChunk(
-      threadId: threadId,
-      timelineEpoch: timelineEpoch,
-      itemId: itemId,
-      field: query.field,
-      text: utf8.decode(bytes.sublist(start, end)),
-      totalBytes: bytes.length,
-      continuation: end == bytes.length
-          ? null
-          : _demoCursor([
-              'detail',
-              threadId,
-              timelineEpoch,
-              itemId,
-              _demoFieldToken(query.field),
-              end,
-            ]),
+    return ContentManifestPage(
+      entries: out,
+      continuation: at < entries.length ? next : null,
     );
   });
+  _DemoBody _body(ContentRef reference) {
+    if (reference.databaseId != _history.epoch) {
+      throw _demoQueryFailure('Wrong Demo database');
+    }
+    switch (reference.target) {
+      case ItemPayloadTarget(:final itemId):
+        if (!_ownsItem(itemId)) throw _demoMissing();
+        return _history.payloads[itemId] ?? (throw _demoMissing());
+      case BodyContentTarget(:final owner, :final key):
+        switch (owner) {
+          case ItemContentOwner(:final itemId):
+            return _itemBodies(itemId)[key] ?? (throw _demoMissing());
+          case CurrentContentOwner(:final domain, :final id, :final revision):
+            if (scope is! MainChatScope) throw _demoMissing();
+            final workspace = _api._demoWorkspace(threadId);
+            if (domain == 'plan' && id == threadId) {
+              final plan = workspace.runtime.plan;
+              if (plan == null || plan.revision != revision) throw _demoStale();
+              if (key != 'plan.document' || plan.document == null) {
+                throw _demoMissing();
+              }
+              // Owner data is prepared at publication, not materialized by a range read.
+              return _history.planDocument ?? (throw _demoMissing());
+            }
+            if (revision != _history.revision) throw _demoStale();
+            return _history.currentBodies[(domain, id, key)] ??
+                (throw _demoMissing());
+        }
+    }
+  }
+
+  ContentWindow _window(ContentRef reference, ContentRange range) {
+    final body = _body(reference);
+    final bytes = body.range(range.offset, range.maxBytes);
+    return ContentWindow(
+      offset: range.offset,
+      bytes: bytes,
+      generation: '${body.generation}',
+      availableThrough: body.length,
+      sealed: body.sealed,
+    );
+  }
+
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) => _read(() => _window(reference, range));
+  @override
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    if (_closed || _api._runtimeExiting) throw _conversationClosedFailure;
+    if (_watches.length >= 64) {
+      throw _demoQueryFailure('Demo content watch limit exceeded');
+    }
+    final watch = _DemoContentWatch(this, reference, range);
+    _watches.add(watch);
+    return watch;
+  }
+
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) => _read(() {
+    _demoDemand(demand);
+    if (scope is! MainChatScope || reference.databaseId != _history.epoch) {
+      throw _demoMissing();
+    }
+    if (reference.revision != _history.revision) throw _demoStale();
+    final source = _collection(reference.collection);
+    final start = continuation == null
+        ? 0
+        : boundary(continuation, reference.collection, reference.revision);
+    final out = <CurrentCollectionEntry>[];
+    if (_demoEncoded({
+          'revision': reference.revision,
+          'entries': [],
+          'continuation': null,
+        }) >
+        demand.maxBytes) {
+      throw _demoQueryFailure(
+        'InvalidDemand: collection envelope does not fit',
+      );
+    }
+    var more = false;
+    String? next;
+    for (final row in source) {
+      final index = row.$2;
+      if (index < start) continue;
+      if (out.length == demand.maxItems) {
+        more = true;
+        break;
+      }
+      final bytes = utf8.encode(jsonEncode(row.$3));
+      PayloadData payload = InlinePayload(bytes: bytes);
+      CurrentCollectionEntry candidate = CurrentCollectionEntry(
+        id: row.$1,
+        position: index,
+        payload: payload,
+      );
+      final token = cursor(reference.collection, reference.revision, index + 1);
+      int encoded() => _demoEncoded({
+        'revision': reference.revision,
+        'entries': [
+          for (final e in [...out, candidate])
+            {
+              'id': e.id,
+              'position': e.position,
+              'payload': _demoPayloadJson(e.payload),
+            },
+        ],
+        'continuation': token,
+      });
+      if (encoded() > demand.maxBytes) {
+        final key = (reference.collection, row.$1, 'payload');
+        _history.currentBodies.putIfAbsent(
+          key,
+          () => _DemoBody()..append(bytes),
+        );
+        payload = DeferredPayload(
+          reference: ContentRef(
+            databaseId: _history.epoch,
+            target: BodyContentTarget(
+              owner: CurrentContentOwner(
+                domain: reference.collection,
+                id: row.$1,
+                revision: reference.revision,
+              ),
+              key: 'payload',
+            ),
+          ),
+          byteLength: bytes.length,
+        );
+        candidate = CurrentCollectionEntry(
+          id: row.$1,
+          position: index,
+          payload: payload,
+        );
+        if (encoded() > demand.maxBytes) {
+          if (out.isEmpty) {
+            throw _demoQueryFailure(
+              'InvalidDemand: current entry does not fit',
+            );
+          }
+          more = true;
+          break;
+        }
+      }
+      out.add(candidate);
+      next = token;
+    }
+    // An exact-sized page may carry a cursor to one empty EOF page.
+    return CurrentCollectionPage(
+      revision: reference.revision,
+      entries: out,
+      continuation: more ? next : null,
+    );
+  });
+  Iterable<(String, int, Map<String, Object?>)> _collection(String name) sync* {
+    if (name == 'members' || name == 'tools') {
+      for (final item in _api._pendingItemsOf(threadId)) {
+        if (name == 'tools' && item.content.kind != _DemoContentKind.tool) {
+          continue;
+        }
+        yield (
+          item.id,
+          _history.positions[('member', item.id)]!,
+          {
+            'id': item.id,
+            'kind': item.content.kind.name,
+            if (item.content.invocation != null)
+              'invocation': item.content.invocation!.toJson(),
+            'bodies': [
+              for (final e
+                  in (_history.bodies[item.id] ?? const <String, _DemoBody>{})
+                      .entries)
+                {
+                  'key': e.key,
+                  'byteLength': e.value.length,
+                  'reference': _demoRefJson(
+                    ContentRef(
+                      databaseId: _history.epoch,
+                      target: BodyContentTarget(
+                        owner: ItemContentOwner(itemId: item.id),
+                        key: e.key,
+                      ),
+                    ),
+                  ),
+                },
+            ],
+          },
+        );
+      }
+    } else if (name == 'interactions') {
+      final ordered = _api._demoWorkspace(threadId).interactions.toList()
+        ..sort(
+          (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
+            _history.positions[('interaction', b.id)]!,
+          ),
+        );
+      for (final i in ordered) {
+        yield (
+          i.id,
+          _history.positions[('interaction', i.id)]!,
+          {'id': i.id, 'revision': i.revision, 'kind': i.kind.name},
+        );
+      }
+    } else {
+      throw _demoMissing();
+    }
+  }
 
   @override
   void requestClose() {
+    if (_closed) return;
     _closed = true;
+    for (final watch in _watches.toList()) {
+      watch.requestClose();
+    }
   }
 
   @override
   Future<void> close() {
     requestClose();
     return _closing ??= () async {
-      await Future.wait(_accepted.toList());
+      // A failed watch must not prevent the other owned operations from joining.
+      await Future.wait([
+        ..._accepted,
+        for (final watch in _watches.toList()) watch.close(),
+      ]);
+      _cursors.clear();
       _api._ownedHistoryReaders.remove(this);
-    }();
+    }().whenComplete(() => _closing = null);
   }
 }
 
-ConversationPage _demoPage(
-  _DemoHistory history,
-  String threadId, {
-  ConversationQueryCursor? before,
-  int? limit,
-}) {
-  final size = limit ?? conversationPageDefaultLimit;
-  if (size < 1 || size > conversationPageMaxLimit) {
-    throw _conversationQueryFailure;
-  }
-  var boundary = history.head + 1;
-  if (before != null) {
-    final data = _demoDecodeCursor(before);
-    if (data.length != 4 ||
-        data[0] != 'page' ||
-        data[1] != threadId ||
-        data[2] != history.epoch ||
-        data[3] is! int) {
-      throw _conversationQueryFailure;
-    }
-    boundary = data[3] as int;
-    if (boundary < 1 || boundary > history.head + 1) {
-      throw _conversationQueryFailure;
-    }
-  }
-  final staged = <ConversationItem>[];
-  var bytes = 128;
-  for (var i = boundary - 2; i >= 0 && staged.length < size; i--) {
-    final preview = _demoPreview(history.items[i]);
-    if (staged.isNotEmpty && bytes + preview.bytes > _demoPageLimitBytes) break;
-    staged.add(preview.item);
-    bytes += preview.bytes;
-  }
-  final items = staged.reversed.toList(growable: false);
-  final oldest = items.firstOrNull?.header.appendSeq;
-  final hasOlder = oldest != null && oldest > 1;
-  return ConversationPage(
-    threadId: threadId,
-    timelineEpoch: history.epoch,
-    items: items,
-    before: hasOlder
-        ? _demoCursor(['page', threadId, history.epoch, oldest])
-        : null,
-    hasOlder: hasOlder,
-  );
-}
-
-ConversationQueryCursor _demoCursor(List<Object?> data) =>
-    ConversationQueryCursor(
-      'dc3.${base64Url.encode(utf8.encode(jsonEncode(data)))}',
-    );
-
-List<Object?> _demoDecodeCursor(ConversationQueryCursor cursor) {
-  try {
-    if (!cursor.token.startsWith('dc3.')) throw _conversationQueryFailure;
-    final data = jsonDecode(
-      utf8.decode(base64Url.decode(cursor.token.substring(4))),
-    );
-    if (data is! List<Object?>) throw _conversationQueryFailure;
-    return data;
-  } catch (_) {
-    throw _conversationQueryFailure;
-  }
-}
-
-Object _demoFieldToken(ThreadContentFieldView field) => switch (field) {
-  ThreadTextFieldView() => ['text'],
-  ThreadThinkingSummaryFieldView(:final chunkIndex) => ['summary', chunkIndex],
-  ThreadThinkingContentFieldView(:final chunkIndex) => [
-    'reasoning',
-    chunkIndex,
-  ],
-  ThreadToolArgumentsFieldView() => ['arguments'],
-  ThreadToolResultFieldView() => ['result'],
-  ThreadToolOutputArtifactsFieldView() => ['artifacts'],
-  ThreadPlanDocumentFieldView() => ['plan'],
-  ThreadPlanFeedbackFieldView() => ['feedback'],
-  ThreadRawPayloadFieldView(:final payloadIndex) => ['raw', payloadIndex],
-  ThreadToolUserInputFieldView(:final questionIndex, :final part) => [
-    'input',
-    questionIndex,
-    switch (part) {
-      ThreadUserInputHeaderFieldPartView() => ['header'],
-      ThreadUserInputQuestionFieldPartView() => ['question'],
-      ThreadUserInputAnswerFieldPartView(:final answerIndex) => [
-        'answer',
-        answerIndex,
-      ],
-      ThreadUserInputOptionLabelFieldPartView(:final optionIndex) => [
-        'label',
-        optionIndex,
-      ],
-      ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) => [
-        'description',
-        optionIndex,
-      ],
+final class _DemoContentWatch implements ConversationContentWatch {
+  _DemoContentWatch(this.reader, this.reference, this.range);
+  final _DemoReader reader;
+  final ContentRef reference;
+  final ContentRange range;
+  bool _dirty = true, _scheduled = false, _stopped = false, _paused = false;
+  String? _last;
+  Future<void>? _delivery;
+  Future<void>? _closing;
+  bool _joined = false;
+  late final StreamController<ContentWindow> _controller = StreamController(
+    sync: true,
+    onListen: () {
+      if (_stopped || reader._closed) return;
+      reader._history.changes.add(wake);
+      wake();
     },
-  ],
-};
-
-List<ConversationFieldPreview> _demoPublicFields(ConversationItem item) {
-  final descriptor = item.descriptor;
-  if (descriptor is! ConversationToolDescriptor ||
-      descriptor.userInput == null) {
-    return item.fields;
-  }
-  final input = descriptor.userInput!;
-  final hidden = <int>{};
-  for (var i = 0; i < input.questions.length; i++) {
-    final q = input.questions[i];
-    if (q.isSecret ||
-        (input.state is ConversationUserInputResolved &&
-            (input.state as ConversationUserInputResolved).answers.any(
-              (a) => a.questionId == q.id && a.redacted,
-            ))) {
-      hidden.add(i);
-    }
-  }
-  return item.fields
-      .where((field) {
-        if (field.field case ThreadToolUserInputFieldView(
-          :final questionIndex,
-        )) {
-          return questionIndex >= 0 &&
-              questionIndex < input.questions.length &&
-              !hidden.contains(questionIndex);
+    onPause: () {
+      _paused = true;
+    },
+    onResume: () {
+      _paused = false;
+      wake();
+    },
+    // Stream cancellation only stops delivery. The original watch remains
+    // registered until its explicit handle successfully joins.
+    onCancel: requestClose,
+  );
+  @override
+  Stream<ContentWindow> get windows => _controller.stream;
+  void wake() {
+    _dirty = true;
+    if (_paused || _stopped || _scheduled || !_controller.hasListener) return;
+    _scheduled = true;
+    _delivery = Future<void>.microtask(() {
+      _scheduled = false;
+      if (_paused || _stopped || !_dirty) return;
+      _dirty = false;
+      try {
+        final window = reader._window(reference, range);
+        final stamp =
+            '${window.generation}:${window.availableThrough}:${window.sealed}';
+        if (stamp != _last) {
+          _last = stamp;
+          _controller.add(window);
         }
-        // Tool argument/result bodies can contain the complete submitted answer map.
-        return hidden.isEmpty ||
-            (field.field is! ThreadToolArgumentsFieldView &&
-                field.field is! ThreadToolResultFieldView &&
-                field.field is! ThreadToolOutputArtifactsFieldView);
-      })
-      .toList(growable: false);
+        if (window.sealed) requestClose();
+      } catch (error, stack) {
+        _controller.addError(error, stack);
+        requestClose();
+      }
+    });
+  }
+
+  @override
+  void requestClose() {
+    if (_stopped) return;
+    _stopped = true;
+    reader._history.changes.remove(wake);
+    unawaited(_controller.close());
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    if (_joined) return Future.value();
+    return _closing ??= () async {
+      await _delivery;
+      _joined = true;
+      reader._watches.remove(this);
+    }().whenComplete(() => _closing = null);
+  }
 }
 
-({ConversationItem item, int bytes}) _demoPreview(ConversationItem full) {
-  final structure = _demoStructureBytes(full);
-  if (structure > _demoItemPreviewLimitBytes) throw _timelineBudgetExceeded();
-  var remaining = _demoItemPreviewLimitBytes - structure;
-  if (remaining > _demoBodyPreviewBytes) remaining = _demoBodyPreviewBytes;
-  final fields = <ConversationFieldPreview>[];
-  var kept = 0;
-  for (final field in full.fields) {
-    var budget = remaining;
-    if ((field.field is ThreadToolArgumentsFieldView ||
-            field.field is ThreadToolResultFieldView) &&
-        budget > _demoToolPreviewBytes) {
-      budget = _demoToolPreviewBytes;
-    }
-    final text = _capDemoText(field.text, budget);
-    final bytes = utf8.encode(text).length;
-    remaining -= bytes;
-    kept += bytes;
-    fields.add(
-      ConversationFieldPreview(
-        field: field.field,
-        text: text,
-        totalBytes: field.totalBytes,
+Map<String, Object?> _demoCurrentJson(CurrentProjection c) => {
+  'sourceEffectSeq': c.sourceEffectSeq,
+  'logicalStatus': c.logicalStatus.name,
+  'executionPresent': c.executionPresent,
+  'active': c.active == null
+      ? null
+      : {
+          'id': c.active!.id,
+          'kind': c.active!.kind.name,
+          'summary': c.active!.summary,
+          'thinkingSummary': c.active!.thinkingSummary,
+          'thinkingSeconds': c.active!.thinkingSeconds,
+          'toolCount': c.active!.toolCount,
+          'backgroundToolCount': c.active!.backgroundToolCount,
+          'latestTool': c.active!.latestTool == null
+              ? null
+              : {
+                  'callId': c.active!.latestTool!.callId,
+                  'name': c.active!.latestTool!.name,
+                  'state': c.active!.latestTool!.state.name,
+                },
+        },
+  'activeTurn': c.activeTurn == null
+      ? null
+      : {
+          'id': c.activeTurn!.id,
+          'phase': c.activeTurn!.phase.name,
+          'childrenParentId': c.activeTurn!.childrenParentId,
+        },
+  'plan': c.plan == null
+      ? null
+      : {
+          'revision': c.plan!.revision,
+          'phase': c.plan!.phase.name,
+          'document': c.plan!.document == null
+              ? null
+              : _demoRefJson(c.plan!.document!),
+        },
+  'interactions': c.interactions == null
+      ? null
+      : _demoCollectionJson(c.interactions!),
+  'previews': [
+    for (final p in c.previews)
+      {
+        'id': p.id,
+        'role': p.role.name,
+        'textChannel': p.textChannel?.name,
+        'text': p.text,
+        'reference': _demoRefJson(p.reference),
+      },
+  ],
+  'collections': [for (final r in c.collections) _demoCollectionJson(r)],
+};
+Map<String, Object?> _demoCollectionJson(CurrentCollectionRef r) => {
+  'databaseId': r.databaseId,
+  'collection': r.collection,
+  'revision': r.revision,
+};
+int _demoBatchBytes(ChatBatch batch) => _demoEncoded({
+  'placement': batch.placement.name,
+  'messages': [for (final m in batch.messages) _demoMessageJson(m)],
+  'before': batch.before,
+  'current': batch.current == null ? null : _demoCurrentJson(batch.current!),
+});
+
+CurrentProjection _demoCurrent(_DemoReader reader, int budget) {
+  final api = reader._api, history = reader._history;
+  final workspace = api._demoWorkspace(reader.threadId);
+  final activity = workspace.activity,
+      turn = workspace.activeTurn,
+      plan = workspace.runtime.plan;
+  history.prepareCurrent(workspace);
+  final collections = <CurrentCollectionRef>[];
+  CurrentCollectionRef collection(String name) {
+    final ref = CurrentCollectionRef(
+      databaseId: history.epoch,
+      collection: name,
+      revision: history.revision,
+    );
+    collections.add(ref);
+    return ref;
+  }
+
+  if (api._pendingItemsOf(reader.threadId).isNotEmpty) collection('members');
+  if (api
+      ._pendingItemsOf(reader.threadId)
+      .any((i) => i.content.kind == _DemoContentKind.tool)) {
+    collection('tools');
+  }
+  final interactions = workspace.interactions.isEmpty
+      ? null
+      : collection('interactions');
+  ContentRef? document;
+  if (plan?.document != null) {
+    document = ContentRef(
+      databaseId: history.epoch,
+      target: BodyContentTarget(
+        owner: CurrentContentOwner(
+          domain: 'plan',
+          id: reader.threadId,
+          revision: plan!.revision,
+        ),
+        key: 'plan.document',
       ),
     );
   }
-  return (
-    item: ConversationItem(
-      header: full.header,
-      descriptor: full.descriptor,
-      source: full.source,
-      fields: fields,
-    ),
-    bytes: structure + kept,
+  final previews = <CurrentContentPreview>[];
+  final pending = api._pendingItemsOf(reader.threadId);
+  // Only a bounded tail preview is pushed; complete member/tool lists are paged.
+  final last = pending.lastOrNull;
+  if (last != null) {
+    final entry = history.bodies[last.id]?.entries.lastOrNull;
+    if (entry != null) {
+      final bytes = entry.value.range(0, (budget ~/ 16).clamp(1, 256));
+      var end = bytes.length;
+      while (end > 0) {
+        try {
+          utf8.decode(bytes.sublist(0, end));
+          break;
+        } on FormatException {
+          end--;
+        }
+      }
+      previews.add(
+        CurrentContentPreview(
+          id: last.id,
+          textChannel: last.content.kind == _DemoContentKind.text
+              ? last.content.textChannel
+              : null,
+          role: switch (last.content.kind) {
+            _DemoContentKind.thinking => CurrentContentRole.reasoning,
+            _DemoContentKind.tool =>
+              entry.key == 'tool.arguments'
+                  ? CurrentContentRole.toolArguments
+                  : CurrentContentRole.toolOutput,
+            _ => CurrentContentRole.response,
+          },
+          text: utf8.decode(bytes.sublist(0, end)),
+          reference: ContentRef(
+            databaseId: history.epoch,
+            target: BodyContentTarget(
+              owner: ItemContentOwner(itemId: last.id),
+              key: entry.key,
+            ),
+          ),
+        ),
+      );
+    }
+  }
+  return CurrentProjection(
+    sourceEffectSeq: history.revision,
+    logicalStatus: workspace.thread.status,
+    executionPresent: workspace.runtime.execution != null,
+    active: activity == null
+        ? null
+        : CurrentActivityHead(
+            id: activity.identity,
+            kind: activity.kind,
+            summary: _capDemoText(activity.summary, 128),
+            thinkingSummary: activity.thinkingSummary == null
+                ? null
+                : _capDemoText(activity.thinkingSummary!, 128),
+            thinkingSeconds: activity.thinkingSeconds,
+            toolCount: activity.tools.count,
+            backgroundToolCount: activity.tools.background,
+            latestTool: activity.tools.latestStarted == null
+                ? null
+                : CurrentToolHead(
+                    callId: activity.tools.latestStarted!.callId,
+                    name: _capDemoText(activity.tools.latestStarted!.name, 128),
+                    state: activity.tools.latestStarted!.state,
+                  ),
+          ),
+    activeTurn: turn == null
+        ? null
+        : CurrentTurnHead(
+            id: turn.turnId,
+            phase: turn.state.activity ?? StudioTurnActivity.preparing,
+            childrenParentId: _demoParent(turn.turnId),
+          ),
+    plan: plan == null
+        ? null
+        : CurrentPlanHead(
+            revision: plan.revision,
+            phase: plan.state,
+            document: document,
+          ),
+    interactions: interactions,
+    previews: previews,
+    collections: collections,
   );
 }
 
-String _capDemoText(String value, int budget) {
-  final bytes = utf8.encode(value);
-  if (bytes.length <= budget) return value;
-  var end = budget;
-  while (end > 0 && (bytes[end] & 0xc0) == 0x80) {
-    end--;
+String _capDemoText(String text, int maxBytes) {
+  // Only bounded heads use this helper. Body range reads use the chunk owner.
+  final out = StringBuffer();
+  var bytes = 0;
+  for (final rune in text.runes) {
+    final s = String.fromCharCode(rune);
+    final n = utf8.encode(s).length;
+    if (bytes + n > maxBytes) break;
+    out.write(s);
+    bytes += n;
   }
-  return utf8.decode(bytes.sublist(0, end));
+  return out.toString();
 }
 
-StudioFailure _timelineBudgetExceeded() => const StudioFailure(
-  code: StudioFailureCode.overloaded,
-  message: 'The conversation item cannot fit the preview budget',
-  retryable: false,
-  correlationId: 'demo-conversation-budget',
-);
-
-// Typed facts support value-idempotent canonical insertion, including descriptor
-// payloads. No descriptor is compared by identity or converted through raw JSON.
-Object _demoItemFacts(ConversationItem item) => [
-  item.id,
-  item.header.threadId,
-  item.header.turnId,
-  item.header.sourceEffectSeq,
-  item.header.sealedAt,
-  switch (item.source) {
-    ConversationContentSource() => 'content',
-    ConversationRecoverySource(:final notice) => notice,
-  },
-  _demoDescriptorFacts(item.descriptor),
-  {
-    for (final field in _demoPublicFields(item))
-      field.field: [field.text, field.totalBytes],
-  },
-];
-
-Object _demoAttachmentFacts(ThreadAttachmentView a) => [
-  a.id,
-  a.modality,
-  a.mediaType,
-  a.filename,
-  a.byteSize,
-  a.width,
-  a.height,
-];
-
-Object _demoContentOutcomeFacts(ConversationContentOutcome o) => switch (o) {
-  ConversationContentCompleted(:final value) => [
-    'completed',
-    value.completedAt,
-  ],
-  ConversationContentFailed(:final value) => [
-    'failed',
-    value.failedAt,
-    value.error,
-  ],
-  ConversationContentCancelled(:final value) => [
-    'cancelled',
-    value.cancelledAt,
-    value.reason,
-  ],
-};
-
-Object? _demoOutputFacts(ConversationToolOutputDescriptor? output) =>
-    output == null
-    ? null
-    : [output.exitCode, output.attachments.map(_demoAttachmentFacts).toList()];
-
-Object _demoDescriptorFacts(ConversationDescriptor d) => switch (d) {
-  ConversationTextDescriptor(
-    :final channel,
-    :final attachments,
-    :final outcome,
-  ) =>
-    [
-      'text',
-      channel,
-      attachments.map(_demoAttachmentFacts).toList(),
-      _demoContentOutcomeFacts(outcome),
-    ],
-  ConversationThinkingDescriptor(:final outcome) => [
-    'thinking',
-    _demoContentOutcomeFacts(outcome),
-  ],
-  ConversationPlanDescriptor(
-    :final interactionId,
-    :final documentVersion,
-    :final contentHash,
-    :final decision,
-  ) =>
-    ['plan', interactionId, documentVersion, contentHash, decision],
-  ConversationRawDescriptor(
-    :final origin,
-    :final payloads,
-    :final notice,
-    :final recordedAt,
-  ) =>
-    [
-      'raw',
-      origin,
-      payloads.map((p) => [p.format, p.version]).toList(),
-      notice,
-      recordedAt,
-    ],
-  ConversationToolDescriptor(
-    :final invocation,
-    :final state,
-    :final userInput,
-    :final wait,
-  ) =>
-    [
-      'tool',
-      invocation.toolCallId,
-      invocation.callId,
-      invocation.providerItemId,
-      invocation.name,
-      invocation.workingDirectory,
-      invocation.taskId,
-      switch (state) {
-        ConversationToolBackgroundStarted(:final startedAt) => [
-          'background',
-          startedAt,
-        ],
-        ConversationToolInterrupted(:final interruptedAt, :final reason) => [
-          'interrupted',
-          interruptedAt,
-          reason,
-        ],
-        ConversationToolSucceeded(:final completedAt, :final output) => [
-          'succeeded',
-          completedAt,
-          _demoOutputFacts(output),
-        ],
-        ConversationToolFailed(
-          :final failedAt,
-          :final failure,
-          :final output,
-        ) =>
-          [
-            'failed',
-            failedAt,
-            failure.kind,
-            failure.message,
-            _demoOutputFacts(output),
-          ],
-        ConversationToolDenied(:final deniedAt, :final reason) => [
-          'denied',
-          deniedAt,
-          reason,
-        ],
-        ConversationToolCancelled(:final cancelledAt, :final reason) => [
-          'cancelled',
-          cancelledAt,
-          reason,
-        ],
-      },
-      if (userInput != null)
-        [
-          userInput.interactionId,
-          userInput.questions
-              .map((q) => [q.id, q.isOther, q.isSecret, q.optionCount])
-              .toList(),
-          switch (userInput.state) {
-            ConversationUserInputCancelled() => 'cancelled',
-            ConversationUserInputResolved(:final answers) =>
-              answers
-                  .map((a) => [a.questionId, a.answerCount, a.redacted])
-                  .toList(),
-          },
-        ]
-      else
-        null,
-      if (wait != null)
-        [
-          wait.state,
-          wait.messagesReady,
-          switch (wait.intent) {
-            ThreadWaitTimerIntentView(:final durationMs) => [
-              'timer',
-              durationMs,
-            ],
-            ThreadWaitEventsIntentView(:final targets, :final timeoutMs) => [
-              'events',
-              timeoutMs,
-              targets
-                  .map(
-                    (t) => [
-                      t.taskId,
-                      t.toolName,
-                      t.summary,
-                      t.summaryTruncated,
-                      t.status,
-                    ],
-                  )
-                  .toList(),
-            ],
-          },
-        ]
-      else
-        null,
-    ],
-  ConversationAgentDescriptor(:final identity, :final outcome) => [
-    'agent',
-    identity.id,
-    identity.path,
-    identity.parentPath,
-    identity.role,
-    identity.task,
-    identity.depth,
-    switch (outcome) {
-      ConversationAgentSucceeded(:final value) => [
-        'succeeded',
-        value.completedAt,
-        value.summary,
-      ],
-      ConversationAgentDenied(:final value) => [
-        'denied',
-        value.deniedAt,
-        value.reason,
-      ],
-      ConversationAgentCancelled(:final value) => [
-        'cancelled',
-        value.cancelledAt,
-        value.reason,
-      ],
-      ConversationAgentFailed(:final value) => [
-        'failed',
-        value.failedAt,
-        value.error,
-      ],
+final class _DemoConversationFeed implements ConversationFeed {
+  _DemoConversationFeed(
+    this._api,
+    this.threadId,
+    this._history,
+    ChatScope scope,
+    this._demand,
+  ) : subscriptionId = 'demo:${newStudioCorrelationId()}',
+      reader = _DemoReader(_api, threadId, _history, scope) {
+    _demoDemand(_demand);
+    _initial = reader.page(
+      _demand,
+      current: scope is MainChatScope
+          ? _demoCurrent(reader, _demand.maxBytes)
+          : null,
+    );
+    _completed = reader.h0;
+    _currentRevision = _history.revision;
+    _initialState = ConversationStateEvent(
+      frame: ThreadSnapshotFrame(
+        workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
+      ),
+    );
+    // No await separates source registration and capture. Failed preparation
+    // has not admitted an owned resource; events.listen never creates the cut.
+    _api._ownedHistoryReaders.add(reader);
+    (_api._conversationFeeds[threadId] ??= {}).add(this);
+  }
+  final DemoStudioTransport _api;
+  final _DemoHistory _history;
+  final ReadDemand _demand;
+  @override
+  final String threadId;
+  @override
+  final String subscriptionId;
+  @override
+  final _DemoReader reader;
+  ChatBatch? _initial;
+  ConversationStateEvent? _initialState;
+  late int _completed, _currentRevision;
+  int _sent = 0, _acked = 0, _phase = 0;
+  bool _started = false,
+      _claimed = false,
+      _closed = false,
+      _ended = false,
+      _pendingState = false,
+      _pendingCurrent = false;
+  Future<void>? _closing;
+  late final StreamController<ConversationFrame> _controller = StreamController(
+    onListen: () {
+      _started = true;
+      _flush();
     },
-  ],
-  ConversationTurnDescriptor(:final inputId, :final outcome) => [
-    'turn',
-    inputId,
-    switch (outcome) {
-      ConversationTurnCompleted(:final value) => [
-        'completed',
-        value.startedAt,
-        value.completedAt,
-        value.completion,
-      ],
-      ConversationTurnFailed(:final value) => [
-        'failed',
-        value.startedAt,
-        value.completedAt,
-        value.failure.category,
-        value.failure.providerKind,
-        value.failure.code,
-        value.failure.httpStatus,
-        value.failure.message,
-        value.failure.retryable,
-        value.failure.retryAfterMs,
-      ],
-      ConversationTurnCancelled(:final value) => [
-        'cancelled',
-        value.startedAt,
-        value.requestedAt,
-        value.completedAt,
-        switch (value.cause) {
-          UnspecifiedTurnCancellation() => ['unspecified'],
-          UserRequestedTurnCancellation() => ['user'],
-          RuntimeShutdownTurnCancellation() => ['shutdown'],
-          AgentClosedTurnCancellation() => ['closed'],
-          InterruptedTurnCancellation() => ['interrupted'],
-          RecoveryTurnCancellation() => ['recovery'],
-          CoalescedTurnCancellation(:final targetTurnId) => [
-            'coalesced',
-            targetTurnId,
-          ],
-        },
-      ],
-      ConversationTurnBudgetLimited(:final value) => [
-        'budget',
-        value.startedAt,
-        value.completedAt,
-        value.limit.kind,
-        value.limit.usage.modelSteps,
-        value.limit.usage.toolCalls,
-        value.limit.usage.waitCalls,
-        value.limit.usage.elapsedMs,
-        switch (value.rollover) {
-          RolloverNotAttempted() => ['notAttempted'],
-          RolloverSucceeded() => ['succeeded'],
-          RolloverFailed(:final error) => ['failed', error],
-        },
-      ],
+    onCancel: () {
+      if (!_ended) {
+        requestClose();
+        return close();
+      }
     },
-  ],
-  ConversationInferenceDescriptor(
-    :final inferenceId,
-    :final model,
-    :final outcome,
-  ) =>
-    [
-      'inference',
-      inferenceId,
-      model,
-      switch (outcome) {
-        ConversationInferenceCompleted(:final value) => [
-          'completed',
-          value.completedAt,
-          value.usage.promptTokens,
-          value.usage.completionTokens,
-          value.usage.cachedPromptTokens,
-          value.usage.totalTokens,
-        ],
-        ConversationInferenceFailed(:final value) => [
-          'failed',
-          value.failedAt,
-          value.error,
-        ],
-        ConversationInferenceCancelled(:final value) => [
-          'cancelled',
-          value.cancelledAt,
-          value.reason,
-        ],
-      },
-    ],
-  ConversationSkillDescriptor(:final value) => [
-    'skill',
-    value.name,
-    value.source,
-    value.providerId,
-    value.resourceBase.kind,
-    value.resourceBase.value,
-    value.cause.kind,
-    value.cause.id,
-    value.activatedAt,
-  ],
-  ConversationFileDescriptor(:final value) => [
-    'file',
-    value.path,
-    value.mediaType,
-    value.completedAt,
-  ],
-  ConversationContextCompactionDescriptor(:final value) => [
-    'compaction',
-    value.beforeTokens,
-    value.afterTokens,
-    value.compactedAt,
-  ],
-};
-
-// Conservative estimate for this typed representation. Fields have their own
-// fixed per-entry cost; full bodies are separately previewed or read in chunks.
-int _demoStructureBytes(ConversationItem item) {
-  int facts(Object? value) {
-    if (value == null) return 8;
-    if (value is String) return 16 + utf8.encode(value).length;
-    if (value is List) return 32 + value.fold<int>(0, (n, v) => n + facts(v));
-    return 128;
+  );
+  @override
+  Stream<ConversationFrame> get events {
+    if (_closed) throw _conversationClosedFailure;
+    if (_claimed) {
+      throw _demoQueryFailure('Conversation events already have a consumer');
+    }
+    _claimed = true;
+    return _controller.stream;
   }
 
-  return 512 +
-      utf8.encode(item.id).length +
-      utf8.encode(item.header.threadId).length +
-      utf8.encode(item.header.turnId ?? '').length +
-      facts(_demoDescriptorFacts(item.descriptor)) +
-      item.fields.length * 96;
+  void _send(ConversationEvent event, {bool terminal = false}) {
+    if (!_started || _ended) return;
+    if (!terminal) _sent++;
+    _controller.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: _sent,
+        event: event,
+      ),
+    );
+    if (terminal) {
+      _ended = true;
+      _unregister();
+      unawaited(_controller.close());
+    }
+  }
+
+  void _flush() {
+    if (_closed || _ended || !_started || _sent != _acked) return;
+    try {
+      if (_phase == 0) {
+        _phase = 1;
+        _send(_initialState!);
+        _initialState = null;
+        return;
+      }
+      if (_phase == 1) {
+        _phase = 2;
+        _send(ConversationChatEvent(batch: _initial!));
+        _initial = null;
+        return;
+      }
+      if (_pendingState) {
+        _pendingState = false;
+        _send(
+          ConversationStateEvent(
+            frame: ThreadSnapshotFrame(
+              workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
+            ),
+          ),
+        );
+        return;
+      }
+      final source = _history.index(reader.scope);
+      var low = 0, high = source.length;
+      while (low < high) {
+        final mid = (low + high) ~/ 2;
+        if (source[mid].order <= _completed) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      final messages = <ChatMessage>[];
+      var through = _completed;
+      CurrentProjection? current;
+      final head = _history.head;
+      // Do not let current retire a member before its completion is delivered.
+      for (
+        var i = low;
+        i < source.length && messages.length < _demand.maxItems;
+        i++
+      ) {
+        var message = reader.fit(source[i].message, _demand.maxBytes);
+        final trial = ChatBatch(
+          placement: ChatPlacement.append,
+          messages: [...messages, message],
+        );
+        if (_demoBatchBytes(trial) > _demand.maxBytes) {
+          message = reader.fit(source[i].message, 0);
+          if (_demoBatchBytes(
+                ChatBatch(
+                  placement: ChatPlacement.append,
+                  messages: [...messages, message],
+                ),
+              ) >
+              _demand.maxBytes) {
+            if (messages.isEmpty) {
+              throw _demoQueryFailure(
+                'InvalidDemand: message envelope does not fit',
+              );
+            }
+            break;
+          }
+        }
+        messages.add(message);
+        through = source[i].order;
+      }
+      var caughtUp = low + messages.length == source.length;
+      if (caughtUp &&
+          reader.scope is MainChatScope &&
+          (_pendingCurrent || _currentRevision != _history.revision)) {
+        current = _demoCurrent(reader, _demand.maxBytes);
+        if (_demoBatchBytes(
+              ChatBatch(
+                placement: ChatPlacement.append,
+                messages: messages,
+                current: current,
+              ),
+            ) >
+            _demand.maxBytes) {
+          // Compact the final handoff, never detach current from the completion
+          // that retires its members. Earlier prefixes may omit current.
+          for (var i = 0; i < messages.length; i++) {
+            messages[i] = reader.fit(messages[i], 0);
+          }
+          if (_demoBatchBytes(
+                ChatBatch(
+                  placement: ChatPlacement.append,
+                  messages: messages,
+                  current: current,
+                ),
+              ) >
+              _demand.maxBytes) {
+            if (messages.length < 2) {
+              throw _demoQueryFailure(
+                'InvalidDemand: completion/current handoff does not fit',
+              );
+            }
+            messages.removeLast();
+            through = source[low + messages.length - 1].order;
+            caughtUp = false;
+            current = null;
+          }
+        }
+      }
+      if (messages.isEmpty && current == null) {
+        if (caughtUp) _completed = head;
+        return;
+      }
+      if (current != null) {
+        _pendingCurrent = false;
+        _currentRevision = _history.revision;
+      }
+      _completed = caughtUp ? head : through;
+      _send(
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            messages: messages,
+            current: current,
+          ),
+        ),
+      );
+    } catch (error) {
+      // Producer termination does not retire the independent read lease.
+      _send(
+        ConversationFailureEvent(
+          failure: _studioFailure(error) as StudioFailure,
+        ),
+        terminal: true,
+      );
+    }
+  }
+
+  void _stateChanged(ThreadStreamFrame frame) {
+    if (_closed || _ended) return;
+    _pendingState = true;
+    _pendingCurrent = true;
+    _flush();
+  }
+
+  void _contentChanged() {
+    if (_closed || _ended) return;
+    _pendingCurrent = true;
+    _flush();
+  }
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    if (_closed) throw _conversationClosedFailure;
+    if (deliverySequence < 0 || deliverySequence > _sent) {
+      throw _demoQueryFailure('ACK exceeds sent sequence');
+    }
+    if (deliverySequence <= _acked) return;
+    _acked = deliverySequence;
+    _flush();
+  }
+
+  void _unregister() {
+    _api._conversationFeeds[threadId]?.remove(this);
+    if (_api._conversationFeeds[threadId]?.isEmpty ?? false) {
+      _api._conversationFeeds.remove(threadId);
+    }
+  }
+
+  @override
+  void requestClose() {
+    if (_closed) return;
+    reader.requestClose();
+    _send(const ConversationClosedEvent(), terminal: true);
+    _closed = true;
+    _initial = null;
+    _initialState = null;
+    _unregister();
+    if (!_ended) {
+      _ended = true;
+      unawaited(_controller.close());
+    }
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    return _closing ??= () async {
+      await reader.close();
+      _api._ownedConversationFeeds.remove(this);
+    }().whenComplete(() => _closing = null);
+  }
 }

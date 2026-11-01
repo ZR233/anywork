@@ -1,6 +1,24 @@
+use super::super::timeline::ChatCursor;
 use super::*;
 
 const THREAD: &str = "atomic-migration";
+
+/// Freeze the last published timeline format as input to the demand migration.
+struct PublishedV11;
+
+impl MigratorTraitSelf for PublishedV11 {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        Migrator {
+            thread_id: THREAD.into(),
+            execution_identity: None,
+            bot_root: None,
+        }
+        .migrations()
+        .into_iter()
+        .filter(|migration| !matches!(migration.name(), DEMAND_CONVERSATION | MODEL_ROUTE_HEAD))
+        .collect()
+    }
+}
 
 struct PublishedV9 {
     checkpoint: Option<pl_core::thread::ThreadCheckpoint>,
@@ -21,7 +39,11 @@ impl MigratorTraitSelf for PublishedV9 {
         .filter(|migration| {
             !matches!(
                 migration.name(),
-                ATOMIC_TIMELINE | METERING_FACTS | COMBINED_CONTENT
+                ATOMIC_TIMELINE
+                    | METERING_FACTS
+                    | COMBINED_CONTENT
+                    | DEMAND_CONVERSATION
+                    | MODEL_ROUTE_HEAD
             )
         })
         .collect()
@@ -45,6 +67,8 @@ impl MigratorTraitSelf for PublishedV10 {
         .into_iter()
         .filter(|migration| {
             migration.name() != COMBINED_CONTENT
+                && migration.name() != DEMAND_CONVERSATION
+                && migration.name() != MODEL_ROUTE_HEAD
                 && migration.name()
                     != if self.atomic {
                         METERING_FACTS
@@ -73,7 +97,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
             0,
             pl_core::thread::ThreadSnapshot::default(),
         );
-        checkpoint::write(&db, &checkpoint, None, None).await?;
+        write_published_checkpoint(&db, &checkpoint).await?;
         // Lifecycle preparation may normalize the checkpoint before execution identity recovery.
         // Supply the actual post-preparation representation as the explicit recovery candidate.
         let lifecycle_steps = published
@@ -457,8 +481,8 @@ async fn atomic_timeline_rejects_nonunique_ordinals_before_backfill_without_muta
 
 #[tokio::test]
 async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> Result<()> {
-    use crate::studio::runtime::chat_item::{completion_draft, encode_record};
-    use pl_core::chat::ChatItemParts;
+    use super::super::timeline::codec::{completion_draft, encode_record};
+    use super::super::timeline::frozen::{ChatItem, ChatItemParts};
 
     for current in [false, true] {
         for (declared, allowed, strict) in [
@@ -483,7 +507,8 @@ async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> R
                 let path = directory.path().join("history.sqlite");
                 let db = v9(&path, true).await?;
                 if current {
-                    prepare(&db, THREAD, Preparation::Schema, None).await?;
+                    PublishedV11.up(&db, Some(3)).await?;
+                    assert_eq!(version(&db).await?, 11);
                 }
                 let suffix = if strict { " STRICT" } else { "" };
                 let (table, identity, sequence) = if current {
@@ -566,15 +591,10 @@ async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> R
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 let before = schema_state(&db).await?;
                 let cold = HistoryStore::open(&path, THREAD).await?;
-                let result = if current {
-                    tokio::time::timeout(Duration::from_secs(10), cold.latest_append_seq())
-                        .await
-                        .map(|result| result.map(|_| ()))
-                } else {
-                    tokio::time::timeout(Duration::from_secs(10), initialize(&db, THREAD))
-                        .await
-                        .map(|result| result.map(|_| ()))
-                }?;
+                // Timeline is a migration input now. Both published shapes must pass the
+                // preparation trust gate before a current reader can observe their records.
+                let result =
+                    tokio::time::timeout(Duration::from_secs(10), initialize(&db, THREAD)).await?;
                 if allowed {
                     result?;
                     assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
@@ -597,6 +617,7 @@ async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> R
                                 cold.read_chat_item(id)
                                     .await?
                                     .context("completed identity")?
+                                    .header
                                     .item_id,
                                 id
                             );
@@ -610,10 +631,7 @@ async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> R
                         "declared={declared:?}, strict={strict}, current={current}: {error:#}"
                     );
                     assert_eq!(schema_state(&db).await?, before);
-                    assert_eq!(
-                        version(&db).await?,
-                        if current { HISTORY_SCHEMA_VERSION } else { 9 }
-                    );
+                    assert_eq!(version(&db).await?, if current { 11 } else { 9 });
                     assert_eq!(applied(&db, ATOMIC_TIMELINE).await?, current);
                     assert_eq!(
                         SchemaManager::new(&db)
@@ -830,7 +848,7 @@ async fn atomic_timeline_validates_all_v9_write_keys_and_semantic_unique_indexes
 }
 
 #[tokio::test]
-async fn atomic_timeline_rejects_damaged_current_keys_without_repair() -> Result<()> {
+async fn atomic_timeline_rejects_damaged_source_keys_without_repair() -> Result<()> {
     for key_ddl in [
         "append_seq INTEGER,record_id TEXT NOT NULL UNIQUE",
         "append_seq INT PRIMARY KEY,record_id TEXT NOT NULL UNIQUE",
@@ -840,7 +858,7 @@ async fn atomic_timeline_rejects_damaged_current_keys_without_repair() -> Result
     ] {
         let directory = tempfile::tempdir()?;
         let db = v9(&directory.path().join("history.sqlite"), true).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        PublishedV11.up(&db, Some(3)).await?;
         db.execute_unprepared(&format!(
             "DROP TABLE timeline_records;
              CREATE TABLE timeline_records(
@@ -850,14 +868,14 @@ async fn atomic_timeline_rejects_damaged_current_keys_without_repair() -> Result
         ))
         .await?;
         let before = schema_state(&db).await?;
-        assert!(validate_current(&db, THREAD).await.is_err());
+        assert!(validate_tables(&db).await.is_err());
         assert!(
             prepare(&db, THREAD, Preparation::Schema, None)
                 .await
                 .is_err()
         );
         assert_eq!(schema_state(&db).await?, before);
-        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        assert_eq!(version(&db).await?, 11);
         assert!(applied(&db, ATOMIC_TIMELINE).await?);
         let payload: String = db
             .query_one_raw(statement(
@@ -898,8 +916,8 @@ async fn atomic_timeline_upgrades_complete_v9_and_pending_cold_store() -> Result
 #[tokio::test]
 async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_facts() -> Result<()>
 {
-    use crate::studio::runtime::chat_item::completion_draft;
-    use pl_core::chat::ChatItemParts;
+    use super::super::timeline::codec::completion_draft;
+    use super::super::timeline::frozen::{ChatItem, ChatItemParts};
 
     for atomic in [false, true] {
         let directory = tempfile::tempdir()?;
@@ -935,7 +953,7 @@ async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_
                 amount: 1.25,
             });
         let saved = pl_core::thread::ThreadCheckpoint::capture(THREAD.into(), 7, state);
-        checkpoint::write(&db, &saved, None, None).await?;
+        write_published_checkpoint(&db, &saved).await?;
         db.execute_unprepared(
             "UPDATE history_meta SET applied_write_seq=7;
              INSERT INTO session_costs VALUES('main','USD',1.25)",
@@ -1178,7 +1196,7 @@ async fn atomic_timeline_rejects_marker_schema_and_identity_conflicts() -> Resul
     ] {
         let directory = tempfile::tempdir()?;
         let db = v9(&directory.path().join("history.sqlite"), true).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        PublishedV11.up(&db, Some(3)).await?;
         db.execute_unprepared(corruption).await?;
         let before = schema_state(&db).await?;
         assert!(
@@ -1483,9 +1501,9 @@ async fn atomic_timeline_backfill_order_content_and_frozen_reads() -> Result<()>
         })
         .collect::<Vec<_>>();
     assert_eq!(bodies, ["原文\n  不裁剪", "第一段", "第二段"]);
-    let input_meta =
-        crate::studio::runtime::timeline_content::meta::TimelineMeta::for_item(&page.items[0])?;
-    let pl_protocol::TimelineDescriptor::Text(text) = input_meta.descriptor else {
+    let input_meta = super::super::timeline::codec::TimelineMeta::for_item(&page.items[0])?;
+    let super::super::timeline::descriptor::TimelineDescriptor::Text(text) = input_meta.descriptor
+    else {
         anyhow::bail!("input completion lost its text descriptor");
     };
     assert_eq!(text.attachments, [attachment]);

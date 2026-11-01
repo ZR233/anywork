@@ -1,6 +1,7 @@
 //! Loopback HTTP/OpenAPI/SSE adapter for [`pl_studio_runtime::StudioRuntime`].
 
 mod bots;
+mod conversation;
 mod error;
 mod routes;
 mod security;
@@ -41,6 +42,7 @@ pub(crate) struct AppState {
     normal_requests: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     shutdown: CancellationToken,
+    conversations: Arc<conversation::Conversations>,
 }
 
 impl AppState {
@@ -50,6 +52,7 @@ impl AppState {
             normal_requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             shutdown,
+            conversations: Arc::new(conversation::Conversations::default()),
         }
     }
 }
@@ -71,7 +74,8 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::new)?;
     let shutdown = CancellationToken::new();
-    let app = router(AppState::new(runtime.clone(), shutdown.clone()));
+    let state = AppState::new(runtime.clone(), shutdown.clone());
+    let app = router(state.clone());
     let signal = shutdown_signal(shutdown.clone());
 
     let result = axum::serve(listener, app)
@@ -79,6 +83,7 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .await
         .context("Studio HTTP server failed");
     shutdown.cancel();
+    state.conversations.shutdown().await;
     let shutdown_result = runtime.shutdown_runtime().await;
     result?;
     shutdown_result?;
@@ -105,7 +110,8 @@ async fn limit_normal_requests(
 ) -> Response {
     let path = request.uri().path();
     if path == "/api/v1/events/product"
-        || (path.starts_with("/api/v1/threads/") && path.ends_with("/events"))
+        || (path.starts_with("/api/v1/threads/")
+            && (path.ends_with("/events") || path.ends_with("/contents/watch")))
     {
         return next.run(request).await;
     }

@@ -6,32 +6,16 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/conversation_fixtures.dart';
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
-// 聚合回归：没有完成/分页时，typed 实时事实（Activity 正文 Begin/Text/Commit、
-// runtime/token/usage、Turn/活动进度、计时 typed 事实、存储保存水位）经过真实
-// SDK 归约后，不得产生任何历史 Controller 操作，也不得触发任何历史查询。
-//
-// 这里是完整生产链路：真实 Demo transport 事实 + 真实 AnyworkClient/SDK 归约 +
-// 真实 TimelineSessionOwner + 真实 Flyer InMemoryChatController。替身只位于
-// transport 输入边界（转发原生帧并按需注入显式 typed 事实、等待 SDK 的真实
-// ACK），不手工归约任何业务状态。完成批次正对照使用 Demo 官方夹具
-// seedConversationItems，经真实完成尾部（Begin/Commit 携带 completed batch）
-// 交付，证明 operationsStream 监听确实生效。
-//
-// 计时的 UI 层节拍显示（elapsed ticker）不在本层驱动，属于 widget 层证据；
-// 本文件只覆盖 typed 计时事实（turnResponseMillis/liveUsage）的投递与收敛。
+// Main Chat.current and State facts traverse the real SDK and display owner.
+// Empty-message Append must not touch the historical component collection. A
+// real Demo seed Append below is the positive control for operation observation.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const threadId = 'thread-main';
-  const liveGeneration = 'isolation-live-body';
-  const responseRegion = ActivityRegion(
-    ActivityRegionKind.response,
-    'isolation-live-response',
-  );
-
   test('实时正文/token/进度/计时/保存ACK更新不产生历史Controller操作或历史查询', () async {
     final transport = _IsolationTransport();
     final graph = AppGraph(
@@ -53,29 +37,18 @@ void main() {
     });
 
     await graph.client.bootstrap();
+    graph.timeline.updateReadDemand(chatDemand);
     await (graph..setConversationPageVisible(true)).client.directoryCommands
         .selectThread(threadId);
     final session = graph.client.conversations.session(threadId);
     await session.source.waitFor((state) => state.hasSnapshot);
     await session.content.ready;
 
-    // 首个非空历史 baseline 已由 owner 接纳为当前展示 lease。
-    final display = graph.timeline.lease(threadId);
-    expect(display, isNotNull, reason: 'baseline 接纳后必须存在展示 lease');
-    final lease = display!;
-    expect(lease.items, isNotEmpty, reason: 'demo 根会话 baseline 非空');
-    final baselineCursor = lease.completedCursor!;
+    final lease = graph.timeline.lease(threadId)!;
+    expect(lease.controller.messages, isNotEmpty);
     final baselineLoaded = lease.loadedCount;
-    // Controller 展示组与原子数是两个口径：一组可含多个原子，分别捕获。
-    final baselineMessageCount = lease.controller.messages.length;
-    final baselineMessageIds = [
-      for (final message in lease.controller.messages) message.id,
-    ];
-    final baselineIds = [for (final item in lease.items) item.header.id];
-    final baselineEntries = <String, Object?>{
-      for (final id in baselineIds) id: lease.presentationFor(id),
-    };
-
+    final baselineMessages = lease.controller.messages.toList();
+    final baselineBefore = lease.olderCursor;
     // 操作记录从 baseline 之后开始；正对照在同一监听上验证有效性。
     final operations = <ChatOperation>[];
     final operationSeen = Completer<void>();
@@ -90,127 +63,67 @@ void main() {
     final feed = transport.feeds.singleWhere(
       (candidate) => candidate.threadId == threadId,
     );
-    // 等待 Demo 自身的初始 activity 事务（Begin/Commit）全部被 SDK 处理，
-    // 注入的 Begin 才不会与原生事务交叠。
-    await session.currentActivity
-        .waitFor((activity) => activity != null)
-        .timeout(const Duration(seconds: 5));
-    await feed
-        .waitForAcknowledgements(feed.deliveredFrames)
-        .timeout(const Duration(seconds: 5));
+    await feed.waitForAcknowledgements(feed.deliveredFrames);
     final framesBeforeUpdates = feed.deliveredFrames;
-
     void expectRealtimeOnly(String phase) {
-      expect(operations, isEmpty, reason: '$phase: 实时更新不得产生历史 Controller 操作');
-      expect(
-        transport.historyReaderOpens,
-        0,
-        reason: '$phase: 实时更新不得打开历史 reader',
-      );
-      expect(
-        transport.readers,
-        isEmpty,
-        reason: '$phase: 实时更新不得产生任何历史查询 scope',
-      );
-      expect(
-        graph.timeline.lease(threadId),
-        same(lease),
-        reason: '$phase: 展示 lease 身份不变',
-      );
-      expect(
-        lease.completedCursor?.timelineEpoch,
-        baselineCursor.timelineEpoch,
-        reason: '$phase: 完成水位 epoch 不变',
-      );
-      expect(
-        lease.completedCursor?.appendSeq,
-        baselineCursor.appendSeq,
-        reason: '$phase: 完成水位不前进',
-      );
-      expect(lease.loadedCount, baselineLoaded, reason: '$phase: 已加载原子数不变');
-      expect(
-        lease.controller.messages,
-        hasLength(baselineMessageCount),
-        reason: '$phase: Controller 展示组数不变',
-      );
-      expect(
-        [for (final message in lease.controller.messages) message.id],
-        equals(baselineMessageIds),
-        reason: '$phase: Controller 消息身份集合不变',
-      );
-      expect(
-        [for (final item in lease.items) item.header.id],
-        equals(baselineIds),
-        reason: '$phase: 原子集合不变',
-      );
-      for (final entry in baselineEntries.entries) {
-        expect(
-          lease.presentationFor(entry.key),
-          same(entry.value),
-          reason: '$phase: 原子/组展示身份不变: ${entry.key}',
-        );
+      expect(operations, isEmpty, reason: '$phase must not mutate history');
+      expect(graph.timeline.lease(threadId), same(lease));
+      expect(lease.loadedCount, baselineLoaded);
+      expect(lease.olderCursor, baselineBefore);
+      expect(lease.controller.messages.length, baselineMessages.length);
+      for (var i = 0; i < baselineMessages.length; i++) {
+        expect(lease.controller.messages[i], same(baselineMessages[i]));
       }
+      expect(
+        feed.reader.queries,
+        0,
+        reason: '$phase must not query any content or older page',
+      );
     }
 
-    // 1. typed 实时正文：Begin -> Text(replace) -> Text(append) -> Commit，
-    //    不携带任何完成批次。
-    await feed
-        .emitAndWait(
-          ConversationActivityContentEvent(
-            frame: ActivityBegin(
-              generation: liveGeneration,
-              revision: 1,
-              baseRevision: null,
-              activity: null,
-              reasoning: const [],
-              response: const [
-                ActivityPartMetadata(
-                  itemId: 'isolation-live-response',
-                  complete: false,
-                  totalBytes: 11,
-                ),
-              ],
-              tools: const [],
-              totalBytes: 11,
+    final current = CurrentProjection(
+      sourceEffectSeq: 17,
+      logicalStatus: ThreadStatusView.running,
+      executionPresent: true,
+      previews: const [
+        CurrentContentPreview(
+          id: 'live',
+          role: CurrentContentRole.response,
+          text: 'hello live!',
+          reference: ContentRef(
+            databaseId: 'database',
+            target: BodyContentTarget(
+              owner: CurrentContentOwner(
+                domain: 'response',
+                id: 'live',
+                revision: 1,
+              ),
+              key: 'body',
             ),
           ),
-        )
-        .timeout(const Duration(seconds: 5));
-    await feed
-        .emitAndWait(
-          ConversationActivityContentEvent(
-            frame: ActivityText(
-              generation: liveGeneration,
-              revision: 1,
-              operations: [ActivityReplace(responseRegion, 'hello ')],
-            ),
-          ),
-        )
-        .timeout(const Duration(seconds: 5));
-    await feed
-        .emitAndWait(
-          ConversationActivityContentEvent(
-            frame: ActivityText(
-              generation: liveGeneration,
-              revision: 1,
-              operations: [ActivityAppend(responseRegion, 'live!')],
-            ),
-          ),
-        )
-        .timeout(const Duration(seconds: 5));
-    await feed
-        .emitAndWait(
-          const ConversationActivityContentEvent(
-            frame: ActivityCommit(generation: liveGeneration, revision: 1),
-          ),
-        )
-        .timeout(const Duration(seconds: 5));
-    final liveBody = session.currentActivity.value;
-    expect(liveBody, isNotNull, reason: '实时正文 Commit 后必须发布 CurrentActivity');
-    expect(liveBody!.generation, liveGeneration);
-    expect(liveBody.response.single.text, 'hello live!');
-    expectRealtimeOnly('实时正文');
-
+        ),
+      ],
+      collections: const [],
+    );
+    await feed.emitAndWait(
+      ConversationChatEvent(
+        batch: chatBatch([], placement: ChatPlacement.append, current: current),
+      ),
+    );
+    expect(session.current.value, same(current));
+    expect(session.current.value!.previews.single.text, 'hello live!');
+    expectRealtimeOnly('current preview');
+    await feed.emitAndWait(
+      ConversationChatEvent(
+        batch: chatBatch([], placement: ChatPlacement.append),
+      ),
+    );
+    expect(
+      session.current.value,
+      same(current),
+      reason: 'None preserves Main.current',
+    );
+    expectRealtimeOnly('None current');
     // 2. typed runtime/token/usage/计时事实。
     final runtimeBefore = session.state.runtime!;
     final liveUsage = ThreadRuntimeLiveUsageView(
@@ -248,6 +161,8 @@ void main() {
           liveUsage: liveUsage,
         ),
         todo: null,
+        // 本帧只交付 runtime/用量事实，既有 route 必须原样带过，不清空。
+        modelRoute: session.state.modelRoute,
       ),
     );
     final runtimeAfter = session.state.runtime!;
@@ -272,7 +187,11 @@ void main() {
         ),
       ),
     );
-    expect(session.state.activeTurn?.turnId, 'turn-isolation');
+    expect(
+      session.current.value,
+      same(current),
+      reason: 'State turn cannot overwrite Chat.current',
+    );
     await publish(
       ThreadActivityUpdate(
         activity: const ThreadActivityView(
@@ -285,7 +204,11 @@ void main() {
         ),
       ),
     );
-    expect(session.state.activity?.identity, 'activity:isolation:responding');
+    expect(
+      session.current.value,
+      same(current),
+      reason: 'State activity cannot overwrite Chat.current',
+    );
     expectRealtimeOnly('Turn/活动进度');
 
     // 4. typed 存储保存水位（保存 ACK）。
@@ -306,66 +229,58 @@ void main() {
     expect(framesBeforeUpdates, lessThan(feed.deliveredFrames));
     expect(session.content.state.value, isA<ChatReady<bool>>());
 
-    // 正对照：Demo 官方夹具写入一个完成原子，经真实完成尾部
-    // （Begin/Commit 携带 completed batch）交付，owner 接纳后必须产生
-    // 真实 Controller 操作并推进完成水位；完成尾部不需要任何历史查询。
+    // Positive control: the official Demo seed traverses a real Chat Append.
     final acksBeforeSeed = feed.acknowledgements.length;
-    transport.seedConversationItems(threadId, [
-      conversationFixture(id: 'isolation-completed', threadId: threadId),
-    ]);
+    transport.seedChatMessages(threadId, [chatMessage('isolation-completed')]);
     await operationSeen.future.timeout(const Duration(seconds: 5));
     await feed
-        .waitForAcknowledgements(acksBeforeSeed + 2)
+        .waitForAcknowledgements(acksBeforeSeed + 1)
         .timeout(const Duration(seconds: 5));
     expect(operations, isNotEmpty, reason: '正对照：真实完成批次必须产生历史 Controller 操作');
-    expect(
-      lease.completedCursor?.appendSeq,
-      baselineCursor.appendSeq + 1,
-      reason: '正对照：完成批次推进完成水位',
-    );
     expect(lease.loadedCount, baselineLoaded + 1);
-    expect(transport.historyReaderOpens, 0, reason: '完成尾部经 feed 交付，同样不需要历史查询');
+    expect(lease.controller.messages.last.id, 'isolation-completed');
+    expect(feed.reader.queries, 0);
+    await feed.emitAndWait(
+      ConversationChatEvent(
+        batch: chatBatch(
+          [],
+          placement: ChatPlacement.append,
+          current: chatCurrent(sequence: 18),
+        ),
+      ),
+    );
+    expect(
+      session.current.value!.previews,
+      isEmpty,
+      reason: 'concrete empty projection clears current',
+    );
   });
 }
 
-/// 真实 Demo transport；只拦截真实历史读取入口并包装原生 feed 以注入显式
-/// typed 事实。所有业务归约仍由生产 SDK 完成。
 final class _IsolationTransport extends DemoStudioTransport {
   final feeds = <_InjectingFeed>[];
-  final readers = <_CountingHistoryReader>[];
-  int historyReaderOpens = 0;
-
   @override
   Duration get shutdownPhaseDelay => Duration.zero;
-
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
-    final inner = await super.openConversationFeed(
-      threadId,
-      resumeAfter: resumeAfter,
+    final feed = _InjectingFeed(
+      await super.openConversationFeed(threadId, scope: scope, demand: demand),
     );
-    final feed = _InjectingFeed(inner);
     feeds.add(feed);
     return feed;
-  }
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) async {
-    historyReaderOpens++;
-    final inner = await super.openHistoryReader(threadId);
-    final reader = _CountingHistoryReader(inner);
-    readers.add(reader);
-    return reader;
   }
 }
 
 /// 输入边界包装：原样转发原生帧并重排连续 deliverySequence，注入的显式
 /// typed 事实在同一序列上排队，并等待 SDK 处理后的真实 ACK。不是归约者。
 final class _InjectingFeed implements ConversationFeed {
-  _InjectingFeed(this.inner);
+  _InjectingFeed(this.inner) : reader = _CountingReader(inner.reader);
+  @override
+  final _CountingReader reader;
   final ConversationFeed inner;
   final acknowledgements = <int>[];
   int deliveredFrames = 0;
@@ -494,55 +409,70 @@ final class _InjectingFeed implements ConversationFeed {
   }
 }
 
-/// 真实历史读取入口计数：包装 Demo 原生 reader，page/readDetail 每次真实
-/// 调用都会递增，close 汇入在途读取。
-final class _CountingHistoryReader implements ConversationHistoryReader {
-  _CountingHistoryReader(this.inner);
-  final ConversationHistoryReader inner;
-  int pageCalls = 0;
-  int detailCalls = 0;
-  final Set<Future<void>> _accepted = {};
-
+// Count actual queries without retaining messages or implementing admission.
+final class _CountingReader implements ConversationReader {
+  _CountingReader(this.inner);
+  final ConversationReader inner;
+  int queries = 0;
   @override
   String get threadId => inner.threadId;
   @override
-  String get timelineEpoch => inner.timelineEpoch;
-
-  @override
-  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit}) {
-    pageCalls++;
-    final result = inner.page(before: before, limit: limit);
-    _track(result);
-    return result;
-  }
-
-  @override
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
   }) {
-    detailCalls++;
-    final result = inner.readDetail(itemId: itemId, query: query);
-    _track(result);
-    return result;
+    queries++;
+    return inner.loadOlder(before: before, demand: demand);
   }
 
-  void _track(Future<Object?> future) {
-    final settled = future.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
+  @override
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  }) {
+    queries++;
+    return inner.listContents(
+      itemId: itemId,
+      continuation: continuation,
+      demand: demand,
     );
-    _accepted.add(settled);
-    unawaited(settled.then((_) => _accepted.remove(settled)));
+  }
+
+  @override
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    queries++;
+    return inner.readContent(reference: reference, range: range);
+  }
+
+  @override
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  }) {
+    queries++;
+    return inner.watchContent(reference: reference, range: range);
+  }
+
+  @override
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) {
+    queries++;
+    return inner.pageCurrent(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    );
   }
 
   @override
   void requestClose() => inner.requestClose();
-
   @override
-  Future<void> close() async {
-    requestClose();
-    await inner.close();
-    await Future.wait(_accepted.toList());
-  }
+  Future<void> close() => inner.close();
 }

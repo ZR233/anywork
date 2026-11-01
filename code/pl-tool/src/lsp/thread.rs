@@ -115,12 +115,17 @@ impl ThreadLspTool {
     /// # Errors
     /// Returns invalid registration identity errors.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
+        let contract = match self.kind {
+            LspToolKind::Capabilities => "builtin.lsp_capabilities@1",
+            LspToolKind::Query => "builtin.lsp_query@1",
+        };
         let name = match self.kind {
             LspToolKind::Capabilities => "lsp_capabilities",
             LspToolKind::Query => "lsp_query",
         };
         let authorization = self.paths.workspace().authorization();
         Ok(Registration::new(name.into(), declaration, self)?
+            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(contract))
             .deferred()
             .with_authorization(authorization))
     }

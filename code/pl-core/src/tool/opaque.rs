@@ -1,6 +1,9 @@
 //! Protocol-independent dynamic tools and immutable execution plans.
 use super::ToolOutput;
-use crate::{context::OpaquePayload, model::ModelToolDeclaration};
+use crate::{
+    context::OpaquePayload,
+    model::{ModelToolDeclaration, ToolPresentationContract},
+};
 use futures::future::BoxFuture;
 use std::{collections::BTreeMap, fmt, future::Future, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -407,6 +410,7 @@ impl Registration {
                 declaration: ModelToolDeclaration {
                     tool_id: id,
                     declaration,
+                    presentation_contract: Some(ToolPresentationContract::generic()),
                 },
                 executor: ExecutorLease::new(tool),
                 deferred: false,
@@ -419,6 +423,13 @@ impl Registration {
                 scheduling: ToolScheduling::Task,
             },
         })
+    }
+
+    /// Freezes the current presentation contract independently of execution authority.
+    #[must_use]
+    pub fn with_presentation_contract(mut self, contract: ToolPresentationContract) -> Self {
+        self.binding.declaration.presentation_contract = Some(contract);
+        self
     }
 }
 

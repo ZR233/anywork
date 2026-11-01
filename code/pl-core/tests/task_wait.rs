@@ -21,7 +21,7 @@ use pl_core::model::{
 use pl_core::thread::{
     StepInput, TaskAccess, ThreadError, ThreadHandle, ToolDispatch,
     inbox::ThreadMessage,
-    task::{TaskRecord, TaskStatus},
+    task::{TaskCancellationReceipt, TaskRecord, TaskStatus},
 };
 use pl_core::tool::{
     ToolOutput,
@@ -49,6 +49,25 @@ impl Tool for HeldTool {
             }
         }
         Ok(ToolOutput::new(input, vec![text("held finished")]))
+    }
+}
+
+#[derive(Debug)]
+struct CleanupHeldTool {
+    cancelled: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl Tool for CleanupHeldTool {
+    async fn execute(
+        &self,
+        _: OpaquePayload,
+        context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        context.cancellation.cancelled().await;
+        self.cancelled.notify_one();
+        self.release.notified().await;
+        Err(ToolError::new(ThreadError::Cancelled))
     }
 }
 
@@ -108,6 +127,7 @@ impl ModelSession for SwitchModel {
                 .expect("tool script")
                 .iter()
                 .map(|tool_id| ModelToolCall {
+                    presentation_contract: None,
                     rejection: None,
                     call_id: format!("{}-{tool_id}", request.turn_id),
                     tool_id: tool_id.clone(),
@@ -129,6 +149,7 @@ struct Harness {
     thread: ThreadHandle,
     tools: Arc<Mutex<Vec<String>>>,
     held: Arc<Notify>,
+    held_b: Arc<Notify>,
 }
 
 impl Harness {
@@ -142,6 +163,7 @@ impl Harness {
         )
         .unwrap();
         let held = Arc::new(Notify::new());
+        let held_b = Arc::new(Notify::new());
         thread
             .register_tools(vec![
                 Registration::new(
@@ -153,7 +175,7 @@ impl Harness {
                 Registration::new(
                     "held-b".into(),
                     OpaquePayload::text("held-b"),
-                    HeldTool(held.clone()),
+                    HeldTool(held_b.clone()),
                 )
                 .unwrap(),
                 Registration::new("fast".into(), OpaquePayload::text("fast"), FastTool).unwrap(),
@@ -164,6 +186,7 @@ impl Harness {
             thread,
             tools,
             held,
+            held_b,
         }
     }
 
@@ -240,7 +263,7 @@ impl Harness {
                 Registration::new(
                     "held-b".into(),
                     OpaquePayload::text("held-b"),
-                    HeldTool(self.held.clone()),
+                    HeldTool(self.held_b.clone()),
                 )
                 .unwrap(),
                 Registration::new("fast".into(), OpaquePayload::text("fast"), FastTool).unwrap(),
@@ -382,7 +405,16 @@ async fn wait_wakes_on_a_later_message_even_when_task_ids_are_selected() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn wait_returns_when_any_selected_task_finishes_while_another_is_running() {
+async fn wait_returns_when_first_selected_task_finishes_while_second_is_running() {
+    any_task_finishes(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_returns_when_second_selected_task_finishes_while_first_is_running() {
+    any_task_finishes(false).await;
+}
+
+async fn any_task_finishes(first_finishes: bool) {
     let harness = Harness::start("any-task").await;
     let first = harness.running_task("first", "held").await;
     let second = harness.running_task("second", "held-b").await;
@@ -392,23 +424,116 @@ async fn wait_returns_when_any_selected_task_finishes_while_another_is_running()
     let waiting = access.wait(&ids, Duration::from_secs(5), CancellationToken::new());
     tokio::pin!(waiting);
     assert_pending(&mut waiting).await;
-    harness.held.notify_one();
+    if first_finishes {
+        harness.held.notify_one();
+    } else {
+        harness.held_b.notify_one();
+    }
     let observed = waiting.await.unwrap();
     assert!(!observed.timed_out);
     assert_eq!(observed.tasks.len(), 2);
-    let finished = observed
-        .tasks
-        .iter()
-        .filter(|task| task.status != TaskStatus::Running)
-        .count();
-    let running = observed
-        .tasks
-        .iter()
-        .filter(|task| task.status == TaskStatus::Running)
-        .count();
-    assert_eq!(finished, 1);
-    assert_eq!(running, 1);
+    for (index, original) in [first, second].iter().enumerate() {
+        let task = observed
+            .tasks
+            .iter()
+            .find(|task| task.id == original.id)
+            .unwrap();
+        assert_eq!(task.call_id, original.call_id);
+        assert_eq!(task.turn_id, original.turn_id);
+        assert_eq!(task.tool_id, original.tool_id);
+        assert!(!task.cancel_requested);
+        assert_eq!(
+            task.status,
+            if (index == 0) == first_finishes {
+                TaskStatus::Succeeded
+            } else {
+                TaskStatus::Running
+            }
+        );
+    }
     assert_eq!(harness.thread.snapshot().consumed_messages, consumed);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn empty_selection_ignores_progress_until_a_message_arrives() {
+    let harness = Harness::start("messages-only").await;
+    let held = harness.running_task("held-turn", "held").await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let waiting = access.wait(&[], Duration::from_secs(5), CancellationToken::new());
+    tokio::pin!(waiting);
+    assert_pending(&mut waiting).await;
+    access
+        .report_output(ToolProgressUpdate::append("progress", "not a message"))
+        .await
+        .unwrap();
+    assert_pending(&mut waiting).await;
+    let consumed = harness.thread.snapshot().consumed_messages;
+    harness
+        .thread
+        .send_message(report("later-child-report"))
+        .await
+        .unwrap();
+    let observed = waiting.await.unwrap();
+    assert!(observed.messages_ready);
+    assert!(!observed.timed_out);
+    assert!(observed.tasks.is_empty());
+    assert_eq!(access.get(&held.id).unwrap().status, TaskStatus::Running);
+    assert_eq!(harness.thread.snapshot().consumed_messages, consumed);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancellation_receipt_precedes_cleanup_and_wait_observes_the_same_task_exit() {
+    let harness = Harness::start("cancel-then-join").await;
+    let cancelled = Arc::new(Notify::new());
+    let cleanup = Arc::new(Notify::new());
+    harness
+        .thread
+        .register_tools(vec![
+            Registration::new(
+                "cleanup".into(),
+                OpaquePayload::text("cleanup"),
+                CleanupHeldTool {
+                    cancelled: cancelled.clone(),
+                    release: cleanup.clone(),
+                },
+            )
+            .unwrap(),
+        ])
+        .await
+        .unwrap();
+    let task = harness.running_task("owned", "cleanup").await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    assert_eq!(
+        harness.thread.cancel_task(task.id.clone()).await.unwrap(),
+        TaskCancellationReceipt::Requested
+    );
+    cancelled.notified().await;
+    let before_join = access.get(&task.id).unwrap();
+    assert_eq!(before_join.status, TaskStatus::Running);
+    assert!(before_join.cancel_requested);
+    assert_eq!(
+        harness.thread.cancel_task(task.id.clone()).await.unwrap(),
+        TaskCancellationReceipt::AlreadyRequested
+    );
+    let ids = [task.id.clone()];
+    let waiting = access.wait(&ids, Duration::from_secs(5), CancellationToken::new());
+    tokio::pin!(waiting);
+    assert_pending(&mut waiting).await;
+    cleanup.notify_one();
+    let observed = waiting.await.unwrap();
+    assert!(!observed.timed_out);
+    assert_eq!(observed.tasks.len(), 1);
+    assert_eq!(observed.tasks[0].id, task.id);
+    assert_eq!(observed.tasks[0].call_id, task.call_id);
+    assert_eq!(observed.tasks[0].status, TaskStatus::Cancelled);
+    assert_eq!(
+        harness.thread.cancel_task(task.id).await.unwrap(),
+        TaskCancellationReceipt::AlreadyFinished
+    );
     finish(release, runner).await;
     harness.thread.close().await.unwrap();
 }

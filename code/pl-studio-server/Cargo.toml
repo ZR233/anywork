@@ -27,3 +27,8 @@ utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+pl-provider-fixture = { workspace = true }
+pl-model = { workspace = true }
+reqwest = { workspace = true }

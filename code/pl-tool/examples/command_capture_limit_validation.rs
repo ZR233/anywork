@@ -897,6 +897,7 @@ async fn backpressured_stdin_cancellation() -> anyhow::Result<()> {
     .into_iter()
     .map(
         |(call_id, tool_id, arguments)| pl_core::model::ModelToolCall {
+            presentation_contract: None,
             call_id: call_id.into(),
             tool_id: tool_id.into(),
             arguments: OpaquePayload::text(arguments.to_string()),
@@ -1783,6 +1784,7 @@ impl ScriptedToolCalls {
     fn single_exec(raw: String, call_id: String) -> Self {
         Self {
             calls: [pl_core::model::ModelToolCall {
+                presentation_contract: None,
                 call_id,
                 tool_id: "exec".into(),
                 arguments: OpaquePayload::text(raw),

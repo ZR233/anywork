@@ -23,7 +23,7 @@ use std::{
 };
 
 use pl_core::{
-    chat::{ChatDraft, ChatField, ChatItem, PresentationPart, Session},
+    chat::{ChatDraft, ChatItem, PresentationPart, Session},
     model::{
         AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
         ObservedPartIdentity, ObservedPartKind,
@@ -42,7 +42,7 @@ use pl_protocol::{
 
 use super::ProjectionError;
 use crate::studio::runtime::chat_item::{
-    TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
+    BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft_reusing, static_state,
 };
 use crate::studio::storage::thread_writer::{ExecutionMaterialization, RuntimeOrderIndex};
 
@@ -157,7 +157,7 @@ impl LiveEvent {
 struct LivePreview {
     /// All field blocks currently delivered; a model observation is one field, a tool preview is
     /// the arguments plus the streamed result.
-    fields: BTreeMap<ChatField, Arc<ContentBlock>>,
+    fields: BTreeMap<BodyKey, Arc<ContentBlock>>,
     /// Cheap stable identity of one provider/aggregate observation, absent for a tool-output
     /// preview.
     ///
@@ -249,7 +249,7 @@ fn preview_entry_bytes(id_len: u64, preview: &LivePreview) -> u64 {
         .saturating_add((preview.fields.len() as u64).saturating_mul(RETAINED_ENTRY_OVERHEAD))
         .saturating_add(preview.fields.keys().fold(0_u64, |bytes, field| {
             bytes.saturating_add(match field {
-                ChatField::Host(key) => key.len() as u64,
+                BodyKey::Host(key) => key.len() as u64,
                 _ => 0,
             })
         }))
@@ -304,6 +304,11 @@ pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
+    pub(in crate::studio) current:
+        Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
+    pub(in crate::studio) current_state: Option<Arc<super::CurrentState>>,
+    /// Small delivery qualification, released before the final effect enters the writer.
+    pub(in crate::studio) current_handoff: Option<Arc<super::CurrentHandoff>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// The frozen completion records this batch published atomically before the handoff.
@@ -390,45 +395,71 @@ impl PreparedEffect {
                 .saturating_add(fact.message.id.len() as u64)
                 .saturating_add(256)
         });
-        // The frozen completion records are the batch's real completion-pending bytes: their field
-        // bodies are separate allocations from the canonical items (the draft codec re-encodes the
-        // text into shared blocks), and the session keeps the same Arcs in pending until the writer
-        // confirms. Charging them here puts that residency in the reliable budget without double
-        // counting the items, which are charged above by their own estimate.
+        // The payload and explicit content owners are the same Arcs retained by pending and writer.
         let completions = self.completions.iter().fold(0_u64, |bytes, record| {
             bytes
-                .saturating_add(record.preview_structure_bytes() as u64)
-                .saturating_add(record.fields.values().fold(0_u64, |fields, preview| {
-                    fields.saturating_add(preview.block.len() as u64)
-                }))
+                .saturating_add(completion_bytes(
+                    &record.header.item_id,
+                    &record.payload,
+                    &record.contents,
+                ))
                 .saturating_add(RETAINED_ITEM_OVERHEAD)
         });
         retained_bytes(&self.items)
             .saturating_add(self.accounting.retained_bytes())
+            .saturating_add(
+                self.current_state
+                    .as_ref()
+                    .map_or(0, |state| state.metadata_bytes()),
+            )
+            .saturating_add(self.current_handoff.as_ref().map_or(0, |handoff| {
+                let projections = [&handoff.before, &handoff.after]
+                    .into_iter()
+                    .map(|current| {
+                        serde_json::to_vec(current.as_ref())
+                            .map_or(u64::MAX, |bytes| bytes.len() as u64)
+                    })
+                    .fold(0_u64, u64::saturating_add);
+                // Reserve every possible exposed-preview retirement before seq assignment;
+                // filling the bounded metadata after publish cannot increase this charge.
+                handoff
+                    .before
+                    .previews
+                    .iter()
+                    .fold(projections, |bytes, preview| {
+                        bytes
+                            .saturating_add(preview.id.len() as u64)
+                            .saturating_add(32)
+                    })
+            }))
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
             .saturating_add(completions)
             .saturating_add(self.completion_drafts.as_ref().map_or(0, |drafts| {
                 drafts.iter().fold(0_u64, |bytes, draft| {
-                    let fields = draft.fields.iter().fold(0_u64, |bytes, (field, block)| {
-                        let key = match field {
-                            ChatField::Host(key) => key.len() as u64,
-                            ChatField::Body | ChatField::Part(_) => 0,
-                        };
-                        bytes
-                            .saturating_add(128)
-                            .saturating_add(key)
-                            .saturating_add(block.len() as u64)
-                    });
                     bytes
                         .saturating_add(RETAINED_ITEM_OVERHEAD)
-                        .saturating_add(draft.item_id.len() as u64)
-                        .saturating_add(draft.turn_id.as_ref().map_or(0, |id| id.len() as u64))
-                        .saturating_add(draft.meta.len() as u64)
-                        .saturating_add(fields)
+                        .saturating_add(completion_bytes(
+                            &draft.item_id,
+                            &draft.payload,
+                            &draft.contents,
+                        ))
                 })
             }))
     }
+}
+
+fn completion_bytes(id: &str, payload: &[u8], contents: &pl_core::chat::ChatContents) -> u64 {
+    contents.iter().fold(
+        (id.len() as u64).saturating_add(payload.len() as u64),
+        |bytes, (key, content)| {
+            bytes
+                .saturating_add(key.owner.as_str().len() as u64)
+                .saturating_add(key.key.len() as u64)
+                .saturating_add(content.data.len() as u64)
+                .saturating_add(RETAINED_ENTRY_OVERHEAD)
+        },
+    )
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -1187,6 +1218,8 @@ pub(in crate::studio) struct LiveProjection {
     /// identity's preview frame and its terminal commit resolve one ordinal from one allocator.
     order_index: Option<Arc<RuntimeOrderIndex>>,
     execution_history: Option<crate::studio::storage::history::HistoryStore>,
+    current: super::current::CurrentOwner,
+    main_through: u64,
 }
 
 impl LiveProjection {
@@ -1209,6 +1242,8 @@ impl LiveProjection {
             revisions: BTreeMap::new(),
             order_index: None,
             execution_history: None,
+            current: Default::default(),
+            main_through: 0,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1230,6 +1265,101 @@ impl LiveProjection {
         self.order_index = Some(index);
         self.execution_history = Some(history);
         Ok(())
+    }
+    pub(in crate::studio) fn bind_conversation_identity(
+        &mut self,
+        database_id: String,
+    ) -> Result<(), ProjectionError> {
+        self.current
+            .bind(database_id)
+            .map_err(|error| ProjectionError::History(error.to_string()))
+    }
+
+    async fn ensure_database_identity(&mut self) -> Result<(), ProjectionError> {
+        if self.current.database_id().is_none() {
+            let database_id = self
+                .execution_history
+                .as_ref()
+                .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?
+                .conversation_database_id()
+                .await
+                .map_err(|error| ProjectionError::History(error.to_string()))?
+                .ok_or_else(|| {
+                    ProjectionError::History(
+                        "execution database has not crossed initialization".into(),
+                    )
+                })?;
+            self.current
+                .bind(database_id)
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::studio) fn current_state(&self) -> Option<Arc<super::CurrentState>> {
+        self.current.snapshot()
+    }
+
+    /// Controlled producer progress for cross-module delivery tests; uses the real current owner.
+    #[cfg(test)]
+    pub(in crate::studio) fn observe_test_current(
+        &mut self,
+        thread: &pl_protocol::Thread,
+        active: Vec<super::current::ActiveText>,
+    ) -> Result<(), ProjectionError> {
+        self.current
+            .observe(thread, &ThreadSnapshot::default(), 0, active)
+            .map(|_| ())
+            .map_err(|error| ProjectionError::History(error.to_string()))
+    }
+    pub(in crate::studio) fn current_activity(&self) -> Option<pl_protocol::ThreadActivity> {
+        self.current.activity()
+    }
+
+    fn freeze_current(
+        &mut self,
+        thread: &pl_protocol::Thread,
+        state: &ThreadSnapshot,
+        sequence: u64,
+    ) -> Result<
+        (
+            Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
+            Arc<super::CurrentState>,
+        ),
+        ProjectionError,
+    > {
+        let active = self.current_texts();
+        self.current
+            .freeze(thread, state, sequence, active)
+            .map_err(|error| ProjectionError::History(error.to_string()))
+    }
+
+    fn current_texts(&self) -> Vec<super::current::ActiveText> {
+        self.previews
+            .iter()
+            .filter(|(id, _)| {
+                !self
+                    .order_index
+                    .as_ref()
+                    .is_some_and(|index| index.is_sealed(id))
+            })
+            .flat_map(|(id, preview)| {
+                let ordinal = self.facts.get(id).map_or(0, |fact| fact.ordinal);
+                let text_channel = match &preview.shape {
+                    ThreadItemState::Text(text) => Some(text.channel()),
+                    _ => None,
+                };
+                preview.fields.iter().map(move |(key, block)| {
+                    (
+                        id.clone(),
+                        key.clone(),
+                        block.clone(),
+                        ordinal,
+                        text_channel,
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Installs the durable facts of work that started before this projection existed.
@@ -1286,7 +1416,7 @@ impl LiveProjection {
     pub(in crate::studio) fn preview_fields(
         &self,
         id: &str,
-    ) -> Option<&BTreeMap<ChatField, Arc<ContentBlock>>> {
+    ) -> Option<&BTreeMap<BodyKey, Arc<ContentBlock>>> {
         self.previews.get(id).map(|entry| &entry.fields)
     }
 
@@ -1314,7 +1444,8 @@ impl LiveProjection {
             .items_bytes
             .saturating_add(self.facts_bytes)
             .saturating_add(self.previews_bytes)
-            .saturating_add(self.revisions_bytes);
+            .saturating_add(self.revisions_bytes)
+            .saturating_add(self.current.retained_bytes());
         for (turn_id, result) in &self.results {
             bytes = bytes
                 .saturating_add(turn_id.len() as u64)
@@ -1362,6 +1493,8 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
+        self.ensure_database_identity().await?;
+        let current_before = self.current_before(thread);
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let (items, review_delivery, completion_drafts) =
@@ -1369,9 +1502,18 @@ impl LiveProjection {
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
+        let (current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
+            current: current.clone(),
+            current_state: Some(current_state),
+            current_handoff: Some(Arc::new(super::CurrentHandoff {
+                main_through: self.main_through,
+                before: current_before,
+                after: Arc::new(current.projection.clone()),
+                retirements: Arc::from([]),
+            })),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -1409,13 +1551,24 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        self.ensure_database_identity().await?;
+        let current_before = self.current_before(thread);
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, completion_drafts) =
             self.project(thread, effect, state).await?;
         self.retire_effect_source(effect)?;
+        let (current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
+            current: current.clone(),
+            current_state: Some(current_state),
+            current_handoff: Some(Arc::new(super::CurrentHandoff {
+                main_through: self.main_through,
+                before: current_before,
+                after: Arc::new(current.projection.clone()),
+                retirements: Arc::from([]),
+            })),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -1425,6 +1578,13 @@ impl LiveProjection {
         });
         self.retain(state);
         Ok(prepared)
+    }
+
+    fn current_before(&self, thread: &pl_protocol::Thread) -> Arc<pl_protocol::CurrentProjection> {
+        Arc::new(self.current.snapshot().map_or_else(
+            || pl_protocol::CurrentProjection::empty(0, thread.status),
+            |state| state.projection.clone(),
+        ))
     }
 
     fn retire_effect_source(&self, effect: &ThreadEffectBatch) -> Result<(), ProjectionError> {
@@ -1569,6 +1729,26 @@ impl LiveProjection {
         // 实时帧同样不允许带着无法补全的 identity 继续：投影失败由调用方转成报告并 fail-closed。
         projected.ensure_complete()?;
         let mut items = projected.items;
+        // Model/Core already checked the final receipt against independently admitted members.
+        // Their frozen product fact must not acquire the final attempt's time, source or revision.
+        // A sealed presentation part is immutable, unlike mutable tool delivery metadata.
+        let member_prefixes = effect
+            .attempt
+            .iter()
+            .map(|attempt| &attempt.attempt_id)
+            .chain(effect.model_members.iter().map(|member| &member.attempt_id))
+            .map(|attempt| super::order::presentation_prefix(attempt))
+            .collect::<BTreeSet<_>>();
+        let index = self.order_index_of()?;
+        items.retain(|item| {
+            !(matches!(
+                item.state(),
+                ThreadItemState::Text(_) | ThreadItemState::Thinking(_)
+            ) && index.is_sealed(&item.id)
+                && member_prefixes
+                    .iter()
+                    .any(|prefix| item.id.starts_with(prefix)))
+        });
         for item in &mut items {
             if let pl_protocol::ThreadItemState::Turn(turn) = item.state()
                 && let pl_protocol::TurnState::Failed(failed) = turn.state()
@@ -1752,6 +1932,9 @@ impl LiveProjection {
                     &super::content::text_content(&receipt.content),
                     effect.sequence,
                     effect.committed_at,
+                    self.current.database_id().ok_or_else(|| {
+                        ProjectionError::History("missing database identity".into())
+                    })?,
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
                 drafts.push(draft);
@@ -1762,8 +1945,15 @@ impl LiveProjection {
                 continue;
             }
             drafts.push(
-                completion_draft(item, effect.sequence)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?,
+                completion_draft_reusing(
+                    item,
+                    effect.sequence,
+                    self.current.database_id().ok_or_else(|| {
+                        ProjectionError::History("missing database identity".into())
+                    })?,
+                    &self.current.item_contents(),
+                )
+                .map_err(|error| ProjectionError::History(error.to_string()))?,
             );
         }
         Ok(drafts)
@@ -1790,11 +1980,43 @@ impl LiveProjection {
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         for record in records.iter() {
             self.order_index_of()?
-                .mark_completion(&record.item_id, true);
+                .mark_completion(&record.header.item_id, true);
         }
+        let handoff = prepared.current_handoff.as_ref().ok_or_else(|| {
+            ProjectionError::History("prepared completion has no current handoff".into())
+        })?;
+        let main_through = records
+            .iter()
+            .filter(|record| record.header.query_class == "conversation")
+            .map(|record| record.header.append_seq)
+            .max()
+            .unwrap_or(self.main_through)
+            .max(self.main_through);
+        let retirements = handoff
+            .before
+            .previews
+            .iter()
+            .filter_map(|preview| {
+                records
+                    .iter()
+                    .find(|record| record.header.item_id == preview.id)
+                    .map(|record| super::CurrentRetirement {
+                        item_id: preview.id.clone(),
+                        through: record.header.append_seq,
+                    })
+            })
+            .collect::<Vec<_>>();
+        let handoff = Arc::new(super::CurrentHandoff {
+            main_through,
+            before: handoff.before.clone(),
+            after: handoff.after.clone(),
+            retirements: retirements.into(),
+        });
         let prepared = Arc::make_mut(prepared);
         prepared.completions = records;
         prepared.completion_drafts = None;
+        prepared.current_handoff = Some(handoff);
+        self.main_through = main_through;
         Ok(())
     }
 
@@ -1844,8 +2066,14 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         _applied: u64,
     ) -> Result<(), ProjectionError> {
+        self.ensure_database_identity().await?;
         self.stream_model_progress(thread, state).await?;
-        self.stream_tool_progress(state)
+        self.stream_tool_progress(state)?;
+        let active = self.current_texts();
+        self.current
+            .observe(thread, state, state.commit_sequence, active)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        Ok(())
     }
 
     async fn stream_model_progress(
@@ -1919,7 +2147,7 @@ impl LiveProjection {
         for (id, message) in
             super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
         {
-            let fields = BTreeMap::from([(ChatField::Body, ContentBlock::from_text(&message))]);
+            let fields = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&message))]);
             if self
                 .previews
                 .get(&id)
@@ -2108,7 +2336,7 @@ impl LiveProjection {
             {
                 continue;
             }
-            let result_field = ChatField::host(TOOL_RESULT_FIELD);
+            let result_field = BodyKey::host(TOOL_RESULT_FIELD);
             // One shared block per identity: an unchanged window is the same `Arc`, and a rollover is
             // a different block, so the typed field diff reports a whole replacement instead of
             // appending onto a body that changed identity.
@@ -2371,7 +2599,7 @@ impl LiveProjection {
                 let state = match &preview.shape {
                     ThreadItemState::Text(value) => ThreadItemState::Text(ThreadTextItem::new(
                         value.channel(),
-                        text(ChatField::Body),
+                        text(BodyKey::Body),
                         value.attachments().to_vec(),
                         value.lifecycle().clone(),
                     )),
@@ -2381,10 +2609,7 @@ impl LiveProjection {
                                 .fields
                                 .iter()
                                 .filter(|(field, _)| {
-                                    matches!(
-                                        field,
-                                        ChatField::Part(PresentationPart::SummaryText(_))
-                                    )
+                                    matches!(field, BodyKey::Part(PresentationPart::SummaryText(_)))
                                 })
                                 .map(|(_, block)| block.text())
                                 .collect(),
@@ -2394,7 +2619,7 @@ impl LiveProjection {
                                 .filter(|(field, _)| {
                                     matches!(
                                         field,
-                                        ChatField::Part(PresentationPart::ReasoningText(_))
+                                        BodyKey::Part(PresentationPart::ReasoningText(_))
                                     )
                                 })
                                 .map(|(_, block)| block.text())
@@ -3034,14 +3259,14 @@ pub(super) fn observation_preview(
     generation: u32,
     part: &ObservedPart,
     lifecycle: &ThreadContentLifecycle,
-) -> Option<(String, ChatField, ThreadItemState)> {
+) -> Option<(String, BodyKey, ThreadItemState)> {
     Some(match part.identity() {
         ObservedPartIdentity::Aggregate { channel } => {
             let id = aggregate_id(attempt_id, generation, *channel);
             match channel {
                 AggregateChannel::Text => (
                     id,
-                    ChatField::Body,
+                    BodyKey::Body,
                     ThreadItemState::Text(ThreadTextItem::new(
                         ThreadTextChannel::Commentary,
                         String::new(),
@@ -3051,7 +3276,7 @@ pub(super) fn observation_preview(
                 ),
                 AggregateChannel::Reasoning => (
                     id,
-                    ChatField::Part(PresentationPart::ReasoningText(0)),
+                    BodyKey::Part(PresentationPart::ReasoningText(0)),
                     ThreadItemState::Thinking(ThreadThinkingItem::new(
                         Vec::new(),
                         vec![String::new()],
@@ -3070,7 +3295,7 @@ pub(super) fn observation_preview(
             match (identity.item_kind, identity.part) {
                 (ObservedItemKind::Text(channel), ObservedPartKind::OutputText) => (
                     id,
-                    ChatField::Body,
+                    BodyKey::Body,
                     ThreadItemState::Text(ThreadTextItem::new(
                         trace_channel(channel),
                         String::new(),
@@ -3080,7 +3305,7 @@ pub(super) fn observation_preview(
                 ),
                 (ObservedItemKind::Reasoning, ObservedPartKind::ReasoningText) => (
                     id,
-                    ChatField::Part(PresentationPart::ReasoningText(0)),
+                    BodyKey::Part(PresentationPart::ReasoningText(0)),
                     ThreadItemState::Thinking(ThreadThinkingItem::new(
                         Vec::new(),
                         vec![String::new()],
@@ -3089,7 +3314,7 @@ pub(super) fn observation_preview(
                 ),
                 (ObservedItemKind::Reasoning, ObservedPartKind::SummaryText) => (
                     id,
-                    ChatField::Part(PresentationPart::SummaryText(0)),
+                    BodyKey::Part(PresentationPart::SummaryText(0)),
                     ThreadItemState::Thinking(ThreadThinkingItem::new(
                         vec![String::new()],
                         Vec::new(),
@@ -3114,8 +3339,8 @@ fn trace_channel(channel: ModelTextChannel) -> ThreadTextChannel {
 /// Whether two field maps carry byte-identical text, compared by shared chain without materializing a
 /// body. The field set itself participates: dropping or adding a field is a structural change.
 fn fields_equal(
-    left: &BTreeMap<ChatField, Arc<ContentBlock>>,
-    right: &BTreeMap<ChatField, Arc<ContentBlock>>,
+    left: &BTreeMap<BodyKey, Arc<ContentBlock>>,
+    right: &BTreeMap<BodyKey, Arc<ContentBlock>>,
 ) -> bool {
     left.len() == right.len()
         && left.iter().all(|(field, block)| {
@@ -3151,7 +3376,7 @@ mod completion_tests {
             id.clone(),
             LivePreview {
                 fields: BTreeMap::from([(
-                    ChatField::Part(PresentationPart::ReasoningText(0)),
+                    BodyKey::Part(PresentationPart::ReasoningText(0)),
                     ContentBlock::from_text("received reasoning prefix"),
                 )]),
                 observed: None,

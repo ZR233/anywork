@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import '../conversation/domain/activity_content.dart';
+import 'chat_models.dart';
 import 'interaction_models.dart';
 import 'studio_enums.dart';
 import 'thread_activity_models.dart';
@@ -267,11 +267,11 @@ bool _sameDetails(
 /// 只从 SDK 已提交的当前活动事件及各域当前事实派生显示值。
 /// 不读取历史，不发起详情 query，不用较早到达的摘要帧清除正文。
 ConversationActivityView? projectConversationActivity({
-  required CurrentActivity? current,
+  required CurrentProjection? current,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
 }) {
-  final activity = current?.activity;
+  final activity = current?.active;
   if (activity == null || current == null) {
     if (interaction != null) return _interactionActivity(interaction);
     if (storage != null && storage.blocksContinuation) {
@@ -292,70 +292,37 @@ ConversationActivityView? projectConversationActivity({
     ThreadActivityKind.awaitingInput => ConversationActivityKind.awaitingInput,
     ThreadActivityKind.stopping => ConversationActivityKind.stopping,
   };
-  final summary = _waitAwareSummary(activity) ?? _singleLine(activity.summary);
-  final thinkingSummary = activity.thinkingSummary?.trim();
-  final hasBody =
-      current.reasoning.any((part) => part.text.isNotEmpty) ||
-      current.tools.any(
-        (tool) =>
-            tool.arguments?.isNotEmpty == true ||
-            tool.outputParts?.any((part) => part.text.isNotEmpty) == true,
-      );
+  final summary = _singleLine(activity.summary);
   return ConversationActivityView(
-    identity: activity.identity,
+    identity: activity.id,
     kind: kind,
-    turnId: activity.turnId,
-    executionId: activity.executionId,
+    turnId: current.activeTurn?.id,
     summary: summary.isEmpty ? null : summary,
-    thinkingSummary: thinkingSummary == null || thinkingSummary.isEmpty
-        ? null
-        : thinkingSummary,
+    thinkingSummary: activity.thinkingSummary,
     thinkingSeconds: activity.thinkingSeconds,
-    reasoningParts: current.reasoning,
-    responseParts: current.response,
-    activeTools: activity.tools.active,
-    toolDetails: current.tools,
-    activeToolCount: activity.tools.count,
-    backgroundToolCount: activity.tools.background,
-    expandable:
-        kind != ConversationActivityKind.responding &&
-        kind != ConversationActivityKind.compacting &&
-        hasBody,
-    wait: _activityWait(activity),
+    // These are bounded producer previews, never locally accumulated deltas.
+    reasoningParts: [
+      for (final preview in current.previews)
+        if (preview.role == CurrentContentRole.reasoning)
+          ThreadActivityContentPart(
+            itemId: preview.id,
+            complete: false,
+            text: preview.text,
+          ),
+    ],
+    responseParts: [
+      for (final preview in current.previews)
+        if (preview.role == CurrentContentRole.response)
+          ThreadActivityContentPart(
+            itemId: preview.id,
+            complete: false,
+            text: preview.text,
+          ),
+    ],
+    activeToolCount: activity.toolCount,
+    backgroundToolCount: activity.backgroundToolCount,
+    expandable: current.previews.isNotEmpty || current.collections.isNotEmpty,
   );
-}
-
-ThreadWaitPresentationView? _activityWait(ThreadActivityView activity) {
-  final latest = activity.tools.latestStarted?.wait;
-  if (latest != null) return latest;
-  for (final tool in activity.tools.active) {
-    final wait = tool.wait;
-    if (wait != null) return wait;
-  }
-  return null;
-}
-
-String? _waitAwareSummary(ThreadActivityView activity) {
-  final wait = _activityWait(activity);
-  if (wait == null) return null;
-  return _waitCollapsedSummary(wait);
-}
-
-String? _waitCollapsedSummary(ThreadWaitPresentationView wait) {
-  return switch (wait.intent) {
-    ThreadWaitEventsIntentView(:final targets) => () {
-      for (final target in targets) {
-        final summary = target.summary?.trim();
-        if (summary != null && summary.isNotEmpty) {
-          return target.summaryTruncated ? '$summary…' : summary;
-        }
-        final toolName = target.toolName?.trim();
-        if (toolName != null && toolName.isNotEmpty) return toolName;
-      }
-      return null;
-    }(),
-    ThreadWaitTimerIntentView() => null,
-  };
 }
 
 ConversationActivityView _storageActivity(ThreadStorageStateView storage) {

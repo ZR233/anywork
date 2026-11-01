@@ -1,72 +1,86 @@
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_group_adapter.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_group_models.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/chat_fixtures.dart';
+
+// Completed activities are producer messages, no longer locally grouped typed
+// atoms. Preserve the timestamp and standalone-receipt risks at the new decoder.
 void main() {
-  final completedAt = DateTime.utc(2026, 10, 29);
-  ConversationItem atom({int? sealedAt, ConversationDescriptor? descriptor}) =>
-      ConversationItem(
-        header: ConversationItemHeader(
-          id: 'completed',
-          threadId: 'thread',
-          turnId: 'turn',
-          appendSeq: 7,
-          sourceEffectSeq: 999,
-          sealedAt: sealedAt,
-        ),
-        descriptor:
-            descriptor ??
-            ConversationThinkingDescriptor(
-              outcome: ConversationContentCompleted(
-                CompletedThreadContentView(completedAt),
-              ),
-            ),
-        source: const ConversationContentSource(),
-        fields: const [],
-      );
-
-  test('unknown seal time does not reject a completed thinking atom', () {
-    final conversion = TimelineActivityGroupAdapter.convertItem(atom());
-    expect(conversion, isA<TimelineActivityConverted>());
-    final message = (conversion as TimelineActivityConverted).message;
-    expect(message.createdAt, isNull);
-    expect(message.completedAt, completedAt);
-    expect(message.duration, isNull);
-  });
-
   test(
-    'completion sequence and seal time do not fabricate an execution start',
+    'unknown seal does not fabricate a message date from completion time',
     () {
-      final conversion = TimelineActivityGroupAdapter.convertItem(
-        atom(sealedAt: 1_700_000_000),
-      ) as TimelineActivityConverted;
-      final message = conversion.message;
-      expect(message.createdAt, isNull);
-      expect(message.completedAt, completedAt);
-      final group = TimelineActivityGroupController(initialMessages: [message]);
-      expect(group.elapsedDuration, isNull);
-      group.dispose();
+      final item = ChatItemPresentation.decode(
+        chatEnvelope(
+          'completed',
+          type: 'thinking',
+          data: const {
+            'outcome': {
+              'kind': 'completed',
+              'data': {'completedAt': 1700000000},
+            },
+          },
+        ),
+      );
+      expect(item.compatibility, ChatItemCompatibility.current);
+      expect(item.createdAt, isNull);
+      expect(item.data['outcome'], {
+        'kind': 'completed',
+        'data': {'completedAt': 1700000000},
+      });
     },
   );
 
-  test('background receipt is a completed standalone receipt, not a running member', () {
-    final conversion = TimelineActivityGroupAdapter.convertItem(
-      atom(
-        descriptor: ConversationToolDescriptor(
-          invocation: const ConversationToolInvocation(
-            toolCallId: 'call',
-            name: 'exec',
-            taskId: 'task',
-          ),
-          state: ConversationToolBackgroundStarted(startedAt: completedAt),
+  test(
+    'only the explicit message seal creates a date, not an execution duration',
+    () {
+      final item = ChatItemPresentation.decode(
+        chatEnvelope(
+          'completed',
+          type: 'thinking',
+          sealedAt: 1700000001,
+          data: const {
+            'outcome': {
+              'kind': 'completed',
+              'data': {'completedAt': 1700000000},
+            },
+          },
         ),
+      );
+      expect(
+        item.createdAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000001000, isUtc: true),
+      );
+      expect(item.data.containsKey('startedAt'), isFalse);
+    },
+  );
+
+  test('background receipt remains its own producer item and exact frozen tool contract', () {
+    final item = ChatItemPresentation.decode(
+      chatEnvelope(
+        'receipt',
+        type: 'tool',
+        data: const {
+          'invocation': {
+            'toolCallId': 'call',
+            'name': 'exec',
+            'taskId': 'task',
+            'presentationContract': 'generic@1',
+          },
+          'state': {
+            'kind': 'backgroundStarted',
+            'data': {'startedAt': 1700000000},
+          },
+        },
       ),
     );
-    expect(conversion, isA<TimelineActivityConversionRejected>());
-    expect(
-      (conversion as TimelineActivityConversionRejected).reason,
-      TimelineActivityRejectionReason.standaloneToolItem,
-    );
+    expect(item.id, 'receipt');
+    expect(item.type, 'tool');
+    expect(item.presentationContract, 'generic@1');
+    expect(item.data['state'], {
+      'kind': 'backgroundStarted',
+      'data': {'startedAt': 1700000000},
+    });
+    expect(item.createdAt, isNull);
+    expect(item.childrenParentId, isNull);
   });
 }

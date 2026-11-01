@@ -439,7 +439,7 @@ final class ConversationWorkspaceProvider
 }
 
 String _$conversationWorkspaceHash() =>
-    r'580cd8e1ac24b0747f9068d58e305f19efc56b94';
+    r'115d56076e083f26b637ea053169f30eba68135c';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -541,7 +541,7 @@ final class ConversationActivityInputProvider
 }
 
 String _$conversationActivityInputHash() =>
-    r'655d90a3dbf1662620e081ae202cc27b3f132776';
+    r'f7dadf36f59a48656233aba7c27c8aa526da01af';
 
 final class ConversationActivityInputFamily extends $Family
     with $FunctionalFamilyOverride<ConversationActivityInput?, String> {

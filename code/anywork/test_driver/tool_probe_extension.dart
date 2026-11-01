@@ -127,6 +127,16 @@ class ToolProbeExtension extends CommandExtension {
           'visibleHeight': _visibleInViewports(box).height
               .clamp(0.0, double.infinity),
           'texts': [
+            for (final element
+                in find
+                    .descendant(
+                      of: target,
+                      matching: find.byType(SelectableText),
+                    )
+                    .evaluate())
+              (element.widget as SelectableText).data ??
+                  (element.widget as SelectableText).textSpan?.toPlainText() ??
+                  '',
             for (final e
                 in find
                     .descendant(of: target, matching: find.byType(Text))
@@ -320,18 +330,33 @@ class ToolProbeExtension extends CommandExtension {
   }
 
   Finder? _expansionTile(Finder target) {
-    final widget = target.evaluate().single.widget;
+    final element = target.evaluate().single;
+    final widget = element.widget;
     if (widget is ExpansionTile) return target;
     final key = widget.key;
-    if (key is! ValueKey<String> || !key.value.startsWith('timeline-block-')) {
-      return null;
+    if (key is ValueKey<String> && key.value.startsWith('timeline-block-')) {
+      final tiles = find.descendant(
+        of: target,
+        matching: find.byType(ExpansionTile, skipOffstage: false),
+        skipOffstage: false,
+      );
+      return tiles.evaluate().isEmpty ? null : tiles.first;
     }
-    final tiles = find.descendant(
-      of: target,
-      matching: find.byType(ExpansionTile, skipOffstage: false),
-      skipOffstage: false,
-    );
-    return tiles.evaluate().isEmpty ? null : tiles.first;
+    // Current collection/member keys belong to the actual title, not the tile.
+    // Bind its nearest owning tile; an outer disclosure may have a different
+    // state. Keep timeline-block's own header/descendant semantics above.
+    Element? nearest;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget is! ExpansionTile) return true;
+      nearest = ancestor;
+      return false;
+    });
+    return nearest == null
+        ? null
+        : find.byElementPredicate(
+            (candidate) => identical(candidate, nearest),
+            skipOffstage: false,
+          );
   }
 
   Element? _activityHeader(Finder target) {

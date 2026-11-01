@@ -41,6 +41,9 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) cancellation: Option<tokio_util::sync::CancellationToken>,
     pub(crate) model_observation: Option<pl_protocol::InferenceModelObservation>,
     pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
+    pub(crate) members: Option<pl_core::model::ModelMemberSender>,
+    pub(crate) generation: u32,
+    pub(crate) member_admitted: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
@@ -56,6 +59,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         cancellation,
         model_observation,
         on_stream_end,
+        members,
+        generation,
+        member_admitted,
     } = context;
     let mut accumulator =
         StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation);
@@ -124,7 +130,27 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 });
             }
         };
-        if let Err(error) = accumulator.apply(event, event_tx) {
+        let admission = async {
+            accumulator.apply(event, event_tx)?;
+            if let Some((item, state)) = accumulator.take_completed_member()
+                && let Some(sender) = members.as_ref()
+            {
+                let payload = crate::runtime::ModelMemberReceipt::encode(item, state)
+                    .map_err(|error| PureError::LlmError(error.to_string()))?;
+                // No cancellation select here: a fact already sent belongs to this original call
+                // until the owner's explicit admission reply. Do not poll another provider event.
+                sender
+                    .submit(generation, item.provider_item_id.clone(), payload)
+                    .await
+                    .map_err(|error| PureError::LlmError(error.to_string()))?;
+                if let Some(admitted) = member_admitted {
+                    admitted.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Ok::<(), PureError>(())
+        }
+        .await;
+        if let Err(error) = admission {
             on_stream_end();
             accumulator.fail_attempt(&error, event_tx);
             return Err(crate::completion::CompletionFailure {

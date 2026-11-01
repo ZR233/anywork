@@ -14,6 +14,7 @@ import 'thread_activity.dart';
 import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeTokenUsageSnapshot`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
@@ -608,6 +609,7 @@ sealed class BridgeThreadNotification with _$BridgeThreadNotification {
   }) = BridgeThreadNotification_InteractionChanged;
   const factory BridgeThreadNotification.threadRuntimeUpdated({
     required BridgeThreadRuntimeSnapshot runtime,
+    BridgeThreadModelRouteSnapshot? modelRoute,
   }) = BridgeThreadNotification_ThreadRuntimeUpdated;
 
   /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
@@ -713,7 +715,6 @@ class BridgeThreadRuntimeLiveUsage {
 
 class BridgeThreadRuntimeSnapshot {
   final String threadId;
-  final BridgeThreadModelRouteSnapshot? modelRoute;
   final BridgeThreadRuntimeUsage usage;
   final BridgeThreadRuntimeLiveUsage? liveUsage;
   final BigInt turnCompletionTokens;
@@ -736,7 +737,6 @@ class BridgeThreadRuntimeSnapshot {
 
   const BridgeThreadRuntimeSnapshot({
     required this.threadId,
-    this.modelRoute,
     required this.usage,
     this.liveUsage,
     required this.turnCompletionTokens,
@@ -757,7 +757,6 @@ class BridgeThreadRuntimeSnapshot {
   @override
   int get hashCode =>
       threadId.hashCode ^
-      modelRoute.hashCode ^
       usage.hashCode ^
       liveUsage.hashCode ^
       turnCompletionTokens.hashCode ^
@@ -780,7 +779,6 @@ class BridgeThreadRuntimeSnapshot {
       other is BridgeThreadRuntimeSnapshot &&
           runtimeType == other.runtimeType &&
           threadId == other.threadId &&
-          modelRoute == other.modelRoute &&
           usage == other.usage &&
           liveUsage == other.liveUsage &&
           turnCompletionTokens == other.turnCompletionTokens &&
@@ -909,6 +907,7 @@ class BridgeThreadSnapshot {
   final BridgeThread thread;
   final BridgeTurn? activeTurn;
   final List<BridgeInteractionRequest> interactions;
+  final BridgeThreadModelRouteSnapshot? modelRoute;
   final BridgeThreadRuntimeSnapshot? runtime;
 
   /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
@@ -924,6 +923,7 @@ class BridgeThreadSnapshot {
     required this.thread,
     this.activeTurn,
     required this.interactions,
+    this.modelRoute,
     this.runtime,
     this.activity,
     this.storage,
@@ -937,6 +937,7 @@ class BridgeThreadSnapshot {
       thread.hashCode ^
       activeTurn.hashCode ^
       interactions.hashCode ^
+      modelRoute.hashCode ^
       runtime.hashCode ^
       activity.hashCode ^
       storage.hashCode ^
@@ -952,6 +953,7 @@ class BridgeThreadSnapshot {
           thread == other.thread &&
           activeTurn == other.activeTurn &&
           interactions == other.interactions &&
+          modelRoute == other.modelRoute &&
           runtime == other.runtime &&
           activity == other.activity &&
           storage == other.storage &&
@@ -1108,37 +1110,6 @@ class BridgeTodoListSnapshot {
 }
 
 enum BridgeTodoStatus { pending, inProgress, completed }
-
-class BridgeTokenUsageSnapshot {
-  final BigInt promptTokens;
-  final BigInt completionTokens;
-  final BigInt cachedPromptTokens;
-  final BigInt totalTokens;
-
-  const BridgeTokenUsageSnapshot({
-    required this.promptTokens,
-    required this.completionTokens,
-    required this.cachedPromptTokens,
-    required this.totalTokens,
-  });
-
-  @override
-  int get hashCode =>
-      promptTokens.hashCode ^
-      completionTokens.hashCode ^
-      cachedPromptTokens.hashCode ^
-      totalTokens.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeTokenUsageSnapshot &&
-          runtimeType == other.runtimeType &&
-          promptTokens == other.promptTokens &&
-          completionTokens == other.completionTokens &&
-          cachedPromptTokens == other.cachedPromptTokens &&
-          totalTokens == other.totalTokens;
-}
 
 @freezed
 sealed class BridgeToolApprovalInteractionState

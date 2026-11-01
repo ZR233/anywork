@@ -1,5 +1,6 @@
 use pl_protocol::PureError;
 use pl_protocol::studio::{StudioError, StudioErrorCode};
+use std::sync::Arc;
 
 use crate::ConfigRuntimeError;
 use crate::{StudioDatabaseError, StudioUpdateError, StudioUpdateErrorCode};
@@ -18,7 +19,34 @@ pub fn studio_error_from_anyhow_ref(error: &anyhow::Error) -> StudioError {
     studio_error_from_ref(error)
 }
 
+/// Transfers a retained failure without cloning its text or losing its typed classification.
+///
+/// `anyhow::Error` is not cloneable. The observation owner keeps the original `Arc`; each reader
+/// receives a borrowing error adapter that this mapper unwraps before applying the existing rules.
+pub(crate) fn shared_runtime_error(error: Arc<anyhow::Error>) -> anyhow::Error {
+    anyhow::Error::new(SharedRuntimeError(error))
+}
+
+#[derive(Debug)]
+struct SharedRuntimeError(Arc<anyhow::Error>);
+
+impl std::fmt::Display for SharedRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.0.as_ref(), formatter)
+    }
+}
+
+impl std::error::Error for SharedRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref().as_ref())
+    }
+}
+
 fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
+    let mut error = error;
+    while let Some(shared) = error.downcast_ref::<SharedRuntimeError>() {
+        error = shared.0.as_ref();
+    }
     if let Some(error) = error.downcast_ref::<StudioError>() {
         return error.clone();
     }
@@ -214,7 +242,7 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
     }
 }
 
-/// Maps one Timeline content failure to its public category.
+/// Maps an opaque conversation read failure to its public category.
 ///
 /// The classification comes from the typed variant; no error text is parsed. Messages stay generic
 /// and the structured details carry only identities, field keys and sizes — never content.
@@ -227,6 +255,24 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_details(serde_json::json!({ "reason": reason })),
+        Chat::InvalidDemand(_) => StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            "The requested demand cannot fit a bounded conversation envelope",
+            false,
+        )
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::InvalidDemand,
+            serde_json::Value::Null,
+        ),
+        Chat::StaleContent => StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "The requested content owner or generation is no longer current",
+            false,
+        )
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::StaleContent,
+            serde_json::Value::Null,
+        ),
         Chat::NotFound(identity) => StudioError::new(
             StudioErrorCode::NotFound,
             "The requested timeline content is not available",
@@ -235,13 +281,16 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
         .with_details(serde_json::json!({ "identity": identity })),
         Chat::EpochMismatch { cursor, session } => StudioError::new(
             StudioErrorCode::StaleRevision,
-            "The timeline epoch changed; establish the current completion window",
-            true,
+            "The conversation read scope no longer matches its original source",
+            false,
         )
-        .with_details(serde_json::json!({
-            "requestedEpoch": cursor.as_str(),
-            "timelineEpoch": session.as_str(),
-        })),
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            serde_json::json!({
+                "requestedEpoch": cursor.as_str(),
+                "timelineEpoch": session.as_str(),
+            }),
+        ),
         Chat::Cancelled => StudioError::new(
             StudioErrorCode::Cancelled,
             "The timeline content observation is closed",
@@ -377,4 +426,91 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
         format!("Studio update could not be completed: {error}"),
         retryable,
     )
+}
+
+#[cfg(test)]
+mod conversation_read_tests {
+    use super::*;
+    use pl_core::chat::ChatError;
+
+    #[test]
+    fn retained_shared_failure_preserves_typed_mapping_and_original_identity() {
+        let original = StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "The original owner failed",
+            false,
+        )
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            serde_json::json!({"owner": "original"}),
+        );
+        let expected = serde_json::to_value(&original).unwrap();
+        let retained = Arc::new(anyhow::Error::new(original).context("private-owner-diagnostic"));
+        let transferred =
+            shared_runtime_error(retained.clone()).context("private-reader-diagnostic");
+        let adapter = transferred.downcast_ref::<SharedRuntimeError>().unwrap();
+        assert!(Arc::ptr_eq(&adapter.0, &retained));
+        assert_eq!(
+            serde_json::to_value(studio_error_from_anyhow_ref(&transferred)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::to_value(studio_error_from_anyhow(transferred)).unwrap(),
+            expected
+        );
+
+        for original in [
+            anyhow::Error::new(ChatError::StaleContent),
+            anyhow::Error::new(std::io::Error::other("private-io-diagnostic")),
+        ] {
+            let expected = studio_error_from_anyhow_ref(&original);
+            let transferred =
+                shared_runtime_error(Arc::new(original.context("private-owner-diagnostic")))
+                    .context("private-reader-diagnostic");
+            let mapped = studio_error_from_anyhow(transferred);
+            assert_eq!(mapped.code, expected.code);
+            assert_eq!(mapped.reason(), expected.reason());
+            assert_eq!(mapped.retryable, expected.retryable);
+            assert!(!serde_json::to_string(&mapped).unwrap().contains("private-"));
+        }
+    }
+
+    #[test]
+    fn demand_and_stale_content_keep_distinct_reasons_without_exposing_bodies() {
+        for (failure, code, reason) in [
+            (
+                ChatError::InvalidDemand("private-body-material".into()),
+                StudioErrorCode::InvalidArgument,
+                "invalidDemand",
+            ),
+            (
+                ChatError::StaleContent,
+                StudioErrorCode::StaleRevision,
+                "staleContent",
+            ),
+        ] {
+            let mapped = studio_error_from_anyhow(
+                anyhow::Error::new(failure).context("private-body-material"),
+            );
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.reason(), Some(reason));
+            assert!(!mapped.retryable);
+            assert!(
+                !serde_json::to_string(&mapped)
+                    .unwrap()
+                    .contains("private-body-material")
+            );
+        }
+        let missing_chunk = ChatError::History(Box::new(std::io::Error::other(
+            "missing chunk with private-body-material",
+        )));
+        let mapped = studio_error_from_anyhow(anyhow::Error::new(missing_chunk));
+        assert_eq!(mapped.code, StudioErrorCode::Storage);
+        assert_ne!(mapped.reason(), Some("staleContent"));
+        assert!(
+            !serde_json::to_string(&mapped)
+                .unwrap()
+                .contains("private-body-material")
+        );
+    }
 }

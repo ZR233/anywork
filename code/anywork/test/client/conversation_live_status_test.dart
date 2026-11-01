@@ -105,6 +105,57 @@ ThreadActivityToolDetail _toolDetail({
 
 void main() {
   group('ConversationActivityBar (direct ConversationActivityView)', () {
+    for (final responding in [false, true]) {
+      testWidgets(
+        'bounded activity surface keeps scrolling content inside its footer ($responding)',
+        (tester) async {
+          const frame = ValueKey('bounded-footer');
+          await tester.pumpWidget(
+            _wrapWithApp(
+              SizedBox(
+                key: frame,
+                height: 160,
+                child: ConversationActivityBar(
+                  view: _view(
+                    identity: 'bounded-activity',
+                    kind: responding
+                        ? ConversationActivityKind.responding
+                        : ConversationActivityKind.runningTool,
+                    expandable: !responding,
+                  ),
+                  expandedContentBuilder: (_) => const SizedBox(
+                    height: 400,
+                    child: Text('expanded tool content'),
+                  ),
+                  responseContentBuilder: (_) => const SizedBox(
+                    height: 400,
+                    child: Text('streaming response content'),
+                  ),
+                ),
+              ),
+            ),
+          );
+          if (!responding) {
+            await tester.tap(
+              find.byKey(const ValueKey('conversation-activity')),
+            );
+            await tester.pump();
+          }
+          expect(tester.takeException(), isNull);
+          final scroll = find.byType(SingleChildScrollView);
+          expect(scroll, findsOneWidget);
+          final viewport = tester.getRect(scroll);
+          final footer = tester.getRect(find.byKey(frame));
+          expect(viewport.top, greaterThanOrEqualTo(footer.top));
+          expect(viewport.bottom, lessThanOrEqualTo(footer.bottom));
+          await tester.drag(scroll, const Offset(0, -100));
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        },
+      );
+    }
+
     testWidgets('思考中且无正文时只显示不可展开的「思考中」', (tester) async {
       await tester.pumpWidget(
         _wrapWithApp(
@@ -170,9 +221,7 @@ void main() {
               identity: 'activity:thinking-full',
               kind: ConversationActivityKind.thinking,
               thinkingSummary: '已收敛出最终架构设计方案',
-              reasoningParts: [
-                _part(itemId: 'think-1', text: reasoning),
-              ],
+              reasoningParts: [_part(itemId: 'think-1', text: reasoning)],
               expandable: true,
             ),
           ),
@@ -351,10 +400,7 @@ void main() {
       const first = 'stdout line 1\n';
       const secondStart = 'stderr start';
       const secondUpdated = 'stderr start\nstderr continued  \n';
-      Widget bar({
-        required String partA,
-        required String partB,
-      }) {
+      Widget bar({required String partA, required String partB}) {
         return _wrapWithApp(
           ConversationActivityBar(
             view: _view(
@@ -427,9 +473,7 @@ void main() {
             view: _view(
               identity: 'activity:responding',
               kind: ConversationActivityKind.responding,
-              responseParts: [
-                _part(itemId: 'resp-1', text: body),
-              ],
+              responseParts: [_part(itemId: 'resp-1', text: body)],
             ),
             maxResponseHeight: 120,
           ),

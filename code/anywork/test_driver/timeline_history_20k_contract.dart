@@ -3,17 +3,17 @@
 import 'dart:convert';
 
 const timelineHistory20kColdWindowBudget = <String, Object>{
-  'defaultPageItems': 32,
+  'scenarioMaximumPageItems': 32,
   'maximumAutoFillPages': 4,
   'maximumLoadedItems': 128,
   'windowWidthPixels': 1280,
   'windowHeightPixels': 720,
   'fixtureBodyBytesPerItem': 32,
   'basis':
-      'The production baseline/page default is 32. This fixture renders each '
-      'canonical output as an independent non-empty single-line text row in '
-      'the fixed 1280x720 Linux window; four pages allow conservative '
-      'automatic viewport filling without accepting a near-full history.',
+      'This fixture renders each completed output as an independent non-empty '
+      'single-line text row in the fixed 1280x720 Linux window. The GUI derives '
+      'its actual demand from viewport height; this conservative scenario cap '
+      'allows viewport filling without accepting a near-full history.',
   'scope':
       'scenario guardrail for this fixed short-text shape, not a production '
       'pagination limit',
@@ -75,16 +75,13 @@ void requireTimelineHistory20kAppendOnlyWindow({
   final beforeScope = _timelineHistory20kScope(before, 'before');
   final afterScope = _timelineHistory20kScope(after, 'after');
   if (afterScope.threadId != beforeScope.threadId ||
-      afterScope.generation != beforeScope.generation ||
-      afterScope.timelineEpoch != beforeScope.timelineEpoch) {
+      afterScope.generation != beforeScope.generation) {
     throw StateError(
       'History scope changed: '
       'before=(threadId=${beforeScope.threadId}, '
-      'generation=${beforeScope.generation}, '
-      'timelineEpoch=${beforeScope.timelineEpoch}) '
+      'generation=${beforeScope.generation}) '
       'after=(threadId=${afterScope.threadId}, '
-      'generation=${afterScope.generation}, '
-      'timelineEpoch=${afterScope.timelineEpoch})',
+      'generation=${afterScope.generation})',
     );
   }
 
@@ -107,17 +104,8 @@ void requireTimelineHistory20kAppendOnlyWindow({
       );
     }
   }
-  if (afterItems.length > beforeItems.length && beforeItems.isNotEmpty) {
-    final oldLastSequence = beforeItems.last['appendSeq']! as int;
-    final newFirstSequence =
-        afterItems[beforeItems.length]['appendSeq']! as int;
-    if (newFirstSequence <= oldLastSequence) {
-      throw StateError(
-        'History appended tail does not advance appendSeq: '
-        'oldLast=$oldLastSequence newFirst=$newFirstSequence',
-      );
-    }
-  }
+  // Strict prefix + unique actual identities proves append-only acceptance.
+  // Completion ordering and durable seq/H/D remain Rust/storage obligations.
 }
 
 int requireNonNegativeInteger(Object? value, String field) {
@@ -127,8 +115,95 @@ int requireNonNegativeInteger(Object? value, String field) {
   return value;
 }
 
+/// Requires an actually accepted, current product baseline, not null-as-empty.
+void requireTimelineHistoryQueueSnapshot(
+  Map<String, Object?> queue, {
+  required String context,
+}) {
+  if (queue['loaded'] != true || queue['syncPhase'] != 'ready') {
+    throw StateError('$context has no connected persistence queue baseline');
+  }
+  requireNonNegativeInteger(queue['revision'], '$context.revision');
+  for (final field in ['pendingOperations', 'pendingBytes', 'inFlightBytes']) {
+    requireNonNegativeInteger(queue[field], '$context.$field');
+  }
+  final threads = queue['threads'];
+  if (threads is! List) {
+    throw StateError('$context.threads must be an array');
+  }
+  final identities = <String>{};
+  for (final thread in threads) {
+    if (thread is! Map) {
+      throw StateError('$context.threads must contain objects');
+    }
+    final id = thread['threadId'];
+    if (id is! String || id.isEmpty || !identities.add(id)) {
+      throw StateError(
+        '$context.threads must have unique non-empty identities',
+      );
+    }
+  }
+}
+
+/// A fresh passive cold read must not manufacture a live execution writer.
+void requireTimelineHistoryPassiveQueue(
+  Map<String, Object?> queue, {
+  required String context,
+}) {
+  requireTimelineHistoryQueueSnapshot(queue, context: context);
+  for (final field in ['pendingOperations', 'pendingBytes', 'inFlightBytes']) {
+    if (queue[field] != 0) {
+      throw StateError(
+        '$context.$field must remain zero during passive reading',
+      );
+    }
+  }
+  if ((queue['threads'] as List).isNotEmpty ||
+      !queue.containsKey('lastError') ||
+      queue['lastError'] != null ||
+      queue['pressurePaused'] != false) {
+    throw StateError(
+      '$context has an execution writer or unresolved save duty',
+    );
+  }
+}
+
+/// One growth lifecycle, including all batches. A passive source has no writer
+/// until execution is activated and its queue projection is delivered.
+final class TimelineHistoryGrowthQueue {
+  TimelineHistoryGrowthQueue({required this.threadId}) {
+    if (threadId.isEmpty) {
+      throw StateError('growth requires the original target thread identity');
+    }
+  }
+
+  final String threadId;
+  bool _writerObserved = false;
+
+  /// Null is an actual startup observation, never a fabricated H/D sample.
+  TimelineHistoryQueueSample? observe(
+    Map<String, Object?> queue, {
+    required String context,
+    required bool turnCompleted,
+  }) {
+    requireTimelineHistoryQueueSnapshot(queue, context: context);
+    final hasTarget = (queue['threads'] as List).cast<Map>().any(
+      (thread) => thread['threadId'] == threadId,
+    );
+    if (!_writerObserved && !hasTarget && !turnCompleted) return null;
+    final sample = TimelineHistoryQueueSample.parse(
+      queue,
+      context: context,
+      threadId: threadId,
+    );
+    _writerObserved = true;
+    return sample;
+  }
+}
+
 final class TimelineHistoryQueueSample {
   const TimelineHistoryQueueSample({
+    required this.threadId,
     required this.pendingOperations,
     required this.pendingBytes,
     required this.inFlightBytes,
@@ -139,13 +214,21 @@ final class TimelineHistoryQueueSample {
   factory TimelineHistoryQueueSample.parse(
     Map<String, Object?> queue, {
     required String context,
+    required String threadId,
   }) {
-    final threads = queue['threads'];
-    if (threads is! List || threads.length != 1 || threads.single is! Map) {
-      throw StateError('$context.threads must contain exactly one thread');
+    requireTimelineHistoryQueueSnapshot(queue, context: context);
+    final threads = (queue['threads'] as List)
+        .cast<Map>()
+        .where((thread) => thread['threadId'] == threadId)
+        .toList();
+    if (threadId.isEmpty || threads.length != 1) {
+      throw StateError(
+        '$context must contain the original target writer $threadId',
+      );
     }
-    final thread = Map<String, Object?>.from(threads.single as Map);
-    return TimelineHistoryQueueSample(
+    final thread = Map<String, Object?>.from(threads.single);
+    final sample = TimelineHistoryQueueSample(
+      threadId: threadId,
       pendingOperations: requireNonNegativeInteger(
         queue['pendingOperations'],
         '$context.pendingOperations',
@@ -160,15 +243,20 @@ final class TimelineHistoryQueueSample {
       ),
       historyAdmitted: requireNonNegativeInteger(
         thread['historyAdmitted'],
-        '$context.threads[0].historyAdmitted',
+        '$context.threads[$threadId].historyAdmitted',
       ),
       historyDurable: requireNonNegativeInteger(
         thread['historyDurable'],
-        '$context.threads[0].historyDurable',
+        '$context.threads[$threadId].historyDurable',
       ),
     );
+    if (sample.historyDurable > sample.historyAdmitted) {
+      throw StateError('$context target durability exceeds history admission');
+    }
+    return sample;
   }
 
+  final String threadId;
   final int pendingOperations;
   final int pendingBytes;
   final int inFlightBytes;
@@ -176,6 +264,7 @@ final class TimelineHistoryQueueSample {
   final int historyDurable;
 
   Map<String, Object?> toJson() => <String, Object?>{
+    'threadId': threadId,
     'pendingOperations': pendingOperations,
     'pendingBytes': pendingBytes,
     'inFlightBytes': inFlightBytes,
@@ -184,8 +273,10 @@ final class TimelineHistoryQueueSample {
   };
 }
 
-({String threadId, int generation, String timelineEpoch})
-_timelineHistory20kScope(Map<String, Object?> timeline, String context) {
+({String threadId, int generation}) _timelineHistory20kScope(
+  Map<String, Object?> timeline,
+  String context,
+) {
   final mode = timeline['mode'];
   if (mode != 'history') {
     throw StateError('$context.mode must be history, got $mode');
@@ -198,15 +289,7 @@ _timelineHistory20kScope(Map<String, Object?> timeline, String context) {
   if (generation is! int || generation < 1) {
     throw StateError('$context.generation must be a positive integer');
   }
-  final timelineEpoch = timeline['timelineEpoch'];
-  if (timelineEpoch is! String || timelineEpoch.isEmpty) {
-    throw StateError('$context.timelineEpoch must be a non-empty string');
-  }
-  return (
-    threadId: threadId,
-    generation: generation,
-    timelineEpoch: timelineEpoch,
-  );
+  return (threadId: threadId, generation: generation);
 }
 
 List<Map<String, Object?>> _timelineHistory20kItems(
@@ -231,7 +314,6 @@ List<Map<String, Object?>> _timelineHistory20kItems(
 
   final items = <Map<String, Object?>>[];
   final ids = <String>{};
-  int? previousSequence;
   for (var index = 0; index < rawItems.length; index++) {
     final rawItem = rawItems[index];
     final rawId = rawItemIds[index];
@@ -249,17 +331,6 @@ List<Map<String, Object?>> _timelineHistory20kItems(
     if (!ids.add(rawId)) {
       throw StateError('$context contains duplicate item id $rawId');
     }
-    final appendSeq = item['appendSeq'];
-    if (appendSeq is! int || appendSeq < 0) {
-      throw StateError('$context item $rawId has invalid appendSeq=$appendSeq');
-    }
-    if (previousSequence != null && appendSeq <= previousSequence) {
-      throw StateError(
-        '$context appendSeq is not strictly increasing at item $rawId: '
-        'previous=$previousSequence current=$appendSeq',
-      );
-    }
-    previousSequence = appendSeq;
     items.add(item);
   }
   return items;

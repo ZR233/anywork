@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
+use eventsource_stream::{Event, EventStreamError, Eventsource};
+use futures::{StreamExt, stream::BoxStream};
 use pl_protocol::studio::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
     BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
@@ -6,6 +8,10 @@ use pl_protocol::studio::{
     ReadBotMessagesRequest, ResolveInteractionRequest, SaveBotRequest, SendBotMessageRequest,
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
+};
+use pl_protocol::{
+    ChatBatch, ChatPlacement, ChatScope, ContentRange, ContentRef, ContentWindow,
+    CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
 };
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use pl_studio_runtime::WorkspaceRecord;
@@ -26,6 +32,107 @@ pub(crate) struct StudioHttp {
     send_client: reqwest::Client,
     command_client: reqwest::Client,
     base: String,
+}
+
+/// Only the transport capability of the original SSE response. Dropping it
+/// closes that response; no business Session or history cache is created.
+pub(crate) struct ChatRead {
+    http: StudioHttp,
+    thread_id: String,
+    capability: String,
+    _stream: BoxStream<'static, Result<Event, EventStreamError<anyhow::Error>>>,
+}
+
+/// Preserves the typed public failure for revision-qualified reads; callers must not parse text.
+#[derive(Debug)]
+pub(crate) struct StudioHttpFailure {
+    pub status: StatusCode,
+    pub path: String,
+    pub error: StudioError,
+}
+
+impl std::fmt::Display for StudioHttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}: {} ({:?}, HTTP {})",
+            self.path, self.error.message, self.error.code, self.status
+        )
+    }
+}
+
+impl std::error::Error for StudioHttpFailure {}
+
+impl ChatRead {
+    pub async fn load_older(&self, before: &str, demand: ReadDemand) -> Result<ChatBatch> {
+        let batch: ChatBatch = self
+            .post(
+                "chat/older",
+                &serde_json::json!({ "before": before, "demand": demand }),
+            )
+            .await?;
+        ensure!(
+            batch.placement == ChatPlacement::Prepend && batch.current.is_none(),
+            "older conversation response is not a current-free Prepend"
+        );
+        ensure!(
+            batch.messages.len() <= demand.max_items as usize
+                && batch.encoded_len()? <= demand.max_bytes as usize,
+            "older conversation response exceeded demand"
+        );
+        Ok(batch)
+    }
+
+    pub async fn page_current(
+        &self,
+        reference: &CurrentCollectionRef,
+        continuation: Option<&str>,
+        demand: ReadDemand,
+    ) -> Result<CurrentCollectionPage> {
+        let page: CurrentCollectionPage = self
+            .post(
+                "current/page",
+                &serde_json::json!({
+                    "reference": reference, "continuation": continuation, "demand": demand
+                }),
+            )
+            .await?;
+        ensure!(
+            page.revision == reference.revision
+                && page.entries.len() <= demand.max_items as usize
+                && serde_json::to_vec(&page)?.len() <= demand.max_bytes as usize,
+            "current collection response exceeded its qualified demand"
+        );
+        Ok(page)
+    }
+
+    pub async fn read_content(
+        &self,
+        reference: &ContentRef,
+        range: ContentRange,
+    ) -> Result<ContentWindow> {
+        self.post(
+            "contents/read",
+            &serde_json::json!({ "reference": reference, "range": range }),
+        )
+        .await
+    }
+
+    async fn post<T: DeserializeOwned, B: Serialize>(&self, suffix: &str, body: &B) -> Result<T> {
+        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
+        let response = self
+            .http
+            .client
+            .post(format!("{}{path}", self.http.base))
+            .header("X-Anywork-Conversation", &self.capability)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let text = response.text().await?;
+        decode_json(status, &text, &path)
+    }
 }
 
 /// Public reply of one precise stop command (`POST /api/v1/threads/{id}/stop`).
@@ -213,20 +320,127 @@ impl StudioHttp {
         self.get_json(&format!("/api/v1/threads/{thread_id}")).await
     }
 
-    /// One page of the canonical Thread timeline (newest page by default).
-    ///
-    /// This is the same content source the GUI reads; previews carry per-field
-    /// `total_bytes`, so a case can prove full local history without pulling a
-    /// complete body into the report.
-    pub async fn read_timeline(
+    /// Read the initial bounded Set and retain its *original* SSE/read lease.
+    /// Every subsequent range/page request uses the returned handle, never a
+    /// replacement feed carrying an old cursor.
+    pub async fn open_chat(
         &self,
         thread_id: &str,
-        limit: u32,
-    ) -> Result<pl_protocol::TimelinePage> {
-        self.get_json(&format!(
-            "/api/v1/threads/{thread_id}/timeline?limit={limit}"
-        ))
+        scope: ChatScope,
+        demand: ReadDemand,
+    ) -> Result<(ChatRead, ChatBatch)> {
+        // Unlike ordinary requests, an SSE response has no total HTTP timeout.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(RedirectPolicy::none())
+            .connect_timeout(Duration::from_secs(2))
+            .build()?;
+        let mut url =
+            reqwest::Url::parse(&format!("{}/api/v1/threads/{thread_id}/events", self.base))?;
+        {
+            let mut query = url.query_pairs_mut();
+            query
+                .append_pair("maxItems", &demand.max_items.to_string())
+                .append_pair("maxBytes", &demand.max_bytes.to_string());
+            if let ChatScope::Children { parent_id } = &scope {
+                query.append_pair("parentId", parent_id);
+            }
+        }
+        let request = client
+            .get(url)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        let response = tokio::time::timeout(ACK_BUDGET, request.send())
+            .await
+            .context("conversation SSE headers timed out")??;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            bail!(
+                "conversation SSE HTTP {status}: {}",
+                crate::env::redact(&body)
+            );
+        }
+        ensure!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream")),
+            "conversation response is not text/event-stream"
+        );
+        let capability = response
+            .headers()
+            .get("X-Anywork-Conversation")
+            .context("conversation SSE omitted its read capability")?
+            .to_str()?
+            .to_owned();
+        ensure!(
+            !capability.is_empty(),
+            "conversation SSE returned an empty capability"
+        );
+        let mut received_bytes = 0usize;
+        let mut stream = response
+            .bytes_stream()
+            .map(move |chunk| -> Result<_> {
+                let chunk = chunk?;
+                received_bytes += chunk.len();
+                ensure!(
+                    received_bytes <= 4 * 1024 * 1024,
+                    "conversation SSE exceeded its byte budget"
+                );
+                Ok(chunk)
+            })
+            .eventsource()
+            .boxed();
+        let batch = tokio::time::timeout(PREDICATE_TIMEOUT, async {
+            // State precedes Chat; only the bounded initial Chat is retained.
+            for _ in 0..256 {
+                let event = stream
+                    .next()
+                    .await
+                    .context("conversation SSE ended before Set")??;
+                ensure!(
+                    event.data.len() <= 2 * 1024 * 1024,
+                    "conversation SSE event exceeded budget"
+                );
+                match event.event.as_str() {
+                    "chat" => {
+                        let batch: ChatBatch = serde_json::from_str(&event.data)?;
+                        batch.validate_for(&scope)?;
+                        ensure!(
+                            batch.placement == ChatPlacement::Set,
+                            "first Chat was not Set"
+                        );
+                        return Ok::<_, anyhow::Error>(batch);
+                    }
+                    "error" => {
+                        let error: StudioError = serde_json::from_str(&event.data)?;
+                        bail!("conversation SSE: {} ({:?})", error.message, error.code);
+                    }
+                    "closed" | "lagged" => {
+                        bail!(
+                            "conversation SSE terminated: {}: {}",
+                            event.event,
+                            crate::env::redact(&event.data)
+                        )
+                    }
+                    "snapshot" | "notification" => {}
+                    other => bail!("unexpected conversation SSE event {other}"),
+                }
+            }
+            bail!("conversation SSE exceeded the initial event budget")
+        })
         .await
+        .context("conversation SSE Set timed out")??;
+        Ok((
+            ChatRead {
+                http: self.clone(),
+                thread_id: thread_id.to_owned(),
+                capability,
+                _stream: stream,
+            },
+            batch,
+        ))
     }
 
     pub async fn list_threads_page(
@@ -490,7 +704,12 @@ fn decode_json<T: DeserializeOwned>(status: StatusCode, body: &str, path: &str) 
     if !status.is_success() {
         let redacted = crate::env::redact(body);
         if let Ok(error) = serde_json::from_str::<StudioError>(body) {
-            bail!("{path}: {} ({:?})", error.message, error.code);
+            return Err(StudioHttpFailure {
+                status,
+                path: path.to_owned(),
+                error,
+            }
+            .into());
         }
         bail!("{path} failed with {status}: {redacted}");
     }

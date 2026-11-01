@@ -7,11 +7,12 @@ import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('共享feed首个内容基线到达前，两个ready等待不能提前观察候选基线或ACK', () async {
+  test('首Chat Set实际接纳前，两个ready等待不能提前完成或ACK', () async {
     var diagnosticSequence = 0;
     void record(Map<String, Object?> facts) => debugPrintSynchronously(
       jsonEncode({'sequence': ++diagnosticSequence, ...facts}),
@@ -58,11 +59,11 @@ void main() {
         'ownerView': view?.toString(),
         'leaseIdentity': display == null ? null : identityHashCode(display),
         'leaseGeneration': display?.generation,
-        'leaseEpoch': display?.timelineEpoch,
         'leaseRetired': display?.isRetired,
         'leaseReleased': display?.isReleased,
-        'atomIds': display?.items.map((item) => item.id).toList(),
-        'completedThrough': display?.completedCursor?.appendSeq,
+        'messageIds': display?.controller.messages
+            .map((message) => message.id)
+            .toList(),
         'budget': {
           for (final kind in ResourceKind.values)
             kind.name: graph.client.budget.used(kind),
@@ -82,6 +83,7 @@ void main() {
       contentObservation.cancel();
     });
     expect(transport.feeds, isEmpty, reason: '读取session不隐式声明内容需求');
+    graph.timeline.updateReadDemand(chatDemand);
     final thread = graph.client.threadDirectory.state.window.threads
         .singleWhere((thread) => thread.id == 'thread-main');
     graph.setConversationPageVisible(true);
@@ -96,8 +98,24 @@ void main() {
     diagnose('before release');
     final first = session.content.ready;
     final second = session.content.ready;
-    unawaited(first.then<void>((_) => diagnose('first ready completed')));
-    unawaited(second.then<void>((_) => diagnose('second ready completed')));
+    var firstCompleted = false;
+    var secondCompleted = false;
+    unawaited(
+      first.then<void>((_) {
+        firstCompleted = true;
+        diagnose('first ready completed');
+      }),
+    );
+    unawaited(
+      second.then<void>((_) {
+        secondCompleted = true;
+        diagnose('second ready completed');
+      }),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(firstCompleted, isFalse);
+    expect(secondCompleted, isFalse);
+    expect(held.acknowledgements, [1]);
     record({
       'feedStage': 'before release',
       'initialCalls': held.initialCalls,
@@ -119,8 +137,8 @@ void main() {
     expect(held.initialCalls, 1);
     final display = graph.timeline.lease('thread-main');
     expect(display, isNotNull, reason: 'ready 只能在真实展示接纳完成基线后完成');
-    expect(display!.items, isNotEmpty);
-    expect(display.completedCursor, isNotNull);
+    expect(display!.controller.messages, isNotEmpty);
+    expect(session.current.value, isNotNull);
     graph.setConversationPageVisible(false);
     await transport.feeds.single.joined.future;
     expect(transport.feeds.single.closeCalls, 1);
@@ -141,10 +159,9 @@ final class _AckObservedFeed extends RecordingConversationFeed {
       'subscriptionId': frame.subscriptionId,
       'deliverySequence': frame.deliverySequence,
       'event': frame.event.runtimeType.toString(),
-      if (frame.event case ConversationBaselineEvent(:final baseline)) ...{
-        'epoch': baseline.timelineEpoch,
-        'completedThrough': baseline.completedCursor.appendSeq,
-        'atomIds': baseline.items.map((item) => item.id).toList(),
+      if (frame.event case ConversationChatEvent(:final batch)) ...{
+        'placement': batch.placement.name,
+        'messageIds': batch.messages.map((message) => message.id).toList(),
       },
     });
     return frame;

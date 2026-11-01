@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -117,25 +119,24 @@ final class _Composer {
       graph.client.conversations.session(_threadId);
   ThreadWorkspace get workspace => owner.state.workspace!;
 
-  /// 只替换 canonical 运行时中的执行/继续点/模型路由，其余事实保持真实。
+  /// 只替换 canonical 执行/继续点/路由事实，其余事实保持真实。
   Future<void> publish({
     Object? execution = _unset,
     Object? continuation = _unset,
     Object? modelRoute = _unset,
   }) async {
-    final runtime = workspace.runtime;
     await transport.publishWorkspace(
       workspace.copyWith(
-        runtime: runtime.copyWith(
+        modelRoute: identical(modelRoute, _unset)
+            ? workspace.modelRoute
+            : modelRoute as ThreadModelRouteView?,
+        runtime: workspace.runtime.copyWith(
           execution: identical(execution, _unset)
-              ? runtime.execution
+              ? workspace.runtime.execution
               : execution as AgentExecutionView?,
           continuation: identical(continuation, _unset)
-              ? runtime.continuation
+              ? workspace.runtime.continuation
               : continuation as ContinuationView?,
-          modelRoute: identical(modelRoute, _unset)
-              ? runtime.modelRoute
-              : modelRoute as ThreadModelRouteView?,
         ),
       ),
     );
@@ -166,7 +167,11 @@ Future<_Composer> _composer(WidgetTester tester) async {
   );
   await pumpClientFuture(
     tester,
-    (graph..setConversationPageVisible(true)).client.directoryCommands
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread(_threadId),
     'select composer thread',
   );
@@ -179,12 +184,7 @@ Future<_Composer> _composer(WidgetTester tester) async {
   await pumpClientUntil(
     tester,
     () =>
-        graph.client.conversations
-            .session(_threadId)
-            .state
-            .runtime
-            ?.modelRoute !=
-        null,
+        graph.client.conversations.session(_threadId).state.modelRoute != null,
     'composer model route',
   );
   return _Composer(graph, transport);
@@ -326,7 +326,7 @@ void main() {
     );
     expect(
       composer.transport.continues.single.revision,
-      composer.workspace.runtime.modelRoute!.revision,
+      composer.workspace.modelRoute!.revision,
       reason: '继续必须携带已观察的模型路由版本',
     );
     expect(find.byKey(StudioDriverKeys.composerContinuing), findsOneWidget);
@@ -352,7 +352,7 @@ void main() {
     );
     await tester.pump();
 
-    final route = composer.workspace.runtime.modelRoute!;
+    final route = composer.workspace.modelRoute!;
     await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,
@@ -892,7 +892,7 @@ void main() {
     expect(find.byKey(const ValueKey('composer-failure')), findsOneWidget);
 
     // 随后出现 canonical 阻塞：准入由它决定，但另两条原因不得被吞掉。
-    final route = composer.workspace.runtime.modelRoute!;
+    final route = composer.workspace.modelRoute!;
     await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,
@@ -1691,7 +1691,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     // 再叠加 canonical 阻塞。
-    final route = composer.workspace.runtime.modelRoute!;
+    final route = composer.workspace.modelRoute!;
     await composer.publish(
       modelRoute: ThreadModelRouteView(
         accountId: route.accountId,

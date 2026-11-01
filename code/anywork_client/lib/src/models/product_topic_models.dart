@@ -680,22 +680,15 @@ class SessionCostsStateView {
 
 /// 一个宿主主会话可见的子任务待决交互投影。
 ///
-/// `items` 是该宿主的完整待决集合（直接、可见 child 的问题与权限请求；child
-/// Plan 仍是诊断事实，不进入集合）。`revision` 是集合领域水位，不是历史
-/// `append_seq`、交互自身 revision 或展示 generation。集合判等按条目身份
-/// （child、交互编号、类型）与各自 revision：同一交互在同水位下内容视为一致。
+/// 资源状态与集合领域水位来自原 owner；无值不表示空集合，也不能确认交互消失。
 class ChildInteractionsStateView {
-  ChildInteractionsStateView({
+  const ChildInteractionsStateView({
     required this.hostThreadId,
-    required this.revision,
-    this.updatedAt,
-    List<ChildInteractionSummary> items = const [],
-  }) : items = List.unmodifiable(items);
+    required this.state,
+  });
 
   final String hostThreadId;
-  final int revision;
-  final DateTime? updatedAt;
-  final List<ChildInteractionSummary> items;
+  final ObservedResource<ChildInteractionsData> state;
 
   /// 一条子任务决议是否已经在原交互事实上生效。
   ///
@@ -706,7 +699,9 @@ class ChildInteractionsStateView {
     required String interactionId,
     required int revision,
   }) {
-    for (final item in items) {
+    final data = state.value;
+    if (data == null) return false;
+    for (final item in data.items) {
       if (item.childThreadId != childThreadId) continue;
       if (item.interactionId != interactionId) continue;
       return item.revision > revision;
@@ -719,19 +714,29 @@ class ChildInteractionsStateView {
       identical(this, other) ||
       other is ChildInteractionsStateView &&
           hostThreadId == other.hostThreadId &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          _itemsEqual(items, other.items);
+          state == other.state;
 
   @override
-  int get hashCode => Object.hash(
-    hostThreadId,
-    revision,
-    updatedAt,
-    Object.hashAll([
-      for (final item in items) (item.interactionId, item.revision),
-    ]),
-  );
+  int get hashCode => Object.hash(hostThreadId, state);
+}
+
+/// 直接、可见 child 的完整待决集合；child Plan 不进入集合。
+class ChildInteractionsData {
+  ChildInteractionsData({required List<ChildInteractionSummary> items})
+    : items = List.unmodifiable(items);
+
+  final List<ChildInteractionSummary> items;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChildInteractionsData && _itemsEqual(items, other.items);
+
+  @override
+  int get hashCode => Object.hashAll([
+    for (final item in items)
+      (item.childThreadId, item.interactionId, item.kind, item.revision),
+  ]);
 }
 
 bool _itemsEqual(

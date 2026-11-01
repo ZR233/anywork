@@ -5,6 +5,7 @@ use super::machine::{
 use crate::thread_assembler::ThreadAssemblyError;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
+    model::ToolPresentationContract,
     thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
@@ -235,8 +236,17 @@ pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError
     .into_iter()
     .map(|kind| {
         let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+        let contract = match kind {
+            WorkflowOperationKind::Current => "builtin.workflow_current@1",
+            WorkflowOperationKind::Next => "builtin.workflow_next@1",
+            WorkflowOperationKind::Graph => "builtin.workflow_graph@1",
+            WorkflowOperationKind::History => "builtin.workflow_history@1",
+            WorkflowOperationKind::Transition => "builtin.workflow_transition@1",
+            WorkflowOperationKind::Restart => "builtin.workflow_restart@1",
+        };
         let registration =
-            Registration::new(kind.id().into(), declaration, ThreadWorkflowTool { kind })?;
+            Registration::new(kind.id().into(), declaration, ThreadWorkflowTool { kind })?
+                .with_presentation_contract(ToolPresentationContract::new(contract));
         Ok(match kind {
             WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {
                 registration.with_extension_updates()

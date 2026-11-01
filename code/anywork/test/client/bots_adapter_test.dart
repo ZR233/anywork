@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
 import 'dart:convert';
@@ -164,7 +165,11 @@ void main() {
         ),
       );
       await graph.client.bootstrap();
-      await (graph..setConversationPageVisible(true)).client.directoryCommands
+      await (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread('thread-main');
       final session = graph.client.conversations.existingSession('thread-main');
       expect(session, isNotNull);

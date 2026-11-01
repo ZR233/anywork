@@ -65,6 +65,270 @@ fn user_message(text: &str) -> Message {
     }
 }
 
+#[tokio::test]
+async fn authoritative_member_is_reliable_while_provider_stream_is_still_open() {
+    use pl_core::thread::{AttemptOutcome, AttemptStatus};
+    use pl_model::runtime::{ModelMemberState, model_member_receipt};
+
+    for (status, expected) in [
+        (None, ModelMemberState::Completed),
+        (Some("completed"), ModelMemberState::Completed),
+        (Some("incomplete"), ModelMemberState::Interrupted),
+    ] {
+        let mut item = json!({"id":"real-member","type":"message","role":"assistant",
+            "content":[{"type":"output_text","text":"authoritative body"}]});
+        if let Some(status) = status {
+            item["status"] = json!(status);
+        }
+        let done = json!({"type":"response.output_item.done","output_index":4,"item":item});
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp, "reliable member", 0,
+            Reply::HangingSse(vec![
+                json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
+                json!({"type":"response.output_text.delta","item_id":"real-member","output_index":4,
+                    "content_index":0,"delta":"untrusted delta"}),
+                done.clone(), done,
+            ]),
+        )]).await.unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("live-fixture", ModelTransportProfile::responses_http()),
+        )
+        .unwrap();
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+            .open_session()
+            .await
+            .unwrap();
+        let thread = ThreadHandle::start("reliable-thread".into(), session).unwrap();
+        let input = user_turn("reliable member");
+        let cancellation = input.cancellation.clone();
+        let task = {
+            let thread = thread.clone();
+            tokio::spawn(async move { thread.run_turn(input).await })
+        };
+        let mut snapshots = thread.subscribe();
+        let member = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(member) = thread
+                    .effects()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .flat_map(|effect| effect.model_members.iter())
+                    .next()
+                    .cloned()
+                {
+                    break member;
+                }
+                snapshots.next().await.unwrap();
+            }
+        })
+        .await
+        .expect("member is admitted before attempt completion");
+        let receipt = model_member_receipt(&member).unwrap();
+        assert_eq!(member.generation, 0);
+        assert_eq!(
+            member.attempt_id,
+            thread.snapshot().attempts.last().unwrap().attempt_id
+        );
+        assert_eq!(receipt.state, expected);
+        assert_eq!(receipt.item.provider_item_id, "real-member");
+        assert_eq!(receipt.item.output_index, Some(4));
+        assert_eq!(receipt.item.parts[0].content_index, 0);
+        assert_eq!(receipt.item.parts[0].text, "authoritative body");
+        let snapshot = thread.snapshot();
+        assert_eq!(
+            snapshot.attempts.last().unwrap().status,
+            AttemptStatus::Running
+        );
+        assert!(snapshot.attempts.last().unwrap().usage.is_none());
+        assert!(
+            !snapshot
+                .context
+                .records
+                .iter()
+                .any(|r| r.source == ContextSource::Assistant)
+        );
+        cancellation.cancel();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(pl_core::thread::ThreadError::Cancelled)
+        ));
+        let effects = thread.effects().await.unwrap();
+        assert_eq!(
+            effects.iter().map(|e| e.model_members.len()).sum::<usize>(),
+            1
+        );
+        let terminal = effects
+            .iter()
+            .filter_map(|e| e.attempt.as_ref())
+            .next_back()
+            .unwrap();
+        let AttemptOutcome::Cancelled { result: Err(error) } = &terminal.outcome else {
+            panic!("cancelled attempt keeps its producer failure");
+        };
+        assert_eq!(
+            model_failure_receipt(error)
+                .unwrap()
+                .unwrap()
+                .presentation_items,
+            vec![receipt.item]
+        );
+        thread.close().await.unwrap();
+        fixture.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn admitted_member_prevents_transparent_replay_after_early_eof() {
+    use pl_core::thread::AttemptOutcome;
+    use pl_model::runtime::model_member_receipt;
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "do not replay",
+        0,
+        Reply::Sse(vec![
+            json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{
+                "id":"irrevocable","type":"reasoning",
+                "summary":[{"type":"summary_text","text":"frozen before EOF"}]}}),
+        ]),
+    )])
+    .await
+    .unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model("live-fixture", ModelTransportProfile::responses_http()),
+    )
+    .unwrap();
+    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .unwrap();
+    let thread = ThreadHandle::start("no-replay".into(), session).unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        thread.run_turn(user_turn("do not replay")),
+    )
+    .await
+    .unwrap();
+    assert!(result.is_err());
+    let effects = thread.effects().await.unwrap();
+    let members = effects
+        .iter()
+        .flat_map(|effect| effect.model_members.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 1);
+    let receipt = model_member_receipt(members[0]).unwrap();
+    let failed = effects
+        .iter()
+        .filter_map(|effect| effect.attempt.as_ref())
+        .next_back()
+        .unwrap();
+    let AttemptOutcome::Failed(error) = &failed.outcome else {
+        panic!("early EOF remains an attempt failure, not a successful member's context");
+    };
+    assert_eq!(
+        model_failure_receipt(error)
+            .unwrap()
+            .unwrap()
+            .presentation_items,
+        vec![receipt.item]
+    );
+    thread.close().await.unwrap();
+    let requests = fixture
+        .finish()
+        .await
+        .expect("no unexpected replay request");
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
+async fn reasoning_raw_and_summary_zero_indices_match_reliable_member_and_final_receipt() {
+    use pl_core::thread::AttemptOutcome;
+    use pl_model::runtime::{ModelMemberState, model_member_receipt, model_response_receipt};
+    let item = json!({
+        "id":"reasoning-both", "type":"reasoning", "status":"completed",
+        "content":[{"id":"raw-part","type":"reasoning_text","text":"authoritative raw"}],
+        "summary":[{"id":"summary-part","type":"summary_text","text":"authoritative summary"}]
+    });
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp, "reasoning namespaces", 0,
+        Reply::Sse(vec![
+            json!({"type":"response.created","response":{"id":"both-response","model":"live-fixture"}}),
+            json!({"type":"response.output_item.done","output_index":3,"item":item}),
+            json!({"type":"response.completed","response":{
+                "id":"both-response","model":"live-fixture","output":[item]}}),
+        ]),
+    )]).await.unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model("live-fixture", ModelTransportProfile::responses_http()),
+    )
+    .unwrap();
+    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .unwrap();
+    let thread = ThreadHandle::start("reasoning-namespaces".into(), session).unwrap();
+    let result = thread.run_turn(user_turn("reasoning namespaces")).await;
+    assert!(
+        result.is_ok(),
+        "both provider arrays have their own valid index zero: {result:?}"
+    );
+    let effects = thread.effects().await.unwrap();
+    let members = effects
+        .iter()
+        .flat_map(|e| e.model_members.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 1);
+    let receipt = model_member_receipt(members[0]).unwrap();
+    assert_eq!(receipt.state, ModelMemberState::Completed);
+    assert_eq!(receipt.item.provider_item_id, "reasoning-both");
+    assert_eq!(receipt.item.output_index, Some(3));
+    assert_eq!(
+        receipt.item.parts,
+        vec![
+            CompletionPresentationPart {
+                content_index: 0,
+                provider_part_id: Some("raw-part".into()),
+                kind: CompletionPresentationPartKind::ReasoningText,
+                text: "authoritative raw".into(),
+            },
+            CompletionPresentationPart {
+                content_index: 0,
+                provider_part_id: Some("summary-part".into()),
+                kind: CompletionPresentationPartKind::SummaryText,
+                text: "authoritative summary".into(),
+            },
+        ]
+    );
+    let terminal = effects
+        .iter()
+        .filter_map(|e| e.attempt.as_ref())
+        .next_back()
+        .unwrap();
+    let AttemptOutcome::Committed(output) = &terminal.outcome else {
+        panic!("valid raw and summary parts must commit the final canonical response");
+    };
+    assert_eq!(
+        model_response_receipt(output)
+            .unwrap()
+            .unwrap()
+            .response
+            .presentation_items,
+        vec![receipt.item]
+    );
+    thread.close().await.unwrap();
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+
 /// Runs one hanging fixture stream through a Thread and returns the first live snapshot the predicate
 /// accepts, so the observation is read while the provider stream is still open.
 async fn observed_progress(
@@ -651,6 +915,7 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
     sender.publish(ModelProgress::live("failed-turn", "failed-attempt"));
     let request = ModelRequest {
         progress: Some(sender.clone()),
+        members: None,
         thread_id: "failed-thread".into(),
         turn_id: "failed-turn".into(),
         attempt_id: "failed-attempt".into(),
@@ -906,13 +1171,14 @@ async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_qu
             0,
             Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"partial","model":"reported-fixture"}}),
-                json!({"type":"response.output_item.done","output_index":0,"item":{"id":"same-item","type":"message","role":"assistant","content":[{"type":"output_text","text":failed_body}]}}),
+                // An unfinished preview is replayable; an independently ended member is not.
+                json!({"type":"response.output_text.delta","output_index":0,"item_id":"same-item","content_index":0,"delta":failed_body}),
             ]),
         )];
         if limit == 1000 {
             steps.push(Step::prompt(Protocol::ResponsesHttp, "retry quota", 1, Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"retry","model":"reported-fixture"}}),
-                json!({"type":"response.output_item.done","output_index":0,"item":{"id":"same-item","type":"message","role":"assistant","content":[{"type":"output_text","text":"accepted retry body"}]}}),
+                json!({"type":"response.output_text.delta","output_index":0,"item_id":"same-item","content_index":0,"delta":"accepted retry body"}),
                 json!({"type":"response.output_item.added","output_index":1,"item":{"id":"tool-item","type":"function_call","name":"lookup","call_id":"discarded-call"}}),
                 json!({"type":"response.function_call_arguments.delta","item_id":"tool-item","call_id":"discarded-call","delta":"x".repeat(400)}),
             ])));

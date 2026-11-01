@@ -1,1281 +1,443 @@
 import 'dart:async';
 
-import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/models.dart';
-import 'package:anywork_client/src/conversation/data/conversation_content_impl.dart';
-import 'package:anywork_client/src/conversation/data/input_turn_facts.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
+import 'support/controlled_batch_consumer.dart';
 import 'support/timeline_transport.dart';
 
-final class _Feed implements ConversationFeed {
-  _Feed(this.subscriptionId);
-  @override
-  final String threadId = 'thread';
-  @override
-  final String subscriptionId;
-  final eventsController = StreamController<ConversationFrame>.broadcast(
-    sync: true,
-  );
-  final acknowledgements = <int>[];
-  int sequence = 0;
-  bool requested = false;
-  @override
-  Stream<ConversationFrame> get events => eventsController.stream;
-  void send(ConversationEvent event) => eventsController.add(
-    ConversationFrame(
-      threadId: threadId,
-      subscriptionId: subscriptionId,
-      deliverySequence: ++sequence,
-      event: event,
-    ),
-  );
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    acknowledgements.add(deliverySequence);
-  }
+const _demand = ReadDemand(maxItems: 7, maxBytes: 16384);
 
-  @override
-  void requestClose() {
-    requested = true;
-  }
-
-  @override
-  Future<void> close() async {
-    await eventsController.close();
-  }
+Future<TestConversationFeed> _open(
+  ConversationFixture fixture,
+  ControlledBatchConsumer consumer, {
+  int index = 0,
+}) async {
+  fixture.session().content.attachConsumer(consumer, demand: _demand);
+  fixture.repository.setVisibleThread('thread');
+  await fixture.transport.opened(index);
+  final feed = TestConversationFeed(subscriptionId: 'sub-$index');
+  fixture.transport.opens[index].result.complete(feed);
+  return feed;
 }
 
-final class _Transport implements ConversationTransport {
-  final feeds = <_Feed>[];
-  final resumes = <ConversationCompletionCursor?>[];
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    ConversationCompletionCursor? resumeAfter,
-  }) async {
-    resumes.add(resumeAfter);
-    final feed = _Feed('sub${feeds.length + 1}');
-    feeds.add(feed);
-    return feed;
-  }
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) =>
-      throw UnimplementedError();
-}
-
-final class _Consumer implements ConversationCompletionConsumer {
-  final frames = <ConversationContentFrame>[];
-  Completer<void>? gate;
-  @override
-  Future<void> accept(ConversationContentFrame frame) async {
-    frames.add(frame);
-    final current = gate;
-    if (current != null) await current.future;
-  }
-}
-
-/// A real controller whose onCancel either delegates to this feed's close or
-/// fails independently; close itself does not require cancelling its listener.
-final class _CancelCoupledFeed implements ConversationFeed {
-  _CancelCoupledFeed({this.independentCancelFailure}) {
-    _events = StreamController<ConversationFrame>(
-      sync: true,
-      onListen: () => listening.complete(),
-      onCancel: () {
-        cancelCalls++;
-        final failure = independentCancelFailure;
-        return failure == null ? close() : Future<void>.error(failure);
-      },
-    );
-  }
-  @override
-  String get threadId => 'thread';
-  @override
-  String get subscriptionId => 'coupled';
-  late final StreamController<ConversationFrame> _events;
-  final Completer<void> listening = Completer<void>();
-  final Completer<void> closeEntered = Completer<void>();
-  Object? closeFailure;
-  final Object? independentCancelFailure;
-  int closeCalls = 0;
-  int cancelCalls = 0;
-  bool requested = false;
-  @override
-  Stream<ConversationFrame> get events => _events.stream;
-  @override
-  Future<void> acknowledge(int deliverySequence) async {}
-  @override
-  void requestClose() {
-    requested = true;
-  }
-
-  @override
-  Future<void> close() async {
-    closeCalls++;
-    if (!closeEntered.isCompleted) closeEntered.complete();
-    if (closeFailure case final error?) throw error;
-  }
-
-  Future<void> dispose() => _events.close();
-}
-
-final class _CoupledTransport implements ConversationTransport {
-  _CoupledTransport(this.feed);
-  final _CancelCoupledFeed feed;
-  int opens = 0;
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    ConversationCompletionCursor? resumeAfter,
-  }) async {
-    opens++;
-    return feed;
-  }
-
-  @override
-  Future<ConversationHistoryReader> openHistoryReader(String threadId) =>
-      throw UnimplementedError();
-}
-
-Future<void> _pump() async {
-  for (var i = 0; i < 6; i++) {
-    await Future<void>.delayed(Duration.zero);
-  }
-}
-
-ConversationBaseline _baseline(
-  _Feed feed, {
-  String epoch = 'epoch',
-  int seq = 0,
-}) => ConversationBaseline(
-  subscriptionId: feed.subscriptionId,
-  timelineEpoch: epoch,
-  items: [],
-  before: null,
-  hasOlder: false,
-  completedCursor: ConversationCompletionCursor(
-    timelineEpoch: epoch,
-    appendSeq: seq,
-  ),
+ChatBatch _append(String id, {CurrentProjection? current}) => ChatBatch(
+  placement: ChatPlacement.append,
+  messages: [chatMessage(id: id)],
+  current: current,
 );
-ConversationContentImpl _owner(_Transport transport) {
-  final budget = ResourceBudget();
-  return ConversationContentImpl(
-    threadId: 'thread',
-    transport: transport,
-    budget: budget,
-    inputFacts: InputFactRegistry(budget, seed: (_, __) {}),
-    onState: (_, __) {},
-    onFailure: (_, __, ___) {},
-    onAttempt: (_) {},
-  );
-}
 
 void main() {
-  for (final target in ['client', 'repository']) {
+  test(
+    'first Set is ready and ACKed only after actual component acceptance',
+    () async {
+      final fixture = ConversationFixture();
+      final consumer = ControlledBatchConsumer();
+      final gate = Completer<void>();
+      consumer.onApply = (_) => gate.future;
+      final feed = await _open(fixture, consumer);
+      final content = fixture.session().content;
+      final initial = chatSet();
+      var ready = false;
+      final readiness = content.ready.then((_) => ready = true);
+      feed.send(ConversationChatEvent(batch: initial));
+      await consumer.waitForCount(1);
+      expect(consumer.batches.single, same(initial));
+      expect(ready, isFalse);
+      expect(content.current.value, isNull);
+      expect(feed.acknowledgements, isEmpty);
+      gate.complete();
+      await readiness;
+      await feed.acknowledged(1);
+      expect(content.current.value, same(initial.current));
+      expect(content.state.value, isA<ChatReady<bool>>());
+      expect(feed.eventConsumers, 1);
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
+
+  test('an unaccepted Chat cannot release credit for a following State', () async {
+    final fixture = ConversationFixture();
+    final consumer = ControlledBatchConsumer();
+    final gate = Completer<void>();
+    consumer.onApply = (_) => gate.future;
+    final feed = await _open(fixture, consumer);
+    feed.send(ConversationChatEvent(batch: chatSet()));
+    await consumer.waitForCount(1);
+    // A producer violating its one-unacknowledged-frame allowance is rejected,
+    // rather than queued or allowed to publish state ahead of the component.
+    feed.send(
+      ConversationStateEvent(
+        frame: ThreadSnapshotFrame(workspace: _workspace()),
+      ),
+    );
+    await feed.requestCloseStarted.future;
+    expect(fixture.session().state.hasSnapshot, isFalse);
+    expect(feed.acknowledgements, isEmpty);
+    gate.complete();
+    expect((await fixture.close()).complete, isTrue);
+  });
+
+  test(
+    'older IO proceeds during apply but Prepend joins the same serial consumer',
+    () async {
+      final fixture = ConversationFixture();
+      final consumer = ControlledBatchConsumer();
+      final feed = await _open(fixture, consumer);
+      await feed.deliver(
+        ConversationChatEvent(batch: chatSet(before: 'opaque')),
+      );
+      final content = fixture.session().content;
+      final scope = content.openScope(generation: 2);
+      final gate = Completer<void>();
+      final incoming = _append('live');
+      consumer.onApply = (batch) =>
+          identical(batch, incoming) ? gate.future : Future.value();
+      feed.send(ConversationChatEvent(batch: incoming));
+      await consumer.waitForCount(2);
+      final ioStarted = Completer<void>();
+      final older = ChatBatch(
+        placement: ChatPlacement.prepend,
+        messages: [chatMessage(id: 'older')],
+      );
+      feed.reader.onOlder = (before, demand) async {
+        expect(before, 'opaque');
+        expect(demand, same(_demand));
+        ioStarted.complete();
+        return older;
+      };
+      var finished = false;
+      final loading = scope.loadOlder(before: 'opaque', demand: _demand).then((
+        batch,
+      ) {
+        finished = true;
+        return batch;
+      });
+      await ioStarted.future;
+      expect(consumer.batches, hasLength(2));
+      expect(finished, isFalse);
+      expect(feed.acknowledgements, [1]);
+      gate.complete();
+      expect(await loading, same(older));
+      expect(consumer.batches, [consumer.batches.first, incoming, older]);
+      await feed.acknowledged(2);
+      expect(feed.acknowledgements, [1, 2], reason: 'Queries do not ACK');
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
+
+  test('queued older page is rejected before consumer admission when its original scope retires', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    final consumer = ControlledBatchConsumer();
+    final feed = await _open(fixture, consumer);
+    final initial = chatSet(before: 'opaque-before');
+    await feed.deliver(ConversationChatEvent(batch: initial));
+    final content = fixture.session().content;
+    final scope = content.openScope(generation: 1);
+    final attempt = content.currentAttemptId;
+    final gate = Completer<void>();
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+    final streamed = _append('live');
+    consumer.onApply = (batch) =>
+        identical(batch, streamed) ? gate.future : Future.value();
+    feed.send(ConversationChatEvent(batch: streamed));
+    await consumer.waitForCount(2);
+
+    final reply = Completer<ChatBatch>();
+    var reads = 0;
+    feed.reader.onOlder = (before, demand) {
+      expect(before, 'opaque-before');
+      expect(demand, same(_demand));
+      reads++;
+      return reply.future;
+    };
+    final pageResult = expectLater(
+      scope.loadOlder(before: 'opaque-before', demand: _demand),
+      throwsA(isA<StaleConversationScope>()),
+    );
+    final older = ChatBatch(
+      placement: ChatPlacement.prepend,
+      messages: [chatMessage(id: 'retired-page')],
+    );
+    reply.complete(older);
+    // The SDK reader's await was registered first on this very Future. Its
+    // continuation enqueues Prepend before this later completion waiter resumes;
+    // the component gate keeps that admission queued, not its IO in flight.
+    await reply.future;
+    expect(reads, 1);
+    expect(scope.isActive, isTrue);
+    expect(scope.pendingQueries, 1);
+    expect(consumer.batches, [initial, streamed]);
+
+    scope.retire();
+    expect(scope.isActive, isFalse);
+    expect(content.currentAttemptId, attempt);
+    expect(content.hasDemand, isTrue);
+    expect(feed.requestCloseCalls, 0);
+    gate.complete();
+    await pageResult;
+    await feed.acknowledged(2);
+    expect(
+      consumer.batches,
+      [initial, streamed],
+      reason: 'Stale after applying Prepend is too late: no consumer write is allowed',
+    );
+    expect(feed.acknowledgements, [1, 2]);
+    expect(content.currentAttemptId, attempt);
+    expect(feed.requestCloseCalls, 0);
+    expect((await scope.close()).complete, isTrue);
+    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
+    expect((await fixture.close()).complete, isTrue);
+  });
+
+  test('loadOlder Future includes Prepend component acceptance', () async {
+    final fixture = ConversationFixture();
+    final consumer = ControlledBatchConsumer();
+    final feed = await _open(fixture, consumer);
+    await feed.deliver(ConversationChatEvent(batch: chatSet()));
+    final scope = fixture.session().content.openScope(generation: 1);
+    final older = ChatBatch(placement: ChatPlacement.prepend, messages: []);
+    feed.reader.onOlder = (_, __) async => older;
+    final gate = Completer<void>();
+    consumer.onApply = (_) => gate.future;
+    var finished = false;
+    final loading = scope.loadOlder(before: 'before', demand: _demand).then((
+      batch,
+    ) {
+      finished = true;
+      return batch;
+    });
+    await consumer.waitForCount(2);
+    expect(finished, isFalse);
+    expect(scope.pendingQueries, 1);
+    gate.complete();
+    expect(await loading, same(older));
+    expect(feed.acknowledgements, [1]);
+    expect((await fixture.close()).complete, isTrue);
+  });
+
+  for (final terminal in <ConversationEvent>[
+    const ConversationClosedEvent(),
+    const ConversationFailureEvent(
+      failure: StudioFailure(
+        code: StudioFailureCode.internal,
+        message: 'producer failed',
+        retryable: false,
+        correlationId: 'terminal',
+      ),
+    ),
+  ]) {
+    for (final beforeData in [true, false]) {
+      test(
+        '${terminal.runtimeType} accepts ${beforeData ? 'zero' : 'last sent'} sequence without ACK',
+        () async {
+          final fixture = ConversationFixture();
+          final consumer = ControlledBatchConsumer();
+          final feed = await _open(fixture, consumer);
+          if (!beforeData) {
+            await feed.deliver(ConversationChatEvent(batch: chatSet()));
+          }
+          feed.send(terminal);
+          await feed.requestCloseStarted.future;
+          expect(feed.acknowledgements, beforeData ? isEmpty : [1]);
+          expect(
+            fixture.session().content.state.value,
+            isA<ChatReconnecting<bool>>(),
+          );
+          expect((await fixture.close()).complete, isTrue);
+        },
+      );
+    }
+
     test(
-      '$target close registers its shared future before visible-thread notification',
+      '${terminal.runtimeType} revokes in-flight acceptance before current and ACK',
       () async {
         final fixture = ConversationFixture();
-        final feed = await fixture.open();
-        final release = Completer<void>();
-        feed.closeGate = release;
-        Future<CloseReport> close({DateTime? deadline}) => target == 'client'
-            ? fixture.client.close(deadline: deadline)
-            : fixture.repository.close(deadline: deadline);
-        Future<CloseReport>? nested;
-        final observation = fixture.repository.visibleThreadId.watch((
-          threadId,
-        ) {
-          if (threadId == null && nested == null) {
-            nested = close(deadline: DateTime.utc(2000));
-          }
-        });
-        try {
-          final outer = close(
-            deadline: DateTime.now().add(const Duration(seconds: 5)),
-          );
-          expect(nested, same(outer));
-          var completed = false;
-          unawaited(outer.then((_) => completed = true));
-          await feed.closeStarted.future;
-          expect(completed, isFalse);
-          expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
-          release.complete();
-          expect((await outer).complete, isTrue);
-          expect(fixture.client.budget.used(ResourceKind.chatHandle), 0);
-          expect(fixture.transport.opens, hasLength(1));
-        } finally {
-          observation.cancel();
-          if (!release.isCompleted) release.complete();
-          await fixture.close();
-          await fixture.client.retryCleanup();
-        }
+        final consumer = ControlledBatchConsumer();
+        final gate = Completer<void>();
+        consumer.onApply = (_) => gate.future;
+        final feed = await _open(fixture, consumer);
+        feed.send(ConversationChatEvent(batch: chatSet()));
+        await consumer.waitForCount(1);
+        feed.send(terminal);
+        await feed.requestCloseStarted.future;
+        final closing = fixture.close(deadline: DateTime.now());
+        expect((await closing).complete, isFalse);
+        expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
+        gate.complete();
+        expect((await fixture.client.retryCleanup()).complete, isTrue);
+        expect(fixture.session().current.value, isNull);
+        expect(feed.acknowledgements, isEmpty);
+        expect(fixture.client.budget.usage, isEmpty);
       },
     );
   }
 
-  test(
-    'retry joins the same feed before controller onCancel delegates to close',
-    () async {
-      final feed = _CancelCoupledFeed()
-        ..closeFailure = StateError('close failed');
-      addTearDown(feed.dispose);
-      final transport = _CoupledTransport(feed);
-      final budget = ResourceBudget();
-      final owner = ConversationContentImpl(
-        threadId: 'thread',
-        transport: transport,
-        budget: budget,
-        inputFacts: InputFactRegistry(budget, seed: (_, __) {}),
-        onState: (_, __) {},
-        onFailure: (_, __, ___) {},
-        onAttempt: (_) {},
-      );
-      owner.setDemand(true);
-      await feed.listening.future;
-      final attempt = owner.currentAttemptId;
-      owner.setDemand(false);
-      await feed.closeEntered.future;
-      final failed = await owner.joinRetired();
-      expect(failed.complete, isFalse);
-      expect(failed.unresolved.single.attemptId, attempt);
-      expect(feed.requested, isTrue);
-      expect(feed.cancelCalls, 0);
-      expect(budget.used(ResourceKind.chatHandle), 1);
-      feed.closeFailure = null;
-      final recovered = await owner.retryCleanup();
-      expect(recovered.complete, isTrue);
-      expect(feed.cancelCalls, 1);
-      expect(feed.closeCalls, 3);
-      expect(transport.opens, 1);
-      expect(budget.used(ResourceKind.chatHandle), 0);
-      expect((await owner.close()).complete, isTrue);
-    },
-  );
-
-  test('independent controller cancellation failure remains unresolved after feed close', () async {
-    final failure = StateError('independent cancel failure');
-    final feed = _CancelCoupledFeed(independentCancelFailure: failure);
-    addTearDown(feed.dispose);
-    final transport = _CoupledTransport(feed);
-    final budget = ResourceBudget();
-    final owner = ConversationContentImpl(
-      threadId: 'thread',
-      transport: transport,
-      budget: budget,
-      inputFacts: InputFactRegistry(budget, seed: (_, __) {}),
-      onState: (_, __) {},
-      onFailure: (_, __, ___) {},
-      onAttempt: (_) {},
-    );
-    owner.setDemand(true);
-    await feed.listening.future;
-    final attempt = owner.currentAttemptId;
-    owner.setDemand(false);
-    final failed = await owner.joinRetired();
-    expect(failed.complete, isFalse);
-    expect(failed.unresolved.single.attemptId, attempt);
-    expect(failed.unresolved.single.reason, same(failure));
-    expect(feed.closeCalls, 1);
-    expect(feed.cancelCalls, 1);
-    final retry = await owner.retryCleanup();
-    expect(retry.complete, isFalse);
-    expect(retry.unresolved.single.reason, same(failure));
-    expect(feed.closeCalls, 1);
-    expect(feed.cancelCalls, 1);
-    expect(transport.opens, 1);
-    expect(budget.used(ResourceKind.chatHandle), 1);
-    expect((await owner.close(deadline: DateTime.now())).complete, isFalse);
-  });
-
-  test(
-    'activity staging without consumer can ACK but cannot establish ready',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      owner.setDemand(true);
-      await _pump();
-      final feed = transport.feeds.single;
-      var ready = false;
-      final readiness = owner.ready.then((_) => ready = true);
-      feed.send(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'activity',
-            revision: 1,
-            baseRevision: null,
-            activity: null,
-            reasoning: const [],
-            response: const [],
-            tools: const [],
-            totalBytes: 0,
-          ),
-        ),
-      );
-      await _pump();
-      expect(feed.acknowledgements, [1]);
-      expect(ready, isFalse);
-      feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-      await _pump();
-      expect(feed.acknowledgements, [1]);
-      expect(ready, isFalse);
-      final lease = owner.attachConsumer(_Consumer());
-      await readiness;
-      await _pump();
-      expect(feed.acknowledgements, [1, 2]);
-      expect(transport.feeds, hasLength(1));
-      owner.setDemand(false);
-      lease.cancel();
-      expect((await owner.close()).complete, isTrue);
-    },
-  );
-
-  test(
-    'ready waits for accepted baseline despite staged activity and later state',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final consumer = _Consumer()..gate = Completer<void>();
-      final lease = owner.attachConsumer(consumer);
-      owner.setDemand(true);
-      await _pump();
-      final feed = transport.feeds.single;
-      var ready = false;
-      final readiness = owner.ready.then((_) => ready = true);
-      feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-      feed.send(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'activity',
-            revision: 1,
-            baseRevision: null,
-            activity: null,
-            reasoning: const [],
-            response: const [],
-            tools: const [],
-            totalBytes: 0,
-          ),
-        ),
-      );
-      await _pump();
-      expect(consumer.frames, hasLength(1));
-      expect(ready, isFalse);
-      expect(owner.state.value, isNot(isA<ChatReady<bool>>()));
-      expect(feed.acknowledgements, isEmpty);
-      consumer.gate!.complete();
-      await readiness;
-      await _pump();
-      expect(ready, isTrue);
-      expect(feed.acknowledgements, [1, 2]);
-      owner.setDemand(false);
-      lease.cancel();
-      expect((await owner.close()).complete, isTrue);
-    },
-  );
-
-  test(
-    'resume without new completions becomes ready only after activity commit',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final lease = owner.attachConsumer(_Consumer());
-      owner.setDemand(true);
-      await _pump();
-      final first = transport.feeds.single;
-      first.send(ConversationBaselineEvent(baseline: _baseline(first)));
-      await owner.ready;
-      owner.refresh();
-      await _pump();
-      final second = transport.feeds.last;
-      expect(
-        transport.resumes.last,
-        const ConversationCompletionCursor(
-          timelineEpoch: 'epoch',
-          appendSeq: 0,
-        ),
-      );
-      var ready = false;
-      final readiness = owner.ready.then((_) => ready = true);
-      second.send(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'resume',
-            revision: 1,
-            baseRevision: null,
-            activity: null,
-            reasoning: const [],
-            response: const [],
-            tools: const [],
-            totalBytes: 0,
-          ),
-        ),
-      );
-      await _pump();
-      expect(second.acknowledgements, [1]);
-      expect(ready, isFalse);
-      second.send(
-        const ConversationActivityContentEvent(
-          frame: ActivityCommit(generation: 'resume', revision: 1),
-        ),
-      );
-      await readiness;
-      await _pump();
-      expect(second.acknowledgements, [1, 2]);
-      owner.setDemand(false);
-      lease.cancel();
-      expect((await owner.close()).complete, isTrue);
-    },
-  );
-
-  test('detach does not reopen until a new consumer attaches', () async {
-    final transport = _Transport();
-    final owner = _owner(transport);
-    final firstConsumer = _Consumer()..gate = Completer<void>();
-    final firstLease = owner.attachConsumer(firstConsumer);
-    owner.setDemand(true);
-    await _pump();
-    final first = transport.feeds.single;
-    first.send(ConversationBaselineEvent(baseline: _baseline(first)));
-    await _pump();
-    firstLease.cancel();
-    await _pump();
-    expect(first.requested, isTrue);
-    expect(transport.feeds, hasLength(1));
-    expect(first.acknowledgements, isEmpty);
-    firstConsumer.gate!.complete();
-    await _pump();
-    expect(first.acknowledgements, isEmpty);
-    final replacement = owner.attachConsumer(_Consumer());
-    await _pump();
-    expect(transport.feeds, hasLength(2));
-    expect(transport.resumes.last, isNull);
-    final second = transport.feeds.last;
-    second.send(ConversationBaselineEvent(baseline: _baseline(second)));
-    await owner.ready;
-    owner.setDemand(false);
-    replacement.cancel();
-    expect((await owner.close()).complete, isTrue);
-  });
-
-  test('cleanup excludes healthy active feed and reader while retaining failed retirements', () async {
+  test('detached pending consumer is joined and never ACKs or publishes into its replacement', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
     final content = fixture.session().content;
-    fixture.transport.onPage = (thread, _, __) async => ConversationPage(
-      threadId: thread,
-      timelineEpoch: 'epoch',
-      items: [],
-      before: null,
-      hasOlder: false,
-    );
-    final scope = content.openScope(timelineEpoch: 'epoch', generation: 1);
-    await scope.page();
-    final reader = fixture.transport.readers.single;
-    expect(
-      (await fixture.repository.retryCleanup(deadline: DateTime.now()))
-          .complete,
-      isTrue,
-    );
-    expect(first.requestCloseCalls, 0);
-    expect(reader.requested, isFalse);
-    first.closeFailure = StateError('close failed');
-    content.refresh();
-    await first.closeStarted.future;
-    await fixture.transport.opened(1);
-    final second = TestConversationFeed(subscriptionId: 'second');
-    fixture.transport.opens[1].result.complete(second);
-    await second.deliver(
-      ConversationActivityContentEvent(
-        frame: ActivityBegin(
-          generation: 'refresh',
-          revision: 1,
-          baseRevision: null,
-          activity: null,
-          reasoning: const [],
-          response: const [],
-          tools: const [],
-          totalBytes: 0,
-        ),
-      ),
-    );
-    final failed = await fixture.repository.retryCleanup(
-      deadline: DateTime.now().add(const Duration(seconds: 1)),
-    );
-    expect(failed.complete, isFalse);
-    expect(reader.requested, isFalse);
-    expect(second.requestCloseCalls, 0);
-    first.closeFailure = null;
-    expect(
-      (await fixture.repository.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 1)),
-      )).complete,
-      isTrue,
-    );
-    expect(reader.requested, isFalse);
-    expect(second.requestCloseCalls, 0);
-    expect((await fixture.close()).complete, isTrue);
-    expect(fixture.client.budget.usage, isEmpty);
-  });
-  test(
-    'second retired close failure retains its permit until retry succeeds',
-    () async {
-      final fixture = ConversationFixture();
-      final first = await fixture.open();
-      final content = fixture.session().content;
-      content.refresh();
-      await first.closeCompleted.future;
-      await fixture.transport.opened(1);
-      final second = TestConversationFeed(subscriptionId: 'second')
-        ..closeFailure = StateError('second close failed');
-      fixture.transport.opens[1].result.complete(second);
-      await second.deliver(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'generation',
-            revision: 1,
-            baseRevision: null,
-            activity: null,
-            reasoning: const [],
-            response: const [],
-            tools: const [],
-            totalBytes: 0,
-          ),
-        ),
-      );
-      fixture.repository.setVisibleThread(null);
-      await second.closeStarted.future;
-      final unresolved = await fixture.repository.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 1)),
-      );
-      expect(unresolved.complete, isFalse);
-      expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
-      second.closeFailure = null;
-      expect(
-        (await fixture.repository.retryCleanup(
-          deadline: DateTime.now().add(const Duration(seconds: 1)),
-        )).complete,
-        isTrue,
-      );
-      expect(fixture.client.budget.used(ResourceKind.chatHandle), 0);
-      expect((await fixture.close()).complete, isTrue);
-    },
-  );
-
-  for (final domain in ['interaction', 'storage']) {
-    test('committed activity survives $domain update until completion acceptance', () async {
-      final fixture = ConversationFixture();
-      final session = fixture.session();
-      final consumer = _Consumer();
-      final lease = session.content.attachConsumer(consumer);
-      fixture.repository.setVisibleThread('thread');
-      await fixture.transport.opened(0);
-      final feed = TestConversationFeed();
-      fixture.transport.opens.single.result.complete(feed);
-      Future<void> deliver(ConversationEvent event) => feed
-          .deliver(event)
-          .timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => throw StateError(
-              'delivery ${event.runtimeType} failed: ${session.content.state.value}',
-            ),
-          );
-      await deliver(
-        ConversationBaselineEvent(baseline: baseline(0, items: [])),
-      );
-      await deliver(
-        ConversationStateEvent(
-          frame: ThreadSnapshotFrame(
-            workspace: ThreadWorkspace(
-              thread: StudioThread(
-                id: 'thread',
-                workspaceId: 'project',
-                title: 'Thread',
-                mode: ThreadModeId.simple,
-                delegationMode: DelegationMode.profile,
-                delegationPreference: DelegationPreference.balanced,
-                updatedAt: DateTime.utc(2026),
-                workspacePath: '/project',
-              ),
-              revision: 1,
-              interactions: const [],
-              runtime: const ThreadRuntimeView(
-                modelId: 'model',
-                contextTokens: 0,
-                contextWindow: 1,
-                totalTokens: 0,
-                costLabel: '',
-                activeSkills: [],
-                activeMcpServers: [],
-                activeLspServers: [],
-              ),
-            ),
-          ),
-        ),
-      );
-      const reasoning = ActivityRegion(ActivityRegionKind.reasoning, 'reason');
-      const response = ActivityRegion(ActivityRegionKind.response, 'answer');
-      const output = ActivityRegion.toolOutput(callId: 'call', partId: 'part');
-      await deliver(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'generation',
-            revision: 1,
-            baseRevision: null,
-            activity: const ThreadActivityView(
-              threadId: 'thread',
-              identity: 'live',
-              revision: 1,
-              turnId: 'turn',
-              kind: ThreadActivityKind.responding,
-              summary: 'working',
-            ),
-            reasoning: const [
-              ActivityPartMetadata(
-                itemId: 'reason',
-                complete: false,
-                totalBytes: 1,
-              ),
-            ],
-            response: const [
-              ActivityPartMetadata(
-                itemId: 'answer',
-                complete: false,
-                totalBytes: 1,
-              ),
-            ],
-            tools: [
-              ActivityToolMetadata(
-                callId: 'call',
-                name: 'exec',
-                state: ThreadActivityToolState.running,
-                outputBytes: 1,
-                outputParts: const [
-                  ActivityToolOutputMetadata(partId: 'part', totalBytes: 1),
-                ],
-              ),
-            ],
-            totalBytes: 3,
-          ),
-        ),
-      );
-      await deliver(
-        ConversationActivityContentEvent(
-          frame: ActivityText(
-            generation: 'generation',
-            revision: 1,
-            operations: const [
-              ActivityReplace(reasoning, 'r'),
-              ActivityReplace(response, 'a'),
-              ActivityReplace(output, 't'),
-            ],
-          ),
-        ),
-      );
-      await deliver(
-        const ConversationActivityContentEvent(
-          frame: ActivityCommit(generation: 'generation', revision: 1),
-        ),
-      );
-      expect(session.currentActivity.value!.activity!.identity, 'live');
-      await deliver(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'generation',
-            revision: 2,
-            baseRevision: 1,
-            activity: null,
-            reasoning: const [],
-            response: const [],
-            tools: const [],
-            totalBytes: 0,
-          ),
-        ),
-      );
-      await deliver(
-        ConversationActivityContentEvent(
-          frame: ActivityText(
-            generation: 'generation',
-            revision: 2,
-            operations: const [
-              ActivityRemove(reasoning),
-              ActivityRemove(response),
-              ActivityRemove(output),
-            ],
-          ),
-        ),
-      );
-      consumer.gate = Completer<void>();
-      final completionSeq = feed.send(
-        ConversationActivityContentEvent(
-          frame: const ActivityCommit(generation: 'generation', revision: 2),
-          completed: ConversationBatch(
-            subscriptionId: 'sub',
-            timelineEpoch: 'epoch',
-            fromSeq: 0,
-            throughSeq: 1,
-            items: [timelineItem(1)],
-          ),
-        ),
-      );
-      await _pump();
-      expect(consumer.frames, hasLength(2));
-      const interaction = PendingInteraction(
-        id: 'pending',
-        threadId: 'thread',
-        turnId: 'turn',
-        kind: InteractionKind.userInput,
-        title: 'Question',
-        body: '',
-      );
-      final update = domain == 'interaction'
-          ? const ThreadInteractionUpdate(
-              interaction: interaction,
-              pending: true,
-            )
-          : const ThreadStorageUpdate(
-              storage: ThreadStorageStateView(pressurePaused: true),
-            );
-      final stateSeq = feed.send(
-        ConversationStateEvent(
-          frame: ThreadNotificationFrame(
-            threadId: 'thread',
-            epoch: 1,
-            baseRevision: 1,
-            revision: 2,
-            update: update,
-          ),
-        ),
-      );
-      await session.source
-          .waitFor((state) => state.revision == 2)
-          .timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => throw StateError(
-              'state not committed: ${session.state.sync.errorMessage}',
-            ),
-          );
-      ConversationActivityView? projection() => projectConversationActivity(
-        current: session.currentActivity.value,
-        interaction: session.state.interactions.firstOrNull,
-        storage: session.state.storage,
-      );
-      final before = projection()!;
-      expect(before.identity, 'live');
-      expect(before.kind, ConversationActivityKind.responding);
-      expect(before.reasoningParts.single.text, 'r');
-      expect(before.responseParts.single.text, 'a');
-      expect(before.toolDetails.single.outputParts!.single.text, 't');
-      expect(feed.acknowledgements, isNot(contains(completionSeq)));
-      expect(feed.acknowledgements, isNot(contains(stateSeq)));
-      consumer.gate!.complete();
-      await feed
-          .acknowledged(stateSeq)
-          .timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => throw StateError(
-              'state ACK not delivered: ${feed.acknowledgements}',
-            ),
-          );
-      expect(session.currentActivity.value!.activity, isNull);
-      expect(
-        projection()!.kind,
-        domain == 'interaction'
-            ? ConversationActivityKind.awaitingInput
-            : ConversationActivityKind.storageBlocked,
-      );
-      expect(
-        feed.acknowledgements,
-        containsAllInOrder([completionSeq, stateSeq]),
-      );
-      fixture.repository.setVisibleThread(null);
-      lease.cancel();
-      expect((await fixture.close()).complete, isTrue);
-    });
-  }
-  test('session reconnect accepts an identical snapshot and catches up from accepted cursor', () async {
-    final fixture = ConversationFixture();
-    final session = fixture.session();
-    final consumer = TestCompletionConsumer();
-    session.content.attachConsumer(consumer);
+    final old = ControlledBatchConsumer();
+    final oldGate = Completer<void>();
+    old.onApply = (_) => oldGate.future;
+    final lease = content.attachConsumer(old, demand: _demand);
     fixture.repository.setVisibleThread('thread');
     await fixture.transport.opened(0);
     final first = TestConversationFeed();
-    fixture.transport.opens.single.result.complete(first);
-    await first.deliver(
-      ConversationBaselineEvent(baseline: baseline(0, items: [])),
-    );
-    ActivityBegin snapshot() => ActivityBegin(
-      generation: 'generation',
-      revision: 1,
-      baseRevision: null,
-      activity: const ThreadActivityView(
-        threadId: 'thread',
-        identity: 'activity',
-        revision: 1,
-        turnId: null,
-        kind: ThreadActivityKind.responding,
-        summary: 'summary',
-      ),
-      reasoning: const [],
-      response: const [
-        ActivityPartMetadata(itemId: 'answer', complete: false, totalBytes: 3),
-      ],
-      tools: const [],
-      totalBytes: 3,
-    );
-    ActivityText chunk(String text) => ActivityText(
-      generation: 'generation',
-      revision: 1,
-      operations: [
-        ActivityReplace(
-          const ActivityRegion(ActivityRegionKind.response, 'answer'),
-          text,
-        ),
-      ],
-    );
-    await first.deliver(ConversationActivityContentEvent(frame: snapshot()));
-    await first.deliver(ConversationActivityContentEvent(frame: chunk('old')));
-    await first.deliver(
-      const ConversationActivityContentEvent(
-        frame: ActivityCommit(generation: 'generation', revision: 1),
-      ),
-    );
-    final original = session.currentActivity.value;
-    var publications = 0;
-    final watch = session.currentActivity.watch((_) => publications++);
-    session.refresh();
+    fixture.transport.opens[0].result.complete(first);
+    first.send(ConversationChatEvent(batch: chatSet()));
+    await old.waitForCount(1);
+    lease.cancel();
+    final next = ControlledBatchConsumer();
+    content.attachConsumer(next, demand: _demand);
     await fixture.transport.opened(1);
-    expect(
-      fixture.transport.resumes.last,
-      const ConversationCompletionCursor(timelineEpoch: 'epoch', appendSeq: 0),
-    );
-    final second = TestConversationFeed(subscriptionId: 'new');
+    final second = TestConversationFeed(subscriptionId: 'replacement');
     fixture.transport.opens[1].result.complete(second);
-    await second.deliver(ConversationActivityContentEvent(frame: snapshot()));
-    await second.deliver(ConversationActivityContentEvent(frame: chunk('old')));
-    await second.deliver(
-      const ConversationActivityContentEvent(
-        frame: ActivityCommit(generation: 'generation', revision: 1),
-      ),
-    );
-    expect(session.currentActivity.value, same(original));
-    expect(publications, 0);
-    await second.deliver(
-      ConversationUpdateEvent(
-        update: ConversationBatch(
-          subscriptionId: 'new',
-          timelineEpoch: 'epoch',
-          fromSeq: 0,
-          throughSeq: 1,
-          items: [timelineItem(1)],
-        ),
-      ),
-    );
-    expect(consumer.frames.last, isA<ConversationCompletedBatchFrame>());
-    expect(second.acknowledgements, [1, 2, 3, 4]);
-    watch.cancel();
+    final replacement = chatSet(messages: [chatMessage(id: 'replacement')]);
+    await second.deliver(ConversationChatEvent(batch: replacement));
+    final report = await content.joinRetired(deadline: DateTime.now());
+    expect(report.complete, isFalse);
+    oldGate.complete();
+    expect((await content.joinRetired()).complete, isTrue);
+    expect(content.current.value, same(replacement.current));
+    expect(first.acknowledgements, isEmpty);
+    expect(next.batches, [replacement]);
+    expect(second.requestCloseCalls, 0);
     expect((await fixture.close()).complete, isTrue);
   });
-  test(
-    'blocked completion prevents ACK from crossing later ready state',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final consumer = _Consumer()..gate = Completer<void>();
-      final lease = owner.attachConsumer(consumer);
-      owner.setDemand(true);
-      await _pump();
-      final feed = transport.feeds.single;
-      feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-      feed.send(
-        ConversationStateEvent(
-          frame: ThreadResyncRequiredFrame(
-            threadId: 'thread',
-            dropped: 1,
-            epoch: 1,
-          ),
-        ),
-      );
-      await _pump();
-      expect(consumer.frames, hasLength(1));
-      expect(feed.acknowledgements, isEmpty);
-      consumer.gate!.complete();
-      await _pump();
-      expect(feed.acknowledgements, [1, 2]);
-      lease.cancel();
-      await owner.close();
-    },
-  );
-  test(
-    'same frame completion gates activity publish and acknowledgement',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final consumer = _Consumer();
-      final lease = owner.attachConsumer(consumer);
-      owner.setDemand(true);
-      await _pump();
-      final feed = transport.feeds.single;
-      feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-      await _pump();
-      const activity = ThreadActivityView(
-        threadId: 'thread',
-        identity: 'pre-turn',
-        revision: 1,
-        turnId: null,
-        executionId: 'execution',
-        kind: ThreadActivityKind.responding,
-        summary: '',
-      );
-      feed.send(
-        ConversationActivityContentEvent(
-          frame: ActivityBegin(
-            generation: 'activity',
-            revision: 1,
-            baseRevision: null,
-            activity: activity,
-            reasoning: const [
-              ActivityPartMetadata(itemId: 'r1', complete: true, totalBytes: 1),
-              ActivityPartMetadata(
-                itemId: 'r2',
-                complete: false,
-                totalBytes: 1,
-              ),
-            ],
-            response: const [
-              ActivityPartMetadata(itemId: 'o1', complete: true, totalBytes: 1),
-              ActivityPartMetadata(
-                itemId: 'o2',
-                complete: false,
-                totalBytes: 1,
-              ),
-            ],
-            tools: const [],
-            totalBytes: 4,
-          ),
-        ),
-      );
-      await _pump();
-      for (final entry in [
-        (ActivityRegionKind.reasoning, 'r1', 'a'),
-        (ActivityRegionKind.reasoning, 'r2', 'b'),
-        (ActivityRegionKind.response, 'o1', 'c'),
-        (ActivityRegionKind.response, 'o2', 'd'),
-      ]) {
-        feed.send(
-          ConversationActivityContentEvent(
-            frame: ActivityText(
-              generation: 'activity',
-              revision: 1,
-              operations: [
-                ActivityReplace(ActivityRegion(entry.$1, entry.$2), entry.$3),
-              ],
-            ),
-          ),
-        );
-        await _pump();
-      }
-      consumer.gate = Completer<void>();
-      final reset = ConversationReset(_baseline(feed, epoch: 'new'));
-      feed.send(
-        ConversationActivityContentEvent(
-          frame: const ActivityCommit(generation: 'activity', revision: 1),
-          completed: reset,
-        ),
-      );
-      await _pump();
-      expect(owner.currentActivity.value, isNull);
-      expect(feed.acknowledgements, [1, 2, 3, 4, 5, 6]);
-      consumer.gate!.complete();
-      await _pump();
-      expect(owner.currentActivity.value!.revision, 1);
-      expect(owner.currentActivity.value!.activity!.turnId, isNull);
-      expect(owner.currentActivity.value!.activity!.executionId, 'execution');
-      final projection = projectConversationActivity(
-        current: owner.currentActivity.value,
-      )!;
-      expect(projection.reasoningParts.map((p) => (p.itemId, p.text)), [
-        ('r1', 'a'),
-        ('r2', 'b'),
-      ]);
-      expect(projection.responseParts.map((p) => (p.itemId, p.text)), [
-        ('o1', 'c'),
-        ('o2', 'd'),
-      ]);
-      expect(feed.acknowledgements, [1, 2, 3, 4, 5, 6, 7]);
-      lease.cancel();
-      await owner.close();
-    },
-  );
-  test('detached pending consumer is joined and cannot acknowledge', () async {
-    final transport = _Transport();
-    final owner = _owner(transport);
-    final consumer = _Consumer()..gate = Completer<void>();
-    final lease = owner.attachConsumer(consumer);
-    owner.setDemand(true);
-    await _pump();
-    final feed = transport.feeds.single;
-    feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-    await _pump();
+
+  test('detach does not reopen until a new real consumer attaches', () async {
+    final fixture = ConversationFixture();
+    final content = fixture.session().content;
+    final consumer = ControlledBatchConsumer();
+    final lease = content.attachConsumer(consumer, demand: _demand);
+    fixture.repository.setVisibleThread('thread');
+    await fixture.transport.opened(0);
+    final feed = TestConversationFeed();
+    fixture.transport.opens[0].result.complete(feed);
+    await feed.deliver(ConversationChatEvent(batch: chatSet()));
     lease.cancel();
-    final report = await owner.close(
-      deadline: DateTime.now().add(const Duration(milliseconds: 20)),
+    await feed.closeCompleted.future;
+    expect((await content.joinRetired()).complete, isTrue);
+    expect(fixture.transport.opens, hasLength(1));
+    expect(content.state.value, isA<ChatIdle<bool>>());
+    content.attachConsumer(ControlledBatchConsumer(), demand: _demand);
+    await fixture.transport.opened(1);
+    fixture.transport.opens[1].result.complete(
+      TestConversationFeed(subscriptionId: 'next'),
     );
-    expect(report.complete, isFalse);
-    expect(feed.requested, isTrue);
-    expect(feed.acknowledgements, isEmpty);
-    consumer.gate!.complete();
-    await _pump();
-    expect(feed.acknowledgements, isEmpty);
-    expect((await owner.retryCleanup()).complete, isTrue);
+    expect((await fixture.close()).complete, isTrue);
   });
+
   test(
-    'accepted atoms freeze nested descriptor lists while delivery is pending',
+    'consumer rejection propagates and cannot publish current or ACK',
     () async {
-      final payloads = [
-        const ConversationRawPayloadDescriptor(format: 'json', version: 1),
-      ];
-      final attachments = [
-        const ThreadAttachmentView(
-          id: 'file',
-          modality: AttachmentModalityView.file,
-          mediaType: 'text/plain',
-          byteSize: 1,
-        ),
-      ];
-      final questions = [
-        const ConversationQuestionDescriptor(
-          id: 'question',
-          isOther: false,
-          isSecret: false,
-        ),
-      ];
-      final answers = [
-        const ConversationAnswerDescriptor(
-          questionId: 'question',
-          answerCount: 1,
-          redacted: false,
-        ),
-      ];
-      final targets = [
-        const ThreadWaitTargetView(taskId: 'task', summary: 'running'),
-      ];
-      final wait = ThreadWaitPresentationView(
-        intent: ThreadWaitEventsIntentView(targets: targets, timeoutMs: 100),
-        state: ThreadWaitStateView.waiting,
+      final fixture = ConversationFixture();
+      final consumer = ControlledBatchConsumer();
+      final failure = StateError('component rejected');
+      consumer.onApply = (_) => Future.error(failure);
+      final feed = await _open(fixture, consumer);
+      final failed = fixture.session().content.state.waitFor(
+        (state) => state is ChatReconnecting<bool>,
       );
-      final raw = ConversationRawDescriptor(
-        origin: ThreadRawItemOrigin.stored,
-        payloads: payloads,
-        notice: 'notice',
-        recordedAt: DateTime.utc(2026),
-      );
-      final output = ConversationToolOutputDescriptor(attachments: attachments);
-      final resolved = ConversationUserInputResolved(answers: answers);
-      final input = ConversationUserInputDescriptor(
-        interactionId: 'input',
-        questions: questions,
-        state: resolved,
-      );
-      final items = [
-        ConversationItem(
-          header: const ConversationItemHeader(
-            id: 'raw',
-            threadId: 'thread',
-            appendSeq: 1,
-          ),
-          source: const ConversationContentSource(),
-          descriptor: raw,
-          fields: const [],
-        ),
-        ConversationItem(
-          header: const ConversationItemHeader(
-            id: 'tool',
-            threadId: 'thread',
-            appendSeq: 2,
-          ),
-          source: const ConversationContentSource(),
-          descriptor: ConversationToolDescriptor(
-            invocation: const ConversationToolInvocation(
-              toolCallId: 'call',
-              name: 'tool',
-            ),
-            state: ConversationToolSucceeded(
-              completedAt: DateTime.utc(2026),
-              output: output,
-            ),
-            userInput: input,
-            wait: wait,
-          ),
-          fields: const [],
-        ),
-      ];
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final consumer = _Consumer();
-      final lease = owner.attachConsumer(consumer);
-      owner.setDemand(true);
-      await _pump();
-      final feed = transport.feeds.single;
-      feed.send(ConversationBaselineEvent(baseline: _baseline(feed)));
-      await _pump();
-      consumer.gate = Completer<void>();
-      feed.send(
-        ConversationUpdateEvent(
-          update: ConversationBatch(
-            subscriptionId: feed.subscriptionId,
-            timelineEpoch: 'epoch',
-            fromSeq: 0,
-            throughSeq: 2,
-            items: items,
-          ),
-        ),
-      );
-      await _pump();
-      expect(consumer.frames, hasLength(2));
-      expect(feed.acknowledgements, [1]);
-      payloads.add(
-        ConversationRawPayloadDescriptor(
-          format: 'x' * (300 * 1024),
-          version: 2,
-        ),
-      );
-      attachments.clear();
-      questions.clear();
-      answers.clear();
-      targets.add(ThreadWaitTargetView(taskId: 'x' * (300 * 1024)));
-      targets.first = const ThreadWaitTargetView(taskId: 'replaced');
-      final delivered =
-          (consumer.frames.last as ConversationCompletedBatchFrame).batch.items;
-      final actualRaw = delivered.first.descriptor as ConversationRawDescriptor;
-      final actualTool =
-          delivered.last.descriptor as ConversationToolDescriptor;
-      final actualOutput =
-          (actualTool.state as ConversationToolSucceeded).output;
-      final actualInput = actualTool.userInput!;
-      final actualAnswers =
-          (actualInput.state as ConversationUserInputResolved).answers;
-      final actualTargets =
-          (actualTool.wait!.intent as ThreadWaitEventsIntentView).targets;
-      expect(actualRaw.payloads.single.format, 'json');
-      expect(actualOutput.attachments.single.id, 'file');
-      expect(actualInput.questions.single.id, 'question');
-      expect(actualAnswers.single.questionId, 'question');
-      expect(actualTargets.single.taskId, 'task');
-      expect(() => actualRaw.payloads.clear(), throwsUnsupportedError);
-      expect(() => actualOutput.attachments.clear(), throwsUnsupportedError);
-      expect(() => actualInput.questions.clear(), throwsUnsupportedError);
-      expect(() => actualAnswers.clear(), throwsUnsupportedError);
-      expect(() => actualTargets.clear(), throwsUnsupportedError);
-      consumer.gate!.complete();
-      await _pump();
-      expect(feed.acknowledgements, [1, 2]);
-      lease.cancel();
-      expect((await owner.close()).complete, isTrue);
+      feed.send(ConversationChatEvent(batch: chatSet()));
+      expect((await failed as ChatReconnecting<bool>).error, same(failure));
+      expect(feed.acknowledgements, isEmpty);
+      expect(fixture.session().current.value, isNull);
+      expect((await fixture.close()).complete, isTrue);
     },
   );
-  test(
-    'late old activity commit cannot overwrite a replacement feed',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final oldConsumer = _Consumer();
-      final oldLease = owner.attachConsumer(oldConsumer);
-      owner.setDemand(true);
-      await _pump();
-      final first = transport.feeds.single;
-      first.send(ConversationBaselineEvent(baseline: _baseline(first)));
-      await _pump();
-      ActivityBegin begin(String generation) => ActivityBegin(
-        generation: generation,
-        revision: 1,
-        baseRevision: null,
-        activity: ThreadActivityView(
-          threadId: 'thread',
-          identity: generation,
-          revision: 1,
-          turnId: null,
-          kind: ThreadActivityKind.preparing,
-          summary: '',
-        ),
-        reasoning: const [],
-        response: const [],
-        tools: const [],
-        totalBytes: 0,
-      );
-      first.send(ConversationActivityContentEvent(frame: begin('old')));
-      await _pump();
-      oldConsumer.gate = Completer<void>();
-      first.send(
-        ConversationActivityContentEvent(
-          frame: const ActivityCommit(generation: 'old', revision: 1),
-          completed: ConversationReset(_baseline(first, epoch: 'other')),
-        ),
-      );
-      await _pump();
-      expect(oldConsumer.frames, hasLength(2));
-      expect(owner.currentActivity.value, isNull);
-      oldLease.cancel();
-      final nextLease = owner.attachConsumer(_Consumer());
-      await _pump();
-      final second = transport.feeds.last;
-      expect(second, isNot(same(first)));
-      second.send(ConversationBaselineEvent(baseline: _baseline(second)));
-      await _pump();
-      second.send(ConversationActivityContentEvent(frame: begin('new')));
-      await _pump();
-      second.send(
-        const ConversationActivityContentEvent(
-          frame: ActivityCommit(generation: 'new', revision: 1),
-        ),
-      );
-      await _pump();
-      expect(owner.currentActivity.value!.activity!.identity, 'new');
-      oldConsumer.gate!.complete();
-      await _pump();
-      expect(owner.currentActivity.value!.activity!.identity, 'new');
-      expect(first.acknowledgements, [1, 2]);
-      nextLease.cancel();
-      expect((await owner.close()).complete, isTrue);
-    },
-  );
-  test(
-    'reopen resumes accepted cursor and reset is delivered to consumer',
-    () async {
-      final transport = _Transport();
-      final owner = _owner(transport);
-      final consumer = _Consumer();
-      final lease = owner.attachConsumer(consumer);
-      owner.setDemand(true);
-      await _pump();
-      final first = transport.feeds.single;
-      first.send(ConversationBaselineEvent(baseline: _baseline(first, seq: 7)));
-      await _pump();
-      owner.refresh();
-      await _pump();
-      expect(
-        transport.resumes.last,
-        const ConversationCompletionCursor(
-          timelineEpoch: 'epoch',
-          appendSeq: 7,
-        ),
-      );
-      final second = transport.feeds.last;
-      second.send(
-        ConversationUpdateEvent(
-          update: ConversationReset(_baseline(second, epoch: 'new')),
-        ),
-      );
-      await _pump();
-      expect(consumer.frames.last, isA<ConversationResetFrame>());
-      expect(second.acknowledgements, [1]);
-      lease.cancel();
-      await owner.close();
-    },
-  );
+
+  test('ACK error retires the accepted feed and leaves native cleanup responsibility', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open(demand: _demand);
+    final error = StateError('ACK failed');
+    feed.ackFailure = error;
+    feed.closeFailure = StateError('join failed');
+    feed.send(ConversationChatEvent(batch: _append('accepted')));
+    await feed.requestCloseStarted.future;
+    expect(
+      fixture.consumers['thread']!.batches.last.messages.single.id,
+      'accepted',
+    );
+    expect(feed.acknowledgements, [1]);
+    expect((await fixture.close()).complete, isFalse);
+    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
+    feed.closeFailure = null;
+    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(feed.closeCalls, 2);
+    expect(fixture.transport.opens, hasLength(1));
+    expect(fixture.client.budget.usage, isEmpty);
+  });
+
+  test('private reader close failure retains original facade responsibility for retry', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open(demand: _demand);
+    final failure = StateError('reader join failed');
+    feed.reader.closeFailure = failure;
+    final report = await fixture.close();
+    expect(report.complete, isFalse);
+    expect(
+      report.unresolved.any((entry) => identical(entry.reason, failure)),
+      isTrue,
+    );
+    expect(feed.closeCompleted.isCompleted, isFalse);
+    expect(feed.reader.closeCalls, 1);
+    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
+    feed.reader.closeFailure = null;
+    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(feed.reader.closeCalls, 2);
+    expect(feed.closeCompleted.isCompleted, isTrue);
+    expect(fixture.transport.opens, hasLength(1));
+    expect(fixture.client.budget.usage, isEmpty);
+  });
+
+  test('cleanup retries retired facade but excludes healthy active feed and reader', () async {
+    final fixture = ConversationFixture();
+    final first = await fixture.open(demand: _demand);
+    first.closeFailure = StateError('old native close failed');
+    fixture.repository.setVisibleThread(null);
+    expect((await fixture.session().content.joinRetired()).complete, isFalse);
+    fixture.repository.setVisibleThread('thread');
+    await fixture.transport.opened(1);
+    final second = TestConversationFeed(subscriptionId: 'healthy');
+    fixture.transport.opens[1].result.complete(second);
+    await second.deliver(ConversationChatEvent(batch: chatSet()));
+    expect((await fixture.repository.retryCleanup()).complete, isFalse);
+    expect(second.requestCloseCalls, 0);
+    expect(second.reader.closeCalls, 0);
+    first.closeFailure = null;
+    expect((await fixture.repository.retryCleanup()).complete, isTrue);
+    expect(second.requestCloseCalls, 0);
+    expect(second.reader.closeCalls, 0);
+    expect(fixture.session().content.state.value, isA<ChatReady<bool>>());
+    expect((await fixture.close()).complete, isTrue);
+  });
 }
+
+ThreadWorkspace _workspace() => ThreadWorkspace(
+  thread: StudioThread(
+    id: 'thread',
+    workspaceId: 'workspace',
+    title: 'Thread',
+    mode: ThreadModeId.simple,
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
+    updatedAt: DateTime.utc(2026),
+    workspacePath: '/workspace',
+  ),
+  revision: 1,
+  interactions: [],
+  runtime: const ThreadRuntimeView(
+    modelId: 'model',
+    contextTokens: 0,
+    contextWindow: 1,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
+  ),
+);

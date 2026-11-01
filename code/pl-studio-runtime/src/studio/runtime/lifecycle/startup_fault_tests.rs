@@ -892,11 +892,12 @@ async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sess
     Ok(())
 }
 
-/// The HTTP detail endpoint can be the first explicit access to an older v2
-/// history. It must prepare the same preserved content as pages and tails.
+/// A passive Chat open prepares supported old v2 content through the Storage migration barrier,
+/// preserving public bytes without activating execution or requiring caller-side preparation.
 #[tokio::test]
-async fn a_detail_first_request_prepares_existing_v2_history_without_activation() -> Result<()> {
+async fn cold_v2_history_supports_passive_chat_content_without_activation() -> Result<()> {
     use crate::studio::storage::history::HistoryStore;
+    use anyhow::Context;
     use sea_orm::{ConnectionTrait, Database};
 
     let temp = tempfile::tempdir()?;
@@ -916,28 +917,51 @@ async fn a_detail_first_request_prepares_existing_v2_history_without_activation(
     history.commit(1, std::slice::from_ref(&item), &[]).await?;
     drop(history);
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-    db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE timeline_records; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
+    db.execute_unprepared(
+        "DROP TABLE seaql_migrations;
+         DROP TABLE IF EXISTS timeline_records;
+         DROP TABLE conversation_content_chunks;
+         DROP TABLE conversation_contents;
+         DROP TABLE conversation_items;
+         DROP TABLE conversation_view_entries;
+         DROP TABLE conversation_view_state;
+         ALTER TABLE history_input_identities DROP COLUMN request_digest;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
+         ALTER TABLE history_meta DROP COLUMN model_route_hash;
+         UPDATE history_meta SET schema_version=8",
+    )
+    .await?;
     db.close().await?;
     let runtime = StudioRuntime::initialize(options(temp.path())).await?;
-    let reader = runtime.timeline_reader("cold").await?;
-    let timeline_epoch = reader.epoch();
-    let read = runtime
-        .read_timeline_detail(
-            "cold",
-            &item.id,
-            &pl_protocol::TimelineDetailQuery {
-                field: pl_protocol::ThreadContentField::Text,
-                timeline_epoch: timeline_epoch.clone(),
-                continuation: None,
-                max_bytes: None,
+    assert!(runtime.threads.observed_thread("cold").is_none());
+    let demand = pl_protocol::ReadDemand {
+        max_items: 1,
+        max_bytes: 64 * 1024,
+    };
+    let mut feed = runtime
+        .open_conversation_feed("cold", pl_protocol::ChatScope::Main, demand)
+        .await?;
+    let reader = feed.reader().clone();
+    let manifest = reader.list_contents(&item.id, None, demand).await?;
+    let reference = &manifest
+        .entries
+        .first()
+        .context("preserved manifest")?
+        .reference;
+    let detail = reader
+        .read_content(
+            reference,
+            pl_protocol::ContentRange {
+                offset: 0,
+                max_bytes: 128,
             },
         )
-        .await;
-    let shutdown = runtime.shutdown_runtime().await;
-    let detail = read?;
-    shutdown?;
-    assert_eq!(detail.text, "preserved detail 中文\n");
-    assert_eq!(detail.timeline_epoch, timeline_epoch);
-    assert!(detail.continuation.is_none());
+        .await?;
+    assert_eq!(detail.bytes, "preserved detail 中文\n".as_bytes());
+    assert!(detail.sealed);
+    assert!(runtime.threads.observed_thread("cold").is_none());
+    feed.close().await?;
+    reader.close().await?;
+    runtime.shutdown_runtime().await?;
     Ok(())
 }

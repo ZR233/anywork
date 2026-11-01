@@ -5,6 +5,7 @@ mod agent;
 mod agent_profile;
 pub mod agent_session;
 mod billing;
+pub mod conversation;
 mod delegation;
 mod error;
 mod event;
@@ -22,7 +23,6 @@ pub mod session_runtime;
 pub mod studio;
 pub mod thread;
 mod thread_item;
-pub mod timeline_content;
 mod tool;
 mod turn;
 mod turn_failure;
@@ -48,9 +48,7 @@ pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport,
 };
 pub use activity::{
-    ACTIVITY_FRAME_BYTES, ACTIVITY_SUMMARY_LIMIT, ACTIVITY_TEXT_FRAME_BYTES, ActivityContentFrame,
-    ActivityPartMetadata, ActivityTextOperation, ActivityTextRegion, ActivityToolMetadata,
-    ActivityToolOutputMetadata, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
+    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
     ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
 };
 pub use agent::*;
@@ -71,6 +69,7 @@ pub use billing::{
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
     ModelPricingSnapshot,
 };
+pub use conversation::*;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
@@ -112,19 +111,6 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
-pub use timeline_content::{
-    ThreadContentField, ThreadUserInputFieldPart, TimelineAgentDescriptor, TimelineAgentOutcome,
-    TimelineAnswerDescriptor, TimelineCompletionCursor, TimelineContentOutcome, TimelineDescriptor,
-    TimelineDetailChunk, TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef,
-    TimelineFieldPreview, TimelineInferenceDescriptor, TimelineInferenceOutcome, TimelineItem,
-    TimelineItemHeader, TimelineItemSource, TimelinePage, TimelinePageCursor, TimelinePageQuery,
-    TimelinePlanDecision, TimelinePlanDescriptor, TimelineQuestionDescriptor,
-    TimelineRawDescriptor, TimelineRawPayloadDescriptor, TimelineRecoveryNotice,
-    TimelineTailBaseline, TimelineTailUpdate, TimelineTextDescriptor, TimelineThinkingDescriptor,
-    TimelineToolDescriptor, TimelineToolInvocation, TimelineToolOutputDescriptor,
-    TimelineToolState, TimelineTurnDescriptor, TimelineTurnOutcome, TimelineUserInputDescriptor,
-    TimelineUserInputState,
-};
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。
 pub use studio::{

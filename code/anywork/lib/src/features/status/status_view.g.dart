@@ -349,7 +349,7 @@ final class StatusContextProjectionProvider
 }
 
 String _$statusContextProjectionHash() =>
-    r'93abdce8a7b9a19456255a2d167d09b8e01e14e1';
+    r'7bf387300cf3c2f00ffd56c725a5677efa6f3a2d';
 
 final class StatusContextProjectionFamily extends $Family
     with $FunctionalFamilyOverride<StudioContextProjection?, String> {

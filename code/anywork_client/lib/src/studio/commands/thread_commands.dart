@@ -984,6 +984,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         operation,
         _client.childInteractions(hostThreadId).source,
         (observation) =>
+            observation.hasCurrentBaseline &&
             observation.canonical.loaded &&
             (observation.canonical.value?.confirmsDecision(
                   childThreadId: summary.childThreadId,
@@ -1266,7 +1267,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _client.settingsWrites.requireOwner(owner);
     _throwIfAccessBlockedForThread(threadId);
     final session = _client.conversations.session(threadId).state;
-    final route = session.runtime?.modelRoute;
+    final route = session.modelRoute;
     final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
       throw StateError('Selected thread model route is unavailable.');

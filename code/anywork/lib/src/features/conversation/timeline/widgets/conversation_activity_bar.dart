@@ -19,6 +19,8 @@ class ConversationActivityBar extends StatefulWidget {
     this.onExpand,
     this.onCollapse,
     this.onExpandedChanged,
+    this.expandedContentBuilder,
+    this.responseContentBuilder,
     this.maxExpandedHeight = 220,
     this.maxResponseHeight = 180,
     super.key,
@@ -28,6 +30,8 @@ class ConversationActivityBar extends StatefulWidget {
   final VoidCallback? onExpand;
   final VoidCallback? onCollapse;
   final ValueChanged<bool>? onExpandedChanged;
+  final WidgetBuilder? expandedContentBuilder;
+  final WidgetBuilder? responseContentBuilder;
   final double maxExpandedHeight;
   final double maxResponseHeight;
 
@@ -58,6 +62,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
 
   bool get _isExpandable {
     if (_isResponding || _isCompacting) return false;
+    if (widget.expandedContentBuilder != null && _view.expandable) return true;
     if (_view.kind == ConversationActivityKind.thinking &&
         !_hasReasoningBody &&
         !_hasTools &&
@@ -206,24 +211,29 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
               expandable: false,
               isExpanded: false,
             ),
-            if (parts.isNotEmpty) ...[
+            if (parts.isNotEmpty || widget.responseContentBuilder != null) ...[
               const SizedBox(height: 5),
-              ConstrainedBox(
-                key: const ValueKey('conversation-activity-response-stream'),
-                constraints: BoxConstraints(
-                  maxHeight: widget.maxResponseHeight,
-                ),
-                child: Scrollbar(
-                  controller: _responseScrollController,
-                  thumbVisibility: true,
-                  child: SingleChildScrollView(
+              Flexible(
+                fit: FlexFit.loose,
+                child: ConstrainedBox(
+                  key: const ValueKey('conversation-activity-response-stream'),
+                  constraints: BoxConstraints(
+                    maxHeight: widget.maxResponseHeight,
+                  ),
+                  child: Scrollbar(
                     controller: _responseScrollController,
-                    primary: false,
-                    child: SelectionArea(
-                      child: _ActivityMarkdownParts(
-                        prefix: 'live-response-part',
-                        parts: parts,
-                        textColor: scheme.onSurface,
+                    thumbVisibility: true,
+                    child: SingleChildScrollView(
+                      controller: _responseScrollController,
+                      primary: false,
+                      child: SelectionArea(
+                        child:
+                            widget.responseContentBuilder?.call(context) ??
+                            _ActivityMarkdownParts(
+                              prefix: 'live-response-part',
+                              parts: parts,
+                              textColor: scheme.onSurface,
+                            ),
                       ),
                     ),
                   ),
@@ -261,7 +271,8 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildTopHeaderRow(context),
-        if (_expanded && _isExpandable) _buildExpandedArea(context),
+        if (_expanded && _isExpandable)
+          Flexible(fit: FlexFit.loose, child: _buildExpandedArea(context)),
       ],
     );
   }
@@ -493,41 +504,45 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (reasoningParts.isNotEmpty)
-                        Padding(
-                          key: const ValueKey(
-                            'conversation-activity-thinking-full',
-                          ),
-                          padding: const EdgeInsets.only(top: 2, bottom: 4),
-                          child: _ActivityMarkdownParts(
-                            prefix: 'conversation-activity-thinking-part',
-                            parts: reasoningParts,
-                            textColor: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      for (final tool in tools)
-                        KeyedSubtree(
-                          key: ValueKey('live-tool-slot-${tool.callId}'),
-                          child: _LiveToolTile(
-                            tool: tool.entry,
-                            detail: tool.detail,
-                            expanded: _expandedToolIds.contains(tool.callId),
-                            elapsedSeconds: _elapsedSeconds(
-                              tool.entry?.startedAt ?? tool.detail?.startedAt,
+                      if (widget.expandedContentBuilder case final builder?)
+                        builder(context)
+                      else ...[
+                        if (reasoningParts.isNotEmpty)
+                          Padding(
+                            key: const ValueKey(
+                              'conversation-activity-thinking-full',
                             ),
-                            onExpansionChanged: (expanded) {
-                              setState(() {
-                                if (expanded) {
-                                  _expandedToolIds.add(tool.callId);
-                                } else {
-                                  _expandedToolIds.remove(tool.callId);
-                                }
-                              });
-                            },
+                            padding: const EdgeInsets.only(top: 2, bottom: 4),
+                            child: _ActivityMarkdownParts(
+                              prefix: 'conversation-activity-thinking-part',
+                              parts: reasoningParts,
+                              textColor: scheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                      for (final detail in extraDetails)
-                        _buildExtraDetailRow(context, detail),
+                        for (final tool in tools)
+                          KeyedSubtree(
+                            key: ValueKey('live-tool-slot-${tool.callId}'),
+                            child: _LiveToolTile(
+                              tool: tool.entry,
+                              detail: tool.detail,
+                              expanded: _expandedToolIds.contains(tool.callId),
+                              elapsedSeconds: _elapsedSeconds(
+                                tool.entry?.startedAt ?? tool.detail?.startedAt,
+                              ),
+                              onExpansionChanged: (expanded) {
+                                setState(() {
+                                  if (expanded) {
+                                    _expandedToolIds.add(tool.callId);
+                                  } else {
+                                    _expandedToolIds.remove(tool.callId);
+                                  }
+                                });
+                              },
+                            ),
+                          ),
+                        for (final detail in extraDetails)
+                          _buildExtraDetailRow(context, detail),
+                      ],
                     ],
                   ),
                 ),

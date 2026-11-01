@@ -1,3 +1,4 @@
+import 'support/chat_fixtures.dart';
 import 'support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -29,6 +30,7 @@ void main() {
         clientId: 'reentrant-graph-close',
       );
       await graph.client.bootstrap();
+      graph.timeline.updateReadDemand(chatDemand);
       graph.setConversationPageVisible(true);
       await graph.client.directoryCommands.selectThread('thread-main');
       await graph.client.conversations.session('thread-main').content.ready;
@@ -130,7 +132,11 @@ void main() {
       );
       addTearDown(() => graph.close(deadline: _deadline()));
       await graph.client.bootstrap();
-      await (graph..setConversationPageVisible(true)).client.directoryCommands
+      await (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread('thread-main');
       final session = graph.client.conversations.existingSession(
         'thread-main',
@@ -227,7 +233,10 @@ void main() {
         attemptId,
       );
       expect(
-        rebuilt.read(startSessionControllerProvider).forProject(workspaceId).text,
+        rebuilt
+            .read(startSessionControllerProvider)
+            .forProject(workspaceId)
+            .text,
         'new session survives Settings',
       );
       expect(
@@ -261,12 +270,22 @@ void main() {
     addTearDown(() => first.close(deadline: _deadline()));
     addTearDown(() => second.close(deadline: _deadline()));
     await Future.wait([first.client.bootstrap(), second.client.bootstrap()]);
+    final beforeVisibleSelection = first.timeline.monotonicMicros;
     first.setConversationPageVisible(true);
     second.setConversationPageVisible(true);
     await Future.wait([
       first.client.directoryCommands.selectThread('thread-main'),
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
+    final afterVisibleSelection = first.timeline.monotonicMicros;
+    expect(firstTransport.feeds, isEmpty);
+    expect(
+      secondTransport.feeds,
+      isEmpty,
+      reason: 'canonical visible selection does not fabricate viewport demand',
+    );
+    first.timeline.updateReadDemand(chatDemand);
+    second.timeline.updateReadDemand(chatDemand);
     await Future.wait([
       first.client.conversations
           .session('thread-main')
@@ -279,6 +298,18 @@ void main() {
           .state
           .waitFor((state) => state.snapshot == true),
     ]);
+    final display = first.timeline.lease('thread-main')!;
+    expect(display.selectionId, isNotNull);
+    expect(
+      display.selectionStartedMicros,
+      inInclusiveRange(beforeVisibleSelection, afterVisibleSelection),
+      reason: 'AppGraph records selection before demand and successful Set',
+    );
+    expect(
+      display.firstContentLayout,
+      isNull,
+      reason: 'a headless ready display has no real content layout witness',
+    );
     final firstContainer = _container(first);
     final secondContainer = _container(second);
     addTearDown(firstContainer.dispose);
@@ -296,7 +327,10 @@ void main() {
     first.client.drafts.composer('thread-main').updateDraft('first app');
     second.client.drafts.composer('thread-main').updateDraft('second app');
     final workspaceId = first.client.selection.state.selectedProjectId!;
-    first.client.drafts.startDraft.updateDraft(workspaceId, 'first start draft');
+    first.client.drafts.startDraft.updateDraft(
+      workspaceId,
+      'first start draft',
+    );
 
     expect(
       first.client.conversations.session('thread-main'),
@@ -370,10 +404,18 @@ void main() {
         await graph.close(deadline: _deadline());
       });
       await graph.client.bootstrap();
-      await (graph..setConversationPageVisible(true)).client.directoryCommands
+      await (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread('thread-main');
       final late = await firstOpen.future;
-      await (graph..setConversationPageVisible(true)).client.directoryCommands
+      await (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .directoryCommands
           .selectThread('thread-alt');
       await graph.client.conversations
           .session('thread-alt')

@@ -24,28 +24,71 @@ import 'updater.dart';
 part 'product_topic.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `to_runtime`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `hash`
 
-/// One host's committed pending-child projection; revision belongs to this domain only.
+class BridgeChildInteractionsData {
+  final List<BridgeChildInteractionSummary> items;
+
+  const BridgeChildInteractionsData({required this.items});
+
+  @override
+  int get hashCode => items.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeChildInteractionsData &&
+          runtimeType == other.runtimeType &&
+          items == other.items;
+}
+
+@freezed
+sealed class BridgeChildInteractionsResource
+    with _$BridgeChildInteractionsResource {
+  const BridgeChildInteractionsResource._();
+
+  const factory BridgeChildInteractionsResource.uninitialized(
+    BridgeUninitializedResource field0,
+  ) = BridgeChildInteractionsResource_Uninitialized;
+  const factory BridgeChildInteractionsResource.loading(
+    BridgeLoadingResource field0,
+  ) = BridgeChildInteractionsResource_Loading;
+  const factory BridgeChildInteractionsResource.ready({
+    required BridgeReadyResource resource,
+    required BridgeChildInteractionsData value,
+  }) = BridgeChildInteractionsResource_Ready;
+  const factory BridgeChildInteractionsResource.refreshing({
+    required BridgeRefreshingResource resource,
+    required BridgeChildInteractionsData value,
+  }) = BridgeChildInteractionsResource_Refreshing;
+  const factory BridgeChildInteractionsResource.stale({
+    required BridgeStaleResource resource,
+    required BridgeChildInteractionsData value,
+  }) = BridgeChildInteractionsResource_Stale;
+  const factory BridgeChildInteractionsResource.degraded({
+    required BridgeDegradedResource resource,
+    required BridgeChildInteractionsData value,
+  }) = BridgeChildInteractionsResource_Degraded;
+  const factory BridgeChildInteractionsResource.failed(
+    BridgeFailedResource field0,
+  ) = BridgeChildInteractionsResource_Failed;
+  const factory BridgeChildInteractionsResource.stopped(
+    BridgeStoppedResource field0,
+  ) = BridgeChildInteractionsResource_Stopped;
+}
+
+/// One host's pending-child resource; absent values are not committed empty collections.
 class BridgeChildInteractionsState {
   final String hostThreadId;
-  final BigInt revision;
-  final PlatformInt64 updatedAt;
-  final List<BridgeChildInteractionSummary> items;
+  final BridgeChildInteractionsResource state;
 
   const BridgeChildInteractionsState({
     required this.hostThreadId,
-    required this.revision,
-    required this.updatedAt,
-    required this.items,
+    required this.state,
   });
 
   @override
-  int get hashCode =>
-      hostThreadId.hashCode ^
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      items.hashCode;
+  int get hashCode => hostThreadId.hashCode ^ state.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -53,9 +96,7 @@ class BridgeChildInteractionsState {
       other is BridgeChildInteractionsState &&
           runtimeType == other.runtimeType &&
           hostThreadId == other.hostThreadId &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          items == other.items;
+          state == other.state;
 }
 
 @freezed

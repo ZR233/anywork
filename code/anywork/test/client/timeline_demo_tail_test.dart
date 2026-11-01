@@ -2,12 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/conversation_fixtures.dart';
+import 'support/chat_fixtures.dart';
+
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +40,11 @@ void main() {
     final value = transport ?? DriverDemoStudioTransport();
     if (prepare) value.prepareThemeScenario(plan: true);
     await value.readBootstrap();
-    final feed = await value.openConversationFeed('thread-main');
+    final feed = await value.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1000, maxBytes: 262144),
+    );
     final iterator = StreamIterator(feed.events);
     try {
       final frame = await nextFrame(iterator);
@@ -66,7 +71,11 @@ void main() {
   }
 
   Future<ThreadWorkspace> latestWorkspace(DemoStudioTransport transport) async {
-    final feed = await transport.openConversationFeed('thread-main');
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1000, maxBytes: 262144),
+    );
     final iterator = StreamIterator(feed.events);
     try {
       final frame = await nextFrame(iterator);
@@ -80,14 +89,43 @@ void main() {
     }
   }
 
-  Future<List<ConversationItem>> historyItems(
+  Future<ChatBatch> nextChat(
+    ConversationFeed feed,
+    StreamIterator<ConversationFrame> iterator,
+  ) async {
+    while (true) {
+      final frame = await nextFrame(iterator);
+      switch (frame.event) {
+        case ConversationChatEvent(:final batch):
+          await feed.acknowledge(frame.deliverySequence);
+          return batch;
+        case ConversationStateEvent():
+          await feed.acknowledge(frame.deliverySequence);
+        case ConversationFailureEvent(:final failure):
+          throw failure;
+        case ConversationClosedEvent():
+          throw StateError('Closed before Chat');
+      }
+    }
+  }
+
+  Future<List<ChatItemPresentation>> historyItems(
     DemoStudioTransport transport,
   ) async {
-    final reader = await transport.openHistoryReader('thread-main');
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1000, maxBytes: 262144),
+    );
+    final iterator = StreamIterator(feed.events);
     try {
-      return (await reader.page(limit: 100)).items;
+      return (await nextChat(
+        feed,
+        iterator,
+      )).messages.map(ChatItemPresentation.decode).toList();
     } finally {
-      await reader.close();
+      await feed.close();
+      await iterator.cancel();
     }
   }
 
@@ -124,7 +162,7 @@ void main() {
     operationId: operationId,
   );
 
-  Future<ConversationItem> planHistoryItem(
+  Future<ChatItemPresentation> planHistoryItem(
     DemoStudioTransport transport,
     String interactionId,
   ) async {
@@ -135,320 +173,277 @@ void main() {
   Future<String> planHistoryField(
     DemoStudioTransport transport,
     String interactionId,
-    ThreadContentFieldView field,
+    String key,
   ) async {
-    final reader = await transport.openHistoryReader('thread-main');
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1000, maxBytes: 262144),
+    );
+    final iterator = StreamIterator(feed.events);
     try {
-      return (await reader.readDetail(
-        itemId: 'demo-plan:$interactionId',
-        query: ConversationDetailQuery(
-          timelineEpoch: reader.timelineEpoch,
-          field: field,
+      final batch = await nextChat(feed, iterator);
+      final item = ChatItemPresentation.decode(
+        batch.messages.singleWhere(
+          (message) => message.id == 'demo-plan:$interactionId',
         ),
-      )).text;
+      );
+      final body = item.body(key)!;
+      if (body.inline != null) return item.inlineText(key)!;
+      return utf8.decode(
+        (await feed.reader.readContent(
+          reference: body.reference!,
+          range: const ContentRange(offset: 0, maxBytes: 65536),
+        )).bytes,
+      );
     } finally {
-      await reader.close();
+      await feed.close();
+      await iterator.cancel();
     }
   }
 
-  test('同 epoch 完成游标连续恢复；feed 两个未 ACK 数据帧后停发', () async {
+  test('single credit gates Set after State; reopen starts with a new Set rather than resume cursor', () async {
     final transport = await demo();
-    transport.seedConversationItems('thread-main', [
-      conversationFixture(id: 'first', appendSeq: 1),
-    ]);
-    final first = await transport.openConversationFeed('thread-main');
-    final iterator = StreamIterator(first.events);
-    // State + baseline fill both initially available data credits.
-    final state = await nextFrame(iterator);
-    final baselineFrame = await nextFrame(iterator);
-    var thirdSettled = false;
-    final thirdFuture = nextFrame(iterator);
-    unawaited(thirdFuture.then((_) => thirdSettled = true));
-    await Future<void>.delayed(Duration.zero);
-    expect(thirdSettled, isFalse, reason: '两个 credit 均未 ACK 时不得投递第三帧');
-    await first.acknowledge(state.deliverySequence);
-    await first.acknowledge(baselineFrame.deliverySequence);
-    final baseline =
-        (baselineFrame.event as ConversationBaselineEvent).baseline;
-    expect(baseline.items.last.id, 'first');
-    final cursor = baseline.completedCursor;
-    final thirdFrame = await thirdFuture;
-    await first.acknowledge(thirdFrame.deliverySequence);
-    await first.close();
-    await iterator.cancel();
-
-    transport.seedConversationItems('thread-main', [
-      conversationFixture(id: 'second', appendSeq: 2),
-      conversationFixture(id: 'third', appendSeq: 3),
-    ]);
-    final resumed = await transport.openConversationFeed(
+    transport.seedChatMessages('thread-main', [chatMessage('first')]);
+    final feed = await transport.openConversationFeed(
       'thread-main',
-      resumeAfter: cursor,
+      scope: const MainChatScope(),
+      demand: chatDemand,
     );
-    final resumedIterator = StreamIterator(resumed.events);
-    final resumedState = await nextFrame(resumedIterator);
-    await resumed.acknowledge(resumedState.deliverySequence);
-    var resumedCompletion = false;
-    while (!resumedCompletion) {
-      final frame = await nextFrame(resumedIterator);
-      await resumed.acknowledge(frame.deliverySequence);
-      if (frame.event case ConversationActivityContentEvent(
-        frame: ActivityCommit(),
-        completed: final ConversationBatch batch?,
-      )) {
-        expect(batch.timelineEpoch, baseline.timelineEpoch);
-        expect(batch.fromSeq, cursor.appendSeq);
-        expect(batch.items.map((item) => item.id), ['second', 'third']);
-        resumedCompletion = true;
-      }
-    }
-    await resumed.close();
-    await resumedIterator.cancel();
-  });
-
-  test('成员完成先于 Turn，且完成 batch 与 Activity Commit 同帧交付', () async {
-    final transport = await demo();
-    final feed = await transport.openConversationFeed('thread-main');
     final iterator = StreamIterator(feed.events);
-    final initialState = await nextFrame(iterator);
-    final initialBaseline = await nextFrame(iterator);
-    await feed.acknowledge(initialState.deliverySequence);
-    await feed.acknowledge(initialBaseline.deliverySequence);
-    transport.seedConversationItems('thread-main', [
-      conversationFixture(id: 'member', appendSeq: 1, turnId: 'turn-A'),
-      conversationFixture(
-        id: 'turn-complete',
-        appendSeq: 2,
-        turnId: 'turn-A',
-        descriptor: ConversationTurnDescriptor(
-          outcome: ConversationTurnCompleted(
-            const CompletedStudioTurnState(
-              startedAt: 1700000000,
-              completedAt: 1700000002,
-              completion: StudioTurnCompletion.normal,
-            ),
-          ),
-        ),
-      ),
-    ]);
-    var found = false;
-    while (!found) {
-      final frame = await nextFrame(iterator);
-      await feed.acknowledge(frame.deliverySequence);
-      if (frame.event case ConversationActivityContentEvent(
-        frame: ActivityCommit(),
-        completed: final ConversationBatch batch?,
-      )) {
-        expect(batch.items.map((item) => item.id), ['member', 'turn-complete']);
-        expect(
-          batch.items.first.header.appendSeq,
-          lessThan(batch.items.last.header.appendSeq),
-        );
-        found = true;
-      }
-    }
-    expect(found, isTrue);
-    await feed.close();
-    await iterator.cancel();
-  });
-
-  test('history reader 同 epoch 独立于 feed 生命周期，并按 UTF-8 字节预算分页详情', () async {
-    final transport = await demo();
-    final text = '🐱中文';
-    transport.seedConversationItems('thread-main', [
-      conversationFixture(
-        id: 'long',
-        appendSeq: 1,
-        fields: {const ThreadTextFieldView(): text},
-        totalBytes: {const ThreadTextFieldView(): utf8.encode(text).length},
-      ),
-    ]);
-    final reader = await transport.openHistoryReader('thread-main');
-    final feed = await transport.openConversationFeed('thread-main');
-    final iterator = StreamIterator(feed.events);
-    await nextFrame(iterator);
-    final baselineFrame = await nextFrame(iterator);
-    final epoch = (baselineFrame.event as ConversationBaselineEvent)
-        .baseline
-        .timelineEpoch;
-    expect(reader.timelineEpoch, epoch);
-    await feed.close();
-    await iterator.cancel();
-
-    final page = await reader.page(limit: 10);
-    expect(page.timelineEpoch, epoch);
-    expect(page.items.singleWhere((item) => item.id == 'long').id, 'long');
-    final first = await reader.readDetail(
-      itemId: 'long',
-      query: ConversationDetailQuery(
-        timelineEpoch: epoch,
-        field: const ThreadTextFieldView(),
-        maxBytes: 4,
-      ),
-    );
-    expect(first.text, '🐱');
-    expect(utf8.encode(first.text), hasLength(4));
-    final second = await reader.readDetail(
-      itemId: 'long',
-      query: ConversationDetailQuery(
-        timelineEpoch: epoch,
-        field: const ThreadTextFieldView(),
-        continuation: first.continuation,
-        maxBytes: 4,
-      ),
-    );
-    final third = await reader.readDetail(
-      itemId: 'long',
-      query: ConversationDetailQuery(
-        timelineEpoch: epoch,
-        field: const ThreadTextFieldView(),
-        continuation: second.continuation,
-        maxBytes: 4,
-      ),
-    );
-    expect(first.text + second.text + third.text, text);
-    await reader.close();
-  });
-
-  test('同一完成身份幂等，冲突内容拒绝；无效跨 epoch reader 查询不串读', () async {
-    final transport = await demo();
-    final item = conversationFixture(id: 'fixed', appendSeq: 1);
-    transport.seedConversationItems('thread-main', [item]);
-    transport.seedConversationItems('thread-main', [
-      conversationCopyFixture(item),
-    ]);
+    final state = await nextFrame(iterator);
+    expect(state.event, isA<ConversationStateEvent>());
+    var secondDelivered = false;
+    final second = iterator.moveNext().then((value) {
+      secondDelivered = true;
+      return value;
+    });
+    await Future<void>.delayed(Duration.zero);
     expect(
-      () => transport.seedConversationItems('thread-main', [
-        conversationCopyFixture(
-          item,
-          fields: {const ThreadTextFieldView(): 'changed'},
-          totalBytes: {
-            const ThreadTextFieldView(): utf8.encode('changed').length,
-          },
-        ),
-      ]),
-      throwsA(
-        isA<StudioFailure>().having(
-          (failure) => failure.code,
-          'code',
-          StudioFailureCode.conflict,
-        ),
-      ),
+      secondDelivered,
+      isFalse,
+      reason: 'one unacknowledged ordinary batch owns the only credit',
     );
-    final reader = await transport.openHistoryReader('thread-main');
+    await feed.acknowledge(state.deliverySequence);
+    expect(await second, isTrue);
+    final set = (iterator.current.event as ConversationChatEvent).batch;
+    expect(set.placement, ChatPlacement.set);
+    expect(set.messages.last.id, 'first');
+    await feed.acknowledge(iterator.current.deliverySequence);
+    transport.seedChatMessages('thread-main', [
+      chatMessage('second'),
+      chatMessage('third'),
+    ]);
+    final append = await nextChat(feed, iterator);
+    expect(append.placement, ChatPlacement.append);
+    expect(append.messages.map((message) => message.id), ['second', 'third']);
+    await feed.close();
+    await iterator.cancel();
+    final reopened = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: chatDemand,
+    );
+    final reopenedIterator = StreamIterator(reopened.events);
+    final fresh = await nextChat(reopened, reopenedIterator);
+    expect(fresh.placement, ChatPlacement.set);
+    expect(
+      fresh.messages.map((message) => message.id),
+      containsAllInOrder(['first', 'second', 'third']),
+    );
+    await reopened.close();
+    await reopenedIterator.cancel();
+  });
+
+  test('producer member and Turn messages remain ordered in one Append without Activity staging', () async {
+    final transport = await demo();
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: chatDemand,
+    );
+    final iterator = StreamIterator(feed.events);
+    await nextChat(feed, iterator);
+    transport.seedChatMessages('thread-main', [
+      chatMessage('member'),
+      chatEnvelope(
+        'turn-complete',
+        type: 'turn',
+        data: const {
+          'outcome': {
+            'kind': 'completed',
+            'data': {'completedAt': 3},
+          },
+        },
+      ),
+    ]);
+    final append = await nextChat(feed, iterator);
+    expect(append.placement, ChatPlacement.append);
+    expect(append.messages.map((message) => message.id), [
+      'member',
+      'turn-complete',
+    ]);
+    await feed.close();
+    await iterator.cancel();
+  });
+
+  test('original reader pages opaque payload byte windows and is cancelled with its feed', () async {
+    final transport = await demo();
+    final message = chatMessage('long', body: '中文🐱' * 3000);
+    transport.seedChatMessages('thread-main', [message]);
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1, maxBytes: 4096),
+    );
+    final iterator = StreamIterator(feed.events);
+    final set = await nextChat(feed, iterator);
+    final deferred = set.messages.single.payload as DeferredPayload;
+    final first = await feed.reader.readContent(
+      reference: deferred.reference,
+      range: const ContentRange(offset: 0, maxBytes: 17),
+    );
+    final second = await feed.reader.readContent(
+      reference: deferred.reference,
+      range: ContentRange(offset: first.bytes.length, maxBytes: 19),
+    );
+    expect([
+      ...first.bytes,
+      ...second.bytes,
+    ], (message.payload as InlinePayload).bytes.take(36));
+    expect(first.offset, 0);
+    expect(second.offset, 17);
+    expect(first.availableThrough, deferred.byteLength);
+    expect(first.sealed, isTrue);
+    await feed.close();
     await expectLater(
-      reader.readDetail(
-        itemId: 'fixed',
-        query: const ConversationDetailQuery(
-          timelineEpoch: 'another-epoch',
-          field: ThreadTextFieldView(),
-        ),
+      feed.reader.readContent(
+        reference: deferred.reference,
+        range: const ContentRange(offset: 0, maxBytes: 17),
       ),
       throwsA(isA<StudioFailure>()),
     );
-    await reader.close();
+    await iterator.cancel();
   });
 
-  test('问答 secret 不暴露答案字段，短预算拒绝且详情仅包含允许的非 secret 正文', () async {
+  test('duplicate producer identity is idempotent but conflicting payload is rejected', () async {
     final transport = await demo();
-    final question = UserQuestionView(
-      id: 'secret-q',
-      header: 'Credentials',
-      question: 'Enter token',
-      options: const [],
-      isOther: false,
-      isSecret: true,
+    transport.seedChatMessages('thread-main', [
+      chatMessage('same', body: 'same'),
+    ]);
+    transport.seedChatMessages('thread-main', [
+      chatMessage('same', body: 'same'),
+    ]);
+    expect(
+      () => transport.seedChatMessages('thread-main', [
+        chatMessage('same', body: 'different'),
+      ]),
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (failure) => failure.code,
+              'code',
+              StudioFailureCode.conflict,
+            )
+            .having(
+              (failure) => failure.correlationId,
+              'correlationId',
+              'demo-completion-conflict',
+            ),
+      ),
     );
-    final input = conversationInputFixture(
-      interactionId: 'interaction',
-      questions: [question],
-      state: ConversationUserInputResolved(
-        answers: const [
-          ConversationAnswerDescriptor(
-            questionId: 'secret-q',
-            answerCount: 1,
-            redacted: true,
+    expect(
+      (await historyItems(transport)).where((item) => item.id == 'same'),
+      hasLength(1),
+    );
+  });
+
+  test('Demo secret answer is absent from both the message and original reader manifest', () async {
+    final transport = await demo();
+    const secret = 'secret-token-never-public';
+    const interaction = PendingInteraction(
+      id: 'secret-input',
+      threadId: 'thread-main',
+      turnId: 'secret-turn',
+      revision: 1,
+      kind: InteractionKind.userInput,
+      title: 'Input',
+      body: '',
+      payload: UserInputInteractionPayload(
+        questions: [
+          UserQuestionView(
+            id: 'secret-q',
+            header: 'Private header',
+            question: 'Private question',
+            isOther: true,
+            isSecret: true,
+            options: [],
           ),
         ],
       ),
-      answers: const {
-        'secret-q': ['do-not-leak'],
-      },
     );
-    final item = conversationFixture(
-      id: 'secret-item',
-      appendSeq: 1,
-      descriptor: ConversationToolDescriptor(
-        invocation: const ConversationToolInvocation(
-          toolCallId: 'call',
-          name: 'ask',
-        ),
-        state: ConversationToolCancelled(
-          cancelledAt: DateTime.fromMillisecondsSinceEpoch(1700000001),
-          reason: 'test',
-        ),
-        userInput: input.descriptor,
+    transport.seedConversationState(
+      'thread-main',
+      const ThreadInteractionUpdate(interaction: interaction, pending: true),
+    );
+    await transport.respondInteraction(
+      'thread-main',
+      interaction.id,
+      interaction.revision,
+      const UserInputResolutionCommand(
+        answers: [
+          UserInputAnswerCommand(questionId: 'secret-q', answers: [secret]),
+        ],
       ),
-      fields: input.fields,
+      operationId: const OperationId('answer-secret'),
     );
-    transport.seedConversationItems('thread-main', [item]);
-    final reader = await transport.openHistoryReader('thread-main');
-    final page = await reader.page();
-    final delivered = page.items.singleWhere(
-      (item) => item.id == 'secret-item',
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: chatDemand,
     );
-    expect(delivered.descriptor, isA<ConversationToolDescriptor>());
-    expect(
-      delivered.fieldFor(
-        const ThreadToolUserInputFieldView(
-          questionIndex: 0,
-          part: ThreadUserInputAnswerFieldPartView(0),
+    final iterator = StreamIterator(feed.events);
+    try {
+      final batch = await nextChat(feed, iterator);
+      final message = batch.messages.singleWhere(
+        (message) => message.id == 'demo-user-input:secret-input',
+      );
+      final item = ChatItemPresentation.decode(message);
+      expect(item.raw, isNot(contains(secret)));
+      expect(item.raw, isNot(contains('Private header')));
+      expect(item.raw, isNot(contains('Private question')));
+      final manifest = await feed.reader.listContents(
+        itemId: message.id,
+        demand: chatDemand,
+      );
+      expect(
+        manifest.entries.where(
+          (entry) => entry.key.startsWith('tool.user-input.'),
         ),
-      ),
-      isNull,
-    );
-    expect(
-      delivered.fields.where(
-        (field) => field.field is ThreadToolUserInputFieldView,
-      ),
-      isEmpty,
-      reason: 'secret 问题的所有字段，包括 header、question 与答案，都不得暴露',
-    );
-    await expectLater(
-      reader.readDetail(
-        itemId: 'secret-item',
-        query: ConversationDetailQuery(
-          timelineEpoch: reader.timelineEpoch,
-          field: const ThreadToolUserInputFieldView(
-            questionIndex: 0,
-            part: ThreadUserInputHeaderFieldPartView(),
+        isEmpty,
+      );
+      final publicManifest = await feed.reader.listContents(
+        itemId: 'turn-demo:final',
+        demand: chatDemand,
+      );
+      expect(publicManifest.entries, isNotEmpty);
+      await expectLater(
+        feed.reader.readContent(
+          reference: ContentRef(
+            databaseId: publicManifest.entries.first.reference.databaseId,
+            target: BodyContentTarget(
+              owner: ItemContentOwner(itemId: message.id),
+              key: 'tool.user-input.answer.0.0',
+            ),
           ),
-          maxBytes: 4,
+          range: const ContentRange(offset: 0, maxBytes: 32),
         ),
-      ),
-      throwsA(
-        isA<StudioFailure>().having(
-          (failure) => failure.code,
-          'code',
-          StudioFailureCode.notFound,
-        ),
-      ),
-    );
-    await expectLater(
-      reader.readDetail(
-        itemId: 'secret-item',
-        query: ConversationDetailQuery(
-          timelineEpoch: reader.timelineEpoch,
-          field: const ThreadToolUserInputFieldView(
-            questionIndex: 0,
-            part: ThreadUserInputHeaderFieldPartView(),
-          ),
-          maxBytes: 3,
-        ),
-      ),
-      throwsA(isA<StudioFailure>()),
-    );
-    await reader.close();
+        throwsA(isA<StudioFailure>()),
+      );
+    } finally {
+      await feed.close();
+      await iterator.cancel();
+    }
   });
 
   test('Driver Plan 公开决议按冻结请求完成、回放同一回执且保留自身文档', () async {
@@ -456,7 +451,7 @@ void main() {
       (
         name: 'approve',
         answers: [agentSessionPlanApproveAnswer],
-        decision: ConversationPlanDecision.approved,
+        decision: 'approved',
         phase: PlanRuntimePhase.approved,
         feedback: null,
         mutateCurrentPlanAfterDecision: true,
@@ -469,7 +464,7 @@ void main() {
           '\n',
           '  Keep keyboard focus visible.\t',
         ],
-        decision: ConversationPlanDecision.revisionRequested,
+        decision: 'revisionRequested',
         phase: PlanRuntimePhase.revisionRequested,
         feedback:
             'Palette should remain legible.\nKeep keyboard focus visible.',
@@ -518,42 +513,35 @@ void main() {
         );
         transport.seedConversationState(
           'thread-main',
-          ThreadRuntimeUpdate(runtime: changedRuntime, todo: workspace.todo),
+          ThreadRuntimeUpdate(
+            runtime: changedRuntime,
+            todo: workspace.todo,
+            modelRoute: workspace.modelRoute,
+          ),
         );
         workspace = await latestWorkspace(transport);
         expect(workspace.runtime.plan!.document, changedDocument);
       }
 
       final item = await planHistoryItem(transport, interaction.id);
-      final descriptor = item.descriptor as ConversationPlanDescriptor;
-      expect(descriptor.interactionId, interaction.id);
-      expect(descriptor.decision, scenario.decision);
-      expect(descriptor.documentVersion, 1);
+      final descriptor = item.data;
+      expect(descriptor['interactionId'], interaction.id);
+      expect(descriptor['decision'], scenario.decision);
+      expect(descriptor['documentVersion'], 1);
       expect(
-        descriptor.contentHash,
+        descriptor['contentHash'],
         'sha256:30205da061addd1c07201c28d92cd9533f77cb5740c452a478425751f3685f0d',
       );
       expect(
-        await planHistoryField(
-          transport,
-          interaction.id,
-          const ThreadPlanDocumentFieldView(),
-        ),
+        await planHistoryField(transport, interaction.id, 'plan.document'),
         document.markdown,
       );
       if (scenario.feedback == null) {
-        expect(item.fieldFor(const ThreadPlanFeedbackFieldView()), isNull);
+        expect(item.body('plan.feedback'), isNull);
       } else {
+        expect(item.inlineText('plan.feedback'), scenario.feedback);
         expect(
-          item.fieldFor(const ThreadPlanFeedbackFieldView())?.text,
-          scenario.feedback,
-        );
-        expect(
-          await planHistoryField(
-            transport,
-            interaction.id,
-            const ThreadPlanFeedbackFieldView(),
-          ),
+          await planHistoryField(transport, interaction.id, 'plan.feedback'),
           scenario.feedback,
         );
       }
@@ -749,24 +737,18 @@ void main() {
       expect((await latestWorkspace(demoTransport)).runtime.plan, isNull);
       if (seededCase.frozenPlan) {
         final receipt = await planHistoryItem(demoTransport, interaction.id);
-        final descriptor = receipt.descriptor as ConversationPlanDescriptor;
-        expect(descriptor.interactionId, interaction.id);
-        expect(descriptor.decision, ConversationPlanDecision.approved);
-        expect(descriptor.documentVersion, isNull);
-        expect(descriptor.contentHash, isNull);
-        expect(
-          receipt.fieldFor(const ThreadPlanDocumentFieldView()),
-          isNotNull,
-        );
+        final descriptor = receipt.data;
+        expect(descriptor['interactionId'], interaction.id);
+        expect(descriptor['decision'], 'approved');
+        expect(descriptor['documentVersion'], isNull);
+        expect(descriptor['contentHash'], isNull);
+        expect(receipt.body('plan.document'), isNotNull);
       } else {
         final genericReceipt = (await historyItems(demoTransport)).singleWhere(
           (item) => item.id == 'demo-user-input:${interaction.id}',
         );
-        expect(genericReceipt.descriptor, isA<ConversationToolDescriptor>());
-        expect(
-          genericReceipt.descriptor,
-          isNot(isA<ConversationPlanDescriptor>()),
-        );
+        expect(genericReceipt.type, 'tool');
+        expect(genericReceipt.type, isNot('plan'));
         expect(
           (await historyItems(demoTransport))
               .where((item) => item.id == 'demo-plan:${interaction.id}'),

@@ -6,7 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use pl_core::chat::{ChatCursor, ChatError, ChatHistory, ChatHistoryPage, ChatItem};
+use pl_core::chat::{
+    ChatBudget, ChatContent, ChatError, ChatHistory, ChatHistoryPage, ChatHistoryRequest, ChatItem,
+    ContentManifestPage, ContentManifestRequest, ContentReadRequest, ContentWindow,
+};
 use pl_protocol::thread::TimelineCursor;
 use pl_protocol::{ThreadItem, ThreadItemKind, ThreadItemState, TimelineTurn};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
@@ -15,7 +18,9 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 11;
+const HISTORY_SCHEMA_VERSION: i64 = 13;
+
+pub(in crate::studio) mod conversation;
 
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
@@ -32,8 +37,6 @@ mod timeline;
 pub(crate) use schema::validate_layout_source;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
-/// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
-const _: () = assert!(pl_core::chat::CHAT_ITEM_PREVIEW_BYTES < PAGE_BYTE_BUDGET);
 /// 一页 Turn 最多返回的 Turn 行数（调用方 `limit` 的上限）。
 const TURN_PAGE_ROW_LIMIT: usize = 200;
 /// 一条 Turn 在一个 Turn 页里最多返回的条目行数。
@@ -91,8 +94,7 @@ struct HistoryStoreState {
     /// half-initialized database and fail closed on a store that is merely still being created. The
     /// writer therefore holds the write side for its whole connect+initialize, while every cold open
     /// takes the read side first: a reader runs either before the file exists (an empty history) or
-    /// after the database is fully initialized. Ordinary readers may reuse a published writer;
-    /// strict canonical reads keep the same coordination but always use the read-only connection.
+    /// after the database is fully initialized. Every read uses the independent read-only pool.
     init: tokio::sync::RwLock<()>,
     /// Test-only gate that parks the first writer after `connect(mode=rwc)` created the file and
     /// before `initialize` commits schema/identity. Production never installs a waiter.
@@ -185,10 +187,13 @@ pub(crate) struct MessageIdentityReceipt {
 }
 
 /// One effect's durable history write, committed as a single transaction.
+#[derive(Clone, Copy)]
 pub(crate) struct EffectCommit<'a> {
     pub items: &'a [ThreadItem],
     /// Immutable completions already sequenced by Session, committed with this effect's facts.
-    pub completions: &'a [ChatItem],
+    pub completions: &'a [std::sync::Arc<ChatItem>],
+    /// The effect-local small current snapshot and its explicitly frozen collection/body changes.
+    pub current: &'a conversation::current::PreparedCurrent,
     pub rolled_back_turns: &'a std::collections::BTreeSet<String>,
     /// Minimal identities of the terminal inputs this effect's state still carries.
     pub identities: &'a [InputIdentityWrite],
@@ -204,9 +209,28 @@ pub(crate) struct EffectCommit<'a> {
     pub attempt: Option<&'a pl_core::thread::journal::AttemptUpdate>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct AccountingCommit<'a> {
     pub facts: &'a crate::studio::thread_projection::PreparedAccounting,
     pub material_changed: bool,
+}
+
+/// A consecutive prepared effect in one physical history transaction.
+#[derive(Clone, Copy)]
+pub(crate) struct CheckpointEffect<'a> {
+    pub checkpoint: &'a pl_core::thread::ThreadCheckpoint,
+    pub effect: &'a pl_core::thread::ThreadEffectBatch,
+    pub history: EffectCommit<'a>,
+    pub accounting: AccountingCommit<'a>,
+}
+
+pub(in crate::studio) struct ColdConversation {
+    pub database_id: String,
+    pub head: u64,
+    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
+    pub current: pl_protocol::CurrentProjection,
+    pub terminal_turn: Option<pl_protocol::Turn>,
+    pub page: ChatHistoryPage,
 }
 
 impl std::fmt::Debug for HistoryStore {
@@ -255,6 +279,21 @@ impl HistoryStore {
         &self.state.thread_id
     }
 
+    /// The existing database identity after the shared initialization/reader barrier. This never
+    /// creates a store, starts a writer, flushes execution or loads recovery state.
+    pub(in crate::studio) async fn conversation_database_id(&self) -> Result<Option<String>> {
+        Ok(self
+            .reader()
+            .await?
+            .map(|connection| connection.database_id.clone()))
+    }
+
+    /// Explicit execution-writer preparation. Read/open paths must not call this creation boundary.
+    pub(crate) async fn prepare_write(&self) -> Result<()> {
+        self.writer().await?;
+        Ok(())
+    }
+
     /// Parks the next writer initialization after the file exists and before identity is committed.
     ///
     /// Returns the entered receiver and the release sender. Production never installs this gate.
@@ -300,22 +339,57 @@ impl HistoryStore {
         share.0.upgrade().map(|state| Self { state })
     }
 
+    /// Classifies preparation without opening a writer or admitting a new content reader.
+    /// A false result still requires reader() before consuming current-format content.
+    async fn conversation_read_needs_preparation(&self) -> Result<bool> {
+        #[cfg(test)]
+        if let Some(tx) = self.state.reader_before_init.lock().await.take() {
+            let _ = tx.send(());
+        }
+        let _initializing = self.state.init.read().await;
+        if let Some(reader) = self.state.reader.get() {
+            if let Some(writer) = self.state.writer.get() {
+                ensure!(
+                    reader.database_id == writer.database_id,
+                    "read-only history does not match the shared writer identity"
+                );
+            }
+            return Ok(false);
+        }
+        if self
+            .state
+            .writer
+            .get()
+            .is_some_and(|writer| writer.schema_version == HISTORY_SCHEMA_VERSION)
+        {
+            return Ok(false);
+        }
+        if !tokio::fs::try_exists(&self.state.path).await? {
+            return Ok(false);
+        }
+        let db = connect_read_only(&self.state.path).await?;
+        let result = validate_existing_identity(&db, &self.state.thread_id)
+            .await
+            .map(|(_, version)| version < HISTORY_SCHEMA_VERSION);
+        let close = db.close().await;
+        match (result, close) {
+            (Ok(needs_preparation), Ok(())) => Ok(needs_preparation),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(error), Err(close)) => Err(error.context(format!(
+                "history read probe connection close failed: {close}"
+            ))),
+        }
+    }
+
     /// The connection cold reads use, or `None` when no history database exists yet.
     ///
-    /// The writer connection, once opened, is authoritative for reads too, so a hot writer and an
-    /// in-memory test store never observe two divergent databases. Otherwise the existing file is
-    /// opened read-only and validated; a missing file is reported as an empty history and is never
-    /// created here, so a cold read leaves an absent store absent. A read that races the first
+    /// The existing file is opened by an independent read-only pool, including while the writer is
+    /// alive. A missing file is reported as an empty history and is never created here, so a cold
+    /// read leaves an absent store absent. A read that races the first
     /// writer initialization waits behind it instead of validating the half-initialized database
     /// that `connect(mode=rwc)` just created.
     async fn reader(&self) -> Result<Option<&HistoryConnection>> {
-        if let Some(writer) = self.state.writer.get() {
-            ensure!(
-                writer.schema_version == HISTORY_SCHEMA_VERSION,
-                "history requires explicit storage preparation"
-            );
-            return Ok(Some(writer));
-        }
         // The first writer may have created the file with `connect(mode=rwc)` while its schema and
         // identity are still uncommitted. Take the read side of the initialization lock before
         // touching the file, so we either run before the file exists or after it is fully
@@ -325,9 +399,11 @@ impl HistoryStore {
             let _ = tx.send(());
         }
         let _initializing = self.state.init.read().await;
-        // Re-check under the guard: the writer may have published its connection while we waited.
         if let Some(writer) = self.state.writer.get() {
-            return Ok(Some(writer));
+            ensure!(
+                writer.schema_version == HISTORY_SCHEMA_VERSION,
+                "history requires explicit storage preparation"
+            );
         }
         self.read_only_connection().await
     }
@@ -477,39 +553,67 @@ impl HistoryStore {
         write_seq: u64,
         commit: EffectCommit<'_>,
     ) -> Result<()> {
-        self.commit_inner(write_seq, commit, None, None)
-            .await
-            .map(|_| ())
+        let tx = begin_write(&self.writer().await?.db).await?;
+        self.apply_effect(&tx, write_seq, commit, None, None)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
-    /// Publishes history and the matching latest recovery state in one transaction.
-    pub(crate) async fn commit_checkpoint_effect(
+    /// Publishes one consecutive prepared prefix in ONE physical transaction. No result or
+    /// acknowledgement escapes until every effect, its current and all recovery facts commit.
+    pub(crate) async fn commit_checkpoint_effects(
         &self,
-        checkpoint: &pl_core::thread::ThreadCheckpoint,
-        effect: &pl_core::thread::ThreadEffectBatch,
-        commit: EffectCommit<'_>,
-        accounting: AccountingCommit<'_>,
-    ) -> Result<Option<SessionAccounting>> {
-        ensure!(
-            checkpoint.thread_id == self.state.thread_id
-                && effect.thread_id == self.state.thread_id
-                && checkpoint.state_revision == effect.sequence
-                && checkpoint.history_fence == effect.sequence
-                && accounting.facts.thread_id == effect.thread_id
-                && accounting.facts.sequence == effect.sequence,
-            "checkpoint and history effect identities differ"
-        );
-        self.commit_inner(
-            effect.sequence,
-            commit,
-            Some((checkpoint, effect)),
-            Some(accounting),
-        )
-        .await
+        effects: &[CheckpointEffect<'_>],
+    ) -> Result<Vec<Option<SessionAccounting>>> {
+        if effects.is_empty() {
+            return Ok(Vec::new());
+        }
+        for pair in effects.windows(2) {
+            ensure!(
+                pair[0].effect.sequence.checked_add(1) == Some(pair[1].effect.sequence),
+                "checkpoint effect batch is not consecutive"
+            );
+        }
+        for prepared in effects {
+            let CheckpointEffect {
+                checkpoint,
+                effect,
+                history,
+                accounting,
+            } = prepared;
+            ensure!(
+                checkpoint.thread_id == self.state.thread_id
+                    && effect.thread_id == self.state.thread_id
+                    && checkpoint.state_revision == effect.sequence
+                    && checkpoint.history_fence == effect.sequence
+                    && accounting.facts.thread_id == effect.thread_id
+                    && accounting.facts.sequence == effect.sequence
+                    && history.current.projection.source_effect_seq == effect.sequence,
+                "checkpoint, current and history effect identities differ"
+            );
+        }
+        let tx = begin_write(&self.writer().await?.db).await?;
+        let mut results = Vec::with_capacity(effects.len());
+        for prepared in effects {
+            results.push(
+                self.apply_effect(
+                    &tx,
+                    prepared.effect.sequence,
+                    prepared.history,
+                    Some((prepared.checkpoint, prepared.effect)),
+                    Some(prepared.accounting),
+                )
+                .await?,
+            );
+        }
+        tx.commit().await?;
+        Ok(results)
     }
 
-    async fn commit_inner(
+    async fn apply_effect(
         &self,
+        tx: &sea_orm::DatabaseTransaction,
         write_seq: u64,
         commit: EffectCommit<'_>,
         checkpoint: Option<(
@@ -521,6 +625,7 @@ impl HistoryStore {
         let EffectCommit {
             items,
             completions,
+            current: current_view,
             rolled_back_turns,
             identities,
             messages,
@@ -531,18 +636,33 @@ impl HistoryStore {
             attempt,
         } = commit;
         ensure!(write_seq > 0, "history write sequence must be positive");
+        ensure!(
+            current_view.projection.source_effect_seq == write_seq,
+            "current projection is not frozen from this effect"
+        );
+        conversation::current::validate_database(
+            &current_view.projection,
+            &self
+                .state
+                .writer
+                .get()
+                .context("effect transaction has no writer identity")?
+                .database_id,
+        )?;
         let write_seq = integer(write_seq)?;
-        let tx = begin_write(&self.writer().await?.db).await?;
         let (current, prior_context) = if checkpoint.is_some() {
-            let head = checkpoint::read_commit_head(&tx).await?;
+            let head = checkpoint::read_commit_head(tx).await?;
             (head.applied_write_seq, head.context)
         } else {
-            (applied_write_seq(&tx).await?, None)
+            (applied_write_seq(tx).await?, None)
         };
         if write_seq <= current {
-            timeline::append_records(&tx, &self.state.thread_id, completions, false).await?;
+            conversation::append_records(tx, completions.iter().map(AsRef::as_ref), false).await?;
+            if write_seq == current {
+                conversation::current::verify(tx, current_view).await?;
+            }
             if let Some((checkpoint, _)) = checkpoint {
-                checkpoint::verify_committed(&tx, checkpoint, current).await?;
+                checkpoint::verify_committed(tx, checkpoint, current).await?;
             }
             // An interrupted caller may retry after its commit succeeded. Read the actual stored
             // accounting only on this exceptional path, never return an unverified candidate.
@@ -550,11 +670,10 @@ impl HistoryStore {
                 .as_ref()
                 .is_some_and(|accounting| accounting.material_changed)
             {
-                checkpoint::read_accounting(&tx, &self.state.thread_id).await?
+                checkpoint::read_accounting(tx, &self.state.thread_id).await?
             } else {
                 None
             };
-            tx.rollback().await?;
             return Ok(result);
         }
         if checkpoint.is_some() {
@@ -563,13 +682,14 @@ impl HistoryStore {
                 "history write sequence is not contiguous"
             );
         }
-        timeline::append_records(&tx, &self.state.thread_id, completions, true).await?;
+        conversation::append_records(tx, completions.iter().map(AsRef::as_ref), true).await?;
+        conversation::current::apply(tx, u64::try_from(write_seq)?, current_view).await?;
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
                 turn_ids.insert(item.turn_id.clone());
             }
-            self.upsert_item(&tx, write_seq, item.clone()).await?;
+            self.upsert_item(tx, write_seq, item.clone()).await?;
         }
         for turn_id in turn_ids {
             let Some(row) = tx
@@ -597,7 +717,7 @@ impl HistoryStore {
                 .context("history Turn has no last item")?
                 .try_get::<String>("", "item_id")?;
             self.upsert_turn(
-                &tx,
+                tx,
                 write_seq,
                 &TimelineTurn {
                     turn: pl_protocol::Turn {
@@ -619,20 +739,20 @@ impl HistoryStore {
             .await?;
         }
         for identity in identities {
-            write_input_identity(&tx, write_seq, identity).await?;
+            write_input_identity(tx, write_seq, identity).await?;
         }
         for message in messages {
-            write_message_identity(&tx, write_seq, message).await?;
+            write_message_identity(tx, write_seq, message).await?;
         }
         for receipt in receipts {
-            write_fact_receipt(&tx, write_seq, receipt).await?;
+            write_fact_receipt(tx, write_seq, receipt).await?;
         }
         if let Some(attempt) = attempt
             && let pl_core::thread::AttemptOutcome::Committed(output) = &attempt.outcome
         {
             for call in output.tool_calls.iter() {
                 write_tool_task(
-                    &tx,
+                    tx,
                     write_seq,
                     &pl_core::thread::task::TaskRecord {
                         id: format!("task:{}", call.call_id),
@@ -650,13 +770,13 @@ impl HistoryStore {
             }
         }
         for task in tasks {
-            write_tool_task(&tx, write_seq, task).await?;
+            write_tool_task(tx, write_seq, task).await?;
         }
         for delivery in deliveries {
-            write_tool_delivery(&tx, write_seq, delivery).await?;
+            write_tool_delivery(tx, write_seq, delivery).await?;
         }
         for repair in delivery_repairs {
-            write_tool_delivery_repair(&tx, write_seq, repair).await?;
+            write_tool_delivery_repair(tx, write_seq, repair).await?;
         }
         if write_seq > current {
             tx.execute_raw(statement(
@@ -667,14 +787,14 @@ impl HistoryStore {
         }
         if let Some((checkpoint, effect)) = checkpoint {
             checkpoint::write(
-                &tx,
+                tx,
                 checkpoint,
                 effect.context.as_ref(),
                 prior_context.as_ref(),
             )
             .await?;
             if let Some(accounting) = &accounting {
-                checkpoint::fold_costs(&tx, accounting.facts).await?;
+                checkpoint::fold_costs(tx, accounting.facts).await?;
             }
         }
         let committed_accounting = if let Some((checkpoint, _)) = checkpoint
@@ -685,12 +805,11 @@ impl HistoryStore {
             Some(SessionAccounting {
                 revision: checkpoint.state_revision,
                 has_unpriced_usage: checkpoint.state.usage_summary.pricing.incomplete,
-                purpose_costs: checkpoint::read_purpose_costs(&tx).await?,
+                purpose_costs: checkpoint::read_purpose_costs(tx).await?,
             })
         } else {
             None
         };
-        tx.commit().await?;
         Ok(committed_accounting)
     }
 
@@ -854,6 +973,18 @@ impl HistoryStore {
     /// an absent history remains absent. Uses the same writer/init lock as owner activation.
     pub(crate) async fn prepare_history_access(&self) -> Result<()> {
         self.prepare_activation().await
+    }
+
+    /// Admits passive conversation reads without activating execution or creating a store.
+    ///
+    /// Only a supported old format enters the existing content migration barrier.
+    /// Current-format reads still pass the ordinary read-only identity/schema gate.
+    pub(crate) async fn prepare_conversation_read(&self) -> Result<()> {
+        if self.conversation_read_needs_preparation().await? {
+            self.prepare_history_access().await?;
+        }
+        self.reader().await?;
+        Ok(())
     }
 
     /// Only a committed hidden disposition can discharge a pruned input without a timeline row.
@@ -1244,7 +1375,7 @@ impl HistoryStore {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let item = timeline::read_item(&tx, &self.state.thread_id, item_id).await?;
+        let item = conversation::read_item(&tx, item_id).await?;
         tx.commit().await?;
         Ok(item)
     }
@@ -1254,7 +1385,7 @@ impl HistoryStore {
             return Ok(0);
         };
         let tx = connection.db.begin().await?;
-        let head = timeline::latest_append_seq(&tx).await?;
+        let head = conversation::latest_append_seq(&tx).await?;
         tx.commit().await?;
         Ok(head)
     }
@@ -1262,33 +1393,101 @@ impl HistoryStore {
     /// One fresh short read transaction, opened after Session captured its completion ceiling.
     async fn chat_page(
         &self,
-        before: Option<&ChatCursor>,
-        ceiling: u64,
-        limit: usize,
+        request: &ChatHistoryRequest,
+        budget: &dyn ChatBudget,
+        ascending: bool,
     ) -> Result<ChatHistoryPage> {
-        timeline::validate_page(ceiling, limit)?;
         let Some(connection) = self.reader().await? else {
-            return Ok(ChatHistoryPage::default());
+            return Ok(ChatHistoryPage {
+                items: Vec::new(),
+                exhausted: true,
+            });
         };
         let tx = connection.db.begin().await?;
-        let page = timeline::page(&tx, &self.state.thread_id, before, ceiling, limit).await?;
+        let page = conversation::page(&tx, request, budget, ascending).await?;
         tx.commit().await?;
         Ok(page)
     }
 
-    async fn chat_page_after(
+    pub(in crate::studio) async fn cold_conversation(
         &self,
-        after: u64,
-        ceiling: u64,
-        limit: usize,
-    ) -> Result<ChatHistoryPage> {
-        timeline::validate_page(ceiling, limit)?;
-        integer(after)?;
+        query: pl_core::chat::ChatQuery,
+        demand: pl_core::chat::ReadDemand,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ColdConversation>> {
         let Some(connection) = self.reader().await? else {
-            return Ok(ChatHistoryPage::default());
+            return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let page = timeline::page_after(&tx, &self.state.thread_id, after, ceiling, limit).await?;
+        let head = conversation::latest_append_seq(&tx).await?;
+        let current = conversation::current::read(&tx).await?;
+        let model_route = checkpoint::read_model_route_head(&tx).await?;
+        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
+        demand.validate()?;
+        // Cold callers budget an envelope with current=None. Main replaces its JSON null with
+        // this projection; Children delivers no current. page consumes item-only demand and
+        // must receive the remaining bytes after this single fixed-envelope reservation.
+        let current_bytes = if query.query_class == pl_protocol::ChatScope::Main.query_class()
+            && query.parent_id.is_none()
+        {
+            serde_json::to_vec(&current)?
+                .len()
+                .saturating_sub(b"null".len())
+        } else {
+            0
+        };
+        let fixed =
+            budget
+                .fixed_bytes()
+                .checked_add(current_bytes)
+                .context(ChatError::InvalidDemand(
+                    "cold envelope size overflow".into(),
+                ))?;
+        let bytes = demand
+            .max_bytes
+            .checked_sub(fixed)
+            .filter(|bytes| *bytes > 0)
+            .context(ChatError::InvalidDemand(
+                "cold current cannot fit demand".into(),
+            ))?;
+        let request = ChatHistoryRequest {
+            query: Some(query),
+            after: 0,
+            before: None,
+            ceiling: head,
+            demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
+        };
+        let page = conversation::page(&tx, &request, budget, false).await?;
+        ensure!(
+            page.exhausted || !page.items.is_empty(),
+            ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
+        );
+        tx.commit().await?;
+        Ok(Some(ColdConversation {
+            database_id: connection.database_id.clone(),
+            head,
+            current,
+            model_route,
+            terminal_turn,
+            page,
+        }))
+    }
+
+    pub(in crate::studio) async fn page_current(
+        &self,
+        reference: &pl_protocol::CurrentCollectionRef,
+        after: Option<&str>,
+        demand: pl_protocol::ReadDemand,
+        encode_continuation: &(dyn Fn(String) -> Result<String> + Send + Sync),
+    ) -> Result<pl_protocol::CurrentCollectionPage> {
+        let connection = self.reader().await?.context(ChatError::StaleContent)?;
+        ensure!(
+            reference.database_id == connection.database_id,
+            ChatError::StaleContent
+        );
+        let tx = connection.db.begin().await?;
+        let page =
+            conversation::current::page(&tx, reference, after, demand, encode_continuation).await?;
         tx.commit().await?;
         Ok(page)
     }
@@ -1316,12 +1515,17 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
+        Self::newest_terminal_turn_in(&connection.db).await
+    }
+
+    async fn newest_terminal_turn_in(
+        db: &impl ConnectionTrait,
+    ) -> Result<Option<pl_protocol::Turn>> {
         // `history_terminal_turns_by_write_seq` is declared over exactly this predicate
         // (`kind='turn' AND lifecycle='terminal'`) and its leading column is `last_write_seq`, so
         // this is one index scan returning at most one row — no table scan, no ordering work and no
         // bounded-scan heuristic that a pathological history could defeat.
-        let Some(row) = connection
-            .db
+        let Some(row) = db
             .query_one_raw(statement(
                 "SELECT turn_id FROM history_items
                  WHERE kind='turn' AND lifecycle='terminal'
@@ -1333,8 +1537,7 @@ impl HistoryStore {
             return Ok(None);
         };
         let turn_id: String = row.try_get("", "turn_id")?;
-        let payload: String = connection
-            .db
+        let payload: String = db
             .query_one_raw(statement(
                 "SELECT payload FROM history_turns WHERE turn_id=?",
                 vec![turn_id.into()],
@@ -1655,14 +1858,6 @@ impl HistoryStore {
 }
 
 impl ChatHistory for HistoryStore {
-    /// 产品展示预算：正文合计 32 KiB，工具参数与结果各最多 4 KiB。
-    ///
-    /// 有界预览由这一处统一实现，因此页、订阅基线与实时出帧共用同一份裁剪规则；裁剪按
-    /// `ContentBlock` 前缀复用，不再重新解码/重编码整条 JSON。
-    fn bounded(&self, item: &ChatItem) -> std::result::Result<ChatItem, ChatError> {
-        crate::studio::runtime::timeline_content::preview::bounded(item)
-    }
-
     async fn latest_append_seq(&self) -> std::result::Result<u64, ChatError> {
         HistoryStore::latest_append_seq(self)
             .await
@@ -1671,22 +1866,20 @@ impl ChatHistory for HistoryStore {
 
     async fn page(
         &self,
-        before: Option<&ChatCursor>,
-        ceiling: u64,
-        limit: usize,
+        request: &ChatHistoryRequest,
+        budget: &dyn ChatBudget,
     ) -> std::result::Result<ChatHistoryPage, ChatError> {
-        self.chat_page(before, ceiling, limit)
+        self.chat_page(request, budget, false)
             .await
             .map_err(chat_history_error)
     }
 
     async fn page_after(
         &self,
-        after: u64,
-        ceiling: u64,
-        limit: usize,
+        request: &ChatHistoryRequest,
+        budget: &dyn ChatBudget,
     ) -> std::result::Result<ChatHistoryPage, ChatError> {
-        self.chat_page_after(after, ceiling, limit)
+        self.chat_page(request, budget, true)
             .await
             .map_err(chat_history_error)
     }
@@ -1701,6 +1894,62 @@ impl ChatHistory for HistoryStore {
             }
         }
         self.read_chat_item(item_id)
+            .await
+            .map_err(chat_history_error)
+    }
+
+    async fn validate_content(&self, content: &ChatContent) -> std::result::Result<(), ChatError> {
+        let Some(connection) = self.reader().await.map_err(chat_history_error)? else {
+            return Ok(());
+        };
+        let tx = connection
+            .db
+            .begin()
+            .await
+            .map_err(|e| chat_history_error(e.into()))?;
+        conversation::validate_content(&tx, content)
+            .await
+            .map_err(chat_history_error)?;
+        tx.commit()
+            .await
+            .map_err(|e| chat_history_error(e.into()))?;
+        Ok(())
+    }
+
+    async fn list_contents(
+        &self,
+        request: &ContentManifestRequest,
+        budget: &dyn ChatBudget,
+    ) -> std::result::Result<ContentManifestPage, ChatError> {
+        let connection = self
+            .reader()
+            .await
+            .map_err(chat_history_error)?
+            .ok_or_else(|| ChatError::NotFound(request.item_id.clone()))?;
+        let tx = connection
+            .db
+            .begin()
+            .await
+            .map_err(|e| chat_history_error(e.into()))?;
+        let result = conversation::list_contents(&tx, request, budget)
+            .await
+            .map_err(chat_history_error)?;
+        tx.commit()
+            .await
+            .map_err(|e| chat_history_error(e.into()))?;
+        Ok(result)
+    }
+
+    async fn read_content(
+        &self,
+        request: &ContentReadRequest,
+    ) -> std::result::Result<ContentWindow, ChatError> {
+        let connection = self
+            .reader()
+            .await
+            .map_err(chat_history_error)?
+            .ok_or_else(|| ChatError::NotFound("history database".into()))?;
+        conversation::read_content(&connection.db, request)
             .await
             .map_err(chat_history_error)
     }
@@ -1865,6 +2114,21 @@ async fn connect_read_only(path: &Path) -> Result<DatabaseConnection> {
 /// A missing identity row, an unsupported schema version, a foreign Thread or an empty database id
 /// fails closed so a cold read reports the damage instead of adopting or rebuilding the store.
 async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result<(String, i64)> {
+    let (database_id, version) = validate_existing_identity(db, thread_id).await?;
+    ensure!(
+        version == HISTORY_SCHEMA_VERSION,
+        "history schema {version} requires explicit storage preparation or is unsupported; existing data preserved"
+    );
+    schema::validate_current(db, thread_id).await?;
+    Ok((database_id, version))
+}
+
+/// Minimal existing-file identity gate, also used before explicit legacy content preparation.
+/// The current reader adds its own strict format and table checks in validate_existing.
+async fn validate_existing_identity(
+    db: &impl ConnectionTrait,
+    thread_id: &str,
+) -> Result<(String, i64)> {
     let row = db
         .query_one_raw(statement(
             "SELECT schema_version,database_id,thread_id FROM history_meta WHERE id=1",
@@ -1875,8 +2139,8 @@ async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result
     let row = row.context("history database identity row is missing")?;
     let version: i64 = row.try_get("", "schema_version")?;
     ensure!(
-        version == HISTORY_SCHEMA_VERSION,
-        "history schema {version} requires explicit storage preparation or is unsupported; existing data preserved"
+        (1..=HISTORY_SCHEMA_VERSION).contains(&version),
+        "unsupported history schema {version}; existing data preserved"
     );
     let owner: String = row.try_get("", "thread_id")?;
     ensure!(
@@ -1888,7 +2152,6 @@ async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result
         !database_id.is_empty(),
         "history database identity is empty"
     );
-    schema::validate_current(db, thread_id).await?;
     Ok((database_id, version))
 }
 
@@ -2493,9 +2756,312 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 }
 
 #[cfg(test)]
+pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    // Synthetic pre-demand fixtures start with current DDL, but no completed/public content.
+    // Refuse to erase real facts when removing those later outputs to recreate the old shape.
+    for table in [
+        "conversation_items",
+        "conversation_contents",
+        "conversation_view_entries",
+    ] {
+        let count: i64 = db
+            .query_one_raw(statement(
+                &format!("SELECT COUNT(*) AS count FROM {table}"),
+                vec![],
+            ))
+            .await?
+            .context("fixture conversation output")?
+            .try_get("", "count")?;
+        ensure!(count == 0, "legacy fixture must not discard {table} facts");
+    }
+    db.execute_unprepared(
+        "DROP TABLE conversation_view_entries;
+         DROP TABLE conversation_view_state;
+         DROP TABLE conversation_content_chunks;
+         DROP TABLE conversation_contents;
+         DROP TABLE conversation_items;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
+         ALTER TABLE history_meta DROP COLUMN model_route_hash;
+         DELETE FROM seaql_migrations
+         WHERE version IN ('m20261029_000001_history_demand_conversation',
+                           'm20261101_000010_history_model_route_head')",
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
+    conversation::current::PreparedCurrent {
+        projection: pl_protocol::CurrentProjection::empty(
+            sequence,
+            pl_protocol::ThreadStatus::Idle,
+        ),
+        changes: std::sync::Arc::from([]),
+        contents: std::sync::Arc::from([]),
+    }
+}
+
+#[cfg(test)]
 mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
+
+    struct FixtureBudget;
+    fn test_request(ceiling: u64, max_items: usize) -> ChatHistoryRequest {
+        ChatHistoryRequest {
+            query: Some(pl_core::chat::ChatQuery::new("conversation", None)),
+            after: 0,
+            before: None,
+            ceiling,
+            demand: pl_core::chat::ReadDemand::new(max_items, 256 * 1024),
+        }
+    }
+    impl ChatBudget for FixtureBudget {
+        fn fixed_bytes(&self) -> usize {
+            0
+        }
+        fn item_bytes(
+            &self,
+            header: &pl_core::chat::ChatItemHeader,
+            mode: pl_core::chat::PayloadMode,
+        ) -> usize {
+            let envelope = 256usize.saturating_add(header.item_id.len().saturating_mul(6));
+            match mode {
+                pl_core::chat::PayloadMode::Inline => envelope.saturating_add(
+                    usize::try_from(header.byte_length)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(4),
+                ),
+                pl_core::chat::PayloadMode::Deferred => envelope,
+            }
+        }
+        fn manifest_bytes(&self, descriptor: &pl_core::chat::ContentDescriptor) -> usize {
+            256 + 6 * (descriptor.key.owner.as_str().len() + descriptor.key.key.len())
+        }
+    }
+
+    #[tokio::test]
+    async fn conversation_read_probe_classifies_without_preparing_or_creating() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing_path = dir.path().join("absent/history.sqlite");
+        let missing = HistoryStore::open(&missing_path, "probe").await?;
+        assert!(!missing.conversation_read_needs_preparation().await?);
+        assert!(!missing_path.parent().unwrap().exists());
+        assert!(missing.state.reader.get().is_none());
+        assert!(missing.state.writer.get().is_none());
+
+        for version in [1, 8, 11, HISTORY_SCHEMA_VERSION] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("history.sqlite");
+            let source = HistoryStore::open(&path, "probe").await?;
+            source.prepare_write().await?;
+            let db = &source.writer().await?.db;
+            if version < HISTORY_SCHEMA_VERSION {
+                discard_empty_demand_fixture(db).await?;
+                if version < 10 {
+                    db.execute_unprepared(
+                        "DROP TABLE timeline_records; DROP TABLE seaql_migrations",
+                    )
+                    .await?;
+                }
+                db.execute_raw(statement(
+                    "UPDATE history_meta SET schema_version=?",
+                    vec![version.into()],
+                ))
+                .await?;
+            } else {
+                // Neither this classifier nor ordinary current admission decodes recovery state.
+                db.execute_unprepared(
+                    "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash)
+                     VALUES(1,0,0,0,'{\"schemaVersion\":999}','bad hash')",
+                )
+                .await?;
+            }
+            db.clone().close().await?;
+            drop(source);
+            let before = tokio::fs::read(&path).await?;
+            let cold = HistoryStore::open(&path, "probe").await?;
+            assert_eq!(
+                cold.conversation_read_needs_preparation().await?,
+                version < HISTORY_SCHEMA_VERSION,
+                "format {version}"
+            );
+            assert!(
+                cold.state.reader.get().is_none(),
+                "probe is not reader admission"
+            );
+            assert!(cold.state.writer.get().is_none(), "probe must not migrate");
+            assert_eq!(tokio::fs::read(&path).await?, before);
+            if version == HISTORY_SCHEMA_VERSION {
+                cold.reader().await?.context("current reader admission")?;
+                assert!(!cold.conversation_read_needs_preparation().await?);
+                assert!(cold.state.writer.get().is_none());
+            } else {
+                assert!(
+                    cold.reader().await.is_err(),
+                    "classification must not admit a legacy format to current reads"
+                );
+            }
+        }
+
+        for (damage, diagnostic) in [
+            (
+                "UPDATE history_meta SET schema_version=0",
+                "unsupported history schema 0",
+            ),
+            (
+                "UPDATE history_meta SET schema_version=999",
+                "unsupported history schema 999",
+            ),
+            (
+                "UPDATE history_meta SET database_id=''",
+                "history database identity is empty",
+            ),
+            (
+                "UPDATE history_meta SET thread_id='foreign'",
+                "history database belongs to another Thread",
+            ),
+            (
+                "UPDATE history_meta SET thread_id=''",
+                "history database belongs to another Thread",
+            ),
+            (
+                "DELETE FROM history_meta",
+                "history database identity row is missing",
+            ),
+            (
+                "DROP TABLE history_meta",
+                "history database has no readable identity table",
+            ),
+        ] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("history.sqlite");
+            let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
+            db.execute_unprepared(
+                "CREATE TABLE history_meta(id INTEGER PRIMARY KEY,schema_version INTEGER NOT NULL,
+                 database_id TEXT NOT NULL,thread_id TEXT NOT NULL);
+                 INSERT INTO history_meta VALUES(1,12,'source-database','probe')",
+            )
+            .await?;
+            db.execute_unprepared(damage).await?;
+            db.close().await?;
+            let before = tokio::fs::read(&path).await?;
+            let cold = HistoryStore::open(&path, "probe").await?;
+            let error = cold
+                .conversation_read_needs_preparation()
+                .await
+                .expect_err("invalid identity must not fall through to writer preparation");
+            assert!(
+                format!("{error:#}").contains(diagnostic),
+                "{damage}: {error:#}"
+            );
+            assert!(cold.state.reader.get().is_none());
+            assert!(cold.state.writer.get().is_none());
+            assert_eq!(tokio::fs::read(&path).await?, before);
+        }
+        let directory_source = dir.path().join("is-a-directory");
+        tokio::fs::create_dir(&directory_source).await?;
+        let io = HistoryStore::open(&directory_source, "probe").await?;
+        let error = io
+            .conversation_read_needs_preparation()
+            .await
+            .expect_err("real read-only open failure must remain an error");
+        assert!(
+            error.downcast_ref::<sea_orm::DbErr>().is_some(),
+            "{error:#}"
+        );
+        assert!(io.state.reader.get().is_none());
+        assert!(io.state.writer.get().is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn conversation_read_probe_waits_for_shared_initialization() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "probe-barrier").await?;
+        let (entered, release) = store.arm_init_gate().await;
+        let waiting = store.arm_reader_before_init().await;
+        let probe = async {
+            entered.await?;
+            let classify = store.conversation_read_needs_preparation();
+            tokio::pin!(classify);
+            tokio::select! {
+                biased;
+                _ = &mut classify => anyhow::bail!("probe passed half-initialized identity"),
+                result = waiting => result?,
+            }
+            release
+                .send(())
+                .map_err(|_| anyhow::anyhow!("writer initialization gate dropped"))?;
+            assert!(!classify.await?);
+            Ok::<(), anyhow::Error>(())
+        };
+        let (written, classified) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(store.prepare_write(), probe)
+        })
+        .await?;
+        written?;
+        classified?;
+        assert!(store.state.writer.get().is_some());
+        assert!(
+            store.state.reader.get().is_none(),
+            "current writer suffices for classification"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ordinary_reader_is_read_only_and_never_borrows_the_live_writer() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "reader").await?;
+        assert!(history.conversation_database_id().await?.is_none());
+        history.prepare_history_access().await?;
+        assert!(history.conversation_database_id().await?.is_none());
+        assert!(!tokio::fs::try_exists(directory.path().join("history.sqlite")).await?);
+        history.prepare_write().await?;
+        assert!(
+            history
+                .conversation_database_id()
+                .await?
+                .is_some_and(|id| !id.is_empty())
+        );
+        let writer = history.writer().await?;
+        let reader = history
+            .reader()
+            .await?
+            .context("initialized history reader")?;
+        assert!(!std::ptr::eq(reader, writer));
+        assert_eq!(reader.database_id, writer.database_id);
+        assert!(
+            reader
+                .db
+                .execute_unprepared("UPDATE history_meta SET applied_write_seq=1 WHERE id=1",)
+                .await
+                .is_err()
+        );
+        writer
+            .db
+            .execute_unprepared("UPDATE history_meta SET applied_write_seq=1 WHERE id=1")
+            .await?;
+        assert_eq!(
+            history.watermark().await?,
+            1,
+            "new request must see the writer commit"
+        );
+        writer
+            .db
+            .execute_unprepared("UPDATE history_meta SET applied_write_seq=2 WHERE id=1")
+            .await?;
+        assert_eq!(
+            history.watermark().await?,
+            2,
+            "reader must not reuse an old snapshot"
+        );
+        Ok(())
+    }
 
     fn test_session(store: HistoryStore) -> pl_core::chat::Session {
         pl_core::chat::Session::new(
@@ -2510,22 +3076,26 @@ mod storage_fault_tests {
         store: &HistoryStore,
         sequence: u64,
         items: &[ThreadItem],
-    ) -> Result<Vec<ChatItem>> {
+    ) -> Result<Vec<std::sync::Arc<ChatItem>>> {
+        let database_id = store.writer().await?.database_id.clone();
         let session = test_session(store.clone());
         let drafts = items
             .iter()
-            .map(|item| crate::studio::runtime::chat_item::completion_draft(item, sequence))
+            .map(|item| {
+                crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id)
+            })
             .collect::<Result<Vec<_>>>()?;
         let completions = session
             .publish_batch(drafts)
             .await?
             .iter()
-            .map(|item| item.as_ref().clone())
+            .cloned()
             .collect::<Vec<_>>();
         store
             .commit_effect(
                 sequence,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(sequence),
                     items,
                     completions: &completions,
                     rolled_back_turns: &Default::default(),
@@ -2560,11 +3130,13 @@ mod storage_fault_tests {
         let session = test_session(store.clone());
         let completions = session
             .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                &item, 1,
+                &item,
+                1,
+                &store.writer().await?.database_id,
             )?])
             .await?
             .iter()
-            .map(|item| item.as_ref().clone())
+            .cloned()
             .collect::<Vec<_>>();
         let mut checkpoint = ThreadCheckpoint::capture(
             "atomic-effect".into(),
@@ -2637,12 +3209,14 @@ mod storage_fault_tests {
         let rollback = std::collections::BTreeSet::new();
         fn commit<'a>(
             items: &'a [ThreadItem],
-            completions: &'a [ChatItem],
+            completions: &'a [std::sync::Arc<ChatItem>],
             rollback: &'a std::collections::BTreeSet<String>,
+            current: &'a conversation::current::PreparedCurrent,
         ) -> EffectCommit<'a> {
             EffectCommit {
                 items,
                 completions,
+                current,
                 rolled_back_turns: rollback,
                 identities: &[],
                 messages: &[],
@@ -2656,12 +3230,17 @@ mod storage_fault_tests {
         // Invalid execution ordinal fails after completion insertion in the same transaction.
         assert!(
             store
-                .commit_checkpoint_effect(
-                    &checkpoint,
-                    &effect,
-                    commit(std::slice::from_ref(&item), &completions, &rollback),
-                    accounting_commit(),
-                )
+                .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                    checkpoint: &checkpoint,
+                    effect: &effect,
+                    history: commit(
+                        std::slice::from_ref(&item),
+                        &completions,
+                        &rollback,
+                        &crate::studio::storage::history::test_current(effect.sequence)
+                    ),
+                    accounting: accounting_commit()
+                }])
                 .await
                 .is_err()
         );
@@ -2682,12 +3261,17 @@ mod storage_fault_tests {
             )
             .await?;
         let error = store
-            .commit_checkpoint_effect(
-                &checkpoint,
-                &effect,
-                commit(std::slice::from_ref(&item), &completions, &rollback),
-                accounting_commit(),
-            )
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &checkpoint,
+                effect: &effect,
+                history: commit(
+                    std::slice::from_ref(&item),
+                    &completions,
+                    &rollback,
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                ),
+                accounting: accounting_commit(),
+            }])
             .await
             .err()
             .context("accounting failure must roll back the complete effect")?;
@@ -2704,13 +3288,21 @@ mod storage_fault_tests {
             .execute_unprepared("DROP TRIGGER reject_accounting")
             .await?;
         let committed_accounting = store
-            .commit_checkpoint_effect(
-                &checkpoint,
-                &effect,
-                commit(std::slice::from_ref(&item), &completions, &rollback),
-                accounting_commit(),
-            )
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &checkpoint,
+                effect: &effect,
+                history: commit(
+                    std::slice::from_ref(&item),
+                    &completions,
+                    &rollback,
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                ),
+                accounting: accounting_commit(),
+            }])
             .await?
+            .into_iter()
+            .next()
+            .context("batch result")?
             .context("successful commit returns its compact accounting")?;
         assert_eq!(committed_accounting.revision, 1);
         assert_eq!(
@@ -2744,35 +3336,57 @@ mod storage_fault_tests {
             1
         );
         let retried_accounting = store
-            .commit_checkpoint_effect(
-                &checkpoint,
-                &effect,
-                commit(std::slice::from_ref(&item), &completions, &rollback),
-                accounting_commit(),
-            )
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &checkpoint,
+                effect: &effect,
+                history: commit(
+                    std::slice::from_ref(&item),
+                    &completions,
+                    &rollback,
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                ),
+                accounting: accounting_commit(),
+            }])
             .await?
+            .into_iter()
+            .next()
+            .context("batch result")?
             .context("lost acknowledgement returns verified committed accounting")?;
         assert_eq!(
             retried_accounting.purpose_costs, committed_accounting.purpose_costs,
             "retry must not add the same price twice"
         );
         let mut conflict = completions.clone();
-        conflict[0].sealed_at = Some(18);
+        let conflicting = std::sync::Arc::make_mut(&mut conflict[0]);
+        let mut payload: serde_json::Value = serde_json::from_slice(&conflicting.payload)?;
+        payload["sealedAt"] = 18.into();
+        conflicting.payload = serde_json::to_vec(&payload)?.into();
+        conflicting.header.byte_length = conflicting.payload.len() as u64;
         assert!(
             store
-                .commit_checkpoint_effect(
-                    &checkpoint,
-                    &effect,
-                    commit(std::slice::from_ref(&item), &conflict, &rollback),
-                    accounting_commit(),
-                )
+                .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                    checkpoint: &checkpoint,
+                    effect: &effect,
+                    history: commit(
+                        std::slice::from_ref(&item),
+                        &conflict,
+                        &rollback,
+                        &crate::studio::storage::history::test_current(effect.sequence)
+                    ),
+                    accounting: accounting_commit()
+                }])
                 .await
                 .is_err()
         );
-        assert_eq!(
-            store.read_chat_item(&item.id).await?,
-            Some(completions[0].clone())
-        );
+        let restored = store
+            .read_chat_item(&item.id)
+            .await?
+            .context("committed completion")?;
+        assert_eq!(restored.header, completions[0].header);
+        assert_eq!(restored.payload, completions[0].payload);
+        for content in completions[0].contents.values() {
+            ChatHistory::validate_content(&store, content).await?;
+        }
         Ok(())
     }
 
@@ -2825,6 +3439,7 @@ mod storage_fault_tests {
                 "the legacy fixture must not discard existing completion facts"
             );
             let connection = store.writer().await?;
+            discard_empty_demand_fixture(&connection.db).await?;
             let row = connection
                 .db
                 .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
@@ -2950,10 +3565,11 @@ mod storage_fault_tests {
             ..Default::default()
         };
         store
-            .commit_checkpoint_effect(
-                &checkpoint,
-                &effect,
-                EffectCommit {
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &checkpoint,
+                effect: &effect,
+                history: EffectCommit {
+                    current: &crate::studio::storage::history::test_current(effect.sequence),
                     completions: &[],
                     items: std::slice::from_ref(&item),
                     rolled_back_turns: &Default::default(),
@@ -2975,11 +3591,11 @@ mod storage_fault_tests {
                     delivery_repairs: &[],
                     attempt: None,
                 },
-                crate::studio::storage::history::AccountingCommit {
+                accounting: crate::studio::storage::history::AccountingCommit {
                     facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                     material_changed: true,
                 },
-            )
+            }])
             .await?;
         // Reproduce a v8 DB which already completed *all* published lifecycle steps. The new
         // content step must still run without asking for a new execution-identity candidate.
@@ -3025,6 +3641,7 @@ mod storage_fault_tests {
             0,
             "the v8 fixture must start before immutable completions were populated"
         );
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store.writer().await?.db.execute_unprepared(
             "DELETE FROM seaql_migrations WHERE version IN (
                  'm20261027_000001_history_retire_ordinals',
@@ -3070,7 +3687,8 @@ mod storage_fault_tests {
         let reading = async {
             entered.await?;
             let waiting = history.arm_reader_before_init().await;
-            let page = history.chat_page(None, i64::MAX as u64, 10);
+            let request = test_request(i64::MAX as u64, 10);
+            let page = history.chat_page(&request, &FixtureBudget, false);
             tokio::pin!(page);
             tokio::select! {
                 biased;
@@ -3090,7 +3708,7 @@ mod storage_fault_tests {
         prepared?;
         let page = page?;
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].item_id, item.id);
+        assert_eq!(page.items[0].header.item_id, item.id);
         assert_eq!(history_facts(&history.writer().await?.db).await?, expected);
         assert_eq!(history.watermark().await?, 1);
         assert_eq!(
@@ -3111,7 +3729,10 @@ mod storage_fault_tests {
         drop(history);
         let cold = HistoryStore::open(&path, thread).await?;
         assert_eq!(
-            cold.chat_page(None, i64::MAX as u64, 10).await?.items.len(),
+            cold.chat_page(&test_request(i64::MAX as u64, 10), &FixtureBudget, false)
+                .await?
+                .items
+                .len(),
             1
         );
         assert_eq!(cold.latest_execution_ordinal().await?, 41);
@@ -3151,7 +3772,13 @@ mod storage_fault_tests {
         let path = directory.path().join("absent/history.sqlite");
         let absent = HistoryStore::open(&path, "absent").await?;
         absent.prepare_history_access().await?;
-        assert!(absent.chat_page(None, 0, 10).await?.items.is_empty());
+        assert!(
+            absent
+                .chat_page(&test_request(0, 10), &FixtureBudget, false)
+                .await?
+                .items
+                .is_empty()
+        );
         assert!(absent.checkpoint().await?.is_none());
         assert!(!path.parent().context("parent")?.exists());
         let legacy = directory.path().join("state.toml");
@@ -3242,6 +3869,7 @@ mod storage_fault_tests {
             item.revision = 1;
             store.commit(1, std::slice::from_ref(&item), &[]).await?;
             let db = &store.writer().await?.db;
+            discard_empty_demand_fixture(db).await?;
             db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE timeline_records; ALTER TABLE history_input_identities DROP COLUMN request_digest").await?;
             if version == 1 {
                 db.execute_unprepared("DROP TABLE history_message_identities; ALTER TABLE history_input_identities DROP COLUMN presentation").await?;
@@ -3253,7 +3881,11 @@ mod storage_fault_tests {
             .await?;
             drop(store);
             let cold = HistoryStore::open(&path, "supported-v2").await?;
-            assert!(cold.chat_page(None, i64::MAX as u64, 10).await.is_err());
+            assert!(
+                cold.chat_page(&test_request(i64::MAX as u64, 10), &FixtureBudget, false)
+                    .await
+                    .is_err()
+            );
             let inspect = connect_read_only(&path).await?;
             assert_eq!(schema::version(&inspect).await?, version);
             inspect.close().await?;
@@ -3266,7 +3898,7 @@ mod storage_fault_tests {
             );
             assert_eq!(
                 prepared
-                    .chat_page(None, i64::MAX as u64, 10)
+                    .chat_page(&test_request(i64::MAX as u64, 10), &FixtureBudget, false)
                     .await?
                     .items
                     .len(),
@@ -3397,6 +4029,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: std::slice::from_ref(&plan_item),
                     rolled_back_turns: &Default::default(),
@@ -3419,6 +4052,7 @@ mod storage_fault_tests {
             .await?,
         )
         .await?;
+        discard_empty_demand_fixture(&db).await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
              DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=2",
@@ -3521,6 +4155,7 @@ mod storage_fault_tests {
             .commit_effect(
                 10,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(10),
                     completions: &[],
                     items: &items,
                     rolled_back_turns: &Default::default(),
@@ -3559,6 +4194,7 @@ mod storage_fault_tests {
             },
         )
         .await?;
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -3621,18 +4257,32 @@ mod storage_fault_tests {
         item.ordinal = 41;
         item.revision = 1;
         let session = test_session(store.clone());
-        let first = crate::studio::runtime::chat_item::completion_draft(&item, 1)?;
+        let first = crate::studio::runtime::chat_item::completion_draft(
+            &item,
+            1,
+            &store.writer().await?.database_id,
+        )?;
         let published = session.publish_batch(vec![first.clone()]).await?;
-        assert_eq!(published[0].append_seq, 1);
+        assert_eq!(published[0].header.append_seq, 1);
         assert_eq!(session.publish_batch(vec![first]).await?, published);
         let mut second = item.clone();
         second.id = "input-2".into();
-        let second_draft = crate::studio::runtime::chat_item::completion_draft(&second, 1)?;
+        let second_draft = crate::studio::runtime::chat_item::completion_draft(
+            &second,
+            1,
+            &store.writer().await?.database_id,
+        )?;
         assert_eq!(
-            session.publish_batch(vec![second_draft]).await?[0].append_seq,
+            session.publish_batch(vec![second_draft]).await?[0]
+                .header
+                .append_seq,
             2
         );
-        assert!(!tokio::fs::try_exists(&path).await?);
+        assert_eq!(
+            store.latest_append_seq().await?,
+            0,
+            "publication must not reserve SQLite sequence rows"
+        );
         persist_completed(&store, 1, &[item]).await?;
         let row = store
             .reader()
@@ -3667,9 +4317,12 @@ mod storage_fault_tests {
         assert_eq!(
             session
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                    &second, 2
+                    &second,
+                    2,
+                    &store.writer().await?.database_id
                 )?])
                 .await?[0]
+                .header
                 .append_seq,
             3
         );
@@ -3682,9 +4335,12 @@ mod storage_fault_tests {
         assert_eq!(
             reopened
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                    &second, 2
+                    &second,
+                    2,
+                    &store.writer().await?.database_id
                 )?])
                 .await?[0]
+                .header
                 .append_seq,
             2
         );
@@ -3694,16 +4350,17 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_bounded_page_continues_by_its_real_boundary_and_a_session_starts_from_the_latest_page()
     -> Result<()> {
+        use pl_core::chat::{ChatHistoryRequest, ChatPageRequest, ChatQuery, ReadDemand};
         let directory = tempfile::tempdir()?;
-        let store =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "paged-thread").await?;
         let items = (0..120)
             .map(|index| {
                 let mut item = ThreadItem::completed_user_message(
                     format!("message-{index}"),
-                    "paged-thread".to_owned(),
-                    "turn-1".to_owned(),
-                    "hello".to_owned(),
+                    "paged-thread".into(),
+                    "turn-1".into(),
+                    "hello".into(),
                     vec![],
                     1,
                 );
@@ -3713,95 +4370,101 @@ mod storage_fault_tests {
             })
             .collect::<Vec<_>>();
         persist_completed(&store, 1, &items).await?;
-        let page = store.chat_page(None, 120, 100).await?;
+        let query = ChatQuery::new("conversation", None);
+        let request = ChatHistoryRequest {
+            query: Some(query.clone()),
+            after: 0,
+            before: None,
+            ceiling: 120,
+            demand: ReadDemand::new(100, 256 * 1024),
+        };
+        let page = store.chat_page(&request, &FixtureBudget, false).await?;
         assert_eq!(page.items.len(), 100);
-        assert_eq!(page.items.first().unwrap().item_id, "message-20");
-        assert_eq!(page.items.last().unwrap().item_id, "message-119");
-        assert!(page.has_more);
-        let session = test_session(store.clone());
+        assert_eq!(page.items.first().unwrap().header.item_id, "message-20");
+        assert_eq!(page.items.last().unwrap().header.item_id, "message-119");
+        assert!(!page.exhausted);
         let before = store
             .chat_page(
-                Some(&pl_core::chat::ChatCursor::new(
-                    session.epoch(),
-                    21,
-                    "message-20",
-                )),
-                120,
-                100,
+                &ChatHistoryRequest {
+                    before: Some(21),
+                    ..request
+                },
+                &FixtureBudget,
+                false,
             )
             .await?;
         assert_eq!(before.items.len(), 20);
-        assert!(!before.has_more);
-
-        // A fresh session starts from the latest small page and continues by the page boundary it
-        // proves, instead of pretending a short page reached the beginning of history.
-        let mut initial = session.subscribe_tail().await?;
+        assert!(before.exhausted);
+        let session = test_session(store.clone());
+        let mut initial = session
+            .subscribe_tail(
+                query.clone(),
+                ReadDemand::new(32, 256 * 1024),
+                std::sync::Arc::new(FixtureBudget),
+            )
+            .await?;
         let baseline = initial.initial()?;
-        assert_eq!(baseline.items.len(), 32);
-        assert_eq!(baseline.items.first().unwrap().item_id, "message-88");
-        assert_eq!(baseline.items.last().unwrap().item_id, "message-119");
-        assert!(
-            baseline.has_older,
-            "the first frame carries its own boundary"
-        );
         assert_eq!(
-            baseline.before,
-            Some(pl_core::chat::ChatCursor::new(
-                session.epoch(),
-                89,
-                "message-88"
-            ))
+            baseline.items.len(),
+            32,
+            "the caller explicitly requests this demand"
         );
+        assert_eq!(baseline.items.first().unwrap().header.item_id, "message-88");
+        assert_eq!(baseline.items.last().unwrap().header.item_id, "message-119");
+        let cursor = baseline
+            .before
+            .clone()
+            .context("continuation at the actual selected boundary")?;
+        assert_eq!(cursor.append_seq, 89);
         let older = session
             .page(
-                pl_core::chat::ChatPageRequest::before(pl_core::chat::ChatCursor::new(
-                    session.epoch(),
-                    89,
-                    "message-88",
-                ))
-                .with_limit(32),
+                ChatPageRequest::before(cursor, ReadDemand::new(32, 256 * 1024)),
+                &FixtureBudget,
             )
             .await?;
         assert_eq!(older.items.len(), 32);
-        assert_eq!(older.items.first().unwrap().item_id, "message-56");
-        assert_eq!(older.items.last().unwrap().item_id, "message-87");
-        assert!(older.has_older);
-
-        // Only persisted items seed the next Session; a discarded live allocation has no
-        // durable reservation to inflate the next ordinal after a restart.
-        let reopened =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?;
-        let resumed = test_session(reopened);
+        assert_eq!(older.items.first().unwrap().header.item_id, "message-56");
+        assert_eq!(older.items.last().unwrap().header.item_id, "message-87");
+        assert!(older.before.is_some());
+        let resumed = test_session(HistoryStore::open(&path, "paged-thread").await?);
         let mut committed = ThreadItem::completed_user_message(
-            "message-120".to_owned(),
-            "paged-thread".to_owned(),
-            "turn-1".to_owned(),
-            "resumed".to_owned(),
+            "message-120".into(),
+            "paged-thread".into(),
+            "turn-1".into(),
+            "resumed".into(),
             vec![],
             2,
         );
         committed.ordinal = 121;
         committed.revision = 2;
+        let database_id = store
+            .conversation_database_id()
+            .await?
+            .context("database identity")?;
         assert_eq!(
             resumed
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                    &committed, 2
+                    &committed,
+                    2,
+                    &database_id
                 )?])
                 .await?[0]
+                .header
                 .append_seq,
             121
         );
         persist_completed(&store, 2, std::slice::from_ref(&committed)).await?;
-        let final_session = test_session(
-            HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?,
-        );
+        let final_session = test_session(HistoryStore::open(&path, "paged-thread").await?);
         committed.id = "message-121".into();
         assert_eq!(
             final_session
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                    &committed, 3
+                    &committed,
+                    3,
+                    &database_id
                 )?])
                 .await?[0]
+                .header
                 .append_seq,
             122
         );
@@ -3819,6 +4482,7 @@ mod storage_fault_tests {
             .commit_effect(
                 sequence,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(sequence),
                     completions: &[],
                     items: &[],
                     rolled_back_turns: &Default::default(),
@@ -3894,6 +4558,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     sequence,
                     EffectCommit {
+                        current: &crate::studio::storage::history::test_current(sequence),
                         completions: &[],
                         items: &[],
                         rolled_back_turns: &Default::default(),
@@ -3973,6 +4638,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     sequence,
                     EffectCommit {
+                        current: &crate::studio::storage::history::test_current(sequence),
                         completions: &[],
                         items: &[],
                         rolled_back_turns: &Default::default(),
@@ -4132,6 +4798,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: &[],
                     rolled_back_turns: &empty,
@@ -4160,6 +4827,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(2),
                     completions: &[],
                     items: &[],
                     rolled_back_turns: &empty,
@@ -4216,18 +4884,24 @@ mod storage_fault_tests {
             })
         };
         let empty = std::collections::BTreeSet::new();
-        let commit = || EffectCommit {
-            completions: &[],
-            items: &[],
-            rolled_back_turns: &empty,
-            identities: &[],
-            messages: &[],
-            receipts: &[],
-            tasks: &[],
-            deliveries: &[],
-            delivery_repairs: &[],
-            attempt: None,
-        };
+        fn commit<'a>(
+            current: &'a conversation::current::PreparedCurrent,
+            empty: &'a std::collections::BTreeSet<String>,
+        ) -> EffectCommit<'a> {
+            EffectCommit {
+                current,
+                completions: &[],
+                items: &[],
+                rolled_back_turns: empty,
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            }
+        }
         let mut state = ThreadSnapshot {
             commit_sequence: 1,
             context: ContextSnapshot {
@@ -4249,15 +4923,18 @@ mod storage_fault_tests {
             ..Default::default()
         };
         store
-            .commit_checkpoint_effect(
-                &first,
-                &effect,
-                commit(),
-                crate::studio::storage::history::AccountingCommit {
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &first,
+                effect: &effect,
+                history: commit(
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                    &empty,
+                ),
+                accounting: crate::studio::storage::history::AccountingCommit {
                     facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                     material_changed: true,
                 },
-            )
+            }])
             .await?;
         // Reject any rewrite of the existing prefix: a normal append must only insert the suffix.
         store.writer().await?.db.execute_unprepared(
@@ -4282,17 +4959,20 @@ mod storage_fault_tests {
         };
         assert!(
             store
-                .commit_checkpoint_effect(
-                    &second,
-                    &effect,
-                    commit(),
-                    crate::studio::storage::history::AccountingCommit {
+                .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                    checkpoint: &second,
+                    effect: &effect,
+                    history: commit(
+                        &crate::studio::storage::history::test_current(effect.sequence),
+                        &empty
+                    ),
+                    accounting: crate::studio::storage::history::AccountingCommit {
                         facts: &crate::studio::thread_projection::PreparedAccounting::prepare(
                             &effect
                         )?,
                         material_changed: true
-                    },
-                )
+                    }
+                }])
                 .await
                 .is_err()
         );
@@ -4324,27 +5004,33 @@ mod storage_fault_tests {
             .execute_unprepared("DROP TRIGGER fail_checkpoint")
             .await?;
         store
-            .commit_checkpoint_effect(
-                &second,
-                &effect,
-                commit(),
-                crate::studio::storage::history::AccountingCommit {
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &second,
+                effect: &effect,
+                history: commit(
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                    &empty,
+                ),
+                accounting: crate::studio::storage::history::AccountingCommit {
                     facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                     material_changed: true,
                 },
-            )
+            }])
             .await?;
         // A lost acknowledgement retries the same transaction without duplicating the append.
         store
-            .commit_checkpoint_effect(
-                &second,
-                &effect,
-                commit(),
-                crate::studio::storage::history::AccountingCommit {
+            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                checkpoint: &second,
+                effect: &effect,
+                history: commit(
+                    &crate::studio::storage::history::test_current(effect.sequence),
+                    &empty,
+                ),
+                accounting: crate::studio::storage::history::AccountingCommit {
                     facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
                     material_changed: true,
                 },
-            )
+            }])
             .await?;
         assert_eq!(store.watermark().await?, 2);
         assert_eq!(
@@ -4396,17 +5082,20 @@ mod storage_fault_tests {
                 ..Default::default()
             };
             store
-                .commit_checkpoint_effect(
-                    &checkpoint,
-                    &effect,
-                    commit(),
-                    crate::studio::storage::history::AccountingCommit {
+                .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
+                    checkpoint: &checkpoint,
+                    effect: &effect,
+                    history: commit(
+                        &crate::studio::storage::history::test_current(effect.sequence),
+                        &empty,
+                    ),
+                    accounting: crate::studio::storage::history::AccountingCommit {
                         facts: &crate::studio::thread_projection::PreparedAccounting::prepare(
                             &effect,
                         )?,
                         material_changed: true,
                     },
-                )
+                }])
                 .await?;
         }
         let after: i64 = store
@@ -4419,8 +5108,8 @@ mod storage_fault_tests {
             .try_get("", "changes")?;
         assert_eq!(
             after - before,
-            137 * 3,
-            "each append only changes one context row, checkpoint, and watermark"
+            137 * 5,
+            "each append only changes one context row, checkpoint, current, route head, and watermark"
         );
         let database_bytes = tokio::fs::metadata(directory.path().join("history.sqlite"))
             .await?
@@ -4441,7 +5130,6 @@ mod storage_fault_tests {
         drop(store);
         let retained = HistoryStore::from_share(&share).context("timeline retained history")?;
         assert!(retained.state.writer.get().is_some());
-        assert!(retained.state.reader.get().is_none());
         let (checkpoint, latest) = retained
             .read_only_checkpoint_with_latest_turn()
             .await?
@@ -4492,6 +5180,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: &[item.clone()],
                     rolled_back_turns: &Default::default(),
@@ -4618,6 +5307,7 @@ mod storage_fault_tests {
             ],
         ))
         .await?;
+        discard_empty_demand_fixture(db).await?;
         db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
         drop(store);
         let failed = HistoryStore::open(&path, "context-migration").await?;
@@ -5711,6 +6401,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
@@ -5725,6 +6416,7 @@ mod storage_fault_tests {
             )
             .await?;
         // 旧库：条目里没有问答投影，schema 停在补齐之前。
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -5811,6 +6503,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
@@ -5824,6 +6517,7 @@ mod storage_fault_tests {
                 },
             )
             .await?;
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -5879,6 +6573,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(2),
                     completions: &[],
                     items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
@@ -5930,6 +6625,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
@@ -5943,6 +6639,7 @@ mod storage_fault_tests {
                 },
             )
             .await?;
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -6021,6 +6718,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: &[approved_item.clone(), cancelled_item.clone()],
                     rolled_back_turns: &Default::default(),
@@ -6035,6 +6733,7 @@ mod storage_fault_tests {
             )
             .await?;
         // 旧库：schema 停在计划历史补齐之前，条目里没有 typed 计划回执。
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -6122,6 +6821,7 @@ mod storage_fault_tests {
             .commit_effect(
                 2,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(2),
                     completions: &[],
                     items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
@@ -6196,6 +6896,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
+                    current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
                     items: std::slice::from_ref(&saved),
                     rolled_back_turns: &Default::default(),
@@ -6209,6 +6910,7 @@ mod storage_fault_tests {
                 },
             )
             .await?;
+        discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
             .writer()
             .await?
@@ -6400,6 +7102,7 @@ mod storage_fault_tests {
                 .commit_effect(
                     1,
                     EffectCommit {
+                        current: &crate::studio::storage::history::test_current(1),
                         completions: &[],
                         items: std::slice::from_ref(&saved),
                         rolled_back_turns: &Default::default(),
@@ -6413,6 +7116,7 @@ mod storage_fault_tests {
                     },
                 )
                 .await?;
+            discard_empty_demand_fixture(&store.writer().await?.db).await?;
             store
                 .writer()
                 .await?
@@ -6511,73 +7215,75 @@ mod storage_fault_tests {
         let store = HistoryStore::open(&path, thread_id).await?;
         persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
 
-        // 静态元数据只带结构：问答正文不进 meta，因此不绕过内容预算。
         let complete = store
             .read_chat_item(&item.id)
             .await?
             .context("complete chat item")?;
-        let meta = String::from_utf8_lossy(&complete.meta).to_string();
-        assert!(!meta.contains("preserved line"));
-        assert!(!meta.contains("secret-deployment-token"));
-        // 持久化本地身份读出后，应与同一权威交互的产品投影严格关联。
+        let payload_text = String::from_utf8_lossy(&complete.payload);
+        assert!(
+            !payload_text.contains("preserved line"),
+            "large body remains a content reference"
+        );
+        assert!(!payload_text.contains("secret-deployment-token"));
+        let payload: serde_json::Value = serde_json::from_slice(&complete.payload)?;
         let projected = crate::thread_assembler::project_user_input(thread_id, &record)?;
-        let decoded = crate::studio::runtime::timeline_content::preview::timeline_item(&complete)?;
-        let pl_protocol::TimelineDescriptor::Tool(tool) = &decoded.descriptor else {
-            anyhow::bail!("persisted question did not project as a tool");
-        };
-        let input = tool.user_input.as_ref().context("projected Q&A identity")?;
-        assert_eq!(input.interaction_id, projected.interaction_id);
+        let interaction = payload["data"]["userInput"]["interactionId"]
+            .as_str()
+            .context("persisted public interaction identity")?;
+        assert_eq!(interaction, projected.interaction_id);
         assert_eq!(
-            crate::thread_assembler::decode_interaction_key(&input.interaction_id)?,
+            crate::thread_assembler::decode_interaction_key(interaction)?,
             (thread_id, record.request.id.as_str())
         );
-        let answer_field = crate::studio::runtime::chat_item::user_input_answer_field(0, 0);
-        assert_eq!(
-            complete.field(&answer_field).map(|block| block.text()),
-            Some(long_answer.clone())
-        );
-        // Execution recovery reads its original authority, not a reconstruction from public
-        // completion metadata. The completion codec independently preserves the frozen record.
+        let key = crate::studio::runtime::chat_item::user_input_answer_field(0, 0).as_key();
+        let content = complete
+            .contents
+            .iter()
+            .find(|(content, _)| content.key == key)
+            .context("public answer manifest")?
+            .0
+            .clone();
+        let window = ChatHistory::read_content(
+            &store,
+            &ContentReadRequest {
+                epoch: pl_core::chat::TimelineEpoch::new("qa-test")?,
+                reference: pl_core::chat::ContentRef::Body(content),
+                offset: 0,
+                max_bytes: long_answer.len(),
+                generation: None,
+            },
+        )
+        .await?;
+        assert_eq!(window.bytes.as_bytes(), long_answer.as_bytes());
+        assert!(window.sealed);
         assert_eq!(store.item(&item.id).await?, Some(item.clone()));
-        let encoded = crate::studio::runtime::chat_item::encode_record(&complete)?;
-        assert_eq!(
-            crate::studio::runtime::chat_item::decode_record(&encoded)?,
-            complete
-        );
-
-        // A foreign Thread or mismatched completion identity cannot enter the immutable store.
-        // Product interaction IDs no longer serve as a reverse execution-item codec.
-        for (field, invalid) in [("id", "other-record"), ("threadId", "other-thread")] {
-            let mut altered = complete.clone();
-            let mut altered_meta: serde_json::Value = serde_json::from_slice(&altered.meta)?;
-            altered_meta[field] = invalid.into();
-            altered.meta = serde_json::to_vec(&altered_meta)?.into();
-            assert!(
-                timeline::append_records(
-                    &store.reader().await?.context("history")?.db,
-                    thread_id,
-                    &[altered],
-                    false,
-                )
-                .await
-                .is_err()
-            );
-        }
-        assert_eq!(store.read_chat_item(&item.id).await?, Some(complete));
-
-        // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
-        let session = test_session(store.clone());
-        let page = session
-            .page(pl_core::chat::ChatPageRequest::latest().with_limit(10))
-            .await?;
-        let previewed = page.items.first().context("paged item")?;
-        assert!(previewed.omitted_bytes() > 0);
+        let mut changed = complete.clone();
+        changed.payload = std::sync::Arc::from(b"{\"changed\":true}".as_slice());
+        changed.header.byte_length = changed.payload.len() as u64;
         assert!(
-            previewed
-                .field(&answer_field)
-                .map(|block| block.text())
-                .is_none_or(|text| text.len() < long_answer.len())
+            conversation::append_records(
+                &store.writer().await?.db,
+                std::iter::once(&changed),
+                false
+            )
+            .await
+            .is_err()
         );
+        assert_eq!(store.read_chat_item(&item.id).await?, Some(complete));
+        let page = test_session(store.clone())
+            .page(
+                pl_core::chat::ChatPageRequest::latest(
+                    pl_core::chat::ChatQuery::new("conversation", None),
+                    pl_core::chat::ReadDemand::new(10, 1024),
+                ),
+                &FixtureBudget,
+            )
+            .await?;
+        assert_eq!(page.items.len(), 1);
+        assert!(matches!(
+            page.items[0].payload,
+            pl_core::chat::PayloadData::Deferred { .. }
+        ));
         Ok(())
     }
 }

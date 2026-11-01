@@ -1216,10 +1216,10 @@ String _stageTurn(Map<String, dynamic> stages, String label) => _requiredString(
 );
 
 bool _isUserInputRow(Map<String, dynamic> row) =>
-    row['kind'] == 'userMessage' && row['channel'] == 'user';
+    row['kind'] == 'text' && row['channel'] == 'user';
 
 bool _isFinalAnswerRow(Map<String, dynamic> row) =>
-    row['kind'] == 'agentMessage' && row['channel'] == 'finalAnswer';
+    row['kind'] == 'text' && row['channel'] == 'final';
 
 String? _lastTurnInputId(Map<String, dynamic> snapshot) {
   final workspace = _map(snapshot['workspace']);

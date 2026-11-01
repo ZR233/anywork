@@ -1,6 +1,4 @@
-mod activity;
-mod activity_delivery;
-pub(crate) use activity_delivery::activity_content as bridge_activity_content;
+pub(super) mod activity;
 mod interaction;
 mod usage;
 
@@ -11,12 +9,12 @@ use anyhow::Result;
 use pl_protocol::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
-    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadAttachment,
-    ThreadNotification, ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot,
-    ThreadRuntimeUsage, ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus,
-    ThreadSubscriptionUpdate, TodoItem, TodoListSnapshot, TodoStatus, TokenUsageSnapshot, Turn,
-    TurnCancellationCause, TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
-    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
+    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadNotification,
+    ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
+    ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus, ThreadSubscriptionUpdate, TodoItem,
+    TodoListSnapshot, TodoStatus, Turn, TurnCancellationCause, TurnCompletion, TurnPhase,
+    TurnRolloverOutcome, TurnState, WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot,
+    WorkflowRuntimeSnapshot,
 };
 
 use crate::api::studio::types::*;
@@ -58,11 +56,13 @@ fn thread_notification(
                 interaction: Box::new(interaction::interaction(*value)?),
             }
         }
-        ThreadNotification::ThreadRuntimeUpdated { runtime: value } => {
-            BridgeThreadNotification::ThreadRuntimeUpdated {
-                runtime: Box::new(runtime_snapshot(*value)),
-            }
-        }
+        ThreadNotification::ThreadRuntimeUpdated {
+            runtime: value,
+            model_route,
+        } => BridgeThreadNotification::ThreadRuntimeUpdated {
+            runtime: Box::new(runtime_snapshot(*value)),
+            model_route: model_route.map(model_route_snapshot),
+        },
         ThreadNotification::ActivityChanged { activity: value } => {
             BridgeThreadNotification::ActivityChanged {
                 activity: value.map(|current| Box::new(activity::activity(*current))),
@@ -102,6 +102,7 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
             .map(interaction::interaction)
             .collect::<Result<Vec<_>>>()?,
         runtime: value.runtime.map(runtime_snapshot),
+        model_route: value.model_route.map(model_route_snapshot),
         activity: value.activity.map(activity::activity),
         storage: value.storage.map(activity::storage),
         runtime_availability,
@@ -245,7 +246,7 @@ pub(super) fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurn
     }
 }
 
-fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
+pub(super) fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
     match value {
         TurnPhase::Preparing => BridgeTurnPhase::Preparing,
         TurnPhase::Thinking => BridgeTurnPhase::Thinking,
@@ -253,22 +254,6 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
         TurnPhase::Planning => BridgeTurnPhase::Planning,
         TurnPhase::RunningTool => BridgeTurnPhase::RunningTool,
         TurnPhase::Persisting => BridgeTurnPhase::Persisting,
-    }
-}
-
-pub(super) fn attachment(value: &ThreadAttachment) -> BridgeThreadAttachment {
-    BridgeThreadAttachment {
-        id: value.id.clone(),
-        modality: match value.modality {
-            pl_protocol::AttachmentModality::Image => BridgeAttachmentModality::Image,
-            pl_protocol::AttachmentModality::Video => BridgeAttachmentModality::Video,
-            pl_protocol::AttachmentModality::File => BridgeAttachmentModality::File,
-        },
-        media_type: value.media_type.clone(),
-        filename: value.filename.clone(),
-        width: value.width,
-        height: value.height,
-        byte_size: value.byte_size,
     }
 }
 
@@ -324,20 +309,23 @@ fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget 
 }
 
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
+fn model_route_snapshot(
+    route: pl_protocol::ThreadModelRouteSnapshot,
+) -> BridgeThreadModelRouteSnapshot {
+    BridgeThreadModelRouteSnapshot {
+        bot_id: route.bot_id,
+        account_id: route.account_id,
+        model_id: route.model_id,
+        effort: route.effort,
+        revision: route.revision,
+        available: route.available,
+        unavailable_reason: route.unavailable_reason,
+    }
+}
+
 pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRuntimeSnapshot {
     BridgeThreadRuntimeSnapshot {
         thread_id: value.thread_id,
-        model_route: value
-            .model_route
-            .map(|route| BridgeThreadModelRouteSnapshot {
-                bot_id: route.bot_id,
-                account_id: route.account_id,
-                model_id: route.model_id,
-                effort: route.effort,
-                revision: route.revision,
-                available: route.available,
-                unavailable_reason: route.unavailable_reason,
-            }),
         usage: runtime_usage(value.usage),
         live_usage: value.live_usage.map(runtime_live_usage),
         turn_completion_tokens: value.turn_completion_tokens,
@@ -431,7 +419,7 @@ fn plan_document(value: AgentSessionPlanDocument) -> BridgePlanDocument {
     }
 }
 
-fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
+pub(super) fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
     match value {
         AgentSessionPlanPhase::Drafting => BridgePlanPhase::Drafting,
         AgentSessionPlanPhase::AwaitingConfirmation => BridgePlanPhase::AwaitingConfirmation,
@@ -560,15 +548,6 @@ fn runtime_cost(value: RuntimeCostAmount) -> BridgeRuntimeCostAmount {
     BridgeRuntimeCostAmount {
         currency: value.currency,
         amount: value.amount,
-    }
-}
-
-pub(super) fn token_usage(value: TokenUsageSnapshot) -> BridgeTokenUsageSnapshot {
-    BridgeTokenUsageSnapshot {
-        prompt_tokens: value.prompt_tokens,
-        completion_tokens: value.completion_tokens,
-        cached_prompt_tokens: value.cached_prompt_tokens,
-        total_tokens: value.total_tokens,
     }
 }
 

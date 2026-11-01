@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
+import 'timeline_scope_driver.dart';
 
 /// Upper bound on the `load-older` pages the probe drives.
 ///
@@ -98,6 +99,7 @@ Future<Map<String, Object?>> _pageOlder(
     }
     final retained = before.itemIds.every(after.itemIds.contains);
     final grew = after.itemCount > before.itemCount;
+    if (grew) after.requireAcceptedOperation(before, prepend: true);
     final movedOlder =
         grew &&
         retained &&
@@ -120,7 +122,10 @@ Future<Map<String, Object?>> _pageOlder(
       'afterLast': after.itemIds.isEmpty ? null : after.itemIds.last,
       'delivered': after.itemCount - before.itemCount,
       'unique': after.itemIds.toSet().length == after.itemIds.length,
-      'orderAscending': after.appendSeqAscending,
+      'previousWindowRetainedAsSuffix': after.retainsWindow(
+        before,
+        prepend: true,
+      ),
       'grewTowardOlder': movedOlder,
       'identityRetained': retained,
       'olderCursorBefore': before.olderCursor,
@@ -144,9 +149,9 @@ Future<Map<String, Object?>> _pageOlder(
     'identityRetained':
         pages.isNotEmpty &&
         pages.every((page) => page['identityRetained'] == true),
-    'orderMonotonic':
+    'previousWindowsPreserved':
         pages.isNotEmpty &&
-        pages.every((page) => page['orderAscending'] == true),
+        pages.every((page) => page['previousWindowRetainedAsSuffix'] == true),
     'uniqueIds':
         pages.isNotEmpty && pages.every((page) => page['unique'] == true),
     'cursorAdvanced': cursorAdvanced,
@@ -241,10 +246,29 @@ Future<void> main(List<String> args) async {
             paginationStarted &&
             streamCompleted &&
             timeline.itemCount > 0 &&
-            kinds.contains('agentMessage') &&
-            // gui_stress_script emits messages and reasoning; tool execution is
-            // covered by tool-scroll. Requiring a nonexistent tool never settles.
-            kinds.contains('reasoning')) {
+            timeline.items.any((item) => item.isFinalAnswer)) {
+          final expanded = TimelineObservation.parse(
+            await TimelineScopeDriver.session(driver).openLatest(),
+          );
+          final parent = expanded.items
+              .lastWhere((item) => item.kind == 'turn')
+              .childrenParentId!;
+          final child = expanded.childrenFor(parent)!;
+          if (!child.items.any((item) => item.kind == 'thinking')) {
+            throw StateError(
+              'Completed stress Turn has no thinking in its actual Children',
+            );
+          }
+          pagingSummary = {
+            ...?pagingSummary,
+            'thinkingScope': {
+              'parentId': child.parentId,
+              'generation': child.generation,
+              'appliedSets': child.appliedSets,
+              'itemIds': child.itemIds,
+            },
+          };
+          await writePagingEvidence();
           await finished.writeAsString(
             '${DateTime.now().millisecondsSinceEpoch}\n',
           );

@@ -8,7 +8,7 @@ use crate::{
     TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 15;
+pub const THREAD_SCHEMA_VERSION: u32 = 16;
 
 /// Timeline 游标 token 的版本号。
 ///
@@ -132,7 +132,7 @@ impl Thread {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadStatus {
     Idle,
@@ -165,6 +165,9 @@ pub struct ThreadSnapshot {
     pub active_turn: Option<Turn>,
     #[serde(default)]
     pub interactions: Vec<InteractionRequest>,
+    /// Saved selector and original extension revision, independent of execution residency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<ThreadModelRouteSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ThreadRuntimeSnapshot>,
     /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
@@ -186,6 +189,7 @@ impl ThreadSnapshot {
             thread: Thread::placeholder(thread_id),
             active_turn: None,
             interactions: Vec::new(),
+            model_route: None,
             runtime: None,
             activity: None,
             storage: None,
@@ -197,8 +201,6 @@ impl ThreadSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRuntimeSnapshot {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_route: Option<ThreadModelRouteSnapshot>,
     pub usage: ThreadRuntimeUsage,
     /// Best-effort usage for the currently running attempt. Durable totals remain in `usage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -374,6 +376,7 @@ pub enum ThreadNotification {
     },
     ThreadRuntimeUpdated {
         runtime: Box<ThreadRuntimeSnapshot>,
+        model_route: Option<ThreadModelRouteSnapshot>,
     },
     /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
     ///
@@ -477,12 +480,11 @@ pub struct ThreadTurnHistory {
     pub context_disposition: ThreadContextDisposition,
 }
 
-/// 版本化、自校验的 Timeline 游标。
+/// 版本化、自校验的 Turn durable 历史游标。
 ///
 /// Turn 历史沿用这套 durable 游标：它绑定 Thread 身份、history 数据库身份、条目 ordinal、
-/// 条目 identity 与读取时的 applied write sequence。Timeline 正文本身改用
-/// [`crate::timeline_content::TimelinePageCursor`]，后者只表达严格 `(ordinal, identity)` 边界，
-/// 不要求该条目已落盘。
+/// 条目 identity 与读取时的 applied write sequence。聊天完成记录则使用
+/// [`crate::ChatBatch::before`] 的不透明续页资格，不使用此执行历史游标，也不要求完成项已落盘。
 ///
 /// 游标绑定 Thread 身份、history 数据库身份、条目 ordinal、条目 identity 与读取时的
 /// applied write sequence。任何一项在当前数据库上不成立（Thread 不符、数据库被重建、

@@ -7,11 +7,18 @@
 #[cfg(test)]
 extern crate self as pl_studio_runtime;
 
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the shared fixture also serves standalone integration test binaries"
+)]
+#[path = "../tests/support/mod.rs"]
+pub(crate) mod runtime_test_support;
+
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
-// Public Studio timeline signatures use the core content types; adapters need no direct
-// dependency on the execution kernel to name them.
-pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem};
+// Execution/storage diagnostics may name the Core's opaque completion records.
+pub use pl_core::chat::{ChatError, ChatItem};
 pub use pl_core::model::ContentBlock;
 mod hash;
 mod toml_schema;
@@ -87,19 +94,18 @@ pub use protocol::{
     StudioPersistenceQueueStateSnapshot,
 };
 pub use studio::{
-    AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ConversationEvent,
-    ConversationFeed, PersistenceState, PersistenceStateSnapshot, ProductEventBus,
-    SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry,
-    StudioDatabaseError, StudioHostKind, StudioInstance, StudioInstanceLease,
-    StudioProductTopicSubscription, StudioRecoveryImpact, StudioRecoveryIssue,
+    AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ContentWatch,
+    ConversationEvent, ConversationFeed, ConversationReader, PersistenceState,
+    PersistenceStateSnapshot, ProductEventBus, SkillSearchResult, SkillsStateSnapshot,
+    SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError, StudioHostKind, StudioInstance,
+    StudioInstanceLease, StudioProductTopicSubscription, StudioRecoveryImpact, StudioRecoveryIssue,
     StudioRecoveryIssueAction, StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
     StudioRecoveryWorktreeOwner, StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions,
     StudioRuntimeSnapshot, StudioRuntimeStateKind, StudioStartNewThreadResponse,
     StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
     StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeInspection,
     StudioWorktreeRecoveryPreview, ThreadPreparationObserver, ThreadPreparationProgress,
-    ThreadPreparationStage, ThreadRecord, TimelineContentReader, TimelineTailStream,
-    WorkspaceRecord,
+    ThreadPreparationStage, ThreadRecord, WorkspaceRecord,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

@@ -84,6 +84,14 @@ pub enum StudioErrorReason {
     StaleInteraction,
     /// 目标会话已归档：只读，不能执行、停止或决议其中的工作。
     ThreadArchived,
+    /// 本次条数/字节需求无法容纳合法的有界读取信封。
+    InvalidDemand,
+    /// 原聊天来源不能证明连续；关闭旧 facade 后重新打开取得 Set。
+    ConversationResyncRequired,
+    /// 当前内容或集合的原版本已被替换。
+    StaleContent,
+    /// 原读取作用域已关闭或其来源资格失效。
+    StaleReadScope,
 }
 
 impl StudioErrorReason {
@@ -100,6 +108,10 @@ impl StudioErrorReason {
             Self::InteractionNotHosted => "interactionNotHosted",
             Self::StaleInteraction => "staleInteraction",
             Self::ThreadArchived => "threadArchived",
+            Self::InvalidDemand => "invalidDemand",
+            Self::ConversationResyncRequired => "conversationResyncRequired",
+            Self::StaleContent => "staleContent",
+            Self::StaleReadScope => "staleReadScope",
         }
     }
 }

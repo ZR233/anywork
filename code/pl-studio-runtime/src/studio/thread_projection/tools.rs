@@ -26,7 +26,12 @@ pub(super) fn project_tool_call(
         call.tool_id.clone(),
         call.arguments.content().into(),
     )
-    .with_provider_identity(Some(id.into()), None);
+    .with_provider_identity(Some(id.into()), None)
+    .with_presentation_contract(
+        call.presentation_contract
+            .as_ref()
+            .map(|contract| contract.as_str().to_owned()),
+    );
     project_invocation(
         thread_id, snapshot, turn_id, invocation, ordinal, created_at, revision, updated_at,
     )

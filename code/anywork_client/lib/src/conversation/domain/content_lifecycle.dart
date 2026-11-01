@@ -43,11 +43,3 @@ final class RetryPolicy {
 
   final List<Duration> delays;
 }
-
-/// 页请求允许的条目范围（design/26 §26.2：默认 32，显式 1..100）。
-const int conversationPageDefaultLimit = 32;
-const int conversationPageMaxLimit = 100;
-
-/// 详情块允许的字节范围：默认 64 KiB，最小 4 字节，最大 256 KiB。
-const int conversationDetailMaxBytes = 256 * 1024;
-const int conversationDetailMinBytes = 4;

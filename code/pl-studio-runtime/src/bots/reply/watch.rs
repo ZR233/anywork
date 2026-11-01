@@ -1,22 +1,32 @@
-//! One native feed, same-Session queries and one bounded target projection.
+//! One native feed, the same read lease, and one bounded target projection.
 
-use super::content::{FinalError, PrefixRecovery, begin_projection, read_failure, recover_prefix};
+use super::content::{Coverage, FinalError, ReplyItem, decode_message, demand, read_failure};
 use super::projection::{ReplyProjection, gap};
-use crate::studio::{ConversationEvent, ConversationFeed, StudioRuntime, TimelineContentReader};
+use crate::studio::{ConversationEvent, ConversationFeed, ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ActivityContentFrame, ThreadNotification, ThreadSubscriptionUpdate, TimelineCompletionCursor,
-    TimelineTailBaseline, TimelineTailUpdate, TimelineTurnOutcome, Turn, TurnState,
+    ChatBatch, ChatPlacement, ChatScope, ThreadNotification, ThreadSubscriptionUpdate, Turn,
+    TurnState,
 };
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
+
+/// A taken Chat frame remains owned here across cancellation of asynchronous body
+/// reads. Only a completely decoded batch can publish its completions/current.
+struct PendingChat {
+    batch: ChatBatch,
+    next: usize,
+    items: Vec<ReplyItem>,
+}
 
 pub(super) struct ReplyWatch {
     feed: ConversationFeed,
     input_id: Option<String>,
     turn_id: Option<String>,
     projection: Option<ReplyProjection>,
-    recovery: Option<PrefixRecovery>,
-    content_cursor: Option<TimelineCompletionCursor>,
+    pending: Option<PendingChat>,
+    before: Option<String>,
+    chat_ready: bool,
+    coverage: Coverage,
     state_revision: Option<u64>,
     state_epoch: Option<u64>,
     observed_turn: Option<Turn>,
@@ -25,55 +35,48 @@ pub(super) struct ReplyWatch {
 impl ReplyWatch {
     pub(super) async fn open(runtime: &StudioRuntime, thread_id: &str) -> Result<Self, FinalError> {
         let feed = runtime
-            .open_conversation_feed(thread_id, None)
+            .open_conversation_feed(thread_id, ChatScope::Main, demand())
             .await
             .map_err(|error| read_failure("bot conversation feed open failed", error))?;
-        let mut watch = Self {
+        // No await after acquisition: the caller immediately owns both close duties.
+        Ok(Self {
             feed,
             input_id: None,
             turn_id: None,
             projection: None,
-            recovery: None,
-            content_cursor: None,
+            pending: None,
+            before: None,
+            chat_ready: false,
+            coverage: Coverage::default(),
             state_revision: None,
             state_epoch: None,
             observed_turn: None,
-        };
-        // Consume the real stream baseline; never call initial/next independently.
-        watch.receive().await?;
-        Ok(watch)
+        })
     }
 
-    pub(super) fn reader(&self) -> TimelineContentReader {
+    pub(super) fn reader(&self) -> ConversationReader {
         self.feed.reader().clone()
     }
-
     pub(super) fn preview(&self) -> Option<String> {
         self.projection.as_ref().and_then(ReplyProjection::preview)
     }
-
-    pub(super) fn terminal(&self, turn_id: &str) -> Option<TimelineTurnOutcome> {
-        (self.turn_id.as_deref() == Some(turn_id))
-            .then(|| {
-                self.projection
-                    .as_ref()?
-                    .terminal(self.feed.reader().durable_seq())
-            })
-            .flatten()
+    pub(super) fn projection(&self) -> Option<ReplyProjection> {
+        self.projection.clone()
     }
-
+    pub(super) fn terminal(&self, turn_id: &str) -> Option<TurnState> {
+        if self.turn_id.as_deref() != Some(turn_id) {
+            return None;
+        }
+        self.projection.as_ref()?.terminal()
+    }
     pub(super) fn observed_state(&self, turn_id: &str) -> Option<TurnState> {
         self.observed_turn
             .as_ref()
-            .filter(|turn| {
-                turn.id == turn_id
-                    && matches!(turn.state, TurnState::Queued(_) | TurnState::Running(_))
-            })
+            .filter(|turn| turn.id == turn_id)
             .map(|turn| turn.state.clone())
     }
 
-    /// Canonical receipt association is the only way to select a reply target.
-    /// A continuation changes the generation even if the old card is still present.
+    /// Only canonical consumed-input routing selects a target, never current/last active.
     pub(super) async fn select_target(
         &mut self,
         runtime: &StudioRuntime,
@@ -84,55 +87,61 @@ impl ReplyWatch {
             return Ok(());
         }
         self.projection = None;
-        self.recovery = None;
-        self.input_id = Some(input_id.to_string());
-        self.turn_id = turn_id.map(str::to_string);
-        // Close the old observation before a new baseline/target can be published.
-        self.close().await?;
-        let feed = runtime
-            .open_conversation_feed(self.feed.thread_id(), None)
-            .await
-            .map_err(|error| read_failure("bot conversation feed target reopen failed", error))?;
-        self.feed = feed;
-        self.content_cursor = None;
-        self.state_revision = None;
-        self.state_epoch = None;
-        self.observed_turn = None;
-        self.receive().await?;
+        self.input_id = Some(input_id.into());
+        self.turn_id = turn_id.map(str::to_owned);
+        self.reconnect(runtime).await?;
         self.ensure_coverage().await
     }
 
     pub(super) async fn ensure_coverage(&mut self) -> Result<(), FinalError> {
-        if let (Some(projection), Some(recovery)) = (&mut self.projection, &mut self.recovery) {
-            recover_prefix(self.feed.reader(), projection, recovery).await?;
-            self.recovery = None;
+        if self.turn_id.is_none() {
+            return Ok(());
+        }
+        while !self.chat_ready {
+            self.receive().await?;
+        }
+        self.finish_pending().await?;
+        while let Some(before) = self.before.clone() {
+            let page = self
+                .feed
+                .reader()
+                .load_older(&before, demand())
+                .await
+                .map_err(|error| read_failure("reply prefix recovery page failed", error))?;
+            if page.placement != ChatPlacement::Prepend {
+                return Err(gap("reply older page is not Prepend"));
+            }
+            self.stage(page)?;
+            self.finish_pending().await?;
+        }
+        if let Some(projection) = &mut self.projection {
+            projection.mark_covered();
         }
         Ok(())
     }
 
-    /// One caller-owned recovery attempt, resuming only the last accepted completion.
+    /// Reconnection creates a new feed/Set and reconstructs only the reliable target.
+    /// No public Core position, parsed cursor or old projection proves continuity.
     pub(super) async fn reconnect(&mut self, runtime: &StudioRuntime) -> Result<(), FinalError> {
-        let cursor = self
-            .content_cursor
-            .clone()
-            .ok_or_else(|| gap("reply resume has no accepted cursor"))?;
         self.close().await?;
-        if let Some(projection) = &mut self.projection {
-            projection.reset_activity();
-        }
         let feed = runtime
-            .open_conversation_feed(self.feed.thread_id(), Some(cursor))
+            .open_conversation_feed(self.feed.thread_id(), ChatScope::Main, demand())
             .await
-            .map_err(|error| read_failure("bot conversation feed resume failed", error))?;
+            .map_err(|error| read_failure("bot conversation feed reopen failed", error))?;
         self.feed = feed;
+        self.projection = None;
+        self.pending = None;
+        self.before = None;
+        self.chat_ready = false;
+        self.coverage = Coverage::default();
         self.state_revision = None;
         self.state_epoch = None;
         self.observed_turn = None;
         Ok(())
     }
 
-    /// Keep consuming and reducing while an admission/read/platform action waits.
-    /// Both futures belong to this task; no detached pump or token queue exists.
+    /// Both futures remain task-owned; observation failure cancels new platform
+    /// admission but drains an already admitted action to its real result.
     pub(super) async fn during<T>(
         &mut self,
         future: impl Future<Output = T>,
@@ -142,17 +151,12 @@ impl ReplyWatch {
         let mut failure = None;
         loop {
             let event = tokio::select! {
-                    result = &mut future => return (result, failure),
+                result = &mut future => return (result, failure),
                 event = self.receive(), if failure.is_none() => event,
             };
             if let Err(error) = event {
-                // Observation failure is not permission to abandon an already
-                // durable platform intent. Drain the owned action to its real
-                // result, without accepting another frame.
                 self.feed.request_close();
                 if let Some(cancel) = action_cancel {
-                    // Stop at the next admission boundary, without dropping an
-                    // HTTP request already in flight.
                     cancel.cancel();
                 }
                 failure = Some(error);
@@ -161,120 +165,107 @@ impl ReplyWatch {
     }
 
     pub(super) async fn receive(&mut self) -> Result<(), FinalError> {
-        let event = match self.feed.recv().await {
-            Ok(Some(event)) => event,
-            result => {
-                return Err(match result {
-                    Err(error) => {
-                        read_failure("bot conversation feed failed; continuity lost", error)
-                    }
-                    Ok(_) => gap("bot conversation feed ended before reply completed"),
-                });
-            }
-        };
-        // Everything after recv is synchronous. Selecting the platform future
-        // cannot cancel half of a baseline recovery or lose an already-taken frame.
+        if self.pending.is_some() {
+            return self.finish_pending().await;
+        }
+        let event = self
+            .feed
+            .recv()
+            .await
+            .map_err(|error| read_failure("bot conversation feed failed; new Set required", error))?
+            .ok_or_else(|| gap("bot conversation feed ended before reply completed"))?;
         match event {
             ConversationEvent::State { update } => self.state(*update),
-            ConversationEvent::ContentBaseline { baseline } => {
-                if self.content_cursor.is_some() {
-                    return Err(gap("duplicate reply content baseline"));
-                }
-                self.baseline(baseline)
-            }
-            ConversationEvent::ContentUpdate { update } => self.completed(update),
-            ConversationEvent::ActivityContent { frame, completed } => {
-                if completed.is_some() && !matches!(frame, ActivityContentFrame::Commit { .. }) {
-                    return Err(gap("activity completion outside commit"));
-                }
-                if matches!(frame, ActivityContentFrame::Commit { .. })
-                    && let Some(projection) = &self.projection
+            ConversationEvent::Chat { batch } => {
+                if (!self.chat_ready && batch.placement != ChatPlacement::Set)
+                    || (self.chat_ready && batch.placement != ChatPlacement::Append)
                 {
-                    projection.validate_commit(&frame)?;
+                    return Err(gap("reply feed expected first Set then Append"));
                 }
-                if let Some(update) = completed {
-                    self.completed(*update)?;
-                }
-                if let Some(projection) = &mut self.projection {
-                    projection.activity(frame)?;
-                }
-                Ok(())
+                self.stage(*batch)?;
+                self.finish_pending().await
             }
         }
     }
 
-    fn completed(&mut self, update: TimelineTailUpdate) -> Result<(), FinalError> {
-        match update {
-            TimelineTailUpdate::Batch {
-                subscription_id,
-                timeline_epoch,
-                from_seq,
-                through_seq,
-                items,
-            } => {
-                let cursor = self
-                    .content_cursor
-                    .as_ref()
-                    .ok_or_else(|| gap("reply completion without baseline"))?;
-                if subscription_id != self.feed.subscription_id()
-                    || timeline_epoch != cursor.timeline_epoch
-                    || from_seq != cursor.append_seq
-                    || through_seq <= from_seq
-                    || items
-                        .last()
-                        .is_none_or(|item| item.header.append_seq != through_seq)
-                    || items
-                        .iter()
-                        .scan(from_seq, |previous, item| {
-                            let valid = previous.checked_add(1) == Some(item.header.append_seq)
-                                && item.header.append_seq <= through_seq;
-                            *previous = item.header.append_seq;
-                            Some(valid)
-                        })
-                        .any(|valid| !valid)
-                {
-                    return Err(gap("reply completion continuity conflict"));
-                }
-                if let Some(projection) = &mut self.projection {
-                    projection.add_page(items)?;
-                }
-                self.content_cursor = Some(TimelineCompletionCursor {
-                    timeline_epoch,
-                    append_seq: through_seq,
-                });
-                Ok(())
-            }
-            TimelineTailUpdate::Reset { baseline } => {
-                if self
-                    .content_cursor
-                    .as_ref()
-                    .is_some_and(|cursor| cursor.timeline_epoch == baseline.timeline_epoch)
-                {
-                    return Err(gap("reply reset did not change epoch"));
-                }
-                self.baseline(baseline)
-            }
+    fn stage(&mut self, batch: ChatBatch) -> Result<(), FinalError> {
+        if self.pending.is_some() {
+            return Err(gap("reply pending batch overwritten"));
         }
+        if self.turn_id.is_some() && batch.placement != ChatPlacement::Append {
+            self.coverage.page(batch.messages.len())?;
+        }
+        self.pending = Some(PendingChat {
+            batch,
+            next: 0,
+            items: Vec::new(),
+        });
+        Ok(())
     }
 
-    fn baseline(&mut self, baseline: TimelineTailBaseline) -> Result<(), FinalError> {
-        self.projection = None;
-        self.recovery = None;
-        self.content_cursor = None;
-        if baseline.subscription_id != self.feed.subscription_id() {
-            return Err(gap("reply content baseline subscription conflict"));
+    async fn finish_pending(&mut self) -> Result<(), FinalError> {
+        while let Some(pending) = &self.pending {
+            if pending.next == pending.batch.messages.len() {
+                break;
+            }
+            // Cancellation before this await returns leaves the original message
+            // and its index intact. Retrying an immutable bounded read is idempotent.
+            let item = if let Some(turn_id) = &self.turn_id {
+                decode_message(
+                    self.feed.reader(),
+                    &pending.batch.messages[pending.next],
+                    turn_id,
+                )
+                .await?
+            } else {
+                None
+            };
+            let pending = self.pending.as_mut().expect("owned pending batch");
+            if let Some(item) = item {
+                let bytes = pending
+                    .items
+                    .iter()
+                    .chain(std::iter::once(&item))
+                    .try_fold(0usize, |size, item| size.checked_add(item.preview_bytes()));
+                if bytes.is_none_or(|size| size > super::content::MAX_TURN_BODY_BYTES) {
+                    return Err(FinalError::Attention(
+                        "pending reply batch exceeded its body budget".into(),
+                    ));
+                }
+                pending.items.push(item);
+            }
+            pending.next += 1;
         }
-        if baseline.timeline_epoch != baseline.completed_cursor.timeline_epoch {
-            return Err(gap("reply baseline epoch conflict"));
+        let Some(pending) = self.pending.take() else {
+            return Ok(());
+        };
+        let ChatBatch {
+            placement,
+            before,
+            current,
+            ..
+        } = pending.batch;
+        if placement != ChatPlacement::Append {
+            if let Some(token) = &before {
+                self.coverage.cursor(token)?;
+            }
+            self.before = before;
         }
-        let cursor = baseline.completed_cursor.clone();
-        if let Some(turn_id) = &self.turn_id {
-            let (projection, recovery) =
-                begin_projection(self.feed.thread_id(), turn_id, baseline)?;
-            self.projection = Some(projection);
-            self.recovery = recovery;
+        if placement == ChatPlacement::Set {
+            self.chat_ready = true;
+            self.projection = self.turn_id.as_deref().map(ReplyProjection::new);
         }
-        self.content_cursor = Some(cursor);
+        if let Some(projection) = &mut self.projection {
+            // Accept all completed members before retiring their current previews.
+            projection.apply(placement, pending.items)?;
+            if let Some(current) = current {
+                projection.set_current(current)?;
+            }
+            projection.validate_budget()?;
+            if self.before.is_none() {
+                projection.mark_covered();
+            }
+        }
         Ok(())
     }
 
@@ -336,123 +327,26 @@ impl ReplyWatch {
     }
 
     pub(super) async fn close(&mut self) -> Result<(), FinalError> {
+        let reader = self.reader();
         self.feed.request_close();
-        self.feed
+        let feed = self
+            .feed
             .close()
             .await
-            .map_err(|error| read_failure("bot conversation feed close failed", error))
+            .map_err(|error| read_failure("bot conversation feed close failed", error));
+        let reader = reader
+            .close()
+            .await
+            .map_err(|error| read_failure("bot conversation reader close failed", error));
+        match (feed, reader) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(first), Err(second)) => Err(FinalError::Attention(format!(
+                "reply close failed on both owners: {first:?}; {second:?}"
+            ))),
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
-    use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-    use pl_model::model::ModelInfo;
-    use pl_model::protocol::ProtocolEndpoint;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn real_feed_resume_and_close_after_cancelled_receive() -> anyhow::Result<()> {
-        let temp = tempfile::tempdir()?;
-        let home = temp.path().join("home");
-        let workspace = temp.path().join("workspace");
-        tokio::fs::create_dir_all(&workspace).await?;
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let account = AccountId::new("reply-observation")?;
-        let route = ModelRouteConfig {
-            account_id: account.clone(),
-            model_id: "storage-model".into(),
-            effort: None,
-        };
-        let mut config = StudioConfig::default_config()?;
-        config.models.accounts.clear();
-        config.models.accounts.insert(
-            account,
-            AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
-                    "Reply fixture",
-                    format!("http://{}", endpoint.local_addr()?),
-                ),
-                vec![ModelInfo::compatible(&route.model_id)],
-            ),
-        );
-        for selected in config
-            .models
-            .routes
-            .values_mut()
-            .chain(config.mode_model_routes.values_mut())
-        {
-            *selected = route.clone();
-        }
-        ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
-        let runtime = StudioRuntime::initialize(crate::StudioRuntimeOptions {
-            studio_home: Some(home),
-            host: crate::StudioHostKind::Test,
-            ..crate::StudioRuntimeOptions::desktop()
-        })
-        .await?;
-        let project = runtime.open_project(&workspace).await?;
-        let thread = runtime
-            .create_thread(&project.id, "reply observation")
-            .await?;
-        let mut watch = ReplyWatch::open(&runtime, &thread.id)
-            .await
-            .map_err(|_| anyhow::anyhow!("open reply watch"))?;
-        watch
-            .select_target(&runtime, "input", Some("turn"))
-            .await
-            .map_err(|_| anyhow::anyhow!("select reply target"))?;
-
-        // Drain initial state and activity, then cancel one genuinely pending receive.
-        let mut cancelled = false;
-        for _ in 0..20 {
-            match tokio::time::timeout(Duration::from_millis(100), watch.receive()).await {
-                Err(_) => {
-                    cancelled = true;
-                    break;
-                }
-                Ok(Ok(())) => {}
-                Ok(Err(_)) => anyhow::bail!("initial reply feed failed"),
-            }
-        }
-        anyhow::ensure!(cancelled, "reply receive never became pending");
-        let cursor = watch
-            .content_cursor
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("missing accepted cursor"))?;
-        let subscription = watch.feed.subscription_id().to_owned();
-        watch
-            .reconnect(&runtime)
-            .await
-            .map_err(|_| anyhow::anyhow!("resume reply watch"))?;
-        anyhow::ensure!(
-            watch.feed.subscription_id() != subscription,
-            "resume reused closed subscription"
-        );
-        anyhow::ensure!(
-            watch.content_cursor == Some(cursor),
-            "resume changed accepted cursor"
-        );
-        for _ in 0..3 {
-            tokio::time::timeout(Duration::from_secs(2), watch.receive())
-                .await?
-                .map_err(|_| anyhow::anyhow!("resumed reply feed failed"))?;
-        }
-        watch
-            .close()
-            .await
-            .map_err(|_| anyhow::anyhow!("close reply watch"))?;
-        anyhow::ensure!(
-            watch.receive().await.is_err(),
-            "closed reply watch accepted a frame"
-        );
-        watch
-            .close()
-            .await
-            .map_err(|_| anyhow::anyhow!("repeat reply watch close"))?;
-        runtime.shutdown_runtime().await?;
-        Ok(())
-    }
-}
+#[path = "tests.rs"]
+mod tests;

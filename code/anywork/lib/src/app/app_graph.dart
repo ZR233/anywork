@@ -207,6 +207,7 @@ class AppGraph {
     _admissionObservation?.cancel();
     _admissionObservation = null;
     final target = _conversationTarget;
+    timeline.noteVisibleSelection(target);
     final conversations = client.conversations;
     if (target != conversations.visibleThreadId.value) {
       conversations.setVisibleThread(null);

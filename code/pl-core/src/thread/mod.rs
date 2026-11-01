@@ -48,6 +48,7 @@ mod handle;
 mod reconfiguration;
 pub use reconfiguration::IdleReconfiguration;
 mod mailbox;
+mod model_members;
 mod model_step;
 mod model_update;
 pub use model_update::{DeferredModelUpdate, DeferredModelUpdatePrecondition};

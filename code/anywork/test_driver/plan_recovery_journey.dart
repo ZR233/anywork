@@ -7,6 +7,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'flutter_driver_session.dart';
 import 'sidebar_navigation.dart';
 import 'timeline_observation.dart';
+import 'content_window_driver.dart';
 import 'window_control.dart';
 // Public snapshot helpers shared with the realtime/history journeys: this
 // journey reads the same Driver projection and must not fork a second reading.
@@ -816,7 +817,7 @@ class PlanRecoveryJourney {
   /// delivered with the hidden presentation, so it must never add one.
   int userMessageCount(Map<String, dynamic> snapshot) =>
       timelineRows(snapshot)
-          .where((row) => row['type'] == 'userMessage')
+          .where((row) => row['kind'] == 'text' && row['channel'] == 'user')
           .length;
 
   /// Waits for the pending Plan confirmation card and its durable checkpoint.
@@ -1792,13 +1793,13 @@ class PlanRecoveryJourney {
           frozenMatch &&
           await _frozenPlanValueMatches(
             item,
-            detailField: 'plan-document',
+            detailField: 'plan.document',
             value: plan.document,
             expected: expected['document'] as String?,
           ) &&
           await _frozenPlanValueMatches(
             item,
-            detailField: 'plan-feedback',
+            detailField: 'plan.feedback',
             value: plan.feedback,
             expected: expected['feedback'] as String?,
           );
@@ -1890,62 +1891,22 @@ class PlanRecoveryJourney {
     );
   }
 
-  /// Reads a truncated canonical field through its existing detail viewer port.
+  /// Each range and copy-current-segment operation is explicit; no whole-body copy is claimed.
   Future<bool> _readTruncatedPlanField({
     required String itemId,
     required String detailField,
     required String expected,
     required int expectedBytes,
   }) async {
-    await _tap('timeline-detail-open-$itemId-$detailField');
-    try {
-      await driver.waitFor(
-        find.byValueKey('timeline-detail-dialog'),
-        timeout: const Duration(seconds: 10),
-      );
-      final expectedHash = _fnv1a64Hex(expected);
-      final deadline = DateTime.now().add(const Duration(seconds: 30));
-      while (DateTime.now().isBefore(deadline)) {
-        final decoded = jsonDecode(
-          await driver.requestData(
-            'timeline-detail-text',
-            timeout: const Duration(seconds: 15),
-          ),
-        );
-        observations['planDetail-$itemId-$detailField'] = decoded;
-        if (decoded is! Map ||
-            decoded['ok'] != true ||
-            decoded['open'] != true ||
-            decoded['bytes'] is! int) {
-          return false;
-        }
-        final bytes = decoded['bytes'] as int;
-        if (bytes > expectedBytes) return false;
-        if (bytes == expectedBytes) {
-          return decoded['hash'] == expectedHash &&
-              decoded['characters'] == expected.length;
-        }
-        // The dialog mounts before its existing owner finishes reading chunks.
-        // Wait for the full expected length, not merely for a mounted widget.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-      return false;
-    } finally {
-      await _tap('timeline-detail-close');
-      await driver.waitForAbsent(
-        find.byValueKey('timeline-detail-dialog'),
-        timeout: const Duration(seconds: 10),
-      );
-    }
-  }
-
-  String _fnv1a64Hex(String value) {
-    var hash = 0xcbf29ce484222325;
-    for (var index = 0; index < value.length; index++) {
-      hash ^= value.codeUnitAt(index);
-      hash = hash * 0x100000001b3;
-    }
-    return hash.toRadixString(16);
+    final proof = await ContentWindowDriver.session(driver).readAllExplicitly(
+      itemId,
+      detailField,
+      expectedBytes: expectedBytes,
+      expectedText: expected,
+    );
+    proof.remove('text');
+    observations['planWindows-$itemId-$detailField'] = proof;
+    return proof['pass'] == true;
   }
 
   Future<bool> _widgetHoldsByKey(SerializableFinder finder) async {

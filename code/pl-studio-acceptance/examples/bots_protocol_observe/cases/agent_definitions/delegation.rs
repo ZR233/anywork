@@ -2,8 +2,15 @@
 //! parent wait → child terminal report. The same sequence resumes original IDs
 //! after the production process and future Profile configuration have changed.
 use super::{Observation, config, http, saved, wire};
+use crate::cases::replies::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes, chat_payload,
+    chat_turn_outcome, payload_bytes,
+};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
+use pl_protocol::{
+    AgentProfileSnapshot, AgentWorkspaceMode, ChatScope, ThreadActivityToolEntry, ThreadStatus,
+    ThreadWaitState, TurnState,
+};
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
 
@@ -174,9 +181,8 @@ impl Observation<'_> {
             "child direct-parent/root/role association changed"
         );
         let route = snapshot
-            .runtime
+            .model_route
             .as_ref()
-            .and_then(|runtime| runtime.model_route.as_ref())
             .context("child public route missing")?;
         ensure!(
             route.available
@@ -214,56 +220,140 @@ impl Observation<'_> {
     }
 
     async fn assert_child_completed(&self, child: &str, turn_id: &str) -> Result<()> {
-        let page = self.session.http()?.read_timeline(child, 100).await?;
-        ensure!(
-            page.items.iter().any(|item| {
-                item.header.turn_id.as_deref() == Some(turn_id)
-                    && matches!(
-                        &item.descriptor,
-                        pl_protocol::TimelineDescriptor::Turn(turn)
-                            if matches!(
-                                &turn.outcome,
-                                pl_protocol::TimelineTurnOutcome::Completed(_)
-                            )
-                    )
-            }),
-            "original child Turn {turn_id} did not complete successfully"
-        );
-        Ok(())
+        let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+        tokio::time::timeout_at(deadline.into(), async {
+            let mut remaining = CHAT_OBSERVATION_BYTES;
+            let (read, page) = self
+                .session
+                .http()?
+                .open_chat(child, ChatScope::Main, CHAT_DEMAND)
+                .await?;
+            charge_chat_batch(&page, &mut remaining)?;
+            for message in &page.messages {
+                let payload =
+                    chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+                if payload["type"] == "turn" && payload["turnId"].as_str() == Some(turn_id) {
+                    ensure!(
+                        matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),
+                        "original child Turn {turn_id} did not complete successfully"
+                    );
+                    return Ok(());
+                }
+            }
+            anyhow::bail!(
+                "original child Turn {turn_id} missing from its Main cut; truncated={}",
+                page.before.is_some()
+            )
+        })
+        .await
+        .context("child completion observation exceeded its deadline")?
     }
 
     async fn wait_parent_wait(&self, parent: &str, phase: AgentPhase) -> Result<()> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
-        let call_id = phase.wait_call();
-        loop {
-            let snapshot = self.session.http()?.read_thread(parent).await?;
-            ensure!(
-                snapshot.thread.status != ThreadStatus::Faulted,
-                "parent failed before its real child wait"
-            );
-            let page = self.session.http()?.read_timeline(parent, 100).await?;
-            if page
-                .items
-                .iter()
-                .filter_map(|item| match &item.descriptor {
-                    pl_protocol::TimelineDescriptor::Tool(tool) => Some(tool),
-                    _ => None,
-                })
-                .any(|tool| {
-                    tool.invocation.tool_call_id == call_id
-                        && tool
-                            .wait
+        tokio::time::timeout_at(deadline.into(), async {
+            let call_id = phase.wait_call();
+            let mut remaining = CHAT_OBSERVATION_BYTES;
+            loop {
+                let snapshot = self.session.http()?.read_thread(parent).await?;
+                ensure!(
+                    snapshot.thread.status != ThreadStatus::Faulted,
+                    "parent failed before its real child wait"
+                );
+                let (read, batch) = self
+                    .session
+                    .http()?
+                    .open_chat(parent, ChatScope::Main, CHAT_DEMAND)
+                    .await?;
+                charge_chat_batch(&batch, &mut remaining)?;
+                let current = batch.current.context("parent Main Set omitted current")?;
+                ensure!(
+                    current.logical_status != ThreadStatus::Faulted,
+                    "parent failed before its real child wait"
+                );
+                if current.execution_present
+                    && current.active_turn.as_ref().is_some_and(|turn| {
+                        snapshot
+                            .active_turn
                             .as_ref()
-                            .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
-                })
-            {
-                return Ok(());
+                            .is_some_and(|active| active.id == turn.id)
+                    })
+                    && let Some(reference) = current
+                        .collections
+                        .iter()
+                        .find(|reference| reference.collection == "tools")
+                {
+                    // Only this revision's active tools can establish Waiting. A stale
+                    // collection restarts from a new Main cut, never an old cursor.
+                    let waiting = async {
+                        let mut continuation = None;
+                        let mut seen = std::collections::HashSet::new();
+                        for _ in 0..256 {
+                            let page = read
+                                .page_current(reference, continuation.as_deref(), CHAT_DEMAND)
+                                .await?;
+                            ensure!(
+                                page.revision == reference.revision,
+                                "current tools revision changed"
+                            );
+                            ensure!(
+                                page.entries.len() <= CHAT_DEMAND.max_items as usize,
+                                "current tools exceeded item demand"
+                            );
+                            let bytes = serde_json::to_vec(&page)?.len();
+                            ensure!(
+                                bytes <= CHAT_DEMAND.max_bytes as usize,
+                                "current tools exceeded byte demand"
+                            );
+                            charge_chat_bytes(bytes, &mut remaining)?;
+                            for entry in &page.entries {
+                                let bytes =
+                                    payload_bytes(&read, &entry.payload, &mut remaining, deadline)
+                                        .await?;
+                                let tool: ThreadActivityToolEntry = serde_json::from_slice(&bytes)
+                                    .context("invalid current tool entry")?;
+                                ensure!(
+                                    entry.id == tool.call_id,
+                                    "current tool entry identity mismatch"
+                                );
+                                if tool.call_id == call_id {
+                                    return Ok::<bool, anyhow::Error>(
+                                        tool.wait.as_ref().is_some_and(|wait| {
+                                            wait.state() == ThreadWaitState::Waiting
+                                        }),
+                                    );
+                                }
+                            }
+                            let Some(next) = page.continuation else {
+                                return Ok(false);
+                            };
+                            ensure!(
+                                seen.insert(next.clone()),
+                                "current tools continuation did not advance"
+                            );
+                            continuation = Some(next);
+                        }
+                        anyhow::bail!("current tools exceeded its bounded page budget")
+                    }
+                    .await;
+                    match waiting {
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {}
+                        Err(error)
+                            if error.downcast_ref::<http::StudioHttpFailure>().is_some_and(
+                                |failure| failure.error.reason() == Some("staleContent"),
+                            ) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "parent wait {call_id} never became canonical before child release"
+                );
+                tokio::time::sleep(http::POLL).await;
             }
-            ensure!(
-                Instant::now() < deadline,
-                "parent wait {call_id} never became canonical before child release"
-            );
-            tokio::time::sleep(http::POLL).await;
-        }
+        })
+        .await
+        .context("parent Waiting observation exceeded its deadline")?
     }
 }

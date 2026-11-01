@@ -1,5 +1,5 @@
 import 'support/mapped_conversation_feed.dart';
-import 'support/conversation_fixtures.dart';
+import 'support/chat_fixtures.dart';
 
 import 'support/test_statistics_feed.dart';
 import 'support/unused_account_ports.dart';
@@ -15,16 +15,19 @@ import 'dart:convert';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
-import '../../test_driver/timeline_observation.dart' as observation;
 
 final class _UnusedTransport extends UnusedAccountPorts
     implements StudioTransport {
@@ -423,7 +426,11 @@ void main() {
     );
     final client = graph.client;
     await client.bootstrap();
-    await (graph..setConversationPageVisible(true)).client.directoryCommands
+    await (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread('thread-main');
     final session = client.conversations.existingSession('thread-main')!;
     await session.content.state.waitFor((state) => state.snapshot == true);
@@ -989,7 +996,14 @@ void main() {
   );
 
   test('timeline facts expose completed clocks, text channels and typed Plan decisions', () async {
-    final transport = _ScriptedTimelineTransport();
+    final diagnosticReaders = <_DiagnosticReader>[];
+    final transport = _ScriptedTimelineTransport(
+      readerFactory: (threadId) {
+        final reader = _DiagnosticReader(threadId);
+        diagnosticReaders.add(reader);
+        return reader;
+      },
+    );
     final graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
@@ -1011,10 +1025,12 @@ void main() {
       revision: 1,
     );
     final timeline = graph.timeline;
-    (graph..setConversationPageVisible(true)).client.selection.selectThread(
-      threadId: 'thread',
-      workspaceId: 'project',
-    );
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .selection
+        .selectThread(threadId: 'thread', workspaceId: 'project');
     await timeline.source.waitFor(
       (state) => state != null && state.generation > 0,
     );
@@ -1038,7 +1054,7 @@ void main() {
 
     // 文本频道是权威判别事实：commentary 与 finalAnswer 不混，非文本为 null。
     expect(itemOf('cm')['channel'], 'commentary');
-    expect(itemOf('fa')['channel'], 'finalAnswer');
+    expect(itemOf('fa')['channel'], 'final');
     expect(itemOf('cm')['channel'], isNot(itemOf('fa')['channel']));
     expect(itemOf('tool')['channel'], isNull);
     // 两个文本条目的 kind 相同也必须靠 channel 区分，不能从 kind/文本推测。
@@ -1053,25 +1069,11 @@ void main() {
       isNot(contains('qa-plan-pending')),
     );
     expect(itemOf('plan-cancelled')['kind'], 'plan');
-    expect(itemOf('plan-cancelled')['status'], 'completed');
-    expect(
-      graph.timeline
-          .lease('thread')!
-          .itemOf('plan-cancelled')!
-          .planReceipt!
-          .decision,
-      PlanConfirmationDecisionView.cancelled,
-    );
+    expect(itemOf('plan-cancelled')['status'], 'cancelled');
+    expect(itemOf('plan-cancelled')['plan']['decision'], 'cancelled');
     expect(itemOf('plan-approved')['kind'], 'plan');
-    expect(itemOf('plan-approved')['status'], 'completed');
-    expect(
-      graph.timeline
-          .lease('thread')!
-          .itemOf('plan-approved')!
-          .planReceipt!
-          .decision,
-      PlanConfirmationDecisionView.approved,
-    );
+    expect(itemOf('plan-approved')['status'], 'approved');
+    expect(itemOf('plan-approved')['plan']['decision'], 'approved');
     expect(userInputOf('plan-approved'), isNull);
     final approved = itemOf('plan-approved')['plan'];
     expect(approved, {
@@ -1082,33 +1084,35 @@ void main() {
       'document': '# Approved plan',
       'feedback': '  historical feedback\n',
     });
-    final typed = observation.TimelineObservation.parse(json);
-    typed.requireConsistentIds();
-    expect(typed.hiddenPresentationItems.single.kind, 'hidden');
-    expect(typed.hiddenPresentationItems.single.memberIds, ['turn-completed']);
     final lease = timeline.lease('thread')!;
-    expect(
-      lease.controller.messages.map((message) => message.id),
-      isNot(contains(typed.hiddenPresentationItems.single.id)),
-      reason: '只读诊断不能为 hidden owner 制造 Flyer Message',
-    );
-    expect(typed.item('plan-approved')!.plan!.toJson(), approved);
-    expect(typed.item('plan-approved')!.frozenFields()['plan'], approved);
-    expect(typed.item('plan-cancelled')!.plan!.documentVersion, isNull);
-    expect(typed.item('plan-cancelled')!.plan!.contentHash, isNull);
-    expect(typed.item('qa-plan-legacy')!.plan, isNull);
     final timelineJson = json['timeline'] as Map<String, dynamic>;
-    expect(timelineJson['timelineEpoch'], 'facts-epoch');
-    expect(timelineJson['completedThrough'], 9);
-    expect(itemOf('cm')['appendSeq'], 1);
-    expect(itemOf('cm')['sourceEffectSeq'], 101);
+    expect(items.length, lease.controller.messages.length);
+    expect(
+      items.cast<Map<String, dynamic>>().map((item) => item['id']),
+      lease.controller.messages.map((message) => message.id),
+    );
+    expect(
+      itemOf('turn-completed')['kind'],
+      'turn',
+      reason: 'one producer Turn is a real Message, no hidden local owner',
+    );
     expect(itemOf('cm')['sealedAt'], isNull);
     expect(itemOf('fa')['sealedAt'], 1767225600);
-    final presentations = (timelineJson['presentationItems'] as List)
-        .cast<Map<String, dynamic>>();
-    expect(presentations.first['firstAppendSeq'], 1);
-    expect(itemOf('cm').keys, isNot(contains('revision')));
-    expect(itemOf('cm').keys, isNot(contains('ordinal')));
+    for (final oldField in [
+      'timelineEpoch',
+      'completedThrough',
+      'presentationItems',
+    ]) {
+      expect(timelineJson.containsKey(oldField), isFalse);
+    }
+    for (final oldField in [
+      'appendSeq',
+      'sourceEffectSeq',
+      'revision',
+      'ordinal',
+    ]) {
+      expect(itemOf('cm').containsKey(oldField), isFalse);
+    }
     // 旧普通问答复用保留 ID：归属只看工具名，仍是普通问答。
     expect(userInputOf('qa-plan-legacy')!['isPlanConfirmation'], isFalse);
     expect(userInputOf('qa-plan-legacy')!['planDecision'], isNull);
@@ -1117,6 +1121,459 @@ void main() {
       expect(userInputOf(id)!.containsKey('isPlanConfirmation'), isTrue);
       expect(userInputOf(id)!.containsKey('planDecision'), isTrue);
     }
+
+    expect(timelineJson['appliedSets'], 1);
+    expect(timelineJson['appliedPrepends'], 0);
+    expect(timelineJson['appliedAppends'], 0);
+    expect(timelineJson['firstContentLayout'], isNull);
+    expect(lease.selectionId, isNotNull);
+    expect(lease.selectionStartedMicros, isNotNull);
+
+    // Only the read-only display resource is supplied by this test. Its messages
+    // and metadata come from the actual Flyer controller and production adapter.
+    // This proves Driver borrowing, not the UI Children's own apply counters.
+    final childController = InMemoryChatController();
+    final childImages = TimelineImageResources(threadId: 'thread');
+    final childAdapter = TimelineMessageController(
+      childController,
+      generation: 71,
+      imageResources: childImages,
+    );
+    addTearDown(() {
+      childAdapter.dispose();
+      childImages.release();
+      childController.dispose();
+    });
+    await childAdapter.applyBatch(
+      chatBatch([
+        _toolItem('child-tool', name: 'child_tool', result: 'child-result'),
+        chatMessage('child-text'),
+      ]),
+    );
+    var childIsCurrent = true;
+    final borrowed = _BorrowedChildrenDisplay(
+      controller: childController,
+      isEligible: () => childIsCurrent,
+    );
+    final usageBeforeQuery = {
+      for (final kind in ResourceKind.values) kind: client.budget.used(kind),
+    };
+    final opensBeforeQuery = transport.opens;
+    final unregister = lease.registerChildrenDisplay(borrowed);
+    Map<String, dynamic> currentTimelineJson() =>
+        (jsonDecode(StudioDriverState.snapshotJson())
+                as Map<String, dynamic>)['timeline']
+            as Map<String, dynamic>;
+    expect(
+      currentTimelineJson()['current'],
+      isNull,
+      reason:
+          'Main facts or Chat.current cannot replace a mounted current borrow',
+    );
+    const waitJson =
+        '{ "contract":"anywork.chat/1","type":"tool","data":'
+        '{"invocation":{"name":"opaque-producer-name","presentationContract":'
+        '"builtin.wait@1"},"wait":{"state":"completed","messagesReady":true,'
+        '"intent":{"kind":"events","data":{"timeoutMs":4500,'
+        '"targets":[{"kind":"task","id":"task:区别"}]}}}} }\n';
+    const payloadRef = ContentRef(
+      databaseId: 'current-db',
+      target: ItemPayloadTarget(itemId: 'large-current-entry'),
+    );
+    const currentBodyRef = ContentRef(
+      databaseId: 'current-db',
+      target: BodyContentTarget(
+        owner: CurrentContentOwner(
+          domain: 'tool',
+          id: 'current-call',
+          revision: 83,
+        ),
+        key: 'tool.output',
+      ),
+    );
+    const itemBodyRef = ContentRef(
+      databaseId: 'current-db',
+      target: BodyContentTarget(
+        owner: ItemContentOwner(itemId: 'completed-tool'),
+        key: 'tool.arguments',
+      ),
+    );
+    final tools = _BorrowedCurrentCollection(
+      reference: const CurrentCollectionRef(
+        databaseId: 'current-db',
+        collection: 'tools',
+        revision: 83,
+      ),
+      generation: 19,
+      page: CurrentCollectionPage(
+        revision: 83,
+        continuation: 'opaque-tools-next',
+        entries: [
+          CurrentCollectionEntry(
+            id: 'wait-entry',
+            position: 42,
+            payload: InlinePayload(bytes: utf8.encode(waitJson)),
+          ),
+          const CurrentCollectionEntry(
+            id: 'deferred-entry',
+            position: 77,
+            payload: DeferredPayload(reference: payloadRef, byteLength: 123456),
+          ),
+        ],
+      ),
+    );
+    final notReady = _BorrowedCurrentCollection(
+      reference: const CurrentCollectionRef(
+        databaseId: 'current-db',
+        collection: 'backgroundTools',
+        revision: 91,
+      ),
+      generation: 20,
+      error: StateError('page unavailable'),
+    );
+    var currentEligible = true;
+    final currentBorrow = _BorrowedCurrentDisplay(
+      isEligible: () => currentEligible,
+      turnId: 'borrowed-turn',
+      childrenParentId: 'borrowed-parent',
+      activityId: 'borrowed-activity',
+      collections: [tools, notReady],
+      windows: [
+        _BorrowedCurrentWindow(
+          id: 'tool-output',
+          reference: currentBodyRef,
+          offset: 128,
+          window: ContentWindow(
+            offset: 128,
+            bytes: [0, 255, 65, 10],
+            generation: 'body-generation-7',
+            availableThrough: 900,
+            sealed: false,
+          ),
+        ),
+        const _BorrowedCurrentWindow(
+          id: 'pending-arguments',
+          reference: itemBodyRef,
+          offset: 64,
+        ),
+        _BorrowedCurrentWindow(
+          id: 'failed-payload',
+          reference: payloadRef,
+          offset: 256,
+          error: StateError('window unavailable'),
+        ),
+      ],
+    );
+    final unregisterCurrent = lease.registerCurrentDisplay(currentBorrow);
+    final projectedCurrent = currentTimelineJson()['current'] as Map;
+    expect(projectedCurrent['turnId'], 'borrowed-turn');
+    expect(projectedCurrent['childrenParentId'], 'borrowed-parent');
+    expect(projectedCurrent['activityId'], 'borrowed-activity');
+    expect(projectedCurrent['expanded'], isTrue);
+    final projectedTools =
+        (projectedCurrent['collections'] as List).first as Map;
+    expect(projectedTools, {
+      'databaseId': 'current-db',
+      'collection': 'tools',
+      'revision': 83,
+      'generation': 19,
+      'expanded': true,
+      'loading': false,
+      'error': null,
+      'ready': true,
+      'continuation': 'opaque-tools-next',
+      'entries': [
+        {
+          'id': 'wait-entry',
+          'position': 42,
+          'payload': {
+            'kind': 'inline',
+            'byteLength': utf8.encode(waitJson).length,
+            'base64': base64Encode(utf8.encode(waitJson)),
+          },
+        },
+        {
+          'id': 'deferred-entry',
+          'position': 77,
+          'payload': {
+            'kind': 'deferred',
+            'byteLength': 123456,
+            'reference': {
+              'databaseId': 'current-db',
+              'target': {
+                'kind': 'itemPayload',
+                'itemId': 'large-current-entry',
+              },
+            },
+          },
+        },
+      ],
+    });
+    final waitPayload =
+        ((projectedTools['entries'] as List).first as Map)['payload'] as Map;
+    expect(
+      utf8.decode(base64Decode(waitPayload['base64'] as String)),
+      waitJson,
+      reason:
+          'keep producer wait JSON opaque, including its name and whitespace',
+    );
+    expect((projectedCurrent['collections'] as List).last, {
+      'databaseId': 'current-db',
+      'collection': 'backgroundTools',
+      'revision': 91,
+      'generation': 20,
+      'expanded': true,
+      'loading': false,
+      'error': 'Bad state: page unavailable',
+      'ready': false,
+      'continuation': null,
+      'entries': [],
+    });
+    expect(projectedCurrent['windows'], [
+      {
+        'id': 'tool-output',
+        'offset': 128,
+        'error': null,
+        'reference': {
+          'databaseId': 'current-db',
+          'target': {
+            'kind': 'body',
+            'key': 'tool.output',
+            'owner': {
+              'kind': 'current',
+              'domain': 'tool',
+              'id': 'current-call',
+              'revision': 83,
+            },
+          },
+        },
+        'window': {
+          'offset': 128,
+          'byteLength': 4,
+          'base64': base64Encode([0, 255, 65, 10]),
+          'generation': 'body-generation-7',
+          'availableThrough': 900,
+          'sealed': false,
+        },
+      },
+      {
+        'id': 'pending-arguments',
+        'offset': 64,
+        'error': null,
+        'window': null,
+        'reference': {
+          'databaseId': 'current-db',
+          'target': {
+            'kind': 'body',
+            'key': 'tool.arguments',
+            'owner': {'kind': 'item', 'itemId': 'completed-tool'},
+          },
+        },
+      },
+      {
+        'id': 'failed-payload',
+        'offset': 256,
+        'error': 'Bad state: window unavailable',
+        'window': null,
+        'reference': {
+          'databaseId': 'current-db',
+          'target': {'kind': 'itemPayload', 'itemId': 'large-current-entry'},
+        },
+      },
+    ]);
+    expect(
+      base64Decode(
+        ((projectedCurrent['windows'] as List).first as Map)['window']['base64']
+            as String,
+      ),
+      [0, 255, 65, 10],
+    );
+    for (var snapshot = 0; snapshot < 3; snapshot++) {
+      expect(currentTimelineJson()['current'], projectedCurrent);
+    }
+    tools.page = CurrentCollectionPage(
+      revision: 83,
+      entries: [
+        CurrentCollectionEntry(
+          id: 'updated-page',
+          position: 98,
+          payload: InlinePayload(bytes: utf8.encode('new admitted page')),
+        ),
+      ],
+    );
+    final updatedCurrent = currentTimelineJson()['current'] as Map;
+    final updatedTools = (updatedCurrent['collections'] as List).first as Map;
+    expect(updatedTools['continuation'], isNull);
+    expect((updatedTools['entries'] as List).single['id'], 'updated-page');
+    expect(
+      (projectedTools['entries'] as List).first['id'],
+      'wait-entry',
+      reason:
+          'new query reads the current borrowed page, not a cached JSON copy',
+    );
+    tools.isCurrent = false;
+    expect(
+      ((currentTimelineJson()['current'] as Map)['collections'] as List),
+      hasLength(1),
+    );
+    tools.isCurrent = true;
+    currentEligible = false;
+    expect(currentTimelineJson()['current'], isNull);
+    currentEligible = true;
+    unregisterCurrent();
+    unregisterCurrent();
+    expect(currentTimelineJson()['current'], isNull);
+    final unregisterA = lease.registerCurrentDisplay(currentBorrow);
+    final currentB = _BorrowedCurrentDisplay(
+      isEligible: () => true,
+      turnId: 'replacement-turn',
+      activityId: null,
+      collections: const [],
+      windows: const [],
+    );
+    final unregisterB = lease.registerCurrentDisplay(currentB);
+    unregisterA();
+    expect(
+      (currentTimelineJson()['current'] as Map)['turnId'],
+      'replacement-turn',
+    );
+    unregisterB();
+    expect(currentTimelineJson()['current'], isNull);
+    final unregisterRetiredCurrent = lease.registerCurrentDisplay(
+      currentBorrow,
+    );
+    final firstBorrow = currentTimelineJson();
+    final childJson = (firstBorrow['children'] as List).single as Map;
+    expect(childJson['parentId'], 'turn-parent');
+    expect(childJson['generation'], 71);
+    expect(childJson['ready'], isTrue);
+    expect(childJson['loadedCount'], childController.messages.length);
+    expect(childJson['itemIds'], ['child-tool', 'child-text']);
+    expect(childJson['olderCursor'], 'opaque-child-before');
+    expect(childJson['loadingOlder'], isFalse);
+    expect(childJson['error'], isNull);
+    expect(
+      (
+        childJson['appliedSets'],
+        childJson['appliedPrepends'],
+        childJson['appliedAppends'],
+      ),
+      (7, 3, 5),
+      reason: 'forward borrowed facts, do not infer them from length',
+    );
+    final childItems = (childJson['items'] as List).cast<Map>();
+    expect(childItems.first['kind'], 'tool');
+    expect(childItems.first['presentationContract'], 'generic@1');
+    expect((childItems.first['tool'] as Map)['result'], 'child-result');
+    expect(
+      (childItems.first['details'] as List).cast<Map>().map(
+        (detail) => detail['field'],
+      ),
+      ['tool.arguments', 'tool.result'],
+    );
+    expect(
+      (firstBorrow['items'] as List).cast<Map>().map((item) => item['id']),
+      lease.controller.messages.map((message) => message.id),
+    );
+    expect(
+      (firstBorrow['items'] as List).cast<Map>().map((item) => item['id']),
+      isNot(contains('child-tool')),
+    );
+    await childAdapter.applyBatch(
+      chatBatch([chatMessage('child-later')], placement: ChatPlacement.append),
+    );
+    final laterBorrow = currentTimelineJson();
+    expect(((laterBorrow['children'] as List).single as Map)['itemIds'], [
+      'child-tool',
+      'child-text',
+      'child-later',
+    ]);
+    expect(
+      childJson['itemIds'],
+      ['child-tool', 'child-text'],
+      reason: 'each query snapshots the borrowed controller, not a live mirror',
+    );
+    expect(
+      laterBorrow['firstContentLayout'],
+      isNull,
+      reason: 'ready, messages and Driver queries are not layout witnesses',
+    );
+    expect(transport.opens, opensBeforeQuery);
+    expect(
+      diagnosticReaders.single.queryCalls,
+      0,
+      reason: 'snapshots never page/read/watch, including Deferred payloads',
+    );
+    expect(
+      {for (final kind in ResourceKind.values) kind: client.budget.used(kind)},
+      usageBeforeQuery,
+      reason: 'borrowing/querying never opens a scope or IO',
+    );
+
+    unregister();
+    unregister();
+    expect(currentTimelineJson()['children'], isEmpty);
+    final unregisterRetiring = lease.registerChildrenDisplay(borrowed);
+    childIsCurrent = false;
+    expect(currentTimelineJson()['children'], isEmpty);
+    childIsCurrent = true;
+    expect(currentTimelineJson()['children'], hasLength(1));
+
+    lease.bind();
+    addTearDown(() async {
+      graph.setConversationPageVisible(false);
+      await lease.unbind();
+    });
+    graph.setConversationPageVisible(false);
+    expect(lease.isRetired, isTrue);
+    expect(lease.childrenDisplays, isEmpty);
+    expect(lease.currentDisplay, isNull);
+    // A late old registration remains scoped to the retired Main lease.
+    lease.registerChildrenDisplay(borrowed)();
+    expect(lease.childrenDisplays, isEmpty);
+    graph.setConversationPageVisible(true);
+    await client.conversations.session('thread').content.ready;
+    final replacement = timeline.lease('thread')!;
+    expect(replacement.generation, greaterThan(lease.generation));
+    expect(replacement.selectionId, isNot(lease.selectionId));
+    replacement.bind();
+    addTearDown(() async {
+      graph.setConversationPageVisible(false);
+      await replacement.unbind();
+    });
+    expect(currentTimelineJson()['children'], isEmpty);
+    expect(currentTimelineJson()['current'], isNull);
+    final unregisterNewCurrent = replacement.registerCurrentDisplay(currentB);
+    unregisterRetiredCurrent();
+    lease.registerCurrentDisplay(currentBorrow)();
+    expect(lease.currentDisplay, isNull);
+    expect(
+      (currentTimelineJson()['current'] as Map)['turnId'],
+      'replacement-turn',
+      reason: 'old lease registrations/unregisters cannot affect the new lease',
+    );
+    final unregisterReplacement = replacement.registerChildrenDisplay(borrowed);
+    unregisterRetiring();
+    expect(
+      currentTimelineJson()['children'],
+      hasLength(1),
+      reason: 'old unregister cannot remove a new lease registration',
+    );
+    timeline.recordContentLayout(lease, 'cm', timeline.monotonicMicros);
+    expect(lease.firstContentLayout, isNull);
+    expect(replacement.firstContentLayout, isNull);
+    expect(
+      currentTimelineJson()['firstContentLayout'],
+      isNull,
+      reason: 'old lease callback cannot write the current generation',
+    );
+    unregisterReplacement();
+    unregisterNewCurrent();
+    expect(currentTimelineJson()['current'], isNull);
+    expect(diagnosticReaders.every((reader) => reader.queryCalls == 0), isTrue);
+    graph.setConversationPageVisible(false);
+    await replacement.unbind();
+    await lease.unbind();
 
     client.conversations.setVisibleThread(null);
     await timeline.close(
@@ -1127,12 +1584,162 @@ void main() {
     );
   });
 
+  test('Driver counts admitted Main placements, not loaded message lengths', () async {
+    final readers = <_DiagnosticReader>[];
+    final transport = _ScriptedTimelineTransport(
+      initial: () => chatBatch([chatMessage('main')], before: 'opaque-main'),
+      readerFactory: (threadId) {
+        final reader = _DiagnosticReader(threadId);
+        readers.add(reader);
+        return reader;
+      },
+    );
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'driver-placement-counts',
+    );
+    addTearDown(() async {
+      graph.setConversationPageVisible(false);
+      for (final reader in readers) {
+        if (!reader.reply.isCompleted) {
+          reader.reply.complete(
+            chatBatch([], placement: ChatPlacement.prepend),
+          );
+        }
+      }
+      await graph.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      );
+    });
+    final client = graph.client;
+    client.selection.markOpened();
+    client.threadDirectory.applyBaseline(
+      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
+      revision: 1,
+    );
+    graph.timeline.updateReadDemand(chatDemand);
+    graph.setConversationPageVisible(true);
+    client.selection.selectThread(threadId: 'thread', workspaceId: 'project');
+    final session = client.conversations.session('thread');
+    await session.content.ready;
+    final feed = transport.feeds.single;
+    await feed.accepted(1);
+    final lease = graph.timeline.lease('thread')!;
+    TimelineDisplayFacts query() => queryStudioDriverFacts(
+      client,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+      timeline: graph.timeline,
+    ).timeline!;
+    void expectCounts(int sets, int prepends, int appends, int messages) {
+      final facts = query();
+      expect(
+        (facts.appliedSets, facts.appliedPrepends, facts.appliedAppends),
+        (sets, prepends, appends),
+      );
+      expect(facts.items.length, messages);
+      expect(facts.firstContentLayout, isNull);
+    }
+
+    expectCounts(1, 0, 0, 1);
+    feed.emit(chatBatch([], placement: ChatPlacement.append));
+    await feed.accepted(2);
+    expectCounts(1, 0, 1, 1);
+    final appendCountsAtComponentOperation = <int>[];
+    final operations = lease.controller.operationsStream.listen((_) {
+      appendCountsAtComponentOperation.add(lease.appliedAppends);
+    });
+    addTearDown(operations.cancel);
+    feed.emit(
+      chatBatch([
+        chatMessage('append-a'),
+        chatMessage('append-b'),
+      ], placement: ChatPlacement.append),
+    );
+    await feed.accepted(3);
+    expect(appendCountsAtComponentOperation, [
+      1,
+    ], reason: 'counter updates only after the actual controller await');
+    expectCounts(1, 0, 2, 3);
+
+    final reader = readers.single;
+    final loading = graph.timeline.loadOlder(
+      'thread',
+      generation: lease.generation,
+    );
+    await reader.entered.future;
+    expectCounts(1, 0, 2, 3);
+    reader.reply.complete(
+      chatBatch(
+        [chatMessage('older-a'), chatMessage('older-b')],
+        placement: ChatPlacement.prepend,
+        before: 'opaque-next',
+      ),
+    );
+    await loading;
+    expectCounts(1, 1, 2, 5);
+    reader.reply = Completer<ChatBatch>()
+      ..complete(chatBatch([], placement: ChatPlacement.prepend));
+    await graph.timeline.loadOlder('thread', generation: lease.generation);
+    expectCounts(1, 2, 2, 5);
+    expect(reader.boundaries, ['opaque-main', 'opaque-next']);
+    final usage = {
+      for (final kind in ResourceKind.values) kind: client.budget.used(kind),
+    };
+    for (var queryIndex = 0; queryIndex < 3; queryIndex++) {
+      expectCounts(1, 2, 2, 5);
+    }
+    expect(transport.opens, 1);
+    expect(reader.queryCalls, 2, reason: 'Driver adds no content/history IO');
+    expect(reader.closeCalls, 0);
+    expect(reader.requestCloseCalls, 0);
+    expect({
+      for (final kind in ResourceKind.values) kind: client.budget.used(kind),
+    }, usage);
+
+    // Re-enter a selection from the real component operation stream. Although
+    // the old controller accepted the Message, that lease must not count it as
+    // a qualified admission or contaminate the replacement generation.
+    await operations.cancel();
+    lease.bind();
+    addTearDown(() async {
+      graph.setConversationPageVisible(false);
+      await lease.unbind();
+    });
+    final interrupted = Completer<void>();
+    final reentrant = lease.controller.operationsStream.listen((_) {
+      if (interrupted.isCompleted) return;
+      expect(lease.appliedAppends, 2);
+      graph.setConversationPageVisible(false);
+      graph.setConversationPageVisible(true);
+      interrupted.complete();
+    });
+    addTearDown(reentrant.cancel);
+    feed.emit(
+      chatBatch([
+        chatMessage('retired-append'),
+      ], placement: ChatPlacement.append),
+    );
+    await interrupted.future;
+    await session.content.ready;
+    await transport.feeds.last.accepted(1);
+    await lease.unbind();
+    expect(lease.appliedAppends, 2);
+    expectCounts(1, 0, 0, 1);
+    expect(query().items.single.id, 'main');
+    expect(
+      readers.fold<int>(0, (count, reader) => count + reader.queryCalls),
+      2,
+    );
+  });
+
   test(
     'attachment facts keep canonical modality for user and tool items',
     () async {
-      final transport = _ScriptedTimelineTransport(
-        baseline: _attachmentBaseline,
-      );
+      final transport = _ScriptedTimelineTransport(initial: _attachmentSet);
       final graph = AppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
@@ -1155,10 +1762,12 @@ void main() {
         revision: 1,
       );
       final timeline = graph.timeline;
-      (graph..setConversationPageVisible(true)).client.selection.selectThread(
-        threadId: 'thread',
-        workspaceId: 'project',
-      );
+      (graph
+            ..timeline.updateReadDemand(chatDemand)
+            ..setConversationPageVisible(true))
+          .client
+          .selection
+          .selectThread(threadId: 'thread', workspaceId: 'project');
       await timeline.source.waitFor(
         (state) => state != null && state.generation > 0,
       );
@@ -1243,8 +1852,8 @@ void main() {
         8192,
       ]);
       expect(tool.attachments.map((attachment) => attachment.source), [
-        null,
-        null,
+        'tool',
+        'tool',
       ]);
       // 用户与工具附件身份不串：两侧 id 无交集。
       expect(
@@ -1443,8 +2052,8 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
       activeSkills: const [],
       activeMcpServers: const [],
       activeLspServers: const [],
-      modelRoute: route,
     ),
+    modelRoute: route,
     turn: null,
     lastTurn: null,
     activeInteraction: null,
@@ -1497,31 +2106,32 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
   );
 }
 
-/// 受控最小 content connection：只交付一份首帧基线，尾部保持静默。
-final class _FactsConnection extends ScriptedConversationFeed {
-  _FactsConnection(String threadId, ConversationBaseline Function() baseline)
-    : super(
-        threadId: threadId,
-        subscriptionId: baseline().subscriptionId,
-        baseline: baseline,
-      );
-}
-
+// Only the external source is scripted; SDK admission and Driver queries remain real.
 final class _ScriptedTimelineTransport extends UnusedAccountPorts
     implements StudioTransport {
-  _ScriptedTimelineTransport({ConversationBaseline Function()? baseline})
-    : _baseline = baseline ?? _factsBaseline;
-
-  final ConversationBaseline Function() _baseline;
+  _ScriptedTimelineTransport({
+    ChatBatch Function()? initial,
+    this.readerFactory,
+  }) : _initial = initial ?? _factsSet;
+  final ChatBatch Function() _initial;
+  final ConversationReader Function(String threadId)? readerFactory;
+  final feeds = <ScriptedConversationFeed>[];
   int opens = 0;
-
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     opens++;
-    return _FactsConnection(threadId, _baseline);
+    final feed = ScriptedConversationFeed(
+      threadId: threadId,
+      subscriptionId: 'facts-$opens',
+      initial: _initial,
+      reader: readerFactory?.call(threadId),
+    );
+    feeds.add(feed);
+    return feed;
   }
 
   @override
@@ -1530,175 +2140,271 @@ final class _ScriptedTimelineTransport extends UnusedAccountPorts
   );
 }
 
-UserQuestionView _factsQuestion({required String id, String text = 'Q'}) =>
-    UserQuestionView(
-      id: id,
-      header: 'Header',
-      question: text,
-      isOther: false,
-      isSecret: false,
-      options: const [],
+/// The only supplied Children seam is a synchronous read-only resource borrow.
+/// Counter values are fixture facts for mechanical Driver projection; no real
+/// Children State's admission, lifecycle or layout behavior is claimed here.
+final class _BorrowedChildrenDisplay implements TimelineChildrenDisplay {
+  _BorrowedChildrenDisplay({
+    required this.controller,
+    required this.isEligible,
+  });
+
+  final ChatController controller;
+  final bool Function() isEligible;
+
+  @override
+  String get parentId => 'turn-parent';
+  @override
+  int get generation => 71;
+  @override
+  bool get isCurrent => isEligible();
+  @override
+  bool get ready => true;
+  @override
+  String? get olderCursor => 'opaque-child-before';
+  @override
+  bool get loadingOlder => false;
+  @override
+  Object? get error => null;
+  @override
+  Iterable<Message> get messages => controller.messages;
+  @override
+  int get appliedSets => 7;
+  @override
+  int get appliedPrepends => 3;
+  @override
+  int get appliedAppends => 5;
+}
+
+/// Supplies only already admitted immutable values through the read-only borrow.
+/// Changing these inputs tests snapshot projection, not production current
+/// State's paging, revision transitions, attempts or cancellation.
+final class _BorrowedCurrentDisplay implements TimelineCurrentDisplay {
+  const _BorrowedCurrentDisplay({
+    required this.isEligible,
+    required this.turnId,
+    required this.activityId,
+    required this.collections,
+    required this.windows,
+    this.childrenParentId,
+  });
+  final bool Function() isEligible;
+  @override
+  bool get isCurrent => isEligible();
+  @override
+  final String? turnId;
+  @override
+  final String? childrenParentId;
+  @override
+  final String? activityId;
+  @override
+  bool get expanded => true;
+  @override
+  final Iterable<TimelineCurrentCollectionDisplay> collections;
+  @override
+  final Iterable<TimelineCurrentWindowDisplay> windows;
+}
+
+final class _BorrowedCurrentCollection
+    implements TimelineCurrentCollectionDisplay {
+  _BorrowedCurrentCollection({
+    required this.reference,
+    required this.generation,
+    this.page,
+    this.error,
+  });
+  @override
+  bool isCurrent = true;
+  @override
+  final CurrentCollectionRef reference;
+  @override
+  final int generation;
+  @override
+  bool get expanded => true;
+  @override
+  bool get loading => false;
+  @override
+  final Object? error;
+  @override
+  CurrentCollectionPage? page;
+}
+
+final class _BorrowedCurrentWindow implements TimelineCurrentWindowDisplay {
+  const _BorrowedCurrentWindow({
+    required this.id,
+    required this.reference,
+    required this.offset,
+    this.window,
+    this.error,
+  });
+  @override
+  final String id;
+  @override
+  final ContentRef reference;
+  @override
+  final int offset;
+  @override
+  final ContentWindow? window;
+  @override
+  final Object? error;
+}
+
+/// Script only the original reader's IO result. The SDK and Main owner still
+/// perform the real serialized Prepend admission and operation accounting.
+final class _DiagnosticReader extends Fake implements ConversationReader {
+  _DiagnosticReader(this.threadId);
+  @override
+  final String threadId;
+  final entered = Completer<void>();
+  Completer<ChatBatch> reply = Completer<ChatBatch>();
+  final boundaries = <String>[];
+  int queryCalls = 0;
+  int closeCalls = 0;
+  int requestCloseCalls = 0;
+
+  @override
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    queryCalls++;
+    boundaries.add(before);
+    if (!entered.isCompleted) entered.complete();
+    return reply.future;
+  }
+
+  @override
+  void requestClose() => requestCloseCalls++;
+  @override
+  Future<void> close() async {
+    closeCalls++;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    queryCalls++;
+    throw UnsupportedError(
+      'Unexpected diagnostic IO: ${invocation.memberName}',
     );
+  }
+}
 
-ConversationItem _textItem(
+Map<String, Object?> _attachment(ThreadAttachmentView value) => {
+  'id': value.id,
+  'modality': value.modality.name,
+  'mediaType': value.mediaType,
+  'byteSize': value.byteSize,
+  'filename': value.filename,
+};
+ChatMessage _textItem(
   String id,
-  int appendSeq,
-  ThreadTextChannel channel, {
+  String channel, {
+  int? sealedAt,
   List<ThreadAttachmentView> attachments = const [],
-}) => conversationFixture(
-  id: id,
-  threadId: 'thread',
-  turnId: 'turn',
-  appendSeq: appendSeq,
-  sourceEffectSeq: 100 + appendSeq,
-  sealedAt: appendSeq == 1 ? null : 1767225600,
-  descriptor: ConversationTextDescriptor(
-    channel: channel,
-    attachments: attachments,
-    outcome: ConversationContentCompleted(
-      CompletedThreadContentView(DateTime.utc(2026)),
-    ),
-  ),
-  fields: {const ThreadTextFieldView(): 'body-$id'},
+}) => chatEnvelope(
+  id,
+  type: 'text',
+  sealedAt: sealedAt,
+  data: {
+    'channel': channel,
+    'attachments': attachments.map(_attachment).toList(),
+    'outcome': {
+      'kind': 'completed',
+      'data': {'completedAt': 1767225600},
+    },
+  },
+  bodies: [inlineBody('body', 'body-$id')],
 );
-
-ConversationItem _toolItem(
-  String id,
-  int appendSeq, {
-  ConversationInputFixture? userInput,
-  ConversationToolState? state,
+ChatMessage _toolItem(
+  String id, {
   String name = 'ask_user',
   String result = '',
-}) => conversationFixture(
-  id: id,
-  threadId: 'thread',
-  turnId: 'turn',
-  appendSeq: appendSeq,
-  descriptor: ConversationToolDescriptor(
-    invocation: ConversationToolInvocation(
-      toolCallId: id,
-      callId: id,
-      name: name,
-    ),
-    userInput: userInput?.descriptor,
-    state:
-        state ??
-        ConversationToolSucceeded(
-          completedAt: DateTime.utc(2026),
-          output: ConversationToolOutputDescriptor(attachments: const []),
-        ),
-  ),
-  fields: {
-    const ThreadToolArgumentsFieldView(): '{}',
-    const ThreadToolResultFieldView(): result,
-    ...?userInput?.fields,
+  Map<String, Object?>? userInput,
+  List<Map<String, Object?>> bodies = const [],
+  List<ThreadAttachmentView> attachments = const [],
+}) => chatEnvelope(
+  id,
+  type: 'tool',
+  data: {
+    'invocation': {
+      'toolCallId': id,
+      'callId': id,
+      'name': name,
+      'presentationContract': 'generic@1',
+    },
+    'state': {
+      'kind': 'succeeded',
+      'completedAt': 1767225600,
+      'output': {'attachments': attachments.map(_attachment).toList()},
+    },
+    'userInput': ?userInput,
   },
-);
-
-ConversationBaseline _factsBaseline() => ConversationBaseline(
-  subscriptionId: 'facts',
-  timelineEpoch: 'facts-epoch',
-  completedCursor: const ConversationCompletionCursor(
-    timelineEpoch: 'facts-epoch',
-    appendSeq: 9,
-  ),
-  before: null,
-  hasOlder: false,
-  items: [
-    _textItem('cm', 1, ThreadTextChannel.commentary),
-    _textItem('fa', 2, ThreadTextChannel.finalAnswer),
-    _toolItem('tool', 3),
-    _toolItem(
-      'qa-normal',
-      4,
-      userInput: conversationInputFixture(
-        interactionId: 'normal',
-        questions: [_factsQuestion(id: 'q1')],
-        state: ConversationUserInputResolved(
-          answers: [
-            const ConversationAnswerDescriptor(
-              questionId: 'q1',
-              answerCount: 1,
-              redacted: false,
-            ),
-          ],
-        ),
-        answers: {
-          'q1': ['A'],
-        },
-      ),
-    ),
-    conversationFixture(
-      id: 'plan-cancelled',
-      threadId: 'thread',
-      appendSeq: 6,
-      descriptor: const ConversationPlanDescriptor(
-        interactionId: 'cancelled',
-        decision: ConversationPlanDecision.cancelled,
-      ),
-      fields: {const ThreadPlanDocumentFieldView(): '# Cancelled plan'},
-    ),
-    conversationFixture(
-      id: 'plan-approved',
-      threadId: 'thread',
-      appendSeq: 7,
-      descriptor: const ConversationPlanDescriptor(
-        interactionId: 'approved',
-        decision: ConversationPlanDecision.approved,
-        documentVersion: 7,
-        contentHash: 'recorded-approved-hash',
-      ),
-      fields: {
-        const ThreadPlanDocumentFieldView(): '# Approved plan',
-        const ThreadPlanFeedbackFieldView(): '  historical feedback\n',
-      },
-    ),
-    _toolItem(
-      'qa-plan-legacy',
-      8,
-      userInput: conversationInputFixture(
-        interactionId: 'plan-legacy',
-        questions: [
-          _factsQuestion(
-            id: agentSessionPlanConfirmationQuestionId,
-            text: '# Plan',
-          ),
-        ],
-        state: ConversationUserInputResolved(
-          answers: [
-            const ConversationAnswerDescriptor(
-              questionId: agentSessionPlanConfirmationQuestionId,
-              answerCount: 1,
-              redacted: false,
-            ),
-          ],
-        ),
-        answers: {
-          agentSessionPlanConfirmationQuestionId: [
-            agentSessionPlanApproveAnswer,
-          ],
-        },
-      ),
-    ),
-    conversationFixture(
-      id: 'turn-completed',
-      threadId: 'thread',
-      turnId: 'turn',
-      appendSeq: 9,
-      descriptor: const ConversationTurnDescriptor(
-        outcome: ConversationTurnCompleted(
-          CompletedStudioTurnState(
-            startedAt: null,
-            completedAt: 1,
-            completion: StudioTurnCompletion.normal,
-          ),
-        ),
-      ),
-    ),
+  bodies: [
+    inlineBody('tool.arguments', '{}'),
+    inlineBody('tool.result', result),
+    ...bodies,
   ],
 );
+Map<String, Object?> _input(String interactionId, String questionId) => {
+  'interactionId': interactionId,
+  'questions': [
+    {'id': questionId, 'isSecret': false, 'optionCount': 0},
+  ],
+  'state': {
+    'kind': 'resolved',
+    'answers': [
+      {'questionId': questionId, 'answerCount': 1, 'redacted': false},
+    ],
+  },
+};
+ChatBatch _factsSet() => chatBatch([
+  _textItem('cm', 'commentary'),
+  _textItem('fa', 'final', sealedAt: 1767225600),
+  _toolItem('tool'),
+  _toolItem(
+    'qa-normal',
+    userInput: _input('normal', 'q1'),
+    bodies: [inlineBody('tool.user-input.answer.0.0', 'A')],
+  ),
+  chatEnvelope(
+    'plan-cancelled',
+    type: 'plan',
+    data: const {'interactionId': 'cancelled', 'decision': 'cancelled'},
+    bodies: [inlineBody('plan.document', '# Cancelled plan')],
+  ),
+  chatEnvelope(
+    'plan-approved',
+    type: 'plan',
+    data: const {
+      'interactionId': 'approved',
+      'decision': 'approved',
+      'documentVersion': 7,
+      'contentHash': 'recorded-approved-hash',
+    },
+    bodies: [
+      inlineBody('plan.document', '# Approved plan'),
+      inlineBody('plan.feedback', '  historical feedback\n'),
+    ],
+  ),
+  _toolItem(
+    'qa-plan-legacy',
+    userInput: _input('plan-legacy', agentSessionPlanConfirmationQuestionId),
+    bodies: [
+      inlineBody('tool.user-input.answer.0.0', agentSessionPlanApproveAnswer),
+    ],
+  ),
+  chatEnvelope(
+    'turn-completed',
+    type: 'turn',
+    data: const {
+      'outcome': {
+        'kind': 'completed',
+        'data': {'startedAt': null, 'completedAt': 1, 'completion': 'normal'},
+      },
+    },
+  ),
+], current: chatCurrent());
 
-/// 用户输入附件与工具输出附件都用 SDK 的 typed DTO 准备，不做 dynamic 替身。
 const _userImage = ThreadAttachmentView(
   id: 'user-image',
   modality: AttachmentModalityView.image,
@@ -1706,7 +2412,6 @@ const _userImage = ThreadAttachmentView(
   byteSize: 2048,
   filename: 'chart.png',
 );
-
 const _userFile = ThreadAttachmentView(
   id: 'user-file',
   modality: AttachmentModalityView.file,
@@ -1714,7 +2419,6 @@ const _userFile = ThreadAttachmentView(
   byteSize: 15,
   filename: 'notes.txt',
 );
-
 const _toolImage = ThreadAttachmentView(
   id: 'tool-image',
   modality: AttachmentModalityView.image,
@@ -1722,7 +2426,6 @@ const _toolImage = ThreadAttachmentView(
   byteSize: 4096,
   filename: 'shot.png',
 );
-
 const _toolVideo = ThreadAttachmentView(
   id: 'tool-video',
   modality: AttachmentModalityView.video,
@@ -1730,39 +2433,15 @@ const _toolVideo = ThreadAttachmentView(
   byteSize: 8192,
   filename: 'clip.mp4',
 );
-
-/// 用户条目带图片/文件附件，工具条目带真实成功输出附件：投影必须同时保留
-/// 顶层附件行与 nested 工具附件，且 modality 是 canonical enum 名。
-ConversationBaseline _attachmentBaseline() => ConversationBaseline(
-  subscriptionId: 'attachments',
-  timelineEpoch: 'attachments-epoch',
-  completedCursor: const ConversationCompletionCursor(
-    timelineEpoch: 'attachments-epoch',
-    appendSeq: 2,
+ChatBatch _attachmentSet() => chatBatch([
+  _textItem('user', 'user', attachments: const [_userImage, _userFile]),
+  _toolItem(
+    'tool-output',
+    name: 'bash',
+    result: 'ok',
+    attachments: const [_toolImage, _toolVideo],
   ),
-  before: null,
-  hasOlder: false,
-  items: [
-    _textItem(
-      'user',
-      1,
-      ThreadTextChannel.user,
-      attachments: const [_userImage, _userFile],
-    ),
-    _toolItem(
-      'tool-output',
-      2,
-      name: 'bash',
-      result: 'ok',
-      state: ConversationToolSucceeded(
-        completedAt: DateTime.utc(2026),
-        output: ConversationToolOutputDescriptor(
-          attachments: [_toolImage, _toolVideo],
-        ),
-      ),
-    ),
-  ],
-);
+], current: chatCurrent());
 
 void _applyInstall(AppGraph graph, AcpInstallSnapshotView snapshot) =>
     graph.accountDomains.acceptFrame(

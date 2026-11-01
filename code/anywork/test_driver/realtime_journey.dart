@@ -738,11 +738,10 @@ class RealtimeJourney {
     final settled = await awaitSettled(turn, 'reasoning');
     await observe('reasoning_complete', settled);
     final rows = TimelineObservation.parse(settled).items;
-    final reasoningIndex = rows.indexWhere((item) => item.kind == 'reasoning');
+    final reasoningIndex = rows.indexWhere((item) => item.kind == 'thinking');
     final answerIndex = rows.indexWhere(
       (item) =>
-          item.kind == 'agentMessage' &&
-          item.text.contains(_answers['reasoning']!),
+          item.isFinalAnswer && item.text.contains(_answers['reasoning']!),
     );
     timings['reasoning'] = {
       'submittedAt': context.submittedAt,
@@ -751,7 +750,7 @@ class RealtimeJourney {
       'durableSettledAt': DateTime.now().millisecondsSinceEpoch,
       'timeToFirstContentMillis': firstContentAt - context.submittedAt,
       'terminalStatus': turnStatus(terminal),
-      'reasoningRows': rows.where((item) => item.kind == 'reasoning').length,
+      'reasoningRows': rows.where((item) => item.kind == 'thinking').length,
     };
     checks['reasoningThenAnswer'] =
         reasoningIndex >= 0 && answerIndex > reasoningIndex;
@@ -1503,8 +1502,7 @@ class RealtimeJourney {
       'entered': entered,
       'threadId': historyTimeline.threadId,
       'sameThread': historyTimeline.threadId == beforeTimeline.threadId,
-      'sameEpoch':
-          historyTimeline.timelineEpoch == beforeTimeline.timelineEpoch,
+      'sameGeneration': historyTimeline.generation == beforeTimeline.generation,
       'retainsCompletedFacts': _retainsCompletedFacts(
         beforeTimeline,
         historyTimeline,
@@ -1552,38 +1550,54 @@ class RealtimeJourney {
     );
   }
 
-  /// 紧凑工作组不足以离底 200px 时，先通过真实 UI 展开已加载的活动组。
+  /// 当前窗口不足以离底 200px 时，通过真实 Turn 行展开它自己的 Children。
   /// 不改写 pixels、不增造消息；展开和可滚范围都必须来自当前展示事实。
   Future<Map<String, Object?>> _expandLoadedActivityForScroll(
     TimelineObservation timeline,
   ) async {
-    TimelinePresentationObservation? target;
-    for (final group in timeline.presentationItems) {
-      if (group.kind == 'activity' && !group.expanded) target = group;
+    TimelineItemObservation? target;
+    for (final item in timeline.items) {
+      if (item.kind == 'turn' && item.childrenParentId != null) target = item;
     }
     if (target == null) {
       throw StateError(
-        'history direct send: no loaded collapsed activity group can provide '
+        'history direct send: no loaded Turn with a Children identity can provide '
         'the required reading range (itemCount=${timeline.itemCount})',
       );
     }
-    final groupId = target.id;
-    final summaryKey = _activitySummaryKey(groupId);
-    final summary = find.byValueKey(summaryKey);
+    final itemId = target.id;
+    final childrenParentId = target.childrenParentId;
+    final row = find.byValueKey('timeline-row-$itemId');
+    final summary = find.descendant(
+      of: find.byValueKey('chat-item:$itemId'),
+      matching: find.byType('TimelineActivityRow'),
+      firstMatchOnly: true,
+    );
     await driver.scrollUntilVisible(
       find.byValueKey('timeline-scrollable'),
       summary,
       dyScroll: _historyScrollStep,
       timeout: const Duration(seconds: 20),
     );
-    await driver.rawTap(summary, timeout: const Duration(seconds: 30));
+    final before = await driver.sendCommand(ToolProbe(summary, 'observe'));
+    final beforeSample = (before['samples'] as List).last as Map;
+    if (beforeSample['expanded'] != true) {
+      await driver.rawTap(summary, timeout: const Duration(seconds: 30));
+    }
+    await driver.waitFor(
+      find.descendant(
+        of: row,
+        matching: find.byType('TimelineChildrenConnector'),
+      ),
+      timeout: const Duration(seconds: 20),
+    );
     final expanded = await waitFor(
       (snapshot) {
         final current = TimelineObservation.optional(snapshot);
         return current != null &&
-            current.presentationItems.any(
-              (group) => group.id == groupId && group.expanded,
-            ) &&
+            current.threadId == timeline.threadId &&
+            current.generation == timeline.generation &&
+            current.item(itemId)?.childrenParentId == childrenParentId &&
             (TimelineScrollObservation.optional(snapshot)?.maxScrollExtent ??
                     0) >
                 _minDetachedOffset;
@@ -1592,10 +1606,17 @@ class RealtimeJourney {
       timeout: const Duration(seconds: 20),
     );
     final scroll = TimelineScrollObservation.parse(expanded);
+    final after = await driver.sendCommand(ToolProbe(summary, 'observe'));
+    final afterSample = (after['samples'] as List).last as Map;
+    if (afterSample['expanded'] != true) {
+      throw StateError(
+        'Turn Children collapsed before its reading range settled',
+      );
+    }
     return <String, Object?>{
-      'groupId': groupId,
-      'summaryKey': summaryKey,
-      'expanded': true,
+      'itemId': itemId,
+      'childrenParentId': childrenParentId,
+      'expanded': afterSample['expanded'],
       'maxScrollExtent': scroll.maxScrollExtent,
       'pixels': scroll.pixels,
       'extentBefore': scroll.extentBefore,
@@ -1692,7 +1713,6 @@ class RealtimeJourney {
           'threadId': currentTimeline.threadId,
           'mode': currentTimeline.mode,
           'generation': currentTimeline.generation,
-          'timelineEpoch': currentTimeline.timelineEpoch,
           'pixels': currentScroll.pixels,
           'extentBefore': currentScroll.extentBefore,
           'extentAfter': currentScroll.extentAfter,
@@ -2884,13 +2904,15 @@ int assistantContentCount(Map<String, dynamic> snapshot) {
   return timeline.items
       .where(
         (item) =>
-            const {'agentMessage', 'reasoning', 'toolCall'}.contains(item.kind),
+            item.isFinalAnswer ||
+            item.isCommentary ||
+            const {'thinking', 'tool'}.contains(item.kind),
       )
       .length;
 }
 
 int reasoningCount(Map<String, dynamic> snapshot) =>
-    TimelineObservation.optional(snapshot)?.ofKind('reasoning').length ?? 0;
+    TimelineObservation.optional(snapshot)?.ofKind('thinking').length ?? 0;
 
 bool _liveTextPresent(
   Map<String, dynamic> snapshot,
@@ -2913,23 +2935,22 @@ bool _retainsCompletedFacts(
   TimelineObservation before,
   TimelineObservation after,
 ) =>
-    before.timelineEpoch == after.timelineEpoch &&
+    after.retainsContiguousWindow(before) &&
     before.items.every((item) {
       final kept = after.item(item.id);
       return kept != null &&
-          kept.appendSeq == item.appendSeq &&
           jsonEncode(kept.frozenFields()) == jsonEncode(item.frozenFields());
     });
 
 /// 已加载时间线里的用户消息条数（evidence 用，不参与判定）。
 int _userItemCount(TimelineObservation timeline) =>
-    timeline.items.where((item) => item.kind == 'userMessage').length;
+    timeline.items.where((item) => item.isUserMessage).length;
 
 /// 当前已加载的最后一条用户消息（canonical 正文与身份来自同一 typed item）。
 TimelineItemObservation? _lastUserItem(TimelineObservation timeline) {
   TimelineItemObservation? last;
   for (final item in timeline.items) {
-    if (item.kind == 'userMessage') last = item;
+    if (item.isUserMessage) last = item;
   }
   return last;
 }
@@ -2944,8 +2965,6 @@ String? _lastUserItemId(TimelineObservation timeline) =>
 /// （`timeline-activity-summary-<$id>`）。宿主脚本运行在纯 Dart VM，不能 import
 /// `package:flutter`；共享 key 值文件不在本任务可写范围，因此这里保留单一定义并
 /// 注明唯一来源，不另建第二套命名规则。
-String _activitySummaryKey(String reasoningId) =>
-    'timeline-activity-summary-$reasoningId';
 
 /// Ordered, typed activity content from the read-only Driver projection. This
 /// serializes actual part identity, order, text and declared UTF-8 length; it is
@@ -2954,7 +2973,7 @@ String? _activityContentObservation(Map<String, dynamic> snapshot) {
   return conversationActivityContentObservation(snapshot);
 }
 
-/// 真正的最终回答数量：只统计 `channel == finalAnswer`，不把进度/解释混入。
+/// 真正的最终回答数量：只统计 `channel == final`，不把进度/解释混入。
 int answerCount(Map<String, dynamic> snapshot) =>
     TimelineObservation.optional(snapshot)?.items
         .where((item) => item.isFinalAnswer)
@@ -2977,14 +2996,15 @@ int answerMatchCount(Map<String, dynamic> snapshot, String needle) =>
         .length ??
     0;
 
-/// The typed tool previews of the current generation, in canonical order.
+/// Completed tools from the currently expanded Children displays.
 ///
 /// 字段来自 `TimelineToolFacts`：完整参数/结果只在详情查看器里读取，这里保留的是
-/// 后端脱敏后的有界预览。
+/// 后端脱敏后的有界预览。每个 Children 的顺序独立，不将它们视为 Main 历史顺序。
 List<Map<String, dynamic>> execTools(Map<String, dynamic> snapshot) {
   final tools = <Map<String, dynamic>>[];
   for (final item
-      in TimelineObservation.optional(snapshot)?.items ??
+      in TimelineObservation.optional(snapshot)?.children
+              .expand((child) => child.items) ??
           const <TimelineItemObservation>[]) {
     final tool = item.tool;
     if (tool == null || tool.name != 'exec') continue;
@@ -2994,9 +3014,8 @@ List<Map<String, dynamic>> execTools(Map<String, dynamic> snapshot) {
       'callId': tool.callId,
       'arguments': tool.arguments,
       'result': tool.result,
-      'output': tool.result,
       'progressBytes': tool.progressBytes,
-      'appendSeq': tool.appendSeq,
+      'presentationContract': tool.presentationContract,
       'itemId': item.id,
     });
   }
@@ -3131,7 +3150,8 @@ TimelineToolObservation? completedToolByCallId(
   String callId,
 ) {
   for (final item
-      in TimelineObservation.optional(snapshot)?.items ??
+      in TimelineObservation.optional(snapshot)?.children
+              .expand((child) => child.items) ??
           const <TimelineItemObservation>[]) {
     final tool = item.tool;
     if (tool != null &&
@@ -3401,15 +3421,14 @@ String _rowType(TimelineItemObservation item) {
   if (item.userInput != null) return 'userInput';
   if (item.isCommentary) return 'commentary';
   if (item.isFinalAnswer) return 'finalAnswer';
-  if (item.kind == 'toolCall') return 'tool';
   return item.kind;
 }
 
 /// Host-side row view over the canonical items of the current generation.
 ///
 /// `type` 是验收词汇，不是第二份行模型：它来自 canonical `kind` **加上**权威
-/// `channel`/typed `userInput`。`agentMessage` 同时覆盖 commentary 与 finalAnswer，
-/// 因此回答只能由 `channel == finalAnswer` 判定；问答行保留 plan 判别与权威决定。
+/// `channel`/公开 `userInput`。回答必须是当前 text payload 的明确 final
+/// 频道；未知 marker 不经工具名或 JSON 外形推测语义。
 List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
   final timeline = TimelineObservation.optional(snapshot);
   if (timeline == null) return const [];
@@ -3422,9 +3441,10 @@ List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
         'type': _rowType(item),
         'text': item.text,
         'status': item.status,
-        'appendSeq': item.appendSeq,
-        'sourceEffectSeq': item.sourceEffectSeq,
         'sealedAt': item.sealedAt,
+        'compatibility': item.compatibility,
+        'payloadByteLength': item.payloadByteLength,
+        'presentationContract': item.presentationContract,
         'callId': item.tool?.callId,
         'userInput': item.userInput == null
             ? null
@@ -3442,9 +3462,8 @@ List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
               'callId': tool.callId,
               'arguments': tool.arguments,
               'result': tool.result,
-              'output': tool.result,
               'progressBytes': tool.progressBytes,
-              'appendSeq': tool.appendSeq,
+              'presentationContract': tool.presentationContract,
               'itemId': item.id,
               'attachments': [
                 for (final attachment in tool.attachments)

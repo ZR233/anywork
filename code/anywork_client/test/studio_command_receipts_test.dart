@@ -11,6 +11,8 @@ import 'package:test/test.dart';
 import 'support/accounts_test_runtime.dart';
 import 'support/timeline_transport.dart';
 
+const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
+
 // The native fixture identity used before the SDK conversation migration.
 const _epoch = 'native-runtime-one';
 
@@ -168,15 +170,12 @@ final class _Transport extends AccountsTestTransport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
     threadBindings.add(states);
-    return ScriptedConversationFeed(
-      threadId: threadId,
-      states: states.stream,
-      resumeAfter: resumeAfter,
-    );
+    return ScriptedConversationFeed(threadId: threadId, states: states.stream);
   }
 
   @override
@@ -328,9 +327,10 @@ final class _Transport extends AccountsTestTransport {
 final class _RouteConflictFeed extends ScriptedConversationFeed {
   _RouteConflictFeed({
     required super.threadId,
+    required super.subscriptionId,
     required super.initial,
     required super.states,
-    super.resumeAfter,
+
     required this.onClose,
   });
 
@@ -365,7 +365,8 @@ final class _RouteConflictTransport extends _Transport {
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     final index = bindings.length;
     // Frames may have no consumer when opening is retired immediately.
@@ -374,17 +375,19 @@ final class _RouteConflictTransport extends _Transport {
     windowOpens++;
     final feed = _RouteConflictFeed(
       threadId: threadId,
-      initial: baseline(
-        300,
-        subscriptionId: 'route-conflict-$index',
-        items: const [],
-      ),
+      subscriptionId: 'route-conflict-$index',
+      initial: chatSet(messages: const []),
       states: binding.stream,
-      resumeAfter: resumeAfter,
+
       onClose: () => onFeedClose?.call(index) ?? Future<void>.value(),
     );
-    if (bindings.length == 2 && !refreshEntered.isCompleted)
-      refreshEntered.complete();
+    if (bindings.length == 2) {
+      unawaited(
+        feed.acknowledged(1).then((_) {
+          if (!refreshEntered.isCompleted) refreshEntered.complete();
+        }),
+      );
+    }
     return feed;
   }
 
@@ -421,7 +424,7 @@ final class _RouteConflictTransport extends _Transport {
       );
     }
     return ThreadModelRouteCommandReply(
-      runtime: _runtime(routeRevision: 4),
+      runtime: _runtime(),
       settings: _settings(2),
       modeDefaultSaved: true,
       receipt: _receipt(operationId, [
@@ -474,7 +477,6 @@ AgentExecutionView? _execution({
 
 ThreadRuntimeView _runtime({
   String modelId = 'alpha',
-  int routeRevision = 1,
   AgentExecutionView? execution,
   ContinuationView? continuation,
 }) => ThreadRuntimeView(
@@ -486,16 +488,18 @@ ThreadRuntimeView _runtime({
   activeSkills: const [],
   activeMcpServers: const [],
   activeLspServers: const [],
-  modelRoute: ThreadModelRouteView(
-    accountId: 'account',
-    modelId: modelId,
-    effort: 'medium',
-    revision: routeRevision,
-    available: true,
-  ),
   execution: execution,
   continuation: continuation,
 );
+
+ThreadModelRouteView _route(int revision, {String modelId = 'alpha'}) =>
+    ThreadModelRouteView(
+      accountId: 'account',
+      modelId: modelId,
+      effort: 'medium',
+      revision: revision,
+      available: true,
+    );
 
 ThreadWorkspace _workspace({
   int revision = 1,
@@ -512,10 +516,10 @@ ThreadWorkspace _workspace({
   interactions: interactions,
   runtime: _runtime(
     modelId: modelId,
-    routeRevision: routeRevision,
     execution: execution,
     continuation: continuation,
   ),
+  modelRoute: _route(routeRevision, modelId: modelId),
   activeTurn: activeTurn,
   storage: storage,
 );
@@ -632,9 +636,12 @@ void _emitChildBaseline(
       state: ChildInteractionsBaseline(
         ChildInteractionsStateView(
           hostThreadId: hostThreadId,
-          revision: revision,
-          updatedAt: DateTime.now(),
-          items: items,
+          state: ReadyObservedResource(
+            revision: revision,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+            lastCheckedAt: null,
+            value: ChildInteractionsData(items: items),
+          ),
         ),
       ),
     ),
@@ -647,9 +654,12 @@ ChildInteractionsStateView _childState(
   List<ChildInteractionSummary> items,
 ) => ChildInteractionsStateView(
   hostThreadId: hostThreadId,
-  revision: revision,
-  updatedAt: DateTime.now(),
-  items: items,
+  state: ReadyObservedResource(
+    revision: revision,
+    updatedAt: DateTime.now().millisecondsSinceEpoch,
+    lastCheckedAt: null,
+    value: ChildInteractionsData(items: items),
+  ),
 );
 
 /// The canonical continuation projection the UI freezes before continuing.
@@ -782,9 +792,14 @@ Future<AnyworkClient> _client(
     needsOpen: true,
   );
   final consumer = TestCompletionConsumer();
-  client.conversations.session('thread').content.attachConsumer(consumer);
+  client.conversations
+      .session('thread')
+      .content
+      .attachConsumer(consumer, demand: _demand);
   _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
+  final feed = await scriptedFeed('thread');
+  await feed.acknowledged(1);
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
@@ -1059,7 +1074,7 @@ void main() {
             id = call.operationId;
             complete = () => call.reply.complete(
               ThreadModelRouteCommandReply(
-                runtime: _runtime(routeRevision: 4),
+                runtime: _runtime(),
                 settings: _settings(100),
                 modeDefaultSaved: true,
                 receipt: StudioCommandReceipt(
@@ -1628,7 +1643,7 @@ void main() {
     expect(closed, isFalse);
     call.reply.complete(
       ThreadModelRouteCommandReply(
-        runtime: _runtime(routeRevision: 4),
+        runtime: _runtime(),
         settings: _settings(100),
         modeDefaultSaved: true,
         warning: 'old-owner-warning',
@@ -2076,8 +2091,9 @@ void main() {
         baseRevision: 40,
         revision: 41,
         update: ThreadRuntimeUpdate(
-          runtime: _runtime(routeRevision: 3),
+          runtime: _runtime(),
           todo: null,
+          modelRoute: _route(3),
         ),
       ),
     );
@@ -2112,6 +2128,7 @@ void main() {
         update: ThreadRuntimeUpdate(
           runtime: _runtime(modelId: 'obsolete'),
           todo: null,
+          modelRoute: _route(3, modelId: 'obsolete'),
         ),
       ),
     );
@@ -2122,22 +2139,23 @@ void main() {
         baseRevision: 7,
         revision: 8,
         update: ThreadRuntimeUpdate(
-          runtime: _runtime(routeRevision: 4),
+          runtime: _runtime(),
           todo: null,
+          modelRoute: _route(4),
         ),
       ),
     );
     await session.source.waitFor((state) => state.revision == 8);
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
+    expect(session.state.modelRoute?.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    final delivered = _completionConsumers[client]!.frames.single;
+    final delivered = _completionConsumers[client]!.batches;
+    expect(delivered, hasLength(2));
     expect(
-      (delivered as ConversationBaselineFrame)
-          .baseline
-          .completedCursor
-          .appendSeq,
-      300,
+      delivered.map((batch) => batch.placement),
+      [ChatPlacement.set, ChatPlacement.set],
+      reason: 'A replacement feed always owns a fresh Set, never cursor replay',
     );
     expect(transport.windowOpens, 2);
     expect(transport.bindings, hasLength(2));
@@ -2255,6 +2273,7 @@ void main() {
       );
       final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
       await cancelEntered.future;
+      await transport.refreshEntered.future;
       expect(transport.bindings, hasLength(2));
       expect(transport.refreshEntered.isCompleted, isTrue);
       final closing = client.close();
@@ -2433,6 +2452,10 @@ void main() {
               ThreadRuntimeUpdate(
                 runtime: _runtime(execution: _execution()),
                 todo: null,
+                modelRoute: client.conversations
+                    .session('thread')
+                    .state
+                    .modelRoute,
               ),
             );
             expect(
@@ -2803,7 +2826,7 @@ void main() {
           .deliverWorkspace(_workspace(revision: 2, routeRevision: 2));
       x.reply.complete(
         ThreadModelRouteCommandReply(
-          runtime: _runtime(routeRevision: 2),
+          runtime: _runtime(),
           settings: _settings(2),
           modeDefaultSaved: true,
           receipt: _receipt(x.operationId, [
@@ -2828,7 +2851,7 @@ void main() {
 
       y.reply.complete(
         ThreadModelRouteCommandReply(
-          runtime: _runtime(modelId: 'beta', routeRevision: 3),
+          runtime: _runtime(modelId: 'beta'),
           settings: _settings(3),
           modeDefaultSaved: true,
           receipt: _receipt(y.operationId, [
@@ -2847,12 +2870,7 @@ void main() {
         'beta',
       );
       expect(
-        client.conversations
-            .session('thread')
-            .state
-            .runtime
-            ?.modelRoute
-            ?.modelId,
+        client.conversations.session('thread').state.modelRoute?.modelId,
         'alpha',
         reason: 'A control response does not write the Thread mirror',
       );
@@ -3434,8 +3452,10 @@ void main() {
     client.conversations
         .session('thread')
         .content
-        .attachConsumer(TestCompletionConsumer());
+        .attachConsumer(TestCompletionConsumer(), demand: _demand);
     client.conversations.setVisibleThread('thread');
+    final feed = await scriptedFeed('thread');
+    await feed.acknowledged(1);
     await client.conversations
         .session('thread')
         .deliverWorkspace(
@@ -4674,6 +4694,7 @@ void main() {
         update: ThreadRuntimeUpdate(
           runtime: _runtime(continuation: _continuation(id: 'obsolete')),
           todo: null,
+          modelRoute: session.state.modelRoute,
         ),
       ),
     );
@@ -4744,7 +4765,7 @@ void main() {
       _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
       expect(store.state.canonical.loaded, isTrue);
       expect(store.state.hasCurrentBaseline, isTrue);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
 
       // An explicit read is a plain query: its result never writes the mirror.
       transport.childInteractions = [_childSummary(revision: 9)];
@@ -4752,7 +4773,7 @@ void main() {
         'thread',
       );
       expect(queried.single.revision, 9);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       expect(store.state.canonical.revision, 1);
 
       // Old domain revisions are rejected; newer ones replace the collection.
@@ -4761,13 +4782,16 @@ void main() {
         'thread',
         _childState('thread', 1, [_childSummary(revision: 4)]),
       );
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       _emitChildTopicFrame(
         transport,
         'thread',
         _childState('thread', 2, [_childSummary(revision: 4)]),
       );
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
 
       // Leaving the page releases the page share; the domain mirror keeps the
       // last known facts, and returning re-arms the topic without a query.
@@ -4779,7 +4803,10 @@ void main() {
         0,
         reason: 'Leaving the page withdraws its topic share immediately',
       );
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
       final readsBeforeReturn = transport.childInteractionReads;
       client.conversations.setVisibleThread('thread');
       expect(
@@ -4794,9 +4821,12 @@ void main() {
       // A returning baseline must still advance the domain revision; an
       // unchanged watermark stays idempotent and a newer one replaces it.
       _emitChildBaseline(transport, 'thread', revision: 2, items: []);
-      expect(store.state.canonical.value?.items.single.revision, 4);
+      expect(
+        store.state.canonical.value?.state.value?.items.single.revision,
+        4,
+      );
       _emitChildBaseline(transport, 'thread', revision: 3, items: []);
-      expect(store.state.canonical.value?.items, isEmpty);
+      expect(store.state.canonical.value?.state.value?.items, isEmpty);
       expect(store.state.canonical.revision, 3);
     },
   );
@@ -4878,7 +4908,7 @@ void main() {
             0,
         0,
       );
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
       client.conversations.setVisibleThread(null);
       await Future<void>.value();
       expect(closed, isFalse);
@@ -4888,7 +4918,7 @@ void main() {
       expect(commandsClosed, isTrue);
       await closing;
       expect(closed, isTrue);
-      expect(store.state.canonical.value?.items, [summary]);
+      expect(store.state.canonical.value?.state.value?.items, [summary]);
     },
   );
 
@@ -4912,6 +4942,8 @@ void main() {
               .existingChildInteractions('thread')!
               .state
               .canonical
+              .value
+              ?.state
               .value
               ?.items
               .single
@@ -5031,13 +5063,13 @@ void main() {
         }
         final store = client.existingChildInteractions('thread')!;
         expect(
-          store.state.canonical.value?.items,
+          store.state.canonical.value?.state.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         client.conversations.setVisibleThread('other');
         client.conversations.setVisibleThread('thread');
         expect(
-          store.state.canonical.value?.items,
+          store.state.canonical.value?.state.value?.items,
           framesFirst ? isEmpty : [summary],
         );
         expect(

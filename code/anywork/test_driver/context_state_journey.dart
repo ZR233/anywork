@@ -112,7 +112,8 @@ class ContextStateJourney {
               false &&
           timelineRows(snapshot).any(
             (row) =>
-                row['type'] == 'userMessage' &&
+                row['kind'] == 'text' &&
+                row['channel'] == 'user' &&
                 !previousAnswerIds.contains('${row['id']}') &&
                 row['text'] == submittedPrompt,
           ),
@@ -121,7 +122,8 @@ class ContextStateJourney {
     submittedInputId =
         timelineRows(accepted).lastWhere(
               (row) =>
-                  row['type'] == 'userMessage' &&
+                  row['kind'] == 'text' &&
+                  row['channel'] == 'user' &&
                   !previousAnswerIds.contains('${row['id']}') &&
                   row['text'] == submittedPrompt,
             )['id']

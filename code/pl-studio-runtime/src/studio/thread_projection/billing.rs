@@ -145,6 +145,7 @@ mod tests {
             context: None,
             private_context: None,
             attempt: None,
+            model_members: Default::default(),
             turn: None,
             discovered_tools: None,
             deliveries: Default::default(),

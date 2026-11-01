@@ -122,7 +122,10 @@ Future<void> main(List<String> args) async {
           'pagedItems': paged.itemCount,
           'pagingHappened': paged.itemCount > initialTimeline.itemCount,
           'identityRetained': retained,
-          'canonicalOrder': paged.appendSeqAscending,
+          'previousWindowRetainedAsSuffix': paged.retainsWindow(
+            initialTimeline,
+            prepend: true,
+          ),
           'latestUnchanged':
               latestItem == null || paged.itemIds.last == latestItem,
           'olderCursor': paged.olderCursor,
@@ -172,7 +175,8 @@ Future<void> main(List<String> args) async {
             (evidence['resizeInLive'] as Map)['stillAtLiveEdge'] == true &&
             (evidence['paging'] as Map)['pagingHappened'] == true &&
             (evidence['paging'] as Map)['identityRetained'] == true &&
-            (evidence['paging'] as Map)['canonicalOrder'] == true &&
+            (evidence['paging'] as Map)['previousWindowRetainedAsSuffix'] ==
+                true &&
             (evidence['paging'] as Map)['latestUnchanged'] == true &&
             reachedBottom &&
             endpointTimeline.isHistory &&

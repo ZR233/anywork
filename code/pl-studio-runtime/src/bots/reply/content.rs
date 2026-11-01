@@ -1,18 +1,30 @@
-//! Explicit first-coverage and terminal recovery, always through the feed's reader.
+//! Explicit bounded completion coverage and reliable final verification on the original read lease.
 
 use super::projection::{ReplyProjection, gap};
-use crate::studio::{StudioRuntime, TimelineContentReader};
+use crate::studio::{ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ThreadContentField, ThreadTextChannel, TimelineDescriptor, TimelineDetailCursor,
-    TimelineDetailQuery, TimelineItem, TimelinePageCursor, TimelinePageQuery, TimelineTailBaseline,
+    ChatMessage, ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
+    ThreadTextChannel, TurnState,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 
 pub(super) const MAX_TURN_CONTENT_ITEMS: usize = 16_384;
 pub(super) const MAX_TURN_BODY_BYTES: usize = 800_000;
+const WINDOW_BYTES: u32 = 32 * 1024;
 
+pub(super) fn demand() -> ReadDemand {
+    ReadDemand {
+        max_items: 100,
+        max_bytes: 256 * 1024,
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
 pub(super) enum FinalError {
+    #[error("{0}")]
     Retryable(String),
+    #[error("{0}")]
     Attention(String),
 }
 
@@ -21,153 +33,299 @@ pub(super) enum FinalText {
     CompleteText(String),
 }
 
-/// The latest 32 are not a Turn boundary. Recover only the missing older prefix,
-/// once for this target/connection, without promoting omitted previews to full text.
-pub(super) fn begin_projection(
-    thread_id: &str,
-    turn_id: &str,
-    baseline: TimelineTailBaseline,
-) -> Result<(ReplyProjection, Option<PrefixRecovery>), FinalError> {
-    let mut projection = ReplyProjection::new(thread_id, turn_id);
-    let mut coverage = Coverage::new(thread_id);
-    coverage.epoch(&baseline.timeline_epoch)?;
-    coverage.page(&baseline.items)?;
-    projection.add_page(baseline.items)?;
-    if !baseline.has_older {
-        projection.mark_covered();
-        return Ok((projection, None));
-    }
-    Ok((
-        projection,
-        Some(PrefixRecovery {
-            coverage,
-            before: baseline.before,
-            has_older: true,
-        }),
-    ))
+#[derive(Clone)]
+pub(super) struct ReplyItem {
+    pub(super) id: String,
+    pub(super) kind: ReplyItemKind,
 }
 
-pub(super) struct PrefixRecovery {
-    coverage: Coverage,
-    before: Option<String>,
-    has_older: bool,
+#[derive(Clone)]
+pub(super) enum ReplyItemKind {
+    Final { body: Body, preview: String },
+    Terminal(TurnState),
+    Interaction(String),
 }
 
-pub(super) async fn recover_prefix(
-    reader: &TimelineContentReader,
-    projection: &mut ReplyProjection,
-    recovery: &mut PrefixRecovery,
-) -> Result<(), FinalError> {
-    while recovery.has_older {
-        let token = recovery.coverage.cursor(recovery.before.clone())?;
-        let page = reader
-            .page(&TimelinePageQuery {
-                before: Some(token),
-                limit: Some(100),
-            })
-            .await
-            .map_err(|error| read_failure("reply prefix recovery page failed", error))?;
-        if page.thread_id != reader.thread_id() {
-            return Err(gap("reply prefix page belongs to another Thread"));
+impl ReplyItem {
+    pub(super) fn preview_bytes(&self) -> usize {
+        match &self.kind {
+            ReplyItemKind::Final { body, .. } => body.byte_length as usize,
+            _ => 0,
         }
-        recovery.coverage.epoch(&page.timeline_epoch)?;
-        recovery.coverage.page(&page.items)?;
-        projection.add_page(page.items)?;
-        recovery.before = page.before;
-        recovery.has_older = page.has_older;
     }
-    projection.mark_covered();
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Body {
+    key: String,
+    pub(super) byte_length: u64,
+    inline: Option<Vec<u8>>,
+    reference: Option<ContentRef>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope {
+    contract: String,
+    #[serde(rename = "type")]
+    kind: String,
+    data: serde_json::Value,
+    turn_id: Option<String>,
+    bodies: Vec<Body>,
+}
+
+/// Decode only the frozen public envelope. Unknown/bad payload is a gap, never
+/// permission to silently omit a possible Final. No private checkpoint fallback.
+pub(super) async fn decode_message(
+    reader: &ConversationReader,
+    message: &ChatMessage,
+    turn_id: &str,
+) -> Result<Option<ReplyItem>, FinalError> {
+    if message.id.is_empty() {
+        return Err(gap("reply message has no identity"));
+    }
+    let bytes = match &message.payload {
+        PayloadData::Inline { bytes } => {
+            check_length(bytes.len() as u64)?;
+            bytes.clone()
+        }
+        PayloadData::Deferred {
+            reference,
+            byte_length,
+        } => {
+            if !matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == &message.id)
+            {
+                return Err(gap("deferred reply payload identity conflict"));
+            }
+            read_bytes(reader, reference, *byte_length, true).await?
+        }
+    };
+    decode_envelope(reader, message.id.clone(), &bytes, turn_id).await
+}
+
+async fn decode_envelope(
+    reader: &ConversationReader,
+    id: String,
+    bytes: &[u8],
+    target: &str,
+) -> Result<Option<ReplyItem>, FinalError> {
+    let envelope: Envelope = serde_json::from_slice(bytes)
+        .map_err(|error| gap(&format!("malformed reply envelope: {error}")))?;
+    if envelope.contract != "anywork.chat/1" {
+        return Err(gap("unsupported reply envelope contract"));
+    }
+    if envelope.turn_id.as_deref() != Some(target) {
+        return Ok(None);
+    }
+    let kind = match envelope.kind.as_str() {
+        "text" => {
+            let channel: ThreadTextChannel = serde_json::from_value(
+                envelope
+                    .data
+                    .get("channel")
+                    .cloned()
+                    .ok_or_else(|| gap("reply text lacks channel"))?,
+            )
+            .map_err(|error| gap(&format!("invalid reply text channel: {error}")))?;
+            if channel != ThreadTextChannel::Final {
+                return Ok(None);
+            }
+            let mut bodies = envelope
+                .bodies
+                .into_iter()
+                .filter(|body| body.key == "body");
+            let body = bodies
+                .next()
+                .ok_or_else(|| gap("canonical Final lacks explicit body manifest"))?;
+            if bodies.next().is_some() {
+                return Err(gap("canonical Final has duplicate body manifests"));
+            }
+            body.validate(&id)?;
+            let preview = body.read(reader, false).await?;
+            ReplyItemKind::Final { body, preview }
+        }
+        "turn" => {
+            let state: TurnState = serde_json::from_value(
+                envelope
+                    .data
+                    .get("outcome")
+                    .cloned()
+                    .ok_or_else(|| gap("reply terminal lacks canonical outcome"))?,
+            )
+            .map_err(|error| gap(&format!("invalid canonical TurnState: {error}")))?;
+            if state.completed_at().is_none() {
+                return Err(gap(
+                    "completed reply message contains nonterminal TurnState",
+                ));
+            }
+            ReplyItemKind::Terminal(state)
+        }
+        "tool" => {
+            let Some(input) = envelope
+                .data
+                .get("userInput")
+                .filter(|value| !value.is_null())
+            else {
+                return Ok(None);
+            };
+            let interaction = input
+                .get("interactionId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| gap("reply tool interaction lacks identity"))?;
+            ReplyItemKind::Interaction(interaction.into())
+        }
+        "plan" => {
+            let interaction = envelope
+                .data
+                .get("interactionId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| gap("reply plan interaction lacks identity"))?;
+            ReplyItemKind::Interaction(interaction.into())
+        }
+        "raw" | "contextCompaction" | "thinking" | "agent" | "inference" | "skill" | "file" => {
+            return Ok(None);
+        }
+        _ => return Err(gap("unsupported target reply payload type")),
+    };
+    Ok(Some(ReplyItem { id, kind }))
+}
+
+impl Body {
+    fn validate(&self, item: &str) -> Result<(), FinalError> {
+        check_length(self.byte_length)?;
+        match (&self.inline, &self.reference) {
+            (Some(bytes), None) if bytes.len() as u64 == self.byte_length => Ok(()),
+            (None, Some(reference))
+                if matches!(&reference.target,
+                ContentTarget::Body { owner: ContentOwner::Item { item_id }, key } if item_id == item && key == &self.key) =>
+            {
+                Ok(())
+            }
+            _ => Err(gap(
+                "canonical Final body manifest identity or length conflict",
+            )),
+        }
+    }
+
+    async fn read(
+        &self,
+        reader: &ConversationReader,
+        complete: bool,
+    ) -> Result<String, FinalError> {
+        let bytes = match (&self.inline, &self.reference) {
+            (Some(bytes), None) => bytes.clone(),
+            (None, Some(reference)) => {
+                read_bytes(reader, reference, self.byte_length, complete).await?
+            }
+            _ => return Err(gap("canonical Final body manifest has no unique source")),
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => Ok(text),
+            Err(error)
+                if !complete
+                    && self.reference.is_some()
+                    && error.utf8_error().error_len().is_none() =>
+            {
+                // A byte window may end inside a scalar. Only this incomplete
+                // boundary is omitted from the preview; malformed bytes still fail.
+                let through = error.utf8_error().valid_up_to();
+                String::from_utf8(error.into_bytes()[..through].to_vec())
+                    .map_err(|_| gap("invalid canonical Final UTF-8 prefix"))
+            }
+            Err(error) => Err(gap(&format!("canonical Final body is not UTF-8: {error}"))),
+        }
+    }
+}
+
+fn check_length(length: u64) -> Result<(), FinalError> {
+    if length > MAX_TURN_BODY_BYTES as u64 {
+        return Err(FinalError::Attention(
+            "canonical turn content exceeded 800000 UTF-8 bytes".into(),
+        ));
+    }
     Ok(())
 }
 
-/// Observe reliable save coverage first, then check the complete Final on this
-/// exact Session. No terminal flag is inferred from the live preview's length.
+/// Bounded ranges are issued before allocating the object. In particular a Deferred
+/// ItemPayload exceeding the bot budget is rejected before any full-object read.
+async fn read_bytes(
+    reader: &ConversationReader,
+    reference: &ContentRef,
+    length: u64,
+    complete: bool,
+) -> Result<Vec<u8>, FinalError> {
+    check_length(length)?;
+    let mut bytes = Vec::new();
+    let mut generation = None;
+    loop {
+        let offset = bytes.len() as u64;
+        let max_bytes = WINDOW_BYTES.min((length - offset).max(1) as u32);
+        let window = reader
+            .read_content(reference, ContentRange { offset, max_bytes })
+            .await
+            .map_err(|error| read_failure("canonical reply content range failed", error))?;
+        if window.offset != offset
+            || window.available_through != length
+            || !window.sealed
+            || window.generation.is_empty()
+            || generation
+                .as_ref()
+                .is_some_and(|old| old != &window.generation)
+            || window.bytes.len() > max_bytes as usize
+            || offset + window.bytes.len() as u64 > length
+            || window.bytes.is_empty() && offset < length
+        {
+            return Err(gap(
+                "canonical reply content range identity, generation or coverage conflict",
+            ));
+        }
+        generation = Some(window.generation);
+        bytes.extend(window.bytes);
+        if bytes.len() as u64 == length || !complete {
+            return Ok(bytes);
+        }
+    }
+}
+
+/// Only completed messages already accepted by this feed are used. Its original
+/// page ceiling is not reopened with a cursor from another lease. Append ordering
+/// plus recovered prefix covers the exact target; the barrier establishes durable
+/// save coverage before any terminal platform action (including failure/cancel).
 pub(super) async fn collect_complete_turn_text(
     runtime: &StudioRuntime,
-    reader: &TimelineContentReader,
-    turn_id: &str,
+    reader: &ConversationReader,
+    projection: &ReplyProjection,
 ) -> Result<FinalText, FinalError> {
+    let items = projection.completed()?;
     runtime
         .synchronize_thread_observation(reader.thread_id())
         .await
         .map_err(|error| read_failure("thread observation barrier failed", error))?;
-    let mut collected = BTreeMap::new();
-    let mut body_bytes = 0usize;
-    let mut before = None;
-    let mut coverage = Coverage::new(reader.thread_id());
-    let mut saw_target = false;
-    let mut saw_terminal = false;
-    loop {
-        let page = reader
-            .page(&TimelinePageQuery {
-                before: before.clone(),
-                limit: Some(100),
-            })
-            .await
-            .map_err(|error| read_failure("canonical final timeline page failed", error))?;
-        if page.thread_id != reader.thread_id() {
-            return Err(gap("canonical final page belongs to another Thread"));
+    let terminal = items
+        .iter()
+        .rev()
+        .find(|item| matches!(item.kind, ReplyItemKind::Terminal(_)))
+        .ok_or_else(|| gap("canonical target terminal is missing"))?;
+    // Even all-inline/empty replies must recheck the original read qualification
+    // after the barrier; closing/replacing a lease must not authorize a final send.
+    reader
+        .list_contents(&terminal.id, None, demand())
+        .await
+        .map_err(|error| read_failure("canonical terminal read qualification failed", error))?;
+    let mut text = String::new();
+    for item in items {
+        if let ReplyItemKind::Final { body, preview } = &item.kind {
+            let value = body.read(reader, true).await?;
+            if !value.starts_with(preview) {
+                return Err(gap("canonical Final does not cover accepted preview"));
+            }
+            if text.len().saturating_add(value.len()) > MAX_TURN_BODY_BYTES {
+                check_length(MAX_TURN_BODY_BYTES as u64 + 1)?;
+            }
+            text.push_str(&value);
         }
-        coverage.epoch(&page.timeline_epoch)?;
-        let epoch = page.timeline_epoch.clone();
-        coverage.page(&page.items)?;
-        for item in page.items {
-            if item.header.turn_id.as_deref() != Some(turn_id) {
-                continue;
-            }
-            saw_target = true;
-            if item.header.append_seq > reader.durable_seq() {
-                return Err(gap(
-                    "canonical target has not reached reliable save coverage",
-                ));
-            }
-            saw_terminal |= matches!(item.descriptor, TimelineDescriptor::Turn(_));
-            let TimelineDescriptor::Text(descriptor) = &item.descriptor else {
-                continue;
-            };
-            if descriptor.channel != ThreadTextChannel::Final {
-                continue;
-            }
-            let fields: Vec<_> = item
-                .fields
-                .iter()
-                .filter(|field| field.field == ThreadContentField::Text)
-                .collect();
-            if fields.len() > 1 {
-                return Err(gap("canonical Final has duplicate text fields"));
-            }
-            let Some(field) = fields.first() else {
-                continue;
-            };
-            if field.text.len() as u64 > field.total_bytes {
-                return Err(gap("canonical Final preview exceeds total bytes"));
-            }
-            let body = if field.text.len() as u64 != field.total_bytes {
-                read_complete_text(
-                    reader,
-                    &item,
-                    &epoch,
-                    field.total_bytes,
-                    &field.text,
-                    &mut body_bytes,
-                )
-                .await?
-            } else {
-                account_body_bytes(&field.text, &mut body_bytes)?;
-                field.text.clone()
-            };
-            collected.insert((item.header.append_seq, item.header.id), body);
-        }
-        if !page.has_older {
-            break;
-        }
-        before = Some(coverage.cursor(page.before)?);
     }
-    if !saw_target || !saw_terminal {
-        return Err(gap("canonical terminal target content is not yet covered"));
-    }
-    // Blocks are original content fragments, not paragraphs we may normalize.
-    let text = collected.into_values().collect::<String>();
     if text.trim().is_empty() {
         Ok(FinalText::CompleteNoText)
     } else {
@@ -175,161 +333,31 @@ pub(super) async fn collect_complete_turn_text(
     }
 }
 
-async fn read_complete_text(
-    reader: &TimelineContentReader,
-    item: &TimelineItem,
-    timeline_epoch: &str,
-    total_bytes: u64,
-    preview: &str,
-    body_bytes: &mut usize,
-) -> Result<String, FinalError> {
-    if total_bytes > MAX_TURN_BODY_BYTES as u64 {
-        return Err(FinalError::Attention(
-            "canonical turn text exceeded 800000 UTF-8 bytes".to_string(),
-        ));
-    }
-    let mut continuation = None;
-    let mut body = String::new();
-    loop {
-        let chunk = reader
-            .read_detail(
-                &item.header.id,
-                &TimelineDetailQuery {
-                    field: ThreadContentField::Text,
-                    timeline_epoch: timeline_epoch.to_string(),
-                    continuation,
-                    max_bytes: None,
-                },
-            )
-            .await
-            .map_err(|error| read_failure("canonical Final detail failed", error))?;
-        if chunk.thread_id != reader.thread_id()
-            || chunk.item_id != item.header.id
-            || chunk.field != ThreadContentField::Text
-            || chunk.timeline_epoch != timeline_epoch
-            || chunk.total_bytes != total_bytes
-        {
-            return Err(gap("canonical Final detail identity or epoch conflict"));
-        }
-        account_body_bytes(&chunk.text, body_bytes)?;
-        body.push_str(&chunk.text);
-        if body.len() as u64 > total_bytes {
-            return Err(gap("canonical Final detail exceeds declared length"));
-        }
-        match chunk.continuation {
-            Some(token) => {
-                let cursor = TimelineDetailCursor::decode(&token)
-                    .ok_or_else(|| gap("invalid Final detail continuation"))?;
-                if cursor.thread_id != reader.thread_id()
-                    || cursor.item_id != item.header.id
-                    || cursor.field != ThreadContentField::Text.token_label()
-                    || cursor.timeline_epoch != timeline_epoch
-                    || cursor.offset != body.len() as u64
-                    || chunk.text.is_empty()
-                {
-                    return Err(gap("canonical Final detail continuation did not advance"));
-                }
-                continuation = Some(token);
-            }
-            None => {
-                if body.len() as u64 != total_bytes || !body.starts_with(preview) {
-                    return Err(gap("canonical Final detail does not cover its preview"));
-                }
-                return Ok(body);
-            }
-        }
-    }
-}
-
+/// Continuations are opaque and local to the original lease. Bound both scanned
+/// items and requests, so even advancing empty pages cannot cause an unbounded walk.
+#[derive(Default)]
 pub(super) struct Coverage {
-    thread_id: String,
-    epoch: Option<String>,
     inspected: usize,
-    oldest: Option<(u64, String)>,
+    pages: usize,
     cursors: BTreeSet<String>,
 }
-
 impl Coverage {
-    pub(super) fn new(thread_id: &str) -> Self {
-        Self {
-            thread_id: thread_id.to_string(),
-            epoch: None,
-            inspected: 0,
-            oldest: None,
-            cursors: BTreeSet::new(),
-        }
-    }
-
-    pub(super) fn epoch(&mut self, epoch: &str) -> Result<(), FinalError> {
-        if epoch.is_empty() || self.epoch.as_deref().is_some_and(|old| old != epoch) {
-            return Err(gap("canonical reply page epoch conflict"));
-        }
-        self.epoch = Some(epoch.to_owned());
-        Ok(())
-    }
-
-    pub(super) fn page(&mut self, items: &[TimelineItem]) -> Result<(), FinalError> {
-        self.inspected = self.inspected.saturating_add(items.len());
-        if self.inspected > MAX_TURN_CONTENT_ITEMS {
+    pub(super) fn page(&mut self, count: usize) -> Result<(), FinalError> {
+        self.inspected = self.inspected.saturating_add(count);
+        self.pages = self.pages.saturating_add(1);
+        if self.inspected > MAX_TURN_CONTENT_ITEMS || self.pages > MAX_TURN_CONTENT_ITEMS {
             return Err(FinalError::Attention(
-                "canonical turn coverage exceeded 16384 content items".to_string(),
+                "canonical turn coverage exceeded 16384 content items or pages".into(),
             ));
-        }
-        let mut previous = None;
-        for item in items {
-            let order = (item.header.append_seq, item.header.id.as_str());
-            if item.header.thread_id != self.thread_id
-                || item.header.id.is_empty()
-                || previous.is_some_and(|previous| previous >= order)
-                || self
-                    .oldest
-                    .as_ref()
-                    .is_some_and(|oldest| order >= (oldest.0, oldest.1.as_str()))
-            {
-                return Err(gap(
-                    "canonical reply page identity or stable order conflict",
-                ));
-            }
-            previous = Some(order);
-        }
-        if let Some(first) = items.first() {
-            self.oldest = Some((first.header.append_seq, first.header.id.clone()));
         }
         Ok(())
     }
-
-    pub(super) fn cursor(&mut self, token: Option<String>) -> Result<String, FinalError> {
-        let token = token
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| gap("canonical reply page lacks older cursor"))?;
-        let cursor = TimelinePageCursor::decode(&token)
-            .ok_or_else(|| gap("canonical reply page cursor is invalid"))?;
-        if cursor.thread_id != self.thread_id
-            || self
-                .epoch
-                .as_ref()
-                .is_some_and(|epoch| epoch != &cursor.timeline_epoch)
-            || self.oldest.as_ref() != Some(&(cursor.append_seq, cursor.item_id))
-        {
-            return Err(gap(
-                "canonical reply cursor is not the page's older boundary",
-            ));
+    pub(super) fn cursor(&mut self, token: &str) -> Result<(), FinalError> {
+        if token.is_empty() || !self.cursors.insert(token.to_owned()) {
+            return Err(gap("canonical reply cursor did not advance"));
         }
-        if !self.cursors.insert(token.clone()) {
-            return Err(gap("canonical reply page cursor did not advance"));
-        }
-        Ok(token)
+        Ok(())
     }
-}
-
-fn account_body_bytes(text: &str, body_bytes: &mut usize) -> Result<(), FinalError> {
-    *body_bytes = body_bytes.saturating_add(text.len());
-    if *body_bytes > MAX_TURN_BODY_BYTES {
-        return Err(FinalError::Attention(
-            "canonical turn text exceeded 800000 UTF-8 bytes".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 pub(super) fn read_failure(context: &str, error: anyhow::Error) -> FinalError {

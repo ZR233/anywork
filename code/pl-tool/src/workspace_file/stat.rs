@@ -32,6 +32,9 @@ impl<B: WorkspaceFileBackend + 'static> ThreadStatPathTool<B> {
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
         let authorization = self.authorization.clone();
         Ok(Registration::new("stat_path".into(), declaration, self)?
+            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                "builtin.stat_path@1",
+            ))
             .with_authorization(authorization))
     }
 }

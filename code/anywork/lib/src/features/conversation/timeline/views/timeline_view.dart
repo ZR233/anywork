@@ -1,20 +1,18 @@
 import 'dart:async';
 
-import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
-import 'package:flyer_chat_file_message/flyer_chat_file_message.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../state/timeline_entry.dart';
+import '../state/chat_item_presentation.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
-import '../widgets/timeline_entry_view.dart';
+import '../widgets/chat_item_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_scroll_intent.dart';
 
@@ -31,14 +29,17 @@ class TimelineView extends StatefulWidget {
     required this.onReturnLive,
     required this.onEnterHistory,
     required this.onRetryConnection,
-    required this.onDetail,
     required this.onLink,
     required this.isSafeLink,
-    required this.imageBuilder,
     required this.remoteImageBuilder,
-    required this.groupMediaBuilder,
     this.planSummary,
     this.pendingPlanInteractionId,
+    this.readContent,
+    this.childrenBuilder,
+    this.attachmentBuilder,
+    this.monotonicMicros,
+    this.onContentLayout,
+    this.isDisplayActive,
   });
   final String threadId;
   final TimelineSessionViewState view;
@@ -48,14 +49,18 @@ class TimelineView extends StatefulWidget {
   final Future<void> Function() onReturnLive;
   final VoidCallback onEnterHistory;
   final VoidCallback onRetryConnection;
-  final TimelineDetailAction onDetail;
   final ValueChanged<String> onLink;
   final bool Function(String) isSafeLink;
-  final Widget Function(BuildContext, ImageMessage, int) imageBuilder;
   final Widget Function(BuildContext, String) remoteImageBuilder;
-  final Widget Function(ConversationItem) groupMediaBuilder;
   final Widget? planSummary;
   final String? pendingPlanInteractionId;
+  final ChatContentRead? readContent;
+  final Widget Function(String parentId)? childrenBuilder;
+  final Widget Function(ChatItemPresentation item)? attachmentBuilder;
+  final int Function()? monotonicMicros;
+  final void Function(String itemId, int layoutCompletedMicros)?
+  onContentLayout;
+  final bool Function()? isDisplayActive;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -68,6 +73,8 @@ class _TimelineViewState extends State<TimelineView> {
   bool _actionIntent = false;
   bool _scheduled = false;
   bool _paging = false;
+  int _fillBudget = 8;
+  bool _fillStopped = false;
   @override
   void initState() {
     super.initState();
@@ -105,7 +112,13 @@ class _TimelineViewState extends State<TimelineView> {
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
-      if (!mounted || !_canPage || _paging) return;
+      if (!mounted ||
+          !_canPage ||
+          _paging ||
+          _fillStopped ||
+          _fillBudget == 0) {
+        return;
+      }
       final scroll = widget.controls.scrollController;
       if (!scroll.hasClients) return;
       final position = scroll.position;
@@ -113,6 +126,7 @@ class _TimelineViewState extends State<TimelineView> {
           position.viewportDimension > 0 &&
           position.maxScrollExtent <= position.minScrollExtent + .5) {
         _paging = true;
+        _fillBudget--;
         unawaited(_fill());
       }
     });
@@ -120,14 +134,33 @@ class _TimelineViewState extends State<TimelineView> {
   }
 
   Future<void> _fill() async {
+    final controls = widget.controls;
     final before = widget.view.olderCursor;
     try {
       await widget.onLoadOlder();
+      // The SDK has published metadata when its Future completes, but this
+      // widget receives that publication on the next actual build/layout frame.
+      // Join that frame once; do not mistake the previous widget for no progress.
+      await WidgetsBinding.instance.endOfFrame;
+      if (mounted &&
+          identical(widget.controls, controls) &&
+          !controls.isRetired &&
+          widget.view.olderCursor == before) {
+        _fillStopped = true;
+      }
+    } catch (_) {
+      _fillStopped = true;
+      rethrow;
     } finally {
       _paging = false;
       // A successful page/state publication supplies the next real layout
       // event. This is not a frame-by-frame prefetch loop.
-      if (mounted && widget.view.olderCursor != before) _scheduleFill();
+      if (mounted &&
+          identical(widget.controls, controls) &&
+          !controls.isRetired &&
+          widget.view.olderCursor != before) {
+        _scheduleFill();
+      }
     }
   }
 
@@ -175,66 +208,13 @@ class _TimelineViewState extends State<TimelineView> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Widget _body(ConversationItem item, String text) => TimelineMarkdown(
-    id: item.id,
+  Widget _body(String id, String text) => TimelineMarkdown(
+    id: id,
     text: text,
     onLink: widget.onLink,
     isSafeLink: widget.isSafeLink,
     imageBuilder: widget.remoteImageBuilder,
   );
-
-  Widget _text(BuildContext context, TextMessage message) {
-    final entry = timelineEntryOf(message)!;
-    return Column(
-      key: StudioDriverKeys.timelineBlock(entry.first.id),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (entry.first.descriptor
-            case ConversationTextDescriptor(:final channel)
-            when channel == ThreadTextChannel.parentAgent)
-          SelectionContainer.disabled(
-            child: Text(
-              context.l10n.timelineParentAgent,
-              key: StudioDriverKeys.parentAgentLabel(entry.first.id),
-            ),
-          ),
-        _body(entry.first, message.text),
-        _terminal(entry.first),
-        TimelineDetailNotices(item: entry.first, onDetail: widget.onDetail),
-        if (timelineAttachments(entry.first).isNotEmpty)
-          widget.groupMediaBuilder(entry.first),
-      ],
-    );
-  }
-
-  Widget _terminal(ConversationItem item) {
-    final descriptor = item.descriptor;
-    if (descriptor is! ConversationTextDescriptor) {
-      return const SizedBox.shrink();
-    }
-    final outcome = descriptor.outcome;
-    // Stops/errors remain outside the exact canonical body and selection.
-    final text = switch (outcome) {
-      ConversationContentCancelled() => context.l10n.timelineTurnStopped,
-      ConversationContentFailed(:final value) => value.error,
-      _ => null,
-    };
-    return text == null
-        ? const SizedBox.shrink()
-        : SelectionContainer.disabled(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                text,
-                style: context.text.bodySmall?.copyWith(
-                  color: outcome is ConversationContentFailed
-                      ? context.colors.error
-                      : context.colors.onSurfaceVariant,
-                ),
-              ),
-            ),
-          );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -355,7 +335,37 @@ class _TimelineViewState extends State<TimelineView> {
                                         context,
                                         itemBuilder,
                                       ) => ChatAnimatedListReversed(
-                                        itemBuilder: itemBuilder,
+                                        // Preserve Flyer's ID lookup for moves
+                                        // while replacing its row State when a
+                                        // Set supplies a new immutable Message.
+                                        // ChatMessageInternal otherwise retains
+                                        // its initState message for the same ID.
+                                        itemBuilder:
+                                            (
+                                              context,
+                                              message,
+                                              index,
+                                              animation, {
+                                              messagesGroupingMode,
+                                              messageGroupingTimeoutInSeconds,
+                                              isRemoved,
+                                            }) => KeyedSubtree(
+                                              key: ValueKey(message.id),
+                                              child: KeyedSubtree(
+                                                key: ObjectKey(message),
+                                                child: itemBuilder(
+                                                  context,
+                                                  message,
+                                                  index,
+                                                  animation,
+                                                  messagesGroupingMode:
+                                                      messagesGroupingMode,
+                                                  messageGroupingTimeoutInSeconds:
+                                                      messageGroupingTimeoutInSeconds,
+                                                  isRemoved: isRemoved,
+                                                ),
+                                              ),
+                                            ),
                                         scrollController:
                                             controls.scrollController,
                                         insertAnimationDuration: Duration.zero,
@@ -391,9 +401,7 @@ class _TimelineViewState extends State<TimelineView> {
                                         required bool isSentByMe,
                                         MessageGroupStatus? groupStatus,
                                       }) {
-                                        if (isRemoved == true ||
-                                            timelineEntryOf(message)?.kind ==
-                                                TimelineEntryKind.hidden) {
+                                        if (isRemoved == true) {
                                           return const SizedBox.shrink();
                                         }
                                         return ChatMessage(
@@ -435,40 +443,6 @@ class _TimelineViewState extends State<TimelineView> {
                                                 ),
                                         );
                                       },
-                                  textMessageBuilder: (
-                                    context,
-                                    message,
-                                    index, {
-                                    required bool isSentByMe,
-                                    MessageGroupStatus? groupStatus,
-                                  }) => _text(context, message),
-                                  imageMessageBuilder:
-                                      (
-                                        context,
-                                        message,
-                                        index, {
-                                        required bool isSentByMe,
-                                        MessageGroupStatus? groupStatus,
-                                      }) => widget.imageBuilder(
-                                        context,
-                                        message,
-                                        index,
-                                      ),
-                                  fileMessageBuilder:
-                                      (
-                                        context,
-                                        message,
-                                        index, {
-                                        required bool isSentByMe,
-                                        MessageGroupStatus? groupStatus,
-                                      }) => FlyerChatFileMessage(
-                                        message: message,
-                                        index: index,
-                                        showTime: false,
-                                        showStatus: false,
-                                        receivedBackgroundColor:
-                                            context.colors.surfaceContainerLow,
-                                      ),
                                   customMessageBuilder:
                                       (
                                         context,
@@ -476,13 +450,16 @@ class _TimelineViewState extends State<TimelineView> {
                                         index, {
                                         required bool isSentByMe,
                                         MessageGroupStatus? groupStatus,
-                                      }) => TimelineEntryView(
-                                        entry: timelineEntryOf(message)!,
+                                      }) => ChatItemView(
+                                        item: chatItemPresentationOf(message)!,
                                         bodyBuilder: _body,
-                                        onDetail: widget.onDetail,
-                                        mediaBuilder: widget.groupMediaBuilder,
-                                        pendingPlanInteractionId:
-                                            widget.pendingPlanInteractionId,
+                                        readContent: widget.readContent,
+                                        childrenBuilder: widget.childrenBuilder,
+                                        attachmentBuilder:
+                                            widget.attachmentBuilder,
+                                        monotonicMicros: widget.monotonicMicros,
+                                        onContentLayout: widget.onContentLayout,
+                                        isDisplayActive: widget.isDisplayActive,
                                       ),
                                 ),
                               ),

@@ -5,23 +5,17 @@ import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
-ConversationBatch completedBatch(
-  int from,
-  int to, {
-  String threadId = 'thread',
-  String subscriptionId = 'sub',
-}) => ConversationBatch(
-  subscriptionId: subscriptionId,
-  timelineEpoch: 'epoch',
-  fromSeq: from,
-  throughSeq: to,
-  items: [timelineItem(to, id: 'item-$to', threadId: threadId)],
+const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
+
+ChatBatch _appendMessage(String id) => ChatBatch(
+  placement: ChatPlacement.append,
+  messages: [chatMessage(id: id)],
 );
 
 void main() {
   test('repository retryCleanup honors expired absolute deadline and preserves original native join', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     feed.closeGate = Completer<void>();
     fixture.repository.setVisibleThread(null);
     await feed.closeStarted.future;
@@ -51,11 +45,11 @@ void main() {
 
   test('retirement starts native close but joins the blocked ACK before releasing ownership', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     final content = fixture.session().content;
     feed.ackGate = Completer<void>();
     feed.closeGate = Completer<void>();
-    feed.send(ConversationUpdateEvent(update: completedBatch(1, 2)));
+    feed.send(ConversationChatEvent(batch: _appendMessage('item-2')));
     await fixture.consumers['thread']!
         .waitForCount(2)
         .timeout(
@@ -100,7 +94,7 @@ void main() {
       final timers = _RetryTimers();
       await runZoned(() async {
         final fixture = ConversationFixture();
-        var feed = await fixture.open();
+        var feed = await fixture.open(demand: _demand);
         final content = fixture.session().content;
         for (var index = 0; index < 4; index++) {
           feed.send(const ConversationClosedEvent());
@@ -123,10 +117,8 @@ void main() {
         final refreshed = TestConversationFeed(subscriptionId: 'explicit');
         fixture.transport.opens[4].result.complete(refreshed);
         await refreshed.deliver(
-          ConversationUpdateEvent(
-            update: ConversationReset(
-              baseline(20, subscriptionId: 'explicit', timelineEpoch: 'new'),
-            ),
+          ConversationChatEvent(
+            batch: chatSet(messages: [chatMessage(id: 'item-20')]),
           ),
         );
         expect(content.state.value, isA<ChatReady<bool>>());
@@ -141,7 +133,8 @@ void main() {
     () async {
       final budget = ResourceBudget();
       final fixture = ConversationFixture(budget: budget);
-      fixture.attach('A');
+      fixture.attach('A', demand: _demand);
+      fixture.attach('B', demand: _demand);
       fixture.repository.setVisibleThread('A');
       fixture.repository.setVisibleThread('B');
       fixture.repository.setVisibleThread('A');
@@ -161,13 +154,7 @@ void main() {
       );
       fixture.transport.opens[2].result.complete(current);
       await current.deliver(
-        ConversationBaselineEvent(
-          baseline: baseline(
-            3,
-            subscriptionId: 'new-A',
-            items: [timelineItem(3, threadId: 'A')],
-          ),
-        ),
+        ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
       );
       final oldB = TestConversationFeed(threadId: 'B');
       fixture.transport.opens[1].result.complete(oldB);
@@ -186,6 +173,7 @@ void main() {
       () async {
         final fixture = ConversationFixture();
         final session = fixture.session('A');
+        fixture.attach('A', demand: _demand);
         Future<CloseReport>? closing;
         final observation = session.content.state.watch((state) {
           if (state is! ChatOpening<bool>) return;
@@ -223,7 +211,8 @@ void main() {
     final fixture = ConversationFixture();
     final oldA = await fixture.open(
       threadId: 'A',
-      initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
+      initial: chatSet(messages: [chatMessage()]),
+      demand: _demand,
     );
     oldA.closeGate = Completer<void>();
     final targets = <String?>[];
@@ -248,16 +237,7 @@ void main() {
     final newA = TestConversationFeed(threadId: 'A', subscriptionId: 'new-A');
     fixture.transport.opens[1].result.complete(newA);
     await newA.deliver(
-      ConversationUpdateEvent(
-        update: ConversationReset(
-          baseline(
-            7,
-            subscriptionId: 'new-A',
-            timelineEpoch: 'new',
-            items: [timelineItem(7, threadId: 'A')],
-          ),
-        ),
-      ),
+      ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
     );
     final content = fixture.session('A').content;
     final expired = await content.joinRetired(
@@ -289,7 +269,8 @@ void main() {
     final fixture = ConversationFixture();
     final oldA = await fixture.open(
       threadId: 'A',
-      initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
+      initial: chatSet(messages: [chatMessage()]),
+      demand: _demand,
     );
     Future<CloseReport>? closing;
     final targets = <String?>[];
@@ -320,7 +301,7 @@ void main() {
         capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 1},
       ),
     );
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     final targets = <String?>[];
     final observation = fixture.repository.visibleThreadId.watch(targets.add);
     expect(
@@ -343,25 +324,24 @@ void main() {
       final fixture = ConversationFixture();
       final oldA = await fixture.open(
         threadId: 'A',
-        initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
+        initial: chatSet(messages: [chatMessage()]),
+        demand: _demand,
       );
       oldA.closeGate = Completer<void>();
       oldA.ackGate = Completer<void>();
       final content = fixture.session('A').content;
-      oldA.send(
-        ConversationUpdateEvent(update: completedBatch(1, 2, threadId: 'A')),
-      );
+      oldA.send(ConversationChatEvent(batch: _appendMessage('item-2')));
       await fixture.consumers['A']!.waitForCount(2);
-      // The second native credit is already queued behind the blocked ACK.
-      oldA.send(
-        ConversationUpdateEvent(update: completedBatch(2, 99, threadId: 'A')),
-      );
+      await oldA.ackStarted(2);
+      // A following native frame may arrive after ACK starts, before Dart's
+      // acknowledge Future settles; it still belongs to this original attempt.
+      oldA.send(ConversationChatEvent(batch: _appendMessage('item-99')));
       await fixture.consumers['A']!.waitForCount(3);
-      final scope = content.openScope(timelineEpoch: 'epoch', generation: 1);
-      final pageReply = Completer<ConversationPage>();
-      fixture.transport.onPage = (_, __, ___) => pageReply.future;
+      final scope = content.openScope(generation: 1);
+      final pageReply = Completer<ChatBatch>();
+      oldA.reader.onOlder = (_, __) => pageReply.future;
       final reading = expectLater(
-        scope.page(),
+        scope.loadOlder(before: 'opaque-before', demand: _demand),
         throwsA(isA<StaleConversationScope>()),
       );
       final visibleTargets = <String?>[];
@@ -375,32 +355,23 @@ void main() {
       fixture.repository.setVisibleThread('B');
       expect(visibleTargets, [null, 'B', null, 'A']);
       expect(oldA.requestCloseStarted.isCompleted, isTrue);
-      expect(scope.isActive, isTrue);
+      expect(scope.isActive, isFalse);
       expect(scope.pendingQueries, 1);
       expect(fixture.transport.opens.map((open) => open.threadId), ['A', 'A']);
       final newA = TestConversationFeed(threadId: 'A', subscriptionId: 'new-A');
       fixture.transport.opens[1].result.complete(newA);
       await newA.deliver(
-        ConversationUpdateEvent(
-          update: ConversationReset(
-            baseline(
-              7,
-              subscriptionId: 'new-A',
-              timelineEpoch: 'new',
-              items: [timelineItem(7, threadId: 'A')],
-            ),
-          ),
-        ),
+        ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
       );
       oldA.ackGate!.complete();
       await oldA.acknowledged(2);
       expect(oldA.acknowledgements, [1, 2]);
       expect(
-        fixture.consumers['A']!.frames.last,
-        isA<ConversationResetFrame>().having(
-          (frame) => frame.baseline.completedCursor.appendSeq,
-          'cursor',
-          7,
+        fixture.consumers['A']!.batches.last,
+        isA<ChatBatch>().having(
+          (batch) => batch.placement,
+          'placement',
+          ChatPlacement.set,
         ),
       );
       expect(newA.requestCloseCalls, 0);
@@ -423,13 +394,7 @@ void main() {
         reason: 'The retired query still owns its future',
       );
       pageReply.complete(
-        ConversationPage(
-          threadId: 'A',
-          timelineEpoch: 'epoch',
-          items: [],
-          before: null,
-          hasOlder: false,
-        ),
+        ChatBatch(placement: ChatPlacement.prepend, messages: []),
       );
       await reading;
       expect((await closing).complete, isTrue);
@@ -443,7 +408,8 @@ void main() {
       final fixture = ConversationFixture();
       final oldA = await fixture.open(
         threadId: 'A',
-        initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
+        initial: chatSet(messages: [chatMessage()]),
+        demand: _demand,
       );
       Future<CloseReport>? closing;
       final observation = fixture.repository.visibleThreadId.watch((target) {
@@ -476,8 +442,10 @@ void main() {
         );
         final oldA = await fixture.open(
           threadId: 'A',
-          initial: baseline(1, items: [timelineItem(1, threadId: 'A')]),
+          initial: chatSet(messages: [chatMessage()]),
+          demand: _demand,
         );
+        fixture.attach('B', demand: _demand);
         final source = fixture
             .session(boundary == 'retirement' ? 'A' : 'B')
             .content
@@ -509,16 +477,7 @@ void main() {
         );
         fixture.transport.opens.last.result.complete(current);
         await current.deliver(
-          ConversationUpdateEvent(
-            update: ConversationReset(
-              baseline(
-                7,
-                subscriptionId: 'fresh-A',
-                timelineEpoch: 'new',
-                items: [timelineItem(7, threadId: 'A')],
-              ),
-            ),
-          ),
+          ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
         );
         if (boundary == 'activation') {
           expect(
@@ -545,7 +504,8 @@ void main() {
         },
       );
       final fixture = ConversationFixture(budget: budget);
-      final consumer = fixture.attach('A');
+      final consumer = fixture.attach('A', demand: _demand);
+      fixture.attach('B', demand: _demand);
       fixture.repository.setVisibleThread('A');
       fixture.repository.setVisibleThread('B');
       fixture.repository.setVisibleThread('A');
@@ -555,13 +515,7 @@ void main() {
       final newA = TestConversationFeed(threadId: 'A', subscriptionId: 'new-A');
       fixture.transport.opens[2].result.complete(newA);
       await newA.deliver(
-        ConversationBaselineEvent(
-          baseline: baseline(
-            7,
-            subscriptionId: 'new-A',
-            items: [timelineItem(7, threadId: 'A')],
-          ),
-        ),
+        ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
       );
       fixture.transport.opens[0].result.complete(oldA);
       fixture.transport.opens[1].result.complete(oldB);
@@ -572,11 +526,11 @@ void main() {
       expect(oldA.eventConsumers, 0);
       expect(oldB.eventConsumers, 0);
       expect(
-        consumer.frames.last,
-        isA<ConversationBaselineFrame>().having(
-          (f) => f.baseline.completedCursor.appendSeq,
-          'cursor',
-          7,
+        consumer.batches.last,
+        isA<ChatBatch>().having(
+          (batch) => batch.placement,
+          'placement',
+          ChatPlacement.set,
         ),
       );
       expect(newA.requestCloseCalls, 0);
@@ -593,8 +547,8 @@ void main() {
       capacities: {...ResourceBudget().capacities, ResourceKind.chatHandle: 8},
     );
     final fixture = ConversationFixture(budget: budget);
-    fixture.attach('A');
-    fixture.attach('B');
+    fixture.attach('A', demand: _demand);
+    fixture.attach('B', demand: _demand);
     // A opens first; its native close stays gated to simulate a slow worker.
     fixture.repository.setVisibleThread('A');
     await fixture.transport.opened(0);
@@ -602,13 +556,7 @@ void main() {
     oldA.closeGate = Completer<void>();
     fixture.transport.opens[0].result.complete(oldA);
     await oldA.deliver(
-      ConversationBaselineEvent(
-        baseline: baseline(
-          1,
-          subscriptionId: 'old-A',
-          items: [timelineItem(1, threadId: 'A')],
-        ),
-      ),
+      ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
     );
     // Leaving A starts its retirement while its native close hangs.
     fixture.repository.setVisibleThread('B');
@@ -617,13 +565,7 @@ void main() {
     final firstB = TestConversationFeed(threadId: 'B', subscriptionId: 'b-1');
     fixture.transport.opens[1].result.complete(firstB);
     await firstB.deliver(
-      ConversationBaselineEvent(
-        baseline: baseline(
-          2,
-          subscriptionId: 'b-1',
-          items: [timelineItem(2, threadId: 'B')],
-        ),
-      ),
+      ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
     );
     // Returning to A must mint a fresh attempt, not resurrect the retired one.
     fixture.repository.setVisibleThread('A');
@@ -631,16 +573,7 @@ void main() {
     final newA = TestConversationFeed(threadId: 'A', subscriptionId: 'new-A');
     fixture.transport.opens[2].result.complete(newA);
     await newA.deliver(
-      ConversationUpdateEvent(
-        update: ConversationReset(
-          baseline(
-            3,
-            subscriptionId: 'new-A',
-            timelineEpoch: 'new-A-epoch',
-            items: [timelineItem(3, threadId: 'A')],
-          ),
-        ),
-      ),
+      ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
     );
     final owner = fixture.repository.existingSession('A')!;
     expect(owner.isActive, isTrue);
@@ -659,16 +592,7 @@ void main() {
     final secondB = TestConversationFeed(threadId: 'B', subscriptionId: 'b-2');
     fixture.transport.opens[3].result.complete(secondB);
     await secondB.deliver(
-      ConversationUpdateEvent(
-        update: ConversationReset(
-          baseline(
-            4,
-            subscriptionId: 'b-2',
-            timelineEpoch: 'new-B-epoch',
-            items: [timelineItem(4, threadId: 'B')],
-          ),
-        ),
-      ),
+      ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
     );
     expect(fixture.transport.opens.map((e) => e.threadId), [
       'A',
@@ -701,6 +625,7 @@ void main() {
     }
 
     void drain(String id) {
+      fixture.attach(id, demand: _demand);
       fixture.repository.setVisibleThread(id);
       record(id);
     }
@@ -766,13 +691,17 @@ void main() {
         workspaceId: 'project',
       );
       expect(visibleTargets, [null]);
-      final consumer = fixture.attach('thread');
+      final consumer = fixture.attach('thread', demand: _demand);
       fixture.repository.setVisibleThread('thread');
       expect(visibleTargets, [null, 'thread']);
       await fixture.transport.opened(0);
       final first = TestConversationFeed();
       fixture.transport.opens.first.result.complete(first);
-      await first.deliver(ConversationBaselineEvent(baseline: baseline(1)));
+      await first.deliver(
+        ConversationChatEvent(
+          batch: chatSet(messages: [chatMessage(id: 'item-1')]),
+        ),
+      );
       final draft = fixture.client.drafts.composer('thread')
         ..updateDraft('keep');
       fixture.repository.setVisibleThread(null);
@@ -789,18 +718,16 @@ void main() {
       final second = TestConversationFeed(subscriptionId: 'new');
       fixture.transport.opens[1].result.complete(second);
       await second.deliver(
-        ConversationUpdateEvent(
-          update: ConversationReset(
-            baseline(9, subscriptionId: 'new', timelineEpoch: 'new'),
-          ),
+        ConversationChatEvent(
+          batch: chatSet(messages: [chatMessage(id: 'item-9')]),
         ),
       );
       expect(
-        consumer.frames.last,
-        isA<ConversationResetFrame>().having(
-          (f) => f.baseline.completedCursor.appendSeq,
-          'cursor',
-          9,
+        consumer.batches.last,
+        isA<ChatBatch>().having(
+          (batch) => batch.messages.single.id,
+          'message identity',
+          'item-9',
         ),
       );
       final closing = fixture.close();
@@ -815,12 +742,12 @@ void main() {
     'consumer acceptance precedes ACK and no second consumer is created',
     () async {
       final fixture = ConversationFixture();
-      final feed = await fixture.open();
+      final feed = await fixture.open(demand: _demand);
       final consumer = fixture.consumers['thread']!;
       feed.ackGate = Completer<void>();
-      feed.send(ConversationUpdateEvent(update: completedBatch(1, 2)));
+      feed.send(ConversationChatEvent(batch: _appendMessage('item-2')));
       await consumer.waitForCount(2);
-      expect(consumer.frames.last, isA<ConversationCompletedBatchFrame>());
+      expect(consumer.batches.last.placement, ChatPlacement.append);
       expect(feed.acknowledgements, [1]);
       // No second consumer and no unbounded async-listen callback chain.
       expect(feed.eventConsumers, 1);
@@ -836,6 +763,7 @@ void main() {
     () async {
       final budget = ResourceBudget();
       final fixture = ConversationFixture(budget: budget);
+      fixture.attach('thread', demand: _demand);
       fixture.repository.setVisibleThread('thread');
       final closing = fixture.close(deadline: DateTime.now());
       final report = await closing;
@@ -855,7 +783,7 @@ void main() {
   test('failed native close retains permit and explicit cleanup retries same owner', () async {
     final budget = ResourceBudget();
     final fixture = ConversationFixture(budget: budget);
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     feed.closeFailure = StateError('native join failed');
     expect((await fixture.close()).complete, isFalse);
     expect(budget.usage, isNotEmpty);
@@ -870,7 +798,7 @@ void main() {
     'terminal control frames use no credit and close does not await an ACK',
     () async {
       final fixture = ConversationFixture();
-      final feed = await fixture.open();
+      final feed = await fixture.open(demand: _demand);
       // Revocation occurs before another ACK can be issued.
       fixture.repository.setVisibleThread(null);
       await feed.closeCompleted.future;

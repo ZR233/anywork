@@ -67,20 +67,51 @@ where
 }
 
 macro_rules! concrete_observed {
-    ($state:expr, $map_value:expr, $target:ident) => {
+    // A fallible value adapter may supply `?`; valueless states never invoke it.
+    ($state:expr, $map_value:expr, $target:ident $(, $try_value:tt)?) => {
         match bridge_observed($state, $map_value) {
             BridgeObservedValue::Uninitialized(resource) => $target::Uninitialized(resource),
             BridgeObservedValue::Loading(resource) => $target::Loading(resource),
-            BridgeObservedValue::Ready(resource, value) => $target::Ready { resource, value },
+            BridgeObservedValue::Ready(resource, value) => $target::Ready {
+                resource,
+                value $(: value $try_value)?,
+            },
             BridgeObservedValue::Refreshing(resource, value) => {
-                $target::Refreshing { resource, value }
+                $target::Refreshing {
+                    resource,
+                    value $(: value $try_value)?,
+                }
             }
-            BridgeObservedValue::Stale(resource, value) => $target::Stale { resource, value },
-            BridgeObservedValue::Degraded(resource, value) => $target::Degraded { resource, value },
+            BridgeObservedValue::Stale(resource, value) => $target::Stale {
+                resource,
+                value $(: value $try_value)?,
+            },
+            BridgeObservedValue::Degraded(resource, value) => $target::Degraded {
+                resource,
+                value $(: value $try_value)?,
+            },
             BridgeObservedValue::Failed(resource) => $target::Failed(resource),
             BridgeObservedValue::Stopped(resource) => $target::Stopped(resource),
         }
     };
+}
+
+pub(crate) fn bridge_child_interactions_resource(
+    state: ObservedResource<Vec<pl_protocol::ChildInteractionSummary>>,
+) -> anyhow::Result<BridgeChildInteractionsResource> {
+    Ok(concrete_observed!(
+        state,
+        |items| {
+            Ok::<_, anyhow::Error>(BridgeChildInteractionsData {
+                items: items
+                    .into_iter()
+                    .map(crate::api::studio::convert::thread_stream::bridge_child_interaction)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            })
+        },
+        BridgeChildInteractionsResource,
+        ?
+    ))
 }
 
 pub(crate) fn bridge_project_directory(

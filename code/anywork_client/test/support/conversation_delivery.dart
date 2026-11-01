@@ -37,49 +37,122 @@ extension ConversationTestDelivery on ConversationSession {
 class ScriptedConversationFeed extends TestConversationFeed {
   ScriptedConversationFeed({
     String threadId = 'thread',
-    ConversationBaseline? initial,
+    String subscriptionId = 'sub',
+    ChatBatch? initial,
     Stream<ThreadStreamFrame>? states,
-    this.resumeAfter,
-  }) : initial = initial ?? baseline(1),
+    TestConversationReader? reader,
+  }) : initial = initial ?? chatSet(),
        states = states,
        super(
          threadId: threadId,
-         subscriptionId: initial?.subscriptionId ?? 'sub',
+         subscriptionId: subscriptionId,
+         reader: reader,
        );
-  final ConversationBaseline initial;
+  final ChatBatch initial;
   final Stream<ThreadStreamFrame>? states;
-  final ConversationCompletionCursor? resumeAfter;
-  StreamSubscription<ThreadStreamFrame>? _states;
+  StreamIterator<ThreadStreamFrame>? _states;
+  Future<void>? _pump;
   @override
   Stream<ConversationFrame> get events {
     final stream = super.events;
-    // Native creation captures a baseline before subsequent publication.
-    scheduleMicrotask(() {
-      if (requestCloseStarted.isCompleted) return;
-      if (resumeAfter == null) {
-        send(ConversationBaselineEvent(baseline: initial));
+    _pump ??= () {
+      final done = Completer<void>();
+      scheduleMicrotask(() => done.complete(_pumpEvents()));
+      return done.future;
+    }();
+    return stream;
+  }
+
+  Future<void> _pumpEvents() async {
+    if (requestCloseStarted.isCompleted) return;
+    registerScriptedFeed(this);
+    await _deliverCredited(ConversationChatEvent(batch: initial));
+    final source = states;
+    if (source == null || requestCloseStarted.isCompleted) return;
+    final iterator = StreamIterator(source);
+    _states = iterator;
+    if (requestCloseStarted.isCompleted) {
+      await iterator.cancel();
+      if (identical(_states, iterator)) _states = null;
+      return;
+    }
+    try {
+      while (!requestCloseStarted.isCompleted) {
+        final hasNext = await _moveNext(iterator);
+        if (!hasNext || requestCloseStarted.isCompleted) return;
+        await _deliverCredited(ConversationStateEvent(frame: iterator.current));
       }
-      _states = states?.listen(
-        (state) => send(ConversationStateEvent(frame: state)),
-        onError: (Object error, StackTrace stack) => send(
-          ConversationFailureEvent(
-            failure: StudioFailure(
-              code: StudioFailureCode.internal,
-              message: error.toString(),
-              retryable: false,
-              correlationId: 'scripted-state',
-            ),
+    } catch (error) {
+      if (requestCloseStarted.isCompleted) return;
+      await _deliverCredited(
+        ConversationFailureEvent(
+          failure: StudioFailure(
+            code: StudioFailureCode.internal,
+            message: error.toString(),
+            retryable: false,
+            correlationId: 'scripted-state',
           ),
         ),
       );
-      registerScriptedFeed(this);
-    });
-    return stream;
+    } finally {
+      await iterator.cancel();
+      if (identical(_states, iterator)) _states = null;
+    }
+  }
+
+  Future<bool> _moveNext(StreamIterator<ThreadStreamFrame> iterator) async {
+    if (requestCloseStarted.isCompleted) return false;
+    final next = iterator.moveNext();
+    try {
+      final progressed = await Future.any<bool>([
+        next,
+        requestCloseStarted.future.then((_) => false),
+      ]);
+      if (requestCloseStarted.isCompleted) {
+        unawaited(next.catchError((_, __) => false));
+        return false;
+      }
+      return progressed;
+    } catch (error) {
+      if (requestCloseStarted.isCompleted) {
+        unawaited(next.catchError((_, __) => false));
+        return false;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _deliverCredited(ConversationEvent event) async {
+    if (requestCloseStarted.isCompleted) return;
+    final sequence = send(event);
+    if (requestCloseStarted.isCompleted) return;
+    if (event is ConversationClosedEvent || event is ConversationFailureEvent) {
+      return;
+    }
+    await Future.any<void>([
+      acknowledged(sequence),
+      requestCloseStarted.future,
+    ]);
   }
 
   @override
   Future<void> close() async {
-    await _states?.cancel();
-    await super.close();
+    Object? closeError;
+    try {
+      await super.close();
+    } catch (error) {
+      closeError = error;
+    }
+    Object? pumpError;
+    final pump = _pump;
+    if (pump != null) {
+      try {
+        await pump;
+      } catch (error) {
+        pumpError = error;
+      }
+    }
+    if (closeError != null) throw closeError;
+    if (pumpError != null) throw pumpError;
   }
 }

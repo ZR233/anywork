@@ -382,6 +382,7 @@ mod tests {
 
     fn bound_output(binding: serde_json::Value) -> ModelStepOutput {
         let tools = vec![pl_core::model::ModelToolCall {
+            presentation_contract: None,
             call_id: "call".into(),
             tool_id: "query".into(),
             arguments: OpaquePayload::new("json", 1, "{\"q\":1}").unwrap(),

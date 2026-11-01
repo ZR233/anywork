@@ -197,6 +197,7 @@ impl ModelSession for Sequence {
 
 fn call(id: &str, tool: &str, rejection: Option<ModelToolCallRejection>) -> ModelToolCall {
     ModelToolCall {
+        presentation_contract: None,
         call_id: id.into(),
         tool_id: tool.into(),
         arguments: OpaquePayload::text(" raw arguments\n"),

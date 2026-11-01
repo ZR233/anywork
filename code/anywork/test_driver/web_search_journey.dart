@@ -770,7 +770,8 @@ class _Probe {
       var newUserIndex = -1;
       for (var index = 0; index < rows.length; index++) {
         final row = rows[index];
-        if (row['type'] == 'userMessage' &&
+        if (row['kind'] == 'text' &&
+            row['channel'] == 'user' &&
             row['id'] is String &&
             !beforeUserIds.contains('${row['id']}')) {
           newUserIndex = index;
@@ -848,7 +849,9 @@ class _Probe {
   /// User-message row ids currently present in the timeline window.
   Set<String> _userMessageIds(Map<String, dynamic> state) => {
     for (final row in timelineRows(state))
-      if (row['type'] == 'userMessage' && row['id'] is String)
+      if (row['kind'] == 'text' &&
+          row['channel'] == 'user' &&
+          row['id'] is String)
         row['id'] as String,
   };
 

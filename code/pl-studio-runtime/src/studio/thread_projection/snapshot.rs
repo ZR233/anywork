@@ -35,12 +35,15 @@ pub(in crate::studio) fn project_snapshot(
         thread.mode = mode;
     }
     let runtime = super::runtime::project_runtime(&thread.id, state, thread.updated_at, usage).ok();
+    let model_route = crate::studio::model_route::projected(state)
+        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
     let activity = super::project_activity(&thread.id, state, None);
     let storage = persistence.map(|persistence| storage_state(state, persistence));
     Ok(pl_protocol::ThreadSnapshot {
         schema_version: pl_protocol::THREAD_SCHEMA_VERSION,
         revision: state.commit_sequence,
         runtime,
+        model_route,
         thread,
         active_turn,
         interactions,

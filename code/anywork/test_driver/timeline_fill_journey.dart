@@ -8,7 +8,7 @@ import 'pointer_scroll.dart';
 import 'raw_tap.dart';
 import 'timeline_observation.dart';
 
-/// Observes the real viewport after the compact grouped tail and explicit Live transitions.
+/// Observes the real viewport after the single-item tail and explicit Live transitions.
 /// Tail baselines remain small; the display may then read several pages to fill its viewport.
 Future<Map<String, Object?>> observeLatestPagePresentation(
   FlutterDriver driver,
@@ -87,7 +87,7 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
           content != null &&
           scroll != null &&
           content.isLive &&
-          content.generation > before.generation &&
+          content.generation == before.generation &&
           !content.hasNewOutput &&
           scroll.atLiveEdge &&
           (scroll.pixels ?? 1).abs() <= 0.5;
@@ -99,14 +99,13 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
       'timeline': content.summary(),
       'scroll': scroll.toJson(),
       'originalItemsCoveredExactlyOnce': true,
-      'presentationItemCount': content.presentationItems.length,
-      'groupsDefaultCollapsed': content.presentationItems.every(
-        (item) => !item.expanded,
-      ),
+      'messageCount': content.items.length,
       'contentFillsViewportOrEof':
           (scroll.maxScrollExtent ?? 0) > 0 || !content.hasOlder,
-      'autoFillExercised': content.itemCount > 32,
-      'generationAdvanced': content.generation > before.generation,
+      // Viewport-driven demand has no fixed 32-item baseline. Loaded cardinality
+      // cannot prove how many page operations were accepted.
+      'previousWindowRetained': content.retainsWindow(before, prepend: true),
+      'sameGeneration': content.generation == before.generation,
     };
     await File('${output.path}/latest-fill-$attempt.png')
         .writeAsBytes(await driver.screenshot());
@@ -135,8 +134,7 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
       keyboardEnd.isHistory &&
       keyboardEnd.generation == keyboardStart.generation &&
       keyboardEnd.itemCount > keyboardStart.itemCount &&
-      keyboardStart.itemIds.every(keyboardEnd.itemIds.contains) &&
-      keyboardEnd.appendSeqAscending;
+      keyboardEnd.retainsWindow(keyboardStart, prepend: true);
   observations['keyboardPagination'] = <String, Object?>{
     'input': 'focused message + native PageUp ScrollAction',
     'keyCount': keyCount,
@@ -154,7 +152,9 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
     (state) =>
         keyboardReturnStability.accept(state) &&
         TimelineObservation.parse(state).isLive &&
-        TimelineObservation.parse(state).generation > keyboardEnd.generation,
+        TimelineObservation.parse(state).generation == keyboardEnd.generation &&
+        TimelineObservation.parse(state)
+            .retainsWindow(keyboardEnd, prepend: true),
   );
   observations['pass'] =
       keyboardPass &&
@@ -162,10 +162,9 @@ Future<Map<String, Object?>> observeLatestPagePresentation(
       List.generate(2, (index) => observations['return-$index']! as Map).every(
         (record) =>
             record['originalItemsCoveredExactlyOnce'] == true &&
-            record['groupsDefaultCollapsed'] == true &&
             record['contentFillsViewportOrEof'] == true &&
-            record['autoFillExercised'] == true &&
-            record['generationAdvanced'] == true,
+            record['previousWindowRetained'] == true &&
+            record['sameGeneration'] == true,
       );
   return observations;
 }

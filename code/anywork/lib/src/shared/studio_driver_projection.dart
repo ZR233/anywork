@@ -8,10 +8,11 @@ import 'package:anywork_client/model_directory.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
-import '../features/conversation/timeline/state/timeline_entry.dart';
+import '../features/conversation/timeline/state/chat_item_presentation.dart';
+import '../features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import '../features/conversation/timeline/state/chat_payload_reading.dart';
 import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
-import 'studio_driver_key_values.dart';
 import 'studio_driver_state.dart';
 
 /// The Driver borrows this application's Client. Binding creates no account,
@@ -115,6 +116,7 @@ StudioDriverFacts queryStudioDriverFacts(
           : null,
       todo: session?.workspace?.todo,
       runtime: session?.runtime ?? _emptyRuntime,
+      modelRoute: session?.modelRoute,
       turn: session?.activeTurn,
       lastTurn: session?.workspace?.lastTurn,
       activeInteraction: primaryInteraction(session?.interactions ?? const []),
@@ -247,23 +249,12 @@ TimelineDisplayFacts? _timelineFacts(
   final view = owner.source.value;
   if (view == null || view.threadId != threadId) return null;
   final lease = owner.lease(threadId);
-  final hidden = <String, TimelineEntry>{};
-  if (lease != null) {
-    for (final atom in lease.items) {
-      final entry = lease.presentationFor(atom.id);
-      if (entry != null && entry.kind == TimelineEntryKind.hidden) {
-        hidden[entry.id] = entry;
-      }
-    }
-  }
   return TimelineDisplayFacts(
     threadId: view.threadId,
     generation: lease?.generation ?? view.generation,
     ready: lease != null,
     mode: view.mode,
     connection: view.connection,
-    timelineEpoch: lease?.timelineEpoch,
-    completedThrough: lease?.completedCursor?.appendSeq,
     loadedCount: lease?.loadedCount,
     olderCursor: lease?.olderCursor,
     hasOlder: lease?.hasOlder ?? false,
@@ -278,35 +269,151 @@ TimelineDisplayFacts? _timelineFacts(
       _ => null,
     },
     hasNewOutput: view.hasNewOutput,
+    appliedSets: lease?.appliedSets,
+    appliedPrepends: lease?.appliedPrepends,
+    appliedAppends: lease?.appliedAppends,
+    current: _currentDisplayJson(lease?.currentDisplay),
+    firstContentLayout: switch (lease?.firstContentLayout) {
+      final layout? => TimelineContentLayoutFacts(
+        selectionId: layout.selectionId,
+        generation: layout.generation,
+        itemId: layout.itemId,
+        selectionStartedMicros: layout.selectionStartedMicros,
+        layoutCompletedMicros: layout.layoutCompletedMicros,
+      ),
+      null => null,
+    },
+    children: [
+      if (lease != null)
+        for (final display in lease.childrenDisplays)
+          TimelineChildrenFacts(
+            parentId: display.parentId,
+            generation: display.generation,
+            ready: display.ready,
+            olderCursor: display.olderCursor,
+            loadingOlder: display.loadingOlder,
+            error: display.error?.toString(),
+            appliedSets: display.appliedSets,
+            appliedPrepends: display.appliedPrepends,
+            appliedAppends: display.appliedAppends,
+            items: [
+              for (final message in display.messages)
+                _timelineMessageFacts(message),
+            ],
+          ),
+    ],
     items: [
-      for (final item in lease?.items ?? const <ConversationItem>[])
-        _timelineItemFacts(item),
-    ],
-    presentationItems: [
       for (final message in lease?.controller.messages ?? const <Message>[])
-        if (timelineEntryOf(message) case final item?
-            when message.id == item.id)
-          _timelinePresentationFacts(item),
-    ],
-    hiddenPresentationItems: [
-      for (final item in hidden.values) _timelinePresentationFacts(item),
+        _timelineMessageFacts(message),
     ],
   );
 }
 
-TimelinePresentationFacts _timelinePresentationFacts(TimelineEntry item) =>
-    TimelinePresentationFacts(
-      id: item.id,
-      kind: item.kind.name,
-      firstAppendSeq: item.position.$1,
-      memberIds: item.memberIds,
-      visibleMemberIds: item.visibleMemberIds,
-      skillPairs: {
-        for (final id in item.visibleMemberIds) id: ?item.pairedToolId(id),
+/// Serializes only already mounted, admitted resources. No getter opens a scope or performs IO.
+Map<String, Object?>? _currentDisplayJson(TimelineCurrentDisplay? display) {
+  if (display == null || !display.isCurrent) return null;
+  return {
+    'turnId': display.turnId,
+    'childrenParentId': display.childrenParentId,
+    'activityId': display.activityId,
+    'expanded': display.expanded,
+    'collections': [
+      for (final collection in display.collections)
+        if (collection.isCurrent)
+          {
+            'databaseId': collection.reference.databaseId,
+            'collection': collection.reference.collection,
+            'revision': collection.reference.revision,
+            'generation': collection.generation,
+            'expanded': collection.expanded,
+            'loading': collection.loading,
+            'error': collection.error?.toString(),
+            'ready': collection.page != null,
+            'continuation': collection.page?.continuation,
+            'entries': [
+              for (final entry
+                  in collection.page?.entries ??
+                      const <CurrentCollectionEntry>[])
+                {
+                  'id': entry.id,
+                  'position': entry.position,
+                  'payload': switch (entry.payload) {
+                    InlinePayload(:final bytes) => {
+                      'kind': 'inline',
+                      'byteLength': bytes.length,
+                      'base64': base64Encode(bytes),
+                    },
+                    DeferredPayload(:final reference, :final byteLength) => {
+                      'kind': 'deferred',
+                      'byteLength': byteLength,
+                      'reference': _currentReferenceJson(reference),
+                    },
+                  },
+                },
+            ],
+          },
+    ],
+    'windows': [
+      for (final observation in display.windows)
+        {
+          'id': observation.id,
+          'reference': _currentReferenceJson(observation.reference),
+          'offset': observation.offset,
+          'error': observation.error?.toString(),
+          'window': switch (observation.window) {
+            final window? => {
+              'offset': window.offset,
+              'byteLength': window.bytes.length,
+              'base64': base64Encode(window.bytes),
+              'generation': window.generation,
+              'availableThrough': window.availableThrough,
+              'sealed': window.sealed,
+            },
+            null => null,
+          },
+        },
+    ],
+  };
+}
+
+Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
+  'databaseId': reference.databaseId,
+  'target': switch (reference.target) {
+    ItemPayloadTarget(:final itemId) => {
+      'kind': 'itemPayload',
+      'itemId': itemId,
+    },
+    BodyContentTarget(:final owner, :final key) => {
+      'kind': 'body',
+      'key': key,
+      'owner': switch (owner) {
+        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
+        CurrentContentOwner(:final domain, :final id, :final revision) => {
+          'kind': 'current',
+          'domain': domain,
+          'id': id,
+          'revision': revision,
+        },
       },
-      expanded: item.expanded,
-      issueCount: item.issueCount,
-    );
+    },
+  },
+};
+
+TimelineItemFacts _timelineMessageFacts(Message message) {
+  final item = chatItemPresentationOf(message);
+  if (item != null) return _timelineItemFacts(item);
+  return TimelineItemFacts(
+    id: message.id,
+    sealedAt: null,
+    compatibility: 'unknown',
+    omittedBytes: null,
+    kind: 'unknown',
+    status: 'unknown',
+    text: '',
+    channel: null,
+    diagnostic: 'Message has no current chat metadata',
+  );
+}
 
 /// 只读滚动几何：每次诊断请求**现场**读当前展示 lease 实测挂载的标准 controller。
 ///
@@ -336,176 +443,151 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(ConversationItem item) {
-  final descriptor = item.descriptor;
-  final tool = descriptor is ConversationToolDescriptor ? descriptor : null;
-  final userInput = item.userInput;
-  // The SDK helper owns plan attribution and secret/redacted answer filtering.
-  final receipt = item.planReceipt;
-  final attachments = timelineAttachments(item);
-  final result = item.fieldFor(const ThreadToolResultFieldView())?.text;
-  final status = _itemStatus(descriptor);
+TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
+  try {
+    return _loadedItemFacts(item);
+  } on FormatException catch (error) {
+    // Only the current in-memory presentation is inspected here; no I/O error
+    // can be relabelled by this per-item diagnostic boundary.
+    return TimelineItemFacts(
+      id: item.id,
+      sealedAt: _diagnosticUnixSeconds(item.createdAt),
+      compatibility: 'malformed',
+      omittedBytes: null,
+      kind: item.type,
+      status: 'unknown',
+      text: '',
+      channel: null,
+      presentationContract: item.presentationContract,
+      diagnostic: error.toString(),
+    );
+  }
+}
+
+TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
+  final data = item.data;
+  final outcome = _diagnosticObject(data['outcome']);
+  final state = _diagnosticObject(data['state']);
+  final userInput = _diagnosticObject(data['userInput']);
+  final tool = item.type == 'tool'
+      ? switch (item.toolCard) {
+          DecodedToolCard(:final value) => value,
+          _ => null,
+        }
+      : null;
+  final attachments = [
+    for (final attachment in item.attachments)
+      TimelineAttachmentFacts(
+        id: attachment.id,
+        modality: attachment.modality.name,
+        filename: attachment.filename ?? '',
+        byteSize: attachment.byteSize,
+        source: item.type == 'tool' ? 'tool' : null,
+      ),
+  ];
+  final status =
+      tool?.statusString ??
+      _diagnosticString(outcome?['kind']) ??
+      _diagnosticString(state?['kind']) ??
+      _diagnosticString(data['decision']) ??
+      'unknown';
   return TimelineItemFacts(
     id: item.id,
-    appendSeq: item.header.appendSeq,
-    sourceEffectSeq: item.header.sourceEffectSeq,
-    sealedAt: item.header.sealedAt,
-    omittedBytes: item.omittedBytes,
-    kind: _itemKind(descriptor),
+    sealedAt: _diagnosticUnixSeconds(item.createdAt),
+    compatibility: item.compatibility.name,
+    omittedBytes: item.compatibility == ChatItemCompatibility.current
+        ? item.bodies.fold<int>(
+            0,
+            (bytes, body) =>
+                bytes + body.byteLength - (body.inline?.length ?? 0),
+          )
+        : null,
+    payloadByteLength:
+        item.byteLength ??
+        (item.raw == null ? null : utf8.encode(item.raw!).length),
+    kind: item.type,
     status: status,
-    text: _itemText(item),
-    channel: switch (descriptor) {
-      ConversationTextDescriptor(:final channel) => channel,
-      _ => null,
-    },
+    text:
+        item.inlineText('body') ??
+        item.inlineText('plan.document') ??
+        _diagnosticString(data['notice']) ??
+        '',
+    channel: _diagnosticString(data['channel']),
+    childrenParentId: item.childrenParentId,
+    presentationContract: item.presentationContract,
+    diagnostic:
+        item.diagnostic ??
+        (item.type == 'tool'
+            ? switch (item.toolCard) {
+                UnavailableToolCard(:final reason) => reason,
+                _ => null,
+              }
+            : null),
     details: [
-      for (final detail in item.details)
+      for (final body in item.bodies)
         TimelineDetailFacts(
-          field: StudioDriverKeyValues.timelineDetailField(detail.field),
-          totalBytes: detail.totalBytes,
-          previewBytes: detail.previewBytes,
+          field: body.key,
+          totalBytes: body.byteLength,
+          previewBytes: body.inline?.length ?? 0,
+          hasReference: body.reference != null,
         ),
     ],
-    attachments: [
-      for (final attachment in attachments)
-        TimelineAttachmentFacts(
-          id: attachment.id,
-          modality: attachment.modality.name,
-          filename: attachment.filename ?? '',
-          byteSize: attachment.byteSize,
-          source: tool == null ? null : 'tool',
-        ),
-    ],
+    attachments: attachments,
     tool: tool == null
         ? null
         : TimelineToolFacts(
-            name: tool.invocation.name,
-            status: status,
-            callId: tool.invocation.callId ?? tool.invocation.toolCallId,
-            arguments:
-                item.fieldFor(const ThreadToolArgumentsFieldView())?.text ?? '',
-            result: result,
-            progressBytes: _utf8Bytes(result ?? ''),
-            appendSeq: item.header.appendSeq,
-            denialReason: switch (tool.state) {
-              ConversationToolDenied(:final reason) => reason,
-              _ => null,
-            },
-            workingDirectory: tool.invocation.workingDirectory,
-            exitCode: switch (tool.state) {
-              ConversationToolSucceeded(:final output) => output.exitCode,
-              ConversationToolFailed(:final output) => output?.exitCode,
-              _ => null,
-            },
-            attachments: [
-              for (final attachment in attachments)
-                TimelineAttachmentFacts(
-                  id: attachment.id,
-                  modality: attachment.modality.name,
-                  filename: attachment.filename ?? '',
-                  byteSize: attachment.byteSize,
-                ),
-            ],
+            name: tool.name,
+            status: tool.statusString,
+            callId: tool.toolCallId,
+            arguments: tool.arguments,
+            result: tool.output,
+            progressBytes: utf8.encode(tool.output).length,
+            presentationContract: tool.presentationContract,
+            denialReason: tool.error,
+            workingDirectory: tool.workingDirectory,
+            exitCode: tool.exitCode,
+            attachments: attachments,
           ),
-    userInput: userInput == null
-        ? null
-        : TimelineUserInputFacts(
-            interactionId: userInput.interactionId,
-            state: switch (userInput.state) {
-              ConversationUserInputResolved() => 'resolved',
-              ConversationUserInputCancelled() => 'cancelled',
-            },
-            isPlanConfirmation: receipt != null,
-            planDecision: receipt?.decision.name,
-          ),
-    plan: descriptor is! ConversationPlanDescriptor
-        ? null
-        : TimelinePlanFacts(
-            interactionId: descriptor.interactionId,
-            decision: descriptor.decision.name,
-            documentVersion: descriptor.documentVersion,
-            contentHash: descriptor.contentHash,
-            document: item.fieldFor(const ThreadPlanDocumentFieldView())?.text,
-            feedback: item.fieldFor(const ThreadPlanFeedbackFieldView())?.text,
-          ),
+    userInput: switch (userInput) {
+      {
+        'interactionId': final String id,
+        'state': final Map<String, Object?> state,
+      }
+          when state['kind'] is String =>
+        TimelineUserInputFacts(
+          interactionId: id,
+          state: state['kind']! as String,
+          isPlanConfirmation: false,
+        ),
+      _ => null,
+    },
+    plan: item.type == 'plan'
+        ? switch (data) {
+            {
+              'interactionId': final String id,
+              'decision': final String decision,
+            } =>
+              TimelinePlanFacts(
+                interactionId: id,
+                decision: decision,
+                documentVersion: data['documentVersion'] is int
+                    ? data['documentVersion']! as int
+                    : null,
+                contentHash: _diagnosticString(data['contentHash']),
+                document: item.inlineText('plan.document'),
+                feedback: item.inlineText('plan.feedback'),
+              ),
+            _ => null,
+          }
+        : null,
   );
 }
 
-int _utf8Bytes(String text) => utf8.encode(text).length;
-
-// Diagnostic labels retain the journey vocabulary, not a retired read model.
-// Every value is derived on demand from this exact typed item, without I/O.
-String _itemKind(ConversationDescriptor descriptor) => switch (descriptor) {
-  ConversationTextDescriptor(:final channel) => switch (channel) {
-    ThreadTextChannel.user => 'userMessage',
-    ThreadTextChannel.parentAgent => 'parentAgentMessage',
-    ThreadTextChannel.commentary ||
-    ThreadTextChannel.finalAnswer => 'agentMessage',
-  },
-  ConversationThinkingDescriptor() => 'reasoning',
-  ConversationToolDescriptor() => 'toolCall',
-  ConversationAgentDescriptor() => 'agent',
-  ConversationTurnDescriptor() => 'turn',
-  ConversationPlanDescriptor() => 'plan',
-  ConversationInferenceDescriptor() => 'inference',
-  ConversationSkillDescriptor() => 'skill',
-  ConversationRawDescriptor() => 'raw',
-  ConversationFileDescriptor() => 'file',
-  ConversationContextCompactionDescriptor() => 'contextCompaction',
-};
-
-String _itemStatus(ConversationDescriptor descriptor) => switch (descriptor) {
-  ConversationTextDescriptor(:final outcome) ||
-  ConversationThinkingDescriptor(:final outcome) => switch (outcome) {
-    ConversationContentCompleted() => 'completed',
-    ConversationContentFailed() => 'failed',
-    ConversationContentCancelled() => 'cancelled',
-  },
-  ConversationToolDescriptor(:final state) => switch (state) {
-    ConversationToolBackgroundStarted() => 'running',
-    ConversationToolInterrupted() => 'interrupted',
-    ConversationToolSucceeded() => 'succeeded',
-    ConversationToolFailed() => 'failed',
-    ConversationToolDenied() => 'denied',
-    ConversationToolCancelled() => 'cancelled',
-  },
-  ConversationAgentDescriptor(:final outcome) => switch (outcome) {
-    ConversationAgentSucceeded() => 'succeeded',
-    ConversationAgentDenied() => 'denied',
-    ConversationAgentCancelled() => 'cancelled',
-    ConversationAgentFailed() => 'failed',
-  },
-  ConversationTurnDescriptor(:final outcome) => switch (outcome) {
-    ConversationTurnCompleted() => 'completed',
-    ConversationTurnFailed() => 'failed',
-    ConversationTurnCancelled() => 'cancelled',
-    ConversationTurnBudgetLimited() => 'budgetLimited',
-  },
-  ConversationInferenceDescriptor(:final outcome) => switch (outcome) {
-    ConversationInferenceCompleted() => 'completed',
-    ConversationInferenceFailed() => 'failed',
-    ConversationInferenceCancelled() => 'cancelled',
-  },
-  ConversationPlanDescriptor() => 'completed',
-  ConversationSkillDescriptor() ||
-  ConversationFileDescriptor() ||
-  ConversationRawDescriptor() ||
-  ConversationContextCompactionDescriptor() => 'completed',
-};
-
-String _itemText(ConversationItem item) => switch (item.descriptor) {
-  ConversationTextDescriptor() => timelineText(item),
-  ConversationRawDescriptor(:final notice) => notice,
-  ConversationAgentDescriptor(:final outcome) => switch (outcome) {
-    ConversationAgentSucceeded(:final value) => value.summary,
-    ConversationAgentDenied(:final value) => value.reason,
-    ConversationAgentCancelled(:final value) => value.reason,
-    ConversationAgentFailed(:final value) => value.error,
-  },
-  ConversationSkillDescriptor(:final value) => value.name,
-  ConversationPlanDescriptor(:final decision) => decision.name,
-  _ => '',
-};
+Map<String, Object?>? _diagnosticObject(Object? value) =>
+    value is Map<String, Object?> ? value : null;
+String? _diagnosticString(Object? value) => value is String ? value : null;
+int? _diagnosticUnixSeconds(DateTime? value) =>
+    value == null ? null : value.millisecondsSinceEpoch ~/ 1000;
 
 ComposerThreadState _newThreadComposer(
   AnyworkClient client,

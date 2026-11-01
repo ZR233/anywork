@@ -30,6 +30,7 @@ class ThreadSessionState {
 
   int get revision => workspace?.revision ?? 0;
   ThreadRuntimeView? get runtime => workspace?.runtime;
+  ThreadModelRouteView? get modelRoute => workspace?.modelRoute;
   WorkflowRuntimeView? get workflow => runtime?.workflow;
   StudioTurnView? get activeTurn => workspace?.activeTurn;
   List<PendingInteraction> get interactions =>

@@ -1,15 +1,56 @@
 //! Official, ordered history migrations. Format numbers are only legacy import markers.
 use super::*;
 mod conversion;
+mod demand_conversation;
+mod model_route_head;
 mod sqlite_metadata;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
     migrate_unconsumed_input_bindings,
 };
+pub(super) use demand_conversation::seed_current;
 use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
 
 #[cfg(test)]
 mod atomic_tests;
+
+/// Frozen pre-head fixture encoder, not an alternate production checkpoint writer.
+#[cfg(test)]
+async fn write_published_checkpoint(
+    db: &impl ConnectionTrait,
+    checkpoint: &pl_core::thread::ThreadCheckpoint,
+) -> Result<()> {
+    use pl_core::context::content_hash;
+    for (ordinal, record) in checkpoint.state.context.records.iter().enumerate() {
+        let payload = serde_json::to_string(record)?;
+        db.execute_raw(statement(
+            "INSERT INTO current_context(ordinal,record_id,payload,payload_hash) VALUES(?,?,?,?)",
+            vec![
+                integer(ordinal)?.into(),
+                record.id.clone().into(),
+                payload.clone().into(),
+                content_hash(payload.as_bytes()).into(),
+            ],
+        ))
+        .await?;
+    }
+    let mut metadata = checkpoint.pruned();
+    metadata.state.context.records = Default::default();
+    let payload = serde_json::to_string(&metadata)?;
+    db.execute_raw(statement(
+        "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash)
+         VALUES(1,?,?,?,?,?)",
+        vec![
+            integer(checkpoint.state_revision)?.into(),
+            integer(checkpoint.state.context.revision)?.into(),
+            integer(checkpoint.state.context.records.len())?.into(),
+            payload.clone().into(),
+            content_hash(payload.as_bytes()).into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
 
 struct Migrator {
     thread_id: String,
@@ -61,6 +102,12 @@ impl MigratorTraitSelf for Migrator {
             Box::new(CombinedContent {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(demand_conversation::DemandConversation {
+                thread_id: self.thread_id.clone(),
+            }),
+            Box::new(model_route_head::RootModelRouteHead {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -101,6 +148,8 @@ const REVIEW_RECEIPT: &str = "m20261027_000003_history_review_receipt";
 const ATOMIC_TIMELINE: &str = "m20261027_000004_history_atomic_timeline";
 const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
 const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
+const DEMAND_CONVERSATION: &str = "m20261029_000001_history_demand_conversation";
+const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -157,7 +206,20 @@ pub(super) async fn prepare_with_bot_root(
             .count(),
         Preparation::ExecutionIdentity => pending.len(),
     };
-    if let Err(error) = migrator.up(db, Some(u32::try_from(steps)?)).await {
+    let steps = u32::try_from(steps)?;
+    let started = std::time::Instant::now();
+    let result = migrator.up(db, Some(steps)).await;
+    if steps > 0 {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id,
+            migration_steps = steps,
+            success = result.is_ok(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "history migration completed"
+        );
+    }
+    if let Err(error) = result {
         let pending = migrator
             .get_pending_migrations_read_only(db)
             .await
@@ -250,20 +312,72 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let metering_pending = pending.iter().any(|step| step.name() == METERING_FACTS);
     let combined_pending = pending.iter().any(|step| step.name() == COMBINED_CONTENT);
     let retire_pending = pending.iter().any(|step| step.name() == RETIRE_ORDINALS);
+    let demand_pending = pending
+        .iter()
+        .any(|step| step.name() == DEMAND_CONVERSATION);
+    let model_route_head_pending = pending.iter().any(|step| step.name() == MODEL_ROUTE_HEAD);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
-        match version {
-            1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
-            9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
-            10 => !retire_pending && (!atomic_pending || !metering_pending) && combined_pending,
-            HISTORY_SCHEMA_VERSION => {
-                !retire_pending && !atomic_pending && !metering_pending && !combined_pending
-            }
-            _ => false,
-        },
+        model_route_head_pending == (version < 13)
+            && match version {
+                1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
+                9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
+                10 => !retire_pending && (!atomic_pending || !metering_pending) && combined_pending,
+                11 => {
+                    !retire_pending
+                        && !atomic_pending
+                        && !metering_pending
+                        && !combined_pending
+                        && demand_pending
+                }
+                12 | 13 => {
+                    !retire_pending
+                        && !atomic_pending
+                        && !metering_pending
+                        && !combined_pending
+                        && !demand_pending
+                }
+                _ => false,
+            },
         "history format conflicts with completed migrations; existing data preserved"
     );
+    if version >= 12 {
+        ensure!(
+            row.try_get::<String>("", "thread_id")? == thread_id,
+            "history database belongs to another Thread"
+        );
+        ensure!(
+            !row.try_get::<String>("", "database_id")?.is_empty(),
+            "empty history database identity"
+        );
+        validate_identity_collations(db).await?;
+        if version == HISTORY_SCHEMA_VERSION {
+            validate_current(db, thread_id).await?;
+        } else {
+            demand_conversation::validate_tables(db).await?;
+            model_route_head::validate_source(db).await?;
+            ensure!(
+                pending.iter().all(|step| {
+                    step.name() == MODEL_ROUTE_HEAD || is_lifecycle_migration(step.name())
+                }),
+                "schema 12 has pending earlier content migrations; existing data preserved"
+            );
+        }
+        return Ok(());
+    }
+    for table in [
+        "conversation_items",
+        "conversation_contents",
+        "conversation_content_chunks",
+        "conversation_view_state",
+        "conversation_view_entries",
+    ] {
+        ensure!(
+            !SchemaManager::new(db).has_table(table).await?,
+            "pending conversation migration has a pre-existing output table; existing data preserved"
+        );
+    }
     ensure!(
         SchemaManager::new(db).has_table("timeline_records").await? == !atomic_pending,
         "atomic timeline migration conflicts with its output table; existing data preserved"
@@ -299,7 +413,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         }
     } else if version == 9 || (version == 10 && atomic_pending) {
         validate_v9_tables(db).await?;
-    } else if version == 10 || version == HISTORY_SCHEMA_VERSION {
+    } else if version == 10 || version == 11 {
         validate_tables(db).await?;
         if version == 10 {
             validate_timeline_data(db, thread_id).await?;
@@ -335,6 +449,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
             );
         }
     }
+    tracing::debug!(target: "conversation_work", quick_check = 1, "history integrity check");
     for row in db
         .query_all_raw(statement("PRAGMA quick_check", vec![]))
         .await?
@@ -365,6 +480,16 @@ pub(super) async fn validate_identity_collations(db: &DatabaseConnection) -> Res
         ("history_tool_tasks", &["call_id"][..]),
         ("session_costs", &["purpose", "currency"][..]),
         ("timeline_records", &["record_id"][..]),
+        (
+            "conversation_items",
+            &["item_id", "query_class", "parent_id"][..],
+        ),
+        ("conversation_contents", &["owner_key", "content_key"][..]),
+        (
+            "conversation_content_chunks",
+            &["owner_key", "content_key"][..],
+        ),
+        ("conversation_view_entries", &["collection", "entry_id"][..]),
     ] {
         if !manager.has_table(table).await? {
             continue;
@@ -413,7 +538,9 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
-    validate_tables(db).await?;
+    demand_conversation::validate_tables(db).await?;
+    model_route_head::validate_tables(db).await?;
+    checkpoint::read_model_route_head(db).await?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
         execution_identity: None,
@@ -464,14 +591,7 @@ async fn validate_timeline_data(db: &impl ConnectionTrait, thread_id: &str) -> R
     let ceiling = super::timeline::latest_append_seq(db).await?;
     let mut after = 0;
     loop {
-        let page = super::timeline::page_after(
-            db,
-            thread_id,
-            after,
-            ceiling,
-            pl_core::chat::MAX_PAGE_ITEMS,
-        )
-        .await?;
+        let page = super::timeline::page_after(db, thread_id, after, ceiling, 100).await?;
         for item in &page.items {
             ensure!(
                 after.checked_add(1) == Some(item.append_seq),
@@ -606,7 +726,7 @@ async fn validate_keys(
         );
     } else {
         ensure!(
-            has_unique_key(db, &indexes, primary, true).await?,
+            has_unique_key(db, &indexes, primary, true, false).await?,
             "history table {table} primary key lacks exact identity uniqueness; existing data preserved"
         );
         // Both published composite keys (receipts and costs) declare every component NOT NULL.
@@ -634,10 +754,50 @@ async fn validate_keys(
                     && column
                         .try_get::<i64>("", "notnull")
                         .is_ok_and(|value| value == 1)
-            }) && has_unique_key(db, &indexes, &[*key], false).await?,
+            }) && has_unique_key(db, &indexes, &[*key], false, false).await?,
             "history table {table} requires NOT NULL UNIQUE key {key}; existing data preserved"
         );
     }
+    Ok(())
+}
+
+/// A single ordered composite constraint, not a list of independently unique columns.
+/// Uses transaction-local SQLite metadata; column affinity/default collations are also checked
+/// by the native first-connection trust gate before the one-connection migration transaction.
+async fn validate_ordered_unique_key(
+    db: &impl ConnectionTrait,
+    table: &str,
+    keys: &[&str],
+    primary: bool,
+) -> Result<()> {
+    let columns = db
+        .query_all_raw(statement(
+            "SELECT name,\"notnull\" FROM pragma_table_info(?, 'main')",
+            vec![table.into()],
+        ))
+        .await?;
+    ensure!(
+        !keys.is_empty()
+            && keys.iter().all(|key| columns.iter().any(|column| {
+                column
+                    .try_get::<String>("", "name")
+                    .is_ok_and(|name| name == *key)
+                    && column
+                        .try_get::<i64>("", "notnull")
+                        .is_ok_and(|value| value == 1)
+            })),
+        "history table {table} requires NOT NULL columns for key {keys:?}; existing data preserved"
+    );
+    let indexes = db
+        .query_all_raw(statement(
+            "SELECT name,\"unique\",origin,partial FROM pragma_index_list(?, 'main')",
+            vec![table.into()],
+        ))
+        .await?;
+    ensure!(
+        has_unique_key(db, &indexes, keys, primary, true).await?,
+        "history table {table} requires ordered BINARY NOT NULL UNIQUE key {keys:?}; existing data preserved"
+    );
     Ok(())
 }
 
@@ -646,6 +806,7 @@ async fn has_unique_key(
     indexes: &[sea_orm::QueryResult],
     keys: &[&str],
     primary: bool,
+    ordered: bool,
 ) -> Result<bool> {
     for index in indexes {
         if index.try_get::<i64>("", "unique")? != 1
@@ -656,7 +817,8 @@ async fn has_unique_key(
         }
         let columns = db
             .query_all_raw(statement(
-                "SELECT name,coll FROM pragma_index_xinfo(?, 'main') WHERE key=1",
+                "SELECT name,coll,\"desc\" AS descending FROM pragma_index_xinfo(?, 'main')
+                 WHERE key=1 ORDER BY seqno",
                 vec![index.try_get::<String>("", "name")?.into()],
             ))
             .await?;
@@ -679,6 +841,15 @@ async fn has_unique_key(
                         .try_get::<String>("", "coll")
                         .is_ok_and(|collation| collation.eq_ignore_ascii_case("BINARY"))
             })
+            && (!ordered
+                || keys.iter().zip(&columns).all(|(key, column)| {
+                    column
+                        .try_get::<Option<String>>("", "name")
+                        .is_ok_and(|name| name.as_deref() == Some(*key))
+                        && column
+                            .try_get::<i64>("", "descending")
+                            .is_ok_and(|value| value == 0)
+                }))
         {
             return Ok(true);
         }
@@ -824,7 +995,13 @@ impl MigrationTrait for CombinedContent {
                 .get_pending_migrations_read_only(db)
                 .await?
                 .iter()
-                .any(|step| step.name() != COMBINED_CONTENT && !is_lifecycle_migration(step.name()))
+                .any(|step| {
+                    // Later content steps are still pending at the format-10 boundary.
+                    !matches!(
+                        step.name(),
+                        COMBINED_CONTENT | DEMAND_CONVERSATION | MODEL_ROUTE_HEAD
+                    ) && !is_lifecycle_migration(step.name())
+                })
         {
             return Err(DbErr::Migration(
                 "combined history content requires both completed format 10 content steps".into(),
@@ -837,7 +1014,7 @@ impl MigrationTrait for CombinedContent {
         checkpoint::read(db, &self.thread_id)
             .await
             .map_err(conversion)?;
-        set_version(db, HISTORY_SCHEMA_VERSION).await
+        set_version(db, 11).await
     }
 }
 
@@ -1177,7 +1354,6 @@ impl MigrationTrait for ModelAccess {
         let mut migrated = original.clone();
         // Absence of explicit close remains absence; core Closed never invents Studio intent.
         crate::studio::agent_close::is_explicitly_closed(&migrated.state).map_err(conversion)?;
-        crate::studio::model_route::migration::upgrade(&mut migrated.state).map_err(conversion)?;
         crate::studio::delegation::migrate(&mut migrated.state).map_err(conversion)?;
         checkpoint::write_representation(db, &original, &migrated)
             .await

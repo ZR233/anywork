@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
                     thread_id: "cache-matrix".into(), turn_id: "auxiliary-summary".into(), attempt_id: "summary-matrix".into(),
                     context: snapshot.context.clone(), tools: Default::default(), tool_call_mode: ToolCallMode::Sequential,
                     solo_tool_ids: Default::default(), committed_private_context: snapshot.private_context.clone(), resources: None,
-                    cancellation: Default::default(), progress: None,
+                    cancellation: Default::default(), progress: None, members: None,
                 }, ThreadCompactionOptions { strategy: ThreadCompactionStrategy::TextSummary, instructions: "只生成简洁交接摘要，保留已批准状态、当前验证阶段和当前指令版本。禁止工具调用。".into(), requirement: "生成摘要。".into(), summary_prefix: "此前历史的压缩摘要：".into(), max_output_tokens: Some(256) }).await?;
                 tokio::fs::write(output.join("auxiliary-summary.json"), serde_json::to_vec_pretty(&json!({"accounting":compacted.accounting,"binding":compacted.binding,"modelObservation":compacted.model_observation}))?).await?;
                 thread.replace_context(compacted.replacement).await?;

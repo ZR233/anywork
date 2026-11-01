@@ -457,6 +457,7 @@ async fn siwc_thread_keeps_capacity_metadata_but_does_not_invent_an_output_limit
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();

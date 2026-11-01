@@ -66,6 +66,9 @@ pub struct ThreadEffectBatch {
     /// None means unchanged; Clear is preserved as an explicit serialized operation.
     pub private_context: Option<PrivateContextChange>,
     pub attempt: Option<AttemptUpdate>,
+    /// Independently ended members; absent in older effects and unrelated to context advancement.
+    #[serde(default)]
+    pub model_members: Arc<[crate::model::ModelCompletedMember]>,
     pub turn: Option<TurnRecord>,
     pub discovered_tools: Option<Arc<[ModelToolDeclaration]>>,
     pub deliveries: Arc<[ToolDelivery]>,
@@ -131,6 +134,7 @@ impl ThreadEffectBatch {
         previous: &ThreadSnapshot,
         current: &ThreadSnapshot,
         sequence: u64,
+        model_members: Arc<[crate::model::ModelCompletedMember]>,
     ) -> Option<Self> {
         let context = if previous.context == current.context {
             None
@@ -254,6 +258,7 @@ impl ThreadEffectBatch {
         if context.is_none()
             && private_context.is_none()
             && attempt.is_none()
+            && model_members.is_empty()
             && turn.is_none()
             && discovered_tools.is_none()
             && tasks.is_empty()
@@ -282,6 +287,7 @@ impl ThreadEffectBatch {
             context,
             private_context,
             attempt,
+            model_members,
             turn,
             discovered_tools,
             deliveries,

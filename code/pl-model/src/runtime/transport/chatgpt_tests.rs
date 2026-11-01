@@ -316,6 +316,9 @@ async fn transport_completion(
                 cancellation: None,
                 model_observation: None,
                 on_stream_end: &|| {},
+                members: None,
+                generation: 0,
+                member_admitted: None,
             },
             None,
         )

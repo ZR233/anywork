@@ -1,27 +1,52 @@
 import 'dart:async';
 
 import 'models.dart';
-import 'src/conversation/domain/activity_content.dart';
 import 'src/studio/thread_frames.dart';
 export 'src/studio/thread_frames.dart';
 
 abstract interface class ConversationTransport {
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
-    ConversationCompletionCursor? resumeAfter,
+    required ChatScope scope,
+    required ReadDemand demand,
   });
-  Future<ConversationHistoryReader> openHistoryReader(String threadId);
 }
 
-/// 独立只读 scope 的原生能力，保留同一注册 Session 的代际和读取生命周期。
-abstract interface class ConversationHistoryReader {
+/// The original feed's read lease; queries do not share its producer's receive/credit lock.
+abstract interface class ConversationReader {
   String get threadId;
-  String get timelineEpoch;
-  Future<ConversationPage> page({ConversationQueryCursor? before, int? limit});
-  Future<ConversationDetailChunk> readDetail({
-    required String itemId,
-    required ConversationDetailQuery query,
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
   });
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  });
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  });
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  });
+  Future<CurrentCollectionPage> pageCurrent({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  });
+  void requestClose();
+  Future<void> close();
+}
+
+/// Owns one range observation on the original reader.
+///
+/// Cancelling [windows] stops delivery and requests cancellation. Call [close]
+/// to join the original resource; a failed join can be retried on this handle.
+abstract interface class ConversationContentWatch {
+  Stream<ContentWindow> get windows;
   void requestClose();
   Future<void> close();
 }
@@ -29,6 +54,7 @@ abstract interface class ConversationHistoryReader {
 abstract interface class ConversationFeed {
   String get threadId;
   String get subscriptionId;
+  ConversationReader get reader;
   Stream<ConversationFrame> get events;
   Future<void> acknowledge(int deliverySequence);
   void requestClose();
@@ -57,20 +83,9 @@ final class ConversationStateEvent extends ConversationEvent {
   final ThreadStreamFrame frame;
 }
 
-final class ConversationBaselineEvent extends ConversationEvent {
-  const ConversationBaselineEvent({required this.baseline});
-  final ConversationBaseline baseline;
-}
-
-final class ConversationUpdateEvent extends ConversationEvent {
-  const ConversationUpdateEvent({required this.update});
-  final ConversationUpdate update;
-}
-
-final class ConversationActivityContentEvent extends ConversationEvent {
-  const ConversationActivityContentEvent({required this.frame, this.completed});
-  final ActivityContentFrame frame;
-  final ConversationUpdate? completed;
+final class ConversationChatEvent extends ConversationEvent {
+  const ConversationChatEvent({required this.batch});
+  final ChatBatch batch;
 }
 
 final class ConversationFailureEvent extends ConversationEvent {

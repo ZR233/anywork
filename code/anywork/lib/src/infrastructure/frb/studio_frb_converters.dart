@@ -558,14 +558,49 @@ PersistenceQueueSnapshot _persistenceQueueFromFrb(
 
 ChildInteractionsStateView _childInteractionsStateFromFrb(
   frb_topic_types.BridgeChildInteractionsState value,
-) => ChildInteractionsStateView(
-  hostThreadId: value.hostThreadId,
-  revision: value.revision.toInt(),
-  updatedAt: value.updatedAt.toInt() == 0
-      ? null
-      : _dateFromUnix(value.updatedAt),
-  items: value.items.map(_childInteractionFromFrb).toList(),
-);
+) {
+  ChildInteractionsData convert(
+    frb_topic_types.BridgeChildInteractionsData data,
+  ) => ChildInteractionsData(
+    items: data.items.map(_childInteractionFromFrb).toList(),
+  );
+
+  return ChildInteractionsStateView(
+    hostThreadId: value.hostThreadId,
+    state: switch (value.state) {
+      frb_topic_types.BridgeChildInteractionsResource_Uninitialized(
+        :final field0,
+      ) =>
+        _uninitializedResource(field0),
+      frb_topic_types.BridgeChildInteractionsResource_Loading(:final field0) =>
+        _loadingResource(field0),
+      frb_topic_types.BridgeChildInteractionsResource_Ready(
+        :final resource,
+        :final value,
+      ) =>
+        _readyResource(resource, convert(value)),
+      frb_topic_types.BridgeChildInteractionsResource_Refreshing(
+        :final resource,
+        :final value,
+      ) =>
+        _refreshingResource(resource, convert(value)),
+      frb_topic_types.BridgeChildInteractionsResource_Stale(
+        :final resource,
+        :final value,
+      ) =>
+        _staleResource(resource, convert(value)),
+      frb_topic_types.BridgeChildInteractionsResource_Degraded(
+        :final resource,
+        :final value,
+      ) =>
+        _degradedResource(resource, convert(value)),
+      frb_topic_types.BridgeChildInteractionsResource_Failed(:final field0) =>
+        _failedResource(field0),
+      frb_topic_types.BridgeChildInteractionsResource_Stopped(:final field0) =>
+        _stoppedResource(field0),
+    },
+  );
+}
 
 ChildInteractionSummary _childInteractionFromFrb(
   frb.BridgeChildInteractionSummary value,

@@ -24,7 +24,14 @@ pub fn registration(
     kind: SessionNoteToolKind,
     declaration: OpaquePayload,
 ) -> std::result::Result<Registration, RegistryError> {
-    let registration = Registration::new(kind.name().into(), declaration, NoteTool { kind })?;
+    let contract = match kind {
+        SessionNoteToolKind::Read => "builtin.read_session_note@1",
+        SessionNoteToolKind::Search => "builtin.search_session_note@1",
+        SessionNoteToolKind::Write => "builtin.write_session_note@1",
+        SessionNoteToolKind::ApplyPatch => "builtin.apply_session_note_patch@1",
+    };
+    let registration = Registration::new(kind.name().into(), declaration, NoteTool { kind })?
+        .with_presentation_contract(pl_core::model::ToolPresentationContract::new(contract));
     Ok(match kind {
         SessionNoteToolKind::Read | SessionNoteToolKind::Search => registration,
         SessionNoteToolKind::Write | SessionNoteToolKind::ApplyPatch => {

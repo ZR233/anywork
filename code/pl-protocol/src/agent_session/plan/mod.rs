@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: &str = "plan_confirmation";
 
 /// 一份 AgentSession Plan 的封闭生命周期状态。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentSessionPlanPhase {
     #[default]

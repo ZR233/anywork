@@ -8,7 +8,7 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload},
     model::{
         ModelError, ModelFailureKind, ModelRequest, ModelStepOutput, ModelToolCall,
-        ModelToolCallRejection, ModelToolDeclaration,
+        ModelToolCallRejection, ModelToolDeclaration, ToolPresentationContract,
     },
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,12 +26,18 @@ enum ArgumentKind {
 pub(super) struct ToolBinding {
     id: String,
     arguments: ArgumentKind,
+    presentation_contract: Option<ToolPresentationContract>,
 }
 
 impl ToolBinding {
-    pub(super) fn new(id: String, spec: &ToolSpec) -> Self {
+    pub(super) fn new(
+        id: String,
+        spec: &ToolSpec,
+        presentation_contract: Option<ToolPresentationContract>,
+    ) -> Self {
         Self {
             id,
+            presentation_contract,
             arguments: match spec {
                 ToolSpec::Custom { .. } => ArgumentKind::Text,
                 ToolSpec::Function { .. }
@@ -135,7 +141,7 @@ fn invalid(message: &'static str) -> ModelError {
 
 pub(super) fn declarations(
     tools: &[ModelToolDeclaration],
-) -> Result<Vec<(String, ToolSpec)>, ModelError> {
+) -> Result<Vec<(&ModelToolDeclaration, ToolSpec)>, ModelError> {
     let mut names = BTreeSet::new();
     let mut ids = BTreeSet::new();
     tools
@@ -153,7 +159,7 @@ pub(super) fn declarations(
             {
                 return Err(invalid("duplicate or empty tool identity"));
             }
-            Ok((tool.tool_id.clone(), spec))
+            Ok((tool, spec))
         })
         .collect()
 }
@@ -178,7 +184,7 @@ fn tool_scheduling_rules(request: &ModelRequest) -> Result<Vec<String>, ModelErr
             .map(|id| {
                 declarations
                     .iter()
-                    .find(|(tool_id, _)| tool_id == id)
+                    .find(|(tool, _)| &tool.tool_id == id)
                     .map(|(_, declaration)| declaration.name())
                     .ok_or_else(|| invalid("solo tool identity is absent from the frozen catalog"))
             })
@@ -626,6 +632,9 @@ fn response_inner(
                 tool_id,
                 arguments,
                 rejection,
+                presentation_contract: names
+                    .get(&call.name)
+                    .and_then(|binding| binding.presentation_contract.clone()),
             })
         })
         .collect::<Result<Vec<_>, ModelError>>()?;

@@ -79,13 +79,17 @@ fn cold_recovery_futures_remain_bounded() {
             future_size(|runtime: &'static StudioRuntime| runtime.read_child_interactions("size")),
         ),
         (
-            "timeline page",
-            future_size(
-                |(runtime, query): (
-                    &'static StudioRuntime,
-                    &'static pl_protocol::TimelinePageQuery,
-                )| { runtime.timeline_page("size", query) },
-            ),
+            "conversation open",
+            future_size(|runtime: &'static StudioRuntime| {
+                runtime.open_conversation_feed(
+                    "size",
+                    pl_protocol::ChatScope::Main,
+                    pl_protocol::ReadDemand {
+                        max_items: 1,
+                        max_bytes: 16 * 1024,
+                    },
+                )
+            }),
         ),
     ];
     for (name, bytes) in &sizes {

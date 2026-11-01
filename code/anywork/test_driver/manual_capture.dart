@@ -111,9 +111,12 @@ List<Map<String, Object?>> _timelineItems(Map<String, dynamic> snapshot) {
     for (final item in timeline.items)
       <String, Object?>{
         'id': item.id,
-        'appendSeq': item.appendSeq,
-        'sourceEffectSeq': item.sourceEffectSeq,
         'sealedAt': item.sealedAt,
+        'compatibility': item.compatibility,
+        'payloadByteLength': item.payloadByteLength,
+        'presentationContract': item.presentationContract,
+        'childrenParentId': item.childrenParentId,
+        'diagnostic': item.diagnostic,
         'kind': item.kind,
         'status': item.status,
         'omittedBytes': item.omittedBytes,
@@ -127,6 +130,7 @@ List<Map<String, Object?>> _timelineItems(Map<String, dynamic> snapshot) {
             'status': tool.status,
             'callId': tool.callId,
             'progressBytes': tool.progressBytes,
+            'presentationContract': tool.presentationContract,
             'exitCode': tool.exitCode,
           },
       },

@@ -35,6 +35,7 @@ impl ModelSession for DemonstrationModel {
                 Vec::new()
             } else {
                 vec![ModelToolCall {
+                    presentation_contract: None,
                     rejection: None,
                     call_id: "echo-call".into(),
                     tool_id: "echo".into(),

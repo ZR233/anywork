@@ -685,7 +685,57 @@ fn with_presentation_item(
             .as_ref()
             .and_then(|item| presentation_item(item, event.output_index))
     {
-        events.push(ModelStreamEvent::PresentationItem { item });
+        let state = match event.item.as_ref().and_then(|item| item.get("status")) {
+            None | Some(serde_json::Value::Null) => {
+                Some(crate::runtime::ModelMemberState::Completed)
+            }
+            Some(serde_json::Value::String(status)) if status == "completed" => {
+                Some(crate::runtime::ModelMemberState::Completed)
+            }
+            Some(serde_json::Value::String(status)) if status == "incomplete" => {
+                Some(crate::runtime::ModelMemberState::Interrupted)
+            }
+            _ => None,
+        };
+        events.push(ModelStreamEvent::PresentationItem { item, state });
     }
     events
+}
+
+#[cfg(test)]
+mod member_tests {
+    use super::*;
+    use crate::runtime::ModelMemberState;
+    use serde_json::json;
+
+    #[test]
+    fn done_status_is_member_authority_not_attempt_success() {
+        for (status, expected) in [
+            (None, Some(ModelMemberState::Completed)),
+            (Some(json!("completed")), Some(ModelMemberState::Completed)),
+            (
+                Some(json!("incomplete")),
+                Some(ModelMemberState::Interrupted),
+            ),
+            (Some(json!("in_progress")), None),
+            (Some(json!(42)), None),
+        ] {
+            let mut item = json!({"id":"reasoning","type":"reasoning",
+                "summary":[{"type":"summary_text","text":"authoritative"}]});
+            if let Some(status) = status {
+                item["status"] = status;
+            }
+            let event = serde_json::from_value(json!({
+                "type":"response.output_item.done", "output_index":2, "item":item
+            }))
+            .unwrap();
+            let normalized = with_presentation_item(&event, vec![]);
+            let [ModelStreamEvent::PresentationItem { item, state }] = normalized.as_slice() else {
+                panic!("independent done produces exactly its normalized member");
+            };
+            assert_eq!(*state, expected);
+            assert_eq!(item.provider_item_id, "reasoning");
+            assert_eq!(item.output_index, Some(2));
+        }
+    }
 }

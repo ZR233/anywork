@@ -37,6 +37,9 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
     ) -> std::result::Result<Registration, RegistryError> {
         let authorization = self.workspace.authorization();
         let registration = Registration::new(self.kind.name().into(), declaration, self)?
+            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                "builtin.apply_patch@1",
+            ))
             .with_authorization(authorization);
         Ok(registration.foreground_coexisting())
     }

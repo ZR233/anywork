@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
@@ -98,7 +100,11 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   await pumpClientFuture(tester, graph.client.bootstrap(), 'child bootstrap');
   await pumpClientFuture(
     tester,
-    (graph..setConversationPageVisible(true)).client.directoryCommands
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectThread('thread-main'),
     'select root thread',
   );
@@ -127,7 +133,11 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
   // 用户对子会话只有列表停止；打开详情只是查看，不是继续执行。
   await pumpClientFuture(
     tester,
-    (graph..setConversationPageVisible(true)).client.directoryCommands
+    (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
         .selectAgentThread(_childId),
     'open child detail',
   );

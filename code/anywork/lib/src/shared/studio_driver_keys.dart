@@ -123,6 +123,18 @@ abstract final class StudioDriverKeys {
   );
   static ValueKey<String> timelineDetailOpen(String id, String field) =>
       ValueKey<String>(StudioDriverKeyValues.timelineDetailOpen(id, field));
+  static ValueKey<String> timelineContentOpen(String id, String key) =>
+      ValueKey<String>(StudioDriverKeyValues.timelineContentOpen(id, key));
+  static ValueKey<String> timelineContentWindow(String id, String key) =>
+      ValueKey<String>(StudioDriverKeyValues.timelineContentWindow(id, key));
+  static ValueKey<String> timelineContentCopyWindow(String id, String key) =>
+      ValueKey<String>(
+        StudioDriverKeyValues.timelineContentCopyWindow(id, key),
+      );
+  static ValueKey<String> timelineContentNextWindow(String id, String key) =>
+      ValueKey<String>(
+        StudioDriverKeyValues.timelineContentNextWindow(id, key),
+      );
   static ValueKey<String> parentAgentLabel(String id) =>
       ValueKey<String>('timeline-parent-agent-label-$id');
   static const workspaceFooterScroll = ValueKey<String>(
@@ -652,6 +664,19 @@ abstract final class StudioDriverKeys {
   static const ValueKey<String> conversationActivityDetails = ValueKey<String>(
     'conversation-activity-details',
   );
+
+  static ValueKey<String> currentCompletedItems(String parentId) =>
+      ValueKey(StudioDriverKeyValues.currentCompletedItems(parentId));
+  static ValueKey<String> currentCollection(String collection) =>
+      ValueKey(StudioDriverKeyValues.currentCollection(collection));
+  static ValueKey<String> currentCollectionReload(String collection) =>
+      ValueKey(StudioDriverKeyValues.currentCollectionReload(collection));
+  static ValueKey<String> currentCollectionNext(String collection) =>
+      ValueKey(StudioDriverKeyValues.currentCollectionNext(collection));
+  static ValueKey<String> currentCollectionEntry(
+    String collection,
+    String id,
+  ) => ValueKey(StudioDriverKeyValues.currentCollectionEntry(collection, id));
 
   static ValueKey<String> timelineRolledBack(String id) =>
       ValueKey<String>('timeline-rolled-back-$id');

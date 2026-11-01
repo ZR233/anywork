@@ -5,9 +5,12 @@ import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
+const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
+
 ThreadWorkspace _workspace({
   int revision = 1,
   ThreadRuntimeView? runtime,
+  ThreadModelRouteView? modelRoute,
   StudioTurnView? latestTurn,
   StudioTurnView? activeTurn,
 }) {
@@ -25,6 +28,7 @@ ThreadWorkspace _workspace({
     thread: thread,
     revision: revision,
     interactions: const [],
+    modelRoute: modelRoute,
     activeTurn: activeTurn,
     latestTurn: latestTurn,
     runtime:
@@ -41,6 +45,14 @@ ThreadWorkspace _workspace({
         ),
   );
 }
+
+ThreadModelRouteView _route(int revision) => ThreadModelRouteView(
+  accountId: 'account',
+  modelId: 'model',
+  effort: 'medium',
+  revision: revision,
+  available: true,
+);
 
 StudioTurnView _turnView({
   String turnId = 'turn',
@@ -100,6 +112,80 @@ ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
 );
 
 void main() {
+  test('model route is independent of cold runtime and clears without stale resurrection', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open(demand: _demand);
+    final session = fixture.session();
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadSnapshotFrame(
+          workspace: _workspace(revision: 1, modelRoute: _route(4)),
+        ),
+      ),
+    );
+    expect(session.state.runtime, isNotNull);
+    expect(session.state.runtime!.execution, isNull);
+    expect(session.state.modelRoute, _route(4));
+
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 2,
+          baseRevision: 1,
+          epoch: 7,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(1),
+            todo: null,
+            modelRoute: _route(5),
+          ),
+        ),
+      ),
+    );
+    expect(session.state.modelRoute, _route(5));
+
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 3,
+          baseRevision: 2,
+          epoch: 7,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(2),
+            todo: null,
+            modelRoute: null,
+          ),
+        ),
+      ),
+    );
+    expect(session.state.modelRoute, isNull);
+
+    final staleSequence = feed.send(
+      ConversationStateEvent(
+        frame: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 3,
+          baseRevision: 2,
+          epoch: 6,
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(99),
+            todo: null,
+            modelRoute: _route(99),
+          ),
+        ),
+      ),
+    );
+    // An old epoch requires resync and is not ACKed. Observe the original feed's retirement
+    // instead of waiting forever for the normal delivery acknowledgement.
+    await feed.requestCloseStarted.future;
+    await feed.closeCompleted.future;
+    expect(feed.acknowledgements, isNot(contains(staleSequence)));
+    expect(session.state.modelRoute, isNull);
+    expect(session.state.runtime!.completionTokens, 2);
+    expect((await fixture.close()).complete, isTrue);
+  });
+
   test('combined feed preserves approved plan and independently advances state/content clocks', () async {
     final fixture = ConversationFixture();
     final diagnostics = ThreadUsageDiagnostics(
@@ -113,7 +199,14 @@ void main() {
       legacyUnknown: true,
       countsOverflowed: false,
     );
-    final feed = await fixture.open(initial: baseline(100));
+    final mainCurrent = emptyCurrent();
+    final feed = await fixture.open(
+      initial: chatSet(
+        messages: [chatMessage(id: 'item-100')],
+        current: mainCurrent,
+      ),
+      demand: _demand,
+    );
     final session = fixture.session();
     await feed.deliver(
       ConversationStateEvent(
@@ -160,31 +253,27 @@ void main() {
                   ),
                 ),
             todo: null,
+            modelRoute: null,
           ),
         ),
       ),
     );
     expect(session.state.streamEpoch, 7);
     expect(session.state.revision, 2);
+    expect(session.current.value, same(mainCurrent));
     expect(session.state.runtime!.plan!.document!.version, 4);
     expect(session.state.runtime!.usageDiagnostics, same(diagnostics));
     expect(session.state.runtime!.cacheUsage.sampleCount, 2);
     expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
-      (fixture.consumers['thread']!.frames.single as ConversationBaselineFrame)
-          .baseline
-          .completedCursor
-          .appendSeq,
-      100,
+      fixture.consumers['thread']!.batches.single.messages.single.id,
+      'item-100',
     );
     await feed.deliver(
-      ConversationUpdateEvent(
-        update: ConversationBatch(
-          subscriptionId: feed.subscriptionId,
-          timelineEpoch: 'epoch',
-          fromSeq: 100,
-          throughSeq: 101,
-          items: [timelineItem(101, id: 'next')],
+      ConversationChatEvent(
+        batch: ChatBatch(
+          placement: ChatPlacement.append,
+          messages: [chatMessage(id: 'next')],
         ),
       ),
     );
@@ -197,7 +286,11 @@ void main() {
           revision: 3,
           baseRevision: 2,
           epoch: 7,
-          update: ThreadRuntimeUpdate(runtime: _runtimeUsage(2), todo: null),
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(2),
+            todo: null,
+            modelRoute: null,
+          ),
         ),
       ),
     );
@@ -209,7 +302,7 @@ void main() {
     'state continuity failure retains last good facts and refuses ACK',
     () async {
       final fixture = ConversationFixture();
-      final feed = await fixture.open();
+      final feed = await fixture.open(demand: _demand);
       final session = fixture.session();
       await feed.deliver(
         ConversationStateEvent(
@@ -226,7 +319,11 @@ void main() {
             revision: 6,
             baseRevision: 5,
             epoch: 1,
-            update: ThreadRuntimeUpdate(runtime: _runtimeUsage(99), todo: null),
+            update: ThreadRuntimeUpdate(
+              runtime: _runtimeUsage(99),
+              todo: null,
+              modelRoute: null,
+            ),
           ),
         ),
       );
@@ -240,7 +337,7 @@ void main() {
 
   test('resync replaces the actual combined feed; new baseline may have lower state revision', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
+    final first = await fixture.open(demand: _demand);
     final session = fixture.session();
     await first.deliver(
       ConversationStateEvent(
@@ -258,10 +355,8 @@ void main() {
     );
     expect((await resync).revision, 3);
     await second.deliver(
-      ConversationUpdateEvent(
-        update: ConversationReset(
-          baseline(7, subscriptionId: 'second', timelineEpoch: 'new'),
-        ),
+      ConversationChatEvent(
+        batch: chatSet(messages: [chatMessage(id: 'item-7')]),
       ),
     );
     await first.closeCompleted.future;
@@ -273,7 +368,7 @@ void main() {
 
   test('snapshot publication cannot complete a resync created synchronously by its listener', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
+    final first = await fixture.open(demand: _demand);
     final session = fixture.session();
     Future<ThreadWorkspace>? resync;
     var completed = false;
@@ -309,10 +404,8 @@ void main() {
     );
     expect((await resync!).revision, 3);
     await second.deliver(
-      ConversationUpdateEvent(
-        update: ConversationReset(
-          baseline(7, subscriptionId: 'snapshot-resync', timelineEpoch: 'new'),
-        ),
+      ConversationChatEvent(
+        batch: chatSet(messages: [chatMessage(id: 'item-7')]),
       ),
     );
     observation.cancel();
@@ -321,7 +414,7 @@ void main() {
 
   test('failure publication cannot fail a resync created synchronously by its listener', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
+    final first = await fixture.open(demand: _demand);
     final session = fixture.session();
     await first.deliver(
       ConversationStateEvent(
@@ -348,7 +441,11 @@ void main() {
           revision: 6,
           baseRevision: 5,
           epoch: 1,
-          update: ThreadRuntimeUpdate(runtime: _runtimeUsage(99), todo: null),
+          update: ThreadRuntimeUpdate(
+            runtime: _runtimeUsage(99),
+            todo: null,
+            modelRoute: null,
+          ),
         ),
       ),
     );
@@ -375,7 +472,7 @@ void main() {
 
   test('directory identity rebind does not overwrite runtime facts or reset state watermarks', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     final session = fixture.session();
     await feed.deliver(
       ConversationStateEvent(
@@ -404,7 +501,7 @@ void main() {
 
   test('same Turn terminal fact and latestTurn survive duplicate busy notifications', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     final session = fixture.session();
     final terminal = StudioTurnView(
       inputId: 'input',
@@ -456,7 +553,7 @@ void main() {
 
   test('demand retire then re-demand never reuses an old baseline', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
+    final first = await fixture.open(demand: _demand);
     final session = fixture.session();
     fixture.repository.setVisibleThread(null);
     await first.closeCompleted.future;
@@ -467,26 +564,11 @@ void main() {
     await fixture.transport.opened(1);
     final second = TestConversationFeed(subscriptionId: 'second');
     fixture.transport.opens[1].result.complete(second);
-    expect(
-      fixture.transport.resumes.last,
-      const ConversationCompletionCursor(timelineEpoch: 'epoch', appendSeq: 1),
-    );
-    await second.deliver(
-      ConversationUpdateEvent(
-        update: ConversationBatch(
-          subscriptionId: 'second',
-          timelineEpoch: 'epoch',
-          fromSeq: 1,
-          throughSeq: 2,
-          items: [timelineItem(2, id: 'next')],
-        ),
-      ),
-    );
+    final replacement = chatSet(messages: [chatMessage(id: 'replacement')]);
+    await second.deliver(ConversationChatEvent(batch: replacement));
     await session.content.ready;
-    final frame =
-        fixture.consumers['thread']!.frames.last
-            as ConversationCompletedBatchFrame;
-    expect(frame.batch.fromSeq, 1);
+    expect(fixture.consumers['thread']!.batches.last, same(replacement));
+    expect(second.acknowledgements, [1]);
     await fixture.close();
   });
 
@@ -495,16 +577,15 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       // 没有 Thread 快照时内容连接同样建立：正文与状态流互相独立。
-      final feed = await fixture.open(initial: baseline(2));
+      final feed = await fixture.open(
+        initial: chatSet(messages: [chatMessage(id: 'item-2')]),
+        demand: _demand,
+      );
       final session = fixture.session();
       await session.content.ready;
       expect(
-        (fixture.consumers['thread']!.frames.single
-                as ConversationBaselineFrame)
-            .baseline
-            .completedCursor
-            .appendSeq,
-        2,
+        fixture.consumers['thread']!.batches.single.messages.single.id,
+        'item-2',
       );
       expect(session.state.hasSnapshot, isFalse);
       expect(session.state.workspace, isNull);
@@ -519,6 +600,7 @@ void main() {
       final budget = ResourceBudget();
       final fixture = ConversationFixture(budget: budget);
       final session = fixture.repository.session('thread');
+      fixture.attach('thread', demand: _demand);
       final observation = session.content.state.watch((state) {
         if (state is ChatOpening<bool>) {
           fixture.repository.setVisibleThread(null);
@@ -540,6 +622,7 @@ void main() {
     final budget = ResourceBudget();
     final fixture = ConversationFixture(budget: budget);
     final session = fixture.repository.session('thread');
+    fixture.attach('thread', demand: _demand);
     final observation = session.content.state.watch((state) {
       if (state is ChatOpening<bool>) {
         unawaited(fixture.client.close());
@@ -557,7 +640,7 @@ void main() {
     final fixture = ConversationFixture(budget: budget);
     final session = fixture.repository.session('thread');
     final consumer = TestCompletionConsumer();
-    session.content.attachConsumer(consumer);
+    session.content.attachConsumer(consumer, demand: _demand);
     var phase = 0;
     final observation = session.content.state.watch((state) {
       if (state is ChatOpening<bool> && phase == 0) {
@@ -581,14 +664,12 @@ void main() {
     expect(session.isActive, isTrue);
     final feed = TestConversationFeed();
     fixture.transport.opens[0].result.complete(feed);
-    await feed.deliver(ConversationBaselineEvent(baseline: baseline(9)));
-    expect(
-      (consumer.frames.single as ConversationBaselineFrame)
-          .baseline
-          .completedCursor
-          .appendSeq,
-      9,
+    await feed.deliver(
+      ConversationChatEvent(
+        batch: chatSet(messages: [chatMessage(id: 'item-9')]),
+      ),
     );
+    expect(consumer.batches.single.messages.single.id, 'item-9');
     observation.cancel();
     await fixture.close();
     expect(budget.usage, isEmpty);
@@ -598,7 +679,7 @@ void main() {
     final fixture = ConversationFixture();
     final session = fixture.repository.session('thread');
     final consumer = TestCompletionConsumer();
-    session.content.attachConsumer(consumer);
+    session.content.attachConsumer(consumer, demand: _demand);
     var openings = 0;
     final observation = session.content.state.watch((state) {
       if (state is ChatOpening<bool>) {
@@ -612,14 +693,12 @@ void main() {
     expect(session.isActive, isTrue);
     final feed = TestConversationFeed();
     fixture.transport.opens[0].result.complete(feed);
-    await feed.deliver(ConversationBaselineEvent(baseline: baseline(4)));
-    expect(
-      (consumer.frames.single as ConversationBaselineFrame)
-          .baseline
-          .completedCursor
-          .appendSeq,
-      4,
+    await feed.deliver(
+      ConversationChatEvent(
+        batch: chatSet(messages: [chatMessage(id: 'item-4')]),
+      ),
     );
+    expect(consumer.batches.single.messages.single.id, 'item-4');
     observation.cancel();
     await fixture.close();
   });
@@ -628,7 +707,7 @@ void main() {
     'latestTurn adoption is revision-strict, left-associated and terminal-safe',
     () async {
       final fixture = ConversationFixture();
-      final feed = await fixture.open();
+      final feed = await fixture.open(demand: _demand);
       final session = fixture.session();
       final terminalA = _turnView(
         turnId: 'turn-a',
@@ -706,7 +785,7 @@ void main() {
 
   test('left-associated fold lets an active revision outrank an earlier terminal fold', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open();
+    final feed = await fixture.open(demand: _demand);
     final session = fixture.session();
     final terminalA = _turnView(
       turnId: 'turn-a',
@@ -748,7 +827,7 @@ void main() {
 
   test('a new attempt baseline may lower the state watermark while payload folding stays independent', () async {
     final fixture = ConversationFixture();
-    final first = await fixture.open();
+    final first = await fixture.open(demand: _demand);
     final session = fixture.session();
     await first.deliver(
       ConversationStateEvent(

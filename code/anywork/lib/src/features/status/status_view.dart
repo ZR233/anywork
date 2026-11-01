@@ -98,6 +98,7 @@ StudioContextProjection? statusContextProjection(Ref ref, String threadId) {
     (session) => StudioContextProjection.fromRuntime(
       threadId,
       session.runtime ?? statusEmptyRuntime,
+      modelRoute: session.modelRoute,
       accounts: accounts,
       isBusy: session.activeTurn?.state.isBusy ?? false,
     ),
@@ -133,7 +134,7 @@ _StatusChrome _chromeFromSession(ThreadSessionState session) {
   final runtime = session.runtime ?? statusEmptyRuntime;
   return (
     isBusy: session.activeTurn?.state.isBusy ?? false,
-    modelRoute: runtime.modelRoute,
+    modelRoute: session.modelRoute,
     workflowRun: runtime.workflow?.currentRun,
     activeSkills: runtime.activeSkills,
     activeMcpServers: runtime.activeMcpServers,

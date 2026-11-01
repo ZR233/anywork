@@ -305,7 +305,6 @@ class ThreadRuntimeView {
     this.liveUsage,
     this.workflow,
     this.plan,
-    this.modelRoute,
     this.execution,
     this.continuation,
   });
@@ -344,7 +343,6 @@ class ThreadRuntimeView {
   final ThreadRuntimeLiveUsageView? liveUsage;
   final WorkflowRuntimeView? workflow;
   final PlanRuntimeView? plan;
-  final ThreadModelRouteView? modelRoute;
 
   /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
   final AgentExecutionView? execution;
@@ -396,7 +394,6 @@ class ThreadRuntimeView {
             liveUsage == other.liveUsage &&
             workflow == other.workflow &&
             plan == other.plan &&
-            modelRoute == other.modelRoute &&
             execution == other.execution &&
             continuation == other.continuation;
   }
@@ -433,7 +430,6 @@ class ThreadRuntimeView {
     liveUsage,
     workflow,
     plan,
-    modelRoute,
     execution,
     continuation,
   ]);
@@ -469,7 +465,6 @@ class ThreadRuntimeView {
     Object? liveUsage = _threadRuntimeUnset,
     WorkflowRuntimeView? workflow,
     Object? plan = _threadRuntimeUnset,
-    ThreadModelRouteView? modelRoute,
     Object? execution = _threadRuntimeUnset,
     Object? continuation = _threadRuntimeUnset,
   }) {
@@ -513,7 +508,6 @@ class ThreadRuntimeView {
       plan: identical(plan, _threadRuntimeUnset)
           ? this.plan
           : plan as PlanRuntimeView?,
-      modelRoute: modelRoute ?? this.modelRoute,
       execution: identical(execution, _threadRuntimeUnset)
           ? this.execution
           : execution as AgentExecutionView?,

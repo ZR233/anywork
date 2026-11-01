@@ -41,6 +41,27 @@ fn user(text: &str) -> Message {
     }
 }
 
+fn assert_frozen_tool_bindings(
+    content: &[ContextContent],
+    calls: &[pl_core::model::ModelToolCall],
+) {
+    let mut frames = 0;
+    for content in content {
+        if let ContextContent::Opaque { payload } = content
+            && payload.format() == "pl.model.assistant"
+        {
+            frames += 1;
+            let frame: Value = serde_json::from_str(payload.content()).unwrap();
+            let bindings: Vec<pl_core::model::ModelToolCall> =
+                serde_json::from_value(frame["bindings"].clone()).unwrap();
+            assert_eq!(bindings, calls);
+        }
+    }
+    if !calls.is_empty() {
+        assert_eq!(frames, 1, "tool calls require their same-source frame");
+    }
+}
+
 #[test]
 fn selectable_models_still_reject_unsupported_tools_before_io() {
     let mut model = ModelInfo::compatible("selectable-text-model");
@@ -149,6 +170,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
             .into(),
         },
         tools: vec![ModelToolDeclaration {
+            presentation_contract: None,
             tool_id: "edit".into(),
             declaration: pl_model::runtime::thread_tool_declaration(&ToolSpec::function(
                 "edit",
@@ -164,6 +186,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     let base = plain.estimate_input(&request, None).await.unwrap().unwrap();
     let with_hosted = hosted
@@ -1064,6 +1087,7 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
             })
         );
         assert_eq!(rejected_call.tool_id, "");
+        assert_eq!(rejected_call.presentation_contract, None);
         assert_eq!(
             rejected_call.arguments.content(),
             pl_provider_fixture::replay_tool_arguments()
@@ -1075,6 +1099,11 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
             .unwrap();
         assert_eq!(valid_call.tool_id, "internal-exec");
         assert_eq!(valid_call.rejection, None);
+        assert_eq!(
+            valid_call.presentation_contract,
+            Some(pl_core::model::ToolPresentationContract::generic())
+        );
+        assert_frozen_tool_bindings(&output.content, &output.tool_calls);
         let receipt = pl_model::runtime::model_response_receipt(output)
             .unwrap()
             .unwrap();
@@ -1315,6 +1344,9 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
                     ReplayTool(count.clone()),
                 )
                 .unwrap()
+                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                    "builtin.apply_patch@1",
+                ))
                 .foreground_coexisting(),
             ])
             .await
@@ -1354,6 +1386,13 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
         assert_eq!(call.tool_id, "stable-patch");
         assert_eq!(call.arguments.content(), raw);
         assert_eq!(call.arguments.format(), "application/json");
+        assert_eq!(
+            call.presentation_contract,
+            Some(pl_core::model::ToolPresentationContract::new(
+                "builtin.apply_patch@1",
+            ))
+        );
+        assert_frozen_tool_bindings(&output.content, &output.tool_calls);
         let Some(ModelToolCallRejection::InvalidArguments { name, reason }) = &call.rejection
         else {
             panic!("lost conversion failure")
@@ -1417,10 +1456,18 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
         let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let contract = pl_core::model::ToolPresentationContract::new(match label {
+            "http" => "future.vendor.contract@未知",
+            "ws" => "generic@1",
+            "chat" => "builtin.exec@2",
+            _ => unreachable!(),
+        });
         let thread =
             ThreadHandle::start(label.into(), factory.open_session().await.unwrap()).unwrap();
         thread
-            .register_tools(vec![replay_registration(&count)])
+            .register_tools(vec![
+                replay_registration(&count).with_presentation_contract(contract.clone()),
+            ])
             .await
             .unwrap();
         for action in ["inspect", "continue"] {
@@ -1437,6 +1484,12 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
             );
         }
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        for record in thread.snapshot().context.records.iter() {
+            assert_frozen_tool_bindings(&record.content, &record.tool_calls);
+            for call in &record.tool_calls {
+                assert_eq!(call.presentation_contract.as_ref(), Some(&contract));
+            }
+        }
         let responses = thread
             .snapshot()
             .context
@@ -1536,6 +1589,12 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
             .await
             .unwrap();
         assert_eq!(restored.snapshot().context, before);
+        for record in restored.snapshot().context.records.iter() {
+            assert_frozen_tool_bindings(&record.content, &record.tool_calls);
+            for call in &record.tool_calls {
+                assert_eq!(call.presentation_contract.as_ref(), Some(&contract));
+            }
+        }
         let result = restored
             .run_turn(replay_turn(
                 &format!("Replay resume {label}"),
@@ -1565,6 +1624,21 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
     let requests = fixture.finish().await.unwrap();
     assert_eq!(requests.len(), 18);
     assert!(requests.iter().all(|request| request.accepted));
+    for request in &requests {
+        let wire = request.body.to_string();
+        for metadata in [
+            "presentationContract",
+            "presentation_contract",
+            "future.vendor.contract@未知",
+            "generic@1",
+            "builtin.exec@2",
+        ] {
+            assert!(
+                !wire.contains(metadata),
+                "host metadata leaked into provider wire"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -2900,6 +2974,9 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
                 .into(),
             },
             tools: vec![ModelToolDeclaration {
+                presentation_contract: Some(pl_core::model::ToolPresentationContract::new(
+                    "builtin.apply_patch@1",
+                )),
                 tool_id: "patch-executor".into(),
                 declaration: thread_tool_declaration(&apply_patch_declaration()).unwrap(),
             }]
@@ -2910,6 +2987,7 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -2919,6 +2997,37 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
     assert_eq!(output.tool_calls[0].tool_id, "patch-executor");
     assert_eq!(output.tool_calls[0].arguments.format(), "text/plain");
     assert_eq!(output.tool_calls[0].arguments.content(), patch);
+    assert_eq!(
+        output.tool_calls[0].presentation_contract,
+        Some(pl_core::model::ToolPresentationContract::new(
+            "builtin.apply_patch@1",
+        ))
+    );
+    assert_frozen_tool_bindings(&output.content, &output.tool_calls);
+    // A pre-field frame has no evidence, not a contract inferred from its name or shape.
+    let mut legacy_output = output.clone();
+    legacy_output.tool_calls[0].presentation_contract = None;
+    for content in &mut legacy_output.content {
+        if let ContextContent::Opaque { payload } = content
+            && payload.format() == "pl.model.assistant"
+        {
+            let mut frame: Value = serde_json::from_str(payload.content()).unwrap();
+            frame["bindings"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("presentationContract");
+            *payload = pl_core::context::OpaquePayload::new(
+                payload.format(),
+                payload.version(),
+                frame.to_string(),
+            )
+            .unwrap();
+        }
+    }
+    assert!(model_response_receipt(&legacy_output).unwrap().is_some());
+    legacy_output.tool_calls[0].presentation_contract =
+        Some(pl_core::model::ToolPresentationContract::generic());
+    assert!(model_response_receipt(&legacy_output).is_err());
     let result = model_response_receipt(&output).unwrap().unwrap().response;
     assert_eq!(result.tool_calls.len(), 1);
     let call = &result.tool_calls[0];
@@ -2934,6 +3043,9 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
     );
     let records = fixture.finish().await.unwrap();
     let tool = &records[0].body["tools"][0];
+    assert!(!tool.to_string().contains("presentationContract"));
+    assert!(!tool.to_string().contains("presentation_contract"));
+    assert!(!tool.to_string().contains("builtin.apply_patch@1"));
     assert_eq!(tool["type"], "custom");
     assert_eq!(tool["name"], "apply_patch");
     let description = tool["description"].as_str().unwrap();
@@ -4206,6 +4318,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 resources: Default::default(),
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             ThreadCompactionOptions {
                 strategy: ThreadCompactionStrategy::PreferNative,
@@ -4292,6 +4405,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 resources: Default::default(),
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             None,
         )
@@ -4609,6 +4723,7 @@ async fn instruction_snapshot_revision_and_hash_are_validated_before_admission()
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     for (label, records) in [
         (
@@ -4705,6 +4820,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -4800,6 +4916,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
             resources: None,
             cancellation: Default::default(),
             progress: None,
+            members: None,
         })
         .await
         .unwrap();
@@ -5099,6 +5216,7 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
                 resources: None,
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             })
             .await
             .unwrap();
@@ -5194,6 +5312,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
                 attempt_id: "proof-compaction".into(),
                 context: state.context.clone(),
                 tools: vec![ModelToolDeclaration {
+                    presentation_contract: None,
                     tool_id: "exec".into(),
                     declaration: pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
                 }]
@@ -5204,6 +5323,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
                 resources: None,
                 cancellation: Default::default(),
                 progress: None,
+                members: None,
             },
             ThreadCompactionOptions {
                 strategy: ThreadCompactionStrategy::TextSummary,
@@ -5397,6 +5517,7 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
         resources: None,
         cancellation: Default::default(),
         progress: None,
+        members: None,
     };
     let call = session.prepare(request.clone()).await.unwrap();
     call.execute().await.unwrap();

@@ -610,6 +610,12 @@ impl Owner {
         loop {
             tokio::select! {
                 result = &mut operation => return result,
+                Some(admission) = async {
+                    match self.model_members.as_mut() {
+                        Some(call) => call.receiver.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => self.admit_model_member(admission),
                 () = &mut cancelled, if !cancellation_observed => {
                     cancellation_observed = true;
                     self.publish_snapshot();
@@ -635,7 +641,14 @@ impl Owner {
                     }
                 } => {
                     if changed.is_ok() { self.publish_snapshot(); }
-                    else { self.model_progress = None; }
+                    else {
+                        if let Some(call) = self.model_members.as_mut()
+                            && let Some((_, receiver)) = self.model_progress.as_ref()
+                        {
+                            call.generation = receiver.borrow().observation().generation;
+                        }
+                        self.model_progress = None;
+                    }
                 },
                 refusal = self.output_refusal_rx.changed() => {
                     // A producer that could not retain the next chunk reports it here the moment it

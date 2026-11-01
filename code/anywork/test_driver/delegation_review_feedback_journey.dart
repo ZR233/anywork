@@ -10,7 +10,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 
 import 'cold_start_navigation.dart';
-import 'driver_read_commands.dart';
+import 'content_window_driver.dart';
 import 'flutter_driver_session.dart';
 import 'realtime_journey.dart' show workspaceOf;
 import 'timeline_observation.dart';
@@ -649,62 +649,33 @@ class _Journey {
   }
 
   Future<void> reviewerHistory() async {
+    final expected =
+        '# Controlled findings: normal\n$_bodySentinel\n'
+        '${List.filled(400, 'A synthetic finding whose full body must reach only the bound executor and reviewer history.\n').join()}'
+        '\nEnd of complete findings: normal.\n';
     final loaded = await waitFor((snapshot) {
       final timeline = TimelineObservation.parse(snapshot);
       return timeline.ready &&
           timeline.items.any(
             (item) =>
                 item.isFinalAnswer &&
-                item.text.startsWith('# Controlled findings: normal'),
+                item.textTotalBytes == utf8.encode(expected).length,
           );
     }, 'reviewer-history');
     final body = TimelineObservation.parse(loaded).items.singleWhere(
       (item) =>
           item.isFinalAnswer &&
-          item.text.startsWith('# Controlled findings: normal'),
+          item.textTotalBytes == utf8.encode(expected).length,
     );
-    if (body.detail('text') == null || !body.textTruncated) {
-      throw StateError(
-        'normal findings did not expose the real long-text detail entry',
-      );
-    }
-    final key = StudioDriverKeyValues.timelineDetailOpen(body.id, 'text');
-    await driver.scrollUntilVisible(
-      find.byValueKey(StudioDriverKeyValues.timelineScrollable),
-      find.byValueKey(key),
-      dyScroll: -600,
-      timeout: const Duration(seconds: 60),
+    final proof = await ContentWindowDriver.session(driver).readAllExplicitly(
+      body.id,
+      'body',
+      expectedBytes: utf8.encode(expected).length,
+      expectedText: expected,
     );
-    await tap(key);
-    await driver.waitFor(
-      find.byValueKey(StudioDriverKeyValues.timelineDetailDialog),
-    );
-    final expected =
-        '# Controlled findings: normal\n$_bodySentinel\n'
-        '${List.filled(400, 'A synthetic finding whose full body must reach only the bound executor and reviewer history.\n').join()}'
-        '\nEnd of complete findings: normal.\n';
-    final deadline = DateTime.now().add(const Duration(seconds: 60));
-    DetailViewerRead? detail;
-    while (DateTime.now().isBefore(deadline)) {
-      detail = await DetailViewerRead.read(driver.requestData);
-      if (detail.open && detail.characters == expected.length) break;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    if (detail?.characters != expected.length) {
-      throw StateError('full detail did not load');
-    }
-    await tap(StudioDriverKeyValues.timelineDetailCopy);
-    final copied = await ClipboardRead.read(driver.requestData, full: true);
-    if (copied.text != expected) {
-      throw StateError('real UI full report differs from exact reviewer body');
-    }
-    evidence['reviewerHistoryDetail'] = {
-      'itemId': body.id,
-      'characters': detail!.characters,
-      'exactCopiedBody': true,
-    };
-    await capture('reviewer-full-history-detail', await driver.readSnapshot());
-    await tap(StudioDriverKeyValues.timelineDetailClose);
+    proof.remove('text');
+    evidence['reviewerHistoryWindows'] = proof;
+    await capture('reviewer-history-windows', await driver.readSnapshot());
   }
 
   Future<void> saveJson(String label, Object? value) => File(

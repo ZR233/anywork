@@ -120,11 +120,7 @@ impl CatalogEntry {
     }
 
     pub(in crate::studio) fn projected_status(&self) -> ThreadStatus {
-        if self.parent_thread_id.is_some() {
-            super::agent_close::directory_status(self.status, self.explicitly_closed)
-        } else {
-            self.status
-        }
+        super::agent_close::directory_status(self.status, self.explicitly_closed)
     }
 }
 

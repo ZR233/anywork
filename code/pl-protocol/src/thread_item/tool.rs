@@ -243,6 +243,9 @@ pub struct ThreadToolInvocation {
     working_directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
+    /// 调用请求冻结时的展示契约；旧记录缺失表示未知，不从当前工具目录补值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presentation_contract: Option<String>,
 }
 
 impl ThreadToolInvocation {
@@ -255,7 +258,17 @@ impl ThreadToolInvocation {
             arguments,
             working_directory: None,
             task_id: None,
+            presentation_contract: None,
         }
+    }
+
+    pub fn with_presentation_contract(mut self, contract: Option<String>) -> Self {
+        self.presentation_contract = contract;
+        self
+    }
+
+    pub fn presentation_contract(&self) -> Option<&str> {
+        self.presentation_contract.as_deref()
     }
 
     pub fn with_provider_identity(

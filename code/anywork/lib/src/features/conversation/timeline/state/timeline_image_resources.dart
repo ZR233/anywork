@@ -1,8 +1,8 @@
 import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart';
 
-/// Per-display image bytes. References belong to raw conversation items, not
-/// mounted widgets or derived Flyer media siblings.
+/// Per-display image bytes. Mounted custom rows declare attachment identities;
+/// this ledger retains no conversation items or derived Flyer media siblings.
 final class TimelineImageResources {
   TimelineImageResources({required this.threadId});
 

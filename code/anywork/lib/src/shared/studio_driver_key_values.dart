@@ -93,42 +93,25 @@ abstract final class StudioDriverKeyValues {
   static String timelineRow(String id) => 'timeline-row-$id';
   static String timelineDetailOpen(String id, String field) =>
       'timeline-detail-open-$id-$field';
+  static String timelineContentOpen(String id, String key) =>
+      'timeline-content-open:${jsonEncode([id, key])}';
+  static String timelineContentWindow(String id, String key) =>
+      'timeline-content-window:${jsonEncode([id, key])}';
+  static String timelineContentCopyWindow(String id, String key) =>
+      'timeline-content-copy-window:${jsonEncode([id, key])}';
+  static String timelineContentNextWindow(String id, String key) =>
+      'timeline-content-next-window:${jsonEncode([id, key])}';
 
-  /// 一个 typed 内容字段的稳定诊断 token（design/26 §26.9）。
-  ///
-  /// 展示层按钮 key 与 Driver 投影共用这一个入口：不按 `record.toString()`、类型名或两份
-  /// switch 镜像生成身份。同类字段靠判别分支 + 逻辑索引区分，独立解码的同值字段得到同一
-  /// token；问答的 header/question/answer/option 各自独立，不折叠成同一个 `user-input-N`。
-  static String timelineDetailField(ThreadContentFieldView field) =>
-      switch (field) {
-        ThreadTextFieldView() => 'text',
-        ThreadThinkingSummaryFieldView(:final chunkIndex) =>
-          'thinking-summary-$chunkIndex',
-        ThreadThinkingContentFieldView(:final chunkIndex) =>
-          'thinking-content-$chunkIndex',
-        ThreadToolArgumentsFieldView() => 'tool-arguments',
-        ThreadToolResultFieldView() => 'tool-result',
-        ThreadToolOutputArtifactsFieldView() => 'tool-artifacts',
-        ThreadPlanDocumentFieldView() => 'plan-document',
-        ThreadPlanFeedbackFieldView() => 'plan-feedback',
-        ThreadRawPayloadFieldView(:final payloadIndex) =>
-          'raw-payload-$payloadIndex',
-        ThreadToolUserInputFieldView(:final questionIndex, :final part) =>
-          'user-input-$questionIndex-${userInputPartToken(part)}',
-      };
-
-  /// 问答正文域的一段：与后端 `BridgeThreadUserInputFieldPart` 一一对应。
-  static String userInputPartToken(ThreadUserInputFieldPartView part) =>
-      switch (part) {
-        ThreadUserInputHeaderFieldPartView() => 'header',
-        ThreadUserInputQuestionFieldPartView() => 'question',
-        ThreadUserInputAnswerFieldPartView(:final answerIndex) =>
-          'answer-$answerIndex',
-        ThreadUserInputOptionLabelFieldPartView(:final optionIndex) =>
-          'option-label-$optionIndex',
-        ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) =>
-          'option-description-$optionIndex',
-      };
+  static String currentCompletedItems(String parentId) =>
+      'timeline-current-completed:$parentId';
+  static String currentCollection(String collection) =>
+      'current-collection:${jsonEncode(collection)}';
+  static String currentCollectionReload(String collection) =>
+      'current-collection-reload:${jsonEncode(collection)}';
+  static String currentCollectionNext(String collection) =>
+      'current-collection-next:${jsonEncode(collection)}';
+  static String currentCollectionEntry(String collection, String id) =>
+      'current-collection-entry:${jsonEncode([collection, id])}';
 
   /// 统一“添加账号”入口的模板选择器与选项。
   ///

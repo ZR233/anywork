@@ -1,23 +1,23 @@
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
-use pl_protocol::{
-    ActivityContentFrame, ThreadNotification, ThreadSubscriptionUpdate, TimelineCompletionCursor,
-    TimelineTailUpdate,
-};
-use pl_studio_runtime::{ConversationEvent, StudioProductFrame};
+use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
+use pl_studio_runtime::{ConversationEvent, ConversationFeed, StudioProductFrame};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
+use crate::conversation::{CONVERSATION_HEADER, ContentRequest, ReadOwner};
 use crate::error::ApiError;
-use crate::routes::{ApiQuery, ProductTopicQuery, StudioApiErrors, parse_product_topic};
+use crate::routes::{ApiJson, ApiQuery, ProductTopicQuery, StudioApiErrors, parse_product_topic};
 
 #[cfg(test)]
 mod tests;
@@ -210,116 +210,169 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
     }
 }
 
-#[derive(Default, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ConversationQuery {
-    timeline_epoch: Option<String>,
-    append_seq: Option<u64>,
+    max_items: u32,
+    max_bytes: u32,
+    parent_id: Option<String>,
 }
 
 impl ConversationQuery {
-    fn resume_after(self) -> Result<Option<TimelineCompletionCursor>, ApiError> {
-        match (self.timeline_epoch, self.append_seq) {
-            (None, None) => Ok(None),
-            (Some(timeline_epoch), Some(append_seq))
-                if !timeline_epoch.is_empty() && append_seq <= i64::MAX as u64 =>
-            {
-                Ok(Some(TimelineCompletionCursor {
-                    timeline_epoch,
-                    append_seq,
-                }))
-            }
-            _ => Err(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                "timelineEpoch and appendSeq must name one accepted completion prefix",
-                false,
-            )
-            .into()),
-        }
+    fn scope_demand(self) -> (pl_protocol::ChatScope, pl_protocol::ReadDemand) {
+        let scope = self
+            .parent_id
+            .map_or(pl_protocol::ChatScope::Main, |parent_id| {
+                pl_protocol::ChatScope::Children { parent_id }
+            });
+        let demand = pl_protocol::ReadDemand {
+            max_items: self.max_items,
+            max_bytes: self.max_bytes,
+        };
+        (scope, demand)
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ActivityDelivery<'a> {
-    frame: &'a ActivityContentFrame,
-    completed: Option<&'a TimelineTailUpdate>,
-}
-
-/// Mechanical SSE mapping of the same feed used by FRB. Activity Commit keeps
-/// its completion batch in one event; HTTP never reduces or queries live text.
+/// The original runtime feed owns both chat delivery and independent reads.
 #[utoipa::path(
     get,
     path = "/api/v1/threads/{thread_id}/events",
     operation_id = "thread.subscribe",
     params(
         ("thread_id" = String, Path, description = "Thread ID"),
-        ("timelineEpoch" = Option<String>, Query, description = "Accepted completion epoch; requires appendSeq"),
-        ("appendSeq" = Option<u64>, Query, description = "Exclusive accepted completion prefix; requires timelineEpoch")
+        ("maxItems" = u32, Query, description = "Requested bounded item count"),
+        ("maxBytes" = u32, Query, description = "Requested encoded byte budget"),
+        ("parentId" = Option<String>, Query, description = "Children scope; omit for Main")
     ),
-    responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream"))
+    responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream",
+        headers(("X-Anywork-Conversation" = String, description = "Original feed read capability"))))
 )]
 pub(crate) async fn thread_events(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     ApiQuery(query): ApiQuery<ConversationQuery>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let resume_after = query.resume_after()?;
+) -> Result<impl IntoResponse, ApiError> {
+    let (scope, demand) = query.scope_demand();
     let permit = state
         .streams
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::overloaded())?;
-    let mut events = state
+    let events = state
         .runtime
-        .open_conversation_feed(&thread_id, resume_after)
+        .open_conversation_feed(&thread_id, scope, demand)
         .await
         .map_err(ApiError::from)?;
-    let shutdown = state.shutdown.clone();
+    let id = events.subscription_id().to_owned();
+    let owner = Arc::new(ReadOwner::new(thread_id.clone(), events.reader().clone()));
     let (sender, receiver) = mpsc::channel(1);
-    tokio::spawn(async move {
-        let _permit = permit;
-        loop {
-            let received = tokio::select! {
-                biased;
-                () = shutdown.cancelled() => break,
-                () = sender.closed() => break,
-                received = events.recv() => received,
-            };
-            let event = match received {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(error) => {
-                    let mapped = pl_studio_runtime::studio_error_from_anyhow(error);
-                    let _ = send_json(&sender, &shutdown, "error", None, &mapped).await;
-                    break;
+    let mut pending = Some((events, permit));
+    {
+        // Register and start under the same lock used by shutdown and query
+        // admission. No capability can outlive an untracked owner task.
+        let mut owners = state
+            .conversations
+            .0
+            .lock()
+            .expect("conversation owners poisoned");
+        if !owners.closed && !state.shutdown.is_cancelled() {
+            while let Some(result) = owners.tasks.try_join_next() {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "conversation HTTP owner task failed");
                 }
-            };
-            let sent = send_conversation_event(&sender, &shutdown, &event).await;
-            if !sent {
+            }
+            owners.readers.insert(id.clone(), owner.clone());
+            let (events, permit) = pending.take().expect("unstarted conversation");
+            let state = state.clone();
+            let id = id.clone();
+            let owner = owner.clone();
+            owners.tasks.spawn(async move {
+                let _permit = permit;
+                run_conversation(&state, &id, events, owner, sender).await;
+            });
+        }
+    }
+    if let Some((mut events, _permit)) = pending {
+        close_conversation(&mut events, &owner).await;
+        return Err(crate::conversation::stale_scope());
+    }
+    Ok((
+        [(CONVERSATION_HEADER, id)],
+        Sse::new(ReceiverStream::new(receiver))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")),
+    ))
+}
+
+async fn run_conversation(
+    state: &AppState,
+    id: &str,
+    mut events: ConversationFeed,
+    owner: Arc<ReadOwner>,
+    sender: mpsc::Sender<Result<Event, Infallible>>,
+) {
+    let mut failure = None;
+    loop {
+        // Reserve before polling the feed: at most one queued frame, with no
+        // second encoded body held while waiting for the slow HTTP consumer.
+        let capacity = tokio::select! {
+            biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel.cancelled() => break,
+            capacity = sender.reserve() => match capacity {
+                Ok(capacity) => capacity,
+                Err(_) => break,
+            },
+        };
+        let received = tokio::select! {
+            biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel.cancelled() => break,
+            () = sender.closed() => break,
+            received = events.recv() => received,
+        };
+        match received {
+            Ok(Some(event)) => match encode_conversation_event(&event) {
+                Ok(event) => {
+                    capacity.send(Ok(event));
+                }
+                Err(_) => break,
+            },
+            Ok(None) => break,
+            Err(error) => {
+                failure = Some(pl_studio_runtime::studio_error_from_anyhow(error));
                 break;
             }
         }
-        events.request_close();
-        if let Err(error) = events.close().await {
+    }
+    // Seal admission before any potentially backpressured terminal delivery.
+    state.conversations.remove(id);
+    close_conversation(&mut events, &owner).await;
+    if let Some(error) = failure {
+        let _ = send_json(&sender, &state.shutdown, "error", None, &error).await;
+    }
+    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+}
+
+async fn close_conversation(events: &mut ConversationFeed, owner: &ReadOwner) {
+    owner.cancel.cancel();
+    events.request_close();
+    owner.reader.request_close();
+    // These are independent owners: one failure must never skip the other join.
+    let (feed_result, reader_result) = tokio::join!(events.close(), owner.reader.close());
+    for (side, result) in [("feed", feed_result), ("reader", reader_result)] {
+        if let Err(error) = result {
             let mapped = pl_studio_runtime::studio_error_from_anyhow(error);
             tracing::warn!(
-                thread_id,
+                side,
                 code = mapped.code.label(),
                 "conversation SSE close failed"
             );
         }
-        let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
-    });
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+    }
+    owner.drain().await;
 }
 
-async fn send_conversation_event(
-    sender: &mpsc::Sender<Result<Event, Infallible>>,
-    shutdown: &CancellationToken,
-    event: &ConversationEvent,
-) -> bool {
+fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::Error> {
     match event {
         ConversationEvent::State { update } => {
             let (name, id) = match &**update {
@@ -335,139 +388,85 @@ async fn send_conversation_event(
                     format!("thread:{}:{}", notification.epoch, notification.revision),
                 ),
             };
-            send_json(sender, shutdown, name, Some(&id), update).await
+            encode_event(name, Some(&id), update)
         }
-        ConversationEvent::ContentBaseline { baseline } => {
-            let id = format!(
-                "timeline:{}:{}",
-                baseline.timeline_epoch, baseline.completed_cursor.append_seq
-            );
-            send_json(sender, shutdown, "contentBaseline", Some(&id), baseline).await
-        }
-        ConversationEvent::ContentUpdate { update } => {
-            let id = completion_event_id(update);
-            send_json(sender, shutdown, "contentUpdate", Some(&id), update).await
-        }
-        ConversationEvent::ActivityContent { frame, completed } => {
-            send_json(
-                sender,
-                shutdown,
-                "activityContent",
-                None,
-                &ActivityDelivery {
-                    frame,
-                    completed: completed.as_deref(),
-                },
-            )
-            .await
-        }
+        ConversationEvent::Chat { batch } => encode_event("chat", None, batch),
     }
 }
 
-fn completion_event_id(update: &TimelineTailUpdate) -> String {
-    let (epoch, through) = match update {
-        TimelineTailUpdate::Batch {
-            timeline_epoch,
-            through_seq,
-            ..
-        } => (timeline_epoch, *through_seq),
-        TimelineTailUpdate::Reset { baseline } => (
-            &baseline.timeline_epoch,
-            baseline.completed_cursor.append_seq,
-        ),
-    };
-    format!("timeline:{epoch}:{through}")
-}
-
-/// Timeline 内容订阅：每条连接持有自己的有界尾部观察与订阅身份。
-///
-/// 首帧是 `baseline`（最新小页 + 该连接的 `subscriptionId`），之后只交付该连接的连续 `batch`。只有 epoch
-/// 变化才交付 `reset`（新基线），客户端按身份重新对账。没有 durable replay：带
-/// `Last-Event-ID` 重连必须建立新基线，不能当作可续读的事件日志。
-///
-/// 待发送正文最多保留一个批次：核心按连续完成位置补发，不在 transport 侧堆积多份大正文。
-/// 读取失败会先交付可见 `error` 再关闭，不静默
-/// 循环失败伪装成 EOF。
-#[utoipa::path(
-    get,
-    path = "/api/v1/threads/{thread_id}/timeline/events",
-    operation_id = "thread.subscribeTimeline",
-    params(("thread_id" = String, Path, description = "Thread ID")),
-    responses(StudioApiErrors, (status = 200, description = "Bounded timeline tail", body = String, content_type = "text/event-stream"))
-)]
-pub(crate) async fn thread_timeline_events(
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/contents/watch",
+    operation_id = "thread.watchContent",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = ContentRequest,
+    responses(StudioApiErrors, (status = 200, description = "Bounded ContentWindow events", body = String, content_type = "text/event-stream")))]
+pub(crate) async fn watch_content(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ContentRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let permit = state
         .streams
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::overloaded())?;
-    let mut stream = state
-        .runtime
-        .open_timeline_tail(&thread_id)
-        .await
-        .map_err(ApiError::from)?;
-    let baseline = stream.initial().await.map_err(ApiError::from)?;
-    let shutdown = state.shutdown.clone();
-    // 一个批次容量：核心已经合帧，慢消费者由核心判定连续性或重同步，而不是在 transport 堆积。
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    let mut source = lease
+        .owner
+        .reader
+        .watch_content(&request.reference, request.range)
+        .await?;
     let (sender, receiver) = mpsc::channel(1);
     tokio::spawn(async move {
         let _permit = permit;
-        if !send_json(&sender, &shutdown, "baseline", None, &baseline).await {
-            stream.close();
-            return;
-        }
+        let mut failure = None;
         loop {
-            let step = tokio::select! {
-                _ = shutdown.cancelled() => Step::End,
-                _ = sender.closed() => Step::End,
-                update = stream.next() => match update {
-                    Ok(Some(update)) => Step::Update(update),
-                    Ok(None) => Step::End,
-                    Err(error) => Step::Failed(error),
+            let capacity = tokio::select! {
+                biased;
+                () = state.shutdown.cancelled() => break,
+                () = lease.owner.cancel.cancelled() => break,
+                capacity = sender.reserve() => match capacity {
+                    Ok(capacity) => capacity,
+                    Err(_) => break,
                 },
             };
-            match step {
-                Step::Update(update) => {
-                    let event_name = match &update {
-                        TimelineTailUpdate::Batch { .. } => "batch",
-                        TimelineTailUpdate::Reset { .. } => "reset",
-                    };
-                    let event_id = completion_event_id(&update);
-                    if !send_json(&sender, &shutdown, event_name, Some(&event_id), &update).await {
-                        break;
+            let received = tokio::select! {
+                biased;
+                () = state.shutdown.cancelled() => break,
+                () = lease.owner.cancel.cancelled() => break,
+                () = sender.closed() => break,
+                received = source.recv() => received,
+            };
+            match received {
+                Ok(Some(window)) => match encode_event("content", None, &window) {
+                    Ok(event) => {
+                        capacity.send(Ok(event));
                     }
-                }
-                Step::End => break,
-                Step::Failed(error) => {
-                    // 错误必须可见，且与 HTTP/FRB 使用同一份类型化分类：只发送映射后的 StudioError，
-                    // 不发送原始诊断文本，因此不会泄漏 SQLite/IO 等内部细节，也保留 code、可重试性与
-                    // 脱敏 details。随后结束这条流，由客户端重连建立新基线。
-                    let mapped = pl_studio_runtime::studio_error_from_anyhow(error);
-                    tracing::debug!(
-                        thread_id,
-                        code = mapped.code.label(),
-                        "timeline tail stream ended with a typed error"
-                    );
-                    let _ = send_json(&sender, &shutdown, "error", None, &mapped).await;
+                    Err(_) => break,
+                },
+                Ok(None) => break,
+                Err(error) => {
+                    failure = Some(pl_studio_runtime::studio_error_from_anyhow(error));
                     break;
                 }
             }
         }
-        stream.close();
+        // A watch has its own cancellation token. Never close the shared reader
+        // here: other queries and the original conversation must remain valid.
+        source.request_close();
+        if let Err(error) = source.close().await {
+            tracing::warn!(%error, "content SSE watch close failed");
+        }
+        if let Some(error) = failure {
+            let _ = send_json(&sender, &lease.owner.cancel, "error", None, &error).await;
+        }
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+        drop(lease);
     });
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
-}
-
-/// 一次循环里要处理的结果，避免在 `select!` 表达式中借用 `stream`。
-enum Step {
-    Update(TimelineTailUpdate),
-    Failed(anyhow::Error),
-    End,
 }
 
 /// Lossless send: awaits channel capacity so transcript/turn terminal frames are never dropped.

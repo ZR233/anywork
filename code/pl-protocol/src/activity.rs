@@ -1,12 +1,9 @@
-//! 当前执行活动的 typed 实时投影契约。
+//! 当前执行活动的轻量语义摘要。
 //!
-//! 活动拥有当前正文与工具进度；Timeline 只接收不可变完成事实。活动内容通过有界事件帧交付，
-//! SDK 在所属 Repository 唯一归约。首次观察和恢复使用分块 snapshot，不通过 revision 后查询正文。
+//! 正文与集合通过 Main Chat 的 CurrentProjection 及原读取资格按需交付；
+//! 这里不再定义独立的 Begin/Text/Commit 正文传输或 SDK staging。
 
 use serde::{Deserialize, Serialize};
-
-mod delivery;
-pub use delivery::*;
 
 /// 活动摘要保留的最大字符数（按字符边界截断，保留行首）。
 ///
@@ -17,7 +14,7 @@ pub const ACTIVITY_SUMMARY_LIMIT: usize = 512;
 ///
 /// 它是 canonical 事实的投影，不是 Turn 生命周期标签：同一 Turn 内 kind 会随 attempt、工具与
 /// 交互事实变化。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadActivityKind {
     /// Turn 运行中，但还没有可观察到的前台 **provider** 阶段。
@@ -93,7 +90,7 @@ pub enum ThreadActivityArguments {
 /// 活动条目（[`ThreadActivityToolEntry`]）只会取到前三个变体（它们描述**正在执行**的工具）；
 /// 活动详情（[`ThreadActivityToolDetail`]）还会描述当前 Turn 里已经结束的调用，用
 /// [`Self::Finished`] 表示终态，**不会**把终态谎报成仍在运行。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadActivityToolState {
     Running,

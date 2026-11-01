@@ -27,6 +27,8 @@ const TIMELINE_HISTORY_20K_GROWTH_RECORD_GLOB: &str = concat!(
     "model:*:presentation:item:*:",
     "timeline-history-20k-growth-[0-9][0-9]-item-[0-9][0-9][0-9][0-9]:text:0"
 );
+const OPEN_SAMPLES: usize = 20;
+const FIRST_CONTENT_P95_MILLIS: f64 = 500.0;
 
 pub(super) struct Scenario<'a> {
     pub(super) workspace: &'a Path,
@@ -56,7 +58,11 @@ struct HistoryAudit {
     database_bytes: u64,
     wal_bytes: Option<u64>,
     #[serde(skip)]
-    timeline_records: Vec<String>,
+    conversation_records: Vec<String>,
+    #[serde(skip)]
+    content_manifests: Vec<String>,
+    #[serde(skip)]
+    content_chunks: Vec<String>,
     #[serde(skip)]
     history_item_records: Vec<String>,
     #[serde(skip)]
@@ -79,7 +85,9 @@ impl fmt::Debug for HistoryAudit {
             .field("applied_write_seq", &self.applied_write_seq)
             .field("database_bytes", &self.database_bytes)
             .field("wal_bytes", &self.wal_bytes)
-            .field("timeline_record_rows", &self.timeline_records.len())
+            .field("conversation_record_rows", &self.conversation_records.len())
+            .field("content_manifest_rows", &self.content_manifests.len())
+            .field("content_chunk_rows", &self.content_chunks.len())
             .field("history_item_rows", &self.history_item_records.len())
             .field("history_turn_rows", &self.history_turn_records.len())
             .finish()
@@ -106,15 +114,7 @@ struct PhaseOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColdPhaseObservation {
     thread_id: String,
-    final_queue: QueueWatermark,
-    before_scroll: QueueWatermark,
-    after_scroll: QueueWatermark,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueueWatermark {
-    history_admitted: u64,
-    history_durable: u64,
+    queue_revisions: [u64; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,8 +122,9 @@ struct QueueWatermark {
 struct ColdLifecycleCheck {
     phase: String,
     previous_closed: u64,
-    open: u64,
     after_close: u64,
+    writer_absent_at_samples: bool,
+    queue_revisions: [u64; 3],
     exact_inventory_unchanged: bool,
 }
 
@@ -133,6 +134,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
     let mut seed_audit = None;
     let mut cold_audits = Vec::new();
     let mut cold_lifecycle_checks = Vec::new();
+    let mut switch_audit = None;
+    let mut opening_performance = None;
     let mut growth_before = None;
     let mut growth_after = None;
     let journey = (|| -> Result<()> {
@@ -147,7 +150,11 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
         );
 
         let mut database: Option<PathBuf> = None;
-        for phase in ["seed", "cold-1", "cold-2", "cold-3", "growth"] {
+        let phase_names = std::iter::once("seed".to_owned())
+            .chain((1..=OPEN_SAMPLES).map(|sample| format!("cold-{sample}")))
+            .chain(["switch".to_owned(), "growth".to_owned()]);
+        for phase in phase_names {
+            let phase = phase.as_str();
             if phase == "growth" {
                 growth_before = Some(history_audit(
                     database
@@ -175,7 +182,7 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                     );
                     seed_audit = Some(audit);
                 }
-                "cold-1" | "cold-2" | "cold-3" => {
+                phase if phase.starts_with("cold-") => {
                     let seed = seed_audit
                         .as_ref()
                         .context("cold phase has no seed audit")?;
@@ -193,6 +200,18 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                     )?);
                     cold_audits.push(audit);
                 }
+                "switch" => {
+                    ensure!(
+                        same_persisted_inventory(
+                            seed_audit
+                                .as_ref()
+                                .context("switch phase has no seed audit")?,
+                            &audit,
+                        ),
+                        "ordinary switching changed the original 20,000-item inventory"
+                    );
+                    switch_audit = Some(audit);
+                }
                 "growth" => {
                     ensure!(
                         audit.seed_text_items == 20_000
@@ -207,6 +226,13 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                 _ => unreachable!(),
             }
         }
+        let performance = opening_latency_report(context.output)?;
+        let passed = performance["pass"] == true;
+        opening_performance = Some(performance);
+        ensure!(
+            passed,
+            "selection-to-first-content p95 exceeded {FIRST_CONTENT_P95_MILLIS} ms; see openingPerformance"
+        );
         Ok(())
     })();
 
@@ -254,7 +280,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
     let aggregate = json!({
         "scenario": "timeline-history-20k",
         "platform": "linux",
-        "processCold": true,
+        "coldOpenProcess": "a fresh GUI process for each cold-N phase",
+        "ordinarySwitchProcess": "one warm GUI process with real reference-session switches",
         "osPageCacheControlled": false,
         "osPageCacheNote": "GUI processes are cold; host Linux page cache is not cleared or controlled",
         "profile": "Flutter profile; release-profile Rust bridge",
@@ -262,6 +289,9 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
             "seedBatches": 10,
             "seedTextItemsPerBatch": 2_000,
             "seedTextItems": 20_000,
+            "coldOpenSamples": OPEN_SAMPLES,
+            "ordinarySwitchSamples": OPEN_SAMPLES,
+            "referenceSessionTextItems": 1,
             "growthBatches": 20,
             "growthTextItemsPerBatch": 100,
             "growthTextItems": 2_000,
@@ -284,6 +314,8 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
         "seedAudit": seed_audit,
         "coldAudits": cold_audits,
         "coldLifecycleChecks": cold_lifecycle_checks,
+        "switchAudit": switch_audit,
+        "openingPerformance": opening_performance,
         "growthBefore": growth_before,
         "growthAfter": growth_after,
         "fixture": {
@@ -353,7 +385,7 @@ fn final_verdict(gate: &FinalGate<'_>) -> Result<()> {
             .unwrap_or("unknown request evidence failure")
     );
     ensure!(
-        gate.rejected == 0 && gate.accepted >= 30,
+        gate.rejected == 0 && gate.accepted >= 31,
         "timeline-history-20k fixture requests were incomplete: accepted={} rejected={}",
         gate.accepted,
         gate.rejected
@@ -798,16 +830,16 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         let row: (String, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sea_orm::sqlx::query_as(
             "SELECT
                     (SELECT thread_id FROM history_meta WHERE id=1),
-                    (SELECT COUNT(*) FROM timeline_records),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records),
-                    (SELECT COUNT(*) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(*) FROM timeline_records
-                       WHERE record_id GLOB ?),
-                    (SELECT COUNT(DISTINCT record_id) FROM timeline_records
-                       WHERE record_id GLOB ?),
+                    (SELECT COUNT(*) FROM conversation_items),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items),
+                    (SELECT COUNT(*) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(*) FROM conversation_items
+                       WHERE item_id GLOB ?),
+                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
+                       WHERE item_id GLOB ?),
                     (SELECT COUNT(*) FROM history_items),
                     (SELECT COUNT(*) FROM history_turns),
                     (SELECT applied_write_seq FROM history_meta WHERE id=1)",
@@ -819,13 +851,29 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         .fetch_one(&mut connection)
         .await
         .with_context(|| format!("failed to audit {}", display.display()))?;
-        let timeline_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload)
-             FROM timeline_records ORDER BY append_seq",
+        let conversation_records = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload))
+             FROM conversation_items ORDER BY seq",
         )
         .fetch_all(&mut connection)
         .await
         .with_context(|| format!("failed to read exact timeline inventory from {}", display.display()))?;
+        // A completed envelope can reference external bodies. Compare their
+        // exact persisted manifests/chunks too; equal item counts or previews
+        // cannot prove preservation. `4:item` is the canonical ChatKey("item", id)
+        // storage prefix; mutable Current bodies are intentionally excluded.
+        let content_manifests = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(c.owner_key,c.content_key,hex(c.payload))
+             FROM conversation_contents c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
+             ORDER BY c.owner_key,c.content_key",
+        ).fetch_all(&mut connection).await
+            .context("failed to audit completed content manifests")?;
+        let content_chunks = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(c.owner_key,c.content_key,c.byte_offset,hex(c.data))
+             FROM conversation_content_chunks c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
+             ORDER BY c.owner_key,c.content_key,c.byte_offset",
+        ).fetch_all(&mut connection).await
+            .context("failed to audit completed content chunks")?;
         let history_item_records = sea_orm::sqlx::query_scalar::<_, String>(
             "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq)
              FROM history_items ORDER BY ordinal",
@@ -853,7 +901,9 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
             applied_write_seq: row.9,
             database_bytes: 0,
             wal_bytes: None,
-            timeline_records,
+            conversation_records,
+            content_manifests,
+            content_chunks,
             history_item_records,
             history_turn_records,
         })
@@ -877,47 +927,156 @@ fn same_persisted_inventory(seed: &HistoryAudit, cold: &HistoryAudit) -> bool {
         && seed.distinct_growth_text_ids == cold.distinct_growth_text_ids
         && seed.history_items == cold.history_items
         && seed.history_turns == cold.history_turns
-        && seed.timeline_records == cold.timeline_records
+        && seed.conversation_records == cold.conversation_records
+        && seed.content_manifests == cold.content_manifests
+        && seed.content_chunks == cold.content_chunks
         && seed.history_item_records == cold.history_item_records
         && seed.history_turn_records == cold.history_turn_records
 }
 
+fn opening_latency_report(output: &Path) -> Result<Value> {
+    let mut cold = Vec::with_capacity(OPEN_SAMPLES);
+    for sample in 1..=OPEN_SAMPLES {
+        let path = output.join(format!("timeline-history-20k-cold-{sample}.json"));
+        let report: Value = serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+        )?;
+        cold.push(layout_millis(
+            &report["coldLoad"]["selectionToFirstContentLayoutMillis"],
+        )?);
+    }
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("timeline-history-20k-switch.json"))?)?;
+    let switch = &report["ordinarySwitch"];
+    ensure!(
+        switch["processCold"] == false
+            && switch["osPageCacheControlled"] == false
+            && switch["sampleCount"].as_u64() == Some(OPEN_SAMPLES as u64),
+        "ordinary-switch report has no complete warm-process sample set"
+    );
+    let source = switch["sourceThreadId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("ordinary-switch source Thread is missing")?;
+    let target = switch["targetThreadId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("ordinary-switch target Thread is missing")?;
+    ensure!(
+        source != target,
+        "ordinary switching reused the same Thread"
+    );
+    let samples = switch["samples"]
+        .as_array()
+        .context("ordinary-switch layout samples are missing")?;
+    let warm = samples
+        .iter()
+        .map(|sample| layout_millis(&sample["selectionToFirstContentLayoutMillis"]))
+        .collect::<Result<Vec<_>>>()?;
+    let cold = layout_distribution(cold)?;
+    let warm = layout_distribution(warm)?;
+    let passed = cold["p95Millis"].as_f64().context("cold p95 is missing")?
+        <= FIRST_CONTENT_P95_MILLIS
+        && warm["p95Millis"]
+            .as_f64()
+            .context("switch p95 is missing")?
+            <= FIRST_CONTENT_P95_MILLIS;
+    Ok(json!({
+        "measurement": "application-selection-owner-monotonic-clock",
+        "percentileMethod": "nearest-rank",
+        "thresholdP95Millis": FIRST_CONTENT_P95_MILLIS,
+        "coldOpen": cold,
+        "ordinarySwitch": warm,
+        "pass": passed,
+    }))
+}
+
+fn layout_millis(value: &Value) -> Result<f64> {
+    let millis = value
+        .as_f64()
+        .context("first-content layout time is missing")?;
+    ensure!(
+        millis.is_finite() && millis >= 0.0,
+        "first-content layout time is invalid"
+    );
+    Ok(millis)
+}
+
+fn layout_distribution(mut samples: Vec<f64>) -> Result<Value> {
+    ensure!(
+        samples.len() == OPEN_SAMPLES,
+        "expected {OPEN_SAMPLES} real first-content samples, got {}",
+        samples.len()
+    );
+    samples.sort_by(f64::total_cmp);
+    Ok(json!({
+        "sampleCount": samples.len(),
+        "p50Millis": samples[(samples.len() * 50).div_ceil(100) - 1],
+        "p95Millis": samples[(samples.len() * 95).div_ceil(100) - 1],
+        "samplesMillis": samples,
+    }))
+}
+
 fn cold_phase_observation(report: &Value, phase: &str) -> Result<ColdPhaseObservation> {
-    let (thread_id, final_queue) =
-        final_persistence_watermark(&report["persistence"], &format!("{phase}.persistence"))?;
-    let watermarks = report["coldWatermarks"]
+    let first = &report["coldLoad"]["viewport"];
+    let last = &report["realScroll"]["finalWindow"];
+    let thread_id = first["threadId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{phase} first viewport has no thread identity"))?;
+    let generation = required_u64(
+        first.get("generation"),
+        &format!("{phase}.viewport.generation"),
+    )?;
+    ensure!(
+        generation > 0
+            && first["ready"] == true
+            && last["ready"] == true
+            && last["threadId"].as_str() == Some(thread_id)
+            && last["generation"].as_u64() == Some(generation),
+        "{phase} passive read changed the actual viewport identity or generation"
+    );
+    let samples = report["coldPersistence"]
         .as_object()
-        .with_context(|| format!("{phase}.coldWatermarks must be an object"))?;
-    let before_scroll = queue_watermark(
-        watermarks
+        .with_context(|| format!("{phase}.coldPersistence must be an object"))?;
+    let before_scroll = passive_queue_revision(
+        samples
             .get("beforeScroll")
-            .with_context(|| format!("{phase}.coldWatermarks.beforeScroll is missing"))?,
-        &format!("{phase}.coldWatermarks.beforeScroll"),
-        false,
+            .with_context(|| format!("{phase}.coldPersistence.beforeScroll is missing"))?,
+        &format!("{phase}.coldPersistence.beforeScroll"),
     )?;
-    let after_scroll = queue_watermark(
-        watermarks
+    let after_scroll = passive_queue_revision(
+        samples
             .get("afterScroll")
-            .with_context(|| format!("{phase}.coldWatermarks.afterScroll is missing"))?,
-        &format!("{phase}.coldWatermarks.afterScroll"),
-        false,
+            .with_context(|| format!("{phase}.coldPersistence.afterScroll is missing"))?,
+        &format!("{phase}.coldPersistence.afterScroll"),
     )?;
+    let final_queue =
+        passive_queue_revision(&report["persistence"], &format!("{phase}.persistence"))?;
+    ensure!(
+        before_scroll <= after_scroll && after_scroll <= final_queue,
+        "{phase} persistence queue baseline revision regressed"
+    );
     Ok(ColdPhaseObservation {
-        thread_id,
-        final_queue,
-        before_scroll,
-        after_scroll,
+        thread_id: thread_id.to_owned(),
+        queue_revisions: [before_scroll, after_scroll, final_queue],
     })
 }
 
-fn final_persistence_watermark(value: &Value, context: &str) -> Result<(String, QueueWatermark)> {
+fn passive_queue_revision(value: &Value, context: &str) -> Result<u64> {
     let object = value
         .as_object()
         .with_context(|| format!("{context} must be an object"))?;
+    ensure!(
+        object.get("loaded").and_then(Value::as_bool) == Some(true)
+            && object.get("syncPhase").and_then(Value::as_str) == Some("ready"),
+        "{context} has no connected persistence queue baseline"
+    );
+    let revision = required_u64(object.get("revision"), &format!("{context}.revision"))?;
     for field in ["pendingOperations", "pendingBytes", "inFlightBytes"] {
         ensure!(
             required_u64(object.get(field), &format!("{context}.{field}"))? == 0,
-            "{context}.{field} must be zero after durability drain"
+            "{context}.{field} must remain zero during passive reading"
         );
     }
     let threads = object
@@ -925,66 +1084,15 @@ fn final_persistence_watermark(value: &Value, context: &str) -> Result<(String, 
         .and_then(Value::as_array)
         .with_context(|| format!("{context}.threads must be an array"))?;
     ensure!(
-        threads.len() == 1,
-        "{context}.threads must contain exactly one thread"
+        threads.is_empty(),
+        "{context} passive reading registered a Thread writer or recovery obligation"
     );
-    let thread = threads[0]
-        .as_object()
-        .with_context(|| format!("{context}.threads[0] must be an object"))?;
-    let thread_id = thread
-        .get("threadId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .with_context(|| format!("{context}.threads[0].threadId must be a non-empty string"))?
-        .to_owned();
-    for field in ["pending", "pendingBytes", "inFlightBytes"] {
-        ensure!(
-            required_u64(thread.get(field), &format!("{context}.threads[0].{field}"))? == 0,
-            "{context}.threads[0].{field} must be zero after durability drain"
-        );
-    }
-    let watermark = QueueWatermark {
-        history_admitted: required_u64(
-            thread.get("historyAdmitted"),
-            &format!("{context}.threads[0].historyAdmitted"),
-        )?,
-        history_durable: required_u64(
-            thread.get("historyDurable"),
-            &format!("{context}.threads[0].historyDurable"),
-        )?,
-    };
     ensure!(
-        watermark.history_durable == watermark.history_admitted,
-        "{context} is not durably drained: {watermark:?}"
+        object.get("lastError") == Some(&Value::Null)
+            && object.get("pressurePaused").and_then(Value::as_bool) == Some(false),
+        "{context} has a persistence fault or pressure pause"
     );
-    Ok((thread_id, watermark))
-}
-
-fn queue_watermark(value: &Value, context: &str, require_drained: bool) -> Result<QueueWatermark> {
-    let object = value
-        .as_object()
-        .with_context(|| format!("{context} must be an object"))?;
-    for field in ["pendingOperations", "pendingBytes", "inFlightBytes"] {
-        let value = required_u64(object.get(field), &format!("{context}.{field}"))?;
-        if require_drained {
-            ensure!(value == 0, "{context}.{field} must be zero");
-        }
-    }
-    let watermark = QueueWatermark {
-        history_admitted: required_u64(
-            object.get("historyAdmitted"),
-            &format!("{context}.historyAdmitted"),
-        )?,
-        history_durable: required_u64(
-            object.get("historyDurable"),
-            &format!("{context}.historyDurable"),
-        )?,
-    };
-    ensure!(
-        watermark.history_durable <= watermark.history_admitted,
-        "{context}.historyDurable exceeds historyAdmitted"
-    );
-    Ok(watermark)
+    Ok(revision)
 }
 
 fn required_u64(value: Option<&Value>, field: &str) -> Result<u64> {
@@ -1012,45 +1120,20 @@ fn verify_cold_lifecycle(
     );
     let previous_closed = u64::try_from(previous.applied_write_seq)
         .with_context(|| format!("{phase} previous closed watermark is negative"))?;
-    let open = previous_closed
-        .checked_add(1)
-        .with_context(|| format!("{phase} open lifecycle watermark overflowed"))?;
-    let after_close = open
-        .checked_add(2)
-        .with_context(|| format!("{phase} close lifecycle watermark overflowed"))?;
+    let seed_closed = u64::try_from(seed.applied_write_seq)
+        .with_context(|| format!("{phase} seed closed watermark is negative"))?;
     let actual_after_close = u64::try_from(current.applied_write_seq)
         .with_context(|| format!("{phase} after-close watermark is negative"))?;
     ensure!(
-        observation.final_queue.history_admitted == open
-            && observation.final_queue.history_durable == open,
-        "{phase} open lifecycle watermark mismatch: expected={open} actual={:?}",
-        observation.final_queue
-    );
-    ensure!(
-        observation.before_scroll.history_admitted == open
-            && observation.after_scroll.history_admitted == open,
-        "{phase} real scroll changed history admission: open={open} before={:?} after={:?}",
-        observation.before_scroll,
-        observation.after_scroll
-    );
-    ensure!(
-        observation.before_scroll.history_durable <= open
-            && observation.after_scroll.history_durable
-                >= observation.before_scroll.history_durable
-            && observation.after_scroll.history_durable <= open,
-        "{phase} real scroll durability did not monotonically approach admission: before={:?} after={:?}",
-        observation.before_scroll,
-        observation.after_scroll
-    );
-    ensure!(
-        actual_after_close == after_close,
-        "{phase} close lifecycle watermark mismatch: previousClosed={previous_closed} open={open} expectedAfterClose={after_close} actualAfterClose={actual_after_close}"
+        previous_closed == seed_closed && actual_after_close == previous_closed,
+        "{phase} passive reading saved an effect: seedClosed={seed_closed} previousClosed={previous_closed} actualAfterClose={actual_after_close}"
     );
     Ok(ColdLifecycleCheck {
         phase: phase.to_owned(),
         previous_closed,
-        open,
-        after_close,
+        after_close: actual_after_close,
+        writer_absent_at_samples: true,
+        queue_revisions: observation.queue_revisions,
         exact_inventory_unchanged: true,
     })
 }
@@ -1101,13 +1184,27 @@ fn linux_process_age_millis(pid: u64) -> Result<u128> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn opening_distribution_requires_twenty_layout_samples_and_uses_nearest_rank() -> Result<()> {
+        ensure!(layout_distribution(vec![1.0, 2.0, 3.0]).is_err());
+        let mut samples = (1..=19).rev().map(f64::from).collect::<Vec<_>>();
+        samples.push(2_000.0);
+        let report = layout_distribution(samples)?;
+        assert_eq!(report["sampleCount"], 20);
+        assert_eq!(report["p50Millis"], 10.0);
+        assert_eq!(report["p95Millis"], 19.0);
+        ensure!(layout_millis(&Value::Null).is_err());
+        ensure!(layout_millis(&json!(-1.0)).is_err());
+        Ok(())
+    }
+
     fn complete_status() -> FixtureLiveStatus {
         FixtureLiveStatus {
-            accepted: 30,
+            accepted: 31,
             rejected: 0,
-            total: 30,
-            consumed_steps: 30,
-            expected_steps: 30,
+            total: 31,
+            consumed_steps: 31,
+            expected_steps: 31,
             remaining_optional: true,
         }
     }
@@ -1119,7 +1216,7 @@ mod tests {
             fixture_stopped_cleanly: true,
             fixture_log_failure: None,
             requests_failure: None,
-            accepted: 30,
+            accepted: 31,
             rejected: 0,
             status_failure: None,
             status,
@@ -1155,10 +1252,12 @@ mod tests {
             applied_write_seq,
             database_bytes: 100,
             wal_bytes: Some(0),
-            timeline_records: vec![
+            conversation_records: vec![
                 r#"[1,"item-1",null,1,null,"text",{"value":"a"}]"#.into(),
                 r#"[2,"turn-1","turn-1",1,10,"turn",{"state":"completed"}]"#.into(),
             ],
+            content_manifests: vec![r#"["4:itemitem-1","body","manifest"]"#.into()],
+            content_chunks: vec![r#"["4:itemitem-1","body",0,"61"]"#.into()],
             history_item_records: vec![
                 r#"[1,"item-1","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into(),
                 r#"[2,"turn-1","turn-1","turn",0,"terminal",1,1,{"state":"completed"},1]"#.into(),
@@ -1167,37 +1266,33 @@ mod tests {
         }
     }
 
-    fn cold_report(open: u64) -> Value {
+    fn passive_queue(revision: u64) -> Value {
         json!({
-            "persistence": {
-                "pendingOperations": 0,
-                "pendingBytes": 0,
-                "inFlightBytes": 0,
-                "threads": [{
-                    "threadId": "thread-1",
-                    "historyAdmitted": open,
-                    "historyDurable": open,
-                    "pending": 0,
-                    "pendingBytes": 0,
-                    "inFlightBytes": 0
-                }]
+            "loaded": true,
+            "revision": revision,
+            "syncPhase": "ready",
+            "pendingOperations": 0,
+            "pendingBytes": 0,
+            "inFlightBytes": 0,
+            "lastError": null,
+            "pressurePaused": false,
+            "threads": []
+        })
+    }
+
+    fn cold_report() -> Value {
+        json!({
+            "coldLoad": {
+                "viewport": {"threadId": "thread-1", "generation": 1, "ready": true}
             },
-            "coldWatermarks": {
-                "beforeScroll": {
-                    "pendingOperations": 1,
-                    "pendingBytes": 16,
-                    "inFlightBytes": 8,
-                    "historyAdmitted": open,
-                    "historyDurable": open - 1
-                },
-                "afterScroll": {
-                    "pendingOperations": 0,
-                    "pendingBytes": 0,
-                    "inFlightBytes": 0,
-                    "historyAdmitted": open,
-                    "historyDurable": open
-                }
-            }
+            "realScroll": {
+                "finalWindow": {"threadId": "thread-1", "generation": 1, "ready": true}
+            },
+            "persistence": passive_queue(1),
+            "coldPersistence": {
+                "beforeScroll": passive_queue(1),
+                "afterScroll": passive_queue(1)
+            },
         })
     }
 
@@ -1260,7 +1355,7 @@ mod tests {
         let seed = audit(10);
 
         let mut changed_payload = seed.clone();
-        changed_payload.timeline_records[0] =
+        changed_payload.conversation_records[0] =
             r#"[1,"item-1",null,1,null,"text",{"value":"changed"}]"#.into();
         assert!(!same_persisted_inventory(&seed, &changed_payload));
 
@@ -1270,15 +1365,23 @@ mod tests {
         assert!(!same_persisted_inventory(&seed, &changed_identity));
 
         let mut changed_order = seed.clone();
-        changed_order.timeline_records.reverse();
+        changed_order.conversation_records.reverse();
         assert!(!same_persisted_inventory(&seed, &changed_order));
+
+        let mut changed_body = seed.clone();
+        changed_body.content_chunks[0] = r#"["4:itemitem-1","body",0,"62"]"#.into();
+        assert!(!same_persisted_inventory(&seed, &changed_body));
+
+        let mut changed_manifest = seed.clone();
+        changed_manifest.content_manifests.clear();
+        assert!(!same_persisted_inventory(&seed, &changed_manifest));
     }
 
     #[test]
-    fn exact_inventory_and_open_close_watermarks_pass_strict_cold_contract() {
+    fn exact_inventory_and_unchanged_watermark_pass_passive_cold_contract() {
         let seed = audit(10);
-        let cold = audit(13);
-        let observation = cold_phase_observation(&cold_report(11), "cold-1").unwrap();
+        let cold = audit(10);
+        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
 
         let check = verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).unwrap();
         assert_eq!(
@@ -1286,31 +1389,64 @@ mod tests {
             ColdLifecycleCheck {
                 phase: "cold-1".into(),
                 previous_closed: 10,
-                open: 11,
-                after_close: 13,
+                after_close: 10,
+                writer_absent_at_samples: true,
+                queue_revisions: [1, 1, 1],
                 exact_inventory_unchanged: true,
             }
         );
     }
 
     #[test]
-    fn missing_fractional_or_incorrect_watermarks_are_rejected() {
-        let seed = audit(10);
-        let cold = audit(13);
-
-        let mut missing = cold_report(11);
-        missing["persistence"]["threads"][0]
+    fn missing_or_invalid_passive_queue_evidence_is_rejected() {
+        let mut missing = cold_report();
+        missing["persistence"]
             .as_object_mut()
             .unwrap()
-            .remove("historyAdmitted");
+            .remove("pendingBytes");
         assert!(cold_phase_observation(&missing, "cold-1").is_err());
 
-        let mut fractional = cold_report(11);
-        fractional["coldWatermarks"]["afterScroll"]["historyAdmitted"] = json!(11.0);
-        assert!(cold_phase_observation(&fractional, "cold-1").is_err());
+        for (field, invalid) in [
+            ("loaded", json!(false)),
+            ("revision", json!(1.0)),
+            ("syncPhase", json!("reconnecting")),
+            ("pendingOperations", json!(1)),
+            ("pendingBytes", json!(1)),
+            ("inFlightBytes", json!(1)),
+            ("lastError", json!("save failed")),
+            ("pressurePaused", json!(true)),
+            ("threads", json!([{"threadId": "thread-1"}])),
+            ("threads", Value::Null),
+        ] {
+            let mut report = cold_report();
+            report["coldPersistence"]["beforeScroll"][field] = invalid;
+            assert!(
+                cold_phase_observation(&report, "cold-1").is_err(),
+                "invalid {field} must not prove a passive read"
+            );
+        }
+        let mut regressed = cold_report();
+        regressed["coldPersistence"]["beforeScroll"]["revision"] = json!(2);
+        assert!(cold_phase_observation(&regressed, "cold-1").is_err());
+        let mut changed_scope = cold_report();
+        changed_scope["realScroll"]["finalWindow"]["generation"] = json!(2);
+        assert!(cold_phase_observation(&changed_scope, "cold-1").is_err());
+    }
 
-        let observation = cold_phase_observation(&cold_report(12), "cold-1").unwrap();
-        assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).is_err());
+    #[test]
+    fn saved_effects_or_another_thread_cannot_pass_passive_cold_contract() {
+        let seed = audit(10);
+        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
+        // Even an already-drained queue must not hide a newly saved lifecycle effect.
+        for changed_sequence in [9, 11, 13] {
+            let cold = audit(changed_sequence);
+            assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).is_err());
+        }
+        let mut another_thread = cold_report();
+        another_thread["coldLoad"]["viewport"]["threadId"] = json!("another-thread");
+        another_thread["realScroll"]["finalWindow"]["threadId"] = json!("another-thread");
+        let observation = cold_phase_observation(&another_thread, "cold-1").unwrap();
+        assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &seed, &observation).is_err());
     }
 
     #[test]

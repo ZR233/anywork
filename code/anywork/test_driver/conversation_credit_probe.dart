@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -25,8 +26,7 @@ final class ConversationCreditProbe {
   final _rejections = <int>[];
   Completer<void> _changed = Completer<void>();
   Object? _failure;
-  String? _baselineEpoch;
-  int? _baselineThrough;
+  List<String>? _baselineIds;
   int _acknowledged = 0;
   bool _done = false;
   bool _joined = false;
@@ -49,14 +49,26 @@ final class ConversationCreditProbe {
         _frames.length >= 3) {
       _failure = StateError('credit probe exceeded its actual sent prefix');
     } else {
-      if (frame.event case ConversationBaselineEvent(:final baseline)) {
-        _baselineEpoch = baseline.timelineEpoch;
-        _baselineThrough = baseline.completedCursor.appendSeq;
+      if (frame.event case ConversationChatEvent(:final batch)) {
+        if (_baselineIds == null && batch.placement != ChatPlacement.set) {
+          _failure = StateError('first Chat was not Set');
+        } else if (_baselineIds != null &&
+            batch.placement != ChatPlacement.append) {
+          _failure = StateError('feed emitted a non-Append after Set');
+        }
+        _baselineIds ??= [for (final message in batch.messages) message.id];
+        _frames.add({
+          'deliverySequence': frame.deliverySequence,
+          'event': 'chat',
+          'placement': batch.placement.name,
+          'itemIds': [for (final message in batch.messages) message.id],
+        });
+      } else {
+        _frames.add({
+          'deliverySequence': frame.deliverySequence,
+          'event': frame.event.runtimeType.toString(),
+        });
       }
-      _frames.add({
-        'deliverySequence': frame.deliverySequence,
-        'event': frame.event.runtimeType.toString(),
-      });
     }
     _notify();
   }
@@ -86,9 +98,7 @@ final class ConversationCreditProbe {
   Future<Map<String, Object?>> holdTwo() async {
     await _received(2);
     await _rejectFuture(3);
-    if (_acknowledged != 0 ||
-        _baselineEpoch == null ||
-        _baselineThrough == null) {
+    if (_acknowledged != 0 || _baselineIds == null) {
       throw StateError('credit probe did not hold its initial real baseline');
     }
     return snapshot();
@@ -107,57 +117,45 @@ final class ConversationCreditProbe {
     return snapshot();
   }
 
-  /// Opens an independent real query capability while this feed has no credit.
-  /// The caller first causes a new real completion through the normal GUI.
-  Future<Map<String, Object?>> query(ConversationTransport transport) async {
+  /// Reads one newly completed, GUI-observed item through the original reader
+  /// while this same feed has no credit. No second feed can hide a credit lock.
+  Future<Map<String, Object?>> query({required String itemId}) async {
     if (_acknowledged != 0 || _frames.length != 2) {
       throw StateError('query evidence requires the original two-frame hold');
     }
-    final reader = await transport.openHistoryReader(feed.threadId);
-    try {
-      final page = await reader.page(limit: 100);
-      if (reader.timelineEpoch != _baselineEpoch ||
-          page.timelineEpoch != _baselineEpoch ||
-          page.items.isEmpty ||
-          page.items.last.header.appendSeq <= _baselineThrough!) {
-        throw StateError('independent page did not observe a new completion');
-      }
-      final item = page.items.lastWhere(
-        (item) =>
-            item.header.appendSeq > _baselineThrough! &&
-            item.fields.any(
-              (field) =>
-                  field.field is ThreadTextFieldView && field.totalBytes > 0,
-            ),
-      );
-      final chunk = await reader.readDetail(
-        itemId: item.header.id,
-        query: ConversationDetailQuery(
-          timelineEpoch: page.timelineEpoch,
-          field: const ThreadTextFieldView(),
-          maxBytes: 64,
-        ),
-      );
-      if (chunk.timelineEpoch != page.timelineEpoch ||
-          chunk.itemId != item.header.id ||
-          chunk.text.isEmpty) {
-        throw StateError('independent detail did not read the completed text');
-      }
-      // Recheck native credit after both queries. This still must not ACK data.
-      await _rejectFuture(3);
-      return {
-        ...snapshot(),
-        'queryEpoch': page.timelineEpoch,
-        'queryHead': page.items.last.header.appendSeq,
-        'detailItemId': chunk.itemId,
-        'detailAppendSeq': item.header.appendSeq,
-        'detailTotalBytes': chunk.totalBytes,
-        'detailReadCharacters': chunk.text.length,
-      };
-    } finally {
-      reader.requestClose();
-      await reader.close();
+    if (_baselineIds!.contains(itemId)) {
+      throw StateError('query target already existed in the held Set');
     }
+    final manifest = await feed.reader.listContents(
+      itemId: itemId,
+      demand: const ReadDemand(maxItems: 32, maxBytes: 64 * 1024),
+    );
+    final body = manifest.entries.singleWhere((entry) => entry.key == 'body');
+    final metadata = jsonDecode(utf8.decode(body.payload)) as Map;
+    final totalBytes = metadata['byteLength'];
+    if (totalBytes is! int || totalBytes <= 0) {
+      throw StateError('completed text manifest has no positive byteLength');
+    }
+    final chunk = await feed.reader.readContent(
+      reference: body.reference,
+      range: const ContentRange(offset: 0, maxBytes: 64),
+    );
+    if (chunk.offset != 0 ||
+        chunk.bytes.isEmpty ||
+        chunk.availableThrough != totalBytes ||
+        !chunk.sealed) {
+      throw StateError('original reader did not read the completed text');
+    }
+    await _rejectFuture(3);
+    return {
+      ...snapshot(),
+      'queryItemId': itemId,
+      'detailItemId': itemId,
+      'detailTotalBytes': totalBytes,
+      'detailReadBytes': chunk.bytes.length,
+      'detailGeneration': chunk.generation,
+      'readerSource': 'original-held-feed',
+    };
   }
 
   Future<Map<String, Object?>> close() async {
@@ -176,8 +174,7 @@ final class ConversationCreditProbe {
     'threadId': feed.threadId,
     'subscriptionId': feed.subscriptionId,
     'frames': List<Map<String, Object?>>.of(_frames),
-    'baselineEpoch': _baselineEpoch,
-    'baselineThrough': _baselineThrough,
+    'baselineItemIds': _baselineIds,
     'acknowledged': _acknowledged,
     'futureAckRejections': List<int>.of(_rejections),
     'done': _done,

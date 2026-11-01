@@ -209,6 +209,7 @@ mod tests {
     }
 
     async fn restore_published_v9(db: &impl ConnectionTrait) -> Result<()> {
+        super::super::discard_empty_demand_fixture(db).await?;
         let count: i64 = db
             .query_one_raw(statement(
                 "SELECT COUNT(*) AS count FROM timeline_records",

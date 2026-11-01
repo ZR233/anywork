@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
 use pl_protocol::{
-    ThreadContentField, ThreadTextChannel, TimelineDescriptor, TimelineFieldPreview, TimelineItem,
-    TimelineItemHeader, TimelineItemSource, TimelineTextDescriptor, studio::StudioErrorCode,
+    ChatBatch, ChatMessage, ChatPlacement, ChatScope, PayloadData, ReadDemand,
+    studio::StudioErrorCode,
 };
 
 use super::*;
 
-async fn resume(uri: &str) -> Result<Option<TimelineCompletionCursor>, ApiError> {
+async fn conversation_query(uri: &str) -> Result<(ChatScope, ReadDemand), ApiError> {
     let (mut parts, _) = Request::builder().uri(uri).body(()).unwrap().into_parts();
     let ApiQuery(query) =
         ApiQuery::<ConversationQuery>::from_request_parts(&mut parts, &()).await?;
-    query.resume_after()
+    Ok(query.scope_demand())
 }
 
 async fn product_topic(uri: &str) -> Result<pl_studio_runtime::StudioProductTopic, ApiError> {
@@ -79,102 +79,115 @@ async fn child_interactions_query_requires_exactly_its_host_scope() {
 }
 
 #[tokio::test]
-async fn conversation_resume_requires_an_explicit_valid_completion_prefix() {
-    assert!(matches!(resume("/").await, Ok(None)));
-    let Ok(Some(cursor)) = resume("/?timelineEpoch=epoch-a&appendSeq=7").await else {
-        panic!("a complete accepted prefix must be admitted");
-    };
-    assert_eq!(cursor.timeline_epoch, "epoch-a");
-    assert_eq!(cursor.append_seq, 7);
+async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() {
     assert!(matches!(
-        resume("/?timelineEpoch=epoch-a&appendSeq=0").await,
-        Ok(Some(TimelineCompletionCursor { append_seq: 0, .. }))
+        conversation_query("/?maxItems=7&maxBytes=4096").await,
+        Ok((
+            ChatScope::Main,
+            ReadDemand {
+                max_items: 7,
+                max_bytes: 4096
+            }
+        ))
+    ));
+    assert!(matches!(
+        conversation_query("/?maxItems=3&maxBytes=4096&parentId=parent-a").await,
+        Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
     ));
     for uri in [
-        "/?timelineEpoch=epoch-a",
-        "/?appendSeq=7",
-        "/?timelineEpoch=&appendSeq=7",
-        "/?timelineEpoch=epoch-a&appendSeq=-1",
-        "/?timelineEpoch=epoch-a&appendSeq=9223372036854775808",
-        "/?timeline_epoch=epoch-a&appendSeq=7",
-        "/?timelineEpoch=epoch-a&appendSeq=7&unknown=1",
+        "/",
+        "/?maxItems=7",
+        "/?maxBytes=4096",
+        "/?maxItems=-1&maxBytes=4096",
+        "/?maxItems=7&maxBytes=4096&timelineEpoch=epoch-a",
+        "/?maxItems=7&maxBytes=4096&appendSeq=7",
+        "/?maxItems=7&maxBytes=4096&parent_id=parent-a",
+        "/?maxItems=7&maxBytes=4096&unknown=1",
+        "/?maxItems=7&maxItems=8&maxBytes=4096",
     ] {
-        let Err(error) = resume(uri).await else {
-            panic!("invalid completion prefix was admitted: {uri}");
+        let Err(error) = conversation_query(uri).await else {
+            panic!("invalid conversation query admitted: {uri}");
         };
         assert_eq!(error.0.code, StudioErrorCode::InvalidArgument, "{uri}");
     }
 }
 
 #[tokio::test]
-async fn sse_keeps_nonempty_completion_and_activity_commit_in_one_delivery() -> Result<()> {
-    let text = "  completed body\n";
-    let item = TimelineItem {
-        header: TimelineItemHeader {
-            id: "completed-text".into(),
-            thread_id: "thread".into(),
-            turn_id: Some("turn".into()),
-            append_seq: 8,
-            source_effect_seq: Some(11),
-            sealed_at: Some(17),
-        },
-        descriptor: TimelineDescriptor::Text(TimelineTextDescriptor {
-            channel: ThreadTextChannel::Final,
-            attachments: vec![],
-            outcome: serde_json::from_value(serde_json::json!({
-                "kind": "completed", "data": {"completedAt": 17}
-            }))?,
-        }),
-        source: TimelineItemSource::Content,
-        fields: vec![TimelineFieldPreview {
-            field: ThreadContentField::Text,
-            text: text.into(),
-            total_bytes: text.len() as u64,
+async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() -> Result<()> {
+    let batch = ChatBatch {
+        placement: ChatPlacement::Set,
+        messages: vec![ChatMessage {
+            id: "message-a".into(),
+            payload: PayloadData::Inline {
+                bytes: b"  body\n".to_vec(),
+            },
         }],
+        before: Some("opaque-before".into()),
+        current: None,
     };
-    let event = ConversationEvent::ActivityContent {
-        frame: ActivityContentFrame::Commit {
-            generation: "activity".into(),
-            revision: 3,
-        },
-        completed: Some(Box::new(TimelineTailUpdate::Batch {
-            subscription_id: "subscription".into(),
-            timeline_epoch: "epoch-a".into(),
-            from_seq: 7,
-            through_seq: 8,
-            items: vec![item],
-        })),
-    };
-    let (sender, receiver) = mpsc::channel(1);
-    assert!(send_conversation_event(&sender, &CancellationToken::new(), &event).await);
-    drop(sender);
-    let response = Sse::new(ReceiverStream::new(receiver)).into_response();
+    batch.validate_for(&ChatScope::Children {
+        parent_id: "parent-a".into(),
+    })?;
+    let event = encode_conversation_event(&ConversationEvent::Chat {
+        batch: Box::new(batch.clone()),
+    })?;
+    let response = Sse::new(futures::stream::iter([Ok::<_, Infallible>(event)])).into_response();
     let bytes = to_bytes(response.into_body(), 8192).await?;
     let wire = std::str::from_utf8(&bytes)?;
-    assert_eq!(wire.matches("event: activityContent\n").count(), 1);
+    assert_eq!(wire.matches("event: chat\n").count(), 1);
+    assert!(!wire.lines().any(|line| line.starts_with("id:")));
     let mut data = wire.lines().filter_map(|line| line.strip_prefix("data: "));
-    let payload: serde_json::Value =
-        serde_json::from_str(data.next().context("missing SSE delivery")?)?;
+    let decoded: ChatBatch = serde_json::from_str(data.next().context("missing chat event")?)?;
+    assert_eq!(decoded, batch);
+    assert!(data.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> Result<()> {
+    let document = serde_json::to_value(crate::openapi_document())?;
+    let paths = document["paths"].as_object().context("missing paths")?;
+    assert!(!paths.keys().any(|path| path.contains("/timeline")));
+    let events = &paths["/api/v1/threads/{thread_id}/events"]["get"];
+    let params = events["parameters"].as_array().context("missing params")?;
+    for name in ["maxItems", "maxBytes"] {
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == name && param["required"] == true)
+        );
+    }
     assert!(
-        data.next().is_none(),
-        "the commit was split into multiple events"
+        !params
+            .iter()
+            .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
     );
-    assert_eq!(payload["frame"]["kind"], "commit");
-    assert_eq!(payload["frame"]["revision"], 3);
-    let completed: TimelineTailUpdate = serde_json::from_value(payload["completed"].clone())?;
-    assert_eq!(completion_event_id(&completed), "timeline:epoch-a:8");
-    let TimelineTailUpdate::Batch {
-        from_seq,
-        through_seq,
-        items,
-        ..
-    } = completed
-    else {
-        panic!("the nonempty completion batch was not preserved");
-    };
-    assert_eq!((from_seq, through_seq), (7, 8));
-    assert_eq!(items[0].header.append_seq, 8);
-    assert_eq!(items[0].fields[0].text, text);
+    assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
+    for suffix in [
+        "chat/older",
+        "contents/manifest",
+        "contents/read",
+        "contents/watch",
+        "current/page",
+    ] {
+        let path = format!("/api/v1/threads/{{thread_id}}/{suffix}");
+        let post = &paths[&path]["post"];
+        assert!(post.is_object(), "{path}");
+        assert!(post["requestBody"]["required"] == true, "{path}");
+        assert!(
+            post["parameters"]
+                .as_array()
+                .context("missing capability parameter")?
+                .iter()
+                .any(|parameter| parameter["name"] == "X-Anywork-Conversation"
+                    && parameter["in"] == "header"
+                    && parameter["required"] == true),
+            "{path}"
+        );
+    }
+    // Unrelated execution/receipt APIs remain available.
+    assert!(paths.contains_key("/api/v1/threads/{thread_id}/turns"));
+    assert!(paths.contains_key("/api/v1/threads/{thread_id}/prompts"));
     Ok(())
 }
 

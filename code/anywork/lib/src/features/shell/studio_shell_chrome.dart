@@ -548,12 +548,54 @@ class _ConversationActivityHost extends ConsumerWidget {
     final view = input == null
         ? null
         : projectConversationActivity(
-            current: input.currentActivity,
+            current: input.current,
             storage: input.storage,
             interaction: input.interaction,
           );
     StudioDriverState.publishConversationActivity(view);
     if (view == null) return const SizedBox.shrink();
+    final current = input?.current;
+    final content = ref
+        .read(anyworkClientProvider)
+        .conversations
+        .existingSession(threadId)
+        ?.content;
+    if (current != null && content != null) {
+      // A local display dependency only: it does not open another conversation reader.
+      ref.watch(timelineViewModelProvider(threadId));
+      final timeline = ref.read(timelineSessionOwnerProvider);
+      final lease = timeline.lease(threadId);
+      return ConversationCurrentConnector(
+        key: ValueKey((threadId, content)),
+        current: current,
+        content: content,
+        view: view,
+        onExpandedChanged: StudioDriverState.publishActivityExpanded,
+        registerDisplay: lease?.registerCurrentDisplay,
+        completedItemsBuilder: lease == null
+            ? null
+            : (parentId, retirement) => TimelineChildrenConnector(
+                key: ValueKey((lease.generation, parentId, retirement)),
+                repository: ref.read(anyworkClientProvider).conversations,
+                threadId: threadId,
+                parentId: parentId,
+                parentRetirement: retirement,
+                registerDisplay: lease.registerChildrenDisplay,
+                isParentActive: () =>
+                    !lease.retirement.value &&
+                    identical(timeline.lease(threadId), lease) &&
+                    identical(lease.content, content),
+                readAttachment: (id) => ref
+                    .read(anyworkClientProvider)
+                    .readAttachmentBytes(threadId, id),
+              ),
+        isDisplayActive: () =>
+            lease != null &&
+            !lease.retirement.value &&
+            identical(timeline.lease(threadId), lease) &&
+            identical(lease.content, content),
+      );
+    }
     return ConversationActivityBar(
       view: view,
       onExpandedChanged: StudioDriverState.publishActivityExpanded,

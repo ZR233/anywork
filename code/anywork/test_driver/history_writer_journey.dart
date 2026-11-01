@@ -334,10 +334,17 @@ class HistoryLockJourney {
     }
     // No tool may start on the locked turn: the fault-safe boundary forbids new
     // model/tool work while persistence cannot commit.
-    // 写锁期间必须没有任何 canonical 工具条目（不再有活动组合并行）。
-    checks['noToolStartedWhileWriterLocked'] = timelineRows(liveSnapshot)
-        .where((row) => row['kind'] == 'toolCall')
-        .isEmpty;
+    // 写锁期间既不能启动当前工具，也不能交付完成工具；Main 列表没有工具
+    // 不足以证明 Children/当前活动没有运行工具。
+    final currentTools = activity?['toolDetails'];
+    if (activity != null && currentTools is! List) {
+      throw StateError('current activity toolDetails is not observable');
+    }
+    checks['noToolStartedWhileWriterLocked'] =
+        timelineRows(liveSnapshot)
+            .where((row) => row['kind'] == 'tool')
+            .isEmpty &&
+        (currentTools == null || (currentTools as List).isEmpty);
     await shot('locked-live');
 
     // 4. The turn must reach its terminal state while the writer is still

@@ -175,6 +175,7 @@ class StudioState {
 
   ThreadRuntimeView get runtime =>
       selectedWorkspace?.runtime ?? _emptySessionRuntime;
+  ThreadModelRouteView? get modelRoute => selectedWorkspace?.modelRoute;
 
   ComposerThreadState get composer => selectedWorkspaceUi.composer;
 
@@ -309,6 +310,7 @@ class StudioState {
       loadError: selectedWorkspaceUi.loadError,
       todo: selectedTodoList,
       runtime: runtime,
+      modelRoute: modelRoute,
       turn: turn,
       lastTurn: selectedWorkspace?.lastTurn,
       activeInteraction: activeInteraction,

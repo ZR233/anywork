@@ -7,7 +7,7 @@
 //!   不重复分配序号，异载荷是类型化冲突，已持久身份同样按此规则检查；
 //! - [`Session::confirm_durable`] 只在 writer 真实提交了连续前缀后回收 pending；保存确认不发
 //!   内容事件，也不改变任何已发布记录；
-//! - 读取不在这里：见 `read` 模块的统一合并算法。锁的纪律固定为锁内只做同步、有界的工作，
+//! - 读取不在这里：见 `read` 模块的互不重叠区间读取。锁的纪律固定为锁内只做同步、有界的工作，
 //!   绝不跨 `.await` 持锁，不 flush，不克隆全部 pending。
 //!
 //! `timelineEpoch` 是宿主构建 Session 时注入的不透明运行代际：重启或重建必然由宿主提供新 epoch，
@@ -22,8 +22,8 @@ use std::{
 use tokio::sync::watch;
 
 use crate::chat::{
-    ChatDraft, ChatError, ChatHistory, ChatItem, ChatItemParts, TimelineEpoch,
-    history::ErasedChatHistory, item::draft_matches_record,
+    ChatContent, ChatContentKey, ChatDraft, ChatError, ChatHistory, ChatItem, ChatKey, ChatQuery,
+    TimelineEpoch, history::ErasedChatHistory, item::draft_matches_record,
 };
 
 /// 会话的完成集合状态。所有字段只在短临界区内被读写。
@@ -41,43 +41,94 @@ pub(crate) struct TimelineState {
     /// 条数与字节预算由外层可靠队列提供，本层不丢最旧项、不做无界复制。
     pending: BTreeMap<u64, Arc<ChatItem>>,
     pending_ids: BTreeMap<String, u64>,
+    by_class: BTreeMap<String, BTreeMap<u64, Arc<ChatItem>>>,
+    by_parent_class: BTreeMap<(ChatKey, String), BTreeMap<u64, Arc<ChatItem>>>,
+    pending_contents: BTreeMap<ChatContentKey, BTreeMap<u64, Arc<ChatContent>>>,
 }
 
 impl TimelineState {
-    /// 补发必须从下边界后的最早记录取连续前缀。
-    pub(crate) fn pending_after(&self, after: u64, ceiling: u64, max: usize) -> Vec<Arc<ChatItem>> {
-        self.pending
-            .range((
-                std::ops::Bound::Excluded(after),
-                std::ops::Bound::Included(ceiling),
-            ))
-            .take(max)
-            .map(|(_, record)| record.clone())
-            .collect()
-    }
-
-    /// 范围内最新的至多 `max` 条 pending 引用；调用方在锁外合并，顺序由合并方决定。
-    pub(crate) fn pending_window(
+    /// Select membership before iteration; hidden pending entries are never visited.
+    pub(crate) fn pending_index(
         &self,
-        lower_exclusive: u64,
-        upper_inclusive: u64,
-        max: usize,
-    ) -> Vec<Arc<ChatItem>> {
-        self.pending
-            .range((
-                std::ops::Bound::Excluded(lower_exclusive),
-                std::ops::Bound::Included(upper_inclusive),
-            ))
-            .rev()
-            .take(max)
-            .map(|(_, record)| record.clone())
-            .collect()
+        query: Option<&ChatQuery>,
+    ) -> Option<&BTreeMap<u64, Arc<ChatItem>>> {
+        match query {
+            None => Some(&self.pending),
+            Some(ChatQuery {
+                query_class,
+                parent_id: None,
+            }) => self.by_class.get(query_class),
+            Some(ChatQuery {
+                query_class,
+                parent_id: Some(parent),
+            }) => self
+                .by_parent_class
+                .get(&(parent.clone(), query_class.clone())),
+        }
     }
 
     /// The pending record of one identity, if it is still awaiting its durable confirmation.
     pub(crate) fn pending_record(&self, item_id: &str) -> Option<Arc<ChatItem>> {
         let seq = self.pending_ids.get(item_id)?;
         self.pending.get(seq).cloned()
+    }
+
+    pub(crate) fn pending_content(&self, key: &ChatContentKey) -> Option<Arc<ChatContent>> {
+        self.pending_contents
+            .get(key)?
+            .first_key_value()
+            .map(|(_, content)| content.clone())
+    }
+
+    fn insert(&mut self, record: Arc<ChatItem>) {
+        let header = &record.header;
+        self.pending_ids
+            .insert(header.item_id.clone(), header.append_seq);
+        self.by_class
+            .entry(header.query_class.clone())
+            .or_default()
+            .insert(header.append_seq, record.clone());
+        if let Some(parent) = &header.parent_id {
+            self.by_parent_class
+                .entry((parent.clone(), header.query_class.clone()))
+                .or_default()
+                .insert(header.append_seq, record.clone());
+        }
+        for (key, content) in record.contents.iter() {
+            self.pending_contents
+                .entry(key.clone())
+                .or_default()
+                .insert(header.append_seq, content.clone());
+        }
+        self.pending.insert(header.append_seq, record);
+    }
+
+    fn remove_indexes(&mut self, record: &ChatItem) {
+        let header = &record.header;
+        self.pending_ids.remove(&header.item_id);
+        if let Some(index) = self.by_class.get_mut(&header.query_class) {
+            index.remove(&header.append_seq);
+            if index.is_empty() {
+                self.by_class.remove(&header.query_class);
+            }
+        }
+        if let Some(parent) = &header.parent_id {
+            let key = (parent.clone(), header.query_class.clone());
+            if let Some(index) = self.by_parent_class.get_mut(&key) {
+                index.remove(&header.append_seq);
+                if index.is_empty() {
+                    self.by_parent_class.remove(&key);
+                }
+            }
+        }
+        for key in record.contents.keys() {
+            if let Some(index) = self.pending_contents.get_mut(key) {
+                index.remove(&header.append_seq);
+                if index.is_empty() {
+                    self.pending_contents.remove(key);
+                }
+            }
+        }
     }
 }
 
@@ -181,6 +232,9 @@ impl Session {
             .seq_seed
             .get_or_try_init(|| self.0.history.latest_append_seq())
             .await?;
+        if *seed > i64::MAX as u64 {
+            return Err(ChatError::SeqExhausted);
+        }
         let mut state = self.lock_timeline();
         if !state.initialized {
             state.head = state.head.max(*seed);
@@ -237,6 +291,23 @@ impl Session {
                     None => fresh.push(draft),
                 }
             }
+            // Content owners can outlive the item that first introduced them. Reclaiming pending
+            // must not make a durable key available for different bytes. Validate each unique key
+            // outside the Session lock, then recheck D and pending below before any publication.
+            let mut durable_contents = BTreeMap::new();
+            for draft in &fresh {
+                for (key, content) in draft.contents.iter() {
+                    if durable_contents
+                        .insert(key, content)
+                        .is_some_and(|old| old != content)
+                    {
+                        return Err(ChatError::Conflict(key.key.clone()));
+                    }
+                }
+            }
+            for content in durable_contents.values() {
+                self.0.history.validate_content(content).await?;
+            }
             // Pass 3 (one short critical section): a concurrent publish may have admitted one of these
             // identities between the passes, so the re-resolution, the sequence assignment and the
             // insertion all happen under the same lock — the batch becomes visible atomically.
@@ -265,20 +336,26 @@ impl Session {
                 .checked_add(additions)
                 .filter(|head| *head <= i64::MAX as u64)
                 .ok_or(ChatError::SeqExhausted)?;
+            // Validate shared content identities before mutating any index.
+            let mut content_keys = BTreeMap::new();
+            for draft in &to_publish {
+                for (key, content) in draft.contents.iter() {
+                    if state
+                        .pending_content(key)
+                        .is_some_and(|old| old != *content)
+                        || content_keys
+                            .insert(key, content)
+                            .is_some_and(|old| old != content)
+                    {
+                        return Err(ChatError::Conflict(key.key.clone()));
+                    }
+                }
+            }
             let mut seq = state.head;
             for draft in to_publish {
                 seq += 1;
-                let record = Arc::new(ChatItem::complete(ChatItemParts {
-                    item_id: draft.item_id.clone(),
-                    turn_id: draft.turn_id.clone(),
-                    append_seq: seq,
-                    source_effect_seq: draft.source_effect_seq,
-                    sealed_at: draft.sealed_at,
-                    fields: draft.fields,
-                    meta: draft.meta,
-                }));
-                state.pending_ids.insert(record.item_id.clone(), seq);
-                state.pending.insert(seq, record.clone());
+                let record = Arc::new(ChatItem::complete(draft, seq));
+                state.insert(record.clone());
                 records.push(record);
             }
             if seq > state.head {
@@ -288,7 +365,7 @@ impl Session {
                 // part of the same atomic publication.
                 self.0.changed.send_replace(seq);
             }
-            records.sort_by_key(|record| record.append_seq);
+            records.sort_by_key(|record| record.header.append_seq);
             return Ok(Arc::from(records));
         }
     }
@@ -343,7 +420,7 @@ impl Session {
             .collect();
         for seq in reclaimed {
             if let Some(record) = state.pending.remove(&seq) {
-                state.pending_ids.remove(record.item_id.as_str());
+                state.remove_indexes(&record);
             }
         }
         Ok(())
@@ -356,19 +433,67 @@ impl Session {
 /// the same identity with a different payload fails the whole batch before anything is published.
 fn collapse_batch(batch: Vec<ChatDraft>) -> Result<Vec<ChatDraft>, ChatError> {
     let mut collapsed: Vec<ChatDraft> = Vec::with_capacity(batch.len());
+    let mut positions = BTreeMap::new();
     for draft in batch {
-        if draft.item_id.is_empty() {
-            return Err(ChatError::InvalidArgument(
-                "chat draft carries an empty item id".to_owned(),
-            ));
-        }
-        if let Some(existing) = collapsed.iter().find(|kept| kept.item_id == draft.item_id) {
-            if *existing != draft {
+        draft.validate()?;
+        if let Some(&position) = positions.get(&draft.item_id) {
+            if collapsed[position] != draft {
                 return Err(ChatError::Conflict(draft.item_id));
             }
             continue;
         }
+        positions.insert(draft.item_id.clone(), collapsed.len());
         collapsed.push(draft);
     }
     Ok(collapsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_selection_borrows_the_membership_index_not_the_global_pending_collection() {
+        let mut state = TimelineState::default();
+        let parent = ChatKey::new("call", "one").unwrap();
+        let query = ChatQuery::new("activity", Some(parent.clone()));
+        let mut chosen = ChatDraft::new("chosen", "activity", Arc::from([1]));
+        chosen.parent_id = Some(parent);
+        let chosen = Arc::new(ChatItem::complete(chosen, 1));
+        state.insert(chosen.clone());
+        for seq in 2..=8193 {
+            state.insert(Arc::new(ChatItem::complete(
+                ChatDraft::new(format!("hidden-{seq}"), "activity", Arc::from([2])),
+                seq,
+            )));
+        }
+        let index = state.pending_index(Some(&query)).unwrap();
+        assert_eq!(
+            index.len(),
+            1,
+            "the iteration source itself excludes hidden items"
+        );
+        assert!(Arc::ptr_eq(index.first_key_value().unwrap().1, &chosen));
+        assert_eq!(
+            state
+                .pending_index(Some(&ChatQuery::new("activity", None)))
+                .unwrap()
+                .len(),
+            8193
+        );
+        let class_index = state.by_class.get("activity").unwrap();
+        assert!(std::ptr::eq(
+            state
+                .pending_index(Some(&ChatQuery::new("activity", None)))
+                .unwrap(),
+            class_index,
+        ));
+        state.pending.remove(&1);
+        state.remove_indexes(&chosen);
+        assert!(
+            state.pending_index(Some(&query)).is_none(),
+            "commit removes empty scope indexes"
+        );
+        assert!(state.pending_record("chosen").is_none());
+    }
 }

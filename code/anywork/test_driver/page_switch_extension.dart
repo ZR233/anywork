@@ -70,7 +70,7 @@ class PageSwitchCommandExtension extends CommandExtension {
           openingAttempt = content?.currentAttemptId?.value;
           openingAtReturn =
               opening?.threadId == request.destinationThreadId &&
-              content?.state.value is ChatOpening<ConversationContentFrame> &&
+              content?.state.value is ChatOpening<ChatBatch> &&
               openingAttempt != null &&
               content!.ownedAttemptCount > 0;
           if (!openingAtReturn) {

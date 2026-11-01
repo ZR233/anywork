@@ -1,7 +1,7 @@
 //! 只读历史访问与 checkpoint 栅栏。
 //!
-//! 为 Turns 历史和 Timeline 内容打开一个已落盘且越过 checkpoint 栅栏的 history 句柄。Timeline 正文本身
-//! 由 [`super::timeline_content`] 统一读取，不再有第二套纯 SQL 正文入口。
+//! 为执行历史和回执查询打开越过 durable checkpoint 栅栏的 history 句柄。
+//! Chat 完成记录另走按需 conversation 读取，不以本栅栏替代其 pending 与 SQLite 切点。
 use super::StudioRuntime;
 use crate::studio::storage::history::HistoryStore;
 use anyhow::Result;

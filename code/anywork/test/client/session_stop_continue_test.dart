@@ -1,3 +1,5 @@
+import 'support/chat_fixtures.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,11 +32,12 @@ void main() {
     await client.bootstrap();
     // Demo's root session; bootstrap only loads the directory and settings.
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
     // The saved model route is the CAS baseline of an explicit continue.
-    await session.source.waitFor((state) => state.runtime?.modelRoute != null);
+    await session.source.waitFor((state) => state.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
       const StudioPromptInput(
@@ -42,7 +45,7 @@ void main() {
         text: 'run the demo task',
         attachmentDraftIds: [],
       ),
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);
     final execution = session.state.runtime!.execution!;
@@ -77,7 +80,7 @@ void main() {
     final continued = await client.threadCommands.continueThread(
       threadId,
       point,
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     expect(continued.threadId, threadId);
     expect(
@@ -118,10 +121,11 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
-    await session.source.waitFor((state) => state.runtime?.modelRoute != null);
+    await session.source.waitFor((state) => state.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
       const StudioPromptInput(
@@ -129,7 +133,7 @@ void main() {
         text: 'run the demo task',
         attachmentDraftIds: [],
       ),
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);
     await client.threadCommands.stop(threadId);
@@ -141,7 +145,7 @@ void main() {
     final continued = await client.threadCommands.continueThread(
       threadId,
       point,
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);
     // 演示的准入发生在准备延迟之后：在有限预算内观察同一事实，不用固定等待。
@@ -179,10 +183,11 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
-    await session.source.waitFor((state) => state.runtime?.modelRoute != null);
+    await session.source.waitFor((state) => state.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
       const StudioPromptInput(
@@ -190,7 +195,7 @@ void main() {
         text: 'run the demo task',
         attachmentDraftIds: [],
       ),
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);
     await client.threadCommands.stop(threadId);
@@ -198,7 +203,7 @@ void main() {
       (state) => state.runtime?.continuation != null,
     );
     final point = client.threadCommands.continuation(threadId)!;
-    final revision = session.state.runtime!.modelRoute!.revision;
+    final revision = session.state.modelRoute!.revision;
 
     const operation = OperationId('op-identity');
     await transport.continueThread(
@@ -235,10 +240,11 @@ void main() {
     addTearDown(() => _closeGraph(graph, transport));
     await client.bootstrap();
     const threadId = 'thread-main';
+    graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     await client.directoryCommands.selectThread(threadId);
     final session = client.conversations.session(threadId);
-    await session.source.waitFor((state) => state.runtime?.modelRoute != null);
+    await session.source.waitFor((state) => state.modelRoute != null);
     await client.threadCommands.submitComposer(
       threadId,
       const StudioPromptInput(
@@ -246,7 +252,7 @@ void main() {
         text: 'run the demo task',
         attachmentDraftIds: [],
       ),
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);
     await client.threadCommands.stop(threadId);
@@ -258,7 +264,7 @@ void main() {
     final continued = await transport.continueThread(
       threadId,
       point.id,
-      expectedModelRouteRevision: session.state.runtime!.modelRoute!.revision,
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
       operationId: const OperationId('op-early-stop'),
     );
     await session.source.waitFor((state) => state.runtime?.execution != null);

@@ -97,7 +97,7 @@ impl Turn {
 }
 
 /// Turn 执行期间的可展示活动阶段。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TurnPhase {
     Preparing,

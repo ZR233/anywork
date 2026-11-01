@@ -3,6 +3,7 @@ use super::{StudioThreadSpec, ThreadAssemblyError};
 use crate::resource_store::FileResourceStore;
 use pl_core::{
     context::{OpaquePayload, ResourceAccess},
+    model::ToolPresentationContract,
     tool::opaque::Registration,
 };
 use pl_tool::{
@@ -261,6 +262,9 @@ impl StudioThreadTools {
                                 pl_model::runtime::thread_tool_declaration(&spec)?,
                                 tool,
                             )?
+                            .with_presentation_contract(ToolPresentationContract::new(
+                                remote_mutation_presentation_contract(kind),
+                            ))
                             .with_authorization(workspace.authorization()),
                         );
                     }
@@ -290,11 +294,14 @@ impl StudioThreadTools {
             pl_tool::task_control::ListTasksTool
                 .registration(declaration(ThreadBuiltin::ListTasks)?)?,
         );
-        registrations.push(Registration::new(
-            "sleep".into(),
-            declaration(ThreadBuiltin::Sleep)?,
-            pl_tool::session::SleepTool,
-        )?);
+        registrations.push(
+            Registration::new(
+                "sleep".into(),
+                declaration(ThreadBuiltin::Sleep)?,
+                pl_tool::session::SleepTool,
+            )?
+            .with_presentation_contract(ToolPresentationContract::new("builtin.sleep@1")),
+        );
         for kind in [
             TaskControlKind::Wait,
             TaskControlKind::Query,
@@ -509,6 +516,17 @@ fn declaration(tool: ThreadBuiltin) -> Result<OpaquePayload, ThreadAssemblyError
     )?)
 }
 
+fn remote_mutation_presentation_contract(
+    kind: pl_tool::remote::RemoteMutationKind,
+) -> &'static str {
+    match kind {
+        pl_tool::remote::RemoteMutationKind::CreateDirectory => "builtin.create_directory@1",
+        pl_tool::remote::RemoteMutationKind::Delete => "builtin.delete_path@1",
+        pl_tool::remote::RemoteMutationKind::Copy => "builtin.copy_path@1",
+        pl_tool::remote::RemoteMutationKind::Move => "builtin.move_path@1",
+    }
+}
+
 fn local_mutation_tools(
     workspace: pl_tool::workspace::ToolWorkspace,
 ) -> Result<Vec<Registration>, ThreadAssemblyError> {
@@ -520,24 +538,28 @@ fn local_mutation_tools(
             declaration(ThreadBuiltin::CreateDirectory)?,
             CreateDirectoryTool::new(workspace.clone()),
         )?
+        .with_presentation_contract(ToolPresentationContract::new("builtin.create_directory@1"))
         .with_authorization(authority.clone()),
         Registration::new(
             "delete_path".into(),
             declaration(ThreadBuiltin::DeletePath)?,
             DeletePathTool::new(workspace.clone()),
         )?
+        .with_presentation_contract(ToolPresentationContract::new("builtin.delete_path@1"))
         .with_authorization(authority.clone()),
         Registration::new(
             "copy_path".into(),
             declaration(ThreadBuiltin::CopyPath)?,
             CopyPathTool::new(workspace.clone()),
         )?
+        .with_presentation_contract(ToolPresentationContract::new("builtin.copy_path@1"))
         .with_authorization(authority.clone()),
         Registration::new(
             "move_path".into(),
             declaration(ThreadBuiltin::MovePath)?,
             MovePathTool::new(workspace),
         )?
+        .with_presentation_contract(ToolPresentationContract::new("builtin.move_path@1"))
         .with_authorization(authority),
     ])
 }

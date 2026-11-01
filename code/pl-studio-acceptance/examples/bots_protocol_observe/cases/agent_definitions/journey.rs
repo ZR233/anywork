@@ -1,4 +1,8 @@
 use super::{Observation, config, http, saved, sqlite, wire};
+use crate::cases::replies::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, chat_payload, chat_turn_outcome,
+    content_bytes,
+};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
     AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
@@ -6,7 +10,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ThreadContentField, ThreadStatus, TimelineDescriptor};
+use pl_protocol::{ChatScope, ContentRef, ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -384,14 +388,19 @@ impl Observation<'_> {
             "bot:{bot}:{DIRECT_CHAT_ID}:{}",
             message_id(AgentPhase::ColdFeishu)
         );
-        let before_cold = self.session.http()?.read_timeline(&feishu, 100).await?;
+        let cold_deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+        let mut cold_remaining = CHAT_OBSERVATION_BYTES;
+        let (_, before_cold) = cold_main_chat(
+            self.session.http()?,
+            &feishu,
+            &mut cold_remaining,
+            cold_deadline,
+        )
+        .await?;
         ensure!(
-            !before_cold.items.iter().any(|item| {
-                matches!(
-                    &item.descriptor,
-                    TimelineDescriptor::Turn(turn)
-                        if turn.input_id.as_deref() == Some(cold_input.as_str())
-                )
+            !before_cold.iter().any(|payload| {
+                payload["type"] == "turn"
+                    && payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             }),
             "cold platform input already existed before this inbound"
         );
@@ -407,46 +416,89 @@ impl Observation<'_> {
                 && cold_binding[0].creation_id == direct[0].creation_id,
             "cold inbound changed original bot/chat Thread binding"
         );
-        let cold_timeline = self.session.http()?.read_timeline(&feishu, 100).await?;
+        let cold_deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+        let (cold_read, cold_timeline) = cold_main_chat(
+            self.session.http()?,
+            &feishu,
+            &mut cold_remaining,
+            cold_deadline,
+        )
+        .await?;
         let cold_turns = cold_timeline
-            .items
             .iter()
-            .filter(|item| {
-                matches!(
-                    &item.descriptor,
-                    TimelineDescriptor::Turn(turn)
-                        if turn.input_id.as_deref() == Some(cold_input.as_str())
-                            && matches!(
-                                &turn.outcome,
-                                pl_protocol::TimelineTurnOutcome::Completed(_)
-                            )
-                )
+            .filter(|payload| {
+                payload["type"] == "turn"
+                    && payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             })
             .collect::<Vec<_>>();
         ensure!(
             cold_turns.len() == 1,
             "original Feishu Thread has no unique completed Turn for current platform message"
         );
-        let cold_turn = cold_turns[0]
-            .header
-            .turn_id
-            .as_deref()
-            .context("completed cold input Turn has no Turn identity")?;
-        let has_text = |channel, expected: &str| {
-            cold_timeline.items.iter().any(|item| {
-                item.header.turn_id.as_deref() == Some(cold_turn)
-                    && matches!(&item.descriptor, TimelineDescriptor::Text(text) if text.channel == channel)
-                    && item.fields.iter().any(|field| field.field == ThreadContentField::Text && field.text == expected)
-            })
-        };
         ensure!(
-            has_text(
-                pl_protocol::ThreadTextChannel::User,
-                AgentPhase::ColdFeishu.marker()
-            ) && has_text(
-                pl_protocol::ThreadTextChannel::Final,
-                "Agent observation ColdFeishu complete."
-            ),
+            matches!(chat_turn_outcome(cold_turns[0])?, TurnState::Completed(_)),
+            "current platform input Turn did not complete successfully"
+        );
+        let cold_turn = cold_turns[0]["turnId"]
+            .as_str()
+            .context("completed cold input Turn has no Turn identity")?;
+        let mut user_marker = false;
+        let mut final_marker = false;
+        for payload in &cold_timeline {
+            if payload["type"] != "text" || payload["turnId"].as_str() != Some(cold_turn) {
+                continue;
+            }
+            let channel = payload["data"]["channel"]
+                .as_str()
+                .context("cold text omitted channel")?;
+            ensure!(
+                matches!(channel, "user" | "commentary" | "final" | "parentAgent"),
+                "unknown cold text channel {channel}"
+            );
+            if !matches!(channel, "user" | "final") {
+                continue;
+            }
+            let mut bodies = payload["bodies"]
+                .as_array()
+                .context("cold text omitted bodies")?
+                .iter()
+                .filter(|body| body["key"] == "body");
+            let body = bodies.next().context("cold text omitted its text body")?;
+            ensure!(
+                bodies.next().is_none(),
+                "cold text has duplicate body manifests"
+            );
+            let length = body["byteLength"]
+                .as_u64()
+                .context("cold text omitted byteLength")?;
+            let bytes = match (body.get("inline"), body.get("reference")) {
+                (Some(inline), None) => {
+                    let bytes: Vec<u8> = serde_json::from_value(inline.clone())?;
+                    ensure!(
+                        bytes.len() as u64 == length,
+                        "cold inline text length mismatch"
+                    );
+                    bytes
+                }
+                (None, Some(reference)) => {
+                    let reference: ContentRef = serde_json::from_value(reference.clone())?;
+                    content_bytes(
+                        &cold_read,
+                        &reference,
+                        length,
+                        &mut cold_remaining,
+                        cold_deadline,
+                    )
+                    .await?
+                }
+                _ => bail!("cold text must contain exactly one inline body or reference"),
+            };
+            let text = String::from_utf8(bytes).context("cold text body is not UTF-8")?;
+            user_marker |= channel == "user" && text == AgentPhase::ColdFeishu.marker();
+            final_marker |= channel == "final" && text == "Agent observation ColdFeishu complete.";
+        }
+        ensure!(
+            user_marker && final_marker,
             "current original-Thread input/Final does not bind the actual cold request marker"
         );
         self.write("agent-definition-cold-feishu-timeline.json", &cold_timeline)?;
@@ -482,9 +534,8 @@ impl Observation<'_> {
             "submit {phase:?} while previous Turn is active"
         );
         let route = snapshot
-            .runtime
+            .model_route
             .as_ref()
-            .and_then(|runtime| runtime.model_route.as_ref())
             .context("public root route revision missing")?;
         let reply = self
             .session
@@ -511,37 +562,68 @@ impl Observation<'_> {
 
     pub(super) async fn wait_complete(&self, id: &str, phase: AgentPhase) -> Result<()> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
-        let input_id = input(phase).input_id;
-        loop {
-            let page = self.session.http()?.read_timeline(id, 100).await?;
-            for item in &page.items {
-                if let TimelineDescriptor::Turn(turn) = &item.descriptor
-                    && turn.input_id.as_deref() == Some(input_id.as_str())
-                {
-                    let turn_id = item.header.turn_id.as_deref().with_context(|| {
-                        format!("Agent phase {phase:?} Turn has no canonical identity")
-                    })?;
-                    match &turn.outcome {
-                        pl_protocol::TimelineTurnOutcome::Completed(_) => {
-                            let snapshot = self.session.http()?.read_thread(id).await?;
-                            if snapshot.active_turn.is_none()
-                                && snapshot.thread.status == ThreadStatus::Idle
-                            {
-                                return Ok(());
+        tokio::time::timeout_at(deadline.into(), async {
+            let input_id = input(phase).input_id;
+            let mut remaining = CHAT_OBSERVATION_BYTES;
+            loop {
+                let (read, mut page) = self
+                    .session
+                    .http()?
+                    .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                    .await?;
+                let mut seen = std::collections::HashSet::new();
+                'pages: for _ in 0..256 {
+                    charge_chat_batch(&page, &mut remaining)?;
+                    for message in &page.messages {
+                        let payload =
+                            chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+                        if payload["type"] != "turn" {
+                            continue;
+                        }
+                        let outcome = chat_turn_outcome(&payload)?;
+                        let canonical_input = payload["data"]
+                            .get("inputId")
+                            .context("Turn omitted inputId")?;
+                        if canonical_input.as_str() != Some(input_id.as_str()) {
+                            continue;
+                        }
+                        let turn_id = payload["turnId"]
+                            .as_str()
+                            .context("Turn omitted identity")?;
+                        match outcome {
+                            TurnState::Completed(_) => {
+                                let snapshot = self.session.http()?.read_thread(id).await?;
+                                if snapshot.active_turn.is_none()
+                                    && snapshot.thread.status == ThreadStatus::Idle
+                                {
+                                    return Ok(());
+                                }
+                                break 'pages;
+                            }
+                            outcome => {
+                                bail!("Agent phase {phase:?} Turn {turn_id} failed: {outcome:?}")
                             }
                         }
-                        outcome => {
-                            bail!("Agent phase {phase:?} Turn {turn_id} failed: {outcome:?}")
-                        }
                     }
+                    let Some(before) = page.before.take() else {
+                        break;
+                    };
+                    ensure!(
+                        seen.insert(before.clone()),
+                        "Main continuation did not advance"
+                    );
+                    ensure!(seen.len() < 256, "Main Chat exceeded bounded page budget");
+                    page = read.load_older(&before, CHAT_DEMAND).await?;
                 }
+                ensure!(
+                    Instant::now() < deadline,
+                    "no complete canonical Turn for {phase:?}"
+                );
+                tokio::time::sleep(http::POLL).await;
             }
-            ensure!(
-                Instant::now() < deadline,
-                "no complete canonical Turn for {phase:?}"
-            );
-            tokio::time::sleep(http::POLL).await;
-        }
+        })
+        .await
+        .context("Agent completion observation exceeded its deadline")?
     }
 
     pub(super) async fn saved(&self, id: &str, label: &str) -> Result<saved::SavedEvidence> {
@@ -872,27 +954,152 @@ impl Observation<'_> {
             "root lacked actual spawn capability for refusal probe"
         );
         wire::output(&requests[1], &phase.action_call())?;
-        let page = self.session.http()?.read_timeline(id, 100).await?;
-        let tool = page
-            .items
-            .iter()
-            .filter_map(|item| match &item.descriptor {
-                TimelineDescriptor::Tool(tool) => Some(tool),
-                _ => None,
-            })
-            .find(|tool| tool.invocation.tool_call_id == phase.action_call())
-            .context("rejected real tool item missing")?;
-        ensure!(
-            matches!(
-                tool.state,
-                pl_protocol::TimelineToolState::Failed { .. }
-                    | pl_protocol::TimelineToolState::Denied { .. }
-            ),
-            "forbidden spawn was not rejected: {:?}",
-            tool.state
-        );
-        Ok(())
+        let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+        tokio::time::timeout_at(deadline.into(), async {
+            let mut remaining = CHAT_OBSERVATION_BYTES;
+            let (read, mut page) = self
+                .session
+                .http()?
+                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .await?;
+            let input_id = input(phase).input_id;
+            let mut seen = std::collections::HashSet::new();
+            let mut parent_id = None;
+            'main: for _ in 0..256 {
+                charge_chat_batch(&page, &mut remaining)?;
+                for message in &page.messages {
+                    let payload =
+                        chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+                    if payload["type"] == "turn"
+                        && payload["data"]["inputId"].as_str() == Some(input_id.as_str())
+                    {
+                        ensure!(
+                            matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),
+                            "refusal probe Turn did not complete"
+                        );
+                        parent_id = Some(
+                            payload["data"]["childrenParentId"]
+                                .as_str()
+                                .filter(|id| !id.is_empty())
+                                .context("Turn omitted childrenParentId")?
+                                .to_owned(),
+                        );
+                        break 'main;
+                    }
+                }
+                let Some(before) = page.before.take() else {
+                    break;
+                };
+                ensure!(
+                    seen.insert(before.clone()),
+                    "Main continuation did not advance"
+                );
+                ensure!(seen.len() < 256, "Main Chat exceeded bounded page budget");
+                page = read.load_older(&before, CHAT_DEMAND).await?;
+            }
+            let scope = ChatScope::Children {
+                parent_id: parent_id.context("refusal probe terminal Turn missing")?,
+            };
+            let (children, mut page) = self
+                .session
+                .http()?
+                .open_chat(id, scope, CHAT_DEMAND)
+                .await?;
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..256 {
+                charge_chat_batch(&page, &mut remaining)?;
+                for message in &page.messages {
+                    let payload =
+                        chat_payload(&children, &message.payload, &mut remaining, deadline).await?;
+                    if payload["type"] != "tool" {
+                        continue;
+                    }
+                    let call_id = payload["data"]["invocation"]["toolCallId"]
+                        .as_str()
+                        .context("completed tool omitted call identity")?;
+                    if call_id != phase.action_call() {
+                        continue;
+                    }
+                    let state = payload["data"]["state"]["kind"]
+                        .as_str()
+                        .context("completed tool omitted state")?;
+                    ensure!(
+                        matches!(state, "failed" | "denied"),
+                        "forbidden spawn was not rejected: {state}"
+                    );
+                    let metadata = &payload["data"]["state"];
+                    if state == "failed" {
+                        metadata["failedAt"]
+                            .as_i64()
+                            .context("failed spawn omitted failedAt")?;
+                        serde_json::from_value::<pl_protocol::ThreadToolFailure>(
+                            metadata
+                                .get("failure")
+                                .context("failed spawn omitted failure")?
+                                .clone(),
+                        )
+                        .context("failed spawn had invalid failure metadata")?;
+                    } else {
+                        metadata["deniedAt"]
+                            .as_i64()
+                            .context("denied spawn omitted deniedAt")?;
+                        metadata["reason"]
+                            .as_str()
+                            .context("denied spawn omitted reason")?;
+                    }
+                    return Ok(());
+                }
+                let Some(before) = page.before.take() else {
+                    break;
+                };
+                ensure!(
+                    seen.insert(before.clone()),
+                    "Children continuation did not advance"
+                );
+                ensure!(
+                    seen.len() < 256,
+                    "Children Chat exceeded bounded page budget"
+                );
+                page = children.load_older(&before, CHAT_DEMAND).await?;
+            }
+            bail!("rejected real tool item missing from its Turn's Children")
+        })
+        .await
+        .context("rejected tool observation exceeded its deadline")?
     }
+}
+
+/// Cold absence/uniqueness requires exhausting this original Main cut. Other
+/// probes stop at their named Turn instead of prefetching the complete history.
+async fn cold_main_chat(
+    http: &http::StudioHttp,
+    id: &str,
+    remaining: &mut usize,
+    deadline: Instant,
+) -> Result<(http::ChatRead, Vec<serde_json::Value>)> {
+    tokio::time::timeout_at(deadline.into(), async {
+        let (read, mut page) = http.open_chat(id, ChatScope::Main, CHAT_DEMAND).await?;
+        let mut payloads = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            charge_chat_batch(&page, remaining)?;
+            for message in &page.messages {
+                let payload = chat_payload(&read, &message.payload, remaining, deadline).await?;
+                payloads.push(payload);
+            }
+            let Some(before) = page.before.take() else {
+                return Ok((read, payloads));
+            };
+            ensure!(
+                seen.insert(before.clone()),
+                "cold Main continuation did not advance"
+            );
+            page = read.load_older(&before, CHAT_DEMAND).await?;
+        }
+        bail!("cold Main cut exceeded bounded pages; absence/uniqueness is unproven")
+    })
+    .await
+    .context("cold Main observation exceeded its deadline")?
 }
 
 fn input(phase: AgentPhase) -> StudioPromptInput {
