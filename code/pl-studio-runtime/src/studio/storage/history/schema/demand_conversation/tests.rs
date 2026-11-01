@@ -64,6 +64,84 @@ async fn source() -> Result<(tempfile::TempDir, DatabaseConnection)> {
     Ok((dir, db))
 }
 
+/// Explicit observation, not a machine-sensitive timing gate in the normal suite.
+/// Fixture setup and the data-preservation audit are outside the measured interval.
+#[tokio::test]
+#[ignore = "explicit nonempty migration cost observation"]
+async fn nonempty_schema11_migration_cost_is_separate_from_current_reads() -> Result<()> {
+    use sea_orm::TransactionTrait as _;
+    for count in [100_u64, 20_000] {
+        let (_dir, db) = source().await?;
+        let tx = db.begin().await?;
+        for seq in 1..=count {
+            let id = format!("old-{seq}");
+            let kind = if seq % 2 == 0 { "tool" } else { "text" };
+            tx.execute_raw(statement(
+                "INSERT INTO timeline_records(append_seq,record_id,turn_id,kind,payload)
+                 VALUES(?,?,'a:b',?,?)",
+                vec![
+                    integer(seq)?.into(),
+                    id.clone().into(),
+                    kind.into(),
+                    record(&id, seq, kind)?.into(),
+                ],
+            ))
+            .await?;
+        }
+        tx.commit().await?;
+        assert_eq!(version(&db).await?, 11);
+        let started = std::time::Instant::now();
+        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        let migration_us = started.elapsed().as_micros();
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        assert_eq!(conversation::latest_append_seq(&db).await?, count);
+        let mismatch: i64 = db
+            .query_one_raw(statement(
+                "SELECT count(*) AS n FROM timeline_records old
+                 LEFT JOIN conversation_items new ON new.seq=old.append_seq
+                 WHERE new.item_id IS NULL OR new.item_id<>old.record_id
+                    OR new.query_class<>CASE WHEN old.kind='tool' THEN 'activity' ELSE 'conversation' END",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get("", "n")?;
+        assert_eq!(mismatch, 0);
+        for seq in [1, count] {
+            let item = conversation::read_item(&db, &format!("old-{seq}"))
+                .await?
+                .unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&item.payload)?;
+            assert_eq!(payload["data"]["oldUnknown"]["opaque"], "原文 🦀");
+            let content = item
+                .contents
+                .values()
+                .find(|content| content.descriptor.key.key == "tool.result")
+                .unwrap();
+            assert_eq!(
+                content
+                    .data
+                    .range(0, content.descriptor.byte_length as usize)?
+                    .as_bytes(),
+                "公开原文 🦀".as_bytes()
+            );
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "observation": "schema11_to_current",
+                "sourceRows": count,
+                "sourceSchema": 11,
+                "targetSchema": HISTORY_SCHEMA_VERSION,
+                "migrationMicros": migration_us,
+                "identityOrScopeMismatches": mismatch,
+            })
+        );
+        db.close().await?;
+    }
+    Ok(())
+}
+
 fn record(id: &str, seq: u64, kind: &str) -> Result<String> {
     Ok(serde_json::to_string(&serde_json::json!({
         "itemId":id,"appendSeq":seq,"turnId":"a:b","sourceEffectSeq":null,"sealedAt":null,

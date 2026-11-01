@@ -2999,6 +2999,12 @@ impl ColdStore for ThreadStorageSink {
     }
 
     async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id,
+            flush_requests = 1,
+            "thread flush requested"
+        );
         if thread_id != self.0.thread.id {
             return Err(ColdStoreError {
                 source: Box::new(std::io::Error::other("Thread persistence owner mismatch")),

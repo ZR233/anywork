@@ -57,12 +57,21 @@ impl std::fmt::Debug for ConversationFeed {
 }
 
 impl StudioRuntime {
+    #[tracing::instrument(
+        target = "conversation_work", level = "debug", name = "conversation_read",
+        skip_all,
+        fields(operation = "open", thread_id = thread_id, trace_id, max_items = demand.max_items, max_bytes = demand.max_bytes)
+    )]
     pub async fn open_conversation_feed(
         &self,
         thread_id: &str,
         scope: ChatScope,
         demand: ReadDemand,
     ) -> Result<ConversationFeed> {
+        let id = crate::studio::ids::new_id("conversation");
+        tracing::Span::current().record("trace_id", &id);
+        let started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", "read started");
         core_demand(demand)?;
         let scope_query = query(&scope)?;
         // This is deliberately before every IO, including thread/catalog reads.
@@ -78,7 +87,6 @@ impl StudioRuntime {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let history = self.store.history(thread_id).await?;
-        let id = crate::studio::ids::new_id("conversation");
         let main = matches!(scope, ChatScope::Main);
         let mut cuts = None;
         let mut progress = None;
@@ -174,6 +182,12 @@ impl StudioRuntime {
                 page.before.map(|cursor| cursor.append_seq),
             )
         } else {
+            tracing::debug!(
+                target: "conversation_work",
+                pending_candidates = 0,
+                pending_returned = 0,
+                "cold source has no pending owner"
+            );
             // Current stores pass only the read-only gate. Supported old content is prepared by
             // HistoryStore's original migration barrier, never by activating an execution owner.
             history.prepare_conversation_read().await?;
@@ -253,6 +267,12 @@ impl StudioRuntime {
             current: current.clone(),
         };
         let initial = reader.finish_batch(initial, demand)?;
+        tracing::debug!(
+            target: "conversation_work",
+            returned = initial.messages.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "read completed"
+        );
         let mut pending = VecDeque::new();
         // Other domains remain State. Current bodies and activity are exclusively Chat.current.
         let runtime_source = position.source.as_ref().and_then(|source| source.runtime());

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import '../../../models.dart';
 import '../../../conversation_ports.dart';
@@ -314,7 +315,18 @@ final class ConversationContentImpl implements ConversationContent {
   /// The sole admission queue for State, streamed Chat and query Chat. Query IO
   /// starts before entering this queue, so a consumer await never blocks reads.
   Future<void> _enqueue(_Attempt a, Future<void> Function() operation) {
-    final work = a.serial.then((_) => operation());
+    final queued = Stopwatch()..start();
+    final work = a.serial.then((_) {
+      developer.Timeline.instantSync(
+        'conversation.admission',
+        arguments: {
+          'threadId': threadId,
+          'subscriptionId': a.feed?.subscriptionId ?? '',
+          'queueWaitMicros': queued.elapsedMicroseconds,
+        },
+      );
+      return operation();
+    });
     // One failed operation must not leave unobserved errors on the queue tail.
     a.serial = work.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     a.pending.add(work);

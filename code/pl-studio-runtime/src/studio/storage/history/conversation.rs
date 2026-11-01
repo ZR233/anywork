@@ -200,11 +200,18 @@ pub(super) async fn page(
     });
     values.push(integer(request.demand.max_items)?.into());
     let rows = db.query_all_raw(statement(&sql, values)).await?;
+    tracing::debug!(
+        target: "conversation_work",
+        sql_candidates = rows.len(),
+        "SQL header selection"
+    );
     let natural_end = rows.len() < request.demand.max_items;
     let mut selected = Vec::with_capacity(rows.len());
     let mut bytes = request.demand.max_bytes;
     let mut exhausted = natural_end;
+    let mut header_decodes = 0;
     for row in &rows {
+        header_decodes += 1;
         let h = header(row)?;
         let Some(mode) = select_payload(&h, bytes, budget) else {
             exhausted = false;
@@ -264,5 +271,15 @@ pub(super) async fn page(
     if !ascending {
         items.reverse();
     }
+    tracing::debug!(
+        target: "conversation_work",
+        sql_returned = items.len(),
+        payload_bytes = items.iter().map(|item| match &item.payload {
+            PayloadData::Inline(bytes) => bytes.len(),
+            PayloadData::Deferred { .. } => 0,
+        }).sum::<usize>(),
+        header_decodes,
+        "SQL page completed"
+    );
     Ok(ChatHistoryPage { items, exhausted })
 }

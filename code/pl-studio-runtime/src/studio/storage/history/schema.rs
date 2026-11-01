@@ -206,7 +206,20 @@ pub(super) async fn prepare_with_bot_root(
             .count(),
         Preparation::ExecutionIdentity => pending.len(),
     };
-    if let Err(error) = migrator.up(db, Some(u32::try_from(steps)?)).await {
+    let steps = u32::try_from(steps)?;
+    let started = std::time::Instant::now();
+    let result = migrator.up(db, Some(steps)).await;
+    if steps > 0 {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id,
+            migration_steps = steps,
+            success = result.is_ok(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "history migration completed"
+        );
+    }
+    if let Err(error) = result {
         let pending = migrator
             .get_pending_migrations_read_only(db)
             .await
@@ -436,6 +449,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
             );
         }
     }
+    tracing::debug!(target: "conversation_work", quick_check = 1, "history integrity check");
     for row in db
         .query_all_raw(statement("PRAGMA quick_check", vec![]))
         .await?

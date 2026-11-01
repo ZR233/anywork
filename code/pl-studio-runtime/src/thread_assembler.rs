@@ -414,6 +414,12 @@ impl StudioThreadAssembler {
         mut spec: StudioThreadSpec,
         reservation: &Reservation,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = %spec.id,
+            tool_or_ssh_initialization = 1,
+            "execution resources requested"
+        );
         if spec.id != reservation.id {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }

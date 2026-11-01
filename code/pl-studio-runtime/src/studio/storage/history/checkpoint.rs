@@ -648,6 +648,12 @@ async fn read_with(
         ))
         .await?;
     ensure!(rows.len() == count, "current context record count mismatch");
+    tracing::debug!(
+        target: "conversation_work",
+        thread_id,
+        full_context_rows = rows.len(),
+        "execution context read"
+    );
     let mut records = Vec::with_capacity(count);
     for (ordinal, row) in rows.into_iter().enumerate() {
         let payload: String = row.try_get("", "payload")?;

@@ -11,6 +11,7 @@ struct Selection {
     records: Vec<(Arc<ChatItem>, PayloadMode)>,
     remaining: ReadDemand,
     exhausted: bool,
+    candidates: usize,
 }
 
 fn select_records<'a>(
@@ -22,11 +23,13 @@ fn select_records<'a>(
         records: Vec::new(),
         remaining: demand,
         exhausted: false,
+        candidates: 0,
     };
     for record in records {
         if selection.remaining.max_items == 0 || selection.remaining.max_bytes == 0 {
             return selection;
         }
+        selection.candidates += 1;
         let Some(mode) = select_payload(&record.header, selection.remaining.max_bytes, budget)
         else {
             return selection;
@@ -178,6 +181,7 @@ impl Session {
                     records: Vec::new(),
                     remaining: demand,
                     exhausted: true,
+                    candidates: 0,
                 }
             } else {
                 select_records(
@@ -193,6 +197,16 @@ impl Session {
             };
             Ok((head, state.durable.min(head), selection))
         })?;
+        tracing::debug!(
+            target: "conversation_work",
+            pending_candidates = selected.candidates,
+            pending_returned = selected.records.len(),
+            pending_payload_bytes = selected.records.iter()
+                .filter(|(_, mode)| *mode == PayloadMode::Inline)
+                .map(|(item, _)| item.payload.len())
+                .sum::<usize>(),
+            "pending selection"
+        );
         let pending_exhausted = selected.exhausted;
         let mut stored_exhausted = durable == 0;
         let mut stored_items = Vec::new();

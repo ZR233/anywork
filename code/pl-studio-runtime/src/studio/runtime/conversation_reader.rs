@@ -252,7 +252,17 @@ impl ConversationReader {
             token,
         ))
     }
+    #[tracing::instrument(
+        target = "conversation_work", level = "debug", name = "conversation_read",
+        skip_all,
+        fields(operation = "older", thread_id = self.thread_id(), lease_id = self.subscription_id(),
+            trace_id, max_items = demand.max_items, max_bytes = demand.max_bytes)
+    )]
     pub async fn load_older(&self, before: &str, demand: ReadDemand) -> Result<ChatBatch> {
+        let trace_id = crate::studio::ids::new_id("read");
+        tracing::Span::current().record("trace_id", &trace_id);
+        let started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", "read started");
         let guard = self.resources().await?;
         let r = guard.as_ref().ok_or_else(cancelled)?;
         let CursorKind::Before { boundary } = self.cursor(r, before)? else {
@@ -300,7 +310,14 @@ impl ConversationReader {
                 .transpose()?,
             current: None,
         };
-        self.finish_batch(batch, demand)
+        let batch = self.finish_batch(batch, demand)?;
+        tracing::debug!(
+            target: "conversation_work",
+            returned = batch.messages.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "read completed"
+        );
+        Ok(batch)
     }
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
         self.ensure()?;
@@ -450,6 +467,13 @@ impl ConversationReader {
         reference: &ContentRef,
         range: ContentRange,
     ) -> Result<ContentWindow> {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = self.thread_id(),
+            trace_id = self.subscription_id(),
+            content_range_requests = 1,
+            "content range started"
+        );
         ensure!(
             range.max_bytes > 0 && range.max_bytes <= CONTENT_WINDOW_MAX_BYTES,
             core::ChatError::InvalidDemand("invalid content range".into())
@@ -475,6 +499,11 @@ impl ConversationReader {
             {
                 let content = content.content();
                 let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
+                tracing::debug!(
+                    target: "conversation_work",
+                    thread_id = self.thread_id(), trace_id = self.subscription_id(),
+                    content_bytes = bytes.as_bytes().len(), "content range completed"
+                );
                 self.ensure()?;
                 return Ok(ContentWindow {
                     offset: range.offset,
@@ -509,6 +538,11 @@ impl ConversationReader {
                         .ok_or_else(stale)?;
                     let data = core::ContentData::Bytes(entry.payload.clone());
                     let bytes = data.range(range.offset, range.max_bytes as usize)?;
+                    tracing::debug!(
+                        target: "conversation_work",
+                        thread_id = self.thread_id(), trace_id = self.subscription_id(),
+                        content_bytes = bytes.as_bytes().len(), "content range completed"
+                    );
                     self.ensure()?;
                     return Ok(ContentWindow {
                         offset: range.offset,
@@ -543,6 +577,11 @@ impl ConversationReader {
             })
             .await?;
         self.ensure()?;
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = self.thread_id(), trace_id = self.subscription_id(),
+            content_bytes = window.bytes.as_bytes().len(), "content range completed"
+        );
         Ok(ContentWindow {
             offset: window.offset,
             bytes: window.bytes.as_bytes().to_vec(),

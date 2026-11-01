@@ -138,6 +138,14 @@ fn publish(
     if !post(frame) {
         return Publication::Disconnected;
     }
+    tracing::debug!(
+        target: "conversation_work",
+        thread_id = %owner.thread_id,
+        trace_id = %owner.subscription_id,
+        delivery_sequence = sequence,
+        frb_encoded_bytes = bytes,
+        "FRB frame posted"
+    );
     state.sent = sequence;
     state.inflight_bytes = bytes;
     Publication::Sent

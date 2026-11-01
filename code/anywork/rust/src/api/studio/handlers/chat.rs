@@ -105,7 +105,21 @@ impl BridgeConversationFeed {
             .load_older(&before, chat::demand(demand))
             .await?;
         self.inner.ensure_read_open()?;
-        Ok(chat::batch(batch))
+        let batch = chat::batch(batch);
+        if tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+            use crate::frb_generated::SseEncode as _;
+            let mut serializer = flutter_rust_bridge::for_generated::SseSerializer::new();
+            batch.clone().sse_encode(&mut serializer);
+            tracing::debug!(
+                target: "conversation_work",
+                thread_id = %self.inner.thread_id,
+                trace_id = %self.inner.subscription_id,
+                // A normal success uses the same SSE action byte as StreamSink::add.
+                frb_encoded_bytes = serializer.cursor.get_ref().len() + 1,
+                "FRB page returned"
+            );
+        }
+        Ok(batch)
     }
 
     pub async fn list_contents(

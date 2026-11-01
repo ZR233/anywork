@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
@@ -48,6 +50,15 @@ final class TimelineMessageController implements ConversationBatchConsumer {
       case ChatPlacement.append:
         if (messages.isNotEmpty) await controller.insertAllMessages(messages);
     }
+    developer.Timeline.instantSync(
+      'conversation.applied',
+      arguments: {
+        'generation': generation,
+        'placement': batch.placement.name,
+        'decodedItems': messages.length,
+        'controllerMessages': controller.messages.length,
+      },
+    );
   }
 
   void dispose() => _disposed = true;

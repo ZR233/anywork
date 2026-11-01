@@ -9,6 +9,12 @@ impl StudioRuntime {
         &self,
         id: &str,
     ) -> Result<pl_core::thread::ThreadHandle> {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = id,
+            execution_activation = 1,
+            "execution owner requested"
+        );
         // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
         // activation's inline future, while retaining this caller's cancellation ownership.
         Box::pin(self.verify_activation_preflight(id)).await?;

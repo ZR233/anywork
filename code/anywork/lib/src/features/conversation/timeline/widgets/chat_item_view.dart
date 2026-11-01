@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
@@ -109,6 +110,10 @@ class _ChatItemViewState extends State<ChatItemView> {
 
   @override
   Widget build(BuildContext context) {
+    developer.Timeline.instantSync(
+      'conversation.row.build',
+      arguments: {'itemId': item.id},
+    );
     if (item.reference case final reference?) {
       return _ContentRangeView(
         key: ValueKey('deferred:${item.id}'),
