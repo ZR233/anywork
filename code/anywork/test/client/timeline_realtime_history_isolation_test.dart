@@ -161,6 +161,8 @@ void main() {
           liveUsage: liveUsage,
         ),
         todo: null,
+        // 本帧只交付 runtime/用量事实，既有 route 必须原样带过，不清空。
+        modelRoute: session.state.modelRoute,
       ),
     );
     final runtimeAfter = session.state.runtime!;

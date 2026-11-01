@@ -167,6 +167,7 @@ void main() {
           phase: AgentExecutionPhase.running,
           turnId: 'settings-route-turn',
         ),
+        modelRoute: session.state.modelRoute,
       );
       await pumpClientUntil(
         tester,
@@ -797,18 +798,17 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   /// 发布一次 canonical 运行时投影，只用于给出该轮次的执行身份。
   ///
   /// 执行身份与轮次一样只能来自会话状态，不由活动快照或界面记忆推断。
+  /// 路由是独立的 Thread 状态领域，本帧只改 runtime，调用方显式给出当前
+  /// 路由，使既有 route 不被这一帧清空。
   ThreadRuntimeView emitExecution(
     ThreadRuntimeView current,
-    AgentExecutionView? execution,
-  ) {
+    AgentExecutionView? execution, {
+    required ThreadModelRouteView? modelRoute,
+  }) {
     final next = current.copyWith(execution: execution);
     return seedConversationState(
       'thread-main',
-      ThreadRuntimeUpdate(
-        runtime: next,
-        todo: null,
-        modelRoute: workspace.modelRoute,
-      ),
+      ThreadRuntimeUpdate(runtime: next, todo: null, modelRoute: modelRoute),
     ).runtime;
   }
 }

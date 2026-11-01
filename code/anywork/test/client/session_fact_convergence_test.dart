@@ -315,11 +315,7 @@ void main() {
 }
 
 int _routeRevision(ProviderContainer container, String threadId) =>
-    container
-        .read(threadSessionStoreProvider(threadId))
-        .runtime
-        ?.modelRoute
-        ?.revision ??
+    container.read(threadSessionStoreProvider(threadId)).modelRoute?.revision ??
     -1;
 
 AccountModelView? _modelFor(
