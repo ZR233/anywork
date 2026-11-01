@@ -1254,6 +1254,9 @@ async fn atomic_timeline_ddl_marker_and_backfill_roll_back_then_retry() -> Resul
         .await?
         .upsert_item(&db, 1, input.clone())
         .await?;
+    // Start at the supported metering-only boundary so the marker fault reaches the atomic
+    // migration itself, after it has created and backfilled timeline_records.
+    PublishedV10 { atomic: false }.up(&db, Some(1)).await?;
     db.execute_unprepared(
         "CREATE TRIGGER fail_atomic_marker BEFORE UPDATE OF schema_version ON history_meta
          WHEN NEW.schema_version=10
@@ -1264,7 +1267,8 @@ async fn atomic_timeline_ddl_marker_and_backfill_roll_back_then_retry() -> Resul
         .await
         .expect_err("schema marker failure must roll back the whole content step");
     assert!(format!("{error:#}").contains("injected atomic marker failure"));
-    assert_eq!(version(&db).await?, 9);
+    assert_eq!(version(&db).await?, 10);
+    assert!(applied(&db, METERING_FACTS).await?);
     assert!(
         !SchemaManager::new(&db)
             .has_table("timeline_records")
@@ -1318,7 +1322,8 @@ async fn atomic_timeline_conversion_failure_preserves_source_and_retries() -> Re
             .await
             .is_err()
     );
-    assert_eq!(version(&db).await?, 9);
+    assert_eq!(version(&db).await?, 10);
+    assert!(applied(&db, METERING_FACTS).await?);
     assert!(
         !SchemaManager::new(&db)
             .has_table("timeline_records")
