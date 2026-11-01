@@ -112,7 +112,7 @@ async fn retained(db: &DatabaseConnection) -> Result<Vec<String>> {
         "SELECT json_array(ordinal,record_id,payload,payload_hash) AS fact FROM current_context ORDER BY ordinal",
         "SELECT json_array(ordinal,item_id,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal",
         "SELECT json_array(append_seq,record_id,payload) AS fact FROM timeline_records ORDER BY append_seq",
-        "SELECT json_array(seq,item_id,payload) AS fact FROM conversation_items ORDER BY seq",
+        "SELECT json_array(seq,item_id,typeof(payload),hex(payload)) AS fact FROM conversation_items ORDER BY seq",
     ] {
         for row in db.query_all_raw(statement(sql, vec![])).await? {
             facts.push(row.try_get("", "fact")?);

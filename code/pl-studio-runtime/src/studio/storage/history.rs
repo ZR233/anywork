@@ -5082,8 +5082,8 @@ mod storage_fault_tests {
             .try_get("", "changes")?;
         assert_eq!(
             after - before,
-            137 * 4,
-            "each append only changes one context row, checkpoint, current, and watermark"
+            137 * 5,
+            "each append only changes one context row, checkpoint, current, route head, and watermark"
         );
         let database_bytes = tokio::fs::metadata(directory.path().join("history.sqlite"))
             .await?

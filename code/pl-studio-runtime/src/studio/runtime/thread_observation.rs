@@ -2790,7 +2790,7 @@ mod storage_fault_tests {
                 anyhow::ensure!(release.is_closed(), "cancelled read retained its gate");
             } else {
                 db.execute_unprepared(
-                    "ALTER TABLE timeline_records RENAME TO paused_timeline_records",
+                    "ALTER TABLE conversation_items RENAME TO paused_conversation_items",
                 )
                 .await?;
                 release
@@ -2799,7 +2799,7 @@ mod storage_fault_tests {
                 let failed = publishing.await;
                 // Restore the real database before checking the failure or resuming the owner.
                 db.execute_unprepared(
-                    "ALTER TABLE paused_timeline_records RENAME TO timeline_records",
+                    "ALTER TABLE paused_conversation_items RENAME TO conversation_items",
                 )
                 .await?;
                 anyhow::ensure!(

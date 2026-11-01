@@ -161,7 +161,7 @@ void main() {
     );
     expect(session.state.modelRoute, isNull);
 
-    await feed.deliver(
+    final staleSequence = feed.send(
       ConversationStateEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
@@ -176,9 +176,14 @@ void main() {
         ),
       ),
     );
+    // An old epoch requires resync and is not ACKed. Observe the original feed's retirement
+    // instead of waiting forever for the normal delivery acknowledgement.
+    await feed.requestCloseStarted.future;
+    await feed.closeCompleted.future;
+    expect(feed.acknowledgements, isNot(contains(staleSequence)));
     expect(session.state.modelRoute, isNull);
     expect(session.state.runtime!.completionTokens, 2);
-    await fixture.close();
+    expect((await fixture.close()).complete, isTrue);
   });
 
   test('combined feed preserves approved plan and independently advances state/content clocks', () async {

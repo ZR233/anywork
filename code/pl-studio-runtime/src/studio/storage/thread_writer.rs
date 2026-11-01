@@ -6782,10 +6782,20 @@ pub(crate) mod storage_fault_tests {
         projection
             .publish_prepared(&sink.0.chat, &mut prepared)
             .await?;
+        assert!(prepared.items.is_empty() && prepared.completions.is_empty());
+        // The real handoff also retains current metadata. Isolate the accounting charge without
+        // changing the batch submitted below, so omitting accounting still fails this assertion.
+        let mut accounting_only = prepared.clone();
+        accounting_only.current_state = None;
+        accounting_only.current_handoff = None;
         assert_eq!(
-            prepared.retained_bytes(),
-            prepared.accounting.retained_bytes(),
+            accounting_only.retained_bytes(),
+            accounting_only.accounting.retained_bytes(),
             "content-empty handoffs still own their prepared accounting"
+        );
+        assert!(
+            prepared.retained_bytes() > accounting_only.retained_bytes(),
+            "the original handoff also keeps its current metadata charged"
         );
         status.borrow_and_update();
         assert!(channel.prepare(prepared.clone()));

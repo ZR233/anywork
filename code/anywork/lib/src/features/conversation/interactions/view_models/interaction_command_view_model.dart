@@ -91,11 +91,14 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
       final matches = command?.target.label == interaction.id;
       actions[interaction.id] = _project(command, matches: matches);
     }
-    final childItems = childClock?.canonical;
-    if (childItems != null &&
-        childItems.loaded &&
-        childItems.value?.hostThreadId == hostThreadId) {
-      for (final child in childItems.value!.items) {
+    final childCanonical = childClock?.canonical;
+    final childView = childCanonical?.value;
+    final childData = childView?.state.value;
+    if (childClock?.hasCurrentBaseline == true &&
+        childCanonical?.loaded == true &&
+        childView?.hostThreadId == hostThreadId &&
+        childData != null) {
+      for (final child in childData.items) {
         final matches = command?.target.label == child.interactionId;
         actions[child.interactionId] = _project(command, matches: matches);
       }
@@ -175,12 +178,17 @@ class InteractionCommandViewModel extends _$InteractionCommandViewModel {
     if (gate == null) return;
     try {
       if (!ref.mounted || !identical(_lifecycle, lifecycle)) return;
-      final clock = client
-          .existingChildInteractions(hostThreadId)
-          ?.state
-          .canonical;
-      if (clock == null || !clock.loaded || clock.value == null) return;
-      final current = clock.value!.items
+      final childState = client.existingChildInteractions(hostThreadId)?.state;
+      final canonical = childState?.canonical;
+      final childView = canonical?.value;
+      final childData = childView?.state.value;
+      if (childState?.hasCurrentBaseline != true ||
+          canonical?.loaded != true ||
+          childView?.hostThreadId != hostThreadId ||
+          childData == null) {
+        return;
+      }
+      final current = childData.items
           .where(
             (item) =>
                 item.childThreadId == captured.childThreadId &&
