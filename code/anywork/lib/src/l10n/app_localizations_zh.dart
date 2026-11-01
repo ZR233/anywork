@@ -5627,4 +5627,40 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get usageStatisticsGapNote => '统计同步缺口与累计用量未知是不同状态；同步恢复不代表历史用量完整。';
+
+  @override
+  String get acpUsageTitle => '账户额度';
+
+  @override
+  String get acpUsageQuery => '查询额度';
+
+  @override
+  String get acpUsageRefresh => '刷新额度';
+
+  @override
+  String get acpUsageNotQueried => '尚未查询账户额度。';
+
+  @override
+  String get acpUsageNotApplicable => '当前认证方式不提供套餐额度。';
+
+  @override
+  String get acpUsageUnavailable => '服务端暂未提供额度数据。';
+
+  @override
+  String get acpUsageNoLimits => '服务端未报告额度限制。';
+
+  @override
+  String get acpUsageNoActiveLimits => '此模型组未报告有效额度窗口。';
+
+  @override
+  String get acpUsageFailed => '额度查询失败，请重试。';
+
+  @override
+  String get acpUsageInvalidResponse => '服务端返回了无法识别的额度数据。';
+
+  @override
+  String get acpUsageDisabled => '已停用';
+
+  @override
+  String get acpUsageUnknown => '剩余量未知';
 }

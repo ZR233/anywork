@@ -175,6 +175,61 @@ const _authenticating = AcpAuthSnapshotView(
 );
 
 void main() {
+  test('额度查询使用 ACP 身份并保留独立且不可变的额度观察', () async {
+    final transport = _AcpTransport();
+    final client = _client(transport);
+    expect(transport.startCalls, 0);
+
+    await client.domains.acp.queryUsage(const AcpAccountIdentity('acp-1'));
+    expect(transport.lastAction, isA<AcpQueryUsageActionView>());
+    expect(transport.lastExpectedConnectionRevision, 7);
+    expect(_operation(client).state.value.observed, isTrue);
+
+    final limits = [
+      const AcpQuotaLimitView(
+        label: 'Weekly Limit Remaining',
+        remaining: AcpQuotaPercentageView(61),
+        nextResetAt: 1793552400,
+      ),
+    ];
+    final groups = [AcpQuotaGroupView(name: 'Gemini Models', limits: limits)];
+    _apply(
+      client,
+      AcpAuthSnapshotView(
+        revision: 2,
+        updatedAt: 2,
+        accounts: [
+          AcpAuthAccountView(
+            accountId: 'acp-1',
+            connectionRevision: 7,
+            state: const AcpVerifiedState(checkedAt: 2, server: null),
+            usage: AcpUsageObservationView(
+              checkedAt: 2,
+              state: AcpUsageReadyView(groups: groups),
+            ),
+          ),
+        ],
+      ),
+    );
+    limits.clear();
+    groups.clear();
+    final observed = client.domains.acp.auth.value.value!.account(
+      'acp-1',
+      connectionRevision: 7,
+    )!;
+    final quota = observed.usage!.state as AcpUsageReadyView;
+    expect(observed.state, isA<AcpVerifiedState>());
+    expect(
+      quota.groups.single.limits.single.remaining,
+      const AcpQuotaPercentageView(61),
+    );
+    expect(quota.groups.single.limits.single.nextResetAt, 1793552400);
+    expect(() => quota.groups.clear(), throwsUnsupportedError);
+    expect(() => quota.groups.single.limits.clear(), throwsUnsupportedError);
+    expect(transport.startCalls, 1);
+    expect((await client.close()).unresolved, isEmpty);
+  });
+
   test('check 受理后由 canonical 水位解除 pending，close 报告无残留', () async {
     final transport = _AcpTransport();
     final client = _client(transport);

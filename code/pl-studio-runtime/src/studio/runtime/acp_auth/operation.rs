@@ -48,6 +48,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
             operation.generation,
             operation.connection_revision,
             AcpAuthState::Cancelled,
+            None,
         );
         return;
     }
@@ -73,6 +74,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
                 operation.generation,
                 operation.connection_revision,
                 state,
+                None,
             );
             return;
         }
@@ -101,6 +103,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
                 operation.generation,
                 operation.connection_revision,
                 state,
+                None,
             );
             return;
         }
@@ -130,6 +133,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
             operation.generation,
             operation.connection_revision,
             state,
+            None,
         );
         return;
     };
@@ -190,11 +194,11 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         None,
     );
     let cleanup_issue = reclaim_worker(&inner, &operation, &mut worker).await;
-    let state = if cleanup_issue.is_some() {
+    let (state, usage_update) = if cleanup_issue.is_some() {
         // 资源已确认停止（或等待结果已交付），如实报告收尾问题，绝不以认证成功掩盖。
-        cleanup_failure()
+        (cleanup_failure(), None)
     } else {
-        terminal_state(protocol, &operation)
+        terminal_result(protocol, &operation, &plan.action)
     };
     // 终态与"该账号已空闲"在同一把锁里提交，只发一次事件。
     inner.complete_operation(
@@ -202,6 +206,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         operation.generation,
         operation.connection_revision,
         state,
+        usage_update,
     );
 }
 
@@ -263,36 +268,60 @@ async fn reclaim_worker(
 /// 版本闸门由协议客户端在 `initialize` 之后、任何探测会话与登录请求之前执行（它持有
 /// `expected_server_version`）：版本不符时这里只会收到类型化失败，因此不再有第二套迟到比较
 /// （design/28 §28.3）。
-fn terminal_state(
+fn terminal_result(
     protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>>,
     operation: &Operation,
-) -> AcpAuthState {
+    action: &AcpAuthAction,
+) -> (
+    AcpAuthState,
+    Option<pl_protocol::studio::AcpUsageObservation>,
+) {
     match protocol {
-        Some(Ok(pl_acp::auth::AuthOutcome::Verified { server })) => AcpAuthState::Verified {
-            checked_at: crate::studio::unix_seconds(),
-            server: map_auth_server(server),
-        },
-        Some(Ok(pl_acp::auth::AuthOutcome::Required { server, methods })) => {
+        Some(Ok(pl_acp::auth::AuthOutcome::Verified { server, usage })) => {
+            let checked_at = crate::studio::unix_seconds();
+            let state = AcpAuthState::Verified {
+                checked_at,
+                server: map_auth_server(server),
+            };
+            let usage_update = matches!(action, AcpAuthAction::QueryUsage).then(|| {
+                pl_protocol::studio::AcpUsageObservation {
+                    checked_at,
+                    state: usage.map_or(
+                        pl_protocol::studio::AcpUsageState::Failed {
+                            code: pl_protocol::studio::AcpUsageFailureCode::InvalidResponse,
+                        },
+                        super::usage::map_report,
+                    ),
+                }
+            });
+            (state, usage_update)
+        }
+        Some(Ok(pl_acp::auth::AuthOutcome::Required { server, methods })) => (
             AcpAuthState::Required {
                 methods: map_auth_methods(methods),
                 server: map_auth_server(server),
-            }
-        }
+            },
+            None,
+        ),
         Some(Err(error)) => {
-            if operation.cancel.is_cancelled()
+            let state = if operation.cancel.is_cancelled()
                 && matches!(error.kind(), pl_acp::auth::AuthFailureKind::Cancelled)
             {
                 AcpAuthState::Cancelled
             } else {
                 map_auth_error(&error).into_state()
+            };
+            (state, None)
+        }
+        None => (
+            AcpFailure {
+                code: AcpAuthFailureCode::Internal,
+                stage: AcpAuthStage::Close,
+                retryable: true,
             }
-        }
-        None => AcpFailure {
-            code: AcpAuthFailureCode::Internal,
-            stage: AcpAuthStage::Close,
-            retryable: true,
-        }
-        .into_state(),
+            .into_state(),
+            None,
+        ),
     }
 }
 

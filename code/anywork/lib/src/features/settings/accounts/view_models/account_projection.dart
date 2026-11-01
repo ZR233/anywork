@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/studio_client.dart'
     show OperationPhase, OperationState, StudioFailure;
 
@@ -169,5 +170,80 @@ AccountUsagePresentation projectUsage(
         (transport != null ||
             usage?.failure?.retryable == true ||
             resource.failure?.retryable == true),
+  );
+}
+
+/// Projects the current ACP-owned quota observation into locale-ready UI data.
+/// The lookup is guarded by both account identity and connection revision;
+/// callers never retain or reinterpret the domain observation themselves.
+AcpUsagePresentation projectAcpUsage({
+  required AcpAuthSnapshotView? snapshot,
+  required bool stale,
+  required String accountId,
+  required int connectionRevision,
+  required AccountStrings strings,
+}) {
+  final account = stale
+      ? null
+      : snapshot?.account(accountId, connectionRevision: connectionRevision);
+  final observation = account?.usage;
+  final busy = account?.state.isBusy ?? false;
+  final usage = observation?.state;
+  final status = switch (usage) {
+    null => strings['acpUsage.notQueried'],
+    AcpUsageNotApplicableView() => strings['acpUsage.notApplicable'],
+    AcpUsageUnavailableView() => strings['acpUsage.unavailable'],
+    AcpUsageFailedView(:final code) =>
+      code == AcpUsageFailureCodeView.invalidResponse
+          ? strings['acpUsage.invalidResponse']
+          : strings['acpUsage.failed'],
+    AcpUsageReadyView(:final groups) when groups.isEmpty =>
+      strings['acpUsage.noLimits'],
+    AcpUsageReadyView() => null,
+  };
+  return AcpUsagePresentation(
+    status: status,
+    busy: busy,
+    queried: observation != null,
+    updatedLabel: observation == null
+        ? null
+        : strings.date(observation.checkedAt),
+    groups: switch (usage) {
+      AcpUsageReadyView(:final groups) => [
+        for (final group in groups)
+          AccountQuotaGroupPresentation(
+            name: group.name,
+            emptyLabel: group.limits.isEmpty
+                ? strings['acpUsage.noActiveLimits']
+                : null,
+            quotas: [
+              for (final limit in group.limits)
+                AccountQuotaPresentation(
+                  label: limit.label,
+                  remaining: switch (limit.remaining) {
+                    AcpQuotaPercentageView(:final value) => '$value%',
+                    AcpQuotaUnitsView(:final value) => '$value',
+                    AcpQuotaUnknownView() => strings['acpUsage.unknown'],
+                    AcpQuotaDisabledView() => strings['acpUsage.disabled'],
+                  },
+                  remainingFraction: switch (limit.remaining) {
+                    AcpQuotaPercentageView(:final value) => value / 100,
+                    AcpQuotaUnitsView() ||
+                    AcpQuotaUnknownView() ||
+                    AcpQuotaDisabledView() => null,
+                  },
+                  resetLabel: limit.nextResetAt == null
+                      ? null
+                      : strings.date(limit.nextResetAt),
+                  low: switch (limit.remaining) {
+                    AcpQuotaPercentageView(:final value) => value <= 10,
+                    _ => false,
+                  },
+                ),
+            ],
+          ),
+      ],
+      _ => const [],
+    },
   );
 }

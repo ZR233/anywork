@@ -20,6 +20,7 @@ mod mapping;
 mod operation;
 mod projection;
 mod registry;
+mod usage;
 mod worker;
 
 pub(crate) use admission::AcpAuthRuntime;

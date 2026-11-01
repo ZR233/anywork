@@ -23,9 +23,10 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest, AuthenticateResponse,
-    CloseSessionRequest, CloseSessionResponse, Implementation, InitializeRequest,
-    InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SessionCapabilities, SessionCloseCapabilities,
+    CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk, Implementation,
+    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, SessionCapabilities, SessionCloseCapabilities, SessionNotification,
+    SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::{
     Agent, ByteStreams, Client, ConnectionTo, Error as RpcError, Responder,
@@ -46,6 +47,20 @@ pub const ACP_AUTHENTICATED_MARKER: &str = "authenticated";
 pub const ACP_AUTH_STARTED_MARKER: &str = "auth-started";
 /// 解除 `authentication: "wait"` 的控制标记。
 pub const ACP_AUTH_RELEASE_MARKER: &str = "auth-release";
+/// 1.4.1 server 在模型调用前截获的唯一额度命令。
+pub const ACP_USAGE_PROMPT: &str = "/usage";
+/// fixture 返回的官方 1.4.1 Markdown 额度形态。
+pub const ACP_USAGE_REPORT: &str = "\
+### Session Usage
+- **Session total:** data not available yet
+
+### Quota Limits
+- **Gemini Models**
+  *(Fixture quota)*
+  - **Weekly Limit Remaining:** 91% remaining (resets Oct 02, 2026, 08:22 UTC)
+  - **Burst Limit:** 1,234 units remaining
+- **Disabled Models**
+  - **Legacy Limit:** Disabled";
 
 /// 成功握手时报出的 server 版本。
 ///
@@ -139,6 +154,11 @@ pub enum AcpFixtureEvent {
     },
     /// 收到 `session/close`。
     Close {
+        /// 模拟 Agent 的进程号。
+        pid: u32,
+    },
+    /// 收到并完成唯一允许的固定 `/usage` prompt。
+    UsagePrompt {
         /// 模拟 Agent 的进程号。
         pid: u32,
     },
@@ -441,14 +461,32 @@ pub async fn run_acp_stdio(options: AcpStdioOptions) -> Result<()> {
             {
                 let state = Arc::clone(&state);
                 async move |
-                    _request: PromptRequest,
+                    request: PromptRequest,
                     responder: Responder<PromptResponse>,
-                    _connection: ConnectionTo<Client>,
+                    connection: ConnectionTo<Client>,
                 | {
+                    let fixed_usage = matches!(
+                        request.prompt.as_slice(),
+                        [ContentBlock::Text(text)] if text.text == ACP_USAGE_PROMPT
+                    );
+                    if fixed_usage {
+                        state
+                            .record(AcpFixtureEvent::UsagePrompt { pid: state.pid })
+                            .map_err(|error| {
+                                state_failure("failed to record usage prompt", error)
+                            })?;
+                        connection.send_notification(SessionNotification::new(
+                            request.session_id,
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new(ACP_USAGE_REPORT)),
+                            )),
+                        ))?;
+                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                    }
                     state
                         .record(AcpFixtureEvent::NoPrompt { pid: state.pid })
                         .map_err(|error| state_failure("failed to record prompt", error))?;
-                    // 本阶段不提供任何模型回合：意外 prompt 一律拒绝，绝不访问网络或浏览器。
+                    // 除固定 `/usage` 外的 prompt 一律拒绝，绝不访问网络或浏览器。
                     responder.respond_with_error(fixture_failure("fixture rejects prompt turns"))
                 }
             },

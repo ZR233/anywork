@@ -335,6 +335,7 @@ pub(super) fn event_pid(event: &AcpFixtureEvent) -> u32 {
         | AcpFixtureEvent::Authenticate { pid }
         | AcpFixtureEvent::SessionNew { pid }
         | AcpFixtureEvent::Close { pid }
+        | AcpFixtureEvent::UsagePrompt { pid }
         | AcpFixtureEvent::NoPrompt { pid }
         | AcpFixtureEvent::AuthenticateReleased { pid }
         | AcpFixtureEvent::Disconnect { pid, .. } => *pid,

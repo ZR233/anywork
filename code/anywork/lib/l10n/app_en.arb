@@ -2889,5 +2889,17 @@
   "recoveryNoAvailableActions": "None currently available",
   "usageUnknown": "Unknown",
   "usageFirstOutputNote": "A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.",
-  "usageStatisticsGapNote": "A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage."
+  "usageStatisticsGapNote": "A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.",
+  "acpUsageTitle": "Account quota",
+  "acpUsageQuery": "Query quota",
+  "acpUsageRefresh": "Refresh quota",
+  "acpUsageNotQueried": "Account quota has not been queried.",
+  "acpUsageNotApplicable": "Plan quota is not available for this authentication method.",
+  "acpUsageUnavailable": "The server has not provided quota data yet.",
+  "acpUsageNoLimits": "The server reported no quota limits.",
+  "acpUsageNoActiveLimits": "This model group reported no active quota windows.",
+  "acpUsageFailed": "Quota query failed. Try again.",
+  "acpUsageInvalidResponse": "The server returned an unrecognized quota report.",
+  "acpUsageDisabled": "Disabled",
+  "acpUsageUnknown": "Remaining amount unknown"
 }

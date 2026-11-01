@@ -7,7 +7,9 @@ use crate::api::studio::types::{
     BridgeAcpAccountCatalog, BridgeAcpAccountSettings, BridgeAcpAccountTemplate,
     BridgeAcpAccountUpdate, BridgeAcpAuthAccount, BridgeAcpAuthAction, BridgeAcpAuthFailure,
     BridgeAcpAuthFailureCode, BridgeAcpAuthMethod, BridgeAcpAuthMethodKind, BridgeAcpAuthSnapshot,
-    BridgeAcpAuthStage, BridgeAcpAuthState, BridgeAcpProvider, BridgeAcpServerInfo,
+    BridgeAcpAuthStage, BridgeAcpAuthState, BridgeAcpProvider, BridgeAcpQuotaGroup,
+    BridgeAcpQuotaLimit, BridgeAcpQuotaRemaining, BridgeAcpServerInfo, BridgeAcpUsageFailureCode,
+    BridgeAcpUsageObservation, BridgeAcpUsageState,
 };
 
 pub(crate) fn bridge_acp_provider(provider: pl_protocol::studio::AcpProvider) -> BridgeAcpProvider {
@@ -79,6 +81,7 @@ pub(crate) fn protocol_auth_action(
 ) -> pl_protocol::studio::AcpAuthAction {
     match action {
         BridgeAcpAuthAction::Check => pl_protocol::studio::AcpAuthAction::Check,
+        BridgeAcpAuthAction::QueryUsage => pl_protocol::studio::AcpAuthAction::QueryUsage,
         BridgeAcpAuthAction::Authenticate { method_id } => {
             pl_protocol::studio::AcpAuthAction::Authenticate { method_id }
         }
@@ -98,8 +101,59 @@ pub(crate) fn bridge_acp_auth_snapshot(
                 account_id: account.account_id,
                 connection_revision: account.connection_revision,
                 state: bridge_acp_auth_state(account.state),
+                usage: account.usage.map(bridge_acp_usage),
             })
             .collect(),
+    }
+}
+
+fn bridge_acp_usage(usage: pl_protocol::studio::AcpUsageObservation) -> BridgeAcpUsageObservation {
+    use pl_protocol::studio::{AcpQuotaRemaining, AcpUsageFailureCode, AcpUsageState};
+    BridgeAcpUsageObservation {
+        checked_at: usage.checked_at,
+        state: match usage.state {
+            AcpUsageState::Ready { groups } => BridgeAcpUsageState::Ready {
+                groups: groups
+                    .into_iter()
+                    .map(|group| BridgeAcpQuotaGroup {
+                        name: group.name,
+                        limits: group
+                            .limits
+                            .into_iter()
+                            .map(|limit| BridgeAcpQuotaLimit {
+                                label: limit.label,
+                                next_reset_at: limit.next_reset_at,
+                                remaining: match limit.remaining {
+                                    AcpQuotaRemaining::Percentage { value } => {
+                                        BridgeAcpQuotaRemaining::Percentage { value }
+                                    }
+                                    AcpQuotaRemaining::Units { value } => {
+                                        BridgeAcpQuotaRemaining::Units { value }
+                                    }
+                                    AcpQuotaRemaining::Unknown => BridgeAcpQuotaRemaining::Unknown,
+                                    AcpQuotaRemaining::Disabled => {
+                                        BridgeAcpQuotaRemaining::Disabled
+                                    }
+                                },
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            AcpUsageState::NotApplicable => BridgeAcpUsageState::NotApplicable,
+            AcpUsageState::Unavailable => BridgeAcpUsageState::Unavailable,
+            AcpUsageState::Failed { code } => BridgeAcpUsageState::Failed {
+                code: match code {
+                    AcpUsageFailureCode::Query => BridgeAcpUsageFailureCode::Query,
+                    AcpUsageFailureCode::Timeout => BridgeAcpUsageFailureCode::Timeout,
+                    AcpUsageFailureCode::Transport => BridgeAcpUsageFailureCode::Transport,
+                    AcpUsageFailureCode::ResourceLimit => BridgeAcpUsageFailureCode::ResourceLimit,
+                    AcpUsageFailureCode::InvalidResponse => {
+                        BridgeAcpUsageFailureCode::InvalidResponse
+                    }
+                },
+            },
+        },
     }
 }
 

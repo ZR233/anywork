@@ -538,6 +538,7 @@ class AcpAuthAccountView {
     required this.accountId,
     required this.connectionRevision,
     required this.state,
+    this.usage,
   });
 
   final String accountId;
@@ -546,6 +547,7 @@ class AcpAuthAccountView {
   final int connectionRevision;
 
   final AcpAuthStateView state;
+  final AcpUsageObservationView? usage;
 
   /// 只有账号身份 **和** 连接身份同时匹配时才可用。
   ///
@@ -561,10 +563,146 @@ class AcpAuthAccountView {
       other is AcpAuthAccountView &&
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
-          state == other.state;
+          state == other.state &&
+          usage == other.usage;
 
   @override
-  int get hashCode => Object.hash(accountId, connectionRevision, state);
+  int get hashCode => Object.hash(accountId, connectionRevision, state, usage);
+}
+
+/// 由 ACP 所有者发布的额度观察，独立于认证结论。
+class AcpUsageObservationView {
+  const AcpUsageObservationView({required this.checkedAt, required this.state});
+  final int checkedAt;
+  final AcpUsageStateView state;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpUsageObservationView &&
+      checkedAt == other.checkedAt &&
+      state == other.state;
+  @override
+  int get hashCode => Object.hash(checkedAt, state);
+}
+
+sealed class AcpUsageStateView {
+  const AcpUsageStateView();
+}
+
+final class AcpUsageReadyView extends AcpUsageStateView {
+  const AcpUsageReadyView({required this.groups});
+  final List<AcpQuotaGroupView> groups;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpUsageReadyView && listEquals(groups, other.groups);
+  @override
+  int get hashCode => Object.hashAll(groups);
+}
+
+final class AcpUsageNotApplicableView extends AcpUsageStateView {
+  const AcpUsageNotApplicableView();
+  @override
+  bool operator ==(Object other) => other is AcpUsageNotApplicableView;
+  @override
+  int get hashCode => 0x0221;
+}
+
+final class AcpUsageUnavailableView extends AcpUsageStateView {
+  const AcpUsageUnavailableView();
+  @override
+  bool operator ==(Object other) => other is AcpUsageUnavailableView;
+  @override
+  int get hashCode => 0x0222;
+}
+
+enum AcpUsageFailureCodeView {
+  query,
+  timeout,
+  transport,
+  resourceLimit,
+  invalidResponse,
+}
+
+final class AcpUsageFailedView extends AcpUsageStateView {
+  const AcpUsageFailedView({required this.code});
+  final AcpUsageFailureCodeView code;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpUsageFailedView && code == other.code;
+  @override
+  int get hashCode => Object.hash(0x0223, code);
+}
+
+class AcpQuotaGroupView {
+  const AcpQuotaGroupView({required this.name, required this.limits});
+  final String name;
+  final List<AcpQuotaLimitView> limits;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpQuotaGroupView &&
+      name == other.name &&
+      listEquals(limits, other.limits);
+  @override
+  int get hashCode => Object.hash(name, Object.hashAll(limits));
+}
+
+class AcpQuotaLimitView {
+  const AcpQuotaLimitView({
+    required this.label,
+    required this.remaining,
+    this.nextResetAt,
+  });
+  final String label;
+  final AcpQuotaRemainingView remaining;
+  final int? nextResetAt;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpQuotaLimitView &&
+      label == other.label &&
+      remaining == other.remaining &&
+      nextResetAt == other.nextResetAt;
+  @override
+  int get hashCode => Object.hash(label, remaining, nextResetAt);
+}
+
+sealed class AcpQuotaRemainingView {
+  const AcpQuotaRemainingView();
+}
+
+final class AcpQuotaPercentageView extends AcpQuotaRemainingView {
+  const AcpQuotaPercentageView(this.value);
+  final int value;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpQuotaPercentageView && value == other.value;
+  @override
+  int get hashCode => Object.hash(0x0224, value);
+}
+
+final class AcpQuotaUnitsView extends AcpQuotaRemainingView {
+  const AcpQuotaUnitsView(this.value);
+  final int value;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpQuotaUnitsView && value == other.value;
+  @override
+  int get hashCode => Object.hash(0x0225, value);
+}
+
+final class AcpQuotaUnknownView extends AcpQuotaRemainingView {
+  const AcpQuotaUnknownView();
+  @override
+  bool operator ==(Object other) => other is AcpQuotaUnknownView;
+  @override
+  int get hashCode => 0x0226;
+}
+
+final class AcpQuotaDisabledView extends AcpQuotaRemainingView {
+  const AcpQuotaDisabledView();
+  @override
+  bool operator ==(Object other) => other is AcpQuotaDisabledView;
+  @override
+  int get hashCode => 0x0227;
 }
 
 /// `acpAuth` 领域的 canonical snapshot。
@@ -635,6 +773,15 @@ final class AcpCheckActionView extends AcpAuthActionView {
 
   @override
   int get hashCode => 0x0211;
+}
+
+/// 额度刷新：仅在已校验 server 的探测会话执行固定 `/usage`。
+final class AcpQueryUsageActionView extends AcpAuthActionView {
+  const AcpQueryUsageActionView();
+  @override
+  bool operator ==(Object other) => other is AcpQueryUsageActionView;
+  @override
+  int get hashCode => 0x0213;
 }
 
 /// 登录：只允许服务端实际宣告的 agent 方法。

@@ -126,6 +126,7 @@ pub(super) fn acp_failure_error(code: AcpAuthFailureCode, message: &str) -> anyh
 pub(super) fn protocol_action(action: &AcpAuthAction) -> pl_acp::auth::AuthAction {
     match action {
         AcpAuthAction::Check => pl_acp::auth::AuthAction::Check,
+        AcpAuthAction::QueryUsage => pl_acp::auth::AuthAction::QueryUsage,
         AcpAuthAction::Authenticate { method_id } => pl_acp::auth::AuthAction::Authenticate {
             method_id: method_id.clone(),
         },
@@ -134,7 +135,7 @@ pub(super) fn protocol_action(action: &AcpAuthAction) -> pl_acp::auth::AuthActio
 
 pub(super) fn initial_state(action: &AcpAuthAction, operation_id: &str) -> AcpAuthState {
     match action {
-        AcpAuthAction::Check => AcpAuthState::Checking {
+        AcpAuthAction::Check | AcpAuthAction::QueryUsage => AcpAuthState::Checking {
             operation_id: operation_id.to_string(),
         },
         AcpAuthAction::Authenticate { method_id } => AcpAuthState::Authenticating {
@@ -156,7 +157,7 @@ pub(super) fn map_progress(
     match progress {
         pl_acp::auth::AuthProgress::Initializing => Some(initial_state(action, operation_id)),
         pl_acp::auth::AuthProgress::Authenticating => match action {
-            AcpAuthAction::Check => None,
+            AcpAuthAction::Check | AcpAuthAction::QueryUsage => None,
             AcpAuthAction::Authenticate { method_id } => Some(AcpAuthState::Authenticating {
                 operation_id: operation_id.to_string(),
                 method_id: method_id.clone(),
@@ -164,9 +165,11 @@ pub(super) fn map_progress(
         },
         pl_acp::auth::AuthProgress::Verifying => match action {
             AcpAuthAction::Check => None,
-            AcpAuthAction::Authenticate { .. } => Some(AcpAuthState::Verifying {
-                operation_id: operation_id.to_string(),
-            }),
+            AcpAuthAction::QueryUsage | AcpAuthAction::Authenticate { .. } => {
+                Some(AcpAuthState::Verifying {
+                    operation_id: operation_id.to_string(),
+                })
+            }
         },
         pl_acp::auth::AuthProgress::Closing => Some(AcpAuthState::Closing {
             operation_id: operation_id.to_string(),

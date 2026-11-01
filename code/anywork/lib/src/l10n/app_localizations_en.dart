@@ -5956,4 +5956,44 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get usageStatisticsGapNote =>
       'A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.';
+
+  @override
+  String get acpUsageTitle => 'Account quota';
+
+  @override
+  String get acpUsageQuery => 'Query quota';
+
+  @override
+  String get acpUsageRefresh => 'Refresh quota';
+
+  @override
+  String get acpUsageNotQueried => 'Account quota has not been queried.';
+
+  @override
+  String get acpUsageNotApplicable =>
+      'Plan quota is not available for this authentication method.';
+
+  @override
+  String get acpUsageUnavailable =>
+      'The server has not provided quota data yet.';
+
+  @override
+  String get acpUsageNoLimits => 'The server reported no quota limits.';
+
+  @override
+  String get acpUsageNoActiveLimits =>
+      'This model group reported no active quota windows.';
+
+  @override
+  String get acpUsageFailed => 'Quota query failed. Try again.';
+
+  @override
+  String get acpUsageInvalidResponse =>
+      'The server returned an unrecognized quota report.';
+
+  @override
+  String get acpUsageDisabled => 'Disabled';
+
+  @override
+  String get acpUsageUnknown => 'Remaining amount unknown';
 }

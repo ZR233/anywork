@@ -596,6 +596,7 @@ class VmAcp implements AcpService {
   final cancels = <Completer<AcpInstallSnapshotView>>[];
   final authStarts = <Completer<AcpAuthSnapshotView>>[];
   final authCancels = <Completer<AcpAuthSnapshotView>>[];
+  final usageQueries = <Completer<AcpAuthSnapshotView>>[];
   final saves = <AcpAccountUpdateView>[];
   final removals = <AcpAccountIdentity>[];
   Future<OperationState> Function()? removeWrite;
@@ -644,6 +645,13 @@ class VmAcp implements AcpService {
   Future<AcpAuthSnapshotView> check(AcpAccountIdentity identity) {
     final work = Completer<AcpAuthSnapshotView>();
     authStarts.add(work);
+    return work.future;
+  }
+
+  @override
+  Future<AcpAuthSnapshotView> queryUsage(AcpAccountIdentity identity) {
+    final work = Completer<AcpAuthSnapshotView>();
+    usageQueries.add(work);
     return work.future;
   }
 
@@ -792,6 +800,7 @@ void publishVmAcp(
   AccountsVmHarness h,
   AcpAuthStateView auth, {
   AcpAccountSettingsView account = vmAcpAccount,
+  AcpUsageObservationView? usage,
 }) {
   h.accounts.state.publish(
     AccountsState(
@@ -818,6 +827,7 @@ void publishVmAcp(
             accountId: account.accountId,
             connectionRevision: account.connectionRevision,
             state: auth,
+            usage: usage,
           ),
         ],
       ),
@@ -1758,6 +1768,253 @@ void main() {
       );
     },
   );
+
+  test(
+    'ACP quota query is explicit and only available for current Verified',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      publishVmAcp(h, const AcpVerifiedState(checkedAt: 1, server: null));
+      final owner = await listenVmAcp(h, vmAcpKey);
+
+      expect(h.acp.usageQueries, isEmpty);
+      expect(
+        owner.state.requireValue.panel.availableActions,
+        contains(AcpAccountAction.queryUsage),
+      );
+      final querying = owner.queryUsage();
+      expect(h.acp.usageQueries, hasLength(1));
+      expect(h.acp.usageQueries.single.isCompleted, isFalse);
+      h.acp.usageQueries.single.complete(const AcpAuthSnapshotView.empty());
+      await querying;
+
+      publishVmAcp(h, const AcpRequiredState(server: null, methods: []));
+      expect(
+        owner.state.requireValue.panel.availableActions,
+        isNot(contains(AcpAccountAction.queryUsage)),
+      );
+      await owner.queryUsage();
+      expect(h.acp.usageQueries, hasLength(1));
+    },
+  );
+  test(
+    'ACP list quota observation is filtered by connection revision',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      const usage = AcpUsageObservationView(
+        checkedAt: 10,
+        state: AcpUsageReadyView(
+          groups: [
+            AcpQuotaGroupView(
+              name: 'Gemini',
+              limits: [
+                AcpQuotaLimitView(
+                  label: 'Fast',
+                  remaining: AcpQuotaPercentageView(40),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+      publishVmAcp(
+        h,
+        const AcpVerifiedState(checkedAt: 1, server: null),
+        account: vmAcpAccount.copyWith(connectionRevision: 2),
+        usage: usage,
+      );
+      final owner = await h.listOwner();
+      owner.setStrings(
+        const AccountStrings({
+          'acpUsage.notQueried': 'not queried',
+          'acpUsage.notApplicable': 'not applicable',
+          'acpUsage.unavailable': 'unavailable',
+          'acpUsage.noLimits': 'no limits',
+          'acpUsage.noActiveLimits': 'no active limits',
+          'acpUsage.failed': 'failed',
+          'acpUsage.invalidResponse': 'invalid response',
+          'acpUsage.disabled': 'disabled',
+          'acpUsage.unknown': 'unknown',
+        }),
+      );
+      final row = owner.state.requireValue.list.rows.singleWhere(
+        (row) =>
+            row.key ==
+            const AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
+      );
+      final displayed = (row.content as AcpAccountRowContent).usage!;
+      expect(displayed.queried, isTrue);
+      expect(displayed.busy, isFalse);
+      expect(displayed.groups.single.name, 'Gemini');
+      expect(displayed.groups.single.quotas.single.remaining, '40%');
+      expect(displayed.groups.single.quotas.single.remainingFraction, .4);
+      expect(displayed.groups.single.quotas.single.low, isFalse);
+      expect(displayed.updatedLabel, isNotEmpty);
+
+      h.acp.auth.publish(
+        AccountResource(
+          stamp: vmStamp,
+          value: AcpAuthSnapshotView(
+            revision: 2,
+            updatedAt: 2,
+            accounts: [
+              AcpAuthAccountView(
+                accountId: 'acp',
+                connectionRevision: 1,
+                state: const AcpVerifiedState(checkedAt: 1, server: null),
+                usage: usage,
+              ),
+            ],
+          ),
+        ),
+      );
+      final staleRow = owner.state.requireValue.list.rows.singleWhere(
+        (row) =>
+            row.key ==
+            const AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
+      );
+      expect((staleRow.content as AcpAccountRowContent).usage, isNull);
+    },
+  );
+  test('ACP quota projection preserves observations while query is busy', () {
+    final strings = const AccountStrings({
+      'acpUsage.notQueried': 'not queried',
+      'acpUsage.notApplicable': 'not applicable',
+      'acpUsage.unavailable': 'unavailable',
+      'acpUsage.noLimits': 'no limits',
+      'acpUsage.noActiveLimits': 'no active limits',
+      'acpUsage.failed': 'failed',
+      'acpUsage.invalidResponse': 'invalid response',
+      'acpUsage.disabled': 'disabled',
+      'acpUsage.unknown': 'unknown',
+    });
+    const observation = AcpUsageObservationView(
+      checkedAt: 100,
+      state: AcpUsageReadyView(
+        groups: [
+          AcpQuotaGroupView(
+            name: 'Gemini',
+            limits: [
+              AcpQuotaLimitView(
+                label: 'Fast',
+                remaining: AcpQuotaPercentageView(35),
+                nextResetAt: 200,
+              ),
+              AcpQuotaLimitView(label: 'Pro', remaining: AcpQuotaUnitsView(12)),
+              AcpQuotaLimitView(
+                label: 'Unknown',
+                remaining: AcpQuotaUnknownView(),
+              ),
+              AcpQuotaLimitView(
+                label: 'Disabled',
+                remaining: AcpQuotaDisabledView(),
+              ),
+            ],
+          ),
+          AcpQuotaGroupView(name: 'Other family', limits: []),
+        ],
+      ),
+    );
+    final snapshot = AcpAuthSnapshotView(
+      revision: 1,
+      updatedAt: 100,
+      accounts: [
+        const AcpAuthAccountView(
+          accountId: 'acp',
+          connectionRevision: 4,
+          state: AcpCheckingState(operationId: 'query-usage'),
+          usage: observation,
+        ),
+      ],
+    );
+
+    final projected = projectAcpUsage(
+      snapshot: snapshot,
+      stale: false,
+      accountId: 'acp',
+      connectionRevision: 4,
+      strings: strings,
+    );
+    expect(projected.queried, isTrue);
+    expect(projected.busy, isTrue);
+    expect(projected.status, isNull);
+    expect(projected.groups, hasLength(2));
+    final quotas = projected.groups.first.quotas;
+    expect(quotas[0].remaining, '35%');
+    expect(quotas[0].remainingFraction, .35);
+    expect(quotas[0].resetLabel, isNotNull);
+    expect(quotas[1].remaining, '12');
+    expect(quotas[1].remainingFraction, isNull);
+    expect(quotas[2].remaining, 'unknown');
+    expect(quotas[2].remainingFraction, isNull);
+    expect(quotas[3].remaining, 'disabled');
+    expect(quotas[3].remainingFraction, isNull);
+    expect(projected.groups.last.emptyLabel, 'no active limits');
+
+    final mismatched = projectAcpUsage(
+      snapshot: snapshot,
+      stale: false,
+      accountId: 'acp',
+      connectionRevision: 5,
+      strings: strings,
+    );
+    expect(mismatched.queried, isFalse);
+    expect(mismatched.busy, isFalse);
+    expect(mismatched.status, 'not queried');
+  });
+  test('ACP quota projection maps distinct owner status outcomes', () {
+    const strings = AccountStrings({
+      'acpUsage.notQueried': 'not queried',
+      'acpUsage.notApplicable': 'not applicable',
+      'acpUsage.unavailable': 'unavailable',
+      'acpUsage.noLimits': 'no limits',
+      'acpUsage.noActiveLimits': 'no active limits',
+      'acpUsage.failed': 'failed',
+      'acpUsage.invalidResponse': 'invalid response',
+      'acpUsage.disabled': 'disabled',
+      'acpUsage.unknown': 'unknown',
+    });
+    AcpUsagePresentation project(AcpUsageStateView? usage) {
+      final snapshot = AcpAuthSnapshotView(
+        revision: 1,
+        updatedAt: 1,
+        accounts: [
+          AcpAuthAccountView(
+            accountId: 'acp',
+            connectionRevision: 1,
+            state: const AcpVerifiedState(checkedAt: 1, server: null),
+            usage: usage == null
+                ? null
+                : AcpUsageObservationView(checkedAt: 1, state: usage),
+          ),
+        ],
+      );
+      return projectAcpUsage(
+        snapshot: snapshot,
+        stale: false,
+        accountId: 'acp',
+        connectionRevision: 1,
+        strings: strings,
+      );
+    }
+
+    expect(project(null).status, 'not queried');
+    expect(project(const AcpUsageNotApplicableView()).status, 'not applicable');
+    expect(project(const AcpUsageUnavailableView()).status, 'unavailable');
+    expect(
+      project(
+        const AcpUsageFailedView(code: AcpUsageFailureCodeView.invalidResponse),
+      ).status,
+      'invalid response',
+    );
+    expect(
+      project(const AcpUsageFailedView(code: AcpUsageFailureCodeView.timeout))
+          .status,
+      'failed',
+    );
+    expect(project(const AcpUsageReadyView(groups: [])).status, 'no limits');
+  });
   test('current detail follows submitting, awaiting and unknown outcomes from the admitted operation', () async {
     final board = MutationBoard(clientId: 'detail');
     final h = AccountsVmHarness(

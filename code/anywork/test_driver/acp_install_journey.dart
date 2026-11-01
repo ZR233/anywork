@@ -44,6 +44,7 @@ const _accountCancel = 'account-cancel';
 final _acpCheck = AccountViewKeyValues.acpAction('check');
 final _acpLogin = AccountViewKeyValues.acpAction('login');
 final _acpCancelAuth = AccountViewKeyValues.acpAction('cancelAuthentication');
+final _acpQueryUsage = AccountViewKeyValues.acpAction('queryUsage');
 const _acpBack = 'account-back';
 final _installPrepare = AccountViewKeyValues.acpAction('prepare');
 final _installCancel = AccountViewKeyValues.acpAction('cancelPreparation');
@@ -684,6 +685,102 @@ Map<String, dynamic>? acpObservedAuthState(
   return null;
 }
 
+Map<String, dynamic>? acpObservedUsage(
+  Map<String, dynamic> snapshot,
+  AcpAccountIdentity identity,
+) {
+  final auth = (snapshot['settings'] as Map?)?['acpAuth'];
+  final entries = auth is Map && auth['loaded'] == true
+      ? auth['accounts']
+      : null;
+  if (entries is! List) return null;
+  for (final entry in entries) {
+    if (entry is! Map ||
+        entry['accountId'] != identity.accountId ||
+        entry['connectionRevision'] != identity.connectionRevision) {
+      continue;
+    }
+    final usage = entry['usage'];
+    return usage is Map ? usage.cast<String, dynamic>() : null;
+  }
+  return null;
+}
+
+/// A query stays busy until the protocol and process have both been closed.
+bool acpUsageQueryReady(
+  String? authKind, {
+  required int revision,
+  required int afterRevision,
+  required bool hasUsage,
+}) => switch (authKind) {
+  'checking' || 'verifying' || 'closing' => false,
+  'verified' => revision > afterRevision && hasUsage,
+  _ => throw StateError(
+    'ACP usage query ended without successful authentication: $authKind',
+  ),
+};
+
+/// Verify the fixed native fixture report without deriving expected values from
+/// the observed snapshot. This binds quota data to the account identity saved by
+/// the actual first journey and rejects partial or extra fixture groups/limits.
+Map<String, dynamic> requireAcpFixtureUsage(
+  Map<String, dynamic> snapshot,
+  AcpAccountIdentity identity,
+) {
+  if (acpObservedAuthState(snapshot, identity)?['kind'] != 'verified') {
+    throw StateError('ACP quota capture has no current verified identity');
+  }
+  final usage = acpObservedUsage(snapshot, identity);
+  if (usage == null || usage['checkedAt'] is! int) {
+    throw StateError('ACP usage observation is absent for $identity');
+  }
+  final state = usage['state'];
+  if (state is! Map || state['kind'] != 'ready' || state['groups'] is! List) {
+    throw StateError('ACP usage did not reach ready: $state');
+  }
+  final groups = (state['groups'] as List).whereType<Map>().toList();
+  if (groups.length != 2 ||
+      groups[0]['name'] != 'Gemini Models' ||
+      groups[1]['name'] != 'Disabled Models') {
+    throw StateError('ACP quota groups changed: $groups');
+  }
+  final weeklyLimits = groups[0]['limits'];
+  final disabledLimits = groups[1]['limits'];
+  if (weeklyLimits is! List ||
+      weeklyLimits.length != 2 ||
+      disabledLimits is! List ||
+      disabledLimits.length != 1) {
+    throw StateError('ACP quota limits are incomplete: $groups');
+  }
+  final weekly = weeklyLimits[0];
+  final burst = weeklyLimits[1];
+  final legacy = disabledLimits[0];
+  if (weekly is! Map ||
+      weekly['label'] != 'Weekly Limit Remaining' ||
+      weekly['remaining'] is! Map ||
+      weekly['remaining']['kind'] != 'percentage' ||
+      weekly['remaining']['value'] != 91 ||
+      weekly['nextResetAt'] != 1790929320) {
+    throw StateError('ACP weekly quota changed: $weekly');
+  }
+  if (burst is! Map ||
+      burst['label'] != 'Burst Limit' ||
+      burst['remaining'] is! Map ||
+      burst['remaining']['kind'] != 'units' ||
+      burst['remaining']['value'] != 1234 ||
+      burst['nextResetAt'] != null) {
+    throw StateError('ACP burst quota changed: $burst');
+  }
+  if (legacy is! Map ||
+      legacy['label'] != 'Legacy Limit' ||
+      legacy['remaining'] is! Map ||
+      legacy['remaining']['kind'] != 'disabled' ||
+      legacy['nextResetAt'] != null) {
+    throw StateError('ACP disabled quota changed: $legacy');
+  }
+  return usage;
+}
+
 /// _capture 在截图前后调用同一入口，旧账号/旧代次/不同操作或失败码都不能冒充。
 Map<String, dynamic> requireAcpAuthCapture(
   Map<String, dynamic> snapshot,
@@ -954,6 +1051,7 @@ class _Journey {
       })}',
     );
     await driver.waitFor(find.byValueKey('account-template-selector'));
+    await _revealInEditor('account-template-selector', dyScroll: 200);
     stage = '$_step:tap:account-template-selector-toggle';
     await driver.rawTap(
       find.descendant(
@@ -1565,6 +1663,70 @@ class _Journey {
     await _saveAndObserve('connected');
   }
 
+  Future<void> _queryAndCaptureUsage(AcpAccountIdentity identity) async {
+    _enterStep('query-acp-usage:${identity.accountId}');
+    final before = await _until(
+      'usage-query-auth-ready',
+      (snapshot) =>
+          _authState(snapshot, identity)?['kind'] == 'verified' &&
+          acpObservedUsage(snapshot, identity) == null,
+    );
+    final revision = _authRevision(before);
+    await _tapPanelAction(_acpQueryUsage);
+    final ready = await _until(
+      'usage-query-ready',
+      (snapshot) => acpUsageQueryReady(
+        _authState(snapshot, identity)?['kind'] as String?,
+        revision: _authRevision(snapshot),
+        afterRevision: revision,
+        hasUsage: acpObservedUsage(snapshot, identity) != null,
+      ),
+      timeout: _startupWait,
+    );
+    requireAcpFixtureUsage(ready, identity);
+    checks['usageQueryActionSent'] = true;
+    checks['usageReadyForSavedIdentity'] = true;
+    await _waitForQuotaPresentation();
+    await _capture(
+      'quota-details',
+      expectedAuth: AcpAuthCapture(identity: identity, kind: 'verified'),
+      expectedUsage: identity,
+    );
+
+    await _returnToAccounts();
+    await _waitForQuotaPresentation();
+    await _capture('quota-list', expectedUsage: identity);
+    await _openDetails(identity);
+  }
+
+  Future<void> _waitForQuotaPresentation() async {
+    for (final text in const [
+      'Gemini Models',
+      'Weekly Limit Remaining',
+      'Burst Limit',
+      'Disabled Models',
+      'Legacy Limit',
+    ]) {
+      await driver.waitFor(find.text(text), timeout: _controlWait);
+    }
+    final resetAt = DateTime.fromMillisecondsSinceEpoch(1790929320 * 1000)
+        .toLocal()
+        .toString()
+        .substring(0, 16);
+    final tree = await driver.renderTree().timeout(_controlWait);
+    if (!tree.contains('91%') ||
+        !tree.contains('1234') ||
+        !tree.contains(resetAt)) {
+      throw StateError(
+        'production quota widget tree omitted the fixed percentage, units, '
+        'or rendered reset time: $tree',
+      );
+    }
+    if (!tree.contains('已停用') && !tree.contains('Disabled')) {
+      throw StateError('quota presentation omitted the disabled limit value');
+    }
+  }
+
   /// A ready installation is shared, but a fresh editor must explicitly claim
   /// it. Reopening uses real leave confirmation and does not prepare again.
   Future<void> _reopenAndClaimPrepared() async {
@@ -1820,6 +1982,7 @@ class _Journey {
     await _successfulFixtureLogin(identity);
     checks['syntheticCredentialRestoredForRestart'] = await fixture
         .markerExists('authenticated');
+    await _queryAndCaptureUsage(identity);
     await _nativeFormRegression();
     _assertAccountsUnchanged(await _snapshot(), 'authFaultsAccountsUnchanged');
   }
@@ -2721,6 +2884,7 @@ class _Journey {
     String name, {
     String? expectedInstallPhase,
     AcpAuthCapture? expectedAuth,
+    AcpAccountIdentity? expectedUsage,
   }) async {
     stage = '$_step:capture:$name';
     if (expectedAuth != null) {
@@ -2747,6 +2911,9 @@ class _Journey {
     if (expectedAuth != null) {
       beforeAuth = requireAcpAuthCapture(before, expectedAuth);
     }
+    if (expectedUsage != null) {
+      requireAcpFixtureUsage(before, expectedUsage);
+    }
     final screenshot = await driver.screenshot().timeout(_controlWait);
     final tree = await driver.renderTree().timeout(_controlWait);
     final after = await _snapshot();
@@ -2764,6 +2931,9 @@ class _Journey {
           'capture $name changed auth operation during screenshot',
         );
       }
+    }
+    if (expectedUsage != null) {
+      requireAcpFixtureUsage(after, expectedUsage);
     }
     await _writeCapture(name, before, screenshot, tree);
   }

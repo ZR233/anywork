@@ -172,6 +172,51 @@ pub struct BridgeAcpAuthAccount {
     pub account_id: String,
     pub connection_revision: u64,
     pub state: BridgeAcpAuthState,
+    pub usage: Option<BridgeAcpUsageObservation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeAcpUsageObservation {
+    pub checked_at: i64,
+    pub state: BridgeAcpUsageState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BridgeAcpUsageState {
+    Ready { groups: Vec<BridgeAcpQuotaGroup> },
+    NotApplicable,
+    Unavailable,
+    Failed { code: BridgeAcpUsageFailureCode },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BridgeAcpUsageFailureCode {
+    Query,
+    Timeout,
+    Transport,
+    ResourceLimit,
+    InvalidResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeAcpQuotaGroup {
+    pub name: String,
+    pub limits: Vec<BridgeAcpQuotaLimit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeAcpQuotaLimit {
+    pub label: String,
+    pub remaining: BridgeAcpQuotaRemaining,
+    pub next_reset_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BridgeAcpQuotaRemaining {
+    Percentage { value: u8 },
+    Units { value: u64 },
+    Unknown,
+    Disabled,
 }
 
 /// ACP 认证 topic 的 canonical 快照。
@@ -186,6 +231,7 @@ pub struct BridgeAcpAuthSnapshot {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub enum BridgeAcpAuthAction {
     Check,
+    QueryUsage,
     Authenticate { method_id: String },
 }
 
