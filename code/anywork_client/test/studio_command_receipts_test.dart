@@ -492,6 +492,15 @@ ThreadRuntimeView _runtime({
   continuation: continuation,
 );
 
+ThreadModelRouteView _route(int revision, {String modelId = 'alpha'}) =>
+    ThreadModelRouteView(
+      accountId: 'account',
+      modelId: modelId,
+      effort: 'medium',
+      revision: revision,
+      available: true,
+    );
+
 ThreadWorkspace _workspace({
   int revision = 1,
   String modelId = 'alpha',
@@ -510,13 +519,7 @@ ThreadWorkspace _workspace({
     execution: execution,
     continuation: continuation,
   ),
-  modelRoute: ThreadModelRouteView(
-    accountId: 'account',
-    modelId: modelId,
-    effort: 'medium',
-    revision: routeRevision,
-    available: true,
-  ),
+  modelRoute: _route(routeRevision, modelId: modelId),
   activeTurn: activeTurn,
   storage: storage,
 );
@@ -2124,7 +2127,7 @@ void main() {
         update: ThreadRuntimeUpdate(
           runtime: _runtime(modelId: 'obsolete'),
           todo: null,
-          modelRoute: _route(3),
+          modelRoute: _route(3, modelId: 'obsolete'),
         ),
       ),
     );
@@ -2144,6 +2147,7 @@ void main() {
     await session.source.waitFor((state) => state.revision == 8);
     expect(session.state.revision, 8);
     expect(session.state.runtime!.modelId, 'alpha');
+    expect(session.state.modelRoute?.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
     final delivered = _completionConsumers[client]!.batches;
     expect(delivered, hasLength(2));
@@ -4937,6 +4941,8 @@ void main() {
               .existingChildInteractions('thread')!
               .state
               .canonical
+              .value
+              ?.state
               .value
               ?.items
               .single

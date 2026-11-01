@@ -74,21 +74,21 @@ macro_rules! concrete_observed {
             BridgeObservedValue::Loading(resource) => $target::Loading(resource),
             BridgeObservedValue::Ready(resource, value) => $target::Ready {
                 resource,
-                value: value $($try_value)?,
+                value $(: value $try_value)?,
             },
             BridgeObservedValue::Refreshing(resource, value) => {
                 $target::Refreshing {
                     resource,
-                    value: value $($try_value)?,
+                    value $(: value $try_value)?,
                 }
             }
             BridgeObservedValue::Stale(resource, value) => $target::Stale {
                 resource,
-                value: value $($try_value)?,
+                value $(: value $try_value)?,
             },
             BridgeObservedValue::Degraded(resource, value) => $target::Degraded {
                 resource,
-                value: value $($try_value)?,
+                value $(: value $try_value)?,
             },
             BridgeObservedValue::Failed(resource) => $target::Failed(resource),
             BridgeObservedValue::Stopped(resource) => $target::Stopped(resource),
