@@ -6785,7 +6785,7 @@ pub(crate) mod storage_fault_tests {
         assert!(prepared.items.is_empty() && prepared.completions.is_empty());
         // The real handoff also retains current metadata. Isolate the accounting charge without
         // changing the batch submitted below, so omitting accounting still fails this assertion.
-        let mut accounting_only = prepared.clone();
+        let mut accounting_only = prepared.as_ref().clone();
         accounting_only.current_state = None;
         accounting_only.current_handoff = None;
         assert_eq!(
