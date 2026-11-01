@@ -77,7 +77,7 @@ pub(super) async fn thread(
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct NonterminalTool<'a> {
-            turn_id: &'a str,
+            turn_id: Option<&'a str>,
             item_id: &'a str,
             tool_call_id: &'a str,
             call_id: Option<&'a str>,
@@ -92,7 +92,7 @@ pub(super) async fn thread(
                     return None;
                 };
                 (!tool_state_is_terminal(&tool.state)).then(|| NonterminalTool {
-                    turn_id: &item.header.turn_id,
+                    turn_id: item.header.turn_id.as_deref(),
                     item_id: &item.header.id,
                     tool_call_id: &tool.invocation.tool_call_id,
                     call_id: tool.invocation.call_id.as_deref(),
@@ -114,7 +114,7 @@ pub(super) async fn thread(
             budget.check()?;
             manifest.timeline_items += 1;
             let item_id = item.header.id.as_str();
-            let turn_id = item.header.turn_id.as_str();
+            let turn_id = item.header.turn_id.as_deref();
             for (field_index, detail) in item.details().enumerate() {
                 let relative = format!(
                     "{prefix}/details/{page_index:05}-{item_index:03}-{field_index:03}.txt"
@@ -130,7 +130,7 @@ pub(super) async fn thread(
                                 item_id,
                                 &TimelineDetailQuery {
                                     field: detail.field,
-                                    revision: detail.revision,
+                                    timeline_epoch: page.timeline_epoch.clone(),
                                     continuation: continuation.clone(),
                                     max_bytes: Some(64 * 1024),
                                 },
@@ -140,9 +140,9 @@ pub(super) async fn thread(
                             chunk.thread_id == id
                                 && chunk.item_id == item_id
                                 && chunk.field == detail.field
-                                && chunk.revision == detail.revision
+                                && chunk.timeline_epoch == page.timeline_epoch
                                 && chunk.total_bytes == detail.total_bytes,
-                            "detail identity/revision/length changed; refusing to splice versions"
+                            "detail identity/epoch/length changed; refusing to splice versions"
                         );
                         file.write_all(chunk.text.as_bytes())?;
                         budget.check()?;
@@ -180,14 +180,15 @@ pub(super) async fn thread(
                     (Err(error), _) | (_, Err(error)) => return Err(error.context(relative)),
                     _ => (),
                 }
-                // Detail identity maps the opaque item/field/revision to an indexed file, never
-                // puts an opaque ID into a filesystem path. Page metadata retains saved/lifecycle.
+                // Detail identity maps the opaque epoch/item/field to an indexed file, never
+                // puts an opaque ID into a filesystem path. Unknown Turn identity stays absent.
                 #[derive(serde::Serialize)]
                 #[serde(rename_all = "camelCase")]
                 struct DetailMapping<'a> {
                     thread_id: &'a str,
+                    timeline_epoch: &'a str,
                     item_id: &'a str,
-                    turn_id: &'a str,
+                    turn_id: Option<&'a str>,
                     detail: &'a pl_protocol::TimelineDetailRef,
                     file: &'a str,
                 }
@@ -196,6 +197,7 @@ pub(super) async fn thread(
                     item_id,
                     &DetailMapping {
                         thread_id: id,
+                        timeline_epoch: &page.timeline_epoch,
                         item_id,
                         turn_id,
                         detail: &detail,
