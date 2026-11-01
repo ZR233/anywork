@@ -405,7 +405,7 @@ impl std::error::Error for RedactedRpcFailure {
 ///
 /// 取消与阶段超时都是类型化失败；结果未知时不自动重发 `session/new`。
 ///
-/// 预算分两段（实现常量，可按真实耗时调整）：前台协议步骤各自限时——协商 30 秒、探测 60 秒、
+/// 预算分两段（实现常量，可按真实耗时调整）：前台协议步骤各自限时——协商 3 分钟、探测 60 秒、
 /// 人工登录 15 分钟、`session/close` 10 秒；**前台协议步骤返回并发布结论之后**才为 SDK 收束
 /// 另起 10 秒预算，只覆盖排空与关闭写端，不从连接建立起算，因此不会截断人工登录。单次命令的
 /// 入站字节上限为 8 MiB。
@@ -536,14 +536,15 @@ fn last_stage(progress: &watch::Sender<AuthProgress>) -> AuthStage {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Duration;
 
     use agent_client_protocol::schema::ProtocolVersion;
     use agent_client_protocol::schema::v1::{
-        AgentCapabilities, AuthenticateRequest, AuthenticateResponse, CloseSessionRequest,
-        CloseSessionResponse, ContentBlock, ContentChunk, Implementation, InitializeRequest,
-        InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-        SessionCapabilities, SessionCloseCapabilities, SessionNotification, SessionUpdate,
-        StopReason, TextContent,
+        AgentCapabilities, AuthMethod as SdkAuthMethod, AuthMethodAgent, AuthenticateRequest,
+        AuthenticateResponse, CloseSessionRequest, CloseSessionResponse, ContentBlock,
+        ContentChunk, Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
+        SessionCloseCapabilities, SessionNotification, SessionUpdate, StopReason, TextContent,
     };
     use agent_client_protocol::{Agent, Client, ConnectionTo, Responder};
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -551,18 +552,42 @@ mod tests {
     use super::*;
 
     const VERSION: &str = "1.4.1";
+    const METHOD_ID: &str = "fixture-login";
     const REPORT: &str = "### Quota Limits\n- No quota limits reported.";
+
+    #[derive(Clone, Copy)]
+    enum Initialization {
+        ReplyAfter(Duration),
+        Cancel,
+    }
 
     #[derive(Default)]
     struct Observed {
         prompts: Vec<Vec<ContentBlock>>,
         authenticates: usize,
+        probes: usize,
         closes: usize,
         default_capabilities: bool,
     }
 
     async fn run(action: AuthAction, auth_required: bool) -> (AuthOutcome, Observed) {
+        let (outcome, observed) = run_with_initialization(
+            action,
+            auth_required,
+            Initialization::ReplyAfter(Duration::ZERO),
+        )
+        .await;
+        (outcome.expect("authentication should succeed"), observed)
+    }
+
+    async fn run_with_initialization(
+        action: AuthAction,
+        auth_required: bool,
+        initialization: Initialization,
+    ) -> (Result<AuthOutcome, AuthError>, Observed) {
         let observed = Arc::new(Mutex::new(Observed::default()));
+        let cancellation = CancellationToken::new();
+        let initialize_cancellation = cancellation.clone();
         let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
         let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
         let transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
@@ -581,8 +606,20 @@ mod tests {
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .default_capabilities =
                                 request.client_capabilities == Default::default();
+                            match initialization {
+                                Initialization::ReplyAfter(delay) => {
+                                    tokio::time::sleep(delay).await;
+                                }
+                                Initialization::Cancel => {
+                                    initialize_cancellation.cancel();
+                                }
+                            }
                             responder.respond(
                                 InitializeResponse::new(ProtocolVersion::V1)
+                                    .auth_methods(vec![SdkAuthMethod::Agent(AuthMethodAgent::new(
+                                        METHOD_ID,
+                                        "Fixture login",
+                                    ))])
                                     .agent_capabilities(
                                         AgentCapabilities::new().session_capabilities(
                                             SessionCapabilities::new()
@@ -597,9 +634,14 @@ mod tests {
                 )
                 .on_receive_request(
                     {
+                        let observed = Arc::clone(&agent_observed);
                         async move |_request: NewSessionRequest,
                                     responder: Responder<NewSessionResponse>,
                                     _connection: ConnectionTo<Client>| {
+                            observed
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .probes += 1;
                             if auth_required {
                                 responder.respond_with_error(RpcError::auth_required())
                             } else {
@@ -671,8 +713,13 @@ mod tests {
                 .await
         });
         let (progress, _receiver) = watch::channel(AuthProgress::Initializing);
+        let budget = Duration::from_secs(15)
+            + match initialization {
+                Initialization::ReplyAfter(delay) => delay,
+                Initialization::Cancel => Duration::ZERO,
+            };
         let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            budget,
             run_authentication(
                 client_writer,
                 client_reader,
@@ -680,14 +727,13 @@ mod tests {
                     expected_server_version: VERSION.into(),
                     probe_cwd: "/tmp".into(),
                     action,
-                    cancellation: CancellationToken::new(),
+                    cancellation,
                     progress,
                 },
             ),
         )
         .await
-        .expect("authentication should finish")
-        .expect("authentication should succeed");
+        .expect("authentication should finish");
         tokio::time::timeout(std::time::Duration::from_secs(5), agent)
             .await
             .expect("agent should stop after client drain")
@@ -698,6 +744,45 @@ mod tests {
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
         (outcome, observed)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cold_start_initialization_can_reach_login() {
+        let (outcome, observed) = run_with_initialization(
+            AuthAction::Authenticate {
+                method_id: METHOD_ID.into(),
+            },
+            false,
+            Initialization::ReplyAfter(Duration::from_secs(45)),
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            Ok(AuthOutcome::Verified { usage: None, .. })
+        ));
+        assert_eq!(observed.authenticates, 1);
+        assert_eq!(observed.probes, 1);
+        assert_eq!(observed.closes, 1);
+        assert!(observed.prompts.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_initialization_stops_before_login() {
+        let (outcome, observed) = run_with_initialization(
+            AuthAction::Authenticate {
+                method_id: METHOD_ID.into(),
+            },
+            false,
+            Initialization::Cancel,
+        )
+        .await;
+        let error = outcome.expect_err("cancelled initialization must not reach login");
+        assert_eq!(error.kind(), AuthFailureKind::Cancelled);
+        assert_eq!(error.stage(), AuthStage::Initialize);
+        assert_eq!(observed.authenticates, 0);
+        assert_eq!(observed.probes, 0);
+        assert_eq!(observed.closes, 0);
+        assert!(observed.prompts.is_empty());
     }
 
     #[tokio::test]
