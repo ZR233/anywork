@@ -174,6 +174,7 @@ impl TaggedVisibleOutputAdapter {
                 .chain([ModelStreamEvent::Completed { response_id }])
                 .collect(),
             ModelStreamEvent::Failed {
+                request_id,
                 code,
                 http_status,
                 retry_after_ms,
@@ -182,6 +183,7 @@ impl TaggedVisibleOutputAdapter {
                 .flush_all()
                 .into_iter()
                 .chain([ModelStreamEvent::Failed {
+                    request_id,
                     code,
                     http_status,
                     retry_after_ms,

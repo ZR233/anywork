@@ -75,7 +75,7 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
         },
     ] {
         let mut events = interrupted_text("remote work already started");
-        events.push(temporary_error());
+        events.push(json!({"type":"error","error":{"code":"upstream_error","message":"Upstream request failed"}}));
         let fixture = FixtureServer::start(vec![Step::prompt(
             Protocol::ResponsesWebSocket,
             "remote",
@@ -424,6 +424,30 @@ async fn close_and_abrupt_eof_replay_plain_output_but_protocol_and_auth_errors_d
             ),
             false,
         ),
+        (
+            WebSocketAction::Event(
+                json!({"type":"error","error":{"code":"unrecognized_failure","message":"Upstream request failed"}}),
+            ),
+            false,
+        ),
+        (
+            WebSocketAction::Event(
+                json!({"type":"error","error":{"code":"upstream_error","status":401,"message":"authentication failed"}}),
+            ),
+            false,
+        ),
+        (
+            WebSocketAction::Event(
+                json!({"type":"error","error":{"code":"upstream_error","status":403,"message":"permission denied"}}),
+            ),
+            false,
+        ),
+        (
+            WebSocketAction::Event(
+                json!({"type":"error","error":{"code":"upstream_error","status":400,"message":"invalid input"}}),
+            ),
+            false,
+        ),
     ] {
         let mut actions = interrupted_text("old output")
             .into_iter()
@@ -517,76 +541,111 @@ async fn invalid_previous_id_after_response_metadata_recovers_with_full_frozen_h
 
 #[tokio::test]
 async fn completed_presentation_item_does_not_prevent_safe_recovery() {
-    let mut interrupted = responses_text("discarded attempt", "interrupted", "recovery-model");
-    interrupted.pop();
-    interrupted.push(json!({"type":"error","error":{"code":"server_error","message":"temporary failure","retry_after_ms":1}}));
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesWebSocket,
-            "recover",
-            0,
-            Reply::WebSocket(interrupted),
+    for (protocol, profile) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
         ),
-        Step::prompt(
+        (
             Protocol::ResponsesWebSocket,
-            "recover",
-            1,
-            Reply::WebSocket(responses_text(
-                "successful attempt",
-                "recovered",
-                "recovery-model",
-            )),
+            ModelTransportProfile::responses_websocket(),
         ),
-    ])
-    .await
-    .unwrap();
-    let session = ModelSession::default();
-    let result = runtime(&fixture)
-        .complete(
-            request("recover"),
-            ModelInvocationContext::new(session.clone()),
-        )
-        .await;
-    session.close().await.unwrap();
-    let response = result.unwrap();
-    assert_eq!(response.content.as_deref(), Some("successful attempt"));
-    let replay = serde_json::to_string(response.replay.as_ref().unwrap()).unwrap();
-    assert!(replay.contains("successful attempt"));
-    assert!(!replay.contains("discarded attempt"));
-    assert_eq!(response.orchestration.transport_attempts, 2);
-    assert_eq!(response.observation.generation, 1);
-    assert_eq!(response.observation.failed.len(), 1);
-    let discarded = &response.observation.failed[0];
-    assert_eq!(discarded.generation, 0);
-    assert_eq!(
-        discarded
-            .parts
-            .iter()
-            .map(|part| part.text())
-            .collect::<String>(),
-        "discarded attempt"
-    );
-    assert_eq!(
-        response.observation.recovery.unwrap().phase,
-        pl_core::model::ModelRecoveryPhase::Recovered
-    );
-    let persisted: pl_model::completion::CompletionResponse =
-        serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
-    assert_eq!(
-        persisted.observation.failed[0]
-            .parts
-            .iter()
-            .map(|part| part.text())
-            .collect::<String>(),
-        "discarded attempt"
-    );
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records.len(), 2);
-    assert_eq!(
-        records[1].body["previous_response_id"],
-        serde_json::Value::Null
-    );
-    assert_eq!(records[0].body["input"], records[1].body["input"]);
+    ] {
+        for (terminal, expected_message) in [
+            (temporary_error(), "temporary failure"),
+            (
+                json!({"type":"error","error":{"code":"upstream_error","message":"Upstream request failed"}}),
+                "Upstream request failed",
+            ),
+            (
+                json!({"type":"error","code":"upstream_error","message":"Upstream request failed"}),
+                "Upstream request failed",
+            ),
+            (
+                json!({"type":"response.failed","response":{"error":{"code":"upstream_error","message":"Upstream request failed"}}}),
+                "Upstream request failed",
+            ),
+            (
+                json!({"type":"response.failed","response":{"status":"failed","status_code":"503","error":{"code":"unrecognized_failure","message":"status code failure"}}}),
+                "status code failure",
+            ),
+        ] {
+            let reply = |events| match protocol {
+                Protocol::ResponsesHttp => Reply::Sse(events),
+                _ => Reply::WebSocket(events),
+            };
+            let mut interrupted =
+                responses_text("discarded attempt", "interrupted", "recovery-model");
+            interrupted.pop();
+            interrupted.push(terminal);
+            let fixture = FixtureServer::start(vec![
+                Step::prompt(protocol, "recover", 0, reply(interrupted)),
+                Step::prompt(
+                    protocol,
+                    "recover",
+                    1,
+                    reply(responses_text(
+                        "successful attempt",
+                        "recovered",
+                        "recovery-model",
+                    )),
+                ),
+            ])
+            .await
+            .unwrap();
+            let session = ModelSession::default();
+            let result = runtime_with_profile(&fixture, profile.clone())
+                .complete(
+                    request("recover"),
+                    ModelInvocationContext::new(session.clone()),
+                )
+                .await;
+            session.close().await.unwrap();
+            let response = result.unwrap();
+            assert_eq!(response.content.as_deref(), Some("successful attempt"));
+            let replay = serde_json::to_string(response.replay.as_ref().unwrap()).unwrap();
+            assert!(replay.contains("successful attempt"));
+            assert!(!replay.contains("discarded attempt"));
+            assert_eq!(response.orchestration.transport_attempts, 2);
+            assert_eq!(response.observation.generation, 1);
+            assert_eq!(response.observation.failed.len(), 1);
+            let discarded = &response.observation.failed[0];
+            assert_eq!(discarded.generation, 0);
+            assert!(
+                discarded.message.contains(expected_message),
+                "the provider failure is decoded instead of treated as EOF"
+            );
+            assert_eq!(
+                discarded
+                    .parts
+                    .iter()
+                    .map(|part| part.text())
+                    .collect::<String>(),
+                "discarded attempt"
+            );
+            assert_eq!(
+                response.observation.recovery.unwrap().phase,
+                pl_core::model::ModelRecoveryPhase::Recovered
+            );
+            let persisted: pl_model::completion::CompletionResponse =
+                serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+            assert_eq!(
+                persisted.observation.failed[0]
+                    .parts
+                    .iter()
+                    .map(|part| part.text())
+                    .collect::<String>(),
+                "discarded attempt"
+            );
+            let records = fixture.finish().await.unwrap();
+            assert_eq!(records.len(), 2);
+            assert_eq!(
+                records[1].body["previous_response_id"],
+                serde_json::Value::Null
+            );
+            assert_eq!(records[0].body["input"], records[1].body["input"]);
+        }
+    }
 }
 
 #[tokio::test]
@@ -594,7 +653,7 @@ async fn websocket_failed_terminal_preserves_usage_and_does_not_replay() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesWebSocket, "billed", 0, Reply::WebSocket(vec![
             json!({"type":"response.created","response":{"id":"billed","model":"recovery-model"}}),
-            json!({"type":"response.failed","response":{"id":"billed","model":"reported-model","usage":{"input_tokens":11,"output_tokens":3},"error":{"code":"server_error","message":"billed failure"}}}),
+            json!({"type":"response.failed","response":{"id":"billed","model":"reported-model","usage":{"input_tokens":11,"output_tokens":3},"error":{"code":"upstream_error","message":"billed failure"}}}),
         ]),
     )]).await.unwrap();
     let session = ModelSession::default();

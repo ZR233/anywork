@@ -280,6 +280,7 @@ pub(crate) async fn sse(
     let started = std::time::Instant::now();
     let mut received_bytes = 0_u64;
     let transport_diagnostics = diagnostics.clone();
+    let body_request_id = request_id.clone();
     let body = response.bytes_stream().map(move |chunk| match chunk {
         Ok(chunk) => {
             received_bytes = received_bytes.saturating_add(chunk.len() as u64);
@@ -289,12 +290,12 @@ pub(crate) async fn sse(
             let mut error = reqwest_body_error_to_pure(error);
             if let PureError::Provider(failure) = &mut error {
                 failure.context.stage = pl_protocol::ProviderFailureStage::Stream;
-                failure.context.request_id = request_id.clone();
+                failure.context.request_id = body_request_id.clone();
                 failure.http_status = Some(status);
                 failure.message.push_str(&format!(
                     "; version={version:?}; received_bytes={received_bytes}; read_elapsed_ms={}; request_id={}",
                     started.elapsed().as_millis(),
-                    request_id.as_deref().unwrap_or("unknown"),
+                    body_request_id.as_deref().unwrap_or("unknown"),
                 ));
             }
             transport_diagnostics.redact_error(&mut error);
@@ -312,12 +313,14 @@ pub(crate) async fn sse(
         })
         .filter_map(move |event| {
             let diagnostics = diagnostics.clone();
+            let request_id = request_id.clone();
             async move {
                 match event {
                     Ok(event) if event.data.trim().is_empty() => None,
                     Ok(event) => Some(
                         serde_json::from_str::<SseStreamEvent>(&event.data)
                             .map(|mut event| {
+                                event.request_id = request_id;
                                 diagnostics.redact_event(&mut event);
                                 event
                             })
