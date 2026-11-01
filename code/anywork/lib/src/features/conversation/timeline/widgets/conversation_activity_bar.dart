@@ -213,25 +213,28 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
             ),
             if (parts.isNotEmpty || widget.responseContentBuilder != null) ...[
               const SizedBox(height: 5),
-              ConstrainedBox(
-                key: const ValueKey('conversation-activity-response-stream'),
-                constraints: BoxConstraints(
-                  maxHeight: widget.maxResponseHeight,
-                ),
-                child: Scrollbar(
-                  controller: _responseScrollController,
-                  thumbVisibility: true,
-                  child: SingleChildScrollView(
+              Flexible(
+                fit: FlexFit.loose,
+                child: ConstrainedBox(
+                  key: const ValueKey('conversation-activity-response-stream'),
+                  constraints: BoxConstraints(
+                    maxHeight: widget.maxResponseHeight,
+                  ),
+                  child: Scrollbar(
                     controller: _responseScrollController,
-                    primary: false,
-                    child: SelectionArea(
-                      child:
-                          widget.responseContentBuilder?.call(context) ??
-                          _ActivityMarkdownParts(
-                            prefix: 'live-response-part',
-                            parts: parts,
-                            textColor: scheme.onSurface,
-                          ),
+                    thumbVisibility: true,
+                    child: SingleChildScrollView(
+                      controller: _responseScrollController,
+                      primary: false,
+                      child: SelectionArea(
+                        child:
+                            widget.responseContentBuilder?.call(context) ??
+                            _ActivityMarkdownParts(
+                              prefix: 'live-response-part',
+                              parts: parts,
+                              textColor: scheme.onSurface,
+                            ),
+                      ),
                     ),
                   ),
                 ),
@@ -268,7 +271,8 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildTopHeaderRow(context),
-        if (_expanded && _isExpandable) _buildExpandedArea(context),
+        if (_expanded && _isExpandable)
+          Flexible(fit: FlexFit.loose, child: _buildExpandedArea(context)),
       ],
     );
   }
