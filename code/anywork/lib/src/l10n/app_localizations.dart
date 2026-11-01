@@ -10584,29 +10584,11 @@ abstract class AppLocalizations {
   /// **'None currently available'**
   String get recoveryNoAvailableActions;
 
-  /// No description provided for @usagePurpose.
-  ///
-  /// In en, this message translates to:
-  /// **'Purpose'**
-  String get usagePurpose;
-
   /// No description provided for @usageUnknown.
   ///
   /// In en, this message translates to:
   /// **'Unknown'**
   String get usageUnknown;
-
-  /// No description provided for @usageThreadId.
-  ///
-  /// In en, this message translates to:
-  /// **'Thread'**
-  String get usageThreadId;
-
-  /// No description provided for @usageCallId.
-  ///
-  /// In en, this message translates to:
-  /// **'Call'**
-  String get usageCallId;
 
   /// No description provided for @usageFirstOutputNote.
   ///
@@ -10614,245 +10596,83 @@ abstract class AppLocalizations {
   /// **'A completed item marks the client’s first observation of complete tool input, not the provider’s first token; decode time can be 0.'**
   String get usageFirstOutputNote;
 
-  /// No description provided for @usageStatusLegacyUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Historical usage status unknown'**
-  String get usageStatusLegacyUnknown;
-
-  /// No description provided for @usageStatusMissing.
-  ///
-  /// In en, this message translates to:
-  /// **'Usage not retained at completion'**
-  String get usageStatusMissing;
-
-  /// No description provided for @usageStatusPartial.
-  ///
-  /// In en, this message translates to:
-  /// **'Partial usage retained'**
-  String get usageStatusPartial;
-
-  /// No description provided for @usageStatusReported.
-  ///
-  /// In en, this message translates to:
-  /// **'Usage complete'**
-  String get usageStatusReported;
-
-  /// No description provided for @usageStatusInvalid.
-  ///
-  /// In en, this message translates to:
-  /// **'Invalid usage'**
-  String get usageStatusInvalid;
-
-  /// No description provided for @usageCumulativeTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Cumulative usage coverage'**
-  String get usageCumulativeTitle;
-
-  /// No description provided for @usageLatestTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Latest main-model call'**
-  String get usageLatestTitle;
-
-  /// No description provided for @usageIncompleteCalls.
-  ///
-  /// In en, this message translates to:
-  /// **'Incomplete calls'**
-  String get usageIncompleteCalls;
-
-  /// No description provided for @usageMissingCalls.
-  ///
-  /// In en, this message translates to:
-  /// **'Calls missing usage'**
-  String get usageMissingCalls;
-
-  /// No description provided for @usagePartialCalls.
-  ///
-  /// In en, this message translates to:
-  /// **'Calls with partial usage'**
-  String get usagePartialCalls;
-
-  /// No description provided for @usageInvalidCalls.
-  ///
-  /// In en, this message translates to:
-  /// **'Calls with invalid usage'**
-  String get usageInvalidCalls;
-
-  /// No description provided for @usageOverflowCalls.
-  ///
-  /// In en, this message translates to:
-  /// **'Calls with overflow'**
-  String get usageOverflowCalls;
-
-  /// No description provided for @usageHistoryUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Call counts, usage or purpose sources in older history cannot be proven; unknown is not 0.'**
-  String get usageHistoryUnknown;
-
-  /// No description provided for @usageCountsOverflowed.
-  ///
-  /// In en, this message translates to:
-  /// **'Cumulative counts overflowed; displayed counts are not the complete total.'**
-  String get usageCountsOverflowed;
-
-  /// No description provided for @usageRecentGapsTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Recent gaps'**
-  String get usageRecentGapsTitle;
-
-  /// No description provided for @usageRecentGaps.
-  ///
-  /// In en, this message translates to:
-  /// **'Recent gaps (at most 8, not the full history)'**
-  String get usageRecentGaps;
-
-  /// No description provided for @usageCumulativeNote.
-  ///
-  /// In en, this message translates to:
-  /// **'Later complete calls do not erase cumulative gaps; the latest call’s completeness is shown separately.'**
-  String get usageCumulativeNote;
-
-  /// No description provided for @usageCancelledNote.
-  ///
-  /// In en, this message translates to:
-  /// **'A cancelled call only means the corresponding usage was not retained at completion; this does not establish that the provider did not send it.'**
-  String get usageCancelledNote;
-
-  /// No description provided for @usageCacheCoverage.
-  ///
-  /// In en, this message translates to:
-  /// **'Cache coverage samples (since upgrade)'**
-  String get usageCacheCoverage;
-
-  /// No description provided for @usageCacheCoverageNote.
-  ///
-  /// In en, this message translates to:
-  /// **'Only samples eligible for cache accumulation are counted; the sample count behind older cache totals cannot be inferred from post-upgrade counts.'**
-  String get usageCacheCoverageNote;
-
-  /// No description provided for @usageCacheLegacyUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Older cache sample counts are unknown; the current count starts after the upgrade.'**
-  String get usageCacheLegacyUnknown;
-
   /// No description provided for @usageStatisticsGapNote.
   ///
   /// In en, this message translates to:
   /// **'A statistics synchronization gap is separate from unknown cumulative usage; recovered synchronization does not prove complete historical usage.'**
   String get usageStatisticsGapNote;
 
-  /// No description provided for @usageOutcomeSucceeded.
+  /// No description provided for @acpUsageTitle.
   ///
   /// In en, this message translates to:
-  /// **'Succeeded'**
-  String get usageOutcomeSucceeded;
+  /// **'Account quota'**
+  String get acpUsageTitle;
 
-  /// No description provided for @usageOutcomeRejected.
+  /// No description provided for @acpUsageQuery.
   ///
   /// In en, this message translates to:
-  /// **'Rejected'**
-  String get usageOutcomeRejected;
+  /// **'Query quota'**
+  String get acpUsageQuery;
 
-  /// No description provided for @usageOutcomeCancelled.
+  /// No description provided for @acpUsageRefresh.
   ///
   /// In en, this message translates to:
-  /// **'Cancelled'**
-  String get usageOutcomeCancelled;
+  /// **'Refresh quota'**
+  String get acpUsageRefresh;
 
-  /// No description provided for @usageOutcomeFailed.
+  /// No description provided for @acpUsageNotQueried.
   ///
   /// In en, this message translates to:
-  /// **'Failed'**
-  String get usageOutcomeFailed;
+  /// **'Account quota has not been queried.'**
+  String get acpUsageNotQueried;
 
-  /// No description provided for @usageOutcomeInterrupted.
+  /// No description provided for @acpUsageNotApplicable.
   ///
   /// In en, this message translates to:
-  /// **'Interrupted'**
-  String get usageOutcomeInterrupted;
+  /// **'Plan quota is not available for this authentication method.'**
+  String get acpUsageNotApplicable;
 
-  /// No description provided for @usageOtherPurposeCalls.
+  /// No description provided for @acpUsageUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Calls with other purposes'**
-  String get usageOtherPurposeCalls;
+  /// **'The server has not provided quota data yet.'**
+  String get acpUsageUnavailable;
 
-  /// No description provided for @usageGapUnreported.
+  /// No description provided for @acpUsageNoLimits.
   ///
   /// In en, this message translates to:
-  /// **'Not retained'**
-  String get usageGapUnreported;
+  /// **'The server reported no quota limits.'**
+  String get acpUsageNoLimits;
 
-  /// No description provided for @usageGapInconsistent.
+  /// No description provided for @acpUsageNoActiveLimits.
   ///
   /// In en, this message translates to:
-  /// **'Inconsistent'**
-  String get usageGapInconsistent;
+  /// **'This model group reported no active quota windows.'**
+  String get acpUsageNoActiveLimits;
 
-  /// No description provided for @usageGapOverflow.
+  /// No description provided for @acpUsageFailed.
   ///
   /// In en, this message translates to:
-  /// **'Overflow'**
-  String get usageGapOverflow;
+  /// **'Quota query failed. Try again.'**
+  String get acpUsageFailed;
 
-  /// No description provided for @usageFieldInput.
+  /// No description provided for @acpUsageInvalidResponse.
   ///
   /// In en, this message translates to:
-  /// **'Input'**
-  String get usageFieldInput;
+  /// **'The server returned an unrecognized quota report.'**
+  String get acpUsageInvalidResponse;
 
-  /// No description provided for @usageFieldOutput.
+  /// No description provided for @acpUsageDisabled.
   ///
   /// In en, this message translates to:
-  /// **'Output'**
-  String get usageFieldOutput;
+  /// **'Disabled'**
+  String get acpUsageDisabled;
 
-  /// No description provided for @usageFieldCacheRead.
+  /// No description provided for @acpUsageUnknown.
   ///
   /// In en, this message translates to:
-  /// **'Cache read'**
-  String get usageFieldCacheRead;
-
-  /// No description provided for @usageFieldCacheWrite.
-  ///
-  /// In en, this message translates to:
-  /// **'Cache write'**
-  String get usageFieldCacheWrite;
-
-  /// No description provided for @usageFieldReasoning.
-  ///
-  /// In en, this message translates to:
-  /// **'Reasoning'**
-  String get usageFieldReasoning;
-
-  /// No description provided for @usageFieldTotal.
-  ///
-  /// In en, this message translates to:
-  /// **'Total'**
-  String get usageFieldTotal;
-
-  /// No description provided for @usageFieldInferenceCount.
-  ///
-  /// In en, this message translates to:
-  /// **'Call count'**
-  String get usageFieldInferenceCount;
-
-  /// No description provided for @usageFieldCachePair.
-  ///
-  /// In en, this message translates to:
-  /// **'Cache counters'**
-  String get usageFieldCachePair;
-
-  /// No description provided for @usageFieldThroughputPair.
-  ///
-  /// In en, this message translates to:
-  /// **'Throughput counters'**
-  String get usageFieldThroughputPair;
+  /// **'Remaining amount unknown'**
+  String get acpUsageUnknown;
 }
 
 class _AppLocalizationsDelegate

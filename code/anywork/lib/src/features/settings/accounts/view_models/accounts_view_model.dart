@@ -61,6 +61,7 @@ class AccountsViewModel extends _$AccountsViewModel {
   AccountStrings _strings = const AccountStrings.empty();
   AccountDemand? _usageDemand;
   AccountDemand? _summaryDemand;
+  AccountDemand? _acpAuthDemand;
   String _search = '';
   final Map<AccountDisplayKey, String> _errors = {};
   final Set<AccountDisplayKey> _pending = {};
@@ -84,10 +85,12 @@ class AccountsViewModel extends _$AccountsViewModel {
       _accounts.state.watch(_summariesChanged),
       _usage.state.watch((_) => _publish()),
       _usage.queryFailures.watch((_) => _publish()),
+      _acp.auth.watch((_) => _publish()),
     ];
     ref.onDispose(() {
       releaseAccountDemand(_summaryDemand);
       releaseAccountDemand(_usageDemand);
+      releaseAccountDemand(_acpAuthDemand);
       for (final attempt in _attempts.values.toList()) {
         if (identical(attempt.lifetime, lifetime)) _retireAttempt(attempt);
       }
@@ -106,10 +109,16 @@ class AccountsViewModel extends _$AccountsViewModel {
   void setVisible(bool visible) {
     if (visible) {
       _usageDemand ??= _usage.observeVisible();
+      // Retain the shared auth snapshot for visible list projection only;
+      // observing it does not issue a quota query.
+      _acpAuthDemand ??= _acp.observeAuth();
     } else {
       final demand = _usageDemand;
       _usageDemand = null;
       releaseAccountDemand(demand);
+      final acpDemand = _acpAuthDemand;
+      _acpAuthDemand = null;
+      releaseAccountDemand(acpDemand);
     }
   }
 
@@ -161,6 +170,19 @@ class AccountsViewModel extends _$AccountsViewModel {
 
   String accountName(AccountDisplayKey key) =>
       _accounts.state.value.account(domainIdentity(key))?.name ?? key.id;
+  AcpUsagePresentation? _projectRowAcpUsage(AccountSummary account) {
+    final revision = account.acpConnectionRevision;
+    if (revision == null) return null;
+    final projection = projectAcpUsage(
+      snapshot: _acp.auth.value.value,
+      stale: _acp.auth.value.stale,
+      accountId: account.identity.accountId,
+      connectionRevision: revision,
+      strings: _strings,
+    );
+    return projection.queried || projection.busy ? projection : null;
+  }
+
   bool needsReplacement(AccountDisplayKey key) =>
       key.kind == AccountKind.native &&
       _accounts.state.value.account(domainIdentity(key))?.isDefault == true &&
@@ -537,7 +559,10 @@ class AccountsViewModel extends _$AccountsViewModel {
                         _strings,
                       ),
                     )
-                  : AccountRowContent.acp(status: _strings['acp']),
+                  : AccountRowContent.acp(
+                      status: _strings['acp'],
+                      usage: _projectRowAcpUsage(account),
+                    ),
               operationError:
                   _errors[displayIdentity(account.identity)] ??
                   _refreshErrors[displayIdentity(account.identity)]?.message,

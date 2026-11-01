@@ -1,14 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../test_driver/realtime_journey.dart' as journey;
+import '../../test_driver/timeline_observation.dart';
 
-Map<String, Object?> _item(String id, int seq, String status) => {
+Map<String, Object?> _item(String id, String status) => {
   'id': id,
-  'appendSeq': seq,
-  'sourceEffectSeq': seq,
   'sealedAt': 1700000000,
+  'compatibility': 'current',
+  'payloadByteLength': 100,
+  'presentationContract': 'builtin.exec@2',
+  'childrenParentId': null,
+  'diagnostic': null,
   'omittedBytes': 0,
-  'kind': 'toolCall',
+  'kind': 'tool',
   'status': status,
   'text': '',
   'channel': null,
@@ -21,7 +25,7 @@ Map<String, Object?> _item(String id, int seq, String status) => {
     'arguments': '{"command":"pwd"}',
     'result': status == 'succeeded' ? 'final stdout' : 'Task is running',
     'progressBytes': 0,
-    'appendSeq': seq,
+    'presentationContract': 'builtin.exec@2',
     'denialReason': null,
     'workingDirectory': null,
     'exitCode': status == 'succeeded' ? 0 : null,
@@ -39,19 +43,31 @@ Map<String, dynamic> _snapshot({
     'ready': true,
     'mode': 'live',
     'connection': 'ready',
-    'timelineEpoch': 'epoch',
-    'completedThrough': items.length,
-    'loadedCount': items.length,
-    'itemCount': items.length,
-    'itemIds': [for (final item in items) item['id']],
+    'loadedCount': 0,
+    'itemCount': 0,
+    'itemIds': <String>[],
     'olderCursor': null,
     'hasOlder': false,
     'loadingOlder': false,
     'olderError': null,
     'hasNewOutput': false,
-    'items': items,
-    'presentationItems': <Object?>[],
-    'hiddenPresentationItems': <Object?>[],
+    'items': <Object?>[],
+    'children': [
+      {
+        'parentId': 'provided-parent',
+        'generation': 2,
+        'ready': true,
+        'loadedCount': items.length,
+        'olderCursor': null,
+        'loadingOlder': false,
+        'error': null,
+        'appliedSets': 1,
+        'appliedPrepends': 0,
+        'appliedAppends': 0,
+        'itemIds': [for (final item in items) item['id']],
+        'items': items,
+      },
+    ],
   },
   'conversationActivity': activityTools == null
       ? null
@@ -65,13 +81,17 @@ Map<String, dynamic> _snapshot({
 
 void main() {
   test('completed lookup skips a separate immutable background receipt', () {
-    final receipt = _item('receipt', 1, 'running');
-    final completion = _item('completion', 2, 'succeeded');
+    final receipt = _item('receipt', 'running');
+    final completion = _item('completion', 'succeeded');
     final held = _snapshot(items: [receipt]);
     expect(journey.completedToolByCallId(held, 'call'), isNull);
     final finished = _snapshot(items: [receipt, completion]);
     final result = journey.completedToolByCallId(finished, 'call')!;
-    expect(result.appendSeq, 2);
+    final children = TimelineObservation.parse(finished).children.single;
+    expect(children.parentId, 'provided-parent');
+    expect(children.itemIds, ['receipt', 'completion']);
+    expect(result.callId, 'call');
+    expect(result.presentationContract, 'builtin.exec@2');
     expect(result.status, 'succeeded');
     expect(result.result, 'final stdout');
     expect(
@@ -79,11 +99,12 @@ void main() {
       'running',
       reason: 'completion did not mutate ACK',
     );
+    expect((receipt['tool']! as Map)['result'], 'Task is running');
   });
 
   test('only current activity proves queued or executing tool state', () {
-    final receipt = _item('receipt', 1, 'running');
-    final history = [receipt, _item('completion', 2, 'succeeded')];
+    final receipt = _item('receipt', 'running');
+    final history = [receipt, _item('completion', 'succeeded')];
     expect(journey.activeExecCount(_snapshot(items: history)), 0);
     for (final state in ['queued', 'running']) {
       final current = _snapshot(

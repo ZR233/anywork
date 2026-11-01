@@ -17,6 +17,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub(super) const INITIALIZE_BUDGET: Duration = Duration::from_secs(30);
 /// `session/new` 探测预算。
 pub(super) const PROBE_BUDGET: Duration = Duration::from_secs(60);
+/// 固定 `/usage` 回合预算；只覆盖 prompt 请求及匹配会话的报告收集。
+pub(super) const USAGE_QUERY_BUDGET: Duration = Duration::from_secs(60);
 /// 人工登录预算。
 pub(super) const AUTHENTICATE_BUDGET: Duration = Duration::from_secs(15 * 60);
 /// `session/close` 预算。
@@ -29,6 +31,8 @@ pub(super) const CLOSE_BUDGET: Duration = Duration::from_secs(10);
 pub(super) const DRAIN_BUDGET: Duration = Duration::from_secs(10);
 /// 单次认证命令允许消费的入站字节上限。
 pub(super) const INPUT_BYTE_BUDGET: u64 = 8 * 1024 * 1024;
+/// 固定 `/usage` 报告中允许保留的 agent text 总量。
+pub(super) const USAGE_REPORT_BYTE_BUDGET: usize = 256 * 1024;
 
 /// 流层观察句柄：入站预算耗尽与真实读/写失败。
 ///

@@ -7947,10 +7947,15 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
         let mut var_connectionRevision = <u64>::sse_decode(deserializer);
         let mut var_state =
             <crate::api::studio::types::acp::BridgeAcpAuthState>::sse_decode(deserializer);
+        let mut var_usage =
+            <Option<crate::api::studio::types::acp::BridgeAcpUsageObservation>>::sse_decode(
+                deserializer,
+            );
         return crate::api::studio::types::acp::BridgeAcpAuthAccount {
             account_id: var_accountId,
             connection_revision: var_connectionRevision,
             state: var_state,
+            usage: var_usage,
         };
     }
 }
@@ -7964,6 +7969,9 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAction {
                 return crate::api::studio::types::acp::BridgeAcpAuthAction::Check;
             }
             1 => {
+                return crate::api::studio::types::acp::BridgeAcpAuthAction::QueryUsage;
+            }
+            2 => {
                 let mut var_methodId = <String>::sse_decode(deserializer);
                 return crate::api::studio::types::acp::BridgeAcpAuthAction::Authenticate {
                     method_id: var_methodId,
@@ -8518,6 +8526,64 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpProvider {
     }
 }
 
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpQuotaGroup {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_limits =
+            <Vec<crate::api::studio::types::acp::BridgeAcpQuotaLimit>>::sse_decode(deserializer);
+        return crate::api::studio::types::acp::BridgeAcpQuotaGroup {
+            name: var_name,
+            limits: var_limits,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpQuotaLimit {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_label = <String>::sse_decode(deserializer);
+        let mut var_remaining =
+            <crate::api::studio::types::acp::BridgeAcpQuotaRemaining>::sse_decode(deserializer);
+        let mut var_nextResetAt = <Option<i64>>::sse_decode(deserializer);
+        return crate::api::studio::types::acp::BridgeAcpQuotaLimit {
+            label: var_label,
+            remaining: var_remaining,
+            next_reset_at: var_nextResetAt,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpQuotaRemaining {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_value = <u8>::sse_decode(deserializer);
+                return crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Percentage {
+                    value: var_value,
+                };
+            }
+            1 => {
+                let mut var_value = <u64>::sse_decode(deserializer);
+                return crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Units {
+                    value: var_value,
+                };
+            }
+            2 => {
+                return crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Unknown;
+            }
+            3 => {
+                return crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Disabled;
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::acp::BridgeAcpServerInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8529,6 +8595,70 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpServerInfo {
             title: var_title,
             version: var_version,
         };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpUsageFailureCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Query,
+            1 => crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Timeout,
+            2 => crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Transport,
+            3 => crate::api::studio::types::acp::BridgeAcpUsageFailureCode::ResourceLimit,
+            4 => crate::api::studio::types::acp::BridgeAcpUsageFailureCode::InvalidResponse,
+            _ => unreachable!("Invalid variant for BridgeAcpUsageFailureCode: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpUsageObservation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_checkedAt = <i64>::sse_decode(deserializer);
+        let mut var_state =
+            <crate::api::studio::types::acp::BridgeAcpUsageState>::sse_decode(deserializer);
+        return crate::api::studio::types::acp::BridgeAcpUsageObservation {
+            checked_at: var_checkedAt,
+            state: var_state,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpUsageState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_groups =
+                    <Vec<crate::api::studio::types::acp::BridgeAcpQuotaGroup>>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::acp::BridgeAcpUsageState::Ready {
+                    groups: var_groups,
+                };
+            }
+            1 => {
+                return crate::api::studio::types::acp::BridgeAcpUsageState::NotApplicable;
+            }
+            2 => {
+                return crate::api::studio::types::acp::BridgeAcpUsageState::Unavailable;
+            }
+            3 => {
+                let mut var_code =
+                    <crate::api::studio::types::acp::BridgeAcpUsageFailureCode>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::acp::BridgeAcpUsageState::Failed {
+                    code: var_code,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 
@@ -18009,6 +18139,34 @@ impl SseDecode for Vec<crate::api::studio::types::acp_install::BridgeAcpInstallE
     }
 }
 
+impl SseDecode for Vec<crate::api::studio::types::acp::BridgeAcpQuotaGroup> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::acp::BridgeAcpQuotaGroup>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::acp::BridgeAcpQuotaLimit> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::acp::BridgeAcpQuotaLimit>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::runtime::BridgeActiveTurn> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -19393,6 +19551,21 @@ impl SseDecode for Option<crate::api::studio::types::acp::BridgeAcpServerInfo> {
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::acp::BridgeAcpServerInfo>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::acp::BridgeAcpUsageObservation> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::acp::BridgeAcpUsageObservation>::sse_decode(
+                    deserializer,
+                ),
             );
         } else {
             return None;
@@ -22535,6 +22708,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcp
             self.account_id.into_into_dart().into_dart(),
             self.connection_revision.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
+            self.usage.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -22557,8 +22731,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcp
             crate::api::studio::types::acp::BridgeAcpAuthAction::Check => {
                 [0.into_dart()].into_dart()
             }
+            crate::api::studio::types::acp::BridgeAcpAuthAction::QueryUsage => {
+                [1.into_dart()].into_dart()
+            }
             crate::api::studio::types::acp::BridgeAcpAuthAction::Authenticate { method_id } => {
-                [1.into_dart(), method_id.into_into_dart().into_dart()].into_dart()
+                [2.into_dart(), method_id.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -23239,6 +23416,82 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcp
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpQuotaGroup {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.name.into_into_dart().into_dart(),
+            self.limits.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpQuotaGroup
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpQuotaGroup>
+    for crate::api::studio::types::acp::BridgeAcpQuotaGroup
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpQuotaGroup {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpQuotaLimit {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.label.into_into_dart().into_dart(),
+            self.remaining.into_into_dart().into_dart(),
+            self.next_reset_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpQuotaLimit
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpQuotaLimit>
+    for crate::api::studio::types::acp::BridgeAcpQuotaLimit
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpQuotaLimit {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpQuotaRemaining {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Percentage { value } => {
+                [0.into_dart(), value.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Units { value } => {
+                [1.into_dart(), value.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Unknown => {
+                [2.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Disabled => {
+                [3.into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpQuotaRemaining
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpQuotaRemaining>
+    for crate::api::studio::types::acp::BridgeAcpQuotaRemaining
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpQuotaRemaining {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpServerInfo {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -23257,6 +23510,84 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcp
     for crate::api::studio::types::acp::BridgeAcpServerInfo
 {
     fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpServerInfo {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpUsageFailureCode {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Query => 0.into_dart(),
+            Self::Timeout => 1.into_dart(),
+            Self::Transport => 2.into_dart(),
+            Self::ResourceLimit => 3.into_dart(),
+            Self::InvalidResponse => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpUsageFailureCode
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpUsageFailureCode>
+    for crate::api::studio::types::acp::BridgeAcpUsageFailureCode
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpUsageFailureCode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpUsageObservation {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.checked_at.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpUsageObservation
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpUsageObservation>
+    for crate::api::studio::types::acp::BridgeAcpUsageObservation
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpUsageObservation {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpUsageState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpUsageState::Ready { groups } => {
+                [0.into_dart(), groups.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::NotApplicable => {
+                [1.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::Unavailable => {
+                [2.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::Failed { code } => {
+                [3.into_dart(), code.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpUsageState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpUsageState>
+    for crate::api::studio::types::acp::BridgeAcpUsageState
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpUsageState {
         self
     }
 }
@@ -36378,6 +36709,9 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
         <String>::sse_encode(self.account_id, serializer);
         <u64>::sse_encode(self.connection_revision, serializer);
         <crate::api::studio::types::acp::BridgeAcpAuthState>::sse_encode(self.state, serializer);
+        <Option<crate::api::studio::types::acp::BridgeAcpUsageObservation>>::sse_encode(
+            self.usage, serializer,
+        );
     }
 }
 
@@ -36388,8 +36722,11 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthAction {
             crate::api::studio::types::acp::BridgeAcpAuthAction::Check => {
                 <i32>::sse_encode(0, serializer);
             }
-            crate::api::studio::types::acp::BridgeAcpAuthAction::Authenticate { method_id } => {
+            crate::api::studio::types::acp::BridgeAcpAuthAction::QueryUsage => {
                 <i32>::sse_encode(1, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpAuthAction::Authenticate { method_id } => {
+                <i32>::sse_encode(2, serializer);
                 <String>::sse_encode(method_id, serializer);
             }
             _ => {
@@ -36867,12 +37204,116 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpProvider {
     }
 }
 
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpQuotaGroup {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.name, serializer);
+        <Vec<crate::api::studio::types::acp::BridgeAcpQuotaLimit>>::sse_encode(
+            self.limits,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpQuotaLimit {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.label, serializer);
+        <crate::api::studio::types::acp::BridgeAcpQuotaRemaining>::sse_encode(
+            self.remaining,
+            serializer,
+        );
+        <Option<i64>>::sse_encode(self.next_reset_at, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpQuotaRemaining {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Percentage { value } => {
+                <i32>::sse_encode(0, serializer);
+                <u8>::sse_encode(value, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Units { value } => {
+                <i32>::sse_encode(1, serializer);
+                <u64>::sse_encode(value, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Unknown => {
+                <i32>::sse_encode(2, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpQuotaRemaining::Disabled => {
+                <i32>::sse_encode(3, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for crate::api::studio::types::acp::BridgeAcpServerInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.name, serializer);
         <Option<String>>::sse_encode(self.title, serializer);
         <String>::sse_encode(self.version, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpUsageFailureCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Query => 0,
+                crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Timeout => 1,
+                crate::api::studio::types::acp::BridgeAcpUsageFailureCode::Transport => 2,
+                crate::api::studio::types::acp::BridgeAcpUsageFailureCode::ResourceLimit => 3,
+                crate::api::studio::types::acp::BridgeAcpUsageFailureCode::InvalidResponse => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpUsageObservation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.checked_at, serializer);
+        <crate::api::studio::types::acp::BridgeAcpUsageState>::sse_encode(self.state, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpUsageState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpUsageState::Ready { groups } => {
+                <i32>::sse_encode(0, serializer);
+                <Vec<crate::api::studio::types::acp::BridgeAcpQuotaGroup>>::sse_encode(
+                    groups, serializer,
+                );
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::NotApplicable => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::Unavailable => {
+                <i32>::sse_encode(2, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpUsageState::Failed { code } => {
+                <i32>::sse_encode(3, serializer);
+                <crate::api::studio::types::acp::BridgeAcpUsageFailureCode>::sse_encode(
+                    code, serializer,
+                );
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 
@@ -44189,6 +44630,26 @@ impl SseEncode for Vec<crate::api::studio::types::acp_install::BridgeAcpInstallE
     }
 }
 
+impl SseEncode for Vec<crate::api::studio::types::acp::BridgeAcpQuotaGroup> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::acp::BridgeAcpQuotaGroup>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::acp::BridgeAcpQuotaLimit> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::acp::BridgeAcpQuotaLimit>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::runtime::BridgeActiveTurn> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -45267,6 +45728,18 @@ impl SseEncode for Option<crate::api::studio::types::acp::BridgeAcpServerInfo> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::acp::BridgeAcpServerInfo>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::acp::BridgeAcpUsageObservation> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::acp::BridgeAcpUsageObservation>::sse_encode(
+                value, serializer,
+            );
         }
     }
 }

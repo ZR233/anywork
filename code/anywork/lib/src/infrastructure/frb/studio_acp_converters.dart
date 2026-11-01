@@ -178,7 +178,59 @@ AcpAuthAccountView _acpAuthAccountFromFrb(frb.BridgeAcpAuthAccount value) =>
       accountId: value.accountId,
       connectionRevision: _frbInt(value.connectionRevision),
       state: _acpAuthStateFromFrb(value.state),
+      usage: value.usage == null ? null : _acpUsageFromFrb(value.usage!),
     );
+
+AcpUsageObservationView _acpUsageFromFrb(
+  frb.BridgeAcpUsageObservation value,
+) => AcpUsageObservationView(
+  checkedAt: _frbInt(value.checkedAt),
+  state: switch (value.state) {
+    frb.BridgeAcpUsageState_Ready(:final groups) => AcpUsageReadyView(
+      groups: [
+        for (final group in groups)
+          AcpQuotaGroupView(
+            name: group.name,
+            limits: [
+              for (final limit in group.limits)
+                AcpQuotaLimitView(
+                  label: limit.label,
+                  nextResetAt: limit.nextResetAt == null
+                      ? null
+                      : _frbInt(limit.nextResetAt!),
+                  remaining: switch (limit.remaining) {
+                    frb.BridgeAcpQuotaRemaining_Percentage(:final value) =>
+                      AcpQuotaPercentageView(value),
+                    frb.BridgeAcpQuotaRemaining_Units(:final value) =>
+                      AcpQuotaUnitsView(_frbInt(value)),
+                    frb.BridgeAcpQuotaRemaining_Unknown() =>
+                      const AcpQuotaUnknownView(),
+                    frb.BridgeAcpQuotaRemaining_Disabled() =>
+                      const AcpQuotaDisabledView(),
+                  },
+                ),
+            ],
+          ),
+      ],
+    ),
+    frb.BridgeAcpUsageState_NotApplicable() =>
+      const AcpUsageNotApplicableView(),
+    frb.BridgeAcpUsageState_Unavailable() => const AcpUsageUnavailableView(),
+    frb.BridgeAcpUsageState_Failed(:final code) => AcpUsageFailedView(
+      code: switch (code) {
+        frb.BridgeAcpUsageFailureCode.query => AcpUsageFailureCodeView.query,
+        frb.BridgeAcpUsageFailureCode.timeout =>
+          AcpUsageFailureCodeView.timeout,
+        frb.BridgeAcpUsageFailureCode.transport =>
+          AcpUsageFailureCodeView.transport,
+        frb.BridgeAcpUsageFailureCode.resourceLimit =>
+          AcpUsageFailureCodeView.resourceLimit,
+        frb.BridgeAcpUsageFailureCode.invalidResponse =>
+          AcpUsageFailureCodeView.invalidResponse,
+      },
+    ),
+  },
+);
 
 AcpAuthSnapshotView _acpAuthSnapshotFromFrb(frb.BridgeAcpAuthSnapshot value) =>
     AcpAuthSnapshotView(
@@ -198,6 +250,7 @@ AcpAuthCommandReply _acpAuthReplyFromFrb(frb.BridgeAcpAuthCommandReply value) =>
 frb.BridgeAcpAuthAction _acpAuthActionToFrb(AcpAuthActionView action) =>
     switch (action) {
       AcpCheckActionView() => const frb.BridgeAcpAuthAction.check(),
+      AcpQueryUsageActionView() => const frb.BridgeAcpAuthAction.queryUsage(),
       AcpAuthenticateActionView(:final methodId) =>
         frb.BridgeAcpAuthAction.authenticate(methodId: methodId),
     };

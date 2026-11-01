@@ -1961,6 +1961,564 @@ as bool,
 }
 
 /// @nodoc
+mixin _$AccountQuotaGroupPresentation {
+
+ String get name; List<AccountQuotaPresentation> get quotas; String? get emptyLabel;
+/// Create a copy of AccountQuotaGroupPresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountQuotaGroupPresentationCopyWith<AccountQuotaGroupPresentation> get copyWith => _$AccountQuotaGroupPresentationCopyWithImpl<AccountQuotaGroupPresentation>(this as AccountQuotaGroupPresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountQuotaGroupPresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountQuotaGroupPresentation&&(identical(other.name, _this.name) || other.name == _this.name)&&const DeepCollectionEquality().equals(other.quotas, _this.quotas)&&(identical(other.emptyLabel, _this.emptyLabel) || other.emptyLabel == _this.emptyLabel));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountQuotaGroupPresentation;
+  return Object.hash(runtimeType,_this.name,const DeepCollectionEquality().hash(_this.quotas),_this.emptyLabel);
+}
+
+@override
+String toString() {
+  final _this = this as AccountQuotaGroupPresentation;
+  return 'AccountQuotaGroupPresentation(name: ${_this.name}, quotas: ${_this.quotas}, emptyLabel: ${_this.emptyLabel})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountQuotaGroupPresentationCopyWith<$Res>  {
+  factory $AccountQuotaGroupPresentationCopyWith(AccountQuotaGroupPresentation value, $Res Function(AccountQuotaGroupPresentation) _then) = _$AccountQuotaGroupPresentationCopyWithImpl;
+@useResult
+$Res call({
+ String name, List<AccountQuotaPresentation> quotas, String? emptyLabel
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountQuotaGroupPresentationCopyWithImpl<$Res>
+    implements $AccountQuotaGroupPresentationCopyWith<$Res> {
+  _$AccountQuotaGroupPresentationCopyWithImpl(this._self, this._then);
+
+  final AccountQuotaGroupPresentation _self;
+  final $Res Function(AccountQuotaGroupPresentation) _then;
+
+/// Create a copy of AccountQuotaGroupPresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? name = null,Object? quotas = null,Object? emptyLabel = freezed,}) {
+  return _then(AccountQuotaGroupPresentation(
+name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,quotas: null == quotas ? _self.quotas : quotas // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaPresentation>,emptyLabel: freezed == emptyLabel ? _self.emptyLabel : emptyLabel // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountQuotaGroupPresentation].
+extension AccountQuotaGroupPresentationPatterns on AccountQuotaGroupPresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountQuotaGroupPresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountQuotaGroupPresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountQuotaGroupPresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String name,  List<AccountQuotaPresentation> quotas,  String? emptyLabel)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation() when $default != null:
+return $default(_that.name,_that.quotas,_that.emptyLabel);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String name,  List<AccountQuotaPresentation> quotas,  String? emptyLabel)  $default,) {final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation():
+return $default(_that.name,_that.quotas,_that.emptyLabel);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String name,  List<AccountQuotaPresentation> quotas,  String? emptyLabel)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountQuotaGroupPresentation() when $default != null:
+return $default(_that.name,_that.quotas,_that.emptyLabel);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountQuotaGroupPresentation implements AccountQuotaGroupPresentation {
+  const _AccountQuotaGroupPresentation({required this.name,  List<AccountQuotaPresentation> quotas = const <AccountQuotaPresentation>[], this.emptyLabel}): _quotas = quotas;
+
+
+@override final  String name;
+ final  List<AccountQuotaPresentation> _quotas;
+@override@JsonKey() List<AccountQuotaPresentation> get quotas {
+  if (_quotas is EqualUnmodifiableListView) return _quotas;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_quotas);
+}
+
+@override final  String? emptyLabel;
+
+/// Create a copy of AccountQuotaGroupPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountQuotaGroupPresentationCopyWith<_AccountQuotaGroupPresentation> get copyWith => __$AccountQuotaGroupPresentationCopyWithImpl<_AccountQuotaGroupPresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountQuotaGroupPresentation&&(identical(other.name, name) || other.name == name)&&const DeepCollectionEquality().equals(other.quotas, _quotas)&&(identical(other.emptyLabel, emptyLabel) || other.emptyLabel == emptyLabel));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,name,const DeepCollectionEquality().hash(_quotas),emptyLabel);
+}
+
+@override
+String toString() {
+    return 'AccountQuotaGroupPresentation(name: $name, quotas: $quotas, emptyLabel: $emptyLabel)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountQuotaGroupPresentationCopyWith<$Res> implements $AccountQuotaGroupPresentationCopyWith<$Res> {
+  factory _$AccountQuotaGroupPresentationCopyWith(_AccountQuotaGroupPresentation value, $Res Function(_AccountQuotaGroupPresentation) _then) = __$AccountQuotaGroupPresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ String name, List<AccountQuotaPresentation> quotas, String? emptyLabel
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountQuotaGroupPresentationCopyWithImpl<$Res>
+    implements _$AccountQuotaGroupPresentationCopyWith<$Res> {
+  __$AccountQuotaGroupPresentationCopyWithImpl(this._self, this._then);
+
+  final _AccountQuotaGroupPresentation _self;
+  final $Res Function(_AccountQuotaGroupPresentation) _then;
+
+/// Create a copy of AccountQuotaGroupPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? name = null,Object? quotas = null,Object? emptyLabel = freezed,}) {
+  return _then(_AccountQuotaGroupPresentation(
+name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,quotas: null == quotas ? _self._quotas : quotas // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaPresentation>,emptyLabel: freezed == emptyLabel ? _self.emptyLabel : emptyLabel // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AcpUsagePresentation {
+
+ List<AccountQuotaGroupPresentation> get groups; String? get status; String? get updatedLabel; bool get busy; bool get queried;
+/// Create a copy of AcpUsagePresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpUsagePresentationCopyWith<AcpUsagePresentation> get copyWith => _$AcpUsagePresentationCopyWithImpl<AcpUsagePresentation>(this as AcpUsagePresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpUsagePresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpUsagePresentation&&const DeepCollectionEquality().equals(other.groups, _this.groups)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel)&&(identical(other.busy, _this.busy) || other.busy == _this.busy)&&(identical(other.queried, _this.queried) || other.queried == _this.queried));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpUsagePresentation;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.groups),_this.status,_this.updatedLabel,_this.busy,_this.queried);
+}
+
+@override
+String toString() {
+  final _this = this as AcpUsagePresentation;
+  return 'AcpUsagePresentation(groups: ${_this.groups}, status: ${_this.status}, updatedLabel: ${_this.updatedLabel}, busy: ${_this.busy}, queried: ${_this.queried})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpUsagePresentationCopyWith<$Res>  {
+  factory $AcpUsagePresentationCopyWith(AcpUsagePresentation value, $Res Function(AcpUsagePresentation) _then) = _$AcpUsagePresentationCopyWithImpl;
+@useResult
+$Res call({
+ List<AccountQuotaGroupPresentation> groups, String? status, String? updatedLabel, bool busy, bool queried
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpUsagePresentationCopyWithImpl<$Res>
+    implements $AcpUsagePresentationCopyWith<$Res> {
+  _$AcpUsagePresentationCopyWithImpl(this._self, this._then);
+
+  final AcpUsagePresentation _self;
+  final $Res Function(AcpUsagePresentation) _then;
+
+/// Create a copy of AcpUsagePresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? groups = null,Object? status = freezed,Object? updatedLabel = freezed,Object? busy = null,Object? queried = null,}) {
+  return _then(AcpUsagePresentation(
+groups: null == groups ? _self.groups : groups // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaGroupPresentation>,status: freezed == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
+as String?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as String?,busy: null == busy ? _self.busy : busy // ignore: cast_nullable_to_non_nullable
+as bool,queried: null == queried ? _self.queried : queried // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpUsagePresentation].
+extension AcpUsagePresentationPatterns on AcpUsagePresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpUsagePresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpUsagePresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpUsagePresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpUsagePresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpUsagePresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpUsagePresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<AccountQuotaGroupPresentation> groups,  String? status,  String? updatedLabel,  bool busy,  bool queried)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpUsagePresentation() when $default != null:
+return $default(_that.groups,_that.status,_that.updatedLabel,_that.busy,_that.queried);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<AccountQuotaGroupPresentation> groups,  String? status,  String? updatedLabel,  bool busy,  bool queried)  $default,) {final _that = this;
+switch (_that) {
+case _AcpUsagePresentation():
+return $default(_that.groups,_that.status,_that.updatedLabel,_that.busy,_that.queried);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<AccountQuotaGroupPresentation> groups,  String? status,  String? updatedLabel,  bool busy,  bool queried)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpUsagePresentation() when $default != null:
+return $default(_that.groups,_that.status,_that.updatedLabel,_that.busy,_that.queried);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpUsagePresentation implements AcpUsagePresentation {
+  const _AcpUsagePresentation({ List<AccountQuotaGroupPresentation> groups = const <AccountQuotaGroupPresentation>[], this.status, this.updatedLabel, this.busy = false, this.queried = false}): _groups = groups;
+
+
+ final  List<AccountQuotaGroupPresentation> _groups;
+@override@JsonKey() List<AccountQuotaGroupPresentation> get groups {
+  if (_groups is EqualUnmodifiableListView) return _groups;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_groups);
+}
+
+@override final  String? status;
+@override final  String? updatedLabel;
+@override@JsonKey() final  bool busy;
+@override@JsonKey() final  bool queried;
+
+/// Create a copy of AcpUsagePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpUsagePresentationCopyWith<_AcpUsagePresentation> get copyWith => __$AcpUsagePresentationCopyWithImpl<_AcpUsagePresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpUsagePresentation&&const DeepCollectionEquality().equals(other.groups, _groups)&&(identical(other.status, status) || other.status == status)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel)&&(identical(other.busy, busy) || other.busy == busy)&&(identical(other.queried, queried) || other.queried == queried));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_groups),status,updatedLabel,busy,queried);
+}
+
+@override
+String toString() {
+    return 'AcpUsagePresentation(groups: $groups, status: $status, updatedLabel: $updatedLabel, busy: $busy, queried: $queried)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpUsagePresentationCopyWith<$Res> implements $AcpUsagePresentationCopyWith<$Res> {
+  factory _$AcpUsagePresentationCopyWith(_AcpUsagePresentation value, $Res Function(_AcpUsagePresentation) _then) = __$AcpUsagePresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ List<AccountQuotaGroupPresentation> groups, String? status, String? updatedLabel, bool busy, bool queried
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpUsagePresentationCopyWithImpl<$Res>
+    implements _$AcpUsagePresentationCopyWith<$Res> {
+  __$AcpUsagePresentationCopyWithImpl(this._self, this._then);
+
+  final _AcpUsagePresentation _self;
+  final $Res Function(_AcpUsagePresentation) _then;
+
+/// Create a copy of AcpUsagePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? groups = null,Object? status = freezed,Object? updatedLabel = freezed,Object? busy = null,Object? queried = null,}) {
+  return _then(_AcpUsagePresentation(
+groups: null == groups ? _self._groups : groups // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaGroupPresentation>,status: freezed == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
+as String?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as String?,busy: null == busy ? _self.busy : busy // ignore: cast_nullable_to_non_nullable
+as bool,queried: null == queried ? _self.queried : queried // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AccountUsagePresentation {
 
  AccountQueryPhase get phase; AccountBalanceHealth get balanceHealth; List<AccountCurrencyBalance> get balances; List<AccountQuotaPresentation> get quotas; String? get updatedLabel; String? get error;/// The owner confirms that retained values belong to a successful query.
@@ -2265,22 +2823,27 @@ as bool,
 /// @nodoc
 mixin _$AccountRowContent {
 
-
+ Object? get usage;
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountRowContent);
+  final _this = this as AccountRowContent;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountRowContent&&const DeepCollectionEquality().equals(other.usage, _this.usage));
 }
 
 
 @override
-int get hashCode => runtimeType.hashCode;
+int get hashCode {
+  final _this = this as AccountRowContent;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.usage));
+}
 
 @override
 String toString() {
-    return 'AccountRowContent()';
+  final _this = this as AccountRowContent;
+  return 'AccountRowContent(usage: ${_this.usage})';
 }
 
 
@@ -2370,11 +2933,11 @@ return acp(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult Function( String status)?  acp,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult Function( String status,  AcpUsagePresentation? usage)?  acp,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
 return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
-return acp(_that.status);case _:
+return acp(_that.status,_that.usage);case _:
   return orElse();
 
 }
@@ -2392,11 +2955,11 @@ return acp(_that.status);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)  native,required TResult Function( String status)  acp,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)  native,required TResult Function( String status,  AcpUsagePresentation? usage)  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent():
 return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent():
-return acp(_that.status);}
+return acp(_that.status,_that.usage);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -2410,11 +2973,11 @@ return acp(_that.status);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult? Function( String status)?  acp,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult? Function( String status,  AcpUsagePresentation? usage)?  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
 return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
-return acp(_that.status);case _:
+return acp(_that.status,_that.usage);case _:
   return null;
 
 }
@@ -2430,7 +2993,7 @@ class NativeAccountRowContent implements AccountRowContent {
 
 
  final  AccountBilling billing;
- final  AccountUsagePresentation usage;
+@override final  AccountUsagePresentation usage;
  final  String? displayEndpoint;
 
 /// Create a copy of AccountRowContent
@@ -2507,10 +3070,11 @@ $AccountUsagePresentationCopyWith<$Res> get usage {
 
 
 class AcpAccountRowContent implements AccountRowContent {
-  const AcpAccountRowContent({required this.status});
+  const AcpAccountRowContent({required this.status, this.usage});
 
 
  final  String status;
+@override final  AcpUsagePresentation? usage;
 
 /// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
@@ -2522,18 +3086,18 @@ $AcpAccountRowContentCopyWith<AcpAccountRowContent> get copyWith => _$AcpAccount
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountRowContent&&(identical(other.status, status) || other.status == status));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountRowContent&&(identical(other.status, status) || other.status == status)&&(identical(other.usage, usage) || other.usage == usage));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,status);
+    return Object.hash(runtimeType,status,usage);
 }
 
 @override
 String toString() {
-    return 'AccountRowContent.acp(status: $status)';
+    return 'AccountRowContent.acp(status: $status, usage: $usage)';
 }
 
 
@@ -2544,11 +3108,11 @@ abstract mixin class $AcpAccountRowContentCopyWith<$Res> implements $AccountRowC
   factory $AcpAccountRowContentCopyWith(AcpAccountRowContent value, $Res Function(AcpAccountRowContent) _then) = _$AcpAccountRowContentCopyWithImpl;
 @useResult
 $Res call({
- String status
+ String status, AcpUsagePresentation? usage
 });
 
 
-
+$AcpUsagePresentationCopyWith<$Res>? get usage;
 
 }
 /// @nodoc
@@ -2561,14 +3125,27 @@ class _$AcpAccountRowContentCopyWithImpl<$Res>
 
 /// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? status = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? status = null,Object? usage = freezed,}) {
   return _then(AcpAccountRowContent(
 status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as String,
+as String,usage: freezed == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
+as AcpUsagePresentation?,
   ));
 }
 
+/// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpUsagePresentationCopyWith<$Res>? get usage {
+    if (_self.usage == null) {
+    return null;
+  }
 
+  return $AcpUsagePresentationCopyWith<$Res>(_self.usage!, (value) {
+    return _then(_self.copyWith(usage: value));
+  });
+}
 }
 
 /// @nodoc
@@ -7104,7 +7681,7 @@ as String,
 /// @nodoc
 mixin _$AcpAccountPresentation {
 
- AcpPresentationPhase get phase; String get status; String? get message; String? get error; double? get progress; String? get progressLabel; List<AccountDisplayFact> get facts; List<AcpAccountAction> get availableActions;/// Optional emphasis chosen by the VM, never inferred from [phase].
+ AcpPresentationPhase get phase; String get status; AcpUsagePresentation get usage; String? get message; String? get error; double? get progress; String? get progressLabel; List<AccountDisplayFact> get facts; List<AcpAccountAction> get availableActions;/// Optional emphasis chosen by the VM, never inferred from [phase].
 /// Must be an available operation, not cancellation or a documentation link.
  AcpAccountAction? get primaryAction; List<AcpLoginMethodPresentation> get loginMethods; String? get selectedLoginMethod; bool get canSelectLoginMethod;
 /// Create a copy of AcpAccountPresentation
@@ -7118,20 +7695,20 @@ $AcpAccountPresentationCopyWith<AcpAccountPresentation> get copyWith => _$AcpAcc
 @override
 bool operator ==(Object other) {
   final _this = this as AcpAccountPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpAccountPresentation;
-  return Object.hash(runtimeType,_this.phase,_this.status,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod);
+  return Object.hash(runtimeType,_this.phase,_this.status,_this.usage,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod);
 }
 
 @override
 String toString() {
   final _this = this as AcpAccountPresentation;
-  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod})';
+  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, usage: ${_this.usage}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod})';
 }
 
 
@@ -7142,11 +7719,11 @@ abstract mixin class $AcpAccountPresentationCopyWith<$Res>  {
   factory $AcpAccountPresentationCopyWith(AcpAccountPresentation value, $Res Function(AcpAccountPresentation) _then) = _$AcpAccountPresentationCopyWithImpl;
 @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, AcpUsagePresentation usage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
 });
 
 
-
+$AcpUsagePresentationCopyWith<$Res> get usage;
 
 }
 /// @nodoc
@@ -7159,11 +7736,12 @@ class _$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? usage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
   return _then(AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as String,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
+as AcpUsagePresentation,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
 as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
@@ -7176,7 +7754,16 @@ as String?,canSelectLoginMethod: null == canSelectLoginMethod ? _self.canSelectL
 as bool,
   ));
 }
+/// Create a copy of AcpAccountPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpUsagePresentationCopyWith<$Res> get usage {
 
+  return $AcpUsagePresentationCopyWith<$Res>(_self.usage, (value) {
+    return _then(_self.copyWith(usage: value));
+  });
+}
 }
 
 
@@ -7258,10 +7845,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   return orElse();
 
 }
@@ -7279,10 +7866,10 @@ return $default(_that.phase,_that.status,_that.message,_that.error,_that.progres
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation():
-return $default(_that.phase,_that.status,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -7299,10 +7886,10 @@ return $default(_that.phase,_that.status,_that.message,_that.error,_that.progres
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   return null;
 
 }
@@ -7314,11 +7901,12 @@ return $default(_that.phase,_that.status,_that.message,_that.error,_that.progres
 
 
 class _AcpAccountPresentation extends AcpAccountPresentation {
-  const _AcpAccountPresentation({required this.phase, required this.status, this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
+  const _AcpAccountPresentation({required this.phase, required this.status, this.usage = const AcpUsagePresentation(), this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
 
 
 @override final  AcpPresentationPhase phase;
 @override final  String status;
+@override@JsonKey() final  AcpUsagePresentation usage;
 @override final  String? message;
 @override final  String? error;
 @override final  double? progress;
@@ -7360,18 +7948,18 @@ _$AcpAccountPresentationCopyWith<_AcpAccountPresentation> get copyWith => __$Acp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,status,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod);
+    return Object.hash(runtimeType,phase,status,usage,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod);
 }
 
 @override
 String toString() {
-    return 'AcpAccountPresentation(phase: $phase, status: $status, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod)';
+    return 'AcpAccountPresentation(phase: $phase, status: $status, usage: $usage, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod)';
 }
 
 
@@ -7382,11 +7970,11 @@ abstract mixin class _$AcpAccountPresentationCopyWith<$Res> implements $AcpAccou
   factory _$AcpAccountPresentationCopyWith(_AcpAccountPresentation value, $Res Function(_AcpAccountPresentation) _then) = __$AcpAccountPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, AcpUsagePresentation usage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
 });
 
 
-
+@override $AcpUsagePresentationCopyWith<$Res> get usage;
 
 }
 /// @nodoc
@@ -7399,11 +7987,12 @@ class __$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? usage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
   return _then(_AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as String,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
+as AcpUsagePresentation,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
 as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
@@ -7417,7 +8006,16 @@ as bool,
   ));
 }
 
+/// Create a copy of AcpAccountPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpUsagePresentationCopyWith<$Res> get usage {
 
+  return $AcpUsagePresentationCopyWith<$Res>(_self.usage, (value) {
+    return _then(_self.copyWith(usage: value));
+  });
+}
 }
 
 /// @nodoc

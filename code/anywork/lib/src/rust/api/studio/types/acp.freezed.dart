@@ -56,11 +56,12 @@ extension BridgeAcpAuthActionPatterns on BridgeAcpAuthAction {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpAuthAction_Check value)?  check,TResult Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpAuthAction_Check value)?  check,TResult Function( BridgeAcpAuthAction_QueryUsage value)?  queryUsage,TResult Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check() when check != null:
-return check(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
+return check(_that);case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
+return queryUsage(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
 return authenticate(_that);case _:
   return orElse();
 
@@ -79,11 +80,12 @@ return authenticate(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpAuthAction_Check value)  check,required TResult Function( BridgeAcpAuthAction_Authenticate value)  authenticate,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpAuthAction_Check value)  check,required TResult Function( BridgeAcpAuthAction_QueryUsage value)  queryUsage,required TResult Function( BridgeAcpAuthAction_Authenticate value)  authenticate,}){
 final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check():
-return check(_that);case BridgeAcpAuthAction_Authenticate():
+return check(_that);case BridgeAcpAuthAction_QueryUsage():
+return queryUsage(_that);case BridgeAcpAuthAction_Authenticate():
 return authenticate(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -98,11 +100,12 @@ return authenticate(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpAuthAction_Check value)?  check,TResult? Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpAuthAction_Check value)?  check,TResult? Function( BridgeAcpAuthAction_QueryUsage value)?  queryUsage,TResult? Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,}){
 final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check() when check != null:
-return check(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
+return check(_that);case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
+return queryUsage(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
 return authenticate(_that);case _:
   return null;
 
@@ -120,10 +123,11 @@ return authenticate(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  check,TResult Function( String methodId)?  authenticate,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  check,TResult Function()?  queryUsage,TResult Function( String methodId)?  authenticate,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check() when check != null:
-return check();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
+return check();case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
+return queryUsage();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
 return authenticate(_that.methodId);case _:
   return orElse();
 
@@ -142,10 +146,11 @@ return authenticate(_that.methodId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  check,required TResult Function( String methodId)  authenticate,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  check,required TResult Function()  queryUsage,required TResult Function( String methodId)  authenticate,}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check():
-return check();case BridgeAcpAuthAction_Authenticate():
+return check();case BridgeAcpAuthAction_QueryUsage():
+return queryUsage();case BridgeAcpAuthAction_Authenticate():
 return authenticate(_that.methodId);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -160,10 +165,11 @@ return authenticate(_that.methodId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  check,TResult? Function( String methodId)?  authenticate,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  check,TResult? Function()?  queryUsage,TResult? Function( String methodId)?  authenticate,}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthAction_Check() when check != null:
-return check();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
+return check();case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
+return queryUsage();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
 return authenticate(_that.methodId);case _:
   return null;
 
@@ -196,6 +202,38 @@ int get hashCode => runtimeType.hashCode;
 @override
 String toString() {
     return 'BridgeAcpAuthAction.check()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpAuthAction_QueryUsage extends BridgeAcpAuthAction {
+  const BridgeAcpAuthAction_QueryUsage(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthAction_QueryUsage);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpAuthAction.queryUsage()';
 }
 
 
@@ -1097,6 +1135,756 @@ class _$BridgeAcpAuthState_FailedCopyWithImpl<$Res>
   return _then(BridgeAcpAuthState_Failed(
 failure: null == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
 as BridgeAcpAuthFailure,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeAcpQuotaRemaining {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpQuotaRemaining);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpQuotaRemaining()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAcpQuotaRemainingCopyWith<$Res>  {
+$BridgeAcpQuotaRemainingCopyWith(BridgeAcpQuotaRemaining _, $Res Function(BridgeAcpQuotaRemaining) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpQuotaRemaining].
+extension BridgeAcpQuotaRemainingPatterns on BridgeAcpQuotaRemaining {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpQuotaRemaining_Percentage value)?  percentage,TResult Function( BridgeAcpQuotaRemaining_Units value)?  units,TResult Function( BridgeAcpQuotaRemaining_Unknown value)?  unknown,TResult Function( BridgeAcpQuotaRemaining_Disabled value)?  disabled,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage() when percentage != null:
+return percentage(_that);case BridgeAcpQuotaRemaining_Units() when units != null:
+return units(_that);case BridgeAcpQuotaRemaining_Unknown() when unknown != null:
+return unknown(_that);case BridgeAcpQuotaRemaining_Disabled() when disabled != null:
+return disabled(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpQuotaRemaining_Percentage value)  percentage,required TResult Function( BridgeAcpQuotaRemaining_Units value)  units,required TResult Function( BridgeAcpQuotaRemaining_Unknown value)  unknown,required TResult Function( BridgeAcpQuotaRemaining_Disabled value)  disabled,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage():
+return percentage(_that);case BridgeAcpQuotaRemaining_Units():
+return units(_that);case BridgeAcpQuotaRemaining_Unknown():
+return unknown(_that);case BridgeAcpQuotaRemaining_Disabled():
+return disabled(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpQuotaRemaining_Percentage value)?  percentage,TResult? Function( BridgeAcpQuotaRemaining_Units value)?  units,TResult? Function( BridgeAcpQuotaRemaining_Unknown value)?  unknown,TResult? Function( BridgeAcpQuotaRemaining_Disabled value)?  disabled,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage() when percentage != null:
+return percentage(_that);case BridgeAcpQuotaRemaining_Units() when units != null:
+return units(_that);case BridgeAcpQuotaRemaining_Unknown() when unknown != null:
+return unknown(_that);case BridgeAcpQuotaRemaining_Disabled() when disabled != null:
+return disabled(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( int value)?  percentage,TResult Function( BigInt value)?  units,TResult Function()?  unknown,TResult Function()?  disabled,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage() when percentage != null:
+return percentage(_that.value);case BridgeAcpQuotaRemaining_Units() when units != null:
+return units(_that.value);case BridgeAcpQuotaRemaining_Unknown() when unknown != null:
+return unknown();case BridgeAcpQuotaRemaining_Disabled() when disabled != null:
+return disabled();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( int value)  percentage,required TResult Function( BigInt value)  units,required TResult Function()  unknown,required TResult Function()  disabled,}) {final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage():
+return percentage(_that.value);case BridgeAcpQuotaRemaining_Units():
+return units(_that.value);case BridgeAcpQuotaRemaining_Unknown():
+return unknown();case BridgeAcpQuotaRemaining_Disabled():
+return disabled();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( int value)?  percentage,TResult? Function( BigInt value)?  units,TResult? Function()?  unknown,TResult? Function()?  disabled,}) {final _that = this;
+switch (_that) {
+case BridgeAcpQuotaRemaining_Percentage() when percentage != null:
+return percentage(_that.value);case BridgeAcpQuotaRemaining_Units() when units != null:
+return units(_that.value);case BridgeAcpQuotaRemaining_Unknown() when unknown != null:
+return unknown();case BridgeAcpQuotaRemaining_Disabled() when disabled != null:
+return disabled();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpQuotaRemaining_Percentage extends BridgeAcpQuotaRemaining {
+  const BridgeAcpQuotaRemaining_Percentage({required this.value}): super._();
+
+
+ final  int value;
+
+/// Create a copy of BridgeAcpQuotaRemaining
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpQuotaRemaining_PercentageCopyWith<BridgeAcpQuotaRemaining_Percentage> get copyWith => _$BridgeAcpQuotaRemaining_PercentageCopyWithImpl<BridgeAcpQuotaRemaining_Percentage>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpQuotaRemaining_Percentage&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpQuotaRemaining.percentage(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpQuotaRemaining_PercentageCopyWith<$Res> implements $BridgeAcpQuotaRemainingCopyWith<$Res> {
+  factory $BridgeAcpQuotaRemaining_PercentageCopyWith(BridgeAcpQuotaRemaining_Percentage value, $Res Function(BridgeAcpQuotaRemaining_Percentage) _then) = _$BridgeAcpQuotaRemaining_PercentageCopyWithImpl;
+@useResult
+$Res call({
+ int value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpQuotaRemaining_PercentageCopyWithImpl<$Res>
+    implements $BridgeAcpQuotaRemaining_PercentageCopyWith<$Res> {
+  _$BridgeAcpQuotaRemaining_PercentageCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpQuotaRemaining_Percentage _self;
+  final $Res Function(BridgeAcpQuotaRemaining_Percentage) _then;
+
+/// Create a copy of BridgeAcpQuotaRemaining
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(BridgeAcpQuotaRemaining_Percentage(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpQuotaRemaining_Units extends BridgeAcpQuotaRemaining {
+  const BridgeAcpQuotaRemaining_Units({required this.value}): super._();
+
+
+ final  BigInt value;
+
+/// Create a copy of BridgeAcpQuotaRemaining
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpQuotaRemaining_UnitsCopyWith<BridgeAcpQuotaRemaining_Units> get copyWith => _$BridgeAcpQuotaRemaining_UnitsCopyWithImpl<BridgeAcpQuotaRemaining_Units>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpQuotaRemaining_Units&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpQuotaRemaining.units(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpQuotaRemaining_UnitsCopyWith<$Res> implements $BridgeAcpQuotaRemainingCopyWith<$Res> {
+  factory $BridgeAcpQuotaRemaining_UnitsCopyWith(BridgeAcpQuotaRemaining_Units value, $Res Function(BridgeAcpQuotaRemaining_Units) _then) = _$BridgeAcpQuotaRemaining_UnitsCopyWithImpl;
+@useResult
+$Res call({
+ BigInt value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpQuotaRemaining_UnitsCopyWithImpl<$Res>
+    implements $BridgeAcpQuotaRemaining_UnitsCopyWith<$Res> {
+  _$BridgeAcpQuotaRemaining_UnitsCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpQuotaRemaining_Units _self;
+  final $Res Function(BridgeAcpQuotaRemaining_Units) _then;
+
+/// Create a copy of BridgeAcpQuotaRemaining
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(BridgeAcpQuotaRemaining_Units(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BigInt,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpQuotaRemaining_Unknown extends BridgeAcpQuotaRemaining {
+  const BridgeAcpQuotaRemaining_Unknown(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpQuotaRemaining_Unknown);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpQuotaRemaining.unknown()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpQuotaRemaining_Disabled extends BridgeAcpQuotaRemaining {
+  const BridgeAcpQuotaRemaining_Disabled(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpQuotaRemaining_Disabled);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpQuotaRemaining.disabled()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+mixin _$BridgeAcpUsageState {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpUsageState);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpUsageState()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAcpUsageStateCopyWith<$Res>  {
+$BridgeAcpUsageStateCopyWith(BridgeAcpUsageState _, $Res Function(BridgeAcpUsageState) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpUsageState].
+extension BridgeAcpUsageStatePatterns on BridgeAcpUsageState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpUsageState_Ready value)?  ready,TResult Function( BridgeAcpUsageState_NotApplicable value)?  notApplicable,TResult Function( BridgeAcpUsageState_Unavailable value)?  unavailable,TResult Function( BridgeAcpUsageState_Failed value)?  failed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready() when ready != null:
+return ready(_that);case BridgeAcpUsageState_NotApplicable() when notApplicable != null:
+return notApplicable(_that);case BridgeAcpUsageState_Unavailable() when unavailable != null:
+return unavailable(_that);case BridgeAcpUsageState_Failed() when failed != null:
+return failed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpUsageState_Ready value)  ready,required TResult Function( BridgeAcpUsageState_NotApplicable value)  notApplicable,required TResult Function( BridgeAcpUsageState_Unavailable value)  unavailable,required TResult Function( BridgeAcpUsageState_Failed value)  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready():
+return ready(_that);case BridgeAcpUsageState_NotApplicable():
+return notApplicable(_that);case BridgeAcpUsageState_Unavailable():
+return unavailable(_that);case BridgeAcpUsageState_Failed():
+return failed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpUsageState_Ready value)?  ready,TResult? Function( BridgeAcpUsageState_NotApplicable value)?  notApplicable,TResult? Function( BridgeAcpUsageState_Unavailable value)?  unavailable,TResult? Function( BridgeAcpUsageState_Failed value)?  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready() when ready != null:
+return ready(_that);case BridgeAcpUsageState_NotApplicable() when notApplicable != null:
+return notApplicable(_that);case BridgeAcpUsageState_Unavailable() when unavailable != null:
+return unavailable(_that);case BridgeAcpUsageState_Failed() when failed != null:
+return failed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<BridgeAcpQuotaGroup> groups)?  ready,TResult Function()?  notApplicable,TResult Function()?  unavailable,TResult Function( BridgeAcpUsageFailureCode code)?  failed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready() when ready != null:
+return ready(_that.groups);case BridgeAcpUsageState_NotApplicable() when notApplicable != null:
+return notApplicable();case BridgeAcpUsageState_Unavailable() when unavailable != null:
+return unavailable();case BridgeAcpUsageState_Failed() when failed != null:
+return failed(_that.code);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<BridgeAcpQuotaGroup> groups)  ready,required TResult Function()  notApplicable,required TResult Function()  unavailable,required TResult Function( BridgeAcpUsageFailureCode code)  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready():
+return ready(_that.groups);case BridgeAcpUsageState_NotApplicable():
+return notApplicable();case BridgeAcpUsageState_Unavailable():
+return unavailable();case BridgeAcpUsageState_Failed():
+return failed(_that.code);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<BridgeAcpQuotaGroup> groups)?  ready,TResult? Function()?  notApplicable,TResult? Function()?  unavailable,TResult? Function( BridgeAcpUsageFailureCode code)?  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAcpUsageState_Ready() when ready != null:
+return ready(_that.groups);case BridgeAcpUsageState_NotApplicable() when notApplicable != null:
+return notApplicable();case BridgeAcpUsageState_Unavailable() when unavailable != null:
+return unavailable();case BridgeAcpUsageState_Failed() when failed != null:
+return failed(_that.code);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpUsageState_Ready extends BridgeAcpUsageState {
+  const BridgeAcpUsageState_Ready({required  List<BridgeAcpQuotaGroup> groups}): _groups = groups,super._();
+
+
+ final  List<BridgeAcpQuotaGroup> _groups;
+ List<BridgeAcpQuotaGroup> get groups {
+  if (_groups is EqualUnmodifiableListView) return _groups;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_groups);
+}
+
+
+/// Create a copy of BridgeAcpUsageState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpUsageState_ReadyCopyWith<BridgeAcpUsageState_Ready> get copyWith => _$BridgeAcpUsageState_ReadyCopyWithImpl<BridgeAcpUsageState_Ready>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpUsageState_Ready&&const DeepCollectionEquality().equals(other.groups, _groups));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_groups));
+}
+
+@override
+String toString() {
+    return 'BridgeAcpUsageState.ready(groups: $groups)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpUsageState_ReadyCopyWith<$Res> implements $BridgeAcpUsageStateCopyWith<$Res> {
+  factory $BridgeAcpUsageState_ReadyCopyWith(BridgeAcpUsageState_Ready value, $Res Function(BridgeAcpUsageState_Ready) _then) = _$BridgeAcpUsageState_ReadyCopyWithImpl;
+@useResult
+$Res call({
+ List<BridgeAcpQuotaGroup> groups
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpUsageState_ReadyCopyWithImpl<$Res>
+    implements $BridgeAcpUsageState_ReadyCopyWith<$Res> {
+  _$BridgeAcpUsageState_ReadyCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpUsageState_Ready _self;
+  final $Res Function(BridgeAcpUsageState_Ready) _then;
+
+/// Create a copy of BridgeAcpUsageState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? groups = null,}) {
+  return _then(BridgeAcpUsageState_Ready(
+groups: null == groups ? _self._groups : groups // ignore: cast_nullable_to_non_nullable
+as List<BridgeAcpQuotaGroup>,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpUsageState_NotApplicable extends BridgeAcpUsageState {
+  const BridgeAcpUsageState_NotApplicable(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpUsageState_NotApplicable);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpUsageState.notApplicable()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpUsageState_Unavailable extends BridgeAcpUsageState {
+  const BridgeAcpUsageState_Unavailable(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpUsageState_Unavailable);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpUsageState.unavailable()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpUsageState_Failed extends BridgeAcpUsageState {
+  const BridgeAcpUsageState_Failed({required this.code}): super._();
+
+
+ final  BridgeAcpUsageFailureCode code;
+
+/// Create a copy of BridgeAcpUsageState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpUsageState_FailedCopyWith<BridgeAcpUsageState_Failed> get copyWith => _$BridgeAcpUsageState_FailedCopyWithImpl<BridgeAcpUsageState_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpUsageState_Failed&&(identical(other.code, code) || other.code == code));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,code);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpUsageState.failed(code: $code)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpUsageState_FailedCopyWith<$Res> implements $BridgeAcpUsageStateCopyWith<$Res> {
+  factory $BridgeAcpUsageState_FailedCopyWith(BridgeAcpUsageState_Failed value, $Res Function(BridgeAcpUsageState_Failed) _then) = _$BridgeAcpUsageState_FailedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAcpUsageFailureCode code
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpUsageState_FailedCopyWithImpl<$Res>
+    implements $BridgeAcpUsageState_FailedCopyWith<$Res> {
+  _$BridgeAcpUsageState_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpUsageState_Failed _self;
+  final $Res Function(BridgeAcpUsageState_Failed) _then;
+
+/// Create a copy of BridgeAcpUsageState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? code = null,}) {
+  return _then(BridgeAcpUsageState_Failed(
+code: null == code ? _self.code : code // ignore: cast_nullable_to_non_nullable
+as BridgeAcpUsageFailureCode,
   ));
 }
 

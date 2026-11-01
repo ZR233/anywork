@@ -5619,138 +5619,48 @@ class AppLocalizationsZh extends AppLocalizations {
   String get recoveryNoAvailableActions => '当前无可用操作';
 
   @override
-  String get usagePurpose => '用途';
-
-  @override
   String get usageUnknown => '未知';
-
-  @override
-  String get usageThreadId => '线程';
-
-  @override
-  String get usageCallId => '调用';
 
   @override
   String get usageFirstOutputNote =>
       '完成项表示客户端首次观测到完整工具参数，并非供应商首 token；decode 耗时可为 0。';
 
   @override
-  String get usageStatusLegacyUnknown => '历史用量状态未知';
-
-  @override
-  String get usageStatusMissing => '收束时未保留到用量';
-
-  @override
-  String get usageStatusPartial => '仅保留部分用量';
-
-  @override
-  String get usageStatusReported => '用量完整';
-
-  @override
-  String get usageStatusInvalid => '用量无效';
-
-  @override
-  String get usageCumulativeTitle => '累计用量覆盖';
-
-  @override
-  String get usageLatestTitle => '最近主模型调用';
-
-  @override
-  String get usageIncompleteCalls => '不完整调用数';
-
-  @override
-  String get usageMissingCalls => '缺失用量调用数';
-
-  @override
-  String get usagePartialCalls => '部分用量调用数';
-
-  @override
-  String get usageInvalidCalls => '无效用量调用数';
-
-  @override
-  String get usageOverflowCalls => '溢出调用数';
-
-  @override
-  String get usageHistoryUnknown => '旧历史的调用次数、用量或用途来源不可证明；不等于 0。';
-
-  @override
-  String get usageCountsOverflowed => '累计次数已溢出，显示值不是完整总数。';
-
-  @override
-  String get usageRecentGapsTitle => '最近缺口';
-
-  @override
-  String get usageRecentGaps => '最近缺口（最多 8 条，并非全部历史）';
-
-  @override
-  String get usageCumulativeNote => '累计缺口不会被后续完整调用消除；最近调用的完整性单独展示。';
-
-  @override
-  String get usageCancelledNote => '取消调用仅表示收束时未保留到相应用量，不能断言供应商未发送。';
-
-  @override
-  String get usageCacheCoverage => '缓存覆盖样本数（升级后）';
-
-  @override
-  String get usageCacheCoverageNote => '只统计满足缓存累计条件的样本；旧缓存累计量对应的样本数不可由升级后计数反推。';
-
-  @override
-  String get usageCacheLegacyUnknown => '旧缓存样本数未知，当前计数仅从升级后开始。';
-
-  @override
   String get usageStatisticsGapNote => '统计同步缺口与累计用量未知是不同状态；同步恢复不代表历史用量完整。';
 
   @override
-  String get usageOutcomeSucceeded => '成功';
+  String get acpUsageTitle => '账户额度';
 
   @override
-  String get usageOutcomeRejected => '拒绝';
+  String get acpUsageQuery => '查询额度';
 
   @override
-  String get usageOutcomeCancelled => '取消';
+  String get acpUsageRefresh => '刷新额度';
 
   @override
-  String get usageOutcomeFailed => '失败';
+  String get acpUsageNotQueried => '尚未查询账户额度。';
 
   @override
-  String get usageOutcomeInterrupted => '中断';
+  String get acpUsageNotApplicable => '当前认证方式不提供套餐额度。';
 
   @override
-  String get usageOtherPurposeCalls => '其他用途调用数';
+  String get acpUsageUnavailable => '服务端暂未提供额度数据。';
 
   @override
-  String get usageGapUnreported => '未保留';
+  String get acpUsageNoLimits => '服务端未报告额度限制。';
 
   @override
-  String get usageGapInconsistent => '矛盾';
+  String get acpUsageNoActiveLimits => '此模型组未报告有效额度窗口。';
 
   @override
-  String get usageGapOverflow => '溢出';
+  String get acpUsageFailed => '额度查询失败，请重试。';
 
   @override
-  String get usageFieldInput => '输入';
+  String get acpUsageInvalidResponse => '服务端返回了无法识别的额度数据。';
 
   @override
-  String get usageFieldOutput => '输出';
+  String get acpUsageDisabled => '已停用';
 
   @override
-  String get usageFieldCacheRead => '缓存读取';
-
-  @override
-  String get usageFieldCacheWrite => '缓存写入';
-
-  @override
-  String get usageFieldReasoning => '推理';
-
-  @override
-  String get usageFieldTotal => '总量';
-
-  @override
-  String get usageFieldInferenceCount => '调用次数';
-
-  @override
-  String get usageFieldCachePair => '缓存计数对';
-
-  @override
-  String get usageFieldThroughputPair => '吞吐计数对';
+  String get acpUsageUnknown => '剩余量未知';
 }

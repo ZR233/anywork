@@ -72,9 +72,17 @@
     flush() { this.content.flush(); }
   }
 
+  const kinds = {
+    thinking: { icon: 'brain', label: '思考' }, read: { icon: 'file-text', label: '读取' },
+    command: { icon: 'terminal', label: '命令' }, search: { icon: 'search', label: '搜索' },
+    edit: { icon: 'file-pen-line', label: '修改' }, wait: { icon: 'users', label: '等待' }
+  };
+  const describe = member => member.kind === 'thinking'
+    ? '思考：' + member.title : member.title + (member.target ? ' ' + member.target : '');
+
   function groupText(group) {
     return [
-      group.summary,
+      `工作组 · ${group.members.length} 步 · ${group.elapsed}s`,
       ...group.members.map(member => [
         `${member.title}${member.target ? ' · ' + member.target : ''} · ${statusLabel(member.status)} · ${member.elapsed}s`,
         member.content || member.output || member.rule || '',
@@ -94,11 +102,12 @@
       this.node = node(`<${member.kind === 'thinking' ? 'section' : 'details'} class="cv-member cv-${escape(member.kind)}" data-member-id="${escape(member.id)}"></${member.kind === 'thinking' ? 'section' : 'details'}>`);
       this.head = node(`<${member.kind === 'thinking' ? 'div' : 'summary'} class="cv-member-heading">
         <span class="cv-member-symbol"></span><span class="cv-member-label"></span>
-        <span class="cv-member-meta cv-tabular"></span>
+        <span class="cv-member-meta cv-tabular"></span><span class="cv-sr-only"></span>
       </${member.kind === 'thinking' ? 'div' : 'summary'}>`);
       this.symbol = this.head.querySelector('.cv-member-symbol');
       this.label = this.head.querySelector('.cv-member-label');
       this.meta = this.head.querySelector('.cv-member-meta');
+      this.statusText = this.head.querySelector('.cv-sr-only');
       this.label.append(node(`<span class="cv-member-verb">${escape(member.title)}</span>`));
       if (member.target) this.label.append(node(`<code class="cv-target" title="${escape(member.path || member.target)}">${escape(member.target)}</code>`));
       if (member.kind !== 'thinking') this.label.append(node(`<span class="cv-chevron">${icon('chevron-right')}</span>`));
@@ -159,13 +168,17 @@
       this.current = member;
       if (this.status !== member.status) {
         this.status = member.status;
-        const name = member.status === 'running' ? 'loader-circle' :
-          ({ thinking: 'brain', read: 'file-text', command: 'terminal', search: 'search', edit: 'file-pen-line', wait: 'users' })[member.kind];
+        // In the status bar progress matters most; finished timeline rows show the member kind instead.
+        const name = member.status === 'running' ? 'loader-circle'
+          : this.mode === 'live' && member.status === 'completed' ? 'check' : kinds[member.kind].icon;
         this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : name);
         this.node.dataset.status = member.status;
+        this.statusText.textContent = statusLabel(member.status);
         icons(this.symbol);
       }
-      this.meta.textContent = `${statusLabel(member.status)} · ${member.elapsed}s`;
+      // The symbol already carries running/completed; only interrupted states need words.
+      const interrupted = member.status === 'failed' || member.status === 'stopped' ? statusLabel(member.status) + ' · ' : '';
+      this.meta.textContent = interrupted + member.elapsed + 's';
       if (this.logContent) {
         this.logContent.update(member.output);
         this.exit.textContent = member.exitCode === null ? '正在接收输出' : '退出码 ' + member.exitCode;
@@ -189,35 +202,63 @@
   function groupHeading(mode = 'history') {
     return node(`<summary class="cv-group-heading">
       ${mode === 'live' ? activityIndicator() : ''}<span class="cv-group-title"></span>
+      ${mode === 'live' ? '<span class="cv-group-current"></span>' : ''}
       <span class="cv-group-meta cv-tabular"></span><span class="cv-chevron">${icon('chevron-right')}</span>
     </summary>`);
+  }
+
+  // Timeline groups are finished and immutable, so their digest is computed once.
+  function groupDigest(group) {
+    const digest = node('<span class="cv-group-digest"></span>');
+    Object.entries(kinds).forEach(([kind, info]) => {
+      const count = group.members.filter(member => member.kind === kind).length;
+      if (count) digest.append(node(`<span class="cv-kind-chip" title="${escape(info.label)} ${count}" aria-label="${escape(info.label)} ${count}">${icon(info.icon)}<span aria-hidden="true">${count}</span></span>`));
+    });
+    ['failed', 'stopped'].forEach(status => {
+      const count = group.members.filter(member => member.status === status).length;
+      if (count) digest.append(node(`<span class="cv-issue-chip" data-status="${status}">${count} 步${escape(statusLabel(status))}</span>`));
+    });
+    return digest;
   }
 
   class WorkGroupView {
     constructor(group, mode, actions, expanded = mode === 'live') {
       this.mode = mode;
+      this.actions = actions;
       this.node = node(`<details class="cv-work-group cv-group-${escape(mode)}" data-history-kind="workGroup"><div class="cv-group-rail"></div></details>`);
       this.node.prepend(groupHeading(mode));
       this.node.open = expanded;
       this.title = this.node.querySelector('.cv-group-title');
+      this.currentStep = this.node.querySelector('.cv-group-current');
       this.meta = this.node.querySelector('.cv-group-meta');
       this.rail = this.node.querySelector('.cv-group-rail');
-      this.members = group.members.map(member => new MemberView(member, mode, actions));
-      this.members.forEach(member => this.rail.append(member.node));
-      const footer = node('<div class="cv-group-actions"></div>');
-      footer.append(button('复制工作记录', 'copy', () => actions.copy(groupText(this.current)), 'cv-quiet'));
-      this.node.append(footer);
+      this.members = [];
+      if (mode === 'history') {
+        this.title.textContent = `工作了 ${group.elapsed} 秒`;
+        this.meta.append(groupDigest(group));
+        const footer = node('<div class="cv-group-actions"></div>');
+        footer.append(button('复制工作记录', 'copy', () => actions.copy(groupText(this.current)), 'cv-quiet'));
+        this.node.append(footer);
+      }
       this.update(group);
       icons(this.node);
     }
     update(group) {
       this.current = group;
-      const tools = group.members.filter(member => member.kind !== 'thinking').length;
-      const running = group.members.filter(member => member.status === 'running').length;
-      this.title.textContent = this.mode === 'live' ? group.summary : `工作了 ${group.elapsed} 秒 · ${tools} 个工具`;
-      this.meta.textContent = this.mode === 'live' ? `${running} 项进行中 · ${group.elapsed}s` : '';
-      this.node.dataset.status = group.status;
+      const follow = this.rail.scrollHeight - this.rail.scrollTop - this.rail.clientHeight < 22;
+      const added = group.members.slice(this.members.length).map(member => new MemberView(member, this.mode, this.actions));
+      added.forEach(view => { this.members.push(view); this.rail.append(view.node); });
       this.members.forEach((view, index) => view.update(group.members[index]));
+      if (added.length && follow) this.rail.scrollTop = this.rail.scrollHeight;
+      this.node.dataset.status = group.status;
+      if (this.mode !== 'live') return;
+      const running = group.members.filter(member => member.status === 'running');
+      const done = group.members.filter(member => member.status === 'completed').length;
+      this.node.dataset.phase = running.length ? 'working' : 'thinking';
+      this.title.textContent = running.length ? '工作中' : '思考中';
+      // Shown only while collapsed; expanded rows already name every running step.
+      this.currentStep.textContent = running.length ? describe(running[0]) + (running.length > 1 ? ` 等 ${running.length} 项` : '') : '';
+      this.meta.textContent = `${done} 完成${running.length ? ` · ${running.length} 进行中` : ''} · ${group.elapsed}s`;
     }
     flush() { this.members.forEach(member => member.flush()); }
   }

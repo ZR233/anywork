@@ -9,8 +9,21 @@ pub(super) struct ProviderFailureMetadata<'a> {
 
 impl ProviderFailureMetadata<'_> {
     pub fn is_retryable(self) -> bool {
-        self.http_status.is_some_and(retryable_provider_status)
-            || self.code.is_some_and(retryable_provider_code)
+        match provider_failure_kind(self.code, self.http_status, false) {
+            ProviderFailureKind::Authentication | ProviderFailureKind::Authorization => false,
+            // The Responses WebSocket connection limit is a capacity failure reported as 400.
+            // Other explicit request/configuration failures take precedence over a generic code.
+            ProviderFailureKind::Configuration => {
+                self.http_status == Some(400)
+                    && self.code.is_some_and(|code| {
+                        code.eq_ignore_ascii_case("websocket_connection_limit_reached")
+                    })
+            }
+            _ => {
+                self.http_status.is_some_and(retryable_provider_status)
+                    || self.code.is_some_and(retryable_provider_code)
+            }
+        }
     }
 
     pub fn into_transient(self, message: String) -> PureError {
@@ -227,6 +240,7 @@ fn retryable_provider_code(code: &str) -> bool {
         "websocket_connection_limit_reached"
             | "rate_limit_exceeded"
             | "server_error"
+            | "upstream_error"
             | "temporarily_unavailable"
             | "service_unavailable"
             | "request_timeout"

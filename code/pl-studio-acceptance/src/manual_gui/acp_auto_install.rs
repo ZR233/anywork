@@ -250,10 +250,10 @@ const PHASES: [PhaseSpec; 8] = [
         unknown_length: true,
         drop_after_bytes: None,
         drop_requests: 0,
-        // Peer-side pacing only: a ~30 MB package needs a real, watchable download
-        // window so the Driver captures the actual downloading stage.
+        // Pace the synthetic transfer so the Driver can observe and capture
+        // downloading even when the optimized fixture archive is small.
         chunk_bytes: 65_536,
-        chunk_delay_ms: 20,
+        chunk_delay_ms: 150,
         require_resume: false,
         require_reuse: false,
         saves_identity: true,
@@ -294,6 +294,8 @@ const PHASES: [PhaseSpec; 8] = [
             "lateReleaseCannotReviveCancelledLogin",
             "syntheticCredentialRestoredForRestart",
             "restoreLoginSamePidChain",
+            "usageQueryActionSent",
+            "usageReadyForSavedIdentity",
             "nativeFormRenderedAndCancelledWithoutSaving",
             "authFaultsAccountsUnchanged",
         ],
@@ -302,6 +304,8 @@ const PHASES: [PhaseSpec; 8] = [
             "verified",
             "authentication-failed",
             "auth-cancelled",
+            "quota-details",
+            "quota-list",
             "native-form",
         ],
     },
@@ -348,7 +352,9 @@ const PHASES: [PhaseSpec; 8] = [
         drop_after_bytes: Some(4 * 1024 * 1024),
         drop_requests: 1,
         chunk_bytes: 65_536,
-        chunk_delay_ms: 20,
+        // Keep the resumed transfer observable through the screenshot barrier,
+        // including when little remains after the injected connection drop.
+        chunk_delay_ms: 150,
         require_resume: true,
         require_reuse: false,
         saves_identity: false,
@@ -404,7 +410,8 @@ const PHASES: [PhaseSpec; 8] = [
         drop_after_bytes: None,
         drop_requests: 0,
         chunk_bytes: 65_536,
-        chunk_delay_ms: 20,
+        // Retry must retain the same real downloading capture window.
+        chunk_delay_ms: 150,
         // Same descriptor and bytes as the cancelled lifecycle: the preserved
         // partial belongs to this identity, so the retry continues it.
         require_resume: true,
@@ -681,6 +688,7 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
             // 被要求出现在这里，也不影响这里的结论。
             let home_published = published.get(home).cloned().unwrap_or_default();
             let facts = PhaseFacts {
+                output: context.output,
                 spec,
                 layout: &layout,
                 ready: &ready,
@@ -817,6 +825,7 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
 }
 
 struct PhaseFacts<'a> {
+    output: &'a Path,
     spec: &'a PhaseSpec,
     layout: &'a Layout,
     ready: &'a Value,
@@ -878,7 +887,7 @@ fn assert_phase(facts: &PhaseFacts<'_>) -> Result<Value> {
     match spec.expect {
         Expect::Ready => {
             let entry = install_entry(facts.summary)?;
-            assert_ready(facts, entry)?
+            assert_ready(facts, entry)?;
         }
         // 认证类 phase 的 summary.install 可以为空：它从未进入安装表单。
         Expect::Auth => assert_auth_phase(facts)?,
@@ -951,6 +960,143 @@ fn assert_phase(facts: &PhaseFacts<'_>) -> Result<Value> {
     phase_evidence(facts)
 }
 
+fn assert_fixture_usage_captures(facts: &PhaseFacts<'_>) -> Result<()> {
+    let saved = facts
+        .saved_identity
+        .context("quota capture has no saved account identity")?;
+    let account_id = saved["accountId"]
+        .as_str()
+        .context("quota capture carries no saved accountId")?;
+    let connection_revision = saved["connectionRevision"]
+        .as_u64()
+        .context("quota capture carries no connectionRevision")?;
+    let captures = facts.summary["captures"]
+        .as_array()
+        .context("quota summary carries no captures")?;
+
+    for name in ["quota-details", "quota-list"] {
+        let matching: Vec<_> = captures
+            .iter()
+            .filter(|capture| capture["name"].as_str() == Some(name))
+            .collect();
+        ensure!(
+            matching.len() == 1,
+            "quota journey must capture exactly one `{name}` artifact"
+        );
+        let path = capture_artifact(
+            facts.output,
+            matching[0],
+            "snapshotFile",
+            "snapshot",
+            ".json",
+            facts.spec.phase,
+        )?;
+        let snapshot = read_json(&path)?;
+        assert_fixture_usage_snapshot(&snapshot, account_id, connection_revision, name)?;
+    }
+    Ok(())
+}
+
+fn assert_fixture_usage_snapshot(
+    snapshot: &Value,
+    account_id: &str,
+    connection_revision: u64,
+    capture_name: &str,
+) -> Result<()> {
+    ensure!(
+        snapshot["settings"]["acpAuth"]["loaded"].as_bool() == Some(true),
+        "{capture_name} quota capture has no loaded auth observation"
+    );
+    let configured = snapshot["settings"]["acpAccounts"]
+        .as_array()
+        .context("quota capture carries no current ACP account summaries")?;
+    let configured: Vec<_> = configured
+        .iter()
+        .filter(|account| {
+            account["accountId"].as_str() == Some(account_id)
+                && account["connectionRevision"].as_u64() == Some(connection_revision)
+        })
+        .collect();
+    ensure!(
+        configured.len() == 1,
+        "{capture_name} quota is not bound to the current configured identity"
+    );
+    // 列表只观察账号摘要；provider 仅在详情需求仍活跃时可用。
+    let provider = &configured[0]["provider"];
+    ensure!(
+        provider.is_null() || provider.as_str() == Some(PROVIDER),
+        "{capture_name} quota account changed provider"
+    );
+    let accounts = snapshot["settings"]["acpAuth"]["accounts"]
+        .as_array()
+        .with_context(|| format!("{capture_name} snapshot has no ACP auth accounts"))?;
+    let matching: Vec<_> = accounts
+        .iter()
+        .filter(|account| {
+            account["accountId"].as_str() == Some(account_id)
+                && account["connectionRevision"].as_u64() == Some(connection_revision)
+        })
+        .collect();
+    ensure!(
+        matching.len() == 1,
+        "{capture_name} quota is not bound to the saved account identity"
+    );
+    ensure!(
+        matching[0]["state"]["kind"].as_str() == Some("verified"),
+        "{capture_name} quota capture has no current verified authentication"
+    );
+    let usage = &matching[0]["usage"];
+    ensure!(
+        usage["checkedAt"].as_i64().is_some(),
+        "{capture_name} quota has no typed checkedAt"
+    );
+    let state = &usage["state"];
+    ensure!(
+        state["kind"].as_str() == Some("ready"),
+        "{capture_name} quota state is not ready"
+    );
+    let groups = state["groups"]
+        .as_array()
+        .with_context(|| format!("{capture_name} quota carries no groups"))?;
+    ensure!(
+        groups.len() == 2
+            && groups[0]["name"].as_str() == Some("Gemini Models")
+            && groups[1]["name"].as_str() == Some("Disabled Models"),
+        "{capture_name} quota groups differ from the fixed fixture"
+    );
+    let weekly = groups[0]["limits"]
+        .as_array()
+        .context("Gemini Models carries no limits")?;
+    let disabled = groups[1]["limits"]
+        .as_array()
+        .context("Disabled Models carries no limits")?;
+    ensure!(
+        weekly.len() == 2 && disabled.len() == 1,
+        "{capture_name} quota did not retain every fixture limit"
+    );
+    ensure!(
+        weekly[0]["label"].as_str() == Some("Weekly Limit Remaining")
+            && weekly[0]["remaining"]["kind"].as_str() == Some("percentage")
+            && weekly[0]["remaining"]["value"].as_i64() == Some(91)
+            && weekly[0]["nextResetAt"].as_i64() == Some(1_790_929_320),
+        "{capture_name} weekly quota differs from the fixed fixture"
+    );
+    ensure!(
+        weekly[1]["label"].as_str() == Some("Burst Limit")
+            && weekly[1]["remaining"]["kind"].as_str() == Some("units")
+            && weekly[1]["remaining"]["value"].as_i64() == Some(1_234)
+            && weekly[1]["nextResetAt"].is_null(),
+        "{capture_name} burst quota differs from the fixed fixture"
+    );
+    ensure!(
+        disabled[0]["label"].as_str() == Some("Legacy Limit")
+            && disabled[0]["remaining"]["kind"].as_str() == Some("disabled")
+            && disabled[0]["nextResetAt"].is_null(),
+        "{capture_name} disabled quota differs from the fixed fixture"
+    );
+    Ok(())
+}
+
 /// 认证类阶段的断言：只读验证，不产生安装操作。
 ///
 /// 必须出现该阶段声明的全部 captured 证据，最终恢复合成 Verified，且 `first`
@@ -993,6 +1139,8 @@ fn assert_auth_phase(facts: &PhaseFacts<'_>) -> Result<()> {
         spec.phase
     );
     if spec.phase == "auth-faults" {
+        assert_fixture_usage_captures(facts)?;
+        assert_connection_events(facts.events, spec.phase)?;
         ensure!(
             facts
                 .events
@@ -1510,13 +1658,18 @@ fn verify_installed(facts: &PhaseFacts<'_>, key: &str) -> Result<()> {
 }
 
 fn assert_connection(facts: &PhaseFacts<'_>, spec: &PhaseSpec) -> Result<()> {
+    assert_connection_events(facts.events, spec.phase)
+}
+
+fn assert_connection_events(events: &[AcpFixtureEvent], phase: &str) -> Result<()> {
     let mut seen: BTreeMap<u32, Vec<&'static str>> = BTreeMap::new();
-    for event in facts.events {
+    for event in events {
         let name = match event {
             AcpFixtureEvent::Initialize { .. } => "initialize",
             AcpFixtureEvent::Authenticate { .. } => "authenticate",
             AcpFixtureEvent::SessionNew { .. } => "session/new",
             AcpFixtureEvent::Close { .. } => "close",
+            AcpFixtureEvent::UsagePrompt { .. } => "usagePrompt",
             AcpFixtureEvent::NoPrompt { .. } => "prompt",
             AcpFixtureEvent::AuthenticateReleased { .. } | AcpFixtureEvent::Disconnect { .. } => {
                 continue;
@@ -1524,13 +1677,43 @@ fn assert_connection(facts: &PhaseFacts<'_>, spec: &PhaseSpec) -> Result<()> {
         };
         seen.entry(event_pid(event)).or_default().push(name);
     }
+    if phase == "auth-faults" {
+        ensure!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AcpFixtureEvent::UsagePrompt { .. }))
+                .count()
+                == 1,
+            "acp-auto-install auth-faults must issue exactly one fixed /usage prompt"
+        );
+        ensure!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AcpFixtureEvent::NoPrompt { .. })),
+            "acp-auto-install auth-faults sent an unexpected prompt"
+        );
+        let usage_event = events
+            .iter()
+            .position(|event| matches!(event, AcpFixtureEvent::UsagePrompt { .. }))
+            .expect("exactly one UsagePrompt was checked above");
+        let usage_pid = event_pid(&events[usage_event]);
+        let sequence = seen
+            .get(&usage_pid)
+            .context("the fixed usage prompt has no connection sequence")?;
+        ensure!(
+            sequence.as_slice() == ["initialize", "session/new", "usagePrompt", "close"],
+            "acp-auto-install auth-faults expected initialize → session/new → usagePrompt → close for the usage connection; observed {sequence:?}"
+        );
+        return Ok(());
+    }
     ensure!(
-        !facts.events.iter().any(|event| matches!(
+        !events.iter().any(|event| matches!(
             event,
-            AcpFixtureEvent::NoPrompt { .. } | AcpFixtureEvent::Authenticate { .. }
+            AcpFixtureEvent::UsagePrompt { .. }
+                | AcpFixtureEvent::NoPrompt { .. }
+                | AcpFixtureEvent::Authenticate { .. }
         )),
-        "acp-auto-install {} sent an ACP prompt or login request the user never asked for",
-        spec.phase
+        "acp-auto-install {phase} sent an ACP prompt or login request the user never asked for"
     );
     ensure!(
         seen.values().any(|sequence| {
@@ -1538,11 +1721,192 @@ fn assert_connection(facts: &PhaseFacts<'_>, spec: &PhaseSpec) -> Result<()> {
             let session = sequence.iter().position(|name| *name == "session/new");
             matches!((initialize, session), (Some(init), Some(session)) if init < session)
         }),
-        "acp-auto-install {} never completed one ACP connection (initialize → session/new); observed {:?}",
-        spec.phase,
-        seen
+        "acp-auto-install {phase} never completed one ACP connection (initialize → session/new); observed {seen:?}",
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod acp_usage_connection_tests {
+    use super::{assert_connection_events, assert_fixture_usage_snapshot};
+    use pl_provider_fixture::AcpFixtureEvent;
+    use serde_json::json;
+
+    #[test]
+    fn auth_phase_accepts_the_usage_probe_after_explicit_login() {
+        assert_connection_events(
+            &[
+                AcpFixtureEvent::Initialize { pid: 41 },
+                AcpFixtureEvent::Authenticate { pid: 41 },
+                AcpFixtureEvent::SessionNew { pid: 41 },
+                AcpFixtureEvent::Close { pid: 41 },
+                AcpFixtureEvent::Initialize { pid: 42 },
+                AcpFixtureEvent::SessionNew { pid: 42 },
+                AcpFixtureEvent::UsagePrompt { pid: 42 },
+                AcpFixtureEvent::Close { pid: 42 },
+            ],
+            "auth-faults",
+        )
+        .expect("the exact native usage probe sequence is valid");
+    }
+
+    #[test]
+    fn auth_phase_rejects_extra_prompt_login_and_incomplete_probe_sequences() {
+        for events in [
+            vec![
+                AcpFixtureEvent::Initialize { pid: 42 },
+                AcpFixtureEvent::SessionNew { pid: 42 },
+                AcpFixtureEvent::UsagePrompt { pid: 42 },
+                AcpFixtureEvent::NoPrompt { pid: 42 },
+                AcpFixtureEvent::Close { pid: 42 },
+            ],
+            vec![
+                AcpFixtureEvent::Initialize { pid: 42 },
+                AcpFixtureEvent::SessionNew { pid: 42 },
+                AcpFixtureEvent::Authenticate { pid: 42 },
+                AcpFixtureEvent::UsagePrompt { pid: 42 },
+                AcpFixtureEvent::Close { pid: 42 },
+            ],
+            vec![
+                AcpFixtureEvent::Initialize { pid: 42 },
+                AcpFixtureEvent::SessionNew { pid: 42 },
+                AcpFixtureEvent::UsagePrompt { pid: 42 },
+            ],
+            vec![
+                AcpFixtureEvent::Initialize { pid: 42 },
+                AcpFixtureEvent::SessionNew { pid: 42 },
+                AcpFixtureEvent::Close { pid: 42 },
+                AcpFixtureEvent::UsagePrompt { pid: 42 },
+                AcpFixtureEvent::Close { pid: 42 },
+            ],
+        ] {
+            assert!(
+                assert_connection_events(&events, "auth-faults").is_err(),
+                "unexpected protocol sequence was accepted: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_phases_continue_to_reject_usage_prompts() {
+        let events = [
+            AcpFixtureEvent::Initialize { pid: 42 },
+            AcpFixtureEvent::SessionNew { pid: 42 },
+            AcpFixtureEvent::UsagePrompt { pid: 42 },
+            AcpFixtureEvent::Close { pid: 42 },
+        ];
+        for phase in ["first", "restart", "resume", "retry", "reuse"] {
+            assert!(assert_connection_events(&events, phase).is_err());
+        }
+    }
+
+    fn fixture_usage_snapshot() -> serde_json::Value {
+        json!({
+            "settings": {
+                "acpAccounts": [{
+                    "accountId": "saved-account",
+                    "connectionRevision": 7,
+                    "provider": null,
+                }],
+                "acpAuth": {
+                    "loaded": true,
+                    "accounts": [{
+                        "accountId": "saved-account",
+                        "connectionRevision": 7,
+                        "state": {"kind": "verified"},
+                        "usage": {
+                            "checkedAt": 1_790_000_000_i64,
+                            "state": {
+                                "kind": "ready",
+                                "groups": [
+                                    {
+                                        "name": "Gemini Models",
+                                        "limits": [
+                                            {
+                                                "label": "Weekly Limit Remaining",
+                                                "remaining": {"kind": "percentage", "value": 91},
+                                                "nextResetAt": 1_790_929_320_i64,
+                                            },
+                                            {
+                                                "label": "Burst Limit",
+                                                "remaining": {"kind": "units", "value": 1_234},
+                                                "nextResetAt": null,
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "name": "Disabled Models",
+                                        "limits": [{
+                                            "label": "Legacy Limit",
+                                            "remaining": {"kind": "disabled"},
+                                            "nextResetAt": null,
+                                        }],
+                                    },
+                                ],
+                            },
+                        },
+                    }],
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn canonical_usage_snapshot_requires_saved_identity_and_all_fixture_limits() {
+        let snapshot = fixture_usage_snapshot();
+        assert_fixture_usage_snapshot(&snapshot, "saved-account", 7, "quota-details")
+            .expect("the complete identity-bound fixture usage is valid");
+        assert!(
+            assert_fixture_usage_snapshot(&snapshot, "another-account", 7, "quota-details")
+                .is_err(),
+            "usage must not be borrowed from a different account"
+        );
+        let mut revoked = snapshot.clone();
+        revoked["settings"]["acpAuth"]["accounts"][0]["state"]["kind"] = json!("required");
+        assert!(
+            assert_fixture_usage_snapshot(&revoked, "saved-account", 7, "quota-list").is_err(),
+            "retained quota must not prove a currently verified capture"
+        );
+
+        let mut changed_reset = snapshot.clone();
+        changed_reset["settings"]["acpAuth"]["accounts"][0]["usage"]["state"]["groups"][0]["limits"]
+            [0]["nextResetAt"] = json!(1_790_929_321_i64);
+        assert!(
+            assert_fixture_usage_snapshot(&changed_reset, "saved-account", 7, "quota-details")
+                .is_err(),
+            "a mismatched reset timestamp must not pass"
+        );
+
+        let mut missing_limit = snapshot;
+        missing_limit["settings"]["acpAuth"]["accounts"][0]["usage"]["state"]["groups"][1]["limits"] =
+            json!([]);
+        assert!(
+            assert_fixture_usage_snapshot(&missing_limit, "saved-account", 7, "quota-list")
+                .is_err(),
+            "omitting the disabled model group limit must not pass"
+        );
+    }
+
+    #[test]
+    fn quota_list_uses_current_summary_identity_without_loading_details() {
+        let snapshot = fixture_usage_snapshot();
+        assert_fixture_usage_snapshot(&snapshot, "saved-account", 7, "quota-list")
+            .expect("a current summary and verified quota do not require account details");
+
+        let mut changed = snapshot.clone();
+        changed["settings"]["acpAccounts"][0]["connectionRevision"] = json!(8);
+        assert!(
+            assert_fixture_usage_snapshot(&changed, "saved-account", 7, "quota-list").is_err(),
+            "retained auth usage cannot prove a changed configured identity"
+        );
+
+        let mut unloaded = snapshot;
+        unloaded["settings"]["acpAuth"]["loaded"] = json!(false);
+        assert!(
+            assert_fixture_usage_snapshot(&unloaded, "saved-account", 7, "quota-list").is_err(),
+            "an unloaded auth observation cannot prove a quota capture"
+        );
+    }
 }
 
 /// 账号投影只允许 name/provider/身份/revision：执行字段（program/args）已从
@@ -3247,6 +3611,8 @@ enum CaptureKind {
     },
     /// 认证阶段截图：安装 phase 允许为 null。
     Auth(AuthExpectation),
+    /// 额度截图：绑定保存身份与当前摘要，不要求详情订阅仍活跃。
+    Quota,
     /// Native 表单回归截图：不得被伪造成安装 phase 或认证成功。
     Native,
 }
@@ -3489,6 +3855,16 @@ fn validate_recorded_capture(
             // 认证截图不带安装 phase：这里既不允许、也不要求它伪造一个。
             assert_capture_auth_facts(name, &snapshot_value, spec, &auth, capture_identity)?;
         }
+        CaptureKind::Quota => {
+            let identity = capture_identity.context("quota capture needs the saved identity")?;
+            let account_id = identity["accountId"]
+                .as_str()
+                .context("quota capture identity carries no account ID")?;
+            let revision = identity["connectionRevision"]
+                .as_u64()
+                .context("quota capture identity carries no connection revision")?;
+            assert_fixture_usage_snapshot(&snapshot_value, account_id, revision, name)?;
+        }
         CaptureKind::Native => {
             // Native 表单截图发生在安装已就绪的 home 里：允许 `phase: null`，
             // 也允许与它自己快照里 antigravity 条目的真实 phase 一致；但必须
@@ -3566,6 +3942,7 @@ fn capture_kind(name: &str) -> Option<CaptureKind> {
             AuthAccount::Seed,
         ),
         "authenticating" => auth(&["authenticating"], None, AuthAccount::Saved),
+        "quota-details" | "quota-list" => Some(CaptureKind::Quota),
         "verified" => auth(&["verified"], None, AuthAccount::Saved),
         // Driver 的认证失败负例固定是 authenticate 阶段的 `authentication` 失败：
         // 任何其它 typed 失败（probe/protocol/…）都不算这一项通过。

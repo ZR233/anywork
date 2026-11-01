@@ -121,6 +121,44 @@ class DemoAcpAuth {
     return snapshot;
   }
 
+  AcpAuthSnapshotView queryUsage(AcpAccountSettingsView account) {
+    check(account);
+    if (stateOf(account.accountId) is! AcpVerifiedState) return snapshot;
+    final current = _accounts[account.accountId]!;
+    _accounts[account.accountId] = AcpAuthAccountView(
+      accountId: current.accountId,
+      connectionRevision: current.connectionRevision,
+      state: current.state,
+      usage: AcpUsageObservationView(
+        checkedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        state: const AcpUsageReadyView(
+          groups: [
+            AcpQuotaGroupView(
+              name: 'Gemini Models',
+              limits: [
+                AcpQuotaLimitView(
+                  label: 'Weekly Limit Remaining',
+                  remaining: AcpQuotaPercentageView(72),
+                ),
+              ],
+            ),
+            AcpQuotaGroupView(
+              name: 'Claude and GPT models',
+              limits: [
+                AcpQuotaLimitView(
+                  label: '5-Hour Limit Remaining',
+                  remaining: AcpQuotaPercentageView(45),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    _revision += 1;
+    return snapshot;
+  }
+
   AcpAuthSnapshotView cancel(AcpAccountSettingsView account, String target) {
     if (stateOf(account.accountId).operationId != target) {
       throw StudioFailure(
@@ -141,6 +179,7 @@ class DemoAcpAuth {
       // demo 不合成真实阶段：检查/登录直接收敛到需要登录或认证通过，
       // Authenticating/Verifying 只由 fake CLI + 生产 bridge 验收覆盖。
       state: state,
+      usage: _accounts[account.accountId]?.usage,
     );
     _revision += 1;
   }

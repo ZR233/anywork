@@ -88,6 +88,7 @@ enum AcpAccountAction {
   verify,
   cancelAuthentication,
   retry,
+  queryUsage,
   openGuide,
   openTerms,
 }
@@ -211,6 +212,30 @@ abstract class AccountQuotaPresentation with _$AccountQuotaPresentation {
 }
 
 @freezed
+abstract class AccountQuotaGroupPresentation
+    with _$AccountQuotaGroupPresentation {
+  const factory AccountQuotaGroupPresentation({
+    required String name,
+    @Default(<AccountQuotaPresentation>[])
+    List<AccountQuotaPresentation> quotas,
+    String? emptyLabel,
+  }) = _AccountQuotaGroupPresentation;
+}
+
+/// Formatted values; connection identity stays in the owning projection.
+@freezed
+abstract class AcpUsagePresentation with _$AcpUsagePresentation {
+  const factory AcpUsagePresentation({
+    @Default(<AccountQuotaGroupPresentation>[])
+    List<AccountQuotaGroupPresentation> groups,
+    String? status,
+    String? updatedLabel,
+    @Default(false) bool busy,
+    @Default(false) bool queried,
+  }) = _AcpUsagePresentation;
+}
+
+@freezed
 abstract class AccountUsagePresentation with _$AccountUsagePresentation {
   const factory AccountUsagePresentation({
     @Default(AccountQueryPhase.idle) AccountQueryPhase phase,
@@ -235,8 +260,10 @@ sealed class AccountRowContent with _$AccountRowContent {
     required AccountUsagePresentation usage,
     String? displayEndpoint,
   }) = NativeAccountRowContent;
-  const factory AccountRowContent.acp({required String status}) =
-      AcpAccountRowContent;
+  const factory AccountRowContent.acp({
+    required String status,
+    AcpUsagePresentation? usage,
+  }) = AcpAccountRowContent;
 }
 
 @freezed
@@ -452,6 +479,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
   const factory AcpAccountPresentation({
     required AcpPresentationPhase phase,
     required String status,
+    @Default(AcpUsagePresentation()) AcpUsagePresentation usage,
     String? message,
     String? error,
     double? progress,

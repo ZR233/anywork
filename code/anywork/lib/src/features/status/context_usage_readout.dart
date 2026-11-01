@@ -8,7 +8,6 @@ import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_hover_detail.dart';
 import 'status_detail_panel.dart';
-import 'usage_diagnostics_details.dart';
 
 /// 状态栏上下文读数。
 ///
@@ -49,7 +48,6 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
           key: StudioDriverKeys.contextUsageDetail(),
           child: _ContextDetail(
             projection: projection,
-            usageDiagnostics: projection.usageDiagnostics,
             onCompact: widget.onCompact,
             compacting: widget.compacting,
             compactionFailed: widget.compactionFailed,
@@ -91,14 +89,12 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
 class _ContextDetail extends StatelessWidget {
   const _ContextDetail({
     required this.projection,
-    required this.usageDiagnostics,
     this.onCompact,
     required this.compacting,
     required this.compactionFailed,
   });
 
   final StudioContextProjection projection;
-  final ThreadUsageDiagnostics? usageDiagnostics;
   final VoidCallback? onCompact;
   final bool compacting;
   final bool compactionFailed;
@@ -242,13 +238,6 @@ class _ContextDetail extends StatelessWidget {
                 cache.hasIncompleteUsage,
               ),
             ),
-            StatusDetailRow(
-              label: context.l10n.usageCacheCoverage,
-              value: '${cache.sampleCount}',
-            ),
-            Text(context.l10n.usageCacheCoverageNote),
-            if (cache.legacySampleCountUnknown)
-              Text(context.l10n.usageCacheLegacyUnknown),
             if (cache.hasPositiveDenominator) ...[
               StatusDetailRow(
                 label: context.l10n.statusCacheHitTokensLabel,
@@ -271,10 +260,6 @@ class _ContextDetail extends StatelessWidget {
               ),
           ],
         ),
-        if (usageDiagnostics != null) ...[
-          const StatusDetailDivider(),
-          UsageDiagnosticsDetails(diagnostics: usageDiagnostics!),
-        ],
         const StatusDetailDivider(),
         StatusDetailPanel(
           title: context.l10n.statusCost,

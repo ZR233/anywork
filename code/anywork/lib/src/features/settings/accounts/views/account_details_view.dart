@@ -92,6 +92,7 @@ class AccountDetailsView extends StatelessWidget {
               value: value,
               onAction: onAcpAction,
               onLoginMethodChanged: onLoginMethodChanged,
+              showUsage: true,
             ),
           ),
         },

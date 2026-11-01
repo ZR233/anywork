@@ -264,6 +264,8 @@ Future<void> performAcpAction(
       await owner.authenticate(login: true);
     case AcpAccountAction.cancelAuthentication:
       await owner.cancelAuthentication();
+    case AcpAccountAction.queryUsage:
+      await owner.queryUsage();
     case AcpAccountAction.openGuide || AcpAccountAction.openTerms:
       final url = owner.documentationUrl(action);
       if (url == null || url.isEmpty) return;

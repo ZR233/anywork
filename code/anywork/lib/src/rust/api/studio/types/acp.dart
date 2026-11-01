@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAcpAccountCatalog {
   final List<BridgeAcpAccountTemplate> templates;
@@ -146,16 +146,21 @@ class BridgeAcpAuthAccount {
   final String accountId;
   final BigInt connectionRevision;
   final BridgeAcpAuthState state;
+  final BridgeAcpUsageObservation? usage;
 
   const BridgeAcpAuthAccount({
     required this.accountId,
     required this.connectionRevision,
     required this.state,
+    this.usage,
   });
 
   @override
   int get hashCode =>
-      accountId.hashCode ^ connectionRevision.hashCode ^ state.hashCode;
+      accountId.hashCode ^
+      connectionRevision.hashCode ^
+      state.hashCode ^
+      usage.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -164,7 +169,8 @@ class BridgeAcpAuthAccount {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
-          state == other.state;
+          state == other.state &&
+          usage == other.usage;
 }
 
 @freezed
@@ -172,6 +178,8 @@ sealed class BridgeAcpAuthAction with _$BridgeAcpAuthAction {
   const BridgeAcpAuthAction._();
 
   const factory BridgeAcpAuthAction.check() = BridgeAcpAuthAction_Check;
+  const factory BridgeAcpAuthAction.queryUsage() =
+      BridgeAcpAuthAction_QueryUsage;
   const factory BridgeAcpAuthAction.authenticate({required String methodId}) =
       BridgeAcpAuthAction_Authenticate;
 }
@@ -369,6 +377,63 @@ sealed class BridgeAcpAuthState with _$BridgeAcpAuthState {
 
 enum BridgeAcpProvider { antigravity }
 
+class BridgeAcpQuotaGroup {
+  final String name;
+  final List<BridgeAcpQuotaLimit> limits;
+
+  const BridgeAcpQuotaGroup({required this.name, required this.limits});
+
+  @override
+  int get hashCode => name.hashCode ^ limits.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpQuotaGroup &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          limits == other.limits;
+}
+
+class BridgeAcpQuotaLimit {
+  final String label;
+  final BridgeAcpQuotaRemaining remaining;
+  final PlatformInt64? nextResetAt;
+
+  const BridgeAcpQuotaLimit({
+    required this.label,
+    required this.remaining,
+    this.nextResetAt,
+  });
+
+  @override
+  int get hashCode =>
+      label.hashCode ^ remaining.hashCode ^ nextResetAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpQuotaLimit &&
+          runtimeType == other.runtimeType &&
+          label == other.label &&
+          remaining == other.remaining &&
+          nextResetAt == other.nextResetAt;
+}
+
+@freezed
+sealed class BridgeAcpQuotaRemaining with _$BridgeAcpQuotaRemaining {
+  const BridgeAcpQuotaRemaining._();
+
+  const factory BridgeAcpQuotaRemaining.percentage({required int value}) =
+      BridgeAcpQuotaRemaining_Percentage;
+  const factory BridgeAcpQuotaRemaining.units({required BigInt value}) =
+      BridgeAcpQuotaRemaining_Units;
+  const factory BridgeAcpQuotaRemaining.unknown() =
+      BridgeAcpQuotaRemaining_Unknown;
+  const factory BridgeAcpQuotaRemaining.disabled() =
+      BridgeAcpQuotaRemaining_Disabled;
+}
+
 class BridgeAcpServerInfo {
   final String name;
   final String? title;
@@ -391,4 +456,49 @@ class BridgeAcpServerInfo {
           name == other.name &&
           title == other.title &&
           version == other.version;
+}
+
+enum BridgeAcpUsageFailureCode {
+  query,
+  timeout,
+  transport,
+  resourceLimit,
+  invalidResponse,
+}
+
+class BridgeAcpUsageObservation {
+  final PlatformInt64 checkedAt;
+  final BridgeAcpUsageState state;
+
+  const BridgeAcpUsageObservation({
+    required this.checkedAt,
+    required this.state,
+  });
+
+  @override
+  int get hashCode => checkedAt.hashCode ^ state.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpUsageObservation &&
+          runtimeType == other.runtimeType &&
+          checkedAt == other.checkedAt &&
+          state == other.state;
+}
+
+@freezed
+sealed class BridgeAcpUsageState with _$BridgeAcpUsageState {
+  const BridgeAcpUsageState._();
+
+  const factory BridgeAcpUsageState.ready({
+    required List<BridgeAcpQuotaGroup> groups,
+  }) = BridgeAcpUsageState_Ready;
+  const factory BridgeAcpUsageState.notApplicable() =
+      BridgeAcpUsageState_NotApplicable;
+  const factory BridgeAcpUsageState.unavailable() =
+      BridgeAcpUsageState_Unavailable;
+  const factory BridgeAcpUsageState.failed({
+    required BridgeAcpUsageFailureCode code,
+  }) = BridgeAcpUsageState_Failed;
 }

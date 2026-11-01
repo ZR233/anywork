@@ -5,6 +5,7 @@ import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import 'account_identity.dart';
 import 'account_sections.dart';
+import 'account_usage_metrics.dart';
 import 'account_usage_view.dart';
 
 class AccountListItem extends StatelessWidget {
@@ -73,7 +74,17 @@ class AccountListItem extends StatelessWidget {
         showUpdated: false,
         onRetry: () => onAction(AccountRowAction.refresh),
       ),
-      AcpAccountRowContent() => const SizedBox.shrink(),
+      AcpAccountRowContent(:final usage) =>
+        usage == null
+            ? const SizedBox.shrink()
+            : AcpUsageMetrics(
+                value: usage,
+                density: AccountMetricDensity.summary,
+              ),
+    };
+    final hasUsage = switch (value.content) {
+      NativeAccountRowContent() => true,
+      AcpAccountRowContent(:final usage) => usage != null,
     };
     // Menu is a sibling of the detail target: opening/actions never bubble to it.
     final menu = AccountMenuButton(
@@ -170,10 +181,7 @@ class AccountListItem extends StatelessWidget {
                       SizedBox(width: 48, child: menu),
                     ],
                   ),
-                  if (value.content case NativeAccountRowContent()) ...[
-                    const SizedBox(height: 8),
-                    usage,
-                  ],
+                  if (hasUsage) ...[const SizedBox(height: 8), usage],
                 ],
               ),
       ),

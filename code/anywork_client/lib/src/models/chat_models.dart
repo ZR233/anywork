@@ -269,6 +269,7 @@ final class CurrentContentPreview {
 
   final String id;
   final CurrentContentRole role;
+
   /// Original producer channel, not inferred from the display role or body.
   final ThreadTextChannel? textChannel;
   final String text;
