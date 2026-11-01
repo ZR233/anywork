@@ -139,7 +139,7 @@
         activeAgentId: spec.activeAgentId || 'root',
         frozenThread: {
           id: 'thr-main',
-          title: '会话组件化与运行期输入框锁定',
+          title: '完成 Issue #243 开发并创建关联 PR',
           projectName: 'pure-lang-pure',
           sshAlias: null,
           workspaceMode: 'worktree',
@@ -219,6 +219,8 @@
             expanded: false
           };
           this.note('准备失败 · 原位保留草稿与附件，支持一键切回本地目录');
+        } else if (spec.id === 'sidebar-add-project') {
+          this.note('添加项目向导 · 支持选择本地文件夹或从 ~/.ssh/config 挂载远程 SSH 项目');
         } else {
           this.note('起始页 · 创建期配置（工作区、分发）与每轮主路由双层清晰分离');
         }
@@ -309,11 +311,23 @@
         });
         this.state.agents.forEach(a => { a.status = 'completed'; });
         this.note('问答已完成 · 时间线保留只读回执，敏感回答已隐藏');
-      } else if (spec.id === 'idle' || spec.id === 'empty') {
+      } else if (spec.id === 'idle' || spec.id === 'empty' || spec.id === 'sidebar-archived') {
         this.state.agents.forEach(a => { a.status = 'completed'; });
         if (!this.state.change) {
-          this.note(spec.empty ? '空会话 · 输入首条消息启动完整运行流' : '轮次空闲 · 除顶栏创建期冻结项外，工作模式、模型与强度均可配置');
+          this.note(spec.id === 'sidebar-archived'
+            ? '侧边栏已归档目录 · 支持搜索历史归档会话并一键恢复至原列表'
+            : spec.empty
+              ? '空会话 · 输入首条消息启动完整运行流'
+              : '轮次空闲 · 除顶栏创建期冻结项外，工作模式、模型与强度均可配置');
         }
+      }
+
+      if (spec.id === 'sidebar-overview') {
+        this.note('侧边栏总览 · 保留蓝色竖条选中态，清理本地标签与已完成对勾噪音');
+      } else if (spec.id === 'sidebar-open-menu') {
+        this.note('跨边界二级菜单 · 「打开方式 ▶」向右展开原色应用徽标，不被滚动容器裁切');
+      } else if (spec.id === 'sidebar-filter-active') {
+        this.note('状态筛选「进行中」· 自动展开折叠的 SSH 项目 dcsdk2，定位全部后台任务');
       }
 
       if (spec.stoppingCleanup) {

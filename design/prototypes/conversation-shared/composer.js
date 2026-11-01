@@ -57,109 +57,13 @@
   }
 
   /* ========================================================================
-     2. Shared Studio Shell: Left Project Sidebar & Context-Aware Topbar
+     2. Shared Studio Shell: Context-Aware Topbar (Sidebar lives in sidebar-shared/)
      ======================================================================== */
-  function renderSidebar(host, controller) {
-    const s = controller.state;
-    const standaloneStartActive = s.stage === 'start' && s.targetType === 'standalone';
-
-    const projectsHTML = app.fixtures.projects.map(proj => {
-      const projStartActive = s.stage === 'start' && s.targetType === 'project' && s.projectId === proj.id;
-      return `
-        <div class="cv-project-group">
-          <button
-            type="button"
-            class="cv-project-row ${projStartActive ? 'is-active' : ''}"
-            data-shell-action="project-start"
-            data-project-id="${escape(proj.id)}"
-            title="在项目 ${escape(proj.name)} (${escape(proj.path)}) 下新建会话">
-            ${icon('chevron-down')}
-            ${icon('folder')}
-            <span class="cv-proj-name">${escape(proj.name)}</span>
-            ${proj.sshAlias ? `<span class="cv-ssh-pill">SSH</span>` : ''}
-            <span class="cv-proj-plus" aria-hidden="true">${icon('plus')}</span>
-          </button>
-          ${proj.threads.length ? `
-            <div class="cv-thread-list">
-              ${proj.threads.map(t => {
-                const isThreadActive = s.stage === 'session' && s.activeSidebarThreadId === t.id;
-                const isRunning = isThreadActive && Boolean(s.live || s.pending || s.transitionPhase !== 'none');
-                return `
-                  <button
-                    type="button"
-                    class="cv-thread-tile ${isThreadActive ? 'is-active' : ''}"
-                    data-shell-action="open-thread"
-                    data-thread-id="${escape(t.id)}"
-                    title="${escape(t.title)} · ${t.worktree ? '独立 Git 工作树' : '本地目录'}">
-                    <span class="cv-thread-tile-title">${escape(t.title)}</span>
-                    ${isRunning ? '<span class="cv-thread-dot" aria-hidden="true"></span>' : ''}
-                    ${t.worktree ? `<span class="cv-thread-wt" title="创建时绑定独立 Git 工作树">${icon('git-branch')}</span>` : ''}
-                  </button>
-                `;
-              }).join('')}
-            </div>
-          ` : ''}
-        </div>
-      `;
-    }).join('');
-
-    const standaloneThreadsHTML = app.fixtures.standaloneThreads.map(t => {
-      const isThreadActive = s.stage === 'session' && s.activeSidebarThreadId === t.id;
-      return `
-        <button
-          type="button"
-          class="cv-thread-tile ${isThreadActive ? 'is-active' : ''}"
-          data-shell-action="open-thread"
-          data-thread-id="${escape(t.id)}"
-          title="${escape(t.title)} · Documents/anywork">
-          <span class="cv-thread-tile-title">${escape(t.title)}</span>
-        </button>
-      `;
-    }).join('');
-
-    host.innerHTML = `
-      <div class="cv-side-top">
-        <div class="cv-brand-bar">
-          <span class="cv-brand-id">
-            <span class="cv-brand-mark">${icon('cat')}</span>
-            <span>糊来帮</span>
-          </span>
-        </div>
-        <button
-          type="button"
-          class="cv-new-standalone-btn ${standaloneStartActive ? 'is-active' : ''}"
-          data-shell-action="standalone-start">
-          ${icon('plus')}
-          <span>新会话</span>
-        </button>
-        <div class="cv-side-search" aria-hidden="true">
-          ${icon('search')}
-          <span>项目与会话</span>
-          <span>Ctrl+K</span>
-        </div>
-      </div>
-      <div class="cv-side-scroll">
-        <div>
-          <div class="cv-side-section-head">
-            <span>项目</span>
-            <span>${app.fixtures.projects.length}</span>
-          </div>
-          <div>${projectsHTML}</div>
-        </div>
-        <div>
-          <div class="cv-side-section-head">
-            <span>非项目会话</span>
-            <span>${app.fixtures.standaloneThreads.length}</span>
-          </div>
-          <div>${standaloneThreadsHTML}</div>
-        </div>
-      </div>
-      <div class="cv-side-foot">
-        <span class="cv-side-foot-item">${icon('archive')}<span>已归档</span></span>
-        <span class="cv-side-foot-item">${icon('settings')}<span>设置</span></span>
-      </div>
-    `;
-    icons(host);
+  function hostLogoOrIcon(appKey, fallbackIcon) {
+    if (window.AnyworkSidebar?.hostAppLogo) {
+      return window.AnyworkSidebar.hostAppLogo(appKey);
+    }
+    return icon(fallbackIcon);
   }
 
   function renderTopbar(leftHost, rightHost, topbarEl, controller, menuManager, helpers) {
@@ -218,7 +122,7 @@
       <div class="cv-frozen-bar" aria-label="创建时固定的会话环境配置">
         <span
           class="cv-frozen-chip ${ft.workspaceMode === 'worktree' ? 'is-worktree' : ''}"
-          title="会话创建时已固定工作区模式（只读）：${escape(ft.workspacePath)}">
+          title="所属项目：${escape(ft.projectName)} · 会话创建时已固定工作区模式（只读）：${escape(ft.workspacePath)}">
           ${icon(ft.workspaceMode === 'worktree' ? 'git-branch' : 'folder')}
           <span>${ft.sshAlias ? `SSH:${escape(ft.sshAlias)} · ` : ''}${escape(wsShort)}</span>
         </span>
@@ -304,15 +208,15 @@
         <div class="cv-menu align-right" data-menu-panel="open-ws" role="menu" hidden>
           <div class="cv-menu-head"><span>打开会话工作区</span></div>
           <button type="button" class="cv-menu-item" data-open-ws="VS Code">
-            ${icon('code')}
+            ${hostLogoOrIcon('vscode', 'code')}
             <span class="cv-item-main">在 VS Code 中打开</span>
           </button>
           <button type="button" class="cv-menu-item" data-open-ws="Zed">
-            ${icon('sparkles')}
+            ${hostLogoOrIcon('zed', 'sparkles')}
             <span class="cv-item-main">在 Zed 中打开</span>
           </button>
           <button type="button" class="cv-menu-item" data-open-ws="终端">
-            ${icon('terminal')}
+            ${hostLogoOrIcon('terminal', 'terminal')}
             <span class="cv-item-main">在终端中打开</span>
           </button>
           <div class="cv-menu-divider"></div>
@@ -1245,7 +1149,6 @@
   app.composer = {
     MenuManager,
     PromptComposerCard,
-    renderSidebar,
     renderTopbar,
     buildPreparationHTML,
     renderStartStage,

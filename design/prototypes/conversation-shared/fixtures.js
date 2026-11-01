@@ -15,7 +15,7 @@
       threads: [
         {
           id: 'thr-main',
-          title: '会话组件化与运行期输入框锁定',
+          title: '完成 Issue #243 开发并创建关联 PR',
           worktree: true,
           branch: 'anywork/thr-01jc9k',
           workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jc9k\\session',
@@ -675,12 +675,58 @@
      3. Unified Scenario Catalog (Grouped by Lifecycle Stage)
      ======================================================================== */
   const scenarioGroups = [
-    { id: 'start', label: '一、新会话创建期（起始页双层输入台）' },
-    { id: 'composer', label: '二、会话运行时输入框与配置锁定' },
-    { id: 'timeline', label: '三、时间线与实时状态栏整组交接' }
+    { id: 'sidebar', label: '一、项目与会话侧边栏交互组件' },
+    { id: 'start', label: '二、新会话创建期（起始页双层输入台）' },
+    { id: 'composer', label: '三、会话运行时输入框与配置锁定' },
+    { id: 'timeline', label: '四、时间线与实时状态栏整组交接' }
   ];
 
   const scenarios = [
+    // Group 0: Project & Session Sidebar Shared Component Scenarios
+    {
+      id: 'sidebar-overview',
+      group: 'sidebar',
+      stage: 'session',
+      at: 'workgroup',
+      sidebarPreset: true,
+      label: '侧边栏总览 · 蓝色竖条选中态与降噪层级',
+      hint: '顶层顺序重构为「新建会话 → 实时搜索 → 三态紧凑筛选 → 项目树 → 非项目会话 → 双栏底栏」；保留选中会话的温暖拿铁底色与左侧眼眸蓝竖条，去除本地冗余标签与空闲会话对勾噪音。'
+    },
+    {
+      id: 'sidebar-open-menu',
+      group: 'sidebar',
+      stage: 'session',
+      at: 'workgroup',
+      sidebarPreset: true,
+      label: '会话菜单 · 跨栏二级「打开方式 ▶」与原色徽标',
+      hint: '点击会话右侧 ··· 展开挂载于窗口顶层 Portal 的菜单，悬停或点击「打开方式 ▶」向右跨出侧栏边界展示 VS Code / Zed / 终端原色矢量徽标子菜单，不被滚动容器裁切。'
+    },
+    {
+      id: 'sidebar-filter-active',
+      group: 'sidebar',
+      stage: 'session',
+      at: 'workgroup',
+      sidebarPreset: true,
+      label: '状态筛选 · 仅看「进行中」并自动展开折叠项目',
+      hint: '三态筛选栏实时统计全局进行中与待处理数量；切换至「进行中」后自动展开含后台运行会话的折叠项目（如 dcsdk2），一键定位多项目并发任务。'
+    },
+    {
+      id: 'sidebar-archived',
+      group: 'sidebar',
+      stage: 'session',
+      sidebarPreset: true,
+      label: '已归档视图 · 就地切换与一键恢复',
+      hint: '点击底栏「已归档」在侧边栏内切换至归档目录，支持按关键字搜索历史归档并一键「恢复」回原项目或非项目列表。'
+    },
+    {
+      id: 'sidebar-add-project',
+      group: 'sidebar',
+      stage: 'start',
+      sidebarPreset: true,
+      label: '添加项目向导 · 本地目录与 SSH 远程主机',
+      hint: '点击「项目」分区标题右侧「+ 添加项目」，可在本地目录与 ~/.ssh/config 远程主机之间切换并立即创建项目分组。'
+    },
+
     // Group 1: Start Page Creation Stage
     {
       id: 'local',

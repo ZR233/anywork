@@ -6,22 +6,24 @@
 
 ## 1. 组件化入口与零复制挂载结构
 
-三个会话概念稿入口页均为约 25 行的纯声明式 HTML 薄壳，按固定顺序加载同一套共享样式与脚本，不在单页内复制外壳、顶栏、时间线、状态栏或输入框代码：
+四个桌面外壳与会话概念稿入口页均为约 26 行的纯声明式 HTML 薄壳，按固定顺序加载同一套共享侧边栏组件（`../sidebar-shared/`）与会话共享模块（`../conversation-shared/`），不在单页内复制侧边栏、顶栏、时间线、状态栏或输入框代码：
 
+- [项目与会话侧边栏共享组件](../project-sidebar/index.html)：`data-page="sidebar"`，默认场景 `sidebar-overview`。聚焦侧边栏顶层动线优化（`新建会话 → 实时搜索 → 三态紧凑筛选 → 项目树 → 非项目会话 → 双栏底栏`）、温暖拿铁底色与左侧眼眸蓝选中竖条、会话行尾四列定轴状态槽（`置顶 · 工作树 · 运行状态 · 更多菜单`，状态变化图标零位移）、重复标签与对勾降噪、跨边界二级「打开方式 ▶」原色徽标子菜单、已归档恢复、添加本地/SSH 项目向导及右侧宽度拖拽手柄。
 - [新会话起始页与工作区输入布局](../session-start/index.html)：`data-page="start"`，默认场景 `local`。聚焦新会话创建期的双层同心输入台（外层 `本地目录 / 新建工作树` 与子智能体分发环境栏 + 内层统一输入卡）及首条请求四阶段准备交接。
 - [会话运行时输入框与配置锁定](../session-composer/index.html)：`data-page="composer"`，默认场景 `running-locked`。聚焦会话创建后外层创建栏退役、顶栏冻结徽标投影、运行期选择器加锁与就地原因提示、并发拟稿、唯一主按钮六态切换、模型不可用自愈、机器人统一路由及子智能体只读底栏。
 - [会话时间线与实时状态栏](../live-status/index.html)：`data-page="session"`，默认场景 `workgroup`。聚焦实时状态栏四种互斥内容、工作组边界整组移交时间线、流式 Markdown 阅读跟随、分步问答停靠面板与独立折叠终态回执。
 
 共享模块职责划分：
 
-- `preview.css`：暹罗浅色主题 Material 3 作用域样式（绑定 MDUI `2.1.4` 主题色板与排版变量，使用 `:where(.cv-preview)` 零特异度基线避免覆盖组件类）、全域无轨道自动隐藏胶囊滚动条（静止完全隐藏，滚动中 `.is-scrolling` 或悬停滑块时浮现，`850ms` 后自动淡出，消除原生白底轨道与上下箭头）、统一应用外壳（M3 导航侧栏与上下文顶栏）、起始页双层同心创建台、会话居中阅读列、实时状态栏、统一 `PromptComposerCard` 与锁定状态视觉、问答停靠区、子智能体只读底栏及右侧 M3 配置可配性检查器。
-- `fixtures.js`：项目目录（本地 Git、SSH 远程 Git、普通非 Git 目录）、非项目独立会话、工作模式、按账号分组的模型目录（含无推理强度模型）、主/子智能体目录、时间线快照、可重复播放的事件序列，以及按生命周期划分的 **26 个统一场景**（创建期 6 个、运行期输入与锁定 8 个、时间线与状态栏 12 个）。
+- `../sidebar-shared/sidebar.css` 与 `../sidebar-shared/sidebar.js`：独立封装的 `StudioSidebar` 共享侧边栏组件与宿主应用矢量徽标（`VS Code` / `Zed` / `终端`），在全部会话概念稿页面单实例复用并与 `ConversationController` 双向同步，同时通过底栏「设置」与账号概念稿的「返回聊天」构成跨页闭环。一级菜单、二级「打开方式 ▶」子菜单与只读悬停详情卡统一挂载于窗口级 `.sb-portal`，避免被侧栏滚动区裁切。
+- `preview.css`：暹罗浅色主题 Material 3 作用域样式（绑定 MDUI `2.1.4` 主题色板与排版变量，使用 `:where(.cv-preview)` 零特异度基线避免覆盖组件类）、全域无轨道自动隐藏胶囊滚动条（静止完全隐藏，滚动中 `.is-scrolling` 或悬停滑块时浮现，`850ms` 后自动淡出，消除原生白底轨道与上下箭头）、统一应用外壳（承载可调宽 `--sb-width` 侧栏宿主与上下文顶栏）、起始页双层同心创建台、会话居中阅读列、实时状态栏、统一 `PromptComposerCard` 与锁定状态视觉、问答停靠区、子智能体只读底栏及右侧 M3 配置可配性检查器。
+- `fixtures.js`：项目目录（本地 Git、SSH 远程 Git、普通非 Git 目录）、非项目独立会话、工作模式、按账号分组的模型目录（含无推理强度模型）、主/子智能体目录、时间线快照、可重复播放的事件序列，以及按生命周期划分的 **32 个统一场景**（侧边栏组件 5 个、创建期 6 个、运行期输入与锁定 8 个、时间线与状态栏 13 个）。
 - `state.js`：每个挂载点独立的 `ConversationController` 状态机，统一管理起始页到已建会话的四阶段准备交接、权威配置可配性判定（`getLockState`）、唯一主操作槽位六态派生（`getPrimaryAction`）、锁定原因横条（`explainLock`）、时间线与状态栏播放、停止收束过渡、待决问答期间的草稿暂存及主/子智能体视图切换。
 - `components.js`：时间线和实时状态栏共用的安全 Markdown、工作组（`live` 与 `history` 共用同一成员内容渲染）、工具详情查看、只读问答回执、独立折叠终态行、上下文压缩回执及分步问答停靠面板。
-- `composer.js`：统一的锚定浮层菜单管理器、项目优先侧边栏、会话顶栏（创建期冻结徽标、`n 个智能体` 切换与行内唯一停止入口、打开工作区菜单）、在起始页外层环境栏与会话底部停靠区之间**复用同一 DOM 实例**的 `PromptComposerCard`（切换场景或输入过程中保持焦点与选区不丢失）、四阶段环境准备卡片与子智能体只读底栏。
-- `preview.js`：可选统一页头/跨页视图切换标签/页脚装配（`data-page-chrome="true"`）、双阶段视图挂载、右侧实时配置可配性矩阵刷新与对话框事件绑定。
+- `composer.js`：统一的锚定浮层菜单管理器、会话顶栏（创建期冻结徽标、`n 个智能体` 切换与行内唯一停止入口、复用 `StudioSidebar` 原色应用徽标的打开工作区菜单）、在起始页外层环境栏与会话底部停靠区之间**复用同一 DOM 实例**的 `PromptComposerCard`（切换场景或输入过程中保持焦点与选区不丢失）、四阶段环境准备卡片与子智能体只读底栏。
+- `preview.js`：可选统一页头/跨页视图切换标签/页脚装配（`data-page-chrome="true"`）、`StudioSidebar` 与双阶段视图挂载、右侧实时配置可配性矩阵刷新与对话框事件绑定。
 
-挂载约定：页面加载 MDUI `2.1.4` 样式与组件脚本后，通过相对路径的 `defer` 脚本按 `fixtures.js → state.js → components.js → composer.js → preview.js` 顺序加载，使用 `data-conversation-preview` 挂载，`data-page="start|composer|session"` 指定默认视角与场景分组优先级，`data-page-chrome="true"` 渲染统一 M3 页头与分段标签栏，`data-scenario`（或 URL 查询参数 `?scenario=<id>`）指定初始场景，`data-controls="false"` 隐藏右侧演示检查器。
+挂载约定：页面加载 MDUI `2.1.4`、`../sidebar-shared/sidebar.css` 与 `../conversation-shared/preview.css` 样式后，通过相对路径的 `defer` 脚本按 `../sidebar-shared/sidebar.js → fixtures.js → state.js → components.js → composer.js → preview.js` 顺序加载，使用 `data-conversation-preview` 挂载，`data-page="sidebar|start|composer|session"` 指定默认视角与场景分组优先级，`data-page-chrome="true"` 渲染统一 M3 页头与分段标签栏，`data-scenario`（或 URL 查询参数 `?scenario=<id>`）指定初始场景，`data-controls="false"` 隐藏右侧演示检查器。
 
 ## 2. 会话生命周期配置锁定与输入框交互规则
 
