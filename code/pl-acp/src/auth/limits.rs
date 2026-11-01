@@ -13,8 +13,11 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// `initialize` 协商预算。
-pub(super) const INITIALIZE_BUDGET: Duration = Duration::from_secs(30);
+/// `initialize` 协商预算，包含对端程序冷启动时的自解包与模块加载。
+///
+/// 取得标准流不代表对端已就绪；Windows 官方发行程序可能在首次响应前超过 30 秒。
+/// 保留有界等待，并由请求层在整个等待期间观察取消。
+pub(super) const INITIALIZE_BUDGET: Duration = Duration::from_secs(3 * 60);
 /// `session/new` 探测预算。
 pub(super) const PROBE_BUDGET: Duration = Duration::from_secs(60);
 /// 固定 `/usage` 回合预算；只覆盖 prompt 请求及匹配会话的报告收集。
