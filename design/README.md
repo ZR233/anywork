@@ -44,7 +44,7 @@
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型（HTML 静态稿，不作为架构契约），`assets/` 保存文档引用的图像资源。
 
 - Material 3 账号设计稿按界面分目录：[账号列表](./prototypes/accounts-list/index.html)、[账号详情](./prototypes/account-details/index.html)、[模型详情、价格与评价](./prototypes/model-details/index.html)。对应 [#168](https://github.com/ZR233/anywork/issues/168)，包含 62 个账户场景、计费方式选择后保存及带评价模型标识的模拟评价。三个入口共用 `prototypes/accounts-shared/` 中的样式、示例数据与交互代码，分别从对应界面打开；维护时修改共享文件，避免页面间漂移。浏览器直接打开即可交互，需要联网加载固定版本的 MDUI 和图标库；金额、价格、性能和评价均为设计样例，不连接真实账户，也不作为原生实现或验收证据。
-- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。以 [26](./26-timeline-content.md) 的逐条完成事实为准，Flutter 把相邻完成项派生成活动组；当前工作组（含已完成成员）、正文与压缩留唯一状态栏，遇到正文、问答、轮次结束等分组边界时工作组整组进入 Timeline，无信息显示不可展开“思考中”。旋转前置图标、独立折叠终态、问答 dock 与输入主按钮复用 [conversation-shared](./prototypes/conversation-shared/README.md)。概念稿为本地模拟和视觉参照，可按 issue 调整，不是原生或真实供应商验收证据。
+- 统一组件化会话交互概念稿按生命周期视角分目录：[新会话起始页与工作区输入布局](./prototypes/session-start/index.html)、[会话运行时输入框与配置锁定](./prototypes/session-composer/index.html)、[会话时间线与实时状态栏](./prototypes/live-status/index.html)（设计说明见 [session-start-layout](./concepts/session-start-layout.md)，共享模块见 [conversation-shared](./prototypes/conversation-shared/README.md)）。三个入口页均为纯声明式薄壳，共用同一套暹罗浅色外壳（项目会话侧栏与上下文顶栏）、`PromptComposerCard`、时间线与状态栏实现，消除跨页复制与样式漂移：起始页采用“外层会话环境栏（项目身份、`local`「本地目录」/ `worktree`「新建工作树」二态分段切换、子智能体分发单层菜单）+ 同心内层主输入卡”双层结构（覆盖 6 个创建期场景）；进入已建会话后外层创建栏退役、冻结项上移顶栏只读徽标，输入区完整呈现运行中选择器锁定与就地原因提示、活动工作流仅锁模式而开放换模、并发拟稿与六态唯一主按钮、模型不可用原地换模自愈、机器人统一路由及子智能体只读底栏（覆盖 8 个运行期输入场景）；时间线与实时状态栏遵循 [26](./26-timeline-content.md) 原子完成事实与分组边界整组移交规则（覆盖 12 个时间线与问答场景）。概念稿为本地模拟与视觉交互参照，不作为原生或真实供应商验收证据。
 
 ## 写作规范
 

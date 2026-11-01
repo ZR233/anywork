@@ -3,33 +3,63 @@
   const app = window.AnyworkConversation;
   const escape = value => String(value ?? '').replace(/[&<>"']/g, character =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+
   function node(html) {
     const template = document.createElement('template');
     template.innerHTML = html.trim();
     if (template.content.childElementCount !== 1) throw new Error('A preview component must have one root element');
     return template.content.firstElementChild;
   }
+
   const icon = name => `<i data-lucide="${escape(name)}" aria-hidden="true"></i>`;
-  const activityIndicator = () => `<span class="cv-activity-indicator" aria-hidden="true">${icon('loader-circle')}</span>`;
+  const hasMduiSpinner = () => Boolean(window.customElements?.get('mdui-circular-progress'));
+  const spinner = (className = '') => hasMduiSpinner()
+    ? `<mdui-circular-progress class="cv-m3-spinner ${escape(className)}" aria-hidden="true"></mdui-circular-progress>`
+    : `<span class="cv-spin ${escape(className)}" aria-hidden="true">${icon('loader-circle')}</span>`;
+  const activityIndicator = () => `<span class="cv-activity-indicator" aria-hidden="true">${spinner()}</span>`;
+
   function icons(root) {
-    window.lucide.createIcons({ root, icons: window.lucide.icons, attrs: { 'stroke-width': 1.65 } });
+    if (window.lucide) {
+      window.lucide.createIcons({ root, icons: window.lucide.icons, attrs: { 'stroke-width': 1.7 } });
+    }
   }
+
   function button(label, name, action, className = '') {
     const element = node(`<button type="button" class="cv-button ${escape(className)}">${name ? icon(name) : ''}<span>${escape(label)}</span></button>`);
     element.addEventListener('click', action);
     icons(element);
     return element;
   }
-  const statusLabel = status => ({ running: '进行中', completed: '已完成', stopped: '已停止', failed: '失败' })[status] || '';
-  const statusIcon = status => ({ running: 'loader-circle', completed: 'check', stopped: 'square', failed: 'circle-alert' })[status] || 'circle';
+
+  const statusLabel = status => ({
+    running: '进行中',
+    completed: '已完成',
+    stopped: '已停止',
+    failed: '失败',
+    stopping: '正在停止',
+    waiting: '等待调度',
+    idle: '空闲'
+  })[status] || '';
+
+  const statusIcon = status => ({
+    running: 'loader-circle',
+    completed: 'check',
+    stopped: 'square',
+    failed: 'circle-alert'
+  })[status] || 'circle';
+
   const selectedInside = element => {
     const selection = window.getSelection();
     return selection && !selection.isCollapsed && (element.contains(selection.anchorNode) || element.contains(selection.focusNode));
   };
 
-  // A view-only pending render protects text selection; the controller continues receiving output.
   class SelectableContent {
-    constructor(element, render) { this.element = element; this.render = render; this.value = null; this.pending = null; }
+    constructor(element, render) {
+      this.element = element;
+      this.render = render;
+      this.value = null;
+      this.pending = null;
+    }
     update(value) {
       if (value === this.value) return;
       if (selectedInside(this.element)) { this.pending = value; return; }
@@ -73,10 +103,14 @@
   }
 
   const kinds = {
-    thinking: { icon: 'brain', label: '思考' }, read: { icon: 'file-text', label: '读取' },
-    command: { icon: 'terminal', label: '命令' }, search: { icon: 'search', label: '搜索' },
-    edit: { icon: 'file-pen-line', label: '修改' }, wait: { icon: 'users', label: '等待' }
+    thinking: { icon: 'brain', label: '思考' },
+    read: { icon: 'file-text', label: '读取' },
+    command: { icon: 'terminal', label: '命令' },
+    search: { icon: 'search', label: '搜索' },
+    edit: { icon: 'file-pen-line', label: '修改' },
+    wait: { icon: 'users', label: '等待' }
   };
+
   const describe = member => member.kind === 'thinking'
     ? '思考：' + member.title : member.title + (member.target ? ' ' + member.target : '');
 
@@ -134,8 +168,10 @@
         this.exit = node('<div class="cv-detail-meta"></div>');
         this.body.append(this.log, this.exit);
       } else if (member.kind === 'read') {
-        this.body.append(node(`<div class="cv-file-path">${escape(member.path)}</div>`),
-          node(`<pre class="cv-file-preview">${escape(member.content)}</pre>`));
+        this.body.append(
+          node(`<div class="cv-file-path">${escape(member.path)}</div>`),
+          node(`<pre class="cv-file-preview">${escape(member.content)}</pre>`)
+        );
         this.body.append(button('查看全文', 'maximize-2', () => actions.detail(member.target, member.content, member.path), 'cv-quiet'));
       } else if (member.kind === 'search') {
         const queries = node('<div class="cv-query-list"></div>');
@@ -168,15 +204,16 @@
       this.current = member;
       if (this.status !== member.status) {
         this.status = member.status;
-        // In the status bar progress matters most; finished timeline rows show the member kind instead.
-        const name = member.status === 'running' ? 'loader-circle'
-          : this.mode === 'live' && member.status === 'completed' ? 'check' : kinds[member.kind].icon;
-        this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : name);
+        if (member.status === 'running') {
+          this.symbol.innerHTML = spinner();
+        } else {
+          const name = this.mode === 'live' && member.status === 'completed' ? 'check' : kinds[member.kind].icon;
+          this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : name);
+          icons(this.symbol);
+        }
         this.node.dataset.status = member.status;
         this.statusText.textContent = statusLabel(member.status);
-        icons(this.symbol);
       }
-      // The symbol already carries running/completed; only interrupted states need words.
       const interrupted = member.status === 'failed' || member.status === 'stopped' ? statusLabel(member.status) + ' · ' : '';
       this.meta.textContent = interrupted + member.elapsed + 's';
       if (this.logContent) {
@@ -188,7 +225,8 @@
         if (signature !== this.signature) {
           this.signature = signature;
           this.targets.replaceChildren(...member.targets.map(target => {
-            const row = node(`<div class="cv-wait-target"><span class="cv-status-symbol" data-status="${escape(target.status)}">${icon(statusIcon(target.status))}</span><div><b>${escape(target.name)}</b><span>${escape(target.task)}</span></div><span class="cv-wait-state">${statusLabel(target.status)}</span></div>`);
+            const sym = target.status === 'running' ? spinner() : icon(statusIcon(target.status));
+            const row = node(`<div class="cv-wait-target"><span class="cv-status-symbol" data-status="${escape(target.status)}">${sym}</span><div><b>${escape(target.name)}</b><span>${escape(target.task)}</span></div><span class="cv-wait-state">${statusLabel(target.status)}</span></div>`);
             if (target.status === 'completed') row.append(button('查看报告', 'arrow-up-right', () => this.actions.detail(target.name + ' 的报告', target.report), 'cv-quiet'));
             return row;
           }));
@@ -207,7 +245,6 @@
     </summary>`);
   }
 
-  // Timeline groups are finished and immutable, so their digest is computed once.
   function groupDigest(group) {
     const digest = node('<span class="cv-group-digest"></span>');
     Object.entries(kinds).forEach(([kind, info]) => {
@@ -256,7 +293,6 @@
       const done = group.members.filter(member => member.status === 'completed').length;
       this.node.dataset.phase = running.length ? 'working' : 'thinking';
       this.title.textContent = running.length ? '工作中' : '思考中';
-      // Shown only while collapsed; expanded rows already name every running step.
       this.currentStep.textContent = running.length ? describe(running[0]) + (running.length > 1 ? ` 等 ${running.length} 项` : '') : '';
       this.meta.textContent = `${done} 完成${running.length ? ` · ${running.length} 进行中` : ''} · ${group.elapsed}s`;
     }
@@ -276,16 +312,18 @@
         ? '上下文压缩已停止，原始历史保持不变。'
         : item.subject === '模型响应' ? '等待模型响应已停止，可以通过主按钮继续。'
         : '本次执行已停止，已保留停止前生成的内容。');
-      body.append(node(`<div class="cv-detail-meta">${escape(item.subject)}</div>`),
-        node(`<p class="${item.status === 'failed' ? 'cv-group-error' : 'cv-outcome-description'}">${escape(explanation)}</p>`));
+      body.append(
+        node(`<div class="cv-detail-meta">${escape(item.subject)}</div>`),
+        node(`<p class="${item.status === 'failed' ? 'cv-group-error' : 'cv-outcome-description'}">${escape(explanation)}</p>`)
+      );
       if (item.status === 'failed' && item.subject === '上下文压缩') {
-        body.append(node('<p class="cv-outcome-description">压缩可通过上下文详情重新发起。</p>'));
+        body.append(node('<p class="cv-outcome-description">压缩可通过底部上下文详情重新发起。</p>'));
       }
       body.append(button('复制说明', 'copy', () => actions.copy([title, item.subject, explanation].join('\n')), 'cv-quiet'));
       return element;
     }
     if (item.kind === 'compression') {
-      return node(`<div class="cv-compression-receipt" data-history-kind="compression">${icon('check') }<span>已完成压缩</span>${item.time ? `<time>${escape(item.time)}</time>` : ''}</div>`);
+      return node(`<div class="cv-compression-receipt" data-history-kind="compression">${icon('check')}<span>已完成压缩</span>${item.time ? `<time>${escape(item.time)}</time>` : ''}</div>`);
     }
     if (item.kind === 'receipt') {
       const element = node(`<details class="cv-receipt" data-history-kind="receipt"><summary>${icon(item.title.includes('取消') || item.title.includes('跳过') ? 'minus' : 'check-check')}<span><b>${escape(item.title)}</b><small>${escape(item.subtitle)}</small></span><span class="cv-chevron">${icon('chevron-right')}</span></summary><div class="cv-receipt-body"></div></details>`);
@@ -298,12 +336,36 @@
       <div class="cv-message-content"></div><div class="cv-message-footer"></div></article>`);
     const content = element.querySelector('.cv-message-content');
     if (item.kind === 'user') {
-      content.append(node(`<div class="cv-user-text">${escape(item.text)}</div>`));
-      if (item.attachments?.length) {
+      const imageFiles = (item.attachments || []).filter(f => f.kind === 'image' && f.url);
+      const otherFiles = (item.attachments || []).filter(f => !(f.kind === 'image' && f.url));
+      if (imageFiles.length) {
+        const thumbs = node('<div class="cv-history-thumbs"></div>');
+        imageFiles.forEach(img => {
+          const btn = node(`
+            <button
+              type="button"
+              class="cv-att-thumb-btn is-history-thumb"
+              title="${escape(img.name)} · 点击弹层查看大图"
+              aria-label="查看图片大图 ${escape(img.name)}">
+              <img src="${escape(img.url)}" alt="${escape(img.name)}">
+              <span class="cv-att-thumb-zoom" aria-hidden="true">${icon('zoom-in')}</span>
+            </button>
+          `);
+          btn.addEventListener('click', () => actions.previewImage?.(imageFiles, img.id, btn));
+          thumbs.append(btn);
+        });
+        content.append(thumbs);
+      }
+      if (item.text) {
+        content.append(node(`<div class="cv-user-text">${escape(item.text)}</div>`));
+      }
+      if (otherFiles.length) {
         const files = node('<div class="cv-history-files"></div>');
-        item.attachments.forEach(file => {
-          const link = node(`<a href="${escape(file.url)}" target="_blank" rel="noopener noreferrer">${icon('paperclip')}${escape(file.name)}</a>`);
-          files.append(link);
+        otherFiles.forEach(file => {
+          const itemNode = file.url
+            ? node(`<a href="${escape(file.url)}" target="_blank" rel="noopener noreferrer">${icon('paperclip')}${escape(file.name)}</a>`)
+            : node(`<span>${icon('paperclip')}${escape(file.name)}</span>`);
+          files.append(itemNode);
         });
         content.append(files);
       }
@@ -311,7 +373,8 @@
       new MarkdownView(content, actions).update(item.text);
     }
     const footer = element.querySelector('.cv-message-footer');
-    footer.append(node(`<span>${item.kind === 'user' ? '你' : '糊来帮'}${item.time ? ' · ' + escape(item.time) : ''}</span>`));
+    const authorLabel = item.kind === 'user' ? (item.author || '你') : (item.author || '糊来帮');
+    footer.append(node(`<span>${escape(authorLabel)}${item.time ? ' · ' + escape(item.time) : ''}</span>`));
     footer.append(button('复制', 'copy', () => actions.copy(item.text), 'cv-quiet'));
     return element;
   }
@@ -327,14 +390,18 @@
     update(pending) {
       this.node.hidden = !pending;
       if (!pending) { this.key = ''; this.node.replaceChildren(); return; }
-      const key = [pending.id, pending.index].join(':');
+      const controller = this.controller;
+      const hasStashedDraft = Boolean(controller.state.draft.trim() || controller.state.attachments.length);
+      const key = [pending.id, pending.index, hasStashedDraft].join(':');
       if (key === this.key) return;
       this.key = key;
-      const controller = this.controller;
       this.node.replaceChildren();
-      const header = node(`<div class="cv-dock-header"><span class="cv-dock-symbol">${icon('message-circle-question')}</span><div><b>${escape(pending.title)}</b><span>你的回答会保留为历史回执</span></div></div>`);
+      const header = node(`<div class="cv-dock-header"><span class="cv-dock-symbol">${icon('message-circle-question')}</span><div><b>${escape(pending.title)}</b><span>待决提问期间输入框暂时收起，回答后会保留为只读历史回执</span></div></div>`);
       header.append(button('停止', 'square', () => controller.stop(), 'cv-quiet'));
       this.node.append(header);
+      if (hasStashedDraft) {
+        this.node.append(node(`<div class="cv-draft-stash-note">${icon('info')}<span>你未发送的输入草稿已自动暂存，提交答案或跳过后将原样恢复。</span></div>`));
+      }
       const question = pending.questions[pending.index];
       this.node.append(node(`<div class="cv-question-heading"><span>问题 ${pending.index + 1} / ${pending.questions.length}</span><span>${question.multiple ? '可多选' : '单选'}</span></div>`));
       this.node.append(node(`<div class="cv-question-title">${escape(question.title)}</div>`));
@@ -346,17 +413,17 @@
         options.append(label);
       });
       this.node.append(options);
-      const other = node(`<label class="cv-field-label">补充说明（可选）<input class="cv-text-input" type="text" value="${escape(pending.others[pending.index])}" placeholder="也可以写下你的想法"></label>`);
+      const other = node(`<label class="cv-field-label">补充说明（可选）<input class="cv-text-input" type="text" value="${escape(pending.others[pending.index])}" placeholder="也可以写下你的补充要求"></label>`);
       other.querySelector('input').addEventListener('input', event => controller.pendingText('other', event.target.value));
       this.node.append(other);
       if (question.secret) {
-        const secret = node(`<label class="cv-field-label">敏感备注（可选）<input class="cv-text-input" type="password" autocomplete="off" value="${escape(pending.secret)}" placeholder="内容不会进入历史或复制结果"></label>`);
+        const secret = node(`<label class="cv-field-label">敏感备注（可选）<input class="cv-text-input" type="password" autocomplete="off" value="${escape(pending.secret)}" placeholder="内容不会进入历史回执或复制结果"></label>`);
         secret.querySelector('input').addEventListener('input', event => controller.pendingText('secret', event.target.value));
         this.node.append(secret);
       }
       const footer = node('<div class="cv-dock-footer"></div>');
       footer.append(button('跳过', '', () => controller.resolve('skip'), 'cv-quiet'));
-      const previous = button('上一题', 'chevron-left', () => controller.questionPage(-1));
+      const previous = button('上一题', 'chevron-left', () => controller.questionPage(-1), 'cv-tonal');
       previous.disabled = pending.index === 0;
       footer.append(previous, pending.index === pending.questions.length - 1
         ? button('提交答案', 'check', () => controller.resolve('answer'), 'cv-primary')
@@ -366,5 +433,20 @@
     }
   }
 
-  app.ui = { escape, node, icon, activityIndicator, icons, button, statusLabel, MarkdownView, WorkGroupView, PendingView, historyItem, groupText, selectedInside };
+  app.ui = {
+    escape,
+    node,
+    icon,
+    spinner,
+    activityIndicator,
+    icons,
+    button,
+    statusLabel,
+    MarkdownView,
+    WorkGroupView,
+    PendingView,
+    historyItem,
+    groupText,
+    selectedInside
+  };
 })();

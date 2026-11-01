@@ -1,30 +1,182 @@
 (() => {
   'use strict';
   const app = window.AnyworkConversation;
-  const { node, icon, activityIndicator, icons, button, escape, MarkdownView, WorkGroupView, PendingView, historyItem, selectedInside } = app.ui;
+  const {
+    node, icon, activityIndicator, icons, button, escape,
+    MarkdownView, WorkGroupView, PendingView, historyItem, selectedInside
+  } = app.ui;
+  const {
+    MenuManager, PromptComposerCard, renderSidebar, renderTopbar,
+    buildPreparationHTML, renderStartStage, buildAgentReadOnlyDock
+  } = app.composer;
+
   let instanceSequence = 0;
+
+  function orderedGroupsForPage(page) {
+    const order = page === 'start'
+      ? ['start', 'composer', 'timeline']
+      : page === 'composer'
+        ? ['composer', 'start', 'timeline']
+        : ['timeline', 'composer', 'start'];
+    return order.map(id => app.fixtures.scenarioGroups.find(g => g.id === id)).filter(Boolean);
+  }
+
+  function guideForPage(page) {
+    if (page === 'start') {
+      return {
+        title: '创建期与运行期组件共享与分层',
+        items: [
+          ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（本地目录 / 新建工作树、子智能体分发），内层复用统一输入卡。'],
+          ['创建后自动收敛', '首条消息准备完成后直接转入会话页：外层创建栏退役，工作区与分发上移至顶栏只读徽标。'],
+          ['零复制共享内核', '起始页、运行期输入交互稿与时间线状态栏稿共享同一套外壳、模型目录与 PromptComposerCard。']
+        ]
+      };
+    }
+    if (page === 'composer') {
+      return {
+        title: '会话运行期不可配项与零位移交互准则',
+        items: [
+          ['创建期永久冻结', '所属项目、本地目录 / 独立工作树、子智能体分发在会话创建后收敛至顶栏等高只读标签，不再占用输入区。'],
+          ['等宽极简不可交互态', '运行中锁定模式 / 模型 / 强度；活动工作流空闲时仅锁模式、开放换模。不可配项省略锁标并保留相同控件几何，状态切换零位移。'],
+          ['并发拟稿与定宽主钮', '运行中文本框与附件不锁定，34×34px 定宽主圆钮按状态在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。']
+        ]
+      };
+    }
+    return {
+      title: '状态栏是当前工作组，时间线只有已结束',
+      items: [
+        ['状态栏 · 当前工作组', '新成员逐个插入，完成的打勾留在组内；下一条仍是工具时继续并入本组。'],
+        ['分组边界整组交接', '出现正文开始、提问、轮次结束、停止或失败时，整组一次移入时间线，之后不再变化。'],
+        ['统一外壳与输入底座', '时间线、实时状态栏与下方运行期锁定输入卡共享同一阅读中心轴与会话状态机。']
+      ]
+    };
+  }
+
+  function pageChromeMeta(page) {
+    if (page === 'start') {
+      return {
+        title: '新会话起始页与工作区输入布局',
+        subtitle: '沿用暹罗浅色主题与统一会话外壳，将创建期固定的「本地目录 / 新建工作树」紧凑下拉列表与子智能体分发外置至输入卡上方环境栏，内层直接复用统一 PromptComposerCard。',
+        footerHTML: '外层环境栏收纳会话创建时一次性固定的空间与协作策略（所属项目、<code>local</code> 本地目录 / <code>worktree</code> 新建工作树紧凑下拉列表、子智能体分发单层菜单）；内层输入卡与会话运行期共用同一组件实例。点击发送可完整预览四阶段环境准备与自动收敛至运行期单层输入卡的交接过程。'
+      };
+    }
+    if (page === 'composer') {
+      return {
+        title: '会话运行时输入框与配置锁定交互',
+        subtitle: '展示会话创建后外层创建栏退役、冻结项上移顶栏只读徽标，以及运行中、活动工作流、停止恢复、模型不可用、机器人接管与子智能体只读视图下的输入框可配性边界。',
+        footerHTML: '会话运行中文本框与附件草稿始终允许并发编辑；当前不可更改的选择器省略锁图标并保持相同触发器几何尺寸，直接以无框置灰的不可交互形态呈现（悬停 Tooltip 说明原因，状态切换不产生位移）。右侧 34×34px 唯一主圆钮按权威运行态与草稿状态在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。'
+      };
+    }
+    return {
+      title: '会话时间线与实时状态栏',
+      subtitle: '状态栏承载正在进行的工作组、流式正文或上下文压缩，时间线只收录已结束内容；下方输入区与起始页及运行期锁定稿共用同一套会话组件。',
+      footerHTML: '新工作组先在状态栏插入成员，完成的成员留在组内；出现正文、提问、轮次结束、停止或失败时整组移入时间线。右侧检查器同步展示实时配置可配性矩阵与状态交接记录，所有任务均为本地模拟。'
+    };
+  }
+
+  function mountPageChrome(host) {
+    const page = host.dataset.page || 'session';
+    const meta = pageChromeMeta(page);
+    const tabs = [
+      { id: 'start', href: '../session-start/index.html', label: '新会话起始页', ico: 'sparkles' },
+      { id: 'composer', href: '../session-composer/index.html', label: '运行时输入框与锁定', ico: 'sliders-horizontal' },
+      { id: 'session', href: '../live-status/index.html', label: '时间线与实时状态栏', ico: 'activity' }
+    ];
+    host.innerHTML = `
+      <header class="cv-page-header">
+        <div>
+          <div class="cv-page-header-nav">
+            <mdui-button variant="text" href="../index.html" class="cv-m3-back-btn">
+              <span slot="icon">${icon('arrow-left')}</span>设计稿索引
+            </mdui-button>
+            <mdui-segmented-button-group selects="single" value="${escape(page)}" class="cv-m3-page-tabs" aria-label="会话概念稿视图切换">
+              ${tabs.map(tab => `
+                <mdui-segmented-button value="${escape(tab.id)}" data-nav-href="${tab.href}">
+                  <span slot="icon">${icon(tab.ico)}</span>${escape(tab.label)}
+                </mdui-segmented-button>
+              `).join('')}
+            </mdui-segmented-button-group>
+          </div>
+          <h1>${escape(meta.title)}</h1>
+          <p>${escape(meta.subtitle)}</p>
+        </div>
+        <mdui-chip class="cv-m3-meta-chip" tabindex="-1">
+          <span slot="icon">${icon('palette')}</span>Material 3 · 暹罗浅色 · 共享组件
+        </mdui-chip>
+      </header>
+      <main class="cv-page-main">
+        <div class="cv-preview-mount"></div>
+        <footer class="cv-page-foot">
+          ${meta.footerHTML}<br>
+          <a href="../conversation-shared/README.md">共享会话组件说明</a> · <a href="../../concepts/session-start-layout.md">起始与运行期输入设计</a> · <a href="../../19-studio-ui.md">桌面界面规范</a> · <a href="../../26-timeline-content.md">时间线内容契约</a>
+        </footer>
+      </main>
+    `;
+    const headerEl = host.querySelector('.cv-page-header');
+    icons(headerEl);
+    headerEl.querySelectorAll('mdui-segmented-button[data-nav-href]').forEach(seg => {
+      seg.addEventListener('click', () => {
+        if (seg.getAttribute('value') !== page) {
+          window.location.href = seg.dataset.navHref;
+        }
+      });
+    });
+    const mount = host.querySelector('.cv-preview-mount');
+    mount.dataset.page = page;
+    if (host.dataset.scenario) mount.dataset.scenario = host.dataset.scenario;
+    if (host.dataset.controls) mount.dataset.controls = host.dataset.controls;
+    return mount;
+  }
 
   class ConversationPreview {
     constructor(root) {
       this.root = root;
       this.id = 'conversation-preview-' + (++instanceSequence);
+      this.page = root.dataset.page || 'session';
       const urlScenario = new URLSearchParams(window.location.search).get('scenario');
+      const defaultScenario = this.page === 'start'
+        ? 'local'
+        : this.page === 'composer'
+          ? 'running-locked'
+          : 'workgroup';
       const initialScenario = (urlScenario && app.fixtures.scenarios.some(item => item.id === urlScenario))
         ? urlScenario
-        : (root.dataset.scenario || 'workgroup');
+        : (root.dataset.scenario || defaultScenario);
+
       this.controller = new app.ConversationController(initialScenario);
       this.signal = new AbortController();
+      this.sidebarCollapsed = false;
       this.historyNodes = new Map();
+      this.renderedHistoryOwner = '';
       this.followHistory = true;
       this.followText = true;
       this.lastRead = 0;
       this.toastTimer = null;
       this.liveView = null;
+
+      this.menuManager = new MenuManager(root, () => this.windowEl);
+      this.lightboxState = { images: [], index: 0, zoomActual: false, triggerEl: null };
       this.actions = {
         copy: text => this.copy(text),
-        detail: (title, content, path) => this.detail(title, content, path)
+        detail: (title, content, path) => this.detail(title, content, path),
+        previewImage: (images, activeId, triggerEl) => this.openImagePreview(images, activeId, triggerEl)
       };
+      this.composerHelpers = {
+        toast: msg => this.toast(msg),
+        copy: text => this.copy(text),
+        openFilePicker: () => this.fileInput.click(),
+        openUrlDialog: () => this.urlDialog.showModal(),
+        openImagePreview: (images, activeId, triggerEl) => this.openImagePreview(images, activeId, triggerEl),
+        onSubmitFromComposer: () => {
+          this.followHistory = true;
+          this.controller.submit();
+        }
+      };
+
+      this.composerCard = new PromptComposerCard(this.controller, this.menuManager, this.composerHelpers);
+
       this.build();
+      this.bindGlobalEvents();
       this.controller.addEventListener('change', event => this.render(event.detail.reason), { signal: this.signal.signal });
       document.addEventListener('selectionchange', () => {
         if (this.liveView?.kind === 'textOutput') {
@@ -34,6 +186,7 @@
         }
         this.liveView?.group?.flush();
       }, { signal: this.signal.signal });
+
       root.conversationPreview = this;
       this.render('reset');
     }
@@ -41,59 +194,206 @@
     build() {
       const root = this.root;
       const controller = this.controller;
+      const groups = orderedGroupsForPage(this.page);
+      const guide = guideForPage(this.page);
+
       root.classList.add('cv-preview');
       if (root.dataset.controls === 'false') root.classList.add('cv-no-controls');
-      root.innerHTML = `<div class="cv-demo-layout">
-        <section class="cv-window" aria-label="会话概念预览">
-          <header class="cv-window-header"><span class="cv-brand">${icon('sparkles')}</span>
-            <div><b>细化会话交互</b><small>pure-lang · 主智能体</small></div></header>
-          <div class="cv-history" role="region" aria-label="已结束的时间线" tabindex="0">
-            <div class="cv-reading-column"><div class="cv-history-start">今天 · 会话记录</div><div class="cv-history-list"></div></div>
+
+      const scenarioMenuHTML = groups.map((grp, gIdx) => {
+        const items = app.fixtures.scenarios.filter(s => s.group === grp.id);
+        return `
+          ${gIdx > 0 ? '<div class="cv-menu-divider"></div>' : ''}
+          <div class="cv-menu-head"><span>${escape(grp.label)}</span></div>
+          ${items.map(s => `
+            <button type="button" class="cv-menu-item cv-scenario-option" data-pick-scenario="${escape(s.id)}">
+              <span class="cv-check-slot"></span>
+              <span class="cv-item-main">
+                <div class="cv-item-title">${escape(s.label)}</div>
+              </span>
+            </button>
+          `).join('')}
+        `;
+      }).join('');
+
+      root.innerHTML = `
+        <div class="cv-demo-layout">
+          <section class="cv-window" aria-label="糊来帮统一会话概念预览">
+            <div class="cv-shell">
+              <aside class="cv-sidebar" aria-label="项目与会话侧边栏"></aside>
+
+              <div class="cv-workspace">
+                <header class="cv-topbar">
+                  <div class="cv-topbar-left"></div>
+                  <div class="cv-topbar-right"></div>
+                </header>
+
+                <!-- Stage 1: New Session Start Stage -->
+                <div class="cv-start-stage" hidden></div>
+
+                <!-- Stage 2: Runtime Session Stage -->
+                <div class="cv-session-stage" hidden>
+                  <div class="cv-history" role="region" aria-label="已结束的时间线" tabindex="0">
+                    <div class="cv-reading-column">
+                      <div class="cv-history-start"></div>
+                      <div class="cv-history-list"></div>
+                    </div>
+                  </div>
+                  <div class="cv-unread-wrap"></div>
+                  <div class="cv-bottom">
+                    <div class="cv-reading-column">
+                      <div class="cv-live-host"></div>
+                      <div class="cv-composer-dock">
+                        <div class="cv-lock-notice-host"></div>
+                        <div class="cv-pending-host"></div>
+                        <div class="cv-readonly-host"></div>
+                        <div class="cv-composer-card-mount"></div>
+                      </div>
+                      <footer class="cv-conversation-footer">
+                        <div class="cv-footer-left"></div>
+                        <div class="cv-footer-right">
+                          <span class="cv-cap-summary" title="当前会话已启用的技能、MCP 与 LSP 服务数量">技能 9 · MCP 2 · LSP 1</span>
+                          <details class="cv-context">
+                            <summary aria-label="上下文详情">
+                              <span class="cv-context-ring"></span>
+                              <span>上下文</span>
+                            </summary>
+                            <div class="cv-context-popover">
+                              <h3>上下文用量</h3>
+                              <div class="cv-context-value"></div>
+                              <div class="cv-context-meta">89.2k / 212.32k 自动压缩阈值 · 最大窗口 400k</div>
+                              <p class="cv-context-explanation"></p>
+                            </div>
+                          </details>
+                        </div>
+                      </footer>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <input class="cv-file-input" type="file" multiple hidden>
+            <div class="cv-toast" role="status" hidden></div>
+          </section>
+
+          <aside class="cv-side" aria-label="概念稿演示控制" ${root.dataset.controls === 'false' ? 'hidden' : ''}>
+            <mdui-card variant="outlined" class="cv-inspector-card">
+              <h2>统一会话组件与交互演示</h2>
+              <p class="cv-inspector-lead">全部会话页面共用同一套外壳、顶栏、时间线与输入卡，无跨页复制代码。所有交互均为本地模拟。</p>
+              <div class="cv-menu-anchor cv-m3-select-anchor">
+                <button
+                  type="button"
+                  class="cv-m3-select"
+                  data-menu-trigger="scenario"
+                  aria-haspopup="menu"
+                  aria-expanded="false">
+                  <span class="cv-m3-select-label">切换生命周期场景</span>
+                  <span class="cv-m3-select-value"></span>
+                  <span class="cv-caret">${icon('chevron-down')}</span>
+                </button>
+                <div class="cv-menu cv-scenario-menu align-right" data-menu-panel="scenario" role="menu" hidden>
+                  ${scenarioMenuHTML}
+                </div>
+              </div>
+              <div class="cv-scenario-hint"></div>
+              <div class="cv-demo-controls"></div>
+              <div class="cv-playback-box" hidden>
+                <div class="cv-demo-progress">
+                  <span>时间线交接进度</span>
+                  <span class="cv-step-count cv-tabular"></span>
+                </div>
+                <mdui-linear-progress class="cv-playback-progress" value="0" aria-label="演示进度"></mdui-linear-progress>
+                <div class="cv-demo-state"></div>
+              </div>
+            </mdui-card>
+
+            <mdui-card variant="outlined" class="cv-inspector-card">
+              <div class="cv-matrix-box">
+                <h3>实时配置可配性矩阵</h3>
+                <div class="cv-matrix-list"></div>
+              </div>
+
+              <div class="cv-guide">
+                <h3>${escape(guide.title)}</h3>
+                <ul class="cv-guide-list">
+                  ${guide.items.map(([head, body]) => `<li><strong>${escape(head)}</strong>：${escape(body)}</li>`).join('')}
+                </ul>
+                <div class="cv-stats">
+                  <div class="cv-stats-line"><span>当前视图</span><strong class="cv-stage-label"></strong></div>
+                  <div class="cv-stats-line"><span>时间线 / 状态栏</span><strong class="cv-live-label"></strong></div>
+                  <div class="cv-stats-change"><span>最近变化</span><strong class="cv-last-change"></strong></div>
+                </div>
+              </div>
+            </mdui-card>
+          </aside>
+        </div>
+
+        <dialog class="cv-dialog cv-detail-dialog">
+          <div class="cv-dialog-header"><h2></h2></div>
+          <div class="cv-dialog-body"></div>
+        </dialog>
+
+        <dialog class="cv-dialog is-compact cv-url-dialog">
+          <h3 style="margin:0 0 6px;font-size:15px;font-weight:600;">添加远程附件链接</h3>
+          <p style="margin:0 0 12px;font-size:12px;color:var(--cv-secondary);">输入 HTTPS 图片或文档链接，作为草稿附件加入当前会话输入框。</p>
+          <input type="url" class="cv-url-input" value="https://example.com/specs/runtime-composer-locks.pdf" placeholder="https://...">
+          <div class="cv-dialog-actions">
+            <button type="button" class="cv-button" data-url-dialog="cancel">取消</button>
+            <button type="button" class="cv-button cv-primary" data-url-dialog="confirm">添加链接</button>
           </div>
-          <div class="cv-unread-wrap"></div>
-          <div class="cv-bottom"><div class="cv-reading-column">
-            <div class="cv-live-host"></div>
-            <div class="cv-dock-host"></div>
-            <form class="cv-composer" aria-label="消息输入">
-              <div class="cv-attachments" hidden></div>
-              <textarea aria-label="输入消息" rows="2" placeholder="描述下一步，或补充你的想法…"></textarea>
-              <input class="cv-file-input" type="file" multiple hidden>
-              <div class="cv-composer-footer"><span class="cv-composer-hint">Enter 发送 · Shift + Enter 换行</span></div>
-            </form>
-            <footer class="cv-conversation-footer">
-              <span class="cv-mode">Auto</span><span>·</span>
-              <span class="cv-model">GPT-5.4 · High</span>
-              <details class="cv-context"><summary aria-label="上下文详情"><span class="cv-context-ring"></span>上下文</summary>
-                <div class="cv-context-popover"><h3>上下文用量</h3><div class="cv-context-value"></div>
-                  <p class="cv-context-explanation"></p></div></details>
-            </footer>
-          </div></div>
-          <div class="cv-toast" role="status" hidden></div>
-        </section>
-        <aside class="cv-side" aria-label="概念稿演示控制" ${root.dataset.controls === 'false' ? 'hidden' : ''}>
-          <h2>交互演示</h2><p>先看完整过程，再停下来检查细节。<br>所有内容均为示例，不执行真实任务。</p>
-          <label class="cv-select-label" for="${this.id}-scenario">切换场景</label>
-          <select class="cv-scenario-select" id="${this.id}-scenario">${app.fixtures.scenarios.map(scenario => `<option value="${escape(scenario.id)}">${escape(scenario.label)}</option>`).join('')}</select>
-          <div class="cv-scenario-hint"></div><div class="cv-demo-controls"></div>
-          <div class="cv-demo-progress"><span>演示进度</span><span class="cv-step-count cv-tabular"></span></div>
-          <progress aria-label="演示进度"></progress><div class="cv-demo-state"></div><div class="cv-demo-failure"></div>
-          <div class="cv-guide"><h3>状态栏是当前工作组，时间线只有已结束</h3>
-            <ol class="cv-flow" aria-label="工作组生命周期">
-              <li><span class="cv-flow-dot cv-active"></span><div><b>思考中</b><p>尚无信息，不可展开。</p></div></li>
-              <li><span class="cv-flow-dot cv-active"></span><div><b>状态栏 · 当前工作组</b><p>成员逐个插入；完成的打勾留在组内，下一条仍是工具时继续并入。</p></div></li>
-              <li><span class="cv-flow-dot cv-boundary"></span><div><b>出现新分组信息</b><p>正文、提问、轮次结束、停止或失败。</p></div></li>
-              <li><span class="cv-flow-dot"></span><div><b>Timeline · 已结束</b><p>整组一次移入，之后不再变化；正文、回执与终态各自独立。</p></div></li>
-            </ol>
-            <div class="cv-stats"><div class="cv-stats-line"><span>时间线</span><strong class="cv-history-count"></strong></div>
-              <div class="cv-stats-line"><span>状态栏</span><strong class="cv-live-label"></strong></div>
-              <div class="cv-stats-change"><span>最近变化</span><strong class="cv-last-change"></strong></div></div>
+        </dialog>
+
+        <dialog class="cv-dialog cv-image-dialog" aria-label="图片大图预览">
+          <div class="cv-lightbox-header">
+            <div class="cv-lightbox-title-group">
+              <h2 class="cv-lightbox-title"></h2>
+              <span class="cv-lightbox-meta"></span>
+            </div>
+            <div class="cv-lightbox-controls">
+              <div class="cv-lightbox-pager" hidden>
+                <button type="button" class="cv-button cv-quiet cv-icon-only" data-lightbox-cmd="prev" title="上一张图片 (←)" aria-label="上一张图片">
+                  ${icon('chevron-left')}
+                </button>
+                <span class="cv-lightbox-count cv-tabular"></span>
+                <button type="button" class="cv-button cv-quiet cv-icon-only" data-lightbox-cmd="next" title="下一张图片 (→)" aria-label="下一张图片">
+                  ${icon('chevron-right')}
+                </button>
+              </div>
+              <button type="button" class="cv-button cv-quiet" data-lightbox-cmd="zoom">
+                ${icon('maximize-2')}
+                <span class="cv-lightbox-zoom-label">1:1 原图</span>
+              </button>
+              <button type="button" class="cv-button cv-quiet cv-icon-only" data-lightbox-cmd="close" title="关闭大图预览 (Esc)" aria-label="关闭大图预览">
+                ${icon('x')}
+              </button>
+            </div>
           </div>
-        </aside>
-      </div>`;
-      this.window = root.querySelector('.cv-window');
+          <div class="cv-lightbox-stage">
+            <img class="cv-lightbox-img" alt="">
+          </div>
+          <div class="cv-lightbox-footer" hidden></div>
+        </dialog>
+      `;
+
+      this.windowEl = root.querySelector('.cv-window');
+      this.shellEl = root.querySelector('.cv-shell');
+      this.sidebarEl = root.querySelector('.cv-sidebar');
+      this.topbarEl = root.querySelector('.cv-topbar');
+      this.topbarLeftEl = root.querySelector('.cv-topbar-left');
+      this.topbarRightEl = root.querySelector('.cv-topbar-right');
+      this.startStageEl = root.querySelector('.cv-start-stage');
+      this.sessionStageEl = root.querySelector('.cv-session-stage');
+
       this.history = root.querySelector('.cv-history');
-      this.historyList = root.querySelector('.cv-history-list');
       this.historyStart = root.querySelector('.cv-history-start');
+      this.historyList = root.querySelector('.cv-history-list');
+      this.liveHost = root.querySelector('.cv-live-host');
+      this.lockNoticeHost = root.querySelector('.cv-lock-notice-host');
+      this.pendingHost = root.querySelector('.cv-pending-host');
+      this.readonlyHost = root.querySelector('.cv-readonly-host');
+      this.sessionCardMount = root.querySelector('.cv-composer-card-mount');
+      this.footerLeftEl = root.querySelector('.cv-footer-left');
+
       this.unread = button('回到最新', 'arrow-down', () => {
         this.followHistory = true;
         this.lastRead = controller.state.history.length;
@@ -102,132 +402,252 @@
       }, 'cv-unread');
       this.unread.hidden = true;
       root.querySelector('.cv-unread-wrap').append(this.unread);
-      this.liveHost = root.querySelector('.cv-live-host');
-      this.pending = new PendingView(root.querySelector('.cv-dock-host'), controller, this.id);
-      this.composer = root.querySelector('.cv-composer');
-      this.textarea = this.composer.querySelector('textarea');
-      this.attachments = root.querySelector('.cv-attachments');
-      this.fileInput = root.querySelector('.cv-file-input');
-      const footer = this.composer.querySelector('.cv-composer-footer');
-      this.attachButton = button('添加附件', 'paperclip', () => this.fileInput.click(), 'cv-quiet cv-icon-only');
-      this.attachButton.setAttribute('aria-label', '添加附件');
-      footer.prepend(this.attachButton);
-      this.mainButton = button('发送', 'arrow-up', () => this.mainAction(), 'cv-primary cv-icon-only cv-main-action');
-      footer.append(this.mainButton);
-      const sessionInfo = button('会话信息', 'info', () => this.detail('会话信息', '主智能体 · 当前会话\n项目：pure-lang\n模型：GPT-5.4 · High\n\n这是本地概念演示，模型与运行内容均为示例。'), 'cv-quiet cv-icon-only');
-      sessionInfo.setAttribute('aria-label', '会话信息');
-      root.querySelector('.cv-window-header').append(sessionInfo);
-      this.compressButton = button('立即压缩', 'minimize-2', () => controller.compact());
+
+      this.pendingView = new PendingView(this.pendingHost, controller, this.id);
+
+      this.compressButton = button('立即压缩', 'minimize-2', () => {
+        root.querySelector('.cv-context').open = false;
+        controller.compact();
+      });
       root.querySelector('.cv-context-popover').append(this.compressButton);
       this.contextValue = root.querySelector('.cv-context-value');
       this.contextExplanation = root.querySelector('.cv-context-explanation');
+
+      this.fileInput = root.querySelector('.cv-file-input');
       this.toastNode = root.querySelector('.cv-toast');
-      this.scenarioSelect = root.querySelector('.cv-scenario-select');
+      this.scenarioTrigger = root.querySelector('[data-menu-trigger="scenario"]');
+      this.scenarioMenu = root.querySelector('[data-menu-panel="scenario"]');
+      this.scenarioValueEl = root.querySelector('.cv-m3-select-value');
+      this.playbackBox = root.querySelector('.cv-playback-box');
+      this.matrixListEl = root.querySelector('.cv-matrix-list');
+
+      // Inspector controls
+      const controlsHost = root.querySelector('.cv-demo-controls');
       this.playButton = button('播放过程', 'play', () => controller.state.playing ? controller.pause() : controller.play(), 'cv-primary');
-      this.stepButton = button('单步', 'step-forward', () => controller.step());
+      this.stepButton = button('单步', 'step-forward', () => controller.step(), 'cv-tonal');
+      this.finishStopButton = button('完成停止收束', 'check', () => controller.completeStoppingCleanup(), 'cv-primary');
+      this.failureButton = button('模拟失败', 'circle-alert', () => controller.fail());
+      this.sidebarBtn = button('侧栏开关', 'panel-left', () => this.toggleSidebar());
       this.resetButton = button('重置', 'rotate-ccw', () => controller.load(controller.state.scenario));
-      root.querySelector('.cv-demo-controls').append(this.playButton, this.stepButton, this.resetButton);
-      this.failureButton = button('模拟执行失败', 'circle-alert', () => controller.fail(), 'cv-quiet');
-      root.querySelector('.cv-demo-failure').append(this.failureButton);
-      this.dialog = node(`<dialog class="cv-dialog"><div class="cv-dialog-header"><h2></h2></div><div class="cv-dialog-body"></div></dialog>`);
+      controlsHost.append(this.playButton, this.stepButton, this.finishStopButton, this.failureButton, this.sidebarBtn, this.resetButton);
+
+      this.dialog = root.querySelector('.cv-detail-dialog');
       const close = button('关闭', 'x', () => this.dialog.close(), 'cv-quiet cv-icon-only');
       close.setAttribute('aria-label', '关闭详情');
       this.dialog.querySelector('.cv-dialog-header').append(close);
-      root.append(this.dialog);
+
+      this.urlDialog = root.querySelector('.cv-url-dialog');
+      this.urlInput = this.urlDialog.querySelector('.cv-url-input');
+      this.imageDialog = root.querySelector('.cv-image-dialog');
+
+      icons(root);
+    }
+
+    bindGlobalEvents() {
+      const controller = this.controller;
+      this.scrollTimers = new WeakMap();
+      this.activeScrollingEls = new Set();
+
+      const markScrolling = rawTarget => {
+        if (this.suppressScrollReveal) return;
+        const el = rawTarget === document ? document.documentElement : rawTarget;
+        if (!(el instanceof Element)) return;
+        el.classList.add('is-scrolling');
+        this.activeScrollingEls.add(el);
+        clearTimeout(this.scrollTimers.get(el));
+        this.scrollTimers.set(el, setTimeout(() => {
+          el.classList.remove('is-scrolling');
+          this.activeScrollingEls.delete(el);
+        }, 850));
+      };
+
+      this.root.addEventListener('scroll', event => markScrolling(event.target), {
+        capture: true,
+        passive: true,
+        signal: this.signal.signal
+      });
+      window.addEventListener('scroll', event => markScrolling(event.target), {
+        passive: true,
+        signal: this.signal.signal
+      });
+
+      this.scenarioTrigger?.addEventListener('click', () => {
+        this.menuManager.toggle('scenario', this.scenarioTrigger, this.scenarioMenu, false);
+        const activeOpt = this.scenarioMenu?.querySelector('.cv-scenario-option.is-selected');
+        activeOpt?.scrollIntoView({ block: 'nearest' });
+      });
+
+      this.scenarioMenu?.querySelectorAll('[data-pick-scenario]').forEach(opt => {
+        opt.addEventListener('click', () => {
+          this.menuManager.closeAll();
+          controller.load(opt.dataset.pickScenario);
+        });
+      });
+
+      this.root.addEventListener('click', event => {
+        const shellBtn = event.target.closest('[data-shell-action]');
+        if (shellBtn) {
+          const act = shellBtn.dataset.shellAction;
+          this.menuManager.closeAll();
+          if (act === 'toggle-sidebar') this.toggleSidebar();
+          else if (act === 'standalone-start') controller.selectStandaloneStart();
+          else if (act === 'project-start') controller.selectProjectStart(shellBtn.dataset.projectId);
+          else if (act === 'open-thread') controller.openSidebarThread(shellBtn.dataset.threadId);
+          else if (act === 'back-to-root') controller.switchAgent('root');
+          return;
+        }
+
+        if (this.menuManager.openId && !event.target.closest('.cv-menu-anchor')) {
+          this.menuManager.closeAll();
+        }
+      }, { signal: this.signal.signal });
+
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && this.menuManager.openId) {
+          event.preventDefault();
+          this.menuManager.closeAll();
+        }
+      }, { signal: this.signal.signal });
+
+      this.fileInput.addEventListener('change', () => {
+        if (this.fileInput.files?.length) {
+          controller.attach(this.fileInput.files);
+          this.fileInput.value = '';
+        }
+      });
+
       this.dialog.addEventListener('click', event => {
         if (event.target === this.dialog) {
           const bounds = this.dialog.getBoundingClientRect();
-          if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) this.dialog.close();
+          if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+            this.dialog.close();
+          }
         }
       });
+
+      this.urlDialog.addEventListener('click', event => {
+        const btn = event.target.closest('[data-url-dialog]');
+        if (!btn) return;
+        if (btn.dataset.urlDialog === 'cancel') {
+          this.urlDialog.close();
+        } else if (btn.dataset.urlDialog === 'confirm') {
+          controller.addLinkAttachment(this.urlInput.value);
+          this.urlDialog.close();
+        }
+      });
+
+      this.imageDialog.addEventListener('click', event => {
+        if (event.target === this.imageDialog) {
+          const bounds = this.imageDialog.getBoundingClientRect();
+          if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+            this.imageDialog.close();
+            return;
+          }
+        }
+        const cmdBtn = event.target.closest('[data-lightbox-cmd]');
+        if (cmdBtn) {
+          const cmd = cmdBtn.dataset.lightboxCmd;
+          if (cmd === 'close') this.imageDialog.close();
+          else if (cmd === 'prev') this.stepLightbox(-1);
+          else if (cmd === 'next') this.stepLightbox(1);
+          else if (cmd === 'zoom') this.toggleLightboxZoom();
+          return;
+        }
+        if (event.target.classList.contains('cv-lightbox-img')) {
+          this.toggleLightboxZoom();
+        }
+      });
+
+      this.imageDialog.addEventListener('keydown', event => {
+        if (event.key === 'ArrowLeft' && this.lightboxState.images.length > 1) {
+          event.preventDefault();
+          this.stepLightbox(-1);
+        } else if (event.key === 'ArrowRight' && this.lightboxState.images.length > 1) {
+          event.preventDefault();
+          this.stepLightbox(1);
+        }
+      });
+
+      this.imageDialog.addEventListener('close', () => {
+        const trigger = this.lightboxState.triggerEl;
+        this.lightboxState.triggerEl = null;
+        if (trigger && trigger.isConnected) trigger.focus();
+      });
+
       this.history.addEventListener('scroll', () => {
         this.followHistory = this.history.scrollHeight - this.history.scrollTop - this.history.clientHeight < 22;
         if (this.followHistory) this.lastRead = controller.state.history.length;
         this.updateUnread();
       }, { passive: true });
+
       this.history.addEventListener('toggle', () => {
         this.followHistory = this.history.scrollHeight - this.history.scrollTop - this.history.clientHeight < 22;
         this.updateUnread();
       }, true);
-      this.scenarioSelect.addEventListener('change', () => controller.load(this.scenarioSelect.value));
-      this.textarea.addEventListener('input', () => {
-        controller.setDraft(this.textarea.value);
-        this.textarea.style.height = 'auto';
-        this.textarea.style.height = Math.min(this.textarea.scrollHeight, 120) + 'px';
-      });
-      this.textarea.addEventListener('keydown', event => {
-        if (event.isComposing || event.keyCode === 229) return;
-        if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-          event.preventDefault();
-          this.submit();
-        } else if (event.key === 'Escape' && controller.state.live) {
-          event.preventDefault();
-          controller.stop();
-        }
-      });
-      this.fileInput.addEventListener('change', () => {
-        controller.attach(this.fileInput.files);
-        this.fileInput.value = '';
-      });
-      this.composer.addEventListener('submit', event => { event.preventDefault(); this.submit(); });
-      icons(root);
     }
 
-    mainAction() {
-      const state = this.controller.state;
-      if (state.draft.trim() || state.attachments.length) this.submit();
-      else if (state.live) this.controller.stop();
-      else if (state.resumable) this.controller.resume();
+    toggleSidebar() {
+      if (window.innerWidth <= 920) {
+        this.shellEl.classList.toggle('is-mobile-drawer-open');
+      } else {
+        this.sidebarCollapsed = !this.sidebarCollapsed;
+        this.shellEl.classList.toggle('is-sidebar-collapsed', this.sidebarCollapsed);
+      }
     }
-    submit() {
-      const state = this.controller.state;
-      if (state.pending || (!state.draft.trim() && !state.attachments.length)) return;
-      this.followHistory = true;
-      this.controller.submit();
+
+    scrollHistory() {
+      this.history.scrollTop = this.history.scrollHeight;
     }
-    scrollHistory() { this.history.scrollTop = this.history.scrollHeight; }
+
     updateUnread() {
+      if (this.controller.state.stage !== 'session' || this.controller.state.activeAgentId !== 'root') {
+        this.unread.hidden = true;
+        return;
+      }
       const count = Math.max(0, this.controller.state.history.length - this.lastRead);
       this.unread.hidden = this.followHistory || count === 0;
       this.unread.querySelector('span').textContent = count ? `${count} 项新内容 · 回到最新` : '回到最新';
     }
-    updateComposer() {
-      const state = this.controller.state;
-      this.composer.hidden = Boolean(state.pending);
-      if (this.textarea.value !== state.draft) this.textarea.value = state.draft;
-      if (!state.draft) this.textarea.style.height = '';
-      const hasDraft = Boolean(state.draft.trim() || state.attachments.length);
-      this.mainButton.disabled = !state.live && !state.resumable && !hasDraft;
-      const stopping = Boolean(state.live && !hasDraft);
-      const continuing = Boolean(!state.live && state.resumable && !hasDraft);
-      this.mainButton.classList.toggle('cv-primary', !stopping);
-      this.mainButton.classList.toggle('cv-stop', stopping);
-      const label = hasDraft ? (state.live || state.resumable ? '发送并继续' : '发送') : stopping ? '停止' : continuing ? '继续' : '发送';
-      if (this.mainButton.dataset.label !== label) {
-        this.mainButton.dataset.label = label;
-        this.mainButton.setAttribute('aria-label', label);
-        this.mainButton.innerHTML = icon(stopping ? 'square' : continuing ? 'play' : 'arrow-up');
-        icons(this.mainButton);
+
+    renderLockNotice() {
+      const s = this.controller.state;
+      if (s.stage !== 'session' || !s.lockNotice || s.activeAgentId !== 'root' || s.pending) {
+        this.lockNoticeHost.replaceChildren();
+        return;
       }
-      const signature = state.attachments.map(item => item.id).join(',');
-      if (this.attachmentSignature !== signature) {
-        this.attachmentSignature = signature;
-        this.attachments.hidden = !state.attachments.length;
-        this.attachments.replaceChildren(...state.attachments.map(item => {
-          const row = node(`<span class="cv-attachment">${icon('file')}<span class="cv-attachment-name">${escape(item.name)}</span></span>`);
-          const remove = button('移除 ' + item.name, 'x', () => this.controller.removeAttachment(item.id), 'cv-quiet cv-icon-only');
-          remove.setAttribute('aria-label', '移除 ' + item.name);
-          row.append(remove);
-          return row;
-        }));
-        icons(this.attachments);
-      }
+      const banner = node(`
+        <div class="cv-lock-notice ${s.lockNoticeTone === 'warning' ? 'is-warning' : ''}" role="status">
+          ${icon(s.lockNoticeTone === 'warning' ? 'triangle-alert' : 'info')}
+          <span class="cv-lock-notice-text">${escape(s.lockNotice)}</span>
+          <button type="button" class="cv-lock-notice-close" aria-label="关闭锁定说明">${icon('x')}</button>
+        </div>
+      `);
+      banner.querySelector('button').addEventListener('click', () => this.controller.dismissLockNotice());
+      this.lockNoticeHost.replaceChildren(banner);
+      icons(banner);
     }
 
     renderLive() {
       const state = this.controller.state;
+      const isSubagent = state.activeAgentId !== 'root';
+      if (isSubagent) {
+        const subAgent = this.controller.currentAgent();
+        if (subAgent.status === 'running') {
+          this.liveHost.innerHTML = `<section class="cv-live" aria-label="子智能体当前状态"><div class="cv-thinking-header">${activityIndicator()}<span>${escape(subAgent.role)} 正在核查运行期选择器锁定规则…</span><span class="cv-tabular">4s</span></div></section>`;
+          icons(this.liveHost);
+        } else {
+          this.liveHost.replaceChildren();
+        }
+        this.liveView = null;
+        return;
+      }
+
       const live = state.live;
-      if (!live) { this.liveHost.replaceChildren(); this.liveView = null; return; }
+      if (!live) {
+        this.liveHost.replaceChildren();
+        this.liveView = null;
+        return;
+      }
       const kind = live.kind;
       if (this.liveView?.id !== live.id || this.liveView.kind !== kind) {
         this.liveHost.replaceChildren();
@@ -259,12 +679,13 @@
             this.updateTextFollow();
           }, { passive: true });
         } else {
-          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩</span><span class="cv-tabular"></span></div>`));
+          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩上下文</span><span class="cv-tabular"></span></div>`));
         }
         icons(surface);
       }
-      if (kind === 'workGroup') this.liveView.group.update(live);
-      else {
+      if (kind === 'workGroup') {
+        this.liveView.group.update(live);
+      } else {
         this.liveView.surface.querySelector('.cv-tabular').textContent = live.elapsed + 's';
         if (kind === 'textOutput') {
           if (selectedInside(this.liveView.markdown.node)) this.followText = false;
@@ -274,38 +695,42 @@
         }
       }
     }
+
     updateTextFollow() {
       if (this.liveView?.kind !== 'textOutput') return;
       this.liveView.follow.hidden = this.followText;
     }
 
-    render(reason) {
+    renderSessionStage(reason) {
       const state = this.controller.state;
-      if (reason === 'draft') { this.updateComposer(); return; }
-      if (reason === 'pendingInput') { this.pending.update(state.pending); return; }
-      this.root.dataset.playing = String(state.playing);
-      if (reason === 'reset') {
+      const agent = this.controller.currentAgent();
+      const isSubagent = !agent.isRoot;
+      const ownerKey = isSubagent ? `sub:${agent.id}:${agent.status}` : 'root';
+
+      if (reason === 'reset' || this.renderedHistoryOwner !== ownerKey) {
         this.historyList.replaceChildren();
         this.historyNodes.clear();
-        this.liveView = null;
-        this.liveHost.replaceChildren();
+        this.renderedHistoryOwner = ownerKey;
         this.followHistory = true;
-        this.lastRead = state.history.length;
-        this.dialog.close();
-        clearTimeout(this.toastTimer);
-        this.toastNode.hidden = true;
       }
+
+      const items = isSubagent ? app.fixtures.childHistory(agent) : state.history;
       const oldTop = this.history.scrollTop;
-      if (state.history.length === 0 && this.historyNodes.size === 0 && !this.historyList.firstChild) {
-        const empty = node(`<div class="cv-empty">${icon('sparkles')}<h2>从一个想法开始</h2><p>告诉糊来帮你想完成什么。</p></div>`);
-        empty.append(button('帮我细化会话界面', 'arrow-up-right', () => {
-          this.controller.setDraft('帮我细化会话界面，完整演示历史和实时状态的切换。');
-          this.textarea.focus();
+
+      if (items.length === 0 && this.historyNodes.size === 0 && !this.historyList.firstChild) {
+        const empty = node(`<div class="cv-empty">${icon('sparkles')}<h2>已建空白会话</h2><p>创建期工作区与分发已锁定在顶栏，输入第一条消息开始本轮工作。</p></div>`);
+        empty.append(button('填入示例任务', 'arrow-up-right', () => {
+          this.controller.setDraft('梳理会话组件化结构，并完整演示运行期输入框选择器的锁定与恢复。');
+          this.composerCard.textarea.focus();
         }));
         this.historyList.append(empty);
+        icons(empty);
       }
-      if (state.history.length && this.historyList.querySelector('.cv-empty')) this.historyList.replaceChildren();
-      state.history.forEach(item => {
+      if (items.length && this.historyList.querySelector('.cv-empty')) {
+        this.historyList.replaceChildren();
+      }
+
+      items.forEach(item => {
         if (this.historyNodes.has(item.id)) return;
         const rendered = historyItem(item, this.actions);
         rendered.dataset.historyId = item.id;
@@ -313,52 +738,286 @@
         this.historyList.append(rendered);
         icons(rendered);
       });
-      this.historyStart.hidden = state.history.length === 0;
+
+      this.historyStart.hidden = items.length === 0;
+      this.historyStart.textContent = isSubagent
+        ? `子智能体 ${agent.role} · 只读会话历史`
+        : '今天 · 主会话已结束记录';
+
       this.renderLive();
-      this.pending.update(state.pending);
-      this.updateComposer();
+      this.renderLockNotice();
+
+      if (isSubagent) {
+        this.pendingView.update(null);
+        this.sessionCardMount.hidden = true;
+        this.readonlyHost.replaceChildren(buildAgentReadOnlyDock(this.controller));
+      } else {
+        this.readonlyHost.replaceChildren();
+        this.pendingView.update(state.pending);
+        if (this.composerCard.node.parentElement !== this.sessionCardMount) {
+          this.sessionCardMount.append(this.composerCard.node);
+        }
+        this.sessionCardMount.hidden = Boolean(state.pending);
+        this.composerCard.update();
+      }
+
+      // Status footer
+      const modeLabel = this.controller.currentMode().label;
+      const wf = state.frozenThread.workflow;
+      const leftParts = [];
+      if (isSubagent) {
+        leftParts.push(`<span class="cv-workflow-pill is-active">${icon('git-fork')}<span>子智能体 · ${escape(agent.role)}</span></span>`);
+      } else if (wf.active) {
+        leftParts.push(`<span class="cv-workflow-pill is-active" title="活动图工作流进行中，中途锁定模式切换">${icon('workflow')}<span>${escape(wf.stageLabel)}</span></span>`);
+      } else {
+        leftParts.push(`<span class="cv-workflow-pill">${escape(modeLabel)}</span>`);
+      }
+      if (!isSubagent && state.live) {
+        leftParts.push(`<span>·</span><span class="cv-tabular">${state.throughput} 词元/秒</span>`);
+      }
+      leftParts.push(`<span>·</span><span class="cv-tabular">累计 ${escape(state.costLabel)}</span>`);
+      this.footerLeftEl.innerHTML = leftParts.join('');
+      icons(this.footerLeftEl);
+
+      // Context ring & popover
       this.contextValue.textContent = state.context + '%';
       this.root.querySelector('.cv-context-ring').style.setProperty('--cv-context-fill', state.context + '%');
-      this.compressButton.disabled = Boolean(state.live || state.pending || !state.history.length);
+      const canCompact = !isSubagent && !state.live && !state.pending && state.transitionPhase === 'none' && state.history.length > 0;
+      this.compressButton.disabled = !canCompact;
       this.compressButton.querySelector('span').textContent = state.retryCompression ? '重试压缩' : '立即压缩';
-      this.contextExplanation.textContent = state.live || state.pending ? '当前正在执行，结束后可以手动压缩。' : state.history.length ? '压缩后仍保留原始历史记录。当前为示例用量。' : '有历史记录后可以压缩上下文。';
-      const currentScenario = app.fixtures.scenarios.find(item => item.id === state.scenario);
-      this.scenarioSelect.value = currentScenario?.id || 'idle';
-      this.root.querySelector('.cv-scenario-hint').textContent = currentScenario?.hint || '';
-      const available = !state.pending && state.cursor < state.queue.length;
-      this.playButton.disabled = !available;
-      this.stepButton.disabled = !available || state.playing;
-      const playLabel = state.playing ? '暂停' : '播放过程';
-      if (this.playButton.dataset.label !== playLabel) {
-        this.playButton.dataset.label = playLabel;
-        this.playButton.innerHTML = icon(state.playing ? 'pause' : 'play') + `<span>${playLabel}</span>`;
-        icons(this.playButton);
+      this.contextExplanation.textContent = isSubagent
+        ? '子智能体上下文由运行时按任务自动管理，不支持手动触发压缩。'
+        : (state.live || state.pending || state.transitionPhase !== 'none')
+          ? '当前会话正在执行或等待处理，轮次空闲后可手动触发强制压缩。'
+          : state.history.length
+            ? '强制压缩复用自动压缩路径，不发送隐藏用户消息，并保留原始历史回执。'
+            : '有历史记录后可手动压缩上下文。';
+
+      if (this.followHistory) {
+        this.scrollHistory();
+        if (!isSubagent) this.lastRead = state.history.length;
+      } else {
+        this.history.scrollTop = oldTop;
       }
-      this.failureButton.disabled = !state.live && !state.pending;
-      this.root.querySelector('.cv-step-count').textContent = `${state.cursor} / ${state.queue.length}`;
-      const progress = this.root.querySelector('progress');
-      progress.max = Math.max(1, state.queue.length);
-      progress.value = state.cursor;
-      this.root.querySelector('.cv-demo-state').textContent = state.pending ? '等待你的决定' : state.playing ? '正在播放 · 可随时暂停' : available ? '演示已暂停 · 可以单步查看' : '演示结束 · 可以重置或发送新消息';
-      this.root.querySelector('.cv-history-count').textContent = state.history.length + ' 项';
-      const group = state.live?.kind === 'workGroup' ? state.live : null;
-      this.root.querySelector('.cv-live-label').textContent = state.pending ? '收起 · 停靠区等待回答'
-        : group ? `工作组 · ${group.members.length} 步${app.isWaitingForModel(group) ? ' · 待交接' : ''}`
-        : ({ waiting: '思考中', textOutput: '正在输出', compacting: '正在压缩' })[state.live?.kind] || '收起';
-      this.root.querySelector('.cv-last-change').textContent = state.change || '—';
-      if (this.followHistory) { this.scrollHistory(); this.lastRead = state.history.length; }
-      else this.history.scrollTop = oldTop;
       this.updateUnread();
+    }
+
+    renderInspector() {
+      const state = this.controller.state;
+      const locks = this.controller.getLockState();
+      const action = this.controller.getPrimaryAction();
+      const currentScenario = app.fixtures.scenarios.find(item => item.id === state.scenario);
+
+      if (currentScenario) {
+        if (this.scenarioValueEl) {
+          this.scenarioValueEl.textContent = currentScenario.label;
+          this.scenarioTrigger?.setAttribute('title', currentScenario.label);
+        }
+        if (this.scenarioMenu && this.renderedScenarioId !== currentScenario.id) {
+          this.renderedScenarioId = currentScenario.id;
+          this.scenarioMenu.querySelectorAll('[data-pick-scenario]').forEach(btn => {
+            const selected = btn.dataset.pickScenario === currentScenario.id;
+            btn.classList.toggle('is-selected', selected);
+            const checkSlot = btn.querySelector('.cv-check-slot');
+            if (checkSlot) checkSlot.innerHTML = selected ? icon('check') : '';
+          });
+          icons(this.scenarioMenu);
+        }
+        this.root.querySelector('.cv-scenario-hint').textContent = currentScenario.hint;
+      }
+
+      const inRootSession = state.stage === 'session' && state.activeAgentId === 'root';
+      const hasQueue = inRootSession && !state.pending && state.transitionPhase === 'none' && state.cursor < state.queue.length;
+
+      this.playButton.hidden = !inRootSession;
+      this.stepButton.hidden = !inRootSession;
+      this.failureButton.hidden = !inRootSession;
+      this.finishStopButton.hidden = state.transitionPhase !== 'stopping';
+      this.playbackBox.hidden = !inRootSession;
+
+      if (inRootSession) {
+        this.playButton.disabled = !hasQueue;
+        this.stepButton.disabled = !hasQueue || state.playing;
+        const playLabel = state.playing ? '暂停' : '播放过程';
+        if (this.playButton.dataset.label !== playLabel) {
+          this.playButton.dataset.label = playLabel;
+          this.playButton.innerHTML = icon(state.playing ? 'pause' : 'play') + `<span>${playLabel}</span>`;
+          icons(this.playButton);
+        }
+        this.failureButton.disabled = (!state.live && !state.pending) || state.transitionPhase !== 'none';
+        this.root.querySelector('.cv-step-count').textContent = `${state.cursor} / ${state.queue.length}`;
+        const progress = this.root.querySelector('.cv-playback-progress');
+        if (progress) {
+          progress.value = state.cursor / Math.max(1, state.queue.length);
+        }
+        this.root.querySelector('.cv-demo-state').textContent = state.transitionPhase === 'stopping'
+          ? '停止收束中 · 可点击上方「完成停止收束」进入已停止态'
+          : state.pending
+            ? '停靠区等待回答 · 原草稿已自动暂存'
+            : state.playing
+              ? '正在连续播放 · 输入框可并发打字，选择器已锁定'
+              : hasQueue
+                ? '演示已暂停 · 可单步推进或在下方并发编辑草稿与粘贴图片'
+                : '当前无队列事件 · 可自由切换配置或发送新消息';
+      }
+
+      // Live Configuration Mutability Matrix
+      let wsStatus;
+      if (state.stage === 'start') {
+        if (locks.prepRunning) wsStatus = ['准备期已锁', 'locked'];
+        else if (state.targetType === 'standalone') wsStatus = ['固定本地目录', 'frozen'];
+        else wsStatus = ['外层环境栏可配', 'open'];
+      } else {
+        wsStatus = ['创建冻结 · 顶栏只读', 'frozen'];
+      }
+
+      let modeStatus;
+      if (locks.isSubagent) modeStatus = ['子会话只读', 'frozen'];
+      else if (locks.modeEditable) modeStatus = ['可切换', 'open'];
+      else if (!locks.isStart && state.frozenThread.workflow.active && !locks.turnBusy) modeStatus = ['已锁 · 工作流进行中', 'locked'];
+      else modeStatus = ['已锁 · 会话运行中', 'locked'];
+
+      let modelStatus;
+      if (locks.isSubagent) modelStatus = ['冻结路由 · 只读', 'frozen'];
+      else if (!locks.isStart && state.frozenThread.botManaged) modelStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (!locks.isStart && !state.frozenThread.routeAvailable) modelStatus = ['可换模（当前不可用）', 'warn'];
+      else if (locks.modelEditable) modelStatus = ['可切换（下轮生效）', 'open'];
+      else modelStatus = ['已锁 · 会话运行中', 'locked'];
+
+      let effortStatus;
+      if (locks.isSubagent) effortStatus = ['冻结路由 · 只读', 'frozen'];
+      else if (!locks.isStart && state.frozenThread.botManaged) effortStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (!locks.effortSupported) effortStatus = ['已锁 · 模型无此参数', 'locked'];
+      else if (locks.effortEditable) effortStatus = ['可切换', 'open'];
+      else effortStatus = ['已锁 · 会话运行中', 'locked'];
+
+      let composerStatus;
+      if (locks.isSubagent) composerStatus = ['只读停靠面板', 'frozen'];
+      else if (state.pending) composerStatus = ['问答停靠（草稿已暂存）', 'locked'];
+      else if (action.kind === 'stopping') composerStatus = ['正在停止（过渡锁）', 'locked'];
+      else if (action.kind === 'continuing') composerStatus = ['正在继续…', 'locked'];
+      else if (!locks.isStart && !state.frozenThread.routeAvailable) composerStatus = ['草稿可写 · 发送已阻塞', 'warn'];
+      else if (action.kind === 'stop') composerStatus = ['可并发拟稿 · 主钮「停止」', 'open'];
+      else if (action.kind === 'sendAndContinue') composerStatus = ['主钮「发送并继续 ↑」', 'open'];
+      else if (action.kind === 'continue') composerStatus = ['主钮「▶ 继续」', 'open'];
+      else composerStatus = [action.enabled ? '主钮「发送 ↑」就绪' : '可编辑（空草稿禁用发送）', 'open'];
+
+      const matrixRows = [
+        ['工作区 / 分发', ...wsStatus],
+        ['工作模式', ...modeStatus],
+        ['主智能体模型', ...modelStatus],
+        ['思考强度', ...effortStatus],
+        ['输入与主操作', ...composerStatus]
+      ];
+
+      this.matrixListEl.innerHTML = matrixRows.map(([key, text, tone]) => `
+        <div class="cv-matrix-row">
+          <span class="cv-matrix-key">${escape(key)}</span>
+          <span class="cv-matrix-badge" data-tone="${escape(tone)}">${escape(text)}</span>
+        </div>
+      `).join('');
+
+      this.root.querySelector('.cv-stage-label').textContent = state.stage === 'start'
+        ? '起始页（双层创建台）'
+        : locks.isSubagent
+          ? `子智能体 · ${this.controller.currentAgent().role}`
+          : '主会话（单层输入卡）';
+
+      const grp = state.live?.kind === 'workGroup' ? state.live : null;
+      const liveText = state.stage === 'start'
+        ? (state.preparation ? `环境准备 · 步骤 ${state.preparation.stepIndex + 1}/4` : '待提交首条消息')
+        : state.pending
+          ? `${state.history.length} 项 · 问答停靠`
+          : grp
+            ? `${state.history.length} 项 · 工作组 ${grp.members.length} 步`
+            : `${state.history.length} 项 · ${({ waiting: '思考中', textOutput: '正在输出', compacting: '正在压缩' })[state.live?.kind] || '空闲收起'}`;
+      this.root.querySelector('.cv-live-label').textContent = liveText;
+      this.root.querySelector('.cv-last-change').textContent = state.change || '—';
+    }
+
+    render(reason) {
+      const state = this.controller.state;
+
+      if (reason === 'draft') {
+        this.composerCard.update();
+        if (state.pending) this.pendingView.update(state.pending);
+        this.renderInspector();
+        return;
+      }
+
+      if (reason === 'notice') {
+        if (state.stage === 'start') {
+          renderStartStage(this.startStageEl, this.controller, this.composerCard, this.menuManager, this.composerHelpers);
+        } else {
+          this.renderLockNotice();
+        }
+        return;
+      }
+
+      if (reason === 'prep' && state.stage === 'start') {
+        const heroSlot = this.startStageEl.querySelector('.cv-hero-slot');
+        if (heroSlot && state.preparation) {
+          heroSlot.innerHTML = buildPreparationHTML(this.controller);
+          icons(heroSlot);
+        }
+        this.renderInspector();
+        return;
+      }
+
+      if (reason === 'pendingInput') {
+        this.pendingView.update(state.pending);
+        return;
+      }
+
+      this.root.dataset.playing = String(state.playing);
+
+      if (reason === 'reset') {
+        this.suppressScrollReveal = true;
+        this.activeScrollingEls?.forEach(el => {
+          clearTimeout(this.scrollTimers?.get(el));
+          el.classList.remove('is-scrolling');
+        });
+        this.activeScrollingEls?.clear();
+        this.liveView = null;
+        this.liveHost.replaceChildren();
+        this.dialog.close();
+        this.imageDialog.close();
+        this.menuManager.closeAll();
+        clearTimeout(this.toastTimer);
+        this.toastNode.hidden = true;
+      }
+
+      renderSidebar(this.sidebarEl, this.controller);
+      renderTopbar(this.topbarLeftEl, this.topbarRightEl, this.topbarEl, this.controller, this.menuManager, this.composerHelpers);
+
+      if (state.stage === 'start') {
+        this.sessionStageEl.hidden = true;
+        this.startStageEl.hidden = false;
+        renderStartStage(this.startStageEl, this.controller, this.composerCard, this.menuManager, this.composerHelpers);
+      } else {
+        this.startStageEl.hidden = true;
+        this.sessionStageEl.hidden = false;
+        this.renderSessionStage(reason);
+      }
+
+      this.renderInspector();
+
+      if (reason === 'reset') {
+        requestAnimationFrame(() => {
+          this.suppressScrollReveal = false;
+        });
+      }
     }
 
     async copy(text) {
       try {
         await navigator.clipboard.writeText(text);
-        this.toast('已复制');
+        this.toast('已复制到剪贴板');
       } catch {
         this.detail('复制内容', text, '浏览器未允许剪贴板访问，请在下方选择并复制原文。');
       }
     }
+
     detail(title, content, path = '') {
       this.dialog.querySelector('h2').textContent = title;
       const body = this.dialog.querySelector('.cv-dialog-body');
@@ -369,42 +1028,118 @@
       body.append(pre);
       if (!this.dialog.open) this.dialog.showModal();
     }
+
+    openImagePreview(images, activeId, triggerEl = null) {
+      if (!images?.length) return;
+      const idx = Math.max(0, images.findIndex(item => item.id === activeId));
+      this.lightboxState = {
+        images,
+        index: idx,
+        zoomActual: false,
+        triggerEl
+      };
+      this.syncLightboxView();
+      if (!this.imageDialog.open) this.imageDialog.showModal();
+    }
+
+    stepLightbox(delta) {
+      const list = this.lightboxState.images;
+      if (list.length <= 1) return;
+      this.lightboxState.index = (this.lightboxState.index + delta + list.length) % list.length;
+      this.lightboxState.zoomActual = false;
+      this.syncLightboxView();
+    }
+
+    toggleLightboxZoom() {
+      this.lightboxState.zoomActual = !this.lightboxState.zoomActual;
+      this.syncLightboxView();
+    }
+
+    syncLightboxView() {
+      const { images, index, zoomActual } = this.lightboxState;
+      const current = images[index];
+      if (!current) return;
+      this.imageDialog.querySelector('.cv-lightbox-title').textContent = current.name;
+      const metaParts = [
+        current.sourceLabel || '图片预览',
+        current.dimensions,
+        current.sizeLabel
+      ].filter(Boolean);
+      this.imageDialog.querySelector('.cv-lightbox-meta').textContent = metaParts.join(' · ');
+
+      const pager = this.imageDialog.querySelector('.cv-lightbox-pager');
+      pager.hidden = images.length <= 1;
+      if (images.length > 1) {
+        this.imageDialog.querySelector('.cv-lightbox-count').textContent = `${index + 1} / ${images.length}`;
+      }
+
+      const stage = this.imageDialog.querySelector('.cv-lightbox-stage');
+      stage.classList.toggle('is-actual-size', zoomActual);
+      const imgEl = this.imageDialog.querySelector('.cv-lightbox-img');
+      imgEl.src = current.url;
+      imgEl.alt = current.name;
+      imgEl.title = zoomActual ? '点击恢复适应窗口大小' : '点击放大至 1:1 原始尺寸';
+
+      const zoomLabel = this.imageDialog.querySelector('.cv-lightbox-zoom-label');
+      zoomLabel.textContent = zoomActual ? '适应窗口' : '1:1 原图';
+
+      const footer = this.imageDialog.querySelector('.cv-lightbox-footer');
+      footer.hidden = !current.caption;
+      footer.textContent = current.caption || '';
+    }
+
     toast(message) {
       clearTimeout(this.toastTimer);
       this.toastNode.textContent = message;
       this.toastNode.hidden = false;
-      this.toastTimer = setTimeout(() => { this.toastNode.hidden = true; }, 1800);
+      this.toastTimer = setTimeout(() => { this.toastNode.hidden = true; }, 2200);
     }
+
     dispose() {
       this.controller.dispose();
       this.signal.abort();
       clearTimeout(this.toastTimer);
       this.dialog.close();
-      this.dialog.remove();
+      this.urlDialog.close();
+      this.imageDialog.close();
       app.instances.delete(this);
       delete this.root.conversationPreview;
     }
   }
 
   app.instances = new Set();
-  app.mount = root => {
-    if (root.conversationPreview) return root.conversationPreview;
-    const preview = new ConversationPreview(root);
+  app.mount = host => {
+    if (host.conversationPreview) return host.conversationPreview;
+    const mountTarget = host.dataset.pageChrome === 'true' ? mountPageChrome(host) : host;
+    const preview = new ConversationPreview(mountTarget);
+    host.conversationPreview = preview;
     app.instances.add(preview);
     return preview;
   };
-  const roots = document.querySelectorAll('[data-conversation-preview]');
-  if (!window.marked || !window.DOMPurify || !window.lucide) {
-    roots.forEach(root => {
-      root.textContent = '概念稿依赖未加载。请联网后重新打开页面（Marked / DOMPurify / Lucide）。';
-    });
-    return;
+
+  function boot() {
+    const roots = document.querySelectorAll('[data-conversation-preview]');
+    if (!roots.length) return;
+    if (!window.marked || !window.DOMPurify || !window.lucide) {
+      roots.forEach(root => {
+        root.textContent = '概念稿依赖未加载。请联网后重新打开页面（Marked / DOMPurify / Lucide）。';
+      });
+      return;
+    }
+    roots.forEach(root => app.mount(root));
   }
-  roots.forEach(root => app.mount(root));
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+
   const observer = new MutationObserver(() => {
     app.instances.forEach(preview => { if (!preview.root.isConnected) preview.dispose(); });
   });
   observer.observe(document.body, { childList: true, subtree: true });
+
   window.addEventListener('pagehide', event => {
     if (event.persisted) app.instances.forEach(preview => preview.controller.pause());
     else {
