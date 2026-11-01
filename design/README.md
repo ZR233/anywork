@@ -37,14 +37,14 @@
 | 23 | [发布与更新](./23-release-update.md) | 发布渠道与信任根、项目级 Linux 构建环境、Windows/DEB 安装边界、更新清单与状态机、安装诊断 |
 | 24 | [测试与人工验收](./24-testing.md) | 测试基础设施、本地模拟供应商、GUI 观察能力与证据边界 |
 | 25 | [客户端、前端状态与资源生命周期](./25-frontend-state.md) | 纯 SDK 客户端、FRB/Riverpod 边界、单一写入端、命令回执、草稿与资源关闭契约（唯一权威源） |
-| 26 | [按需会话加载与有序聊天交付](./26-timeline-content.md) | 完整 pending、按需分页、Set/Prepend/Append、current 与内容范围、单一组件消息集合（唯一权威源） |
+| 26 | [时间线内容源与原生列表](./26-timeline-content.md) | 键集分页、有界尾部订阅、详情按需读取、实时/历史模式、原生列表与显示预算（唯一权威源） |
 | 27 | [外部机器人与飞书接入](./27-bots.md) | 原生飞书协议、扫码首配、可信联系人与群组、会话工具、统一发送与连接生命周期（唯一权威源） |
 | 28 | [ACP 接入、服务器准备与认证](./28-acp.md) | 固定 Antigravity 1.4.1 自动安装、受管接入、认证检查与资源生命周期（独立于原生模型协议） |
 
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型（HTML 静态稿，不作为架构契约），`assets/` 保存文档引用的图像资源。
 
 - Material 3 账号设计稿按界面分目录：[账号列表](./prototypes/accounts-list/index.html)、[账号详情](./prototypes/account-details/index.html)、[模型详情、价格与评价](./prototypes/model-details/index.html)。对应 [#168](https://github.com/ZR233/anywork/issues/168)，包含 62 个账户场景、计费方式选择后保存及带评价模型标识的模拟评价。三个入口共用 `prototypes/accounts-shared/` 中的样式、示例数据与交互代码，分别从对应界面打开；维护时修改共享文件，避免页面间漂移。浏览器直接打开即可交互，需要联网加载固定版本的 MDUI 和图标库；金额、价格、性能和评价均为设计样例，不连接真实账户，也不作为原生实现或验收证据。
-- 会话交互概念稿：[Timeline 与实时状态栏](./prototypes/live-status/index.html)。旋转前置图标、独立折叠终态、问答 dock 与输入主按钮复用 [conversation-shared](./prototypes/conversation-shared/README.md)。其中“当前工作组整组移交”仅演示视觉工况；生产交付以 [26](./26-timeline-content.md) 的逐条完成、真实父域按需 Children 和唯一组件消息集合为准，不因概念稿恢复前端分组缓存或延迟独立完成事实。无信息时显示不可展开“思考中”。概念稿为本地模拟和视觉参照，可按 issue 调整，不是原生或真实供应商验收证据。
+- 统一组件化会话交互概念稿按生命周期视角分目录：[新会话起始页与工作区输入布局](./prototypes/session-start/index.html)、[会话运行时输入框与配置锁定](./prototypes/session-composer/index.html)、[会话时间线与实时状态栏](./prototypes/live-status/index.html)（设计说明见 [session-start-layout](./concepts/session-start-layout.md)，共享模块见 [conversation-shared](./prototypes/conversation-shared/README.md)）。三个入口页均为纯声明式薄壳，共用同一套暹罗浅色外壳（项目会话侧栏与上下文顶栏）、`PromptComposerCard`、时间线与状态栏实现，消除跨页复制与样式漂移：起始页采用“外层会话环境栏（项目身份、`local`「本地目录」/ `worktree`「新建工作树」二态分段切换、子智能体分发单层菜单）+ 同心内层主输入卡”双层结构（覆盖 6 个创建期场景）；进入已建会话后外层创建栏退役、冻结项上移顶栏只读徽标，输入区完整呈现运行中选择器锁定与就地原因提示、活动工作流仅锁模式而开放换模、并发拟稿与六态唯一主按钮、模型不可用原地换模自愈、机器人统一路由及子智能体只读底栏（覆盖 8 个运行期输入场景）；时间线与问答演示覆盖 12 个场景。其中“当前工作组整组移交”仅演示视觉工况，生产交付以 [26](./26-timeline-content.md) 的逐条可靠完成、真实父域按需 Children 和唯一组件消息集合为准，不因概念稿恢复前端分组缓存或延迟独立完成事实。概念稿为本地模拟与视觉交互参照，不作为原生或真实供应商验收证据。
 
 ## 写作规范
 

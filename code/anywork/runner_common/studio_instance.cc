@@ -1,10 +1,15 @@
 #include "studio_instance.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <vector>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 #include <vector>
 #else
 #include <dlfcn.h>
@@ -31,6 +36,26 @@ DesktopInstanceBootstrap::DesktopInstanceBootstrap() {
         GetProcAddress(library, "anywork_desktop_instance_claim"));
     report_ = reinterpret_cast<ReportFunction>(
         GetProcAddress(library, "anywork_desktop_instance_report"));
+  }
+#elif defined(__APPLE__)
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> executable(size);
+  if (_NSGetExecutablePath(executable.data(), &size) != 0) return;
+  // dyld may return a symlink used to launch the app. Resolve it before locating
+  // Frameworks so native startup and Dart open the same packaged Rust statics.
+  char* resolved = realpath(executable.data(), nullptr);
+  if (resolved == nullptr) return;
+  const std::string path(resolved);
+  std::free(resolved);
+  const auto separator = path.find_last_of('/');
+  if (separator == std::string::npos) return;
+  void* library = dlopen(
+      (path.substr(0, separator) + "/../Frameworks/libpl_studio_bridge.dylib").c_str(),
+      RTLD_NOW | RTLD_LOCAL);
+  if (library != nullptr) {
+    claim_ = reinterpret_cast<ClaimFunction>(dlsym(library, "anywork_desktop_instance_claim"));
+    report_ = reinterpret_cast<ReportFunction>(dlsym(library, "anywork_desktop_instance_report"));
   }
 #else
   g_autoptr(GError) error = nullptr;

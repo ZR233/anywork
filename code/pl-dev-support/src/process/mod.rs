@@ -13,6 +13,8 @@ use std::process::{Command, ExitStatus, Stdio};
 
 pub use anyhow::Result;
 
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "linux")]
 mod unix;
 #[cfg(windows)]
@@ -37,6 +39,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 ///   natural reclamation window and therefore had to be force-killed by this
 ///   harness. Empty means the started process supervised its own subtree; a
 ///   non-empty list means it leaked and this harness reclaimed it.
+///
+/// Descendant PID snapshots are available on Linux. macOS owns the launched
+/// process group and returns an error if that group required forced reclamation;
+/// its empty PID lists do not cover children that create a new session.
 #[derive(Debug)]
 pub struct ResidentExit {
     /// The direct child's OS process id, captured before it exited.
@@ -136,7 +142,15 @@ pub fn run_resident_checked(command: &mut Command, display: &str) -> Result<()> 
     {
         unix::run_resident(command, display)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let exit = macos::run_resident(command, display)?;
+        if exit.cancelled {
+            bail!("resident command cancelled: {display}");
+        }
+        ensure_success(exit.status, display)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         configure_background_command(command);
         print_command_context(command, display);
@@ -179,12 +193,17 @@ pub fn run_resident_checked(command: &mut Command, display: &str) -> Result<()> 
 /// # Errors
 /// Returns an error when descendant adoption or the command start fails, or
 /// when the reaping loop fails; the returned status itself is never an error.
+/// On macOS, a leaked process group is reclaimed and returned as an error.
 pub fn run_resident_reporting(command: &mut Command, display: &str) -> Result<ResidentExit> {
     #[cfg(target_os = "linux")]
     {
         unix::run_resident_reporting(command, display)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::run_resident(command, display)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         configure_background_command(command);
         print_command_context(command, display);

@@ -267,3 +267,13 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  macos:
+    name: macOS arm64 package check
+    needs: helper
+    uses: ./.github/workflows/macos-release-build.yml
+    with:
+      sourceSha: ${{ github.sha }}
+      helperX64Id: ${{ needs.helper.outputs.x64ArtifactId }}
+      helperArm64Id: ${{ needs.helper.outputs.arm64ArtifactId }}
+      artifactPrefix: rc-${{ github.sha }}

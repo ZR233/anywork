@@ -63,17 +63,36 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
-        if entry
+        let file_type = entry
             .file_type()
-            .with_context(|| format!("failed to inspect {}", source_path.display()))?
-            .is_dir()
-        {
+            .with_context(|| format!("failed to inspect {}", source_path.display()))?;
+        if file_type.is_symlink() {
+            copy_symlink(&source_path, &destination_path)?;
+        } else if file_type.is_dir() {
             copy_tree(&source_path, &destination_path)?;
         } else {
             copy_file(&source_path, &destination_path)?;
         }
     }
     Ok(())
+}
+
+// macOS frameworks contain relative Versions/Current links. Following them
+// duplicates framework trees and changes the structure covered by code signing.
+fn copy_symlink(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let target = fs::read_link(source)?;
+        if destination.symlink_metadata().is_ok() {
+            fs::remove_file(destination)?;
+        }
+        std::os::unix::fs::symlink(target, destination)
+            .with_context(|| format!("failed to copy symlink {}", source.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        copy_file(source, destination)
+    }
 }
 
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
@@ -85,4 +104,48 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{BundleKind, copy};
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    /// A copied macOS framework must retain its version links and runnable binary.
+    #[test]
+    fn preserves_framework_links_and_executable_permissions() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source");
+        let destination = root.path().join("copy");
+        fs::create_dir_all(source.join("Versions/A"))?;
+        fs::write(source.join("Versions/A/Engine"), b"native library")?;
+        fs::set_permissions(
+            source.join("Versions/A/Engine"),
+            fs::Permissions::from_mode(0o755),
+        )?;
+        symlink("A", source.join("Versions/Current"))?;
+        symlink("Versions/Current/Engine", source.join("Engine"))?;
+        // KeepExisting must also replace existing links without following them.
+        for _ in 0..2 {
+            copy(&source, &destination, BundleKind::PreserveAll)?;
+            assert_eq!(
+                fs::read_link(destination.join("Versions/Current"))?,
+                std::path::Path::new("A")
+            );
+            assert_eq!(
+                fs::read_link(destination.join("Engine"))?,
+                std::path::Path::new("Versions/Current/Engine")
+            );
+            assert_eq!(fs::read(destination.join("Engine"))?, b"native library");
+            assert_eq!(
+                fs::metadata(destination.join("Engine"))?
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+        Ok(())
+    }
 }

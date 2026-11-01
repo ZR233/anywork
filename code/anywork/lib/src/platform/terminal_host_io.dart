@@ -19,6 +19,15 @@ Future<void> launchHostTerminal(HostTerminalTarget target) async {
     program: resolved.program,
     target: target,
   );
+  if (resolved.program == HostTerminalProgram.macTerminal) {
+    // Wait for automation acceptance so permission denial reaches the UI.
+    // Terminal owns the interactive session after AppleScript returns.
+    final result = await Process.run(plan.executable, plan.arguments);
+    if (result.exitCode != 0) {
+      throw StateError('Terminal launch failed: ${result.stderr}');
+    }
+    return;
+  }
   // 终端由用户主动打开，拥有独立生命周期：detached 启动后 Studio 退出
   // 不回收该进程。
   await Process.start(
@@ -37,6 +46,7 @@ _resolveHostTerminal() async {
     (program: HostTerminalProgram.windowsTerminal, platforms: ['windows']),
     (program: HostTerminalProgram.xdgTerminalExec, platforms: ['linux']),
     (program: HostTerminalProgram.xTerminalEmulator, platforms: ['linux']),
+    (program: HostTerminalProgram.macTerminal, platforms: ['macos']),
   ];
   final os = Platform.operatingSystem;
   for (final candidate in candidates) {

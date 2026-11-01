@@ -722,13 +722,15 @@ class FrbStudioTransport
             // FRB's default search can select a development library from CWD or
             // environment, which would have a different set of Rust statics.
             final executable = File(Platform.resolvedExecutable);
-            final bundle = Platform.isLinux
+            final bundle = Platform.isLinux || Platform.isMacOS
                 ? File(executable.resolveSymbolicLinksSync()).parent
                 : executable.parent;
             final libraryPath = bundle.uri
                 .resolve(
                   Platform.isWindows
                       ? 'pl_studio_bridge.dll'
+                      : Platform.isMacOS
+                      ? '../Frameworks/libpl_studio_bridge.dylib'
                       : 'lib/libpl_studio_bridge.so',
                 )
                 .toFilePath();

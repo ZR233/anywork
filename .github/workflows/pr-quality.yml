@@ -64,7 +64,7 @@ jobs:
           $superseded = Get-StudioSupersededReleases -WorkspaceRoot $env:GITHUB_WORKSPACE
           Write-Host "Validated $($superseded.Count) superseded Studio Releases"
 
-      - name: Test release reconciliation and Debian checksum boundaries
+      - name: Test release reconciliation and platform checksum boundaries
         shell: pwsh
         run: ./.github/scripts/studio-release-assets.tests.ps1
 
@@ -314,3 +314,49 @@ jobs:
 
       - name: Verify Flutter application
         run: cargo xtask verify-gui
+
+  macos-desktop:
+    name: macOS desktop
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Set up existing remote helper cross compiler
+        run: |
+          brew install zig
+          cargo install cargo-zigbuild --version 0.24.0 --locked
+
+      - name: Test native process ownership and bundle collection
+        run: cargo test --locked -p pl-dev-support -p pl-xtask
+
+      - name: Build native macOS application
+        run: cargo xtask build-gui
+
+      - name: Test AppKit asynchronous termination and exit codes
+        run: python3 .github/scripts/studio-macos-termination-tests.py dist/anywork-release/anywork.app
+
+      - name: Verify macOS archive, version, architecture and signatures
+        run: |
+          version=$(cat studio-version.txt)
+          cargo xtask release-gui stage --version "$version" --bundle dist/anywork-release
+          cargo xtask release-gui verify --version "$version"
+
+      - name: Test macOS terminal command quoting
+        run: cargo flutter test --no-pub test/platform/macos_terminal_test.dart

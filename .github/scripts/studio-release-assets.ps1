@@ -44,6 +44,8 @@ function Get-StudioReleaseAssetNames {
         'SHA256SUMS.txt'
         "anywork-$Version-linux-x86_64.deb"
         "anywork-$Version-linux-x86_64.deb.sha256"
+        "anywork-$Version-macos-arm64.zip"
+        "anywork-$Version-macos-arm64.zip.sha256"
     )
 }
 
@@ -56,14 +58,37 @@ function Assert-StudioDebianChecksum {
         [string] $AssetDirectory
     )
 
-    $name = "anywork-$Version-linux-x86_64.deb"
+    Assert-StudioPackageChecksum -Name "anywork-$Version-linux-x86_64.deb" -AssetDirectory $AssetDirectory
+}
+
+function Assert-StudioMacOSChecksum {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Version,
+
+        [Parameter(Mandatory)]
+        [string] $AssetDirectory
+    )
+
+    Assert-StudioPackageChecksum -Name "anywork-$Version-macos-arm64.zip" -AssetDirectory $AssetDirectory
+}
+
+function Assert-StudioPackageChecksum {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Name,
+
+        [Parameter(Mandatory)]
+        [string] $AssetDirectory
+    )
+
     $package = Join-Path $AssetDirectory $name
     $sidecar = Join-Path $AssetDirectory "$name.sha256"
     $digest = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
     $expected = "$digest  $name`n"
     $actual = [IO.File]::ReadAllText($sidecar).Replace("`r`n", "`n")
     if ($actual -cne $expected) {
-        throw 'Debian checksum does not match the exact package name and bytes'
+        throw 'Package checksum does not match the exact package name and bytes'
     }
 }
 

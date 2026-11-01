@@ -1,6 +1,8 @@
 # 23 - anywork 发布与应用内升级
 
-本文定义 `anywork` 稳定版的唯一发布渠道、Windows 与 Linux `x64` 打包格式及 Windows 应用内更新信任边界。Linux 提供手动安装的 Debian 包，不加入 Windows 更新清单；候选发布（RC）构建仅作为 CI 构件（artifact），不进入稳定更新源。SSH 远端辅助进程（`pl-remote-helper`）不设独立发布契约，而是以压缩资源随应用发行包（bundle）一并分发（见 [22](./22-ssh-remote.md)）：安装目录包含随包资源，GitHub Release 不提供单独的辅助进程下载项，也不在用户数据目录安装副本。
+本文定义 `anywork` 稳定版的唯一发布渠道、Windows / Linux `x64` 与 macOS `arm64` 打包格式及 Windows 应用内更新信任边界。Linux 提供手动安装的 Debian 包，macOS 提供完整 `.app` ZIP，均不加入 Windows 更新清单；候选发布（RC）构建仅作为 CI 构件（artifact），不进入稳定更新源。SSH 远端辅助进程（`pl-remote-helper`）不设独立发布契约，而是以压缩资源随应用发行包（bundle）一并分发（见 [22](./22-ssh-remote.md)）：安装目录包含随包资源，GitHub Release 不提供单独的辅助进程下载项，也不在用户数据目录安装副本。
+
+macOS 当前提供从源码构建当前宿主架构的 `.app`：bridge 动态库位于包内 Frameworks，SSH helper 位于包内 Resources，完整保留 framework 的版本符号链接。应用为访问用户工作区及启动工具而不启用 App Sandbox；本地构建采用 ad-hoc 签名。稳定版与 RC 使用 GitHub 的 `macos-15` Apple Silicon runner，首版仅分发 `arm64`；不包含 Developer ID 签名、公证或应用内更新。
 
 ## 23.1 版本与发布流
 
@@ -25,18 +27,19 @@ PR 质量门禁（PR Quality Gate）对 PR 头部分支运行 Release Please 演
 3. **Windows 打包与签名作业**：下载并强校验编译构件，显式使用其中的预构建发行包准备安装器（stage），不再编译 Flutter、Rust bridge 或发布工具。阶段内完成可选 Authenticode、Minisign 定稿、独立产物核验及临时目录静默安装冒烟，成功后归档最终资产。缺失输入或校验失败直接终止，不回退编译。
 4. **Linux GUI 编译与预构建打包作业**：与 Windows 编译并行，消费同一次辅助进程矩阵的两个不可变构件身份及既有预构建资源入口，不再次编译辅助进程。编译成功即归档完整 Linux 运行 bundle 和同源码发布工具；打包仅消费校验过的预构建输入，生成 Debian 包及独立校验和，不回退编译。
 5. **Linux 成品兼容验证作业**：在目标发行版的干净运行环境中安装同一个归档 Debian 包，检查依赖解算、文件布局、动态加载及启动边界。它不使用预装全部开发依赖的构建环境，避免掩盖包依赖缺失；重试仅消费同一成品，不重新编译。
-6. **独立构建溯源作业**：仅消费已经归档并校验的最终 Windows 安装器或 Linux Debian 包，分别生成构建溯源证明（provenance attestation）。适用平台的证明均是正式发布必需前置条件；外部服务失败不得降级为跳过，但可独立重跑而不重复编译、打包或签名。
-7. **正式发布对账作业（Publish）**：等待适用平台的验证与溯源，下载最终构件并按精确 Release ID 对账——草稿 Release 可为空或仅含部分资产，但任何已存在资产的文件名、字节长度与 SHA-256 摘要必须与本地文件完全一致，仅允许补传缺失资产而严禁覆盖不同字节；全部资产核对一致后取消草稿状态并标记为 `latest`。失败重跑可复用原构件继续补传，幂等收敛。
+6. **macOS GUI 编译与预构建打包作业**：复用稳定版与 RC 的 `macos-release-build.yml`，消费同次辅助进程矩阵的两个构件，分别归档完整 `.app` 与同源码发布工具。下游核对构件 ID、生产者摘要及工具工作区后，通过 Apple `ditto` 生成保留签名、权限与 framework 符号链接的 ZIP；解包复核版本、架构、资源与完整签名，不重新编译、不修改已签名的应用。
+7. **独立构建溯源作业**：仅消费已经归档并校验的最终 Windows 安装器、Linux Debian 包或 macOS ZIP，分别生成构建溯源证明（provenance attestation）。适用平台的证明均是正式发布必需前置条件；外部服务失败不得降级为跳过，但可独立重跑而不重复编译、打包或签名。
+8. **正式发布对账作业（Publish）**：等待适用平台的验证与溯源，下载最终构件并按精确 Release ID 对账——草稿 Release 可为空或仅含部分资产，但任何已存在资产的文件名、字节长度与 SHA-256 摘要必须与本地文件完全一致，仅允许补传缺失资产而严禁覆盖不同字节；全部资产核对一致后取消草稿状态并标记为 `latest`。失败重跑可复用原构件继续补传，幂等收敛。
 
 跨作业构件只在同一工作流运行实例内传递，使用不可变构件身份并由受控源码检出、发布解析结果及生产者输出绑定来源。消费者对每份有效载荷核对一次生产者提供的 SHA-256；独立工具执行前还须核对编译工作区身份。不额外保存重复这些身份的自述清单或符号协议映射。不得跨运行实例、跨 PR 借用构件或以重新编译掩盖构件缺失。归档后仅重跑失败或指定的下游作业可复用成功前置作业的原构件；完整重跑不属于该续跑保证，构件过期后也不能保证恢复。
 
 验证按信任边界分工：定稿（finalize）负责签名与完整本地自检，同一作业内不再对未改变的资产重复执行相同核验；构件下载负责有效载荷完整性与工具身份；安装冒烟负责实际安装结果；正式发布前保留资产签名核验及远端逐资产对账。在线溯源独立执行，不能替代任何签名或安装检查。
 
-RC/手动构建沿用编译构件交接与预构建打包契约，并在无生产签名凭据、无 Release/tag 写入的路径执行安装器打包和静默安装冒烟。此路径不证明生产 Minisign 签名、在线溯源或正式发布已经通过。
+RC/手动构建沿用编译构件交接与预构建打包契约，并在无生产签名凭据、无 Release/tag 写入的路径执行安装器打包和静默安装冒烟。macOS 同样完成预构建打包、解包与签名校验，结果仅存为 CI 构件。此路径不证明生产 Minisign 签名、在线溯源或正式发布已经通过。
 
 若某个未完成发布的草稿 Release 因源码缺陷必须由后续提交修复，维护者可在主分支记录明确的取代（supersede）声明（绑定稳定标签、精确提交 SHA 与原因），使该草稿不再阻塞下一版 Release PR 的生成，同时禁止手动发布该被取代的草稿。构建与发布遵循严格的权限分离：发现与解析草稿的作业虽需仓库写权限（因 GitHub 草稿 Release 仅对具备推送权限的身份可见）但仅执行只读查询；编译作业保持只读权限且不接触生产签名凭据；签名凭据只在打包签名作业使用并清理；独立溯源作业持有 OIDC/attestation 权限；唯有最终发布作业执行 Release 资产上传与状态切换。
 
-稳定版 Release 的资产集合由不可变发布源码的契约决定。包含 Linux 分发能力的版本提供六项公开资产：Windows 单用户（per-user）安装器及其 `.minisig`、`latest.json`、Windows `SHA256SUMS.txt`，以及 `anywork-<version>-linux-x86_64.deb` 和同名 `.deb.sha256`。平台内严格核验与最终统一对账分开，不能因合并资产而放宽 Windows 文件集或签名验证。历史已发布版本按其原有资产契约验证，不补包、不覆盖；不提供便携版压缩包，也不执行 Cargo crate 发布。
+稳定版 Release 的资产集合由不可变发布源码的契约决定。当前版本提供八项公开资产：Windows 单用户（per-user）安装器及其 `.minisig`、`latest.json`、Windows `SHA256SUMS.txt`，以及 `anywork-<version>-linux-x86_64.deb`、同名 `.deb.sha256`、`anywork-<version>-macos-arm64.zip` 和同名 `.zip.sha256`。平台内严格核验与最终统一对账分开，不能因合并资产而放宽 Windows 文件集或签名验证。历史已发布版本按其原有资产契约验证，不补包、不覆盖；不提供 Windows 便携版压缩包，也不执行 Cargo crate 发布。
 
 ### 工具链固定、构建缓存与 MSVC 环境排障
 
@@ -85,6 +88,12 @@ ELF 依赖分析不能发现运行时动态加载的库。Flutter/GTK 图形栈�
 安装后的产品沿用系统工具的既有所有权：本地 Git 项目的工作树管理与恢复诊断使用 `PATH` 中的 Git，SSH 远程能力使用系统 OpenSSH 并复用用户配置与凭据设施（见 [22](./22-ssh-remote.md)）。这些功能要求用户提供满足命令能力的工具，不把构建镜像内的 Git/OpenSSH 当作 Debian 包已交付内容，也不由安装器添加第三方软件源。当前本地恢复审计需要 `git worktree list --porcelain -z`，这是 Git 2.36 起文档化的能力；Ubuntu 22.04 默认 Git 2.34 不满足该调用，使用相关功能前须按 [Git 官方安装说明](https://git-scm.com/install/linux) 更新系统 Git。该能力要求不是对所有 Git 功能的统一最低版本审计结论。SSH 远程功能另需安装系统 OpenSSH 客户端，Debian/Ubuntu 包名为 `openssh-client`。共享库与首帧兼容通过不能替代这些外部工具和业务路径的独立验证。
 
 Linux 的 `.deb.sha256` 只描述最终 Debian 包字节，不改写 Windows 校验和或更新清单。安装由用户或系统包管理器负责，本次不提供 Linux 应用内更新或 APT 仓库。
+
+### macOS Apple Silicon 归档与兼容边界
+
+macOS 的 `release-gui stage` 显式消费 `dist/anywork-release` 格式的预构建 bundle，通过 Apple 官方 `ditto -c -k --sequesterRsrc --keepParent` 生成 `anywork-<version>-macos-arm64.zip` 与严格绑定文件名和字节摘要的 `.sha256`。归档包含单个完整 `anywork.app`；许可证、Flutter/bridge/插件和两个 Linux helper 资源均随应用保留。`verify` 严格检查两项资产、校验和，并使用 `ditto` 解包后复核应用版本、主程序与 bridge 的 `arm64` 架构、必要资源及 `codesign --verify --deep --strict`。这些检查不启动应用，不代表完整 GUI 或供应商业务验收。
+
+最低系统版本为 macOS 13；CI 原生构建与打包使用 `macos-15`，不据此宣称已在所有 macOS 版本实机验证。当前应用使用 ad-hoc 签名，尚未配置 Developer ID 和 Apple 公证，GitHub 构建溯源不能替代它们；下载后的系统信任判定仍遵循 Gatekeeper。用户解压并将 `.app` 放入 Applications，更新使用同样的手动替换方式，不写入 Windows 更新清单。本次不提供 Intel 或 Universal 包。
 
 ## 23.3 更新清单（`latest.json`）
 
