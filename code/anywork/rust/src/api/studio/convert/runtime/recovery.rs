@@ -88,6 +88,7 @@ pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioR
                 head_commit: worktree.head_commit,
                 dirty: worktree.dirty,
                 changed_files: worktree.changed_files,
+                ignored_files: worktree.ignored_files,
             }),
     }
 }

@@ -3,9 +3,79 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/recovery_store.dart';
+import '../../shared/recovery_check_status.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
+import 'settings_scope.dart';
+
+class WorktreeRecoveryPanel extends ConsumerWidget {
+  const WorktreeRecoveryPanel({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final issues =
+        ref
+            .watch(recoveryStoreProvider)
+            .value
+            ?.values
+            .where(
+              (issue) => issue.category == RecoveryIssueCategory.repository,
+            )
+            .toList(growable: false) ??
+        const <StudioRecoveryIssue>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SettingsTopicStatus(topic: RecoveryTopic()),
+        const RecoveryCheckStatus(showChecking: false),
+        if (issues.isNotEmpty)
+          ExpansionTile(
+            key: const ValueKey('settings-worktree-recovery'),
+            leading: const Icon(Icons.folder_outlined),
+            title: Text(
+              context.l10n.settingsWorktreeRecoveryTitle(issues.length),
+            ),
+            children: [
+              for (final issue in issues)
+                if (issue.worktree != null)
+                  WorktreeRecoverySection(key: ValueKey(issue.id), issue: issue)
+                else
+                  Padding(
+                    key: ValueKey(issue.id),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SelectableText(context.recoveryIssueLabel(issue)),
+                        if (issue.canRetry)
+                          TextButton(
+                            onPressed: () async {
+                              try {
+                                await ref
+                                    .read(anyworkClientProvider)
+                                    .directoryCommands
+                                    .retryRecovery();
+                              } catch (error) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(error.toString())),
+                                  );
+                                }
+                              }
+                            },
+                            child: Text(context.l10n.settingsWorktreeRetry),
+                          ),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+      ],
+    );
+  }
+}
 
 class WorktreeRecoverySection extends ConsumerStatefulWidget {
   const WorktreeRecoverySection({super.key, required this.issue});
@@ -20,6 +90,7 @@ class WorktreeRecoverySection extends ConsumerStatefulWidget {
 class _WorktreeRecoverySectionState
     extends ConsumerState<WorktreeRecoverySection> {
   bool _cleaning = false;
+  String? _error;
 
   @override
   Widget build(BuildContext context) {
@@ -95,12 +166,11 @@ class _WorktreeRecoverySectionState
           style: DefaultTextStyle.of(context).style
               .copyWith(fontFamily: studioCodeFontFamily),
         ),
-        const SizedBox(height: 8),
-        SelectableText(widget.issue.detail),
-        if (worktree.changedFiles == null) ...[
+        if (worktree.changedFiles == null || worktree.ignoredFiles == null) ...[
           const SizedBox(height: 8),
           Text(l10n.settingsWorktreeChangedFilesUnknown),
-        ] else if (worktree.changedFiles!.isNotEmpty) ...[
+        ],
+        if (worktree.changedFiles?.isNotEmpty == true) ...[
           const SizedBox(height: 8),
           Text(
             context.l10n.settingsWorktreeChangedFiles(
@@ -109,6 +179,16 @@ class _WorktreeRecoverySectionState
             style: const TextStyle(fontFamily: studioCodeFontFamily),
           ),
         ],
+        if (worktree.ignoredFiles?.isNotEmpty == true) ...[
+          const SizedBox(height: 8),
+          Text(
+            l10n.settingsWorktreeIgnoredFiles(
+              worktree.ignoredFiles!.join(', '),
+            ),
+            style: const TextStyle(fontFamily: studioCodeFontFamily),
+          ),
+        ],
+        if (_error != null) SettingsInlineError(message: _error!),
         const Divider(height: 24),
       ],
     );
@@ -127,21 +207,31 @@ class _WorktreeRecoverySectionState
       };
 
   Future<void> _retryRecovery() async {
-    setState(() => _cleaning = true);
+    setState(() {
+      _cleaning = true;
+      _error = null;
+    });
     try {
       await ref.read(anyworkClientProvider).directoryCommands.retryRecovery();
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _cleaning = false);
     }
   }
 
   Future<void> _cleanup(WorktreeRecoveryPreview worktree) async {
-    setState(() => _cleaning = true);
+    setState(() {
+      _cleaning = true;
+      _error = null;
+    });
     try {
       await ref
           .read(anyworkClientProvider)
           .directoryCommands
           .cleanupPreservedWorktree(worktree);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _cleaning = false);
     }

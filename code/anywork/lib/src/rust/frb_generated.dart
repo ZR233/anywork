@@ -17060,8 +17060,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_bridge_worktree_recovery_preview_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return BridgeWorktreeRecoveryPreviewDto(
       inspection: dco_decode_bridge_worktree_inspection(arr[0]),
       ownerKind: dco_decode_bridge_worktree_owner(arr[1]),
@@ -17075,6 +17075,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       headCommit: dco_decode_opt_String(arr[9]),
       dirty: dco_decode_opt_box_autoadd_bool(arr[10]),
       changedFiles: dco_decode_opt_list_String(arr[11]),
+      ignoredFiles: dco_decode_opt_list_String(arr[12]),
     );
   }
 
@@ -31628,6 +31629,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_headCommit = sse_decode_opt_String(deserializer);
     var var_dirty = sse_decode_opt_box_autoadd_bool(deserializer);
     var var_changedFiles = sse_decode_opt_list_String(deserializer);
+    var var_ignoredFiles = sse_decode_opt_list_String(deserializer);
     return BridgeWorktreeRecoveryPreviewDto(
       inspection: var_inspection,
       ownerKind: var_ownerKind,
@@ -31641,6 +31643,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       headCommit: var_headCommit,
       dirty: var_dirty,
       changedFiles: var_changedFiles,
+      ignoredFiles: var_ignoredFiles,
     );
   }
 
@@ -45164,6 +45167,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.headCommit, serializer);
     sse_encode_opt_box_autoadd_bool(self.dirty, serializer);
     sse_encode_opt_list_String(self.changedFiles, serializer);
+    sse_encode_opt_list_String(self.ignoredFiles, serializer);
   }
 
   @protected
