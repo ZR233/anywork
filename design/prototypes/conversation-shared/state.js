@@ -227,7 +227,21 @@
       }
 
       // Configure Session Stage scenarios
-      if (!spec.empty) {
+      if (spec.id === 'read-images') {
+        this.state.projectId = 'pure-lang-remote';
+        this.state.activeSidebarThreadId = 'thr-read-images';
+        this.state.frozenThread.id = 'thr-read-images';
+        this.state.frozenThread.title = '界面走查截图与远端预览核对';
+        this.state.frozenThread.projectName = 'pure-lang-remote';
+        this.state.frozenThread.sshAlias = 'gpu-dev';
+        this.state.frozenThread.workspaceMode = 'local';
+        this.state.frozenThread.branch = null;
+        this.state.frozenThread.workspacePath = '/srv/repos/pure-lang';
+        this.state.frozenThread.delegationSummary = '自动选模 · 平衡';
+        app.fixtures.readImagesHistory().forEach(item => this.snapshot(item));
+        this.state.agents.forEach(a => { a.status = 'completed'; });
+        this.note('时间线查看图片 · 轻量单行折叠，展开即横向排布圆角缩略图，不展示文件地址');
+      } else if (!spec.empty) {
         app.fixtures.history().forEach(item => this.snapshot(item));
       }
 
@@ -845,6 +859,8 @@
                 member.exitCode = 0;
                 member.output += member.target.startsWith('cargo test')
                   ? '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0' : '\nProcess exited with code 0';
+              } else if (member.kind === 'readImage') {
+                member.title = `查看了 ${(member.images || []).length} 张图片`;
               }
               member.targets?.forEach(target => {
                 target.status = 'completed';

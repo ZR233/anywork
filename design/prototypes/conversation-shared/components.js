@@ -98,20 +98,66 @@
   const kinds = {
     thinking: { icon: 'brain', label: '思考' },
     read: { icon: 'file-text', label: '读取' },
+    readImage: { icon: 'images', label: '图片' },
     command: { icon: 'terminal', label: '命令' },
     search: { icon: 'search', label: '搜索' },
     edit: { icon: 'file-pen-line', label: '修改' },
     wait: { icon: 'users', label: '等待' }
   };
 
+  function renderImageThumbStrip(images, actions) {
+    const strip = node('<div class="cv-image-strip" role="list" aria-label="已查看的图片缩略图"></div>');
+    const validImages = (images || []).filter(img => !img.failed && img.url);
+    const previewList = validImages.map((img, idx) => ({
+      id: img.id,
+      name: img.label || `图片 ${idx + 1}`,
+      sourceLabel: validImages.length > 1 ? `已查看图片 (${idx + 1}/${validImages.length})` : '已查看图片',
+      dimensions: img.dimensions || '',
+      caption: img.caption || '',
+      url: img.url
+    }));
+
+    (images || []).forEach((img, index) => {
+      if (img.failed || !img.url) {
+        strip.append(node(`
+          <div
+            class="cv-read-thumb is-failed"
+            role="listitem"
+            aria-label="图片读取失败"
+            title="${escape(img.errorHint || '图片读取失败')}">
+            <span>失败</span>
+          </div>
+        `));
+        return;
+      }
+      const label = img.label || `图片 ${index + 1}`;
+      const thumb = node(`
+        <button
+          type="button"
+          class="cv-read-thumb"
+          role="listitem"
+          title="点击查看大图"
+          aria-label="查看大图：${escape(label)}">
+          <img src="${escape(img.url)}" alt="${escape(label)}">
+        </button>
+      `);
+      thumb.addEventListener('click', () => actions.previewImage?.(previewList, img.id, thumb));
+      strip.append(thumb);
+    });
+    return strip;
+  }
+
   const describe = member => member.kind === 'thinking'
-    ? '思考：' + member.title : member.title + (member.target ? ' ' + member.target : '');
+    ? '思考：' + member.title
+    : member.kind === 'readImage'
+      ? member.title
+      : member.title + (member.target ? ' ' + member.target : '');
 
   function groupText(group) {
     return [
       `工作组 · ${group.members.length} 步 · ${group.elapsed}s`,
       ...group.members.map(member => [
-        `${member.title}${member.target ? ' · ' + member.target : ''} · ${statusLabel(member.status)} · ${member.elapsed}s`,
+        `${member.title}${member.kind !== 'readImage' && member.target ? ' · ' + member.target : ''} · ${statusLabel(member.status)} · ${member.elapsed}s`,
         member.content || member.output || member.rule || '',
         ...(member.files || []).map(file => file.name + '\n' + file.diff),
         ...(member.targets || []).map(target => target.name + ' · ' + statusLabel(target.status) + '\n' + target.report)
@@ -135,8 +181,11 @@
       this.label = this.head.querySelector('.cv-member-label');
       this.meta = this.head.querySelector('.cv-member-meta');
       this.statusText = this.head.querySelector('.cv-sr-only');
-      this.label.append(node(`<span class="cv-member-verb">${escape(member.title)}</span>`));
-      if (member.target) this.label.append(node(`<code class="cv-target" title="${escape(member.path || member.target)}">${escape(member.target)}</code>`));
+      this.verb = node(`<span class="cv-member-verb">${escape(member.title)}</span>`);
+      this.label.append(this.verb);
+      if (member.kind !== 'readImage' && member.target) {
+        this.label.append(node(`<code class="cv-target" title="${escape(member.path || member.target)}">${escape(member.target)}</code>`));
+      }
       if (member.kind !== 'thinking') this.label.append(node(`<span class="cv-chevron">${icon('chevron-right')}</span>`));
       this.body = node('<div class="cv-member-body"></div>');
       this.node.append(this.head, this.body);
@@ -166,6 +215,8 @@
           node(`<pre class="cv-file-preview">${escape(member.content)}</pre>`)
         );
         this.body.append(button('查看全文', 'maximize-2', () => actions.detail(member.target, member.content, member.path), 'cv-quiet'));
+      } else if (member.kind === 'readImage') {
+        this.body.append(renderImageThumbStrip(member.images || [], actions));
       } else if (member.kind === 'search') {
         const queries = node('<div class="cv-query-list"></div>');
         member.queries.forEach(query => queries.append(node(`<code>${escape(query)}</code>`)));
@@ -195,6 +246,9 @@
     }
     update(member) {
       this.current = member;
+      if (this.verb.textContent !== member.title) {
+        this.verb.textContent = member.title;
+      }
       if (this.status !== member.status) {
         this.status = member.status;
         if (member.status === 'running') {
@@ -299,6 +353,39 @@
 
   function historyItem(item, actions) {
     if (item.kind === 'workGroup') return new WorkGroupView(item, 'history', actions).node;
+    if (item.kind === 'imageRead') {
+      const images = item.images || [];
+      const titleText = item.title || `查看了 ${images.length} 张图片`;
+      const element = node(`
+        <details class="cv-timeline-step cv-image-read" data-history-kind="imageRead">
+          <summary class="cv-timeline-step-summary">
+            <span class="cv-timeline-step-icon">${icon('images')}</span>
+            <span class="cv-timeline-step-label">${escape(titleText)}</span>
+            <span class="cv-chevron">${icon('chevron-down')}</span>
+          </summary>
+        </details>
+      `);
+      element.open = Boolean(item.expanded);
+      element.append(renderImageThumbStrip(images, actions));
+      return element;
+    }
+    if (item.kind === 'commandStep') {
+      const element = node(`
+        <details class="cv-timeline-step cv-command-step" data-history-kind="commandStep">
+          <summary class="cv-timeline-step-summary">
+            <span class="cv-timeline-step-icon">${icon('square-terminal')}</span>
+            <span class="cv-timeline-step-label">${escape(item.title || '运行了命令')}</span>
+            <span class="cv-chevron">${icon('chevron-down')}</span>
+          </summary>
+          <div class="cv-command-step-body">
+            <div class="cv-detail-meta"><code>$ ${escape(item.command || '')}</code><span>退出码 ${escape(item.exitCode ?? 0)}</span></div>
+            <pre class="cv-terminal">${escape(item.output || '')}</pre>
+          </div>
+        </details>
+      `);
+      element.open = Boolean(item.expanded);
+      return element;
+    }
     if (item.kind === 'outcome') {
       const element = node(`<details class="cv-history-outcome cv-group-history" data-history-kind="outcome" data-status="${escape(item.status)}"><div class="cv-group-rail"></div></details>`);
       const heading = groupHeading();
@@ -371,9 +458,13 @@
       new MarkdownView(content, actions).update(item.text);
     }
     const footer = element.querySelector('.cv-message-footer');
-    const authorLabel = item.kind === 'user' ? (item.author || '你') : (item.author || '糊来帮');
-    footer.append(node(`<span>${escape(authorLabel)}${item.time ? ' · ' + escape(item.time) : ''}</span>`));
-    footer.append(button('复制', 'copy', () => actions.copy(item.text), 'cv-quiet'));
+    if (item.hideFooter) {
+      footer.remove();
+    } else {
+      const authorLabel = item.kind === 'user' ? (item.author || '你') : (item.author || '糊来帮');
+      footer.append(node(`<span>${escape(authorLabel)}${item.time ? ' · ' + escape(item.time) : ''}</span>`));
+      footer.append(button('复制', 'copy', () => actions.copy(item.text), 'cv-quiet'));
+    }
     return element;
   }
 

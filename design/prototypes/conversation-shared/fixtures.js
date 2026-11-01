@@ -48,6 +48,15 @@
           workspacePath: '/srv/repos/pure-lang/.anywork/worktrees/thr_01jb7x/session',
           delegationSummary: '自动选模 · 快速',
           scenario: 'workgroup'
+        },
+        {
+          id: 'thr-read-images',
+          title: '界面走查截图与远端预览核对',
+          worktree: false,
+          branch: null,
+          workspacePath: '/srv/repos/pure-lang',
+          delegationSummary: '自动选模 · 平衡',
+          scenario: 'read-images'
         }
       ]
     },
@@ -269,6 +278,143 @@
     }
   ];
 
+  const timelineReadImages = [
+    {
+      id: 'tl-img-1',
+      label: '双栏会话布局与阅读流走查',
+      dimensions: '1280 × 800',
+      caption: '主界面左侧项目导航栏与右侧居中会话阅读流留白比例核对',
+      url: svgDataUri(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+          <rect width="1280" height="800" fill="#F3EDE3"/>
+          <rect x="36" y="32" width="1208" height="736" rx="22" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="3"/>
+          <rect x="36" y="32" width="276" height="736" rx="22" fill="#EFE6DA"/>
+          <rect x="290" y="32" width="22" height="736" fill="#EFE6DA"/>
+          <line x1="312" y1="32" x2="312" y2="768" stroke="#D8CDBF" stroke-width="2"/>
+          <circle cx="84" cy="84" r="18" fill="#514039"/>
+          <rect x="116" y="72" width="124" height="24" rx="7" fill="#514039" opacity="0.85"/>
+          <rect x="66" y="134" width="216" height="44" rx="12" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="2"/>
+          <rect x="66" y="206" width="216" height="36" rx="10" fill="#E1D4C5"/>
+          <rect x="66" y="254" width="196" height="32" rx="9" fill="#E7DED2"/>
+          <rect x="66" y="298" width="206" height="32" rx="9" fill="#E7DED2"/>
+
+          <rect x="692" y="106" width="440" height="78" rx="20" fill="#E7DED2"/>
+          <rect x="722" y="128" width="356" height="14" rx="7" fill="#40362F" opacity="0.78"/>
+          <rect x="722" y="152" width="228" height="14" rx="7" fill="#66584E" opacity="0.58"/>
+
+          <rect x="412" y="226" width="168" height="24" rx="8" fill="#E7DED2"/>
+          <rect x="412" y="268" width="184" height="132" rx="18" fill="#F3EDE3" stroke="#D8CDBF" stroke-width="2.5"/>
+          <rect x="614" y="268" width="184" height="132" rx="18" fill="#DDE9F0" stroke="#BFD0D8" stroke-width="2.5"/>
+          <rect x="816" y="268" width="184" height="132" rx="18" fill="#E5EBE2" stroke="#C3D4BE" stroke-width="2.5"/>
+
+          <rect x="412" y="438" width="680" height="16" rx="8" fill="#40362F" opacity="0.76"/>
+          <rect x="412" y="470" width="612" height="16" rx="8" fill="#66584E" opacity="0.55"/>
+          <rect x="412" y="502" width="524" height="16" rx="8" fill="#66584E" opacity="0.45"/>
+
+          <rect x="412" y="586" width="720" height="128" rx="20" fill="#FAF6EF" stroke="#C8B9A8" stroke-width="2.5"/>
+          <rect x="444" y="616" width="320" height="16" rx="8" fill="#8A7A6C" opacity="0.45"/>
+          <circle cx="1084" cy="672" r="22" fill="#514039"/>
+        </svg>
+      `)
+    },
+    {
+      id: 'tl-img-2',
+      label: '缩略图网格与圆角间距标尺',
+      dimensions: '1280 × 800',
+      caption: '横向 3 图圆角卡片（12px 圆角 · 10px 间距）与对齐基线检查',
+      url: svgDataUri(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+          <rect width="1280" height="800" fill="#EFE6DA"/>
+          <rect x="64" y="54" width="1152" height="692" rx="24" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="3"/>
+          <line x1="156" y1="96" x2="156" y2="704" stroke="#55798C" stroke-width="2.5" stroke-dasharray="10 8" opacity="0.55"/>
+          <rect x="156" y="132" width="260" height="36" rx="10" fill="#E3ECF0"/>
+          <text x="180" y="156" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="18" font-weight="600" fill="#3F6072">查看了 3 张图片  ⌄</text>
+
+          <rect x="156" y="202" width="286" height="264" rx="28" fill="#F3EDE3" stroke="#C9B9A7" stroke-width="3"/>
+          <circle cx="299" cy="306" r="52" fill="#55798C" opacity="0.22"/>
+          <path d="M196 420 L272 336 L332 392 L374 352 L412 420 Z" fill="#55798C" opacity="0.72"/>
+
+          <rect x="474" y="202" width="286" height="264" rx="28" fill="#F3EDE3" stroke="#C9B9A7" stroke-width="3"/>
+          <rect x="522" y="252" width="190" height="34" rx="10" fill="#514039" opacity="0.84"/>
+          <rect x="522" y="306" width="146" height="22" rx="8" fill="#8A7A6C" opacity="0.52"/>
+          <rect x="522" y="344" width="172" height="68" rx="12" fill="#E1D4C5"/>
+
+          <rect x="792" y="202" width="286" height="264" rx="28" fill="#F3EDE3" stroke="#C9B9A7" stroke-width="3"/>
+          <circle cx="935" cy="334" r="74" fill="none" stroke="#42604C" stroke-width="18" opacity="0.78"/>
+          <path d="M902 334 L926 358 L972 308" fill="none" stroke="#42604C" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <rect x="156" y="522" width="922" height="148" rx="18" fill="#E5EBE2" stroke="#C3D4BE" stroke-width="2"/>
+          <text x="196" y="576" font-family="Consolas, monospace" font-size="22" font-weight="600" fill="#42604C">PASS · 左边缘严格对齐 · 0 文件路径噪音</text>
+          <text x="196" y="622" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="19" fill="#40362F">展开即见横向缩略图，再次点击平滑收起，点击单图弹层查看高清大图</text>
+        </svg>
+      `)
+    },
+    {
+      id: 'tl-img-3',
+      label: '流式吞吐与帧耗时采样图',
+      dimensions: '1280 × 800',
+      caption: '时间线连续滚动与缩略图懒加载帧率分布采样',
+      url: svgDataUri(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+          <rect width="1280" height="800" fill="#F3EDE3"/>
+          <rect x="56" y="48" width="1168" height="704" rx="24" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="3"/>
+          <rect x="116" y="108" width="248" height="32" rx="9" fill="#EFE6DA"/>
+          <rect x="956" y="104" width="204" height="40" rx="12" fill="#DDE9F0"/>
+          <text x="990" y="130" font-family="Consolas, monospace" font-size="18" font-weight="600" fill="#3F6072">60 FPS · 1.8ms</text>
+
+          <line x1="120" y1="620" x2="1152" y2="620" stroke="#D8CDBF" stroke-width="3"/>
+          <line x1="120" y1="470" x2="1152" y2="470" stroke="#E7DED2" stroke-width="2" stroke-dasharray="8 8"/>
+          <line x1="120" y1="320" x2="1152" y2="320" stroke="#E7DED2" stroke-width="2" stroke-dasharray="8 8"/>
+
+          <rect x="172" y="430" width="76" height="190" rx="12" fill="#E1D4C5"/>
+          <rect x="312" y="362" width="76" height="258" rx="12" fill="#E1D4C5"/>
+          <rect x="452" y="394" width="76" height="226" rx="12" fill="#E1D4C5"/>
+          <rect x="592" y="294" width="76" height="326" rx="12" fill="#D5C3B0"/>
+          <rect x="732" y="336" width="76" height="284" rx="12" fill="#E1D4C5"/>
+          <rect x="872" y="256" width="76" height="364" rx="12" fill="#55798C" opacity="0.38"/>
+          <rect x="1012" y="228" width="76" height="392" rx="12" fill="#55798C" opacity="0.55"/>
+
+          <path d="M210 408 C 310 330, 410 370, 490 342 C 580 310, 650 246, 770 272 C 880 296, 960 206, 1050 188" fill="none" stroke="#55798C" stroke-width="10" stroke-linecap="round"/>
+          <circle cx="210" cy="408" r="13" fill="#FAF6EF" stroke="#55798C" stroke-width="6"/>
+          <circle cx="630" cy="272" r="13" fill="#FAF6EF" stroke="#55798C" stroke-width="6"/>
+          <circle cx="1050" cy="188" r="15" fill="#514039" stroke="#FAF6EF" stroke-width="5"/>
+        </svg>
+      `)
+    },
+    {
+      id: 'tl-img-4',
+      label: 'SSH 远端工作树顶栏徽标快照',
+      dimensions: '1200 × 760',
+      caption: '远端主机徽标与只读冻结工作区胶囊在紧凑窗口下的显示效果',
+      url: svgDataUri(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+          <rect width="1200" height="760" fill="#E7DED2"/>
+          <rect x="56" y="52" width="1088" height="656" rx="22" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="3"/>
+          <rect x="56" y="52" width="1088" height="84" rx="22" fill="#EFE6DA"/>
+          <rect x="104" y="76" width="212" height="38" rx="11" fill="#DDE9F0" stroke="#BFD0D8" stroke-width="2"/>
+          <text x="128" y="101" font-family="Consolas, monospace" font-size="17" font-weight="600" fill="#3F6072">SSH:gpu-dev · 工作树</text>
+          <rect x="336" y="76" width="184" height="38" rx="11" fill="#FAF6EF" stroke="#D8CDBF" stroke-width="2"/>
+          <text x="364" y="101" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="16" fill="#66584E">自动选模 · 快速</text>
+
+          <rect x="112" y="198" width="976" height="212" rx="18" fill="#F3EDE3" stroke="#D8CDBF" stroke-width="2"/>
+          <rect x="154" y="242" width="380" height="22" rx="8" fill="#514039" opacity="0.82"/>
+          <rect x="154" y="286" width="760" height="18" rx="7" fill="#66584E" opacity="0.52"/>
+          <rect x="154" y="324" width="640" height="18" rx="7" fill="#66584E" opacity="0.42"/>
+
+          <rect x="112" y="452" width="468" height="188" rx="18" fill="#E5EBE2"/>
+          <circle cx="202" cy="546" r="42" fill="#42604C" opacity="0.22"/>
+          <path d="M184 546 L198 560 L224 532" fill="none" stroke="#42604C" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="268" y="522" width="248" height="20" rx="7" fill="#42604C" opacity="0.75"/>
+          <rect x="268" y="558" width="186" height="16" rx="6" fill="#42604C" opacity="0.48"/>
+
+          <rect x="620" y="452" width="468" height="188" rx="18" fill="#EFE6DA"/>
+          <rect x="668" y="508" width="320" height="20" rx="7" fill="#514039" opacity="0.72"/>
+          <rect x="668" y="548" width="246" height="16" rx="6" fill="#8A7A6C" opacity="0.55"/>
+        </svg>
+      `)
+    }
+  ];
+
   function defaultAgents() {
     return [
       {
@@ -358,7 +504,9 @@
         targets: [
           { name: 'explorer', task: '梳理起始页与会话页共享组件边界', status: 'completed', report: '已确认外层创建环境栏仅在起始页挂载，会话页复用同一内层输入卡。' },
           { name: 'reviewer', task: '核对运行期选择器锁定原因与只读停靠', status, report: terminal ? '完成全部锁定态、模型不可用告警与子会话只读面板核对。' : '正在核对运行期锁定点击反馈与子智能体只读面板。' }
-        ] }
+        ] },
+      { id: id + '-readImage', kind: 'readImage', title: '查看了 3 张图片', status: 'completed', elapsed: 1,
+        images: timelineReadImages.slice(0, 3) }
     ];
   }
 
@@ -381,10 +529,80 @@
     return [
       { id: 'message-user-1', kind: 'user', author: '你', text: '把会话设计稿组件化避免每个页面复制一份，再把会话运行时的输入框交互和不可配项体现清楚。', time: '14:32' },
       old,
+      { id: 'history-read-images', kind: 'imageRead', expanded: false, images: timelineReadImages.slice(0, 3) },
       { id: 'message-assistant-1', kind: 'text', status: 'completed', time: '14:34',
-        text: '我会先把侧栏、顶栏、时间线和主输入卡统一收敛到 `conversation-shared`，再细化已建会话中「创建期永久冻结」与「运行期动态锁定」的分层交互。' },
+        text: '已对照界面走查图把侧栏、顶栏、时间线和主输入卡统一收敛到 `conversation-shared`，再细化已建会话中「创建期永久冻结」与「运行期动态锁定」的分层交互。' },
       { id: 'compression-history', kind: 'compression', status: 'completed', time: '14:35' },
       { id: 'message-user-2', kind: 'user', author: '你', text: '重点检查运行中锁模型、活动工作流锁模式、中断后继续以及子智能体只读视图。', time: '14:36' }
+    ];
+  }
+
+  function readImagesHistory() {
+    return [
+      {
+        id: 'img-scene-user-1',
+        kind: 'user',
+        author: '你',
+        time: '15:18',
+        text: '核对本地与 SSH 远端导出的界面走查截图，检查缩略图排布和清理后的异常占位。'
+      },
+      {
+        id: 'img-scene-cmd-1',
+        kind: 'commandStep',
+        title: '运行了命令',
+        command: 'cargo xtask manual-gui --capture timeline-gallery',
+        exitCode: 0,
+        output: 'Captured 3 local viewport snapshots (0 overflow, 0 layout shift).'
+      },
+      {
+        id: 'img-scene-text-1',
+        kind: 'text',
+        status: 'completed',
+        hideFooter: true,
+        text: '本地原生场景已跑完，先查看本轮导出的 3 张界面走查画面：'
+      },
+      {
+        id: 'img-scene-read-3',
+        kind: 'imageRead',
+        expanded: true,
+        images: timelineReadImages.slice(0, 3)
+      },
+      {
+        id: 'img-scene-text-2',
+        kind: 'text',
+        status: 'completed',
+        hideFooter: true,
+        text: '3 张画面留白与基线对齐正常。接着用 `gpu-dev` 运行 SSH 场景，核对远端快照读取与过期截图清理后的占位表现：'
+      },
+      {
+        id: 'img-scene-read-2',
+        kind: 'imageRead',
+        expanded: false,
+        images: [timelineReadImages[3], timelineReadImages[0]]
+      },
+      {
+        id: 'img-scene-cmd-2',
+        kind: 'commandStep',
+        title: '运行了命令',
+        command: 'ssh gpu-dev "rm -f /tmp/anywork-expired-capture.png"',
+        exitCode: 0,
+        output: 'Removed expired remote temporary capture.'
+      },
+      {
+        id: 'img-scene-read-fail',
+        kind: 'imageRead',
+        expanded: true,
+        images: [
+          { id: 'tl-img-failed', failed: true, errorHint: '图片读取失败或临时文件已清理' }
+        ]
+      },
+      {
+        id: 'img-scene-text-3',
+        kind: 'text',
+        status: 'completed',
+        time: '15:20',
+        text: '远端验收通过：点击各行标题即可展开或收起横向缩略图，读取失败时仅呈现轻量「失败」圆角占位块，全程不暴露文件路径。'
+      }
     ];
   }
 
@@ -591,6 +809,13 @@
       hint: '当前工作组位于状态栏：成员逐个插入，已完成的切换为对应语义图标留在组内，运行中的继续计时。时间线不出现半成品。'
     },
     {
+      id: 'read-images',
+      group: 'timeline',
+      stage: 'session',
+      label: '时间线 · 查看图片与横向缩略图',
+      hint: '极简折叠行展示「查看了 3 张图片」，展开即横向排布圆角缩略图、不展示文件地址；点击任意缩略图可弹层查看高清大图，并覆盖折叠态与读取失败轻量占位。'
+    },
+    {
       id: 'thinking',
       group: 'timeline',
       stage: 'session',
@@ -688,7 +913,12 @@
   }
 
   function story(id) {
-    const first = members(id, false).map(member => ({ ...member, status: 'running', elapsed: 0 }));
+    const first = members(id, false).map(member => ({
+      ...member,
+      title: member.kind === 'readImage' ? `正在查看 ${(member.images || []).length} 张图片` : member.title,
+      status: 'running',
+      elapsed: 0
+    }));
     first.find(member => member.kind === 'wait').targets[0].status = 'running';
     const add = member => ({ type: 'addMember', groupId: id, member });
     const done = name => ({ type: 'memberDone', id: id + '-' + name });
@@ -703,6 +933,7 @@
       { type: 'appendCommand', line: 'test history_is_immutable ... ok' },
       done('search'),
       add(first[4]), done('edit'),
+      add(first[6]), done('readImage'),
       add(first[5]),
       { type: 'appendCommand', line: 'test group_moves_as_a_whole ... ok', label: 'workgroup' },
       done('command'), done('wait'),
@@ -733,10 +964,12 @@
     allModels,
     preferenceHints,
     sampleScreenshots,
+    timelineReadImages,
     defaultAgents,
     text,
     group,
     history,
+    readImagesHistory,
     childHistory,
     questions,
     scenarioGroups,

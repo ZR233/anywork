@@ -47,7 +47,7 @@
       items: [
         ['状态栏 · 当前工作组', '新成员逐个插入，已完成的以对应语义图标留在组内；下一条仍是工具时继续并入本组。'],
         ['分组边界整组交接', '出现正文开始、提问、轮次结束、停止或失败时，整组一次移入时间线，之后不再变化。'],
-        ['统一外壳与输入底座', '时间线、实时状态栏与下方运行期锁定输入卡共享同一阅读中心轴与会话状态机。']
+        ['极简查看图片行', '时间线以轻量折叠行展示「查看了 N 张图片」，展开即横向排布圆角缩略图，不展示文件地址。']
       ]
     };
   }
@@ -793,7 +793,11 @@
             ? '强制压缩复用自动压缩路径，不发送隐藏用户消息，并保留原始历史回执。'
             : '有历史记录后可手动压缩上下文。';
 
-      if (this.followHistory) {
+      if (reason === 'reset' && state.scenario === 'read-images' && !isSubagent) {
+        this.history.scrollTop = 0;
+        this.lastRead = state.history.length;
+        this.followHistory = this.history.scrollHeight - this.history.clientHeight < 22;
+      } else if (this.followHistory) {
         this.scrollHistory();
         if (!isSubagent) this.lastRead = state.history.length;
       } else {

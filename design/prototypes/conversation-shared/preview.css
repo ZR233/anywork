@@ -1820,6 +1820,7 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
 .cv-compression-receipt time { margin-left: 4px; font-size: 10px; }
 
 .cv-group-heading,
+.cv-timeline-step-summary,
 .cv-member summary,
 .cv-receipt summary,
 .cv-context summary {
@@ -1827,6 +1828,7 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
 }
 
 .cv-group-heading::-webkit-details-marker,
+.cv-timeline-step-summary::-webkit-details-marker,
 .cv-member summary::-webkit-details-marker,
 .cv-receipt summary::-webkit-details-marker,
 .cv-context summary::-webkit-details-marker {
@@ -1958,8 +1960,156 @@ details.cv-member > summary.cv-member-heading:hover {
 .cv-member-meta { font-size: 10.5px; color: var(--cv-muted); flex-shrink: 0; white-space: nowrap; }
 .cv-member-body { border-left: 1px solid var(--cv-rail); margin: 3px 0 8px 6px; padding: 3px 0 3px 15px; min-width: 0; }
 .cv-thinking .cv-member-body { border-left: 0; margin-left: 23px; padding: 0 0 4px; }
+.cv-readImage .cv-member-body { border-left: 0; margin: 4px 0 8px 23px; padding: 0; }
 .cv-thinking .cv-markdown { font-size: 11.5px; color: var(--cv-secondary); line-height: 1.72; }
 .cv-thinking .cv-markdown p { margin-bottom: 6px; }
+
+/* Lightweight Inline Timeline Steps: Read Images & Single Command */
+.cv-timeline-step {
+  min-width: 0;
+  margin: -3px 0;
+}
+
+.cv-timeline-step-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  color: var(--cv-secondary);
+  font-size: 12.5px;
+  line-height: 1.45;
+  user-select: none;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.cv-timeline-step-summary:hover {
+  color: var(--cv-ink);
+  background: rgba(81, 64, 57, 0.055);
+}
+
+.cv-timeline-step-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #7c6d61;
+  flex-shrink: 0;
+}
+
+.cv-timeline-step-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.cv-timeline-step-summary:hover .cv-timeline-step-icon {
+  color: var(--cv-primary);
+}
+
+.cv-timeline-step-label {
+  white-space: nowrap;
+}
+
+.cv-timeline-step-summary > .cv-chevron {
+  margin-left: -1px;
+  opacity: 0.32;
+  transition: opacity 0.15s ease;
+}
+
+.cv-timeline-step-summary > .cv-chevron svg {
+  width: 13px;
+  height: 13px;
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+
+.cv-timeline-step-summary:hover > .cv-chevron {
+  opacity: 0.82;
+}
+
+.cv-timeline-step[open] > .cv-timeline-step-summary > .cv-chevron {
+  opacity: 0.78;
+}
+
+.cv-timeline-step[open] > .cv-timeline-step-summary > .cv-chevron svg {
+  transform: rotate(0deg);
+}
+
+.cv-image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 7px;
+  padding: 1px 0 3px;
+}
+
+.cv-readImage .cv-image-strip {
+  margin-top: 2px;
+}
+
+.cv-read-thumb {
+  width: 92px;
+  height: 84px;
+  padding: 0;
+  border-radius: 11px;
+  border: 1px solid rgba(64, 54, 47, 0.13);
+  background: var(--cv-card-bg);
+  overflow: hidden;
+  display: block;
+  position: relative;
+  flex-shrink: 0;
+  cursor: zoom-in;
+  box-shadow: 0 1px 3px rgba(64, 54, 47, 0.05);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.cv-read-thumb:hover,
+.cv-read-thumb:focus-visible {
+  transform: translateY(-1.5px);
+  border-color: rgba(81, 64, 57, 0.42);
+  box-shadow: 0 6px 14px -5px rgba(64, 54, 47, 0.18);
+}
+
+.cv-read-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.2s ease;
+}
+
+.cv-read-thumb:hover img {
+  transform: scale(1.035);
+}
+
+.cv-read-thumb.is-failed {
+  background: #fcf2f0;
+  border: 1px solid #ecc6c4;
+  color: #b44c4f;
+  box-shadow: none;
+  cursor: default;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.cv-read-thumb.is-failed:hover {
+  transform: none;
+  border-color: #e4b5b2;
+  box-shadow: none;
+}
+
+.cv-command-step-body {
+  margin: 6px 0 4px;
+  max-width: 640px;
+}
 
 .cv-detail-meta {
   display: flex;
