@@ -108,7 +108,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 桌面 GUI
 
-- GUI 构建和运行必须从仓库根目录通过 xtask（按当前 OS 选择目标平台：Windows / Linux）：
+- GUI 构建和运行必须从仓库根目录通过 xtask（按当前 OS 选择目标平台：Windows / Linux / macOS）：
 
   ```powershell
   cargo xtask run-gui [--demo] [--driver]
@@ -119,8 +119,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。依赖升级必须手动运行对应的依赖更新命令并审查提交新的 lockfile。
 - Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
 
-- 不支持直接执行 `flutter build windows|linux` 或 `flutter run -d windows|linux`，也不新增 PowerShell GUI wrapper。
+- 不支持直接执行 `flutter build windows|linux|macos` 或 `flutter run -d windows|linux|macos`，也不新增 PowerShell GUI wrapper。
 - `run-gui --release` 直接启动已有 `dist/anywork-release` 原生程序，不执行构建或依赖解析；缺失时提示先执行 `build-gui`。它与 `--demo`、`--driver`、`--profile` 互斥，并沿用平台进程树管理。
+- macOS 使用完整 Xcode 与 Flutter 官方 Swift Package Manager 集成，构建当前宿主架构的 `.app`；Rust bridge 由 xtask 预构建后放入 `Contents/Frameworks/`，SSH helper 放入 `Contents/Resources/data/remote-helper/`。构建收集保留 framework 符号链接，`run-gui --release` 启动 `dist/anywork-release/anywork.app/Contents/MacOS/anywork`。本地使用 ad-hoc 签名，不包含 Developer ID、公证或稳定发布授权。
 - Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件；Debian/Ubuntu 示例为 `sudo apt-get install -y clang cmake ninja-build pkg-config build-essential libgtk-3-dev`。xtask 必须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask run-gui --driver` 使用 `test_driver/driver_main.dart` 启用 Flutter Driver extension，供 Dart MCP 的 `flutter_driver_command` 操作 GUI；xtask 不负责启动实验性的 `dart mcp-server`。
 - `cargo xtask manual-gui` 启动隔离的原生 Studio 和本地模拟供应商，记录截图、快照、请求与日志供人工判定；真实供应商人工验收仍用 `cargo xtask run-gui --driver` 直接读取用户已有配置，不修改其凭据。
@@ -128,7 +129,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
 - GUI 人工验收使用 `cargo xtask manual-gui`；`cargo xtask run-gui --demo` 仍可供独立的界面预览，不能证明真实 bridge、持久化或 provider 行为。
-- Driver 命令在正常完成、失败或取消后都必须等待并回收所属 Flutter、DTD、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制。
+- Driver 命令在正常完成、失败或取消后都必须等待并回收所属 Flutter、DTD、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
 - 调试和验收 Flutter GUI 时，Flutter Driver 能覆盖的交互必须使用 Flutter Driver，不使用 Computer Use。只有 Driver 无法覆盖且确有必要时，才可使用 Computer Use，以减少对用户鼠标、键盘、窗口焦点和桌面状态的影响。
 
 ### GUI 生成文件

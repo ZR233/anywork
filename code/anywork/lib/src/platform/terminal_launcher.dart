@@ -45,7 +45,10 @@ enum HostTerminalProgram {
 
   /// 系统配置的 x-terminal-emulator；无标准工作目录参数，本地依赖进程
   /// 继承的工作目录，执行命令使用 `-e`。
-  xTerminalEmulator('x-terminal-emulator');
+  xTerminalEmulator('x-terminal-emulator'),
+
+  /// Apple Terminal through its official AppleScript interface.
+  macTerminal('osascript');
 
   const HostTerminalProgram(this.executableName);
 
@@ -97,6 +100,31 @@ HostTerminalLaunchPlan buildHostTerminalLaunchPlan({
 }) {
   validateHostTerminalTarget(target);
   return switch ((program, target)) {
+    // AppleScript 固定，通过 argv 交付 shell 命令，避免路径进入 AppleScript 源码。
+    // Terminal 仍会解析 shell，因此路径和 SSH 参数必须继续逐项引用。
+    (HostTerminalProgram.macTerminal, final target) => HostTerminalLaunchPlan(
+      executable: executable,
+      arguments: [
+        '-e',
+        'on run argv\n'
+            'tell application id "com.apple.Terminal"\n'
+            'activate\n'
+            'do script (item 1 of argv)\n'
+            'end tell\n'
+            'end run',
+        '--',
+        switch (target) {
+          LocalHostTerminalTarget(directory: final directory) =>
+            'cd ${_quotePosix(directory)} && clear',
+          RemoteSshTerminalTarget(
+            alias: final alias,
+            remotePath: final remotePath,
+          ) =>
+            'ssh -t ${_quotePosix(alias)} '
+                '${_quotePosix(buildRemoteSshRemoteCommand(remotePath))}',
+        },
+      ],
+    ),
     (
       HostTerminalProgram.windowsTerminal,
       LocalHostTerminalTarget(directory: final directory),
@@ -173,6 +201,8 @@ HostTerminalLaunchPlan buildHostTerminalLaunchPlan({
       ),
   };
 }
+
+String _quotePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
 /// 校验打开目标；远端别名与路径不满足契约时抛出 [ArgumentError]。
 void validateHostTerminalTarget(HostTerminalTarget target) {

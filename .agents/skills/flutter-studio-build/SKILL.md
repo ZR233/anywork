@@ -1,8 +1,8 @@
 ---
 name: flutter-studio-build
-description: Use when building anywork on Windows or Linux, validating pure widgets with the official Widget Previewer, manually validating the native GUI with Flutter Driver (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
+description: Use when building anywork on Windows, Linux or macOS, validating pure widgets with the official Widget Previewer, manually validating the native GUI with Flutter Driver (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
 category: guides
-platforms: [windows, linux]
+platforms: [windows, linux, macos]
 ---
 
 # anywork 构建
@@ -32,8 +32,8 @@ cargo xtask build-gui --no-clean
 cargo xtask build-gui --check-generated
 ```
 
-当前产品只支持 Windows 与 Linux 桌面工程。不要直接执行 `flutter build windows|linux` 或
-`flutter run -d windows|linux`；xtask 负责 Rust bridge 预构建、环境注入、Flutter 调用和进程回收。
+当前产品支持 Windows、Linux 与 macOS 桌面工程。不要直接执行 `flutter build windows|linux|macos` 或
+`flutter run -d windows|linux|macos`；xtask 负责 Rust bridge 预构建、环境注入、Flutter 调用和进程回收。
 
 普通 xtask 不链接 Studio runtime、模型、数据库或 GUI 验收工具。`cargo xtask manual-gui`
 仅在调用时编译并启动独立 `pl-studio-acceptance`，参数由该工具唯一解析；路径与平台进程
@@ -97,6 +97,7 @@ Flutter 原始 release 输出位于：
 
 - Windows：`code/anywork/build/windows/x64/runner/Release/`
 - Linux：`code/anywork/build/linux/x64/release/bundle/`
+- macOS：`code/anywork/build/macos/Build/Products/Release/anywork.app`
 
 `cargo xtask build-gui` 完成后再把可发布文件收集到 `dist/anywork-release/`。讨论故障时明确区分
 Flutter 原始输出与 xtask 最终收集目录。
@@ -115,6 +116,23 @@ Windows 发布目录只收集运行所需的 `anywork.exe`、Flutter/bridge/插�
 `data/app.so` 是 Windows Dart AOT 产物，不可当作 Linux 文件删除。Linux 发布目录包含对应可执行文件、Flutter 库、
 `libpl_studio_bridge.so` 与数据目录。两平台 `data/remote-helper/` 均包含两个架构的
 `pl-remote-helper.zst` 和 `pl-remote-helper.metadata.json`，应随安装包一并交付。
+
+## macOS
+
+macOS 使用完整 Xcode 和 Flutter 官方 Swift Package Manager 集成；现有插件无需 CocoaPods。
+xtask 将 Flutter/Xcode 的架构与 Cargo 当前宿主对齐（Apple Silicon 为 `arm64`），不直接使用
+可能返回 `arm64e` 的 `NATIVE_ARCH_ACTUAL`。Rust bridge 放入 `.app/Contents/Frameworks/`，
+helper 压缩资源放入 `.app/Contents/Resources/data/remote-helper/`。SSH helper 仍为两个 Linux
+musl 目标，可复用现有 Zig/cargo-zigbuild 或 `PURE_REMOTE_HELPER_PREBUILT_DIR` 入口。
+
+最终收集目录为 `dist/anywork-release/anywork.app`，必须保留 framework 版本符号链接；
+`run-gui --release` 直接启动包内 `Contents/MacOS/anywork`。本地与 CI 使用 ad-hoc 签名，
+不启用 App Sandbox，不包含 Developer ID、公证或应用内更新。稳定版与 RC 共享 `macos-15`
+Apple Silicon 构建、预构建打包作业；`release-gui stage` 通过 Apple `ditto` 生成完整 `.app` ZIP
+及 SHA-256，`verify` 解包核对版本、arm64 架构、资源和完整签名。编译检查点以 tar 保留
+framework 符号链接与执行权限，跨作业仍按构件 ID、生产者摘要与工具工作区验证，不回退编译。
+关闭窗口与 `Cmd+Q` 复用标准退出协调器和共享原生期限。Driver 使用 `process-wrap` 进程组回收；
+macOS 没有 Linux subreaper，主动脱离进程组的子进程不在该机制覆盖内，不能外推 Linux 回收结论。
 
 ## 入口的证明范围
 

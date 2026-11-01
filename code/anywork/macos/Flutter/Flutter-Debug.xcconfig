@@ -1,0 +1,5 @@
+#include "ephemeral/Flutter-Generated.xcconfig"
+
+// Match the prebuilt Cargo bridge across the runner and Flutter Assemble.
+ARCHS = $(ANYWORK_MACOS_ARCH)
+ONLY_ACTIVE_ARCH = YES

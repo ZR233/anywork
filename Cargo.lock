@@ -3927,6 +3927,9 @@ dependencies = [
  "anyhow",
  "ctrlc",
  "libc",
+ "nix",
+ "process-wrap",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 

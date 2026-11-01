@@ -122,7 +122,8 @@ impl DesktopTarget {
     fn executable_name(self) -> &'static str {
         match self {
             Self::Windows => "anywork.exe",
-            Self::Macos | Self::Linux => "anywork",
+            Self::Macos => "anywork.app/Contents/MacOS/anywork",
+            Self::Linux => "anywork",
         }
     }
 }
@@ -195,12 +196,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
     let target = DesktopTarget::current()?;
     if options.release {
         let dist_dir = paths::release_dist_dir(&workspace_root);
-        let name = match target {
-            DesktopTarget::Windows => "anywork.exe",
-            DesktopTarget::Linux => "anywork",
-            DesktopTarget::Macos => bail!("release GUI entrypoint supports Windows and Linux"),
-        };
-        let executable = dist_dir.join(name);
+        let executable = dist_dir.join(target.executable_name());
         ensure!(
             executable.is_file(),
             "release executable is missing: {}; run cargo xtask build-gui first",
@@ -436,6 +432,8 @@ fn run_gui_native_launch(
 #[serde(rename_all = "camelCase")]
 struct NativeExitReport {
     schema: &'static str,
+    /// Distinguishes Linux descendant adoption from macOS process-group coverage.
+    process_ownership: &'static str,
     pid: u32,
     exit_code: Option<i32>,
     signal: Option<i32>,
@@ -462,6 +460,13 @@ impl NativeExitReport {
         let signal = None;
         Self {
             schema: "anywork-native-exit/1",
+            process_ownership: if cfg!(target_os = "linux") {
+                "adopted-descendants"
+            } else if cfg!(target_os = "macos") {
+                "process-group"
+            } else {
+                "windows-job"
+            },
             pid: exit.pid,
             exit_code: exit.status.code(),
             signal,
@@ -686,6 +691,17 @@ fn run_flutter_with_process_mode(
 }
 
 fn configure_flutter_environment(command: &mut Command, invocation: FlutterInvocation<'_>) {
+    // Xcode can report arm64e as NATIVE_ARCH_ACTUAL on Apple Silicon; the Rust
+    // target and Flutter engine both use arm64. Keep every native input aligned.
+    #[cfg(target_os = "macos")]
+    command.env(
+        "ANYWORK_MACOS_ARCH",
+        if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x86_64"
+        },
+    );
     command.env_remove(BRIDGE_LIBRARY_ENV);
     command.env_remove(BRIDGE_DEBUG_SYMBOLS_ENV);
     command.env_remove(BUNDLE_DIR_ENV);
@@ -746,7 +762,15 @@ fn copy_release_artifacts(
     } else {
         BundleKind::PreserveAll
     };
-    release_bundle::copy(artifact_dir, dist_dir, bundle_kind)?;
+    if target == DesktopTarget::Macos {
+        release_bundle::copy(
+            &artifact_dir.join("anywork.app"),
+            &dist_dir.join("anywork.app"),
+            bundle_kind,
+        )?;
+    } else {
+        release_bundle::copy(artifact_dir, dist_dir, bundle_kind)?;
+    }
 
     println!();
     println!("Release build complete.");

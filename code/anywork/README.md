@@ -1,6 +1,6 @@
 # anywork Flutter
 
-Windows and Linux Flutter desktop client for anywork.
+Windows, Linux and macOS Flutter desktop client for anywork.
 
 ## Stack
 
@@ -11,6 +11,18 @@ Windows and Linux Flutter desktop client for anywork.
 - `pl-studio-bridge` Rust crate in `rust/`
 
 ## Commands
+
+Building for macOS requires full Xcode and uses Flutter's Swift Package Manager integration.
+The application targets macOS 13 or later.
+Build and run through xtask on the desired host architecture. The complete `.app`
+is collected at `dist/anywork-release/anywork.app`; `run-gui --release` launches it.
+Remote helpers remain Linux targets for SSH hosts: install Zig and `cargo-zigbuild`
+or supply the existing `PURE_REMOTE_HELPER_PREBUILT_DIR`. Local builds use ad-hoc
+signing and run outside App Sandbox for workspace and tool access. Developer ID,
+notarization and in-app updates are not configured for macOS. Stable and RC CI build
+Apple Silicon archives on `macos-15`; `release-gui stage` packages the prebuilt `.app`
+as a ZIP plus SHA-256, and `verify` extracts it to check version, arm64 and signatures.
+
 
 On Linux, install the GTK runner dependency before the first native build.
 Headless native GUI observation also requires Xvfb:
@@ -38,7 +50,7 @@ cargo xtask build-gui --check-generated # CI/release: regenerate and reject unst
 cargo xtask run-gui --driver
 cargo xtask manual-gui # isolated native app with local scripted provider and evidence
 
-# Windows/Linux GUI run/build must use xtask so the runner receives the
+# Windows/Linux/macOS GUI run/build must use xtask so the runner receives the
 # prebuilt Rust bridge artifact. cargo flutter/dart are passthrough commands.
 
 # Use cargo xtask run-gui --driver for live manual observations using installed config.
