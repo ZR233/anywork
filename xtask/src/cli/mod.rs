@@ -140,7 +140,7 @@ pub(crate) struct BuildGuiOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum ReleaseGuiOptions {
-    /// Package a prebuilt bundle for the current platform (Windows or Linux x64).
+    /// Package a prebuilt bundle (Windows/Linux x64 or macOS arm64).
     Stage {
         /// Stable SemVer matching code/anywork/pubspec.yaml.
         #[arg(long)]

@@ -19,6 +19,10 @@ pub(super) fn stage(
     if cfg!(target_os = "linux") {
         return super::linux::stage(workspace_root, release_dir, version, source_bundle);
     }
+    #[cfg(target_os = "macos")]
+    if cfg!(target_os = "macos") {
+        return super::macos::stage(release_dir, version, source_bundle);
+    }
     ensure_windows()?;
     validate_bundle(source_bundle)?;
     reject_existing_release(release_dir)?;

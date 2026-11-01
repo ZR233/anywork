@@ -104,6 +104,11 @@ fn prepare() -> Result<StudioInstance> {
     let bundle_root = executable
         .parent()
         .context("application executable has no parent")?;
+    #[cfg(target_os = "macos")]
+    let bundle_root = bundle_root
+        .parent()
+        .context("macOS executable has no Contents directory")?
+        .join("Resources");
     Ok(StudioInstance::prepare(
         StudioRuntimeOptions::desktop().with_remote_helper_source(RemoteHelperSource::Bundled(
             bundle_root.join("data").join("remote-helper"),

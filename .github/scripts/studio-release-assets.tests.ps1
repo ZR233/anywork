@@ -13,7 +13,7 @@ function Assert-Throws {
     throw "Expected failure matching $Pattern"
 }
 
-# Synthetic payloads exercise reconciliation, not the installer/DEB format.
+# Synthetic payloads exercise reconciliation, not the installer/DEB/macOS ZIP format.
 $root = Join-Path ([IO.Path]::GetTempPath()) ("studio-asset-tests-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
@@ -28,6 +28,12 @@ try {
     $sidecar = Join-Path $root "$debName.sha256"
     [IO.File]::WriteAllText($sidecar, "$digest  $debName`n")
     Assert-StudioDebianChecksum -Version $version -AssetDirectory $root
+    $macName = "anywork-$version-macos-arm64.zip"
+    $macPath = Join-Path $root $macName
+    $macDigest = (Get-FileHash -LiteralPath $macPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $macSidecar = Join-Path $root "$macName.sha256"
+    [IO.File]::WriteAllText($macSidecar, "$macDigest  $macName`n")
+    Assert-StudioMacOSChecksum -Version $version -AssetDirectory $root
 
     $assets = @(
         foreach ($name in $names) {
@@ -49,6 +55,11 @@ try {
     $plan = Get-StudioReleaseAssetPlan -Release $release -Version $version -AssetDirectory $root
     if ($plan.MissingNames.Count -ne 1 -or $plan.MissingNames[0] -cne $debName) {
         throw 'Partial draft did not identify the missing DEB'
+    }
+    $release.assets = @($assets | Where-Object name -ne $macName)
+    $plan = Get-StudioReleaseAssetPlan -Release $release -Version $version -AssetDirectory $root
+    if ($plan.MissingNames.Count -ne 1 -or $plan.MissingNames[0] -cne $macName) {
+        throw 'Partial draft did not identify the missing macOS ZIP'
     }
     $release.assets = $assets
     $release.draft = $false
@@ -75,7 +86,12 @@ try {
     [IO.File]::WriteAllText($sidecar, "$digest  $debName`n")
     [IO.File]::AppendAllText($debPath, 'changed')
     Assert-Throws { Assert-StudioDebianChecksum -Version $version -AssetDirectory $root } 'checksum'
-    Write-Host 'Release asset reconciliation and DEB checksum tests passed'
+    [IO.File]::WriteAllText($macSidecar, "$macDigest  other.zip`n")
+    Assert-Throws { Assert-StudioMacOSChecksum -Version $version -AssetDirectory $root } 'checksum'
+    [IO.File]::WriteAllText($macSidecar, "$macDigest  $macName`n")
+    [IO.File]::AppendAllText($macPath, 'changed')
+    Assert-Throws { Assert-StudioMacOSChecksum -Version $version -AssetDirectory $root } 'checksum'
+    Write-Host 'Release reconciliation and Debian/macOS checksum tests passed'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force
 }

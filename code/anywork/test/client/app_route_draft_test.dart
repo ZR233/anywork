@@ -666,12 +666,35 @@ Future<void> _settingsRoundTrip(
   await tester.tap(find.byKey(StudioDriverKeys.settingsOpen));
   await tester.pumpAndSettle();
   expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
+  // The first category change must retain the shell just like later changes:
+  // replacing a pushed Settings page with a declarative match loses its key.
+  final settingsShell = tester.element(
+    find.byKey(StudioDriverKeys.settingsPage),
+  );
+  final navigation = tester.element(find.byKey(StudioDriverKeys.settingsBack));
+  final controller = DefaultTabController.of(navigation);
   for (final tab in ['general', 'agents', 'accounts']) {
     final target = find.byKey(StudioDriverKeys.settingsTab(tab));
     await tester.ensureVisible(target);
     await tester.tap(target);
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
+    expect(
+      tester.element(find.byKey(StudioDriverKeys.settingsPage)),
+      same(settingsShell),
+      reason: 'Switching to $tab must retain the Settings shell',
+    );
+    expect(
+      tester.element(find.byKey(StudioDriverKeys.settingsBack)),
+      same(navigation),
+      reason: 'Switching to $tab must retain the Settings sidebar',
+    );
+    expect(
+      DefaultTabController.of(
+        tester.element(find.byKey(StudioDriverKeys.settingsBack)),
+      ),
+      same(controller),
+    );
   }
   await whileSettingsOpen?.call();
   await tester.tap(find.byKey(StudioDriverKeys.settingsBack));

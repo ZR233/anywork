@@ -43,7 +43,9 @@ struct UpdateAsset {
 
 pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
     if !cfg!(target_os = "windows") {
-        bail!("release-gui finalize supports Windows only; Linux stage produces final assets");
+        bail!(
+            "release-gui finalize supports Windows only; Linux/macOS stage produces final assets"
+        );
     }
     ensure_staged_assets(release_dir, version)?;
     let setup_name = asset_name(version, "setup.exe");
@@ -88,6 +90,10 @@ pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Versio
     #[cfg(target_os = "linux")]
     if cfg!(target_os = "linux") {
         return super::linux::verify(release_dir, version);
+    }
+    #[cfg(target_os = "macos")]
+    if cfg!(target_os = "macos") {
+        return super::macos::verify(release_dir, version);
     }
     ensure_staged_assets(release_dir, version)?;
     let expected = expected_files(version);

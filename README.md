@@ -161,7 +161,8 @@ sequenceDiagram
 
 - **Windows**：从 [Releases](https://github.com/ZR233/pure-lang/releases/latest) 下载 `anywork-<版本>-windows-x86_64-setup.exe` 安装，应用内支持检查更新。
 - **Linux**：可从 Releases 下载 DEB 安装包；版本、安装布局与发行版兼容范围见 [发布与更新](design/23-release-update.md)。
-- **从源码运行（Windows / Linux）**：在仓库根目录执行
+- **macOS（Apple Silicon）**：稳定版 CI 提供包含完整 `.app` 的 ZIP 及 SHA-256，解压后放入 Applications。当前使用 ad-hoc 签名，未配置 Developer ID 或公证；系统信任与手动更新边界见 [发布与更新](design/23-release-update.md#macos-apple-silicon-归档与兼容边界)。
+- **从源码运行（Windows / Linux / macOS）**：在仓库根目录执行
 
   ```bash
   # 构建并启动桌面端
@@ -173,6 +174,8 @@ sequenceDiagram
   # 构建发行版到 dist/anywork-release
   cargo xtask build-gui
   ```
+
+  macOS 本地构建需要完整 Xcode、Flutter 和 Swift Package Manager；生成当前宿主架构的 `dist/anywork-release/anywork.app`。SSH helper 的交叉构建可复用 Zig 与 `cargo-zigbuild`，也可使用既有预构建资源入口。稳定版与 RC 的 macOS CI 目标为 Apple Silicon；尚未配置 Developer ID 签名、公证或应用内更新。
 
   Linux 本地构建需要 Clang、CMake、Ninja、pkg-config 与 GTK 3 开发包（详见 [AGENTS.md](AGENTS.md#桌面-gui)）。Linux 开发者也可使用 [项目级 Docker 构建环境](docker/linux/README.md)，无需自行安装 Rust、Flutter 和原生开发依赖；本地构建与 CI 使用同一环境，Rust 配置来自根 `rust-toolchain.toml`。
 

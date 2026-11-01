@@ -1,0 +1,20 @@
+// Application-level settings for the Runner target.
+//
+// This may be replaced with something auto-generated from metadata (e.g., pubspec.yaml) in the
+// future. If not, the values below would default to using the project name when this becomes a
+// 'flutter create' template.
+
+// The application's name. By default this is also the title of the Flutter window.
+PRODUCT_NAME = anywork
+
+// The application's bundle identifier
+PRODUCT_BUNDLE_IDENTIFIER = io.github.zr233.anywork
+
+// The copyright displayed in application information
+PRODUCT_COPYRIGHT = Copyright © 2026 anywork contributors. All rights reserved.
+
+// The agent needs user workspaces, SSH and command subprocesses outside App Sandbox.
+ENABLE_APP_SANDBOX = NO
+SWIFT_OBJC_BRIDGING_HEADER = Runner/Runner-Bridging-Header.h
+CLANG_CXX_LANGUAGE_STANDARD = c++17
+OTHER_CPLUSPLUSFLAGS = $(inherited) -DANYWORK_DEMO_$(ANYWORK_DEMO)=1
