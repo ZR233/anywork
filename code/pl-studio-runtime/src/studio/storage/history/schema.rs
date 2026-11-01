@@ -980,8 +980,11 @@ impl MigrationTrait for CombinedContent {
                 .await?
                 .iter()
                 .any(|step| {
-                    !matches!(step.name(), COMBINED_CONTENT | DEMAND_CONVERSATION)
-                        && !is_lifecycle_migration(step.name())
+                    // Later content steps are still pending at the format-10 boundary.
+                    !matches!(
+                        step.name(),
+                        COMBINED_CONTENT | DEMAND_CONVERSATION | MODEL_ROUTE_HEAD
+                    ) && !is_lifecycle_migration(step.name())
                 })
         {
             return Err(DbErr::Migration(
