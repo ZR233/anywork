@@ -32,27 +32,23 @@ void main() {
       idleHasOlder: true,
     ),
   );
-  _expectStateError(
-    'missing required queue field',
-    () => TimelineHistoryQueueSample.parse(<String, Object?>{
-      'pendingOperations': 0,
-      'inFlightBytes': 0,
-      'threads': [
-        <String, Object?>{'historyAdmitted': 1, 'historyDurable': 1},
-      ],
-    }, context: 'test'),
-  );
-  _expectStateError(
-    'non-integer required queue field',
-    () => TimelineHistoryQueueSample.parse(<String, Object?>{
-      'pendingOperations': 0.0,
-      'pendingBytes': 0,
-      'inFlightBytes': 0,
-      'threads': [
-        <String, Object?>{'historyAdmitted': 1, 'historyDurable': 1},
-      ],
-    }, context: 'test'),
-  );
+  _expectStateError('missing required queue field', () {
+    final queue = _queue()..remove('pendingBytes');
+    TimelineHistoryQueueSample.parse(
+      queue,
+      context: 'test',
+      threadId: 'thread-1',
+    );
+  });
+  _expectStateError('non-integer required queue field', () {
+    final queue = _queue();
+    queue['pendingOperations'] = 0.0;
+    TimelineHistoryQueueSample.parse(
+      queue,
+      context: 'test',
+      threadId: 'thread-1',
+    );
+  });
   final beforeAppend = _timeline(<Map<String, Object?>>[
     _item('a', text: 'old-a'),
     _item('b', text: 'old-b'),
@@ -136,15 +132,113 @@ void main() {
     itemCount: 128,
     hasOlder: true,
   );
-  TimelineHistoryQueueSample.parse(<String, Object?>{
-    'pendingOperations': 0,
-    'pendingBytes': 0,
-    'inFlightBytes': 0,
-    'threads': [
-      <String, Object?>{'historyAdmitted': 1, 'historyDurable': 1},
+  TimelineHistoryQueueSample.parse(
+    _queue(),
+    context: 'test',
+    threadId: 'thread-1',
+  );
+  final passive = _queue(threads: []);
+  requireTimelineHistoryPassiveQueue(passive, context: 'cold');
+  for (final (field, invalid) in [
+    ('loaded', false),
+    ('syncPhase', 'reconnecting'),
+    ('revision', 1.0),
+    ('pendingOperations', 1),
+    ('pendingBytes', 1),
+    ('inFlightBytes', 1),
+    ('lastError', 'save failed'),
+    ('pressurePaused', true),
+    (
+      'threads',
+      <Object?>[
+        {'threadId': 'thread-1'},
+      ],
+    ),
+  ]) {
+    _expectStateError('invalid passive $field', () {
+      final queue = Map<String, Object?>.from(passive);
+      queue[field] = invalid;
+      requireTimelineHistoryPassiveQueue(queue, context: 'cold');
+    });
+  }
+  _expectStateError('missing passive queue metric', () {
+    final queue = Map<String, Object?>.from(passive)..remove('pendingBytes');
+    requireTimelineHistoryPassiveQueue(queue, context: 'cold');
+  });
+
+  final twoWriters = _queue(
+    threads: [
+      {'threadId': 'other', 'historyAdmitted': 7, 'historyDurable': 7},
+      {'threadId': 'thread-1', 'historyAdmitted': 11, 'historyDurable': 10},
     ],
-  }, context: 'test');
+  );
+  final target = TimelineHistoryQueueSample.parse(
+    twoWriters,
+    context: 'growth',
+    threadId: 'thread-1',
+  );
+  if (target.threadId != 'thread-1' ||
+      target.historyAdmitted != 11 ||
+      target.historyDurable != 10 ||
+      target.toJson()['threadId'] != 'thread-1') {
+    throw StateError(
+      'growth used another writer instead of its original target',
+    );
+  }
+  _expectStateError(
+    'target writer missing',
+    () => TimelineHistoryQueueSample.parse(
+      twoWriters,
+      context: 'growth',
+      threadId: 'missing',
+    ),
+  );
+  _expectStateError(
+    'duplicate target writer',
+    () => TimelineHistoryQueueSample.parse(
+      _queue(
+        threads: [
+          {'threadId': 'thread-1', 'historyAdmitted': 1, 'historyDurable': 1},
+          {'threadId': 'thread-1', 'historyAdmitted': 1, 'historyDurable': 1},
+        ],
+      ),
+      context: 'growth',
+      threadId: 'thread-1',
+    ),
+  );
+  _expectStateError(
+    'unknown target watermark cannot become zero',
+    () => TimelineHistoryQueueSample.parse(
+      _queue(
+        threads: [
+          {
+            'threadId': 'thread-1',
+            'historyAdmitted': null,
+            'historyDurable': null,
+          },
+        ],
+      ),
+      context: 'growth',
+      threadId: 'thread-1',
+    ),
+  );
 }
+
+Map<String, Object?> _queue({List<Map<String, Object?>>? threads}) => {
+  'loaded': true,
+  'revision': 1,
+  'syncPhase': 'ready',
+  'pendingOperations': 0,
+  'pendingBytes': 0,
+  'inFlightBytes': 0,
+  'lastError': null,
+  'pressurePaused': false,
+  'threads':
+      threads ??
+      [
+        {'threadId': 'thread-1', 'historyAdmitted': 1, 'historyDurable': 1},
+      ],
+};
 
 Map<String, Object?> _timeline(
   List<Map<String, Object?>> items, {

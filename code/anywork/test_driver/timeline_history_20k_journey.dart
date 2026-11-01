@@ -112,6 +112,54 @@ Future<void> main(List<String> args) async {
     report['verdict'] = 'failed';
     report['failure'] = '$error';
     report['failureStack'] = '$stack';
+    final diagnostics = <String, Object?>{};
+    report['failureDiagnostics'] = diagnostics;
+    for (final request in ['exit-status', 'snapshot']) {
+      final filename = 'timeline-history-20k-$phase-failure-$request.json';
+      final evidence = <String, Object?>{
+        'requestTimeoutMillis': 5000,
+        'artifactWriteTimeoutMillis': 5000,
+        'attemptedFile': filename,
+      };
+      diagnostics[request] = evidence;
+      try {
+        final raw = await driver
+            .requestData(request, timeout: const Duration(seconds: 5))
+            .timeout(const Duration(seconds: 5));
+        // Retain the actual response even if decoding or writing it fails.
+        evidence['response'] = raw;
+        evidence['response'] = jsonDecode(raw);
+        await File('${output.path}/$filename')
+            .writeAsString(raw)
+            .timeout(const Duration(seconds: 5));
+        evidence['file'] = filename;
+      } on Object catch (captureError, captureStack) {
+        evidence['error'] = '$captureError';
+        evidence['stack'] = '$captureStack';
+      }
+    }
+    final screenshot = <String, Object?>{
+      'captureTimeoutMillis': 10000,
+      'artifactWriteTimeoutMillis': 5000,
+      'attemptedFile': 'timeline-history-20k-$phase-failure.png',
+    };
+    diagnostics['screenshot'] = screenshot;
+    try {
+      // This read uses the same Driver connection closed by the original
+      // finally. A late screenshot response cannot start a PNG write.
+      final bytes = await driver.screenshot().timeout(
+        const Duration(seconds: 10),
+      );
+      final filename = 'timeline-history-20k-$phase-failure.png';
+      await File('${output.path}/$filename')
+          .writeAsBytes(bytes)
+          .timeout(const Duration(seconds: 5));
+      screenshot['file'] = filename;
+      screenshot['byteLength'] = bytes.length;
+    } on Object catch (captureError, captureStack) {
+      screenshot['error'] = '$captureError';
+      screenshot['stack'] = '$captureStack';
+    }
     rethrow;
   } finally {
     report['lifecycleMillisBeforeShutdown'] = lifecycle.elapsedMilliseconds;
@@ -298,8 +346,14 @@ Future<void> _runCold(
   );
   await _stage(coord, phase, 'first_viewport_settled');
 
-  final beforeScrollQueue = TimelineHistoryQueueSample.parse(
-    await _persistenceQueue(driver),
+  final coldPersistence = <String, Object?>{};
+  report['coldPersistence'] = coldPersistence;
+  final beforeScrollQueue = await _persistenceQueue(
+    driver,
+    onSample: (queue) => coldPersistence['beforeScroll'] = queue,
+  );
+  requireTimelineHistoryPassiveQueue(
+    beforeScrollQueue,
     context: '$phase before real scroll',
   );
   final storageBeforeScroll = await _storageSample(pid);
@@ -311,22 +365,25 @@ Future<void> _runCold(
   );
   final scrollFrames = await _stopFrames(driver, '$phase-realScroll');
   final storageAfterScroll = await _storageSample(pid);
-  final afterScrollQueue = TimelineHistoryQueueSample.parse(
-    await _persistenceQueue(driver),
+  final afterScrollQueue = await _persistenceQueue(
+    driver,
+    onSample: (queue) => coldPersistence['afterScroll'] = queue,
+  );
+  requireTimelineHistoryPassiveQueue(
+    afterScrollQueue,
     context: '$phase after real scroll',
   );
-  if (beforeScrollQueue.historyAdmitted != afterScrollQueue.historyAdmitted ||
-      beforeScrollQueue.historyDurable > beforeScrollQueue.historyAdmitted ||
-      afterScrollQueue.historyDurable < beforeScrollQueue.historyDurable ||
-      afterScrollQueue.historyDurable > afterScrollQueue.historyAdmitted) {
-    throw StateError('$phase real scrolling changed history admission');
-  }
-  // 打开 owner 的生命周期 effect 可以仍在保存；帧/分页计时已结束，
-  // 再等待既有保存排空，不能把耐久追平当成分页写入。
-  await _waitFor(driver, _durable, '$phase open lifecycle durable');
+  await _waitFor(driver, _durable, '$phase passive read persistence ready');
   final finalState = await _settled(driver, '$phase-final');
   final finalTimeline = TimelineObservation.parse(finalState);
-  final queue = await _persistenceQueue(driver);
+  final queue = await _persistenceQueue(
+    driver,
+    onSample: (queue) => report['persistence'] = queue,
+  );
+  requireTimelineHistoryPassiveQueue(
+    queue,
+    context: '$phase final persistence',
+  );
   report['identity'] = <String, Object?>{
     'target': identity.toJson(),
     'restore': restore,
@@ -368,6 +425,7 @@ Future<void> _runCold(
     'scrollTriggeredPageLoadsObserved': pages.length,
     'pages': pages,
     'finalCanonicalAtomsLoaded': finalTimeline.itemCount,
+    'finalWindow': finalTimeline.summary(),
     'frames': scrollFrames,
     'storage': <String, Object?>{
       'before': storageBeforeScroll,
@@ -375,11 +433,6 @@ Future<void> _runCold(
       'delta': _storageDelta(storageBeforeScroll, storageAfterScroll),
     },
   };
-  report['coldWatermarks'] = <String, Object?>{
-    'beforeScroll': beforeScrollQueue.toJson(),
-    'afterScroll': afterScrollQueue.toJson(),
-  };
-  report['persistence'] = queue;
 }
 
 Future<void> _runSwitch(
@@ -822,6 +875,7 @@ Future<Map<String, Object?>> _runGrowthBatch(
     final queueSample = TimelineHistoryQueueSample.parse(
       queue,
       context: 'growth batch $batch sample ${samples.length + 1}',
+      threadId: beforeTimeline.threadId,
     );
     maxSampledPendingOperations = math.max(
       maxSampledPendingOperations,
@@ -906,6 +960,7 @@ Future<Map<String, Object?>> _runGrowthBatch(
   final finalQueueSample = TimelineHistoryQueueSample.parse(
     finalQueue,
     context: 'growth batch $batch final queue',
+    threadId: beforeTimeline.threadId,
   );
   final durableTimeline = TimelineObservation.parse(durable);
   durableTimeline.requireConsistentIds();
@@ -1292,20 +1347,28 @@ Map<String, Object?> _timelineSummary(Map<String, dynamic> snapshot) {
 }
 
 Future<Map<String, Object?>> _persistenceQueue(
-  FlutterDriverSession driver,
-) async {
-  final decoded = jsonDecode(
-    await driver.requestData(
-      'persistence-queue',
-      timeout: const Duration(seconds: 15),
-    ),
+  FlutterDriverSession driver, {
+  void Function(Map<String, Object?> queue)? onSample,
+}) async {
+  final raw = await driver.requestData(
+    'persistence-queue',
+    timeout: const Duration(seconds: 15),
   );
-  if (decoded is! Map) {
-    throw StateError('persistence-queue is not an object');
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      throw StateError('persistence-queue is not an object');
+    }
+    final queue = decoded.cast<String, Object?>();
+    onSample?.call(queue);
+    requireTimelineHistoryQueueSnapshot(queue, context: 'persistence-queue');
+    return queue;
+  } on Object catch (error, stack) {
+    Error.throwWithStackTrace(
+      StateError('$error; raw persistence-queue: $raw'),
+      stack,
+    );
   }
-  final queue = decoded.cast<String, Object?>();
-  TimelineHistoryQueueSample.parse(queue, context: 'persistence-queue');
-  return queue;
 }
 
 Future<Map<String, Object?>> _stopFrames(

@@ -115,8 +115,62 @@ int requireNonNegativeInteger(Object? value, String field) {
   return value;
 }
 
+/// Requires an actually accepted, current product baseline, not null-as-empty.
+void requireTimelineHistoryQueueSnapshot(
+  Map<String, Object?> queue, {
+  required String context,
+}) {
+  if (queue['loaded'] != true || queue['syncPhase'] != 'ready') {
+    throw StateError('$context has no connected persistence queue baseline');
+  }
+  requireNonNegativeInteger(queue['revision'], '$context.revision');
+  for (final field in ['pendingOperations', 'pendingBytes', 'inFlightBytes']) {
+    requireNonNegativeInteger(queue[field], '$context.$field');
+  }
+  final threads = queue['threads'];
+  if (threads is! List) {
+    throw StateError('$context.threads must be an array');
+  }
+  final identities = <String>{};
+  for (final thread in threads) {
+    if (thread is! Map) {
+      throw StateError('$context.threads must contain objects');
+    }
+    final id = thread['threadId'];
+    if (id is! String || id.isEmpty || !identities.add(id)) {
+      throw StateError(
+        '$context.threads must have unique non-empty identities',
+      );
+    }
+  }
+}
+
+/// A fresh passive cold read must not manufacture a live execution writer.
+void requireTimelineHistoryPassiveQueue(
+  Map<String, Object?> queue, {
+  required String context,
+}) {
+  requireTimelineHistoryQueueSnapshot(queue, context: context);
+  for (final field in ['pendingOperations', 'pendingBytes', 'inFlightBytes']) {
+    if (queue[field] != 0) {
+      throw StateError(
+        '$context.$field must remain zero during passive reading',
+      );
+    }
+  }
+  if ((queue['threads'] as List).isNotEmpty ||
+      !queue.containsKey('lastError') ||
+      queue['lastError'] != null ||
+      queue['pressurePaused'] != false) {
+    throw StateError(
+      '$context has an execution writer or unresolved save duty',
+    );
+  }
+}
+
 final class TimelineHistoryQueueSample {
   const TimelineHistoryQueueSample({
+    required this.threadId,
     required this.pendingOperations,
     required this.pendingBytes,
     required this.inFlightBytes,
@@ -127,13 +181,21 @@ final class TimelineHistoryQueueSample {
   factory TimelineHistoryQueueSample.parse(
     Map<String, Object?> queue, {
     required String context,
+    required String threadId,
   }) {
-    final threads = queue['threads'];
-    if (threads is! List || threads.length != 1 || threads.single is! Map) {
-      throw StateError('$context.threads must contain exactly one thread');
+    requireTimelineHistoryQueueSnapshot(queue, context: context);
+    final threads = (queue['threads'] as List)
+        .cast<Map>()
+        .where((thread) => thread['threadId'] == threadId)
+        .toList();
+    if (threadId.isEmpty || threads.length != 1) {
+      throw StateError(
+        '$context must contain the original target writer $threadId',
+      );
     }
-    final thread = Map<String, Object?>.from(threads.single as Map);
-    return TimelineHistoryQueueSample(
+    final thread = Map<String, Object?>.from(threads.single);
+    final sample = TimelineHistoryQueueSample(
+      threadId: threadId,
       pendingOperations: requireNonNegativeInteger(
         queue['pendingOperations'],
         '$context.pendingOperations',
@@ -148,15 +210,20 @@ final class TimelineHistoryQueueSample {
       ),
       historyAdmitted: requireNonNegativeInteger(
         thread['historyAdmitted'],
-        '$context.threads[0].historyAdmitted',
+        '$context.threads[$threadId].historyAdmitted',
       ),
       historyDurable: requireNonNegativeInteger(
         thread['historyDurable'],
-        '$context.threads[0].historyDurable',
+        '$context.threads[$threadId].historyDurable',
       ),
     );
+    if (sample.historyDurable > sample.historyAdmitted) {
+      throw StateError('$context target durability exceeds history admission');
+    }
+    return sample;
   }
 
+  final String threadId;
   final int pendingOperations;
   final int pendingBytes;
   final int inFlightBytes;
@@ -164,6 +231,7 @@ final class TimelineHistoryQueueSample {
   final int historyDurable;
 
   Map<String, Object?> toJson() => <String, Object?>{
+    'threadId': threadId,
     'pendingOperations': pendingOperations,
     'pendingBytes': pendingBytes,
     'inFlightBytes': inFlightBytes,

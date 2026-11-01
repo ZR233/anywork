@@ -408,8 +408,12 @@ Future<String> _handleDriverData(String? message) async {
       });
     case 'persistence-queue':
       // Driver 通过显式 topic lease 读取事件缓存，避免恢复已删除的 GUI 周期查询。
-      final queue = _client.persistence.state.queue?.queue;
+      final persistence = _client.persistence.state;
+      final queue = persistence.queue?.queue;
       return jsonEncode({
+        'loaded': persistence.queueLoaded,
+        'revision': persistence.queueRevision,
+        'syncPhase': persistence.queueSync.phase.name,
         'pendingOperations': queue?.pendingOperations,
         'pendingBytes': queue?.pendingBytes,
         'inFlightBytes': queue?.inFlightBytes,

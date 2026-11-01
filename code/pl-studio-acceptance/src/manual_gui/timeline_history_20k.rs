@@ -114,15 +114,7 @@ struct PhaseOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColdPhaseObservation {
     thread_id: String,
-    final_queue: QueueWatermark,
-    before_scroll: QueueWatermark,
-    after_scroll: QueueWatermark,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueueWatermark {
-    history_admitted: u64,
-    history_durable: u64,
+    queue_revisions: [u64; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -130,8 +122,9 @@ struct QueueWatermark {
 struct ColdLifecycleCheck {
     phase: String,
     previous_closed: u64,
-    open: u64,
     after_close: u64,
+    writer_absent_at_samples: bool,
+    queue_revisions: [u64; 3],
     exact_inventory_unchanged: bool,
 }
 
@@ -1025,41 +1018,65 @@ fn layout_distribution(mut samples: Vec<f64>) -> Result<Value> {
 }
 
 fn cold_phase_observation(report: &Value, phase: &str) -> Result<ColdPhaseObservation> {
-    let (thread_id, final_queue) =
-        final_persistence_watermark(&report["persistence"], &format!("{phase}.persistence"))?;
-    let watermarks = report["coldWatermarks"]
+    let first = &report["coldLoad"]["viewport"];
+    let last = &report["realScroll"]["finalWindow"];
+    let thread_id = first["threadId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{phase} first viewport has no thread identity"))?;
+    let generation = required_u64(
+        first.get("generation"),
+        &format!("{phase}.viewport.generation"),
+    )?;
+    ensure!(
+        generation > 0
+            && first["ready"] == true
+            && last["ready"] == true
+            && last["threadId"].as_str() == Some(thread_id)
+            && last["generation"].as_u64() == Some(generation),
+        "{phase} passive read changed the actual viewport identity or generation"
+    );
+    let samples = report["coldPersistence"]
         .as_object()
-        .with_context(|| format!("{phase}.coldWatermarks must be an object"))?;
-    let before_scroll = queue_watermark(
-        watermarks
+        .with_context(|| format!("{phase}.coldPersistence must be an object"))?;
+    let before_scroll = passive_queue_revision(
+        samples
             .get("beforeScroll")
-            .with_context(|| format!("{phase}.coldWatermarks.beforeScroll is missing"))?,
-        &format!("{phase}.coldWatermarks.beforeScroll"),
-        false,
+            .with_context(|| format!("{phase}.coldPersistence.beforeScroll is missing"))?,
+        &format!("{phase}.coldPersistence.beforeScroll"),
     )?;
-    let after_scroll = queue_watermark(
-        watermarks
+    let after_scroll = passive_queue_revision(
+        samples
             .get("afterScroll")
-            .with_context(|| format!("{phase}.coldWatermarks.afterScroll is missing"))?,
-        &format!("{phase}.coldWatermarks.afterScroll"),
-        false,
+            .with_context(|| format!("{phase}.coldPersistence.afterScroll is missing"))?,
+        &format!("{phase}.coldPersistence.afterScroll"),
     )?;
+    let final_queue =
+        passive_queue_revision(&report["persistence"], &format!("{phase}.persistence"))?;
+    ensure!(
+        before_scroll <= after_scroll && after_scroll <= final_queue,
+        "{phase} persistence queue baseline revision regressed"
+    );
     Ok(ColdPhaseObservation {
-        thread_id,
-        final_queue,
-        before_scroll,
-        after_scroll,
+        thread_id: thread_id.to_owned(),
+        queue_revisions: [before_scroll, after_scroll, final_queue],
     })
 }
 
-fn final_persistence_watermark(value: &Value, context: &str) -> Result<(String, QueueWatermark)> {
+fn passive_queue_revision(value: &Value, context: &str) -> Result<u64> {
     let object = value
         .as_object()
         .with_context(|| format!("{context} must be an object"))?;
+    ensure!(
+        object.get("loaded").and_then(Value::as_bool) == Some(true)
+            && object.get("syncPhase").and_then(Value::as_str) == Some("ready"),
+        "{context} has no connected persistence queue baseline"
+    );
+    let revision = required_u64(object.get("revision"), &format!("{context}.revision"))?;
     for field in ["pendingOperations", "pendingBytes", "inFlightBytes"] {
         ensure!(
             required_u64(object.get(field), &format!("{context}.{field}"))? == 0,
-            "{context}.{field} must be zero after durability drain"
+            "{context}.{field} must remain zero during passive reading"
         );
     }
     let threads = object
@@ -1067,66 +1084,15 @@ fn final_persistence_watermark(value: &Value, context: &str) -> Result<(String, 
         .and_then(Value::as_array)
         .with_context(|| format!("{context}.threads must be an array"))?;
     ensure!(
-        threads.len() == 1,
-        "{context}.threads must contain exactly one thread"
+        threads.is_empty(),
+        "{context} passive reading registered a Thread writer or recovery obligation"
     );
-    let thread = threads[0]
-        .as_object()
-        .with_context(|| format!("{context}.threads[0] must be an object"))?;
-    let thread_id = thread
-        .get("threadId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .with_context(|| format!("{context}.threads[0].threadId must be a non-empty string"))?
-        .to_owned();
-    for field in ["pending", "pendingBytes", "inFlightBytes"] {
-        ensure!(
-            required_u64(thread.get(field), &format!("{context}.threads[0].{field}"))? == 0,
-            "{context}.threads[0].{field} must be zero after durability drain"
-        );
-    }
-    let watermark = QueueWatermark {
-        history_admitted: required_u64(
-            thread.get("historyAdmitted"),
-            &format!("{context}.threads[0].historyAdmitted"),
-        )?,
-        history_durable: required_u64(
-            thread.get("historyDurable"),
-            &format!("{context}.threads[0].historyDurable"),
-        )?,
-    };
     ensure!(
-        watermark.history_durable == watermark.history_admitted,
-        "{context} is not durably drained: {watermark:?}"
+        object.get("lastError") == Some(&Value::Null)
+            && object.get("pressurePaused").and_then(Value::as_bool) == Some(false),
+        "{context} has a persistence fault or pressure pause"
     );
-    Ok((thread_id, watermark))
-}
-
-fn queue_watermark(value: &Value, context: &str, require_drained: bool) -> Result<QueueWatermark> {
-    let object = value
-        .as_object()
-        .with_context(|| format!("{context} must be an object"))?;
-    for field in ["pendingOperations", "pendingBytes", "inFlightBytes"] {
-        let value = required_u64(object.get(field), &format!("{context}.{field}"))?;
-        if require_drained {
-            ensure!(value == 0, "{context}.{field} must be zero");
-        }
-    }
-    let watermark = QueueWatermark {
-        history_admitted: required_u64(
-            object.get("historyAdmitted"),
-            &format!("{context}.historyAdmitted"),
-        )?,
-        history_durable: required_u64(
-            object.get("historyDurable"),
-            &format!("{context}.historyDurable"),
-        )?,
-    };
-    ensure!(
-        watermark.history_durable <= watermark.history_admitted,
-        "{context}.historyDurable exceeds historyAdmitted"
-    );
-    Ok(watermark)
+    Ok(revision)
 }
 
 fn required_u64(value: Option<&Value>, field: &str) -> Result<u64> {
@@ -1154,45 +1120,20 @@ fn verify_cold_lifecycle(
     );
     let previous_closed = u64::try_from(previous.applied_write_seq)
         .with_context(|| format!("{phase} previous closed watermark is negative"))?;
-    let open = previous_closed
-        .checked_add(1)
-        .with_context(|| format!("{phase} open lifecycle watermark overflowed"))?;
-    let after_close = open
-        .checked_add(2)
-        .with_context(|| format!("{phase} close lifecycle watermark overflowed"))?;
+    let seed_closed = u64::try_from(seed.applied_write_seq)
+        .with_context(|| format!("{phase} seed closed watermark is negative"))?;
     let actual_after_close = u64::try_from(current.applied_write_seq)
         .with_context(|| format!("{phase} after-close watermark is negative"))?;
     ensure!(
-        observation.final_queue.history_admitted == open
-            && observation.final_queue.history_durable == open,
-        "{phase} open lifecycle watermark mismatch: expected={open} actual={:?}",
-        observation.final_queue
-    );
-    ensure!(
-        observation.before_scroll.history_admitted == open
-            && observation.after_scroll.history_admitted == open,
-        "{phase} real scroll changed history admission: open={open} before={:?} after={:?}",
-        observation.before_scroll,
-        observation.after_scroll
-    );
-    ensure!(
-        observation.before_scroll.history_durable <= open
-            && observation.after_scroll.history_durable
-                >= observation.before_scroll.history_durable
-            && observation.after_scroll.history_durable <= open,
-        "{phase} real scroll durability did not monotonically approach admission: before={:?} after={:?}",
-        observation.before_scroll,
-        observation.after_scroll
-    );
-    ensure!(
-        actual_after_close == after_close,
-        "{phase} close lifecycle watermark mismatch: previousClosed={previous_closed} open={open} expectedAfterClose={after_close} actualAfterClose={actual_after_close}"
+        previous_closed == seed_closed && actual_after_close == previous_closed,
+        "{phase} passive reading saved an effect: seedClosed={seed_closed} previousClosed={previous_closed} actualAfterClose={actual_after_close}"
     );
     Ok(ColdLifecycleCheck {
         phase: phase.to_owned(),
         previous_closed,
-        open,
-        after_close,
+        after_close: actual_after_close,
+        writer_absent_at_samples: true,
+        queue_revisions: observation.queue_revisions,
         exact_inventory_unchanged: true,
     })
 }
@@ -1325,37 +1266,33 @@ mod tests {
         }
     }
 
-    fn cold_report(open: u64) -> Value {
+    fn passive_queue(revision: u64) -> Value {
         json!({
-            "persistence": {
-                "pendingOperations": 0,
-                "pendingBytes": 0,
-                "inFlightBytes": 0,
-                "threads": [{
-                    "threadId": "thread-1",
-                    "historyAdmitted": open,
-                    "historyDurable": open,
-                    "pending": 0,
-                    "pendingBytes": 0,
-                    "inFlightBytes": 0
-                }]
+            "loaded": true,
+            "revision": revision,
+            "syncPhase": "ready",
+            "pendingOperations": 0,
+            "pendingBytes": 0,
+            "inFlightBytes": 0,
+            "lastError": null,
+            "pressurePaused": false,
+            "threads": []
+        })
+    }
+
+    fn cold_report() -> Value {
+        json!({
+            "coldLoad": {
+                "viewport": {"threadId": "thread-1", "generation": 1, "ready": true}
             },
-            "coldWatermarks": {
-                "beforeScroll": {
-                    "pendingOperations": 1,
-                    "pendingBytes": 16,
-                    "inFlightBytes": 8,
-                    "historyAdmitted": open,
-                    "historyDurable": open - 1
-                },
-                "afterScroll": {
-                    "pendingOperations": 0,
-                    "pendingBytes": 0,
-                    "inFlightBytes": 0,
-                    "historyAdmitted": open,
-                    "historyDurable": open
-                }
-            }
+            "realScroll": {
+                "finalWindow": {"threadId": "thread-1", "generation": 1, "ready": true}
+            },
+            "persistence": passive_queue(1),
+            "coldPersistence": {
+                "beforeScroll": passive_queue(1),
+                "afterScroll": passive_queue(1)
+            },
         })
     }
 
@@ -1441,10 +1378,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_inventory_and_open_close_watermarks_pass_strict_cold_contract() {
+    fn exact_inventory_and_unchanged_watermark_pass_passive_cold_contract() {
         let seed = audit(10);
-        let cold = audit(13);
-        let observation = cold_phase_observation(&cold_report(11), "cold-1").unwrap();
+        let cold = audit(10);
+        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
 
         let check = verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).unwrap();
         assert_eq!(
@@ -1452,31 +1389,64 @@ mod tests {
             ColdLifecycleCheck {
                 phase: "cold-1".into(),
                 previous_closed: 10,
-                open: 11,
-                after_close: 13,
+                after_close: 10,
+                writer_absent_at_samples: true,
+                queue_revisions: [1, 1, 1],
                 exact_inventory_unchanged: true,
             }
         );
     }
 
     #[test]
-    fn missing_fractional_or_incorrect_watermarks_are_rejected() {
-        let seed = audit(10);
-        let cold = audit(13);
-
-        let mut missing = cold_report(11);
-        missing["persistence"]["threads"][0]
+    fn missing_or_invalid_passive_queue_evidence_is_rejected() {
+        let mut missing = cold_report();
+        missing["persistence"]
             .as_object_mut()
             .unwrap()
-            .remove("historyAdmitted");
+            .remove("pendingBytes");
         assert!(cold_phase_observation(&missing, "cold-1").is_err());
 
-        let mut fractional = cold_report(11);
-        fractional["coldWatermarks"]["afterScroll"]["historyAdmitted"] = json!(11.0);
-        assert!(cold_phase_observation(&fractional, "cold-1").is_err());
+        for (field, invalid) in [
+            ("loaded", json!(false)),
+            ("revision", json!(1.0)),
+            ("syncPhase", json!("reconnecting")),
+            ("pendingOperations", json!(1)),
+            ("pendingBytes", json!(1)),
+            ("inFlightBytes", json!(1)),
+            ("lastError", json!("save failed")),
+            ("pressurePaused", json!(true)),
+            ("threads", json!([{"threadId": "thread-1"}])),
+            ("threads", Value::Null),
+        ] {
+            let mut report = cold_report();
+            report["coldPersistence"]["beforeScroll"][field] = invalid;
+            assert!(
+                cold_phase_observation(&report, "cold-1").is_err(),
+                "invalid {field} must not prove a passive read"
+            );
+        }
+        let mut regressed = cold_report();
+        regressed["coldPersistence"]["beforeScroll"]["revision"] = json!(2);
+        assert!(cold_phase_observation(&regressed, "cold-1").is_err());
+        let mut changed_scope = cold_report();
+        changed_scope["realScroll"]["finalWindow"]["generation"] = json!(2);
+        assert!(cold_phase_observation(&changed_scope, "cold-1").is_err());
+    }
 
-        let observation = cold_phase_observation(&cold_report(12), "cold-1").unwrap();
-        assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).is_err());
+    #[test]
+    fn saved_effects_or_another_thread_cannot_pass_passive_cold_contract() {
+        let seed = audit(10);
+        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
+        // Even an already-drained queue must not hide a newly saved lifecycle effect.
+        for changed_sequence in [9, 11, 13] {
+            let cold = audit(changed_sequence);
+            assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).is_err());
+        }
+        let mut another_thread = cold_report();
+        another_thread["coldLoad"]["viewport"]["threadId"] = json!("another-thread");
+        another_thread["realScroll"]["finalWindow"]["threadId"] = json!("another-thread");
+        let observation = cold_phase_observation(&another_thread, "cold-1").unwrap();
+        assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &seed, &observation).is_err());
     }
 
     #[test]
