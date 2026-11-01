@@ -44,6 +44,11 @@ impl MigratorTraitSelf for Migrator {
             // This content-only step precedes the lifecycle-gated recovery steps. SeaORM
             // preserves vector order and skips applied names, including on fully recovered v8 DBs.
             Box::new(RetireOrdinals),
+            // Published v8/v9 databases may still have a schema-5 checkpoint even when the
+            // original checkpoint step is applied. Upgrade it before any current-only reader.
+            Box::new(MeteringFacts {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ProducerPayloads {
                 thread_id: self.thread_id.clone(),
             }),
@@ -51,9 +56,6 @@ impl MigratorTraitSelf for Migrator {
                 thread_id: self.thread_id.clone(),
             }),
             Box::new(AtomicTimeline {
-                thread_id: self.thread_id.clone(),
-            }),
-            Box::new(MeteringFacts {
                 thread_id: self.thread_id.clone(),
             }),
             Box::new(CombinedContent {

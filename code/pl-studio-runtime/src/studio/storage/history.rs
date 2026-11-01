@@ -2776,8 +2776,8 @@ mod storage_fault_tests {
         Ok(())
     }
 
-    /// Real SQLite representation maintenance must preserve old review history without granting
-    /// feedback/baselines, and roll back both the checkpoint and migration name on save failure.
+    /// Real SQLite preparation upgrades the old checkpoint before reading review receipts, without
+    /// granting feedback/baselines, and rolls back the review step on its own save failure.
     #[tokio::test]
     async fn review_receipt_upgrade_is_atomic_and_does_not_infer_authority() -> Result<()> {
         use pl_core::{
@@ -2825,6 +2825,26 @@ mod storage_fault_tests {
                 "the legacy fixture must not discard existing completion facts"
             );
             let connection = store.writer().await?;
+            let row = connection
+                .db
+                .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+                .await?
+                .context("saved checkpoint")?;
+            let mut legacy_checkpoint: serde_json::Value =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            legacy_usage::flatten(&mut legacy_checkpoint);
+            legacy_checkpoint["schemaVersion"] = 5.into();
+            let payload = serde_json::to_string(&legacy_checkpoint)?;
+            connection
+                .db
+                .execute_raw(statement(
+                    "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+                    vec![
+                        payload.clone().into(),
+                        pl_core::context::content_hash(payload.as_bytes()).into(),
+                    ],
+                ))
+                .await?;
             connection
                 .db
                 .execute_unprepared(
@@ -2837,13 +2857,17 @@ mod storage_fault_tests {
                  DROP TABLE timeline_records;
                  UPDATE history_meta SET schema_version=9;
                  CREATE TRIGGER reject_review_upgrade BEFORE UPDATE ON session_checkpoint
+                 WHEN json_extract(OLD.payload,'$.schemaVersion') = json_extract(NEW.payload,'$.schemaVersion')
                  BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;",
                 )
                 .await?;
             let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
                 .await
                 .expect_err("checkpoint failure must fail the representation migration");
-            assert!(format!("{error:#}").contains("injected review checkpoint failure"));
+            assert!(
+                format!("{error:#}").contains("injected review checkpoint failure"),
+                "{error:#}"
+            );
             let unchanged = checkpoint::read(&connection.db, &id)
                 .await?
                 .context("preserved checkpoint")?;
@@ -3004,6 +3028,8 @@ mod storage_fault_tests {
         store.writer().await?.db.execute_unprepared(
             "DELETE FROM seaql_migrations WHERE version IN (
                  'm20261027_000001_history_retire_ordinals',
+                 'm20261027_000002_history_producer_payloads',
+                 'm20261027_000003_history_review_receipt',
                  'm20261027_000004_history_atomic_timeline',
                  'm20261028_000001_history_metering_facts',
                  'm20261028_000002_history_combined_content'
