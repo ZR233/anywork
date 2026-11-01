@@ -41,13 +41,6 @@
     idle: '空闲'
   })[status] || '';
 
-  const statusIcon = status => ({
-    running: 'loader-circle',
-    completed: 'check',
-    stopped: 'square',
-    failed: 'circle-alert'
-  })[status] || 'circle';
-
   const selectedInside = element => {
     const selection = window.getSelection();
     return selection && !selection.isCollapsed && (element.contains(selection.anchorNode) || element.contains(selection.focusNode));
@@ -207,8 +200,8 @@
         if (member.status === 'running') {
           this.symbol.innerHTML = spinner();
         } else {
-          const name = this.mode === 'live' && member.status === 'completed' ? 'check' : kinds[member.kind].icon;
-          this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : name);
+          const kindIcon = kinds[member.kind]?.icon || 'wrench';
+          this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : kindIcon);
           icons(this.symbol);
         }
         this.node.dataset.status = member.status;
@@ -225,7 +218,12 @@
         if (signature !== this.signature) {
           this.signature = signature;
           this.targets.replaceChildren(...member.targets.map(target => {
-            const sym = target.status === 'running' ? spinner() : icon(statusIcon(target.status));
+            const targetIcon = target.status === 'failed'
+              ? 'circle-alert'
+              : target.status === 'stopped'
+                ? 'square'
+                : (target.icon || 'git-fork');
+            const sym = target.status === 'running' ? spinner() : icon(targetIcon);
             const row = node(`<div class="cv-wait-target"><span class="cv-status-symbol" data-status="${escape(target.status)}">${sym}</span><div><b>${escape(target.name)}</b><span>${escape(target.task)}</span></div><span class="cv-wait-state">${statusLabel(target.status)}</span></div>`);
             if (target.status === 'completed') row.append(button('查看报告', 'arrow-up-right', () => this.actions.detail(target.name + ' 的报告', target.report), 'cv-quiet'));
             return row;

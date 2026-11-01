@@ -850,7 +850,7 @@
                 target.status = 'completed';
                 target.report = target.report.replace('正在核对', '已核对');
               });
-              this.note(runningCount(live) ? '成员完成 · 打勾后留在当前工作组' : '组内成员全部完成 · 等待下一条信息决定去向');
+              this.note(runningCount(live) ? '成员完成 · 切换为语义图标留在当前工作组' : '组内成员全部完成 · 等待下一条信息决定去向');
             }
           }
           break;
