@@ -6,22 +6,34 @@
     MarkdownView, WorkGroupView, PendingView, historyItem, selectedInside
   } = app.ui;
   const {
-    MenuManager, PromptComposerCard, renderSidebar, renderTopbar,
+    MenuManager, PromptComposerCard, renderTopbar,
     buildPreparationHTML, renderStartStage, buildAgentReadOnlyDock
   } = app.composer;
 
   let instanceSequence = 0;
 
   function orderedGroupsForPage(page) {
-    const order = page === 'start'
-      ? ['start', 'composer', 'timeline']
-      : page === 'composer'
-        ? ['composer', 'start', 'timeline']
-        : ['timeline', 'composer', 'start'];
+    const order = page === 'sidebar'
+      ? ['sidebar', 'start', 'composer', 'timeline']
+      : page === 'start'
+        ? ['start', 'sidebar', 'composer', 'timeline']
+        : page === 'composer'
+          ? ['composer', 'sidebar', 'start', 'timeline']
+          : ['timeline', 'sidebar', 'composer', 'start'];
     return order.map(id => app.fixtures.scenarioGroups.find(g => g.id === id)).filter(Boolean);
   }
 
   function guideForPage(page) {
+    if (page === 'sidebar') {
+      return {
+        title: '统一侧边栏组件化与降噪交互准则',
+        items: [
+          ['顺畅顶层动线', '将全局「新建会话」上移为顶部柔和浅色主卡，紧随实时搜索与三态筛选，不再割裂「项目」标题与项目树。'],
+          ['四列定轴零位移', '右侧按「置顶 · 工作树 · 运行状态 · 更多菜单」固定列轴排布：无论空闲、进行中、待处理、失败、悬停或置顶切换，图标均保持 0px 位移。'],
+          ['保留蓝条与跨栏浮层', '选中会话保留拿铁底色与左侧眼眸蓝竖条；省略本地冗余标签与空闲对勾，二级「打开方式 ▶」原色徽标子菜单挂载于顶层浮层不裁切。']
+        ]
+      };
+    }
     if (page === 'start') {
       return {
         title: '创建期与运行期组件共享与分层',
@@ -53,6 +65,13 @@
   }
 
   function pageChromeMeta(page) {
+    if (page === 'sidebar') {
+      return {
+        title: '项目与会话侧边栏共享组件',
+        subtitle: '重构为独立可复用的 StudioSidebar 组件并在全部会话概念稿页面统一挂载：梳理顶层操作动线、清理重复标签与状态噪音、保留左侧眼眸蓝选中竖条，并完整支持跨栏二级「打开方式 ▶」菜单、状态筛选、归档恢复与可拖拽宽度。',
+        footerHTML: '侧边栏由 <code>sidebar-shared/</code> 单一事实源提供，所有会话概念稿复用同一组件实例。保留选中会话的拿铁底色与左侧 <code>3px</code> 眼眸蓝竖条；本地项目省略冗余「本地」字样，空闲/已完成会话省略刷屏对勾；会话行尾按「置顶 (<code>18px</code>) · 工作树 (<code>18px</code>) · 运行状态 (<code>18px</code> 常驻占位) · 更多菜单 (<code>22px</code> 常驻占位)」四列定轴对齐，切换任意运行态、悬停态或置顶态均保持图标零位移。'
+      };
+    }
     if (page === 'start') {
       return {
         title: '新会话起始页与工作区输入布局',
@@ -78,6 +97,7 @@
     const page = host.dataset.page || 'session';
     const meta = pageChromeMeta(page);
     const tabs = [
+      { id: 'sidebar', href: '../project-sidebar/index.html', label: '项目与会话侧边栏', ico: 'panel-left' },
       { id: 'start', href: '../session-start/index.html', label: '新会话起始页', ico: 'sparkles' },
       { id: 'composer', href: '../session-composer/index.html', label: '运行时输入框与锁定', ico: 'sliders-horizontal' },
       { id: 'session', href: '../live-status/index.html', label: '时间线与实时状态栏', ico: 'activity' }
@@ -134,11 +154,13 @@
       this.id = 'conversation-preview-' + (++instanceSequence);
       this.page = root.dataset.page || 'session';
       const urlScenario = new URLSearchParams(window.location.search).get('scenario');
-      const defaultScenario = this.page === 'start'
-        ? 'local'
-        : this.page === 'composer'
-          ? 'running-locked'
-          : 'workgroup';
+      const defaultScenario = this.page === 'sidebar'
+        ? 'sidebar-overview'
+        : this.page === 'start'
+          ? 'local'
+          : this.page === 'composer'
+            ? 'running-locked'
+            : 'workgroup';
       const initialScenario = (urlScenario && app.fixtures.scenarios.some(item => item.id === urlScenario))
         ? urlScenario
         : (root.dataset.scenario || defaultScenario);
@@ -220,7 +242,7 @@
         <div class="cv-demo-layout">
           <section class="cv-window" aria-label="糊来帮统一会话概念预览">
             <div class="cv-shell">
-              <aside class="cv-sidebar" aria-label="项目与会话侧边栏"></aside>
+              <aside data-sidebar-host aria-label="项目与会话侧边栏"></aside>
 
               <div class="cv-workspace">
                 <header class="cv-topbar">
@@ -377,12 +399,21 @@
 
       this.windowEl = root.querySelector('.cv-window');
       this.shellEl = root.querySelector('.cv-shell');
-      this.sidebarEl = root.querySelector('.cv-sidebar');
+      this.sidebarEl = root.querySelector('[data-sidebar-host]');
       this.topbarEl = root.querySelector('.cv-topbar');
       this.topbarLeftEl = root.querySelector('.cv-topbar-left');
       this.topbarRightEl = root.querySelector('.cv-topbar-right');
       this.startStageEl = root.querySelector('.cv-start-stage');
       this.sessionStageEl = root.querySelector('.cv-session-stage');
+
+      this.sidebar = new window.AnyworkSidebar.StudioSidebar({
+        host: this.sidebarEl,
+        windowEl: this.windowEl,
+        shellEl: this.shellEl,
+        controller: this.controller,
+        onToast: msg => this.toast(msg),
+        onCopy: text => this.copy(text)
+      });
 
       this.history = root.querySelector('.cv-history');
       this.historyStart = root.querySelector('.cv-history-start');
@@ -428,7 +459,11 @@
       this.finishStopButton = button('完成停止收束', 'check', () => controller.completeStoppingCleanup(), 'cv-primary');
       this.failureButton = button('模拟失败', 'circle-alert', () => controller.fail());
       this.sidebarBtn = button('侧栏开关', 'panel-left', () => this.toggleSidebar());
-      this.resetButton = button('重置', 'rotate-ccw', () => controller.load(controller.state.scenario));
+      this.resetButton = button('重置', 'rotate-ccw', () => {
+        const sc = controller.state.scenario;
+        controller.load(sc);
+        this.sidebar?.applyScenarioPreset(sc);
+      });
       controlsHost.append(this.playButton, this.stepButton, this.finishStopButton, this.failureButton, this.sidebarBtn, this.resetButton);
 
       this.dialog = root.querySelector('.cv-detail-dialog');
@@ -480,9 +515,17 @@
       this.scenarioMenu?.querySelectorAll('[data-pick-scenario]').forEach(opt => {
         opt.addEventListener('click', () => {
           this.menuManager.closeAll();
-          controller.load(opt.dataset.pickScenario);
+          const sc = opt.dataset.pickScenario;
+          controller.load(sc);
+          this.sidebar?.applyScenarioPreset(sc);
         });
       });
+
+      document.addEventListener('pointerdown', event => {
+        if (this.menuManager.openId && !event.target.closest('.cv-menu-anchor')) {
+          this.menuManager.closeAll();
+        }
+      }, { signal: this.signal.signal });
 
       this.root.addEventListener('click', event => {
         const shellBtn = event.target.closest('[data-shell-action]');
@@ -490,15 +533,7 @@
           const act = shellBtn.dataset.shellAction;
           this.menuManager.closeAll();
           if (act === 'toggle-sidebar') this.toggleSidebar();
-          else if (act === 'standalone-start') controller.selectStandaloneStart();
-          else if (act === 'project-start') controller.selectProjectStart(shellBtn.dataset.projectId);
-          else if (act === 'open-thread') controller.openSidebarThread(shellBtn.dataset.threadId);
           else if (act === 'back-to-root') controller.switchAgent('root');
-          return;
-        }
-
-        if (this.menuManager.openId && !event.target.closest('.cv-menu-anchor')) {
-          this.menuManager.closeAll();
         }
       }, { signal: this.signal.signal });
 
@@ -587,8 +622,11 @@
     }
 
     toggleSidebar() {
+      this.sidebar?.closeMenus();
+      this.sidebar?.hideHoverCard();
       if (window.innerWidth <= 920) {
         this.shellEl.classList.toggle('is-mobile-drawer-open');
+        this.sidebar?.syncDrawerBackdrop();
       } else {
         this.sidebarCollapsed = !this.sidebarCollapsed;
         this.shellEl.classList.toggle('is-sidebar-collapsed', this.sidebarCollapsed);
@@ -991,7 +1029,12 @@
         this.toastNode.hidden = true;
       }
 
-      renderSidebar(this.sidebarEl, this.controller);
+      if (reason === 'reset' && !this._initialPresetApplied) {
+        this._initialPresetApplied = true;
+        this.sidebar?.applyScenarioPreset(state.scenario);
+      } else {
+        this.sidebar?.render();
+      }
       renderTopbar(this.topbarLeftEl, this.topbarRightEl, this.topbarEl, this.controller, this.menuManager, this.composerHelpers);
 
       if (state.stage === 'start') {
@@ -1100,6 +1143,7 @@
     }
 
     dispose() {
+      this.sidebar?.destroy();
       this.controller.dispose();
       this.signal.abort();
       clearTimeout(this.toastTimer);
@@ -1124,9 +1168,9 @@
   function boot() {
     const roots = document.querySelectorAll('[data-conversation-preview]');
     if (!roots.length) return;
-    if (!window.marked || !window.DOMPurify || !window.lucide) {
+    if (!window.marked || !window.DOMPurify || !window.lucide || !window.AnyworkSidebar) {
       roots.forEach(root => {
-        root.textContent = '概念稿依赖未加载。请联网后重新打开页面（Marked / DOMPurify / Lucide）。';
+        root.textContent = '概念稿依赖未加载。请联网后重新打开页面（Marked / DOMPurify / Lucide / StudioSidebar）。';
       });
       return;
     }

@@ -1,0 +1,1453 @@
+/* ==========================================================================
+   糊来帮 · 统一项目与会话侧边栏共享组件样式 (sidebar-shared/sidebar.css)
+   主题：暹罗浅色主题 (Siamese Light Theme, design/19-studio-ui.md §19.7)
+   设计要点：
+   - 顺畅顶层动线：全局「新建会话」→ 实时搜索 → 紧凑三态筛选 → 项目树 → 非项目会话 → 紧凑双栏底栏
+   - 清理重复信息：本地项目省略冗余「本地」标签、已完成/空闲会话省略刷屏对勾、行内不重复弹出置顶按钮
+   - 标志性选中态：温暖拿铁底色 (#E2D5C6) + 左侧眼眸蓝竖条 (#55798C)
+   - 跨边界浮层层叠：一级/二级「打开方式」原色徽标菜单与只读悬停详情卡挂载于窗口浮层宿主，不被滚动区裁切
+   ========================================================================== */
+
+.sb-host {
+  --sb-bg: #efe6da;
+  --sb-surface-lowest: #faf6ef;
+  --sb-surface-input: #f6f0e7;
+  --sb-surface-hover: rgba(81, 64, 57, 0.06);
+  --sb-surface-active: #e2d5c6;
+  --sb-surface-active-hover: #dccdbf;
+  --sb-line: #d8cdbf;
+  --sb-line-soft: #e2d7c9;
+  --sb-guide: #d7cab9;
+  --sb-primary: #514039;
+  --sb-on-primary: #faf6ef;
+  --sb-ink: #3d332c;
+  --sb-ink-strong: #2f2620;
+  --sb-secondary: #64564c;
+  --sb-muted: #8a7a6c;
+  --sb-blue: #55798c;
+  --sb-blue-accent: #4c7388;
+  --sb-blue-bg: #dde9f0;
+  --sb-warning: #795625;
+  --sb-warning-bg: #f0e3cd;
+  --sb-danger: #914447;
+  --sb-danger-bg: #f3e0dd;
+  --sb-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif;
+  --sb-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+
+  position: relative;
+  background: var(--sb-bg);
+  border-right: 1px solid var(--sb-line);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--sb-ink);
+  font: 12.5px/1.45 var(--sb-font);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sb-host *,
+.sb-host *::before,
+.sb-host *::after,
+.sb-portal *,
+.sb-portal *::before,
+.sb-portal *::after {
+  box-sizing: border-box;
+}
+
+.sb-host [hidden],
+.sb-portal [hidden] {
+  display: none !important;
+}
+
+.sb-host button,
+.sb-host input,
+.sb-portal button,
+.sb-portal input {
+  font: inherit;
+  color: inherit;
+}
+
+.sb-host svg,
+.sb-portal svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.sb-host :focus-visible,
+.sb-portal :focus-visible {
+  outline: 2px solid var(--sb-blue);
+  outline-offset: 1px;
+}
+
+/* ==========================================================================
+   1. Resizable Right Edge Handle & Narrow Drawer Backdrop
+   ========================================================================== */
+.sb-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 12;
+  background: transparent;
+  transition: background 0.14s ease;
+}
+
+.sb-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.14s ease;
+}
+
+.sb-resizer:hover::after,
+.sb-resizer:focus-visible::after,
+.sb-host.is-resizing .sb-resizer::after {
+  background: var(--sb-blue);
+}
+
+.sb-resizer:focus-visible {
+  outline: none;
+}
+
+.sb-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(64, 54, 47, 0.24);
+  z-index: 24;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.sb-drawer-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ==========================================================================
+   2. Top Fixed Header: New Session + Live Search + Compact Filter Strip
+   ========================================================================== */
+.sb-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  flex-shrink: 0;
+}
+
+/* Global New Session Entry (Warm Ivory Card Button — No Heavy Dark Block!) */
+.sb-new-session-btn {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 35px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid #d4c7b7;
+  background: var(--sb-surface-lowest);
+  color: var(--sb-ink-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(64, 54, 47, 0.04);
+  transition: background 0.13s ease, border-color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.sb-new-session-btn svg {
+  width: 15px;
+  height: 15px;
+  color: var(--sb-primary);
+}
+
+.sb-new-session-btn:hover {
+  background: #fdfbf7;
+  border-color: #bca996;
+  box-shadow: 0 2px 5px rgba(64, 54, 47, 0.07);
+}
+
+.sb-new-session-btn.is-active {
+  background: var(--sb-surface-active);
+  border-color: #cbbba9;
+  box-shadow: none;
+}
+
+.sb-new-session-btn.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--sb-blue-accent);
+}
+
+.sb-kbd {
+  margin-left: auto;
+  font: 500 10.5px/1 var(--sb-mono);
+  color: var(--sb-muted);
+  opacity: 0.85;
+}
+
+/* Search Input Box */
+.sb-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sb-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--sb-muted);
+  pointer-events: none;
+  display: inline-flex;
+}
+
+.sb-search-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sb-search-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 30px 0 31px;
+  border-radius: 8px;
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-input);
+  color: var(--sb-ink-strong);
+  font-size: 12px;
+  transition: border-color 0.13s ease, background 0.13s ease, box-shadow 0.13s ease;
+}
+
+.sb-search-input::placeholder {
+  color: var(--sb-muted);
+}
+
+.sb-search-input:hover {
+  border-color: #c5b6a5;
+}
+
+.sb-search-input:focus {
+  outline: none;
+  background: var(--sb-surface-lowest);
+  border-color: var(--sb-blue);
+  box-shadow: 0 0 0 2px rgba(85, 121, 140, 0.14);
+}
+
+.sb-search-hint {
+  position: absolute;
+  right: 9px;
+  font: 500 10px/1 var(--sb-mono);
+  color: var(--sb-muted);
+  opacity: 0.76;
+  pointer-events: none;
+}
+
+.sb-search-clear {
+  position: absolute;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-secondary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.sb-search-clear:hover {
+  background: var(--sb-surface-hover);
+  color: var(--sb-ink-strong);
+}
+
+.sb-search-clear svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+/* Compact 3-State Segmented Filter Strip (All / Running / Pending) */
+.sb-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 2px;
+  border-radius: 8px;
+  background: #e6dccf;
+  border: 1px solid #dcd0c1;
+}
+
+.sb-filter-tab {
+  height: 25px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.13s ease, color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.sb-filter-tab:hover:not(.is-selected) {
+  color: var(--sb-ink-strong);
+  background: rgba(250, 246, 239, 0.45);
+}
+
+.sb-filter-tab.is-selected {
+  background: var(--sb-surface-lowest);
+  color: var(--sb-ink-strong);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(64, 54, 47, 0.08);
+}
+
+.sb-filter-count {
+  font: 600 10px/1 var(--sb-mono);
+  font-variant-numeric: tabular-nums;
+  padding: 2px 4.5px;
+  border-radius: 999px;
+  background: rgba(81, 64, 57, 0.1);
+  color: var(--sb-secondary);
+}
+
+.sb-filter-tab[data-filter="running"] .sb-filter-count {
+  background: var(--sb-blue-bg);
+  color: #36596b;
+}
+
+.sb-filter-tab[data-filter="attention"] .sb-filter-count {
+  background: var(--sb-warning-bg);
+  color: var(--sb-warning);
+}
+
+/* Archived Mode Header Banner */
+.sb-archived-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #e5dacb;
+  border: 1px solid #d5c7b5;
+  font-size: 11.5px;
+  color: var(--sb-ink-strong);
+}
+
+.sb-archived-banner-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.sb-archived-banner-title svg {
+  width: 14px;
+  height: 14px;
+  color: var(--sb-secondary);
+}
+
+.sb-archived-back {
+  border: 0;
+  background: var(--sb-surface-lowest);
+  color: var(--sb-primary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #d3c5b4;
+}
+
+.sb-archived-back:hover {
+  background: #fffdf9;
+}
+
+/* ==========================================================================
+   3. Scrollable Directory Tree: Projects & Standalone Sessions
+   ========================================================================== */
+.sb-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sb-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sb-section.is-standalone {
+  padding-top: 8px;
+  border-top: 1px solid var(--sb-line-soft);
+}
+
+.sb-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  padding: 0 4px 2px 6px;
+}
+
+.sb-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--sb-muted);
+}
+
+.sb-section-action {
+  height: 23px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sb-section-action svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sb-section-action:hover {
+  background: var(--sb-surface-hover);
+  color: var(--sb-ink-strong);
+}
+
+/* Project Group & Project Row */
+.sb-project-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sb-project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 31px;
+  padding: 2px 3px 2px 2px;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+.sb-project-row:hover,
+.sb-project-row.is-menu-open {
+  background: var(--sb-surface-hover);
+}
+
+.sb-project-row.is-draft-target {
+  background: var(--sb-surface-active);
+}
+
+.sb-project-row.is-draft-target::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 8px 0 0 8px;
+  background: var(--sb-blue-accent);
+}
+
+.sb-proj-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 27px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 5.5px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.sb-proj-chevron {
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--sb-muted);
+  flex-shrink: 0;
+}
+
+.sb-proj-chevron svg {
+  width: 13.5px;
+  height: 13.5px;
+  transition: transform 0.14s ease;
+}
+
+.sb-project-group.is-expanded .sb-proj-chevron svg {
+  transform: rotate(90deg);
+}
+
+.sb-proj-folder {
+  width: 16px;
+  height: 16px;
+  color: var(--sb-secondary);
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.sb-proj-folder svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sb-project-row.is-owner .sb-proj-folder,
+.sb-project-row.is-draft-target .sb-proj-folder {
+  color: var(--sb-primary);
+}
+
+.sb-proj-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #4f4239;
+}
+
+.sb-project-row.is-owner .sb-proj-name,
+.sb-project-row.is-draft-target .sb-proj-name {
+  color: var(--sb-ink-strong);
+}
+
+/* Only remote SSH projects show a clean badge; local projects omit redundant "本地" */
+.sb-ssh-badge {
+  font: 600 9.5px/1.3 var(--sb-mono);
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(85, 121, 140, 0.12);
+  border: 1px solid rgba(85, 121, 140, 0.25);
+  color: #3d6275;
+  flex-shrink: 0;
+}
+
+.sb-proj-pin-mark {
+  color: var(--sb-muted);
+  display: inline-flex;
+  opacity: 0.72;
+  flex-shrink: 0;
+}
+
+.sb-proj-pin-mark svg {
+  width: 11.5px;
+  height: 11.5px;
+}
+
+/* Collapsed project background summary & fixed-slot quick actions (zero hover shift!) */
+.sb-proj-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.sb-proj-collapsed-status {
+  min-width: 18px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.sb-proj-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0.54;
+  transition: opacity 0.12s ease;
+}
+
+.sb-project-row:hover .sb-proj-actions,
+.sb-project-row:focus-within .sb-proj-actions,
+.sb-project-row.is-menu-open .sb-proj-actions,
+.sb-project-row.is-owner .sb-proj-actions,
+.sb-project-row.is-draft-target .sb-proj-actions {
+  opacity: 1;
+}
+
+/* Compact 22px Icon Button (Aligned on identical right axis with session Col 4!) */
+.sb-icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-secondary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sb-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sb-icon-btn:hover,
+.sb-icon-btn[aria-expanded="true"] {
+  background: rgba(81, 64, 57, 0.1);
+  color: var(--sb-ink-strong);
+}
+
+/* ==========================================================================
+   4. Nested Thread List & Selected Left Eye-Blue Bar Marker
+   ========================================================================== */
+.sb-thread-list {
+  margin-left: 11px;
+  padding-left: 6px;
+  border-left: 1px solid var(--sb-guide);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 1px;
+  margin-bottom: 4px;
+}
+
+.sb-standalone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sb-thread-row {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  min-height: 31px;
+  border-radius: 8px;
+  padding: 0 3px 0 0;
+  transition: background 0.12s ease;
+}
+
+.sb-thread-row:hover,
+.sb-thread-row.is-menu-open {
+  background: var(--sb-surface-hover);
+}
+
+/* Signature Selected Session Style: Warm Latte Surface + Left Eye-Blue Vertical Bar */
+.sb-thread-row.is-active {
+  background: var(--sb-surface-active);
+}
+
+.sb-thread-row.is-active:hover {
+  background: var(--sb-surface-active-hover);
+}
+
+.sb-thread-row.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--sb-blue-accent);
+  z-index: 1;
+}
+
+.sb-thread-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 31px;
+  padding: 5px 4px 5px 10px;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sb-thread-row.is-archived .sb-thread-select {
+  cursor: default;
+}
+
+.sb-thread-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 460;
+  color: #53463d;
+  line-height: 1.38;
+}
+
+.sb-thread-row:hover .sb-thread-title {
+  color: var(--sb-ink-strong);
+}
+
+.sb-thread-row.is-active .sb-thread-title {
+  color: var(--sb-ink-strong);
+  font-weight: 600;
+}
+
+/* Fixed 4-Axis Trailing Icon Slots: [Col 1: pin 18px] [Col 2: worktree 18px] [Col 3: status 18px] [Col 4: more 22px]
+   Guarantees ZERO icon horizontal shift across idle / running / attention / failed / hover / active / pin states! */
+.sb-thread-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.sb-slot {
+  width: 18px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--sb-secondary);
+  flex-shrink: 0;
+}
+
+.sb-slot.is-empty {
+  pointer-events: none;
+}
+
+.sb-worktree-slot.is-worktree {
+  color: var(--sb-blue);
+  opacity: 0.9;
+}
+
+.sb-worktree-slot.is-worktree svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+.sb-status-slot.is-attention {
+  color: var(--sb-warning);
+}
+
+.sb-status-slot.is-attention svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sb-status-slot.is-failed {
+  color: var(--sb-danger);
+}
+
+.sb-status-slot.is-failed svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Eye-Blue Activity Ring (14px) */
+.sb-ring {
+  width: 13.5px;
+  height: 13.5px;
+  border-radius: 50%;
+  border: 2px solid rgba(85, 121, 140, 0.22);
+  border-top-color: var(--sb-blue);
+  border-right-color: var(--sb-blue);
+  animation: sb-spin 0.85s linear infinite;
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-ring {
+    animation: none;
+  }
+}
+
+@keyframes sb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sb-attention-pill {
+  font: 600 10px/1 var(--sb-mono);
+  padding: 2px 4.5px;
+  border-radius: 999px;
+  background: var(--sb-warning-bg);
+  color: var(--sb-warning);
+}
+
+/* Col 1: Pinned Indicator Button (Leftmost meta slot so unpin/pin never shifts worktree/status/more) */
+.sb-pin-badge {
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sb-secondary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: background 0.12s ease, opacity 0.12s ease, color 0.12s ease;
+}
+
+.sb-pin-badge svg {
+  width: 12.5px;
+  height: 12.5px;
+}
+
+.sb-pin-badge:hover {
+  opacity: 1;
+  color: var(--sb-ink-strong);
+  background: rgba(81, 64, 57, 0.1);
+}
+
+/* Col 4: Fixed 22px Trailing More-Menu Slot (Aligned with project Col 4, Zero Reflow on Hover!) */
+.sb-more-slot {
+  width: 22px;
+  height: 22px;
+}
+
+.sb-more-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-secondary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.sb-more-btn svg {
+  width: 14.5px;
+  height: 14.5px;
+}
+
+.sb-thread-row:hover .sb-more-btn,
+.sb-thread-row:focus-within .sb-more-btn,
+.sb-thread-row.is-active .sb-more-btn,
+.sb-thread-row.is-menu-open .sb-more-btn {
+  opacity: 1;
+}
+
+.sb-more-btn:hover,
+.sb-more-btn[aria-expanded="true"] {
+  background: rgba(81, 64, 57, 0.11);
+  color: var(--sb-ink-strong);
+}
+
+/* Restore button in Archived View */
+.sb-restore-btn {
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d2c3b1;
+  border-radius: 6px;
+  background: var(--sb-surface-lowest);
+  color: var(--sb-primary);
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sb-restore-btn svg {
+  width: 12.5px;
+  height: 12.5px;
+}
+
+.sb-restore-btn:hover {
+  background: #fffdf9;
+  border-color: var(--sb-primary);
+}
+
+/* Pagination "View Earlier Sessions" & Empty Hint */
+.sb-earlier-btn {
+  align-self: flex-start;
+  height: 26px;
+  margin: 1px 0 2px 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sb-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sb-earlier-btn svg {
+  width: 12.5px;
+  height: 12.5px;
+}
+
+.sb-earlier-btn:hover {
+  background: var(--sb-surface-hover);
+  color: var(--sb-ink-strong);
+}
+
+.sb-empty-note {
+  padding: 6px 10px 8px;
+  font-size: 11.5px;
+  color: var(--sb-muted);
+  line-height: 1.5;
+}
+
+.sb-empty-state {
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--sb-muted);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.sb-empty-reset {
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-lowest);
+  color: var(--sb-ink-strong);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sb-empty-reset:hover {
+  background: #fffdf9;
+}
+
+/* ==========================================================================
+   5. Compact 2-Column Footer (Archived Toggle + Settings Entry)
+   ========================================================================== */
+.sb-foot {
+  flex-shrink: 0;
+  padding: 7px 10px 9px;
+  border-top: 1px solid var(--sb-line);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sb-foot-btn {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sb-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.sb-foot-btn svg {
+  width: 14.5px;
+  height: 14.5px;
+}
+
+.sb-foot-btn:hover {
+  background: var(--sb-surface-hover);
+  color: var(--sb-ink-strong);
+}
+
+.sb-foot-btn.is-selected {
+  background: var(--sb-surface-active);
+  border-color: #cbbba9;
+  color: var(--sb-ink-strong);
+  font-weight: 600;
+}
+
+.sb-foot-icon-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.sb-update-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sb-blue);
+  border: 1.5px solid var(--sb-bg);
+}
+
+.sb-foot-count {
+  font: 500 10.5px/1 var(--sb-mono);
+  color: var(--sb-muted);
+}
+
+/* ==========================================================================
+   6. Window-Level Portal: Context Menus, "Open With" Submenu & Hover Card
+   ========================================================================== */
+.sb-portal {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  font: 12.5px/1.45 var(--sb-font);
+  color: #3d332c;
+}
+
+.sb-pop-menu {
+  position: absolute;
+  pointer-events: auto;
+  min-width: 158px;
+  padding: 5px;
+  border-radius: 10px;
+  background: #faf6ef;
+  border: 1px solid #d5c7b6;
+  box-shadow: 0 12px 28px -8px rgba(64, 54, 47, 0.22), 0 2px 6px rgba(64, 54, 47, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sb-menu-item {
+  position: relative;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #3d332c;
+  font-size: 12.5px;
+  font-weight: 460;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s ease;
+}
+
+.sb-menu-item:hover,
+.sb-menu-item.is-open {
+  background: #ebe1d3;
+  color: #2c231d;
+}
+
+.sb-menu-item.is-danger {
+  color: #914447;
+}
+
+.sb-menu-item.is-danger:hover {
+  background: #f3e0dd;
+  color: #7d3639;
+}
+
+.sb-menu-item svg {
+  width: 14.5px;
+  height: 14.5px;
+  color: #64564c;
+}
+
+.sb-menu-item.is-danger svg {
+  color: currentColor;
+}
+
+.sb-menu-divider {
+  height: 1px;
+  background: #e2d7c9;
+  margin: 4px 4px;
+}
+
+.sb-submenu-wrap {
+  position: relative;
+}
+
+/* Invisible hover bridge so diagonal pointer travel into submenu never drops */
+.sb-submenu-wrap::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  right: -10px;
+  width: 12px;
+}
+
+.sb-submenu-wrap.is-flip-left::after {
+  right: auto;
+  left: -10px;
+}
+
+.sb-submenu-arrow {
+  margin-left: auto;
+  color: #7b6b5e;
+  display: inline-flex;
+}
+
+.sb-submenu-arrow svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+.sb-submenu {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 5px);
+  min-width: 176px;
+  padding: 5px;
+  border-radius: 10px;
+  background: #faf6ef;
+  border: 1px solid #d5c7b6;
+  box-shadow: 0 12px 28px -8px rgba(64, 54, 47, 0.22), 0 2px 6px rgba(64, 54, 47, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sb-submenu-wrap.is-flip-left .sb-submenu {
+  left: auto;
+  right: calc(100% + 5px);
+}
+
+.sb-submenu-wrap.is-flip-up .sb-submenu {
+  top: auto;
+  bottom: -5px;
+}
+
+.sb-host-logo {
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sb-host-logo svg {
+  width: 17px !important;
+  height: 17px !important;
+}
+
+/* Read-Only Hover Detail Overlay (Ignore Pointer, Zero Redundant Rows) */
+.sb-hover-card {
+  position: absolute;
+  pointer-events: none;
+  max-width: 288px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #faf6ef;
+  border: 1px solid #d5c7b6;
+  box-shadow: 0 8px 22px -8px rgba(64, 54, 47, 0.2), 0 1px 4px rgba(64, 54, 47, 0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sb-hover-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #2f2620;
+  line-height: 1.42;
+  word-break: break-word;
+}
+
+.sb-hover-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  color: #64564c;
+  line-height: 1.4;
+}
+
+.sb-hover-row svg {
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+  color: #8a7a6c;
+}
+
+.sb-hover-mono {
+  font-family: var(--sb-mono);
+  font-size: 10.5px;
+  word-break: break-all;
+}
+
+.sb-hover-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+  background: #9e8e7e;
+}
+
+.sb-hover-dot[data-tone="running"] {
+  background: #55798c;
+}
+
+.sb-hover-dot[data-tone="attention"] {
+  background: #795625;
+}
+
+.sb-hover-dot[data-tone="failed"] {
+  background: #914447;
+}
+
+/* ==========================================================================
+   7. Built-In Component Modal Dialogs (Rename / Archive / Add Project Wizard)
+   ========================================================================== */
+.sb-dialog {
+  border: 1px solid #d5c7b6;
+  border-radius: 14px;
+  background: #faf6ef;
+  color: #3d332c;
+  padding: 18px 20px;
+  width: min(420px, calc(100vw - 32px));
+  box-shadow: 0 18px 42px -12px rgba(64, 54, 47, 0.32);
+  font: 13px/1.5 var(--sb-font);
+}
+
+.sb-dialog::backdrop {
+  background: rgba(64, 54, 47, 0.28);
+}
+
+.sb-dialog h3 {
+  margin: 0 0 6px;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: #2f2620;
+}
+
+.sb-dialog p {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: #64564c;
+  line-height: 1.58;
+}
+
+.sb-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #64564c;
+  margin-bottom: 5px;
+}
+
+.sb-text-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 1px solid #d2c3b2;
+  background: #fffdf9;
+  color: #2f2620;
+  font-size: 13px;
+}
+
+.sb-text-input.is-mono {
+  font-family: var(--sb-mono);
+  font-size: 12px;
+}
+
+.sb-text-input:focus {
+  outline: none;
+  border-color: #55798c;
+  box-shadow: 0 0 0 2px rgba(85, 121, 140, 0.16);
+}
+
+.sb-field-error {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: #914447;
+}
+
+.sb-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sb-choice-card {
+  padding: 10px 11px;
+  border-radius: 10px;
+  border: 1px solid #d6c8b7;
+  background: #f5efe6;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.sb-choice-card strong {
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #2f2620;
+}
+
+.sb-choice-card small {
+  font-size: 11px;
+  color: #64564c;
+}
+
+.sb-choice-card.is-selected {
+  background: #fffdf9;
+  border-color: #55798c;
+  box-shadow: 0 0 0 1px #55798c;
+}
+
+.sb-ssh-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.sb-ssh-option {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid #d6c8b7;
+  background: #f5efe6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sb-ssh-option.is-selected {
+  background: #fffdf9;
+  border-color: #55798c;
+}
+
+.sb-ssh-option code {
+  font-family: var(--sb-mono);
+  font-size: 11px;
+  color: #64564c;
+}
+
+.sb-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.sb-btn {
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 8px;
+  border: 1px solid #d2c3b2;
+  background: #f4ede3;
+  color: #3d332c;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.sb-btn:hover:not(:disabled) {
+  background: #ebe2d5;
+}
+
+.sb-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sb-btn.is-primary {
+  background: #514039;
+  border-color: #514039;
+  color: #faf6ef;
+}
+
+.sb-btn.is-primary:hover:not(:disabled) {
+  background: #42332d;
+}
+
+.sb-btn.is-danger {
+  background: #914447;
+  border-color: #914447;
+  color: #faf6ef;
+}
+
+.sb-btn.is-danger:hover:not(:disabled) {
+  background: #7c383b;
+}
+
+/* Narrow Window Overlay Drawer Mode */
+@media (max-width: 920px) {
+  .sb-resizer {
+    display: none;
+  }
+}

@@ -308,6 +308,7 @@
       <div class="meta-chips">
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="palette"></i></span>暹罗浅色色板</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="layers"></i></span>Material 3 组件</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="panel-left"></i></span>5 个侧边栏共享组件场景</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="circle-check"></i></span>62 个账户与模型场景</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="git-branch"></i></span>6 个起始页与工作区场景</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="lock"></i></span>8 个运行时输入框与锁定场景</mdui-chip>
@@ -326,6 +327,77 @@
         <div class="swatch dark" style="background:#914447"><span>Error</span><small>#914447</small></div>
       </div>
     </mdui-card>
+
+    <section class="sec" aria-label="项目与会话侧边栏共享组件设计稿">
+      <div class="sec-head">
+        <div class="sec-title">
+          <mdui-chip class="chip-tag" tabindex="-1">共享导航组件</mdui-chip>
+          <h2>项目与会话侧边栏（统一复用组件）</h2>
+        </div>
+        <span class="sec-cnt">共享 sidebar-shared · 5 个侧栏交互场景</span>
+      </div>
+      <div class="grid-2">
+        <mdui-card variant="outlined" clickable href="project-sidebar/index.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>侧边栏层级优化与蓝条选中态<span class="card-zh">全局单实例复用</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>梳理顶层动线为「新建会话 → 实时搜索 → 三态筛选 → 项目树 → 非项目会话 → 双栏底栏」；保留选中会话的拿铁底色与左侧眼眸蓝竖条，去除本地项目冗余标签与已完成会话对勾噪音，所有会话概念稿页面统一复用。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">左侧眼眸蓝竖条</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">默认静默降噪</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">可拖拽宽度</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="project-sidebar/index.html?scenario=sidebar-open-menu" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>跨边界二级「打开方式 ▶」与原色徽标<span class="card-zh">顶层 Portal 浮层</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>会话右侧固定 24px 菜单槽位实现悬停零文字回流；一级菜单与二级「打开方式 ▶」（VS Code / Zed / 终端原色矢量徽标）挂载于窗口浮层宿主，平滑跨出侧栏右边界而不被滚动区裁切。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">二级打开方式子菜单</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">原色编辑器徽标</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">悬停零文字回流</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="project-sidebar/index.html?scenario=sidebar-filter-active" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>实时搜索与三态活跃度筛选<span class="card-zh">全部 / 进行中 / 待处理</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>紧凑分段筛选栏实时汇总全局进行中与待处理数量；折叠项目在右侧提示后台运行进度，切换筛选或搜索时自动展开命中项目并支持重命名、置顶与分页加载。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">三态实时计数</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">折叠项目后台提示</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">Ctrl+K 搜索</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="project-sidebar/index.html?scenario=sidebar-archived" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>已归档会话恢复与添加项目向导<span class="card-zh">本地 / SSH 主机</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>底栏集成「已归档」就地切换（支持搜索与一键恢复）及带更新圆点的「设置」跳转；「+ 添加项目」弹窗支持本地目录与 ~/.ssh/config 远程主机目录接入。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">已归档一键恢复</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">本地与 SSH 添加向导</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">设置双向跳转</mdui-chip>
+          </div>
+        </mdui-card>
+      </div>
+    </section>
 
     <section class="sec" aria-label="Material 3 账号与模型评价设计稿">
       <div class="sec-head">
