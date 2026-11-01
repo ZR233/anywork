@@ -199,6 +199,7 @@ pub struct BridgeWorktreeRecoveryPreviewDto {
     pub head_commit: Option<String>,
     pub dirty: Option<bool>,
     pub changed_files: Option<Vec<String>>,
+    pub ignored_files: Option<Vec<String>>,
 }
 
 /// Worktree lease 的归属来源；显式清理必须与 durable lease 的归属一致。

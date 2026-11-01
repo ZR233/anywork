@@ -415,6 +415,7 @@ mod binding_confirmation_tests {
                 head_commit: None,
                 dirty: None,
                 changed_files: None,
+                ignored_files: None,
             }),
         }
     }

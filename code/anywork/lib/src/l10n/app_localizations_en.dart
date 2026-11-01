@@ -3239,7 +3239,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAgentsEditTooltip => 'Edit';
 
   @override
-  String get settingsAgentsRecoveryTitle => 'Recovery';
+  String settingsWorktreeRecoveryTitle(int count) {
+    return 'Workspace checks ($count)';
+  }
+
+  @override
+  String get sidebarOriginalWorkspace => 'View original workspace';
+
+  @override
+  String get sidebarOriginalWorkspaceUnknown =>
+      'No original workspace was recorded for this session.';
 
   @override
   String settingsWorktreeBase(String commit) {
@@ -3256,7 +3265,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String settingsWorktreeChangedFiles(String files) {
-    return 'Changed files: $files';
+    return 'Pending Git changes: $files';
+  }
+
+  @override
+  String settingsWorktreeIgnoredFiles(String files) {
+    return 'Ignored local files: $files';
   }
 
   @override
@@ -3815,7 +3829,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWorktreeStatePrepared => 'Prepared';
 
   @override
-  String get settingsWorktreeStateActive => 'Active';
+  String get settingsWorktreeStateActive => 'Bound';
 
   @override
   String get settingsWorktreeStatePreserved => 'Preserved';
@@ -3827,17 +3841,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWorktreeStateCleaned => 'Cleaned';
 
   @override
-  String get settingsWorktreeDirty => 'dirty';
+  String get settingsWorktreeDirty => 'Local content present';
 
   @override
-  String get settingsWorktreeClean => 'No uncommitted changes';
+  String get settingsWorktreeClean => 'No pending changes or extra files';
 
   @override
-  String get settingsWorktreeDirtyUnknown => 'Change status unknown';
+  String get settingsWorktreeDirtyUnknown => 'Local content status unknown';
 
   @override
   String get settingsWorktreeChangedFilesUnknown =>
-      'Changed files are not yet known. Retry the inspection.';
+      'Local file status is not yet known. Retry the inspection.';
 
   @override
   String get settingsWorktreeInspectionAvailable => 'Worktree verified';

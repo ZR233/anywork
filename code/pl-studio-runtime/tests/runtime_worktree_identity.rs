@@ -170,8 +170,19 @@ async fn preview(
 }
 
 async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()> {
-    // Retry may join a scan already in progress. Wait for a complete new Ready result,
-    // never treat an empty Refreshing snapshot as success.
+    // Finish an older scan before requesting a fresh observation of current facts.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let state = runtime.read_recovery_state().state;
+            ensure!(state.kind() != ObservedResourceKind::Failed, "{state:?}");
+            if state.kind() == ObservedResourceKind::Ready {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("previous Recovery scan did not complete")??;
     let before = runtime.read_recovery_state().state.revision();
     runtime.retry_recovery().await?;
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -180,6 +191,9 @@ async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()
             ensure!(state.kind() != ObservedResourceKind::Failed, "{state:?}");
             if state.kind() == ObservedResourceKind::Ready && state.revision() > before {
                 return Ok(());
+            }
+            if state.kind() == ObservedResourceKind::Ready {
+                runtime.retry_recovery().await?;
             }
             tokio::task::yield_now().await;
         }
@@ -561,7 +575,11 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
                 "confirmed child retained a stale Recovery issue"
             );
             ensure!(git(&path, &["rev-parse", "HEAD"])? == head);
-            ensure!(git(&path, &["status", "--porcelain", "--ignored"])? == status);
+            let restored_status = git(&path, &["status", "--porcelain", "--ignored"])?;
+            ensure!(
+                restored_status == status,
+                "binding changed local content status: before={status:?}, after={restored_status:?}"
+            );
             if dirty {
                 ensure!(std::fs::read_to_string(path.join("tracked.txt"))? == "keep modified\n");
                 ensure!(std::fs::read_to_string(path.join("untracked.txt"))? == "keep untracked\n");
@@ -632,6 +650,30 @@ async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_bran
             .archive_thread("identity-visible-history".into(), root.thread.id.clone())
             .await?
             .context("archive identity owner")?;
+        recovery_ready(&env.runtime).await?;
+        ensure!(
+            !env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| { issue.thread_id.as_deref() == Some(&root.thread.id) }),
+            "normal archive reported its healthy retained workspace as a recovery problem"
+        );
+        let archived = env.runtime.thread_snapshot(&root.thread.id).await?;
+        ensure!(archived.thread.workspace_path == root.thread.workspace_path);
+        let lease = lease_fact(&env.home, &root.thread.id, false).await?;
+        ensure!(
+            env.runtime
+                .cleanup_preserved_worktree(
+                    StudioRecoveryWorktreeOwner::Session,
+                    &root.thread.id,
+                    lease["revision"]
+                        .as_u64()
+                        .context("confirmed lease revision")?,
+                )
+                .await
+                .is_err(),
+            "removing a normal reminder granted permission to discard local content"
+        );
         let observation = preview(
             &env.runtime,
             &root.thread.id,
@@ -646,6 +688,17 @@ async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_bran
             observation.dirty == Some(true),
             "Recovery lost real local content state"
         );
+        let changed = observation
+            .changed_files
+            .as_ref()
+            .context("pending changes")?;
+        let ignored = observation
+            .ignored_files
+            .as_ref()
+            .context("ignored content")?;
+        ensure!(changed.iter().any(|path| path == "untracked.txt"));
+        ensure!(!changed.iter().any(|path| path == "ignored.txt"));
+        ensure!(ignored.iter().any(|path| path == "ignored.txt"));
         env.runtime.restore_thread(root.thread.id.clone()).await?;
         let _subscription = env
             .runtime
@@ -845,6 +898,9 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             }),
             "original complete history did not contain the saved reply"
         );
+        // The fault injection must not race a startup Git process holding this checkout
+        // open on Windows. Observe the completed scan before removing the test resource.
+        recovery_ready(&env.runtime).await?;
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
         let mut subscription = env
             .runtime
@@ -966,7 +1022,8 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             missing.branch.is_none()
                 && missing.head_commit.is_none()
                 && missing.dirty.is_none()
-                && missing.changed_files.is_none(),
+                && missing.changed_files.is_none()
+                && missing.ignored_files.is_none(),
             "missing inspection invented mutable Git state"
         );
         let missing_issue = env
@@ -1054,15 +1111,18 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             .archive_thread("retire-identity-owner".into(), root.thread.id.clone())
             .await?
             .context("retire owner without deleting its site")?;
-        let protected = preview(
-            &env.runtime,
-            &root.thread.id,
-            StudioWorktreeInspection::Available,
-        )
-        .await?;
+        recovery_ready(&env.runtime).await?;
+        ensure!(
+            !env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| { issue.thread_id.as_deref() == Some(&root.thread.id) }),
+            "normal archive produced a recovery reminder for ignored session files"
+        );
+        let lease = lease_fact(&env.home, &root.thread.id, false).await?;
         let session_files = Path::new(&root.thread.workspace_path).join(".anywork");
         ensure!(
-            protected.dirty == Some(true) && session_files.exists(),
+            session_files.exists(),
             "fixture lacks its real ignored session files"
         );
         ensure!(
@@ -1070,7 +1130,9 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
                 .cleanup_preserved_worktree(
                     StudioRecoveryWorktreeOwner::Session,
                     &root.thread.id,
-                    protected.lease_revision
+                    lease["revision"]
+                        .as_u64()
+                        .context("confirmed lease revision")?
                 )
                 .await
                 .is_err(),
@@ -1079,6 +1141,20 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
         ensure!(
             session_files.exists(),
             "safe Recovery deleted ignored session files"
+        );
+        let protected = preview(
+            &env.runtime,
+            &root.thread.id,
+            StudioWorktreeInspection::Available,
+        )
+        .await?;
+        ensure!(protected.dirty == Some(true));
+        ensure!(protected.changed_files.as_ref().is_some_and(Vec::is_empty));
+        ensure!(
+            protected
+                .ignored_files
+                .as_ref()
+                .is_some_and(|files| { files.iter().any(|path| path == ".anywork/") })
         );
         // The original runtime resources are already closed. Remove only this fixture's own
         // ignored session files to isolate Git-lock refusal from content-preservation refusal.

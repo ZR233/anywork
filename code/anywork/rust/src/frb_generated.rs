@@ -17889,6 +17889,7 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         let mut var_headCommit = <Option<String>>::sse_decode(deserializer);
         let mut var_dirty = <Option<bool>>::sse_decode(deserializer);
         let mut var_changedFiles = <Option<Vec<String>>>::sse_decode(deserializer);
+        let mut var_ignoredFiles = <Option<Vec<String>>>::sse_decode(deserializer);
         return crate::api::studio::types::runtime::BridgeWorktreeRecoveryPreviewDto {
             inspection: var_inspection,
             owner_kind: var_ownerKind,
@@ -17902,6 +17903,7 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
             head_commit: var_headCommit,
             dirty: var_dirty,
             changed_files: var_changedFiles,
+            ignored_files: var_ignoredFiles,
         };
     }
 }
@@ -34866,6 +34868,7 @@ impl flutter_rust_bridge::IntoDart
             self.head_commit.into_into_dart().into_dart(),
             self.dirty.into_into_dart().into_dart(),
             self.changed_files.into_into_dart().into_dart(),
+            self.ignored_files.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -44570,6 +44573,7 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         <Option<String>>::sse_encode(self.head_commit, serializer);
         <Option<bool>>::sse_encode(self.dirty, serializer);
         <Option<Vec<String>>>::sse_encode(self.changed_files, serializer);
+        <Option<Vec<String>>>::sse_encode(self.ignored_files, serializer);
     }
 }
 

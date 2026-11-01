@@ -1424,6 +1424,7 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
             headCommit: issue.worktree!.headCommit,
             dirty: issue.worktree!.dirty,
             changedFiles: issue.worktree!.changedFiles,
+            ignoredFiles: issue.worktree!.ignoredFiles,
           ),
   );
 }

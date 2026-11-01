@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../app/theme/studio_tokens.dart';
-import '../../shared/recovery_check_status.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'agent_workspace_mode_label.dart';
@@ -13,7 +12,6 @@ import 'settings_agent_routes.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
 import 'settings_views.dart';
-import 'settings_worktree_recovery.dart';
 
 String _systemAgentName(BuildContext context, AgentProfileView profile) {
   final localized = context.roleLabel(profile.id);
@@ -79,12 +77,6 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
     final agents = ref.watch(settingsAgentsViewProvider);
     final profilesState = agents.profiles;
     final profiles = profilesState?.data.profiles ?? const <AgentProfileView>[];
-    final recoveryState = agents.recovery;
-    final worktreeIssues =
-        recoveryState?.values
-            .where((issue) => issue.worktree != null)
-            .toList(growable: false) ??
-        const <StudioRecoveryIssue>[];
     final filtered = profiles.where((profile) {
       final name = profile.system
           ? _systemAgentName(context, profile)
@@ -127,19 +119,10 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
       child: ListView(
         key: const ValueKey('settings-pane-scroll'),
         children: [
-          const RecoveryCheckStatus(),
           if (agents.profilesLoading && profilesState == null)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
               child: Center(child: CircularProgressIndicator()),
-            ),
-          if (worktreeIssues.isNotEmpty)
-            SettingsSectionPanel(
-              title: context.l10n.settingsAgentsRecoveryTitle,
-              children: [
-                for (final issue in worktreeIssues)
-                  WorktreeRecoverySection(issue: issue),
-              ],
             ),
           for (final system in [true, false])
             SettingsSectionPanel(

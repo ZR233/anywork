@@ -117,7 +117,10 @@ pub struct StudioWorktreeRecoveryPreview {
     pub base_commit: String,
     pub head_commit: Option<String>,
     pub dirty: Option<bool>,
+    /// Tracked modifications and untracked files, excluding Git-ignored content.
     pub changed_files: Option<Vec<String>>,
+    /// Ignored local content is protected independently from pending Git changes.
+    pub ignored_files: Option<Vec<String>>,
 }
 
 /// 单个项目或 Thread 的可隔离恢复问题。
