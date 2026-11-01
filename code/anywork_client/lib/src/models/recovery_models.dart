@@ -38,6 +38,7 @@ class WorktreeRecoveryPreview {
     required this.headCommit,
     required this.dirty,
     required this.changedFiles,
+    required this.ignoredFiles,
   });
 
   final WorktreeInspection inspection;
@@ -52,6 +53,7 @@ class WorktreeRecoveryPreview {
   final String? headCommit;
   final bool? dirty;
   final List<String>? changedFiles;
+  final List<String>? ignoredFiles;
 }
 
 class StudioRecoveryIssue {

@@ -123,6 +123,10 @@ impl Environment {
         let repo = temp.path().join("repo");
         std::fs::create_dir(&repo)?;
         git(&repo, &["init", "-b", "main"])?;
+        // Production Git and the isolated test helper must agree on checkout bytes,
+        // regardless of the host's system-wide Windows line-ending configuration.
+        git(&repo, &["config", "--local", "core.autocrlf", "false"])?;
+        git(&repo, &["config", "--local", "core.eol", "lf"])?;
         git(&repo, &["config", "user.name", "Lifecycle Test"])?;
         git(
             &repo,

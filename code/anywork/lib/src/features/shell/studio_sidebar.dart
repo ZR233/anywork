@@ -593,27 +593,44 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                       title: thread.title,
                       onTap: null,
                       touchMode: _touchInput,
-                      trailing: _tileIconButton(
-                        key: ValueKey('thread-restore-${thread.id}'),
-                        tooltip: context.l10n.sidebarRestore,
-                        icon: Icons.unarchive_outlined,
-                        iconSize: 17,
-                        minTarget: _touchInput ? 44 : 32,
-                        onPressed: () async {
-                          try {
-                            await ref
-                                .read(anyworkClientProvider)
-                                .directoryCommands
-                                .restoreThread(thread.id);
-                            if (mounted) _refreshNow();
-                          } catch (error) {
-                            if (mounted) {
-                              setState(
-                                () => _errors[project.id] = error.toString(),
-                              );
-                            }
-                          }
-                        },
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _tileIconButton(
+                            key: ValueKey(
+                              'thread-archived-workspace-${thread.id}',
+                            ),
+                            tooltip: context.l10n.sidebarOriginalWorkspace,
+                            icon: Icons.folder_outlined,
+                            iconSize: 17,
+                            minTarget: _touchInput ? 44 : 32,
+                            onPressed: () =>
+                                _showArchivedWorkspace(thread, project),
+                          ),
+                          _tileIconButton(
+                            key: ValueKey('thread-restore-${thread.id}'),
+                            tooltip: context.l10n.sidebarRestore,
+                            icon: Icons.unarchive_outlined,
+                            iconSize: 17,
+                            minTarget: _touchInput ? 44 : 32,
+                            onPressed: () async {
+                              try {
+                                await ref
+                                    .read(anyworkClientProvider)
+                                    .directoryCommands
+                                    .restoreThread(thread.id);
+                                if (mounted) _refreshNow();
+                              } catch (error) {
+                                if (mounted) {
+                                  setState(
+                                    () =>
+                                        _errors[project.id] = error.toString(),
+                                  );
+                                }
+                              }
+                            },
+                          ),
+                        ],
                       ),
                     )
                   : _ThreadTile(
@@ -676,6 +693,46 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         ),
     ];
   }
+
+  Future<void> _showArchivedWorkspace(
+    StudioThread thread,
+    StudioProject project,
+  ) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      scrollable: true,
+      title: Text(context.l10n.sidebarOriginalWorkspace),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(thread.title),
+          if (project.sshAlias != null) Text(project.sshAlias!),
+          const SizedBox(height: 12),
+          SelectableText(
+            thread.workspacePath.isEmpty
+                ? context.l10n.sidebarOriginalWorkspaceUnknown
+                : thread.workspacePath,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: StudioDriverKeys.copyThreadWorkspace(thread.id),
+          onPressed: thread.workspacePath.isEmpty
+              ? null
+              : () => Clipboard.setData(
+                  ClipboardData(text: thread.workspacePath),
+                ),
+          child: Text(context.l10n.sidebarCopyPath),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(MaterialLocalizations.of(context).closeButtonLabel),
+        ),
+      ],
+    ),
+  );
 }
 
 Future<void> _saveSidebarPreferences(

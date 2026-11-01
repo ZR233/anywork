@@ -948,6 +948,7 @@ class BridgeWorktreeRecoveryPreviewDto {
   final String? headCommit;
   final bool? dirty;
   final List<String>? changedFiles;
+  final List<String>? ignoredFiles;
 
   const BridgeWorktreeRecoveryPreviewDto({
     required this.inspection,
@@ -962,6 +963,7 @@ class BridgeWorktreeRecoveryPreviewDto {
     this.headCommit,
     this.dirty,
     this.changedFiles,
+    this.ignoredFiles,
   });
 
   @override
@@ -977,7 +979,8 @@ class BridgeWorktreeRecoveryPreviewDto {
       baseCommit.hashCode ^
       headCommit.hashCode ^
       dirty.hashCode ^
-      changedFiles.hashCode;
+      changedFiles.hashCode ^
+      ignoredFiles.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -995,7 +998,8 @@ class BridgeWorktreeRecoveryPreviewDto {
           baseCommit == other.baseCommit &&
           headCommit == other.headCommit &&
           dirty == other.dirty &&
-          changedFiles == other.changedFiles;
+          changedFiles == other.changedFiles &&
+          ignoredFiles == other.ignoredFiles;
 }
 
 class RuntimeSnapshot {

@@ -1974,6 +1974,7 @@ void main() {
                 headCommit: null,
                 dirty: null,
                 changedFiles: null,
+                ignoredFiles: null,
               ),
             ),
           ],

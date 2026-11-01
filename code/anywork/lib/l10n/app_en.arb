@@ -1619,7 +1619,10 @@
   "settingsAgentsSubtitle": "Enable and configure subagents by purpose; directory mode restricts built-in file writes, not OS access.",
   "settingsAgentsAddUserProfile": "Add user profile",
   "settingsAgentsEditTooltip": "Edit",
-  "settingsAgentsRecoveryTitle": "Recovery",
+  "settingsWorktreeRecoveryTitle": "Workspace checks ({count})",
+  "@settingsWorktreeRecoveryTitle": {"placeholders": {"count": {"type": "int"}}},
+  "sidebarOriginalWorkspace": "View original workspace",
+  "sidebarOriginalWorkspaceUnknown": "No original workspace was recorded for this session.",
   "settingsWorktreeBase": "base {commit}",
   "@settingsWorktreeBase": {
     "placeholders": {
@@ -1637,7 +1640,9 @@
     }
   },
   "settingsWorktreeHeadUnavailable": "head unavailable",
-  "settingsWorktreeChangedFiles": "Changed files: {files}",
+  "settingsWorktreeChangedFiles": "Pending Git changes: {files}",
+  "settingsWorktreeIgnoredFiles": "Ignored local files: {files}",
+  "@settingsWorktreeIgnoredFiles": {"placeholders": {"files": {"type": "String"}}},
   "@settingsWorktreeChangedFiles": {
     "placeholders": {
       "files": {
@@ -1873,14 +1878,14 @@
   "settingsSshStateReconnecting": "Reconnecting",
   "settingsSshStateFailed": "Failed",
   "settingsWorktreeStatePrepared": "Prepared",
-  "settingsWorktreeStateActive": "Active",
+  "settingsWorktreeStateActive": "Bound",
   "settingsWorktreeStatePreserved": "Preserved",
   "settingsWorktreeStateCleanupRequested": "Cleanup requested",
   "settingsWorktreeStateCleaned": "Cleaned",
-  "settingsWorktreeDirty": "dirty",
-  "settingsWorktreeClean": "No uncommitted changes",
-  "settingsWorktreeDirtyUnknown": "Change status unknown",
-  "settingsWorktreeChangedFilesUnknown": "Changed files are not yet known. Retry the inspection.",
+  "settingsWorktreeDirty": "Local content present",
+  "settingsWorktreeClean": "No pending changes or extra files",
+  "settingsWorktreeDirtyUnknown": "Local content status unknown",
+  "settingsWorktreeChangedFilesUnknown": "Local file status is not yet known. Retry the inspection.",
   "settingsWorktreeInspectionAvailable": "Worktree verified",
   "settingsWorktreeInspectionMissing": "Worktree missing",
   "settingsWorktreeInspectionIdentityMismatch": "Worktree identity mismatch",

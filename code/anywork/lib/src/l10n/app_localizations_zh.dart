@@ -3077,7 +3077,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsAgentsEditTooltip => '编辑';
 
   @override
-  String get settingsAgentsRecoveryTitle => '恢复';
+  String settingsWorktreeRecoveryTitle(int count) {
+    return '工作目录检查（$count）';
+  }
+
+  @override
+  String get sidebarOriginalWorkspace => '查看原工作目录';
+
+  @override
+  String get sidebarOriginalWorkspaceUnknown => '此会话未记录原工作目录。';
 
   @override
   String settingsWorktreeBase(String commit) {
@@ -3094,7 +3102,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String settingsWorktreeChangedFiles(String files) {
-    return '变更文件：$files';
+    return '待提交文件：$files';
+  }
+
+  @override
+  String settingsWorktreeIgnoredFiles(String files) {
+    return '版本管理忽略的本地文件：$files';
   }
 
   @override
@@ -3626,7 +3639,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsWorktreeStatePrepared => '已准备';
 
   @override
-  String get settingsWorktreeStateActive => '使用中';
+  String get settingsWorktreeStateActive => '已绑定';
 
   @override
   String get settingsWorktreeStatePreserved => '已保留';
@@ -3638,16 +3651,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsWorktreeStateCleaned => '已清理';
 
   @override
-  String get settingsWorktreeDirty => '有改动';
+  String get settingsWorktreeDirty => '存在本地内容';
 
   @override
-  String get settingsWorktreeClean => '无未提交改动';
+  String get settingsWorktreeClean => '无待提交或额外文件';
 
   @override
-  String get settingsWorktreeDirtyUnknown => '改动状态未知';
+  String get settingsWorktreeDirtyUnknown => '本地内容状态未知';
 
   @override
-  String get settingsWorktreeChangedFilesUnknown => '尚未确认变更文件，请重试检查。';
+  String get settingsWorktreeChangedFilesUnknown => '尚未确认本地文件状态，请重试检查。';
 
   @override
   String get settingsWorktreeInspectionAvailable => '工作树已核实';

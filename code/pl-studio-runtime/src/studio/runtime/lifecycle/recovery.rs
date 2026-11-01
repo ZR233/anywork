@@ -197,9 +197,12 @@ impl StudioRuntime {
             };
         }
         let facts = self.worktree_issue_facts(lease).await;
+        // Archiving intentionally retains the original workspace. A confirmed, healthy
+        // binding with an existing owner is normal even when that owner is archived.
+        // Local content affects deletion eligibility, not whether recovery is needed.
         if lease.state == WorktreeLeaseState::Active
             && self.agent_facility.worktrees.is_durable(lease)
-            && matches!(facts.owner, Ok(WorktreeOwnerFacts { retained: true, .. }))
+            && matches!(facts.owner, Ok(WorktreeOwnerFacts { exists: true, .. }))
             && facts.inspection() == StudioWorktreeInspection::Available
         {
             return None;
@@ -235,14 +238,6 @@ impl StudioRuntime {
         message: String,
     ) -> StudioRecoveryIssue {
         let preview = facts.observation.as_ref().ok();
-        let changed_files = preview.map(|preview| {
-            preview
-                .changed_files
-                .iter()
-                .chain(&preview.ignored_files)
-                .cloned()
-                .collect()
-        });
         let mut message = message;
         match facts
             .observation
@@ -324,7 +319,8 @@ impl StudioRuntime {
                 dirty: preview.map(|preview| {
                     !preview.changed_files.is_empty() || !preview.ignored_files.is_empty()
                 }),
-                changed_files,
+                changed_files: preview.map(|preview| preview.changed_files.clone()),
+                ignored_files: preview.map(|preview| preview.ignored_files.clone()),
             }),
         }
     }

@@ -8,6 +8,7 @@ import 'settings_common.dart';
 import 'settings_update_row.dart';
 import 'settings_web_search.dart';
 import 'settings_delegation.dart';
+import 'settings_worktree_recovery.dart';
 
 class GeneralTab extends StatefulWidget {
   const GeneralTab({
@@ -48,6 +49,7 @@ class _GeneralTabState extends State<GeneralTab> {
       children: [
         const SizedBox(height: 16),
         const DelegationDefaultsPanel(),
+        const WorktreeRecoveryPanel(),
         SettingsSectionPanel(
           title: context.l10n.settingsAppearanceGroup,
           children: [

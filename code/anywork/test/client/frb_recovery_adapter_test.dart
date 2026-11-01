@@ -85,8 +85,15 @@ void main() {
           branch: branch,
           baseCommit: 'base-commit',
           headCommit: null,
-          dirty: null,
-          changedFiles: null,
+          dirty: expectedInspection == WorktreeInspection.available
+              ? true
+              : null,
+          changedFiles: expectedInspection == WorktreeInspection.available
+              ? const ['src/example.rs']
+              : null,
+          ignoredFiles: expectedInspection == WorktreeInspection.available
+              ? const ['build/']
+              : null,
         ),
       );
       final frame = productTopicFrameFromEnvelope(
@@ -142,8 +149,15 @@ void main() {
       );
       final worktree = convertedIssue.worktree!;
       expect(worktree.inspection, expectedInspection);
-      expect(worktree.dirty, isNull);
-      expect(worktree.changedFiles, isNull);
+      if (expectedInspection == WorktreeInspection.available) {
+        expect(worktree.dirty, isTrue);
+        expect(worktree.changedFiles, ['src/example.rs']);
+        expect(worktree.ignoredFiles, ['build/']);
+      } else {
+        expect(worktree.dirty, isNull);
+        expect(worktree.changedFiles, isNull);
+        expect(worktree.ignoredFiles, isNull);
+      }
       expect(worktree.headCommit, isNull);
       expect(worktree.branch, branch);
       expect(

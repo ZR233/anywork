@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
-import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../presentation/providers/settings_store.dart';
 import '../../presentation/providers/skills_store.dart';
@@ -162,8 +161,6 @@ class SettingsAgentsView {
     required this.profilesRevision,
     required this.profilesSync,
     required this.roles,
-    required this.recovery,
-    required this.recoveryRevision,
     required this.settingsRevision,
   });
 
@@ -172,8 +169,6 @@ class SettingsAgentsView {
   final int profilesRevision;
   final DomainSyncStatus profilesSync;
   final List<RoleSettingsView> roles;
-  final RecoveryStateSnapshot? recovery;
-  final int recoveryRevision;
   final int settingsRevision;
 
   bool get profilesFailed => profilesSync.phase == DomainSyncPhase.failed;
@@ -190,22 +185,18 @@ class SettingsAgentsView {
           profilesLoaded == other.profilesLoaded &&
           profilesRevision == other.profilesRevision &&
           profilesSync == other.profilesSync &&
-          recoveryRevision == other.recoveryRevision &&
           settingsRevision == other.settingsRevision &&
           identical(profiles, other.profiles) &&
-          identical(roles, other.roles) &&
-          identical(recovery, other.recovery);
+          identical(roles, other.roles);
 
   @override
   int get hashCode => Object.hash(
     profilesLoaded,
     profilesRevision,
     profilesSync,
-    recoveryRevision,
     settingsRevision,
     identityHashCode(profiles),
     identityHashCode(roles),
-    identityHashCode(recovery),
   );
 }
 
@@ -213,15 +204,12 @@ final settingsAgentsViewProvider = Provider.autoDispose<SettingsAgentsView>((
   ref,
 ) {
   final settings = ref.watch(settingsStoreProvider);
-  final recovery = ref.watch(recoveryStoreProvider);
   return SettingsAgentsView(
     profiles: settings.agentProfiles,
     profilesLoaded: settings.agentProfilesLoaded,
     profilesRevision: settings.agentProfilesRevision,
     profilesSync: settings.agentProfilesSync,
     roles: settings.canonical?.roles ?? const <RoleSettingsView>[],
-    recovery: recovery.value,
-    recoveryRevision: recovery.revision,
     settingsRevision: settings.settingsRevision,
   );
 }, name: 'settingsAgentsViewProvider');

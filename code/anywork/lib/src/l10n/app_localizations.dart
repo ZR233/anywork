@@ -5802,11 +5802,23 @@ abstract class AppLocalizations {
   /// **'Edit'**
   String get settingsAgentsEditTooltip;
 
-  /// No description provided for @settingsAgentsRecoveryTitle.
+  /// No description provided for @settingsWorktreeRecoveryTitle.
   ///
   /// In en, this message translates to:
-  /// **'Recovery'**
-  String get settingsAgentsRecoveryTitle;
+  /// **'Workspace checks ({count})'**
+  String settingsWorktreeRecoveryTitle(int count);
+
+  /// No description provided for @sidebarOriginalWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'View original workspace'**
+  String get sidebarOriginalWorkspace;
+
+  /// No description provided for @sidebarOriginalWorkspaceUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'No original workspace was recorded for this session.'**
+  String get sidebarOriginalWorkspaceUnknown;
 
   /// No description provided for @settingsWorktreeBase.
   ///
@@ -5829,8 +5841,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWorktreeChangedFiles.
   ///
   /// In en, this message translates to:
-  /// **'Changed files: {files}'**
+  /// **'Pending Git changes: {files}'**
   String settingsWorktreeChangedFiles(String files);
+
+  /// No description provided for @settingsWorktreeIgnoredFiles.
+  ///
+  /// In en, this message translates to:
+  /// **'Ignored local files: {files}'**
+  String settingsWorktreeIgnoredFiles(String files);
 
   /// No description provided for @settingsWorktreeCleanup.
   ///
@@ -6849,7 +6867,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWorktreeStateActive.
   ///
   /// In en, this message translates to:
-  /// **'Active'**
+  /// **'Bound'**
   String get settingsWorktreeStateActive;
 
   /// No description provided for @settingsWorktreeStatePreserved.
@@ -6873,25 +6891,25 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWorktreeDirty.
   ///
   /// In en, this message translates to:
-  /// **'dirty'**
+  /// **'Local content present'**
   String get settingsWorktreeDirty;
 
   /// No description provided for @settingsWorktreeClean.
   ///
   /// In en, this message translates to:
-  /// **'No uncommitted changes'**
+  /// **'No pending changes or extra files'**
   String get settingsWorktreeClean;
 
   /// No description provided for @settingsWorktreeDirtyUnknown.
   ///
   /// In en, this message translates to:
-  /// **'Change status unknown'**
+  /// **'Local content status unknown'**
   String get settingsWorktreeDirtyUnknown;
 
   /// No description provided for @settingsWorktreeChangedFilesUnknown.
   ///
   /// In en, this message translates to:
-  /// **'Changed files are not yet known. Retry the inspection.'**
+  /// **'Local file status is not yet known. Retry the inspection.'**
   String get settingsWorktreeChangedFilesUnknown;
 
   /// No description provided for @settingsWorktreeInspectionAvailable.
