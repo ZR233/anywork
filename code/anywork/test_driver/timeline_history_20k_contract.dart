@@ -168,6 +168,39 @@ void requireTimelineHistoryPassiveQueue(
   }
 }
 
+/// One growth lifecycle, including all batches. A passive source has no writer
+/// until execution is activated and its queue projection is delivered.
+final class TimelineHistoryGrowthQueue {
+  TimelineHistoryGrowthQueue({required this.threadId}) {
+    if (threadId.isEmpty) {
+      throw StateError('growth requires the original target thread identity');
+    }
+  }
+
+  final String threadId;
+  bool _writerObserved = false;
+
+  /// Null is an actual startup observation, never a fabricated H/D sample.
+  TimelineHistoryQueueSample? observe(
+    Map<String, Object?> queue, {
+    required String context,
+    required bool turnCompleted,
+  }) {
+    requireTimelineHistoryQueueSnapshot(queue, context: context);
+    final hasTarget = (queue['threads'] as List).cast<Map>().any(
+      (thread) => thread['threadId'] == threadId,
+    );
+    if (!_writerObserved && !hasTarget && !turnCompleted) return null;
+    final sample = TimelineHistoryQueueSample.parse(
+      queue,
+      context: context,
+      threadId: threadId,
+    );
+    _writerObserved = true;
+    return sample;
+  }
+}
+
 final class TimelineHistoryQueueSample {
   const TimelineHistoryQueueSample({
     required this.threadId,

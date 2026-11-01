@@ -715,6 +715,7 @@ Future<void> _runGrowth(
   final baselineState = await _settled(driver, 'growth-baseline');
   final baseline = TimelineObservation.parse(baselineState);
   baseline.requireConsistentIds();
+  final growthQueue = TimelineHistoryGrowthQueue(threadId: baseline.threadId);
   final pid = report['pid']! as int;
   final liveBatches = <Map<String, Object?>>[];
   final historyBatches = <Map<String, Object?>>[];
@@ -750,8 +751,14 @@ Future<void> _runGrowth(
   await driver.requestData('frame-start');
   final liveStorageStart = await _storageSample(pid);
   for (var batch = 1; batch <= 10; batch++) {
-    liveBatches.add(
-      await _runGrowthBatch(driver, batch: batch, expectedMode: 'live'),
+    final batchReport = <String, Object?>{'batch': batch};
+    liveBatches.add(batchReport);
+    await _runGrowthBatch(
+      driver,
+      batch: batch,
+      expectedMode: 'live',
+      growthQueue: growthQueue,
+      report: batchReport,
     );
     await _stage(coord, phase, 'growth_live_batch_$batch');
   }
@@ -791,8 +798,14 @@ Future<void> _runGrowth(
   final historyStorageStart = await _storageSample(pid);
   for (var batch = 11; batch <= _growthBatches; batch++) {
     final beforePageCount = frozen.itemCount;
-    historyBatches.add(
-      await _runGrowthBatch(driver, batch: batch, expectedMode: 'history'),
+    final batchReport = <String, Object?>{'batch': batch};
+    historyBatches.add(batchReport);
+    await _runGrowthBatch(
+      driver,
+      batch: batch,
+      expectedMode: 'history',
+      growthQueue: growthQueue,
+      report: batchReport,
     );
     final pageEvidence = await _scrollOlderPages(
       driver,
@@ -838,10 +851,12 @@ Future<void> _runGrowth(
   growthReport['persistenceAtEnd'] = await _persistenceQueue(driver);
 }
 
-Future<Map<String, Object?>> _runGrowthBatch(
+Future<void> _runGrowthBatch(
   FlutterDriverSession driver, {
   required int batch,
   required String expectedMode,
+  required TimelineHistoryGrowthQueue growthQueue,
+  required Map<String, Object?> report,
 }) async {
   final beforeSnapshot = await _settled(driver, 'growth-$batch-before');
   final beforeTimeline = TimelineObservation.parse(beforeSnapshot);
@@ -852,14 +867,32 @@ Future<Map<String, Object?>> _runGrowthBatch(
   );
   final beforeScroll = TimelineScrollObservation.parse(beforeSnapshot);
   final previousTurnId = _lastTurnId(beforeSnapshot);
-  if (beforeTimeline.mode != expectedMode) {
+  if (beforeTimeline.mode != expectedMode ||
+      beforeTimeline.threadId != growthQueue.threadId) {
     throw StateError(
-      'growth batch $batch started in ${beforeTimeline.mode}, expected $expectedMode',
+      'growth batch $batch started in ${beforeTimeline.mode}/${beforeTimeline.threadId}, '
+      'expected $expectedMode/${growthQueue.threadId}',
     );
   }
+  final samples = <Map<String, Object?>>[];
+  final startupObservations = <Map<String, Object?>>[];
+  report.addAll({
+    'previousTurnId': previousTurnId,
+    'latencyOrigin': 'before composer text entry and submit input',
+    'samples': samples,
+    'writerStartupObservations': startupObservations,
+  });
+  final beforeQueue = await _persistenceQueue(
+    driver,
+    onSample: (queue) => report['queueBeforeSubmit'] = queue,
+  );
+  growthQueue.observe(
+    beforeQueue,
+    context: 'growth batch $batch before submit',
+    turnCompleted: false,
+  );
   final accepted = Stopwatch()..start();
   await _submit(driver, _growthPrompt(batch));
-  final samples = <Map<String, Object?>>[];
   var maxSampledPendingOperations = 0;
   var maxSampledPendingBytes = 0;
   var maxSampledInFlightBytes = 0;
@@ -871,41 +904,24 @@ Future<Map<String, Object?>> _runGrowthBatch(
     final snapshot = await driver.readSnapshot();
     final timeline = TimelineObservation.parse(snapshot);
     timeline.requireConsistentIds();
-    final queue = await _persistenceQueue(driver);
-    final queueSample = TimelineHistoryQueueSample.parse(
-      queue,
-      context: 'growth batch $batch sample ${samples.length + 1}',
-      threadId: beforeTimeline.threadId,
+    final observation = <String, Object?>{
+      'snapshotElapsedMillis': accepted.elapsedMilliseconds,
+      'timelineThreadId': timeline.threadId,
+      'displayGeneration': timeline.generation,
+      'submission': _growthSubmissionObservation(snapshot),
+    };
+    report['lastQueueObservation'] = observation;
+    final queue = await _persistenceQueue(
+      driver,
+      onSample: (queue) => observation['queue'] = queue,
     );
-    maxSampledPendingOperations = math.max(
-      maxSampledPendingOperations,
-      queueSample.pendingOperations,
-    );
-    maxSampledPendingBytes = math.max(
-      maxSampledPendingBytes,
-      queueSample.pendingBytes,
-    );
-    maxSampledInFlightBytes = math.max(
-      maxSampledInFlightBytes,
-      queueSample.inFlightBytes,
-    );
-    final tailId = timeline.itemIds.lastOrNull;
-    firstCompletedItemId ??= tailId;
-    lastCompletedItemId = tailId;
     final sampleMillis = accepted.elapsedMilliseconds;
-    final sampleIntervalMillis = previousSampleMillis == null
-        ? null
-        : sampleMillis - previousSampleMillis;
-    previousSampleMillis = sampleMillis;
-    samples.add(<String, Object?>{
-      'elapsedMillis': sampleMillis,
-      'sampleIntervalMillis': sampleIntervalMillis,
-      'mode': timeline.mode,
-      'loadedAtoms': timeline.itemCount,
-      'completedTailItemId': tailId,
-      'hasNewOutput': timeline.hasNewOutput,
-      ...queueSample.toJson(),
-    });
+    observation['queueElapsedMillis'] = sampleMillis;
+    // Live may replace its display after an explicit cold-to-live resync.
+    // History's stronger frozen-lease requirement is checked below.
+    if (timeline.threadId != beforeTimeline.threadId) {
+      throw StateError('growth batch $batch changed its original selection');
+    }
     if (timeline.mode != expectedMode) {
       throw StateError(
         'growth batch $batch reader mode changed at ${sampleMillis}ms: '
@@ -930,18 +946,61 @@ Future<Map<String, Object?>> _runGrowthBatch(
         ),
       );
     }
-    if (!_busy(snapshot) &&
+    final turnCompleted =
+        !_busy(snapshot) &&
         _lastTurnId(snapshot) != null &&
         _lastTurnId(snapshot) != previousTurnId &&
-        _lastTurnStatus(snapshot) == 'completed' &&
-        _viewportReady(snapshot)) {
+        _lastTurnStatus(snapshot) == 'completed';
+    final queueSample = growthQueue.observe(
+      queue,
+      context: 'growth batch $batch sample ${samples.length + 1}',
+      turnCompleted: turnCompleted,
+    );
+    if (queueSample == null) {
+      startupObservations.add(observation);
+    } else {
+      report.putIfAbsent('firstWriterSampleMillis', () => sampleMillis);
+      maxSampledPendingOperations = math.max(
+        maxSampledPendingOperations,
+        queueSample.pendingOperations,
+      );
+      maxSampledPendingBytes = math.max(
+        maxSampledPendingBytes,
+        queueSample.pendingBytes,
+      );
+      maxSampledInFlightBytes = math.max(
+        maxSampledInFlightBytes,
+        queueSample.inFlightBytes,
+      );
+      final tailId = timeline.itemIds.lastOrNull;
+      firstCompletedItemId ??= tailId;
+      lastCompletedItemId = tailId;
+      final sampleIntervalMillis = previousSampleMillis == null
+          ? null
+          : sampleMillis - previousSampleMillis;
+      previousSampleMillis = sampleMillis;
+      samples.add(<String, Object?>{
+        'elapsedMillis': sampleMillis,
+        'sampleIntervalMillis': sampleIntervalMillis,
+        'displayGeneration': timeline.generation,
+        'mode': timeline.mode,
+        'loadedAtoms': timeline.itemCount,
+        'completedTailItemId': tailId,
+        'hasNewOutput': timeline.hasNewOutput,
+        ...queueSample.toJson(),
+      });
+    }
+    if (turnCompleted && _viewportReady(snapshot)) {
       completed = snapshot;
       break;
     }
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }
   if (completed == null) {
-    throw StateError('growth batch $batch did not complete');
+    throw StateError(
+      'growth batch $batch did not complete within the original deadline; '
+      'writerSamples=${samples.length}, startupObservations=${startupObservations.length}',
+    );
   }
   final completedMillis = accepted.elapsedMilliseconds;
   final completedTurnId = _lastTurnId(completed)!;
@@ -956,7 +1015,10 @@ Future<Map<String, Object?>> _runGrowthBatch(
     'growth-$batch-durable',
     timeout: const Duration(minutes: 3),
   );
-  final finalQueue = await _persistenceQueue(driver);
+  final finalQueue = await _persistenceQueue(
+    driver,
+    onSample: (queue) => report['finalQueue'] = queue,
+  );
   final finalQueueSample = TimelineHistoryQueueSample.parse(
     finalQueue,
     context: 'growth batch $batch final queue',
@@ -1018,7 +1080,7 @@ Future<Map<String, Object?>> _runGrowthBatch(
       );
     }
   }
-  return <String, Object?>{
+  report.addAll(<String, Object?>{
     'batch': batch,
     'expectedCompletedTextItems': _growthItemsPerBatch,
     'previousTurnId': previousTurnId,
@@ -1056,6 +1118,22 @@ Future<Map<String, Object?>> _runGrowthBatch(
     'completed': _timelineSummary(completed),
     'durable': _timelineSummary(durable),
     'samples': samples,
+  });
+}
+
+Map<String, Object?> _growthSubmissionObservation(
+  Map<String, dynamic> snapshot,
+) {
+  final workspace = snapshot['workspace'] as Map?;
+  final diagnostics = snapshot['driverDiagnostics'] as Map?;
+  final composer = (diagnostics?['composer'] as Map?)?['thread'] as Map?;
+  return {
+    'threadId': workspace?['threadId'],
+    'isBusy': workspace?['isBusy'],
+    'turn': workspace?['turn'],
+    'lastTurn': workspace?['lastTurn'],
+    'submissionPending': composer?['submissionPending'],
+    'submissionFailed': composer?['failed'],
   };
 }
 

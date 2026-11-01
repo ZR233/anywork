@@ -1,6 +1,7 @@
 import 'timeline_history_20k_contract.dart';
 
 void main() {
+  _testGrowthWriterStartup();
   _expectStateError(
     'near-full cold window',
     () => requireTimelineHistory20kColdWindow(
@@ -222,6 +223,113 @@ void main() {
       threadId: 'thread-1',
     ),
   );
+}
+
+void _testGrowthWriterStartup() {
+  final growth = TimelineHistoryGrowthQueue(threadId: 'thread-1');
+  final passive = _queue(threads: []);
+  final unrelated = _queue(
+    threads: [
+      {'threadId': 'other', 'historyAdmitted': 99, 'historyDurable': 98},
+    ],
+  );
+  for (final queue in [passive, unrelated]) {
+    if (growth.observe(
+          queue,
+          context: 'submission still pending',
+          turnCompleted: false,
+        ) !=
+        null) {
+      throw StateError('startup fabricated a target watermark sample');
+    }
+  }
+  final running = growth.observe(
+    _queue(
+      threads: [
+        {'threadId': 'other', 'historyAdmitted': 99, 'historyDurable': 98},
+        {'threadId': 'thread-1', 'historyAdmitted': 11, 'historyDurable': 9},
+      ],
+    ),
+    context: 'writer appeared before Turn completion',
+    turnCompleted: false,
+  );
+  if (running?.threadId != 'thread-1' ||
+      running?.historyAdmitted != 11 ||
+      running?.historyDurable != 9) {
+    throw StateError('growth must sample the first actual target immediately');
+  }
+  // The same observer belongs to the whole lifecycle, not just one batch.
+  final nextBatch = growth.observe(
+    _queue(
+      threads: [
+        {'threadId': 'thread-1', 'historyAdmitted': 12, 'historyDurable': 11},
+      ],
+    ),
+    context: 'next batch before completion',
+    turnCompleted: false,
+  );
+  if (nextBatch?.historyAdmitted != 12 || nextBatch?.historyDurable != 11) {
+    throw StateError('growth stopped sampling between batches');
+  }
+  _expectStateError(
+    'observed writer disappeared in a later batch',
+    () =>
+        growth.observe(unrelated, context: 'later batch', turnCompleted: false),
+  );
+  _expectStateError(
+    'completed Turn cannot bypass missing writer',
+    () => TimelineHistoryGrowthQueue(threadId: 'thread-1').observe(
+      passive,
+      context: 'completion before writer observed',
+      turnCompleted: true,
+    ),
+  );
+  _expectStateError(
+    'missing original identity',
+    () => TimelineHistoryGrowthQueue(threadId: ''),
+  );
+  final malformedQueues = [
+    {...passive, 'loaded': false},
+    {...passive, 'syncPhase': 'reconnecting'},
+    {...passive, 'pendingBytes': null},
+    {...passive, 'threads': null},
+    _queue(
+      threads: [
+        {'threadId': 'thread-1', 'historyAdmitted': 11, 'historyDurable': 9},
+        {'threadId': 'thread-1', 'historyAdmitted': 11, 'historyDurable': 9},
+      ],
+    ),
+    _queue(
+      threads: [
+        {
+          'threadId': 'thread-1',
+          'historyAdmitted': null,
+          'historyDurable': null,
+        },
+      ],
+    ),
+    _queue(
+      threads: [
+        {'threadId': 'thread-1', 'historyAdmitted': 9, 'historyDurable': 11},
+      ],
+    ),
+  ];
+  for (var index = 0; index < malformedQueues.length; index++) {
+    final queue = malformedQueues[index];
+    for (final observer in [
+      TimelineHistoryGrowthQueue(threadId: 'thread-1'),
+      growth,
+    ]) {
+      _expectStateError(
+        'invalid queue $index must not be mistaken for writer startup',
+        () => observer.observe(
+          queue,
+          context: 'invalid queue',
+          turnCompleted: false,
+        ),
+      );
+    }
+  }
 }
 
 Map<String, Object?> _queue({List<Map<String, Object?>>? threads}) => {
