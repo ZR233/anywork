@@ -917,7 +917,20 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
     history.commit(1, std::slice::from_ref(&item), &[]).await?;
     drop(history);
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-    db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE IF EXISTS timeline_records; DROP TABLE conversation_content_chunks; DROP TABLE conversation_contents; DROP TABLE conversation_items; DROP TABLE conversation_view_entries; DROP TABLE conversation_view_state; ALTER TABLE history_input_identities DROP COLUMN request_digest; UPDATE history_meta SET schema_version=8").await?;
+    db.execute_unprepared(
+        "DROP TABLE seaql_migrations;
+         DROP TABLE IF EXISTS timeline_records;
+         DROP TABLE conversation_content_chunks;
+         DROP TABLE conversation_contents;
+         DROP TABLE conversation_items;
+         DROP TABLE conversation_view_entries;
+         DROP TABLE conversation_view_state;
+         ALTER TABLE history_input_identities DROP COLUMN request_digest;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
+         ALTER TABLE history_meta DROP COLUMN model_route_hash;
+         UPDATE history_meta SET schema_version=8",
+    )
+    .await?;
     db.close().await?;
     let runtime = StudioRuntime::initialize(options(temp.path())).await?;
     assert!(runtime.threads.observed_thread("cold").is_none());
