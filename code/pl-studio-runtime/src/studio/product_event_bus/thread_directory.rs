@@ -476,6 +476,25 @@ impl ProductEventBus {
             .catalog()
             .project_explicit_close(thread_id)
             .await?;
+        // A cold row is not resident in the directory index. Re-read exactly this durable row
+        // instead of opening a list observation for it, then commit through the same path.
+        let resident = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned")
+            .get(thread_id)
+            .is_some();
+        if !resident {
+            let record = self
+                .store
+                .read_thread(thread_id)
+                .await?
+                .ok_or_else(|| StudioError::not_found("session"))?;
+            self.thread_index
+                .lock()
+                .expect("thread index lock poisoned")
+                .insert(pl_protocol::Thread::from(record));
+        }
         let mut index = self
             .thread_index
             .lock()

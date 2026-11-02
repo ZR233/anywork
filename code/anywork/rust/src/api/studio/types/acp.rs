@@ -138,6 +138,7 @@ pub enum BridgeAcpAuthState {
         operation_id: String,
     },
     Required {
+        operation_id: String,
         methods: Vec<BridgeAcpAuthMethod>,
         /// 协议观察；对端未提供 `agentInfo` 时为 `None`（未知），不用本地账号名冒充。
         server: Option<BridgeAcpServerInfo>,
@@ -232,7 +233,6 @@ pub struct BridgeAcpAuthSnapshot {
 pub enum BridgeAcpAuthAction {
     Check,
     QueryUsage,
-    Authenticate { method_id: String },
 }
 
 /// 认证命令的受理回执与受理时快照。

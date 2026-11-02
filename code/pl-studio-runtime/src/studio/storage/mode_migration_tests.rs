@@ -3168,6 +3168,181 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
 }
 
 #[tokio::test]
+async fn archive_cold_tree_prepares_legacy_checkpoints_without_execution() -> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::studio::store::directory::DirectoryDelta;
+    use crate::{StudioHostKind, StudioRuntimeOptions};
+    use pl_model::{
+        config::{AccountConfig, AccountId, ModelRouteConfig},
+        model::ModelInfo,
+        protocol::ProtocolEndpoint,
+    };
+    use pl_tool::workspace::SessionFiles;
+    use sea_orm::{DatabaseBackend, Statement};
+
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let workspace = directory.path().join("workspace");
+    tokio::fs::create_dir(&workspace).await?;
+    let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+    endpoint.set_nonblocking(true)?;
+    let account_id = AccountId::new("archive-fixture")?;
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "archive-model".into(),
+        effort: None,
+    };
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account_id,
+        AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible(
+                "Archive fixture",
+                format!("http://{}", endpoint.local_addr()?),
+            ),
+            vec![ModelInfo::compatible(&route.model_id)],
+        ),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+    let options = || StudioRuntimeOptions {
+        studio_home: Some(home.clone()),
+        host: StudioHostKind::Test,
+        ..StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let project = runtime.open_project(&workspace).await?;
+    runtime.shutdown_runtime().await?;
+    drop(runtime);
+
+    let store = crate::studio::StudioStore::open(&home.join("data/studio.sqlite")).await?;
+    let root_id = "archive-current-root";
+    let mut members = Vec::new();
+    for id in [root_id, "archive-legacy-envelope", "archive-legacy-route"] {
+        let mut thread = bound_thread(id);
+        thread.role = if id == root_id {
+            crate::config::ROOT_AGENT_ROUTE_KEY.into()
+        } else {
+            "executor".into()
+        };
+        thread.workspace_id = project.id.clone();
+        thread.workspace_path = project.path.clone();
+        thread.root_thread_id = root_id.into();
+        thread.parent_thread_id = (id != root_id).then(|| root_id.to_owned());
+        store
+            .persist_directory_summaries(&DirectoryDelta {
+                thread_upserts: vec![thread.clone()],
+                ..Default::default()
+            })
+            .await?;
+        let session = store.session_paths(&project.id, id)?;
+        let path = session.history_database();
+        let mut original = saved_state(BTreeMap::from([(
+            "vendor.unknown".into(),
+            record(6, "vendor.unknown", 7, "preserve opaque state")?,
+        )]));
+        original.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
+        if id == "archive-legacy-route" {
+            // This saved route's account is no longer configured. Only its representation
+            // may be migrated; archive must not resolve it for model execution.
+            original.extensions.insert(
+                "studio.model-route".into(),
+                record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
+            );
+            persist_schema12_fixture(&path, id, original.clone()).await?;
+        } else {
+            let history = store.history_for(&project.id, id).await?;
+            persist(&history, original.clone(), true).await?;
+            drop(history);
+            if id != root_id {
+                downgrade_checkpoint_to_schema_five(&path).await?;
+            }
+        }
+        let files = SessionFiles::new(id);
+        for temp in [session.temp_dir(), workspace.join(files.temp())] {
+            tokio::fs::create_dir_all(&temp).await?;
+            tokio::fs::write(temp.join("disposable"), b"temporary").await?;
+        }
+        tokio::fs::create_dir_all(workspace.join(files.artifacts())).await?;
+        tokio::fs::write(workspace.join(files.artifacts()).join("delivery"), b"keep").await?;
+        tokio::fs::create_dir_all(session.root().join("resources")).await?;
+        tokio::fs::write(session.root().join("resources/reliable"), b"reliable").await?;
+        let cold = HistoryStore::open(&path, id).await?;
+        if id != root_id {
+            assert!(
+                cold.checkpoint().await.is_err(),
+                "legacy reads need preparation"
+            );
+        }
+        members.push((thread, session, original));
+    }
+    drop(store);
+
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let result = async {
+        let reply = runtime
+            .archive_thread("archive-old-tree".into(), root_id.into())
+            .await?
+            .context("archive reply")?;
+        assert_eq!(reply.result.removed_thread_ids.len(), members.len());
+        for (thread, session, original) in &members {
+            let snapshot = runtime.thread_snapshot(&thread.id).await?;
+            assert!(snapshot.thread.archived);
+            let history = HistoryStore::open(&session.history_database(), &thread.id).await?;
+            let saved = history.checkpoint().await?.context("archived checkpoint")?;
+            assert_eq!(saved.state.context, original.context);
+            assert_eq!(
+                saved.state.extensions["vendor.unknown"],
+                original.extensions["vendor.unknown"]
+            );
+            if thread.id == "archive-legacy-route" {
+                assert_eq!(
+                    saved.state.extensions["studio.model-route"].payload.version(),
+                    2
+                );
+            }
+            let db = raw_database(&session.history_database()).await?;
+            assert!(
+                db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+                    "SELECT version FROM seaql_migrations WHERE version='m20261026_000008_history_execution_identity'"
+                )).await?.is_none(),
+                "archive must not prepare execution identity"
+            );
+            db.close().await?;
+            let files = SessionFiles::new(&thread.id);
+            assert!(!session.temp_dir().exists());
+            assert!(!workspace.join(files.temp()).exists());
+            assert_eq!(
+                tokio::fs::read(workspace.join(files.artifacts()).join("delivery")).await?,
+                b"keep"
+            );
+            assert_eq!(
+                tokio::fs::read(session.root().join("resources/reliable")).await?,
+                b"reliable"
+            );
+        }
+        assert_eq!(
+            endpoint.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    let shutdown = runtime.shutdown_runtime().await;
+    result?;
+    shutdown?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_root_route_representation_is_committed_once_before_recovery() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");

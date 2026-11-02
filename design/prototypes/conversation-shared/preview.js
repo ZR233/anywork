@@ -38,9 +38,9 @@
       return {
         title: '创建期与运行期组件共享与分层',
         items: [
-          ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（本地目录 / 新建工作树、子智能体分发），内层复用统一输入卡。'],
-          ['创建后自动收敛', '首条消息准备完成后直接转入会话页：外层创建栏退役，工作区与分发上移至顶栏只读徽标。'],
-          ['零复制共享内核', '起始页、运行期输入交互稿与时间线状态栏稿共享同一套外壳、模型目录与 PromptComposerCard。']
+          ['统一新会话入口', '直接点击侧栏「新建会话」与在项目行点击「+」均进入同一新会话页，仅初始开启位置分别为「无项目」或所点项目。'],
+          ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（项目选择器支持无项目 / 已有项目模糊搜索 / 新建项目，以及本地目录 / 新建工作树、子智能体分发），内层复用统一输入卡。'],
+          ['创建后自动收敛', '首条消息准备完成后直接转入会话页：外层创建栏退役，工作区与分发上移至顶栏只读徽标。']
         ]
       };
     }
@@ -75,8 +75,8 @@
     if (page === 'start') {
       return {
         title: '新会话起始页与工作区输入布局',
-        subtitle: '沿用暹罗浅色主题与统一会话外壳，将创建期固定的「本地目录 / 新建工作树」紧凑下拉列表与子智能体分发外置至输入卡上方环境栏，内层直接复用统一 PromptComposerCard。',
-        footerHTML: '外层环境栏收纳会话创建时一次性固定的空间与协作策略（所属项目、<code>local</code> 本地目录 / <code>worktree</code> 新建工作树紧凑下拉列表、子智能体分发单层菜单）；内层输入卡与会话运行期共用同一组件实例。点击发送可完整预览四阶段环境准备与自动收敛至运行期单层输入卡的交接过程。'
+        subtitle: '直接点击侧栏「新建会话」与在项目行点击「+」共享同一个新会话页面：外层环境栏左侧直接展示新会话开启在「无项目」还是具体项目，点击即可在「无项目」、支持模糊搜索的「已有项目」列表与「新建项目」之间切换，并配置本地目录 / 新建工作树与子智能体分发。',
+        footerHTML: '外层环境栏收纳会话创建时一次性固定的空间与协作策略（所属项目下拉选择器：支持<code>无项目</code>、<code>已有项目</code>实时模糊搜索与<code>新建项目…</code>向导联动；<code>local</code> 本地目录 / <code>worktree</code> 新建工作树紧凑下拉列表；子智能体分发单层菜单）；内层输入卡与会话运行期共用同一组件实例。'
       };
     }
     if (page === 'composer') {
@@ -189,6 +189,20 @@
         openFilePicker: () => this.fileInput.click(),
         openUrlDialog: () => this.urlDialog.showModal(),
         openImagePreview: (images, activeId, triggerEl) => this.openImagePreview(images, activeId, triggerEl),
+        selectStandaloneOnStart: () => {
+          if (this.sidebar) this.sidebar.archivedMode = false;
+          this.controller.selectStandaloneStart();
+        },
+        selectProjectOnStart: projectId => {
+          if (this.sidebar) {
+            this.sidebar.archivedMode = false;
+            this.sidebar.expandedIds.add(projectId);
+          }
+          this.controller.selectProjectStart(projectId);
+        },
+        openAddProjectDialog: initialName => {
+          this.sidebar?.openAddProjectDialog(initialName);
+        },
         onSubmitFromComposer: () => {
           this.followHistory = true;
           this.controller.submit();
@@ -907,7 +921,7 @@
       let wsStatus;
       if (state.stage === 'start') {
         if (locks.prepRunning) wsStatus = ['准备期已锁', 'locked'];
-        else if (state.targetType === 'standalone') wsStatus = ['固定本地目录', 'frozen'];
+        else if (state.targetType === 'standalone') wsStatus = ['无项目 · 可切换项目', 'open'];
         else wsStatus = ['外层环境栏可配', 'open'];
       } else {
         wsStatus = ['创建冻结 · 顶栏只读', 'frozen'];
@@ -945,7 +959,7 @@
       else composerStatus = [action.enabled ? '主钮「发送 ↑」就绪' : '可编辑（空草稿禁用发送）', 'open'];
 
       const matrixRows = [
-        ['工作区 / 分发', ...wsStatus],
+        ['项目 / 工作区 / 分发', ...wsStatus],
         ['工作模式', ...modeStatus],
         ['主智能体模型', ...modelStatus],
         ['思考强度', ...effortStatus],
@@ -1041,6 +1055,16 @@
         this.sessionStageEl.hidden = true;
         this.startStageEl.hidden = false;
         renderStartStage(this.startStageEl, this.controller, this.composerCard, this.menuManager, this.composerHelpers);
+        if (reason === 'reset' && state.scenario === 'project-picker') {
+          requestAnimationFrame(() => {
+            const projTrig = this.startStageEl.querySelector('[data-menu-trigger="project"]');
+            const projPanel = this.startStageEl.querySelector('[data-menu-panel="project"]');
+            if (projTrig && projPanel && projPanel.hidden) {
+              this.menuManager.open('project', projTrig, projPanel, false);
+              projPanel.querySelector('.cv-project-search-input')?.focus({ preventScroll: true });
+            }
+          });
+        }
       } else {
         this.startStageEl.hidden = true;
         this.sessionStageEl.hidden = false;

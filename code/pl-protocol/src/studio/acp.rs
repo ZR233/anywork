@@ -5,7 +5,7 @@
 //! Native account 的 endpoint/secret 结构，也不携带任何凭据、token、原始进程输出或 SDK 内部
 //! 类型；官方程序自行管理登录凭据（见 design/28）。
 //!
-//! 本阶段只支持产品内置的官方 server 发行（Antigravity 1.4.1）。因此这里**不存在** program 或
+//! 本阶段只支持产品内置的官方 server 发行（Antigravity 1.4.5）。因此这里**不存在** program 或
 //! argv 字段：启动命令只来自产品固定清单与经完整验证的受管安装，客户端、HTTP 与配置文件都不能
 //! 提交或恢复任意执行路径（design/28 §28.1、§28.8）。
 
@@ -111,8 +111,6 @@ pub enum AcpAuthAction {
     Check,
     /// 在受控探测会话中执行固定 `/usage`，不调用语言模型。
     QueryUsage,
-    /// 用服务端实际公布的方法登录。
-    Authenticate { method_id: String },
 }
 
 /// 认证方法的实现类型；`terminal` 在本阶段没有专门实现，不能当作 agent 方法发送。
@@ -233,6 +231,7 @@ pub enum AcpAuthState {
     ///
     /// `server` 是协议观察：对端未提供 `agentInfo` 时为 `None`，不能用本地账号名冒充服务端名称。
     Required {
+        operation_id: String,
         methods: Vec<AcpAuthMethod>,
         server: Option<AcpServerInfo>,
     },
@@ -269,15 +268,12 @@ impl AcpAuthState {
     pub fn operation_id(&self) -> Option<&str> {
         match self {
             Self::Checking { operation_id }
+            | Self::Required { operation_id, .. }
             | Self::Authenticating { operation_id, .. }
             | Self::Verifying { operation_id }
             | Self::Closing { operation_id, .. }
             | Self::Cancelling { operation_id } => Some(operation_id),
-            Self::Unchecked
-            | Self::Required { .. }
-            | Self::Verified { .. }
-            | Self::Cancelled
-            | Self::Failed { .. } => None,
+            Self::Unchecked | Self::Verified { .. } | Self::Cancelled | Self::Failed { .. } => None,
         }
     }
 }
@@ -383,6 +379,17 @@ pub struct StartAcpAuthRequest {
     pub account_id: String,
     pub expected_connection_revision: u64,
     pub action: AcpAuthAction,
+}
+
+/// 在仍然存活的原连接上继续登录；命令身份与目标流程身份分别校验。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinueAcpAuthRequest {
+    pub operation_id: String,
+    pub account_id: String,
+    pub expected_connection_revision: u64,
+    pub target_operation_id: String,
+    pub method_id: String,
 }
 
 /// 取消当前认证操作；`target_operation_id` 必须命中当前操作。

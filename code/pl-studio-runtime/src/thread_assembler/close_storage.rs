@@ -118,20 +118,21 @@ impl StudioThreadAssembler {
                     .into(),
             ));
         }
-        let checkpoint = services
-            .store
-            .history_for(&record.workspace_id, &record.id)
-            .await
-            .map_err(preparation_storage_error)?
-            .checkpoint()
-            .await
-            .map_err(preparation_storage_error)?
-            .ok_or_else(|| {
-                ThreadAssemblyError::Identity(format!(
-                    "archive checkpoint is unconfirmed for {}",
-                    record.id
-                ))
-            })?;
+        // A cold descendant may still use a supported old history format even when the root
+        // was already opened. Prepare its storage through the shared recovery boundary before
+        // decoding a current checkpoint; no model, tools or execution identity are restored.
+        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+            &services.store,
+            record,
+        )
+        .await
+        .map_err(preparation_storage_error)?
+        .ok_or_else(|| {
+            ThreadAssemblyError::Identity(format!(
+                "archive checkpoint is unconfirmed for {}",
+                record.id
+            ))
+        })?;
         services.install_storage_owner(self, record, checkpoint, EntryPurpose::CloseStorage)?;
         Ok(())
     }

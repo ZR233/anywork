@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::{Context, Result, bail};
-use pl_provider_fixture::{Reply, ReplyStage};
-use std::time::Duration;
+use pl_provider_fixture::{Protocol, Reply, ReplyStage, RequestMatch, Step};
+use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 
@@ -21,6 +21,500 @@ fn demand() -> ReadDemand {
         max_items: 8,
         max_bytes: 128 * 1024,
     }
+}
+
+fn question_steps(prompt: &str, first: Reply) -> Vec<Step> {
+    vec![
+        support::prompt_step(prompt, 0, first),
+        Step {
+            protocol: Protocol::ResponsesHttp,
+            request: RequestMatch::InteractionAnswers {
+                text: serde_json::json!({
+                    "answers": {
+                        "provider": {
+                            "answers": ["fixture-answer"]
+                        }
+                    }
+                })
+                .to_string(),
+                step: 1,
+            },
+            reply: support::text_reply("question resolved", "question-resolved"),
+            optional: false,
+        },
+    ]
+}
+
+fn question_reply(call_id: &str) -> Reply {
+    support::tool_reply(
+        "request_user_input",
+        call_id,
+        serde_json::json!({
+            "questions": [{
+                "id": "provider",
+                "header": "Provider",
+                "question": "Which provider should the next release verify?",
+                "isOther": true
+            }]
+        }),
+    )
+}
+
+fn answer() -> InteractionResolution {
+    InteractionResolution::UserInput(UserInputResolution {
+        answers: HashMap::from([(
+            "provider".into(),
+            UserInputAnswer {
+                answers: vec!["fixture-answer".into()],
+            },
+        )]),
+    })
+}
+
+async fn initial_snapshot(feed: &mut ConversationFeed) -> Result<ThreadSnapshot> {
+    let ConversationEvent::Chat { batch } = feed.recv().await?.context("missing initial Chat")?
+    else {
+        bail!("conversation must start with Chat");
+    };
+    assert_eq!(batch.placement, ChatPlacement::Set);
+    let ConversationEvent::State { update } =
+        feed.recv().await?.context("missing initial State")?
+    else {
+        bail!("Chat Set must be followed by State");
+    };
+    let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
+        bail!("first State must be a snapshot");
+    };
+    Ok(*snapshot)
+}
+
+fn assert_notification_revision(notification: &ThreadNotificationEnvelope, revision: &mut u64) {
+    assert_eq!(notification.base_revision, *revision);
+    assert_eq!(notification.revision, *revision + 1);
+    *revision = notification.revision;
+}
+
+async fn finish_question(
+    feed: &mut ConversationFeed,
+    interaction_id: &str,
+    pending_revision: u64,
+    mut revision: u64,
+    pending: &mut usize,
+    resolved: &mut usize,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match feed
+                .recv()
+                .await?
+                .context("feed ended before terminal State")?
+            {
+                ConversationEvent::Chat { .. } => {}
+                ConversationEvent::State { update } => {
+                    let ThreadSubscriptionUpdate::Notification { notification } = *update else {
+                        bail!("live question flow emitted a second State snapshot");
+                    };
+                    assert_notification_revision(&notification, &mut revision);
+                    match notification.notification {
+                        ThreadNotification::InteractionChanged { interaction }
+                            if interaction.interaction_id == interaction_id =>
+                        {
+                            match interaction.status() {
+                                InteractionStatus::Pending => {
+                                    assert_eq!(interaction.revision, pending_revision);
+                                    *pending += 1;
+                                }
+                                InteractionStatus::Resolved => {
+                                    assert_eq!(interaction.revision, pending_revision + 1);
+                                    *resolved += 1;
+                                }
+                                status => bail!("question reached unexpected status {status:?}"),
+                            }
+                        }
+                        ThreadNotification::TurnCompleted { .. } if *resolved == 1 => {
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .context("finite question scenario did not reach terminal State")?
+}
+
+async fn published_pending(
+    env: &support::Environment,
+    thread_id: &str,
+) -> Result<(InteractionRequest, u64)> {
+    let slot = env.runtime.thread_observations.observation_slot(thread_id);
+    let (position, _) = slot.capture();
+    let source = position
+        .source
+        .context("running Thread has no live owner")?;
+    let mut changed = source.content_changes();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(current) = source
+                .current_conversation()
+                .map(|value| value.current.clone())
+                && let Some(interaction) = current
+                    .interactions
+                    .iter()
+                    .find(|interaction| interaction.status() == InteractionStatus::Pending)
+            {
+                return Ok::<_, anyhow::Error>((
+                    interaction.clone(),
+                    current.projection.source_effect_seq,
+                ));
+            }
+            changed
+                .changed()
+                .await
+                .context("live publication ended before the pending question")?;
+        }
+    })
+    .await
+    .context("pending question was not published by the live owner")?
+}
+
+#[tokio::test]
+async fn question_cut_late_open_starts_with_published_pending_and_delivers_one_answer() -> Result<()>
+{
+    let env = support::Environment::new(
+        question_steps("late-question", question_reply("late-question-call")),
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "late-question")
+            .await?;
+        let id = &thread.thread.id;
+        let (pending, publication_revision) = published_pending(&env, id).await?;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        let snapshot = initial_snapshot(&mut feed).await?;
+        assert_eq!(snapshot.revision, publication_revision);
+        assert_eq!(
+            snapshot.interactions.as_slice(),
+            std::slice::from_ref(&pending),
+            "first State did not use the canonical owner cut"
+        );
+        assert_eq!(pending.status(), InteractionStatus::Pending);
+
+        env.runtime
+            .resolve_interaction(
+                "late-question-answer".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                answer(),
+            )
+            .await?;
+        let mut repeated_pending = 0;
+        let mut resolved = 0;
+        finish_question(
+            &mut feed,
+            &pending.interaction_id,
+            pending.revision,
+            snapshot.revision,
+            &mut repeated_pending,
+            &mut resolved,
+        )
+        .await?;
+        assert_eq!(
+            repeated_pending, 0,
+            "baseline pending question was notified again"
+        );
+        assert_eq!(resolved, 1);
+        feed.close().await?;
+        feed.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() -> Result<()> {
+    let stage = ReplyStage::new();
+    let Reply::Sse(frames) = question_reply("live-question-call") else {
+        unreachable!("question fixture uses SSE")
+    };
+    let first = stage.gated(vec![frames[0].clone()], frames[1..].to_vec());
+    let env = support::Environment::new(question_steps("live-question", first), vec![]).await?;
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "live-question")
+            .await?;
+        let id = &thread.thread.id;
+        support::reached(&stage).await?;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        let snapshot = initial_snapshot(&mut feed).await?;
+        assert!(
+            snapshot.interactions.is_empty(),
+            "held tool interaction entered the initial cut"
+        );
+        stage.release();
+
+        let mut state_revision = snapshot.revision;
+        let pending = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match feed
+                    .recv()
+                    .await?
+                    .context("feed ended before pending question")?
+                {
+                    ConversationEvent::Chat { .. } => {}
+                    ConversationEvent::State { update } => {
+                        let ThreadSubscriptionUpdate::Notification { notification } = *update
+                        else {
+                            bail!("live question flow emitted a second State snapshot");
+                        };
+                        assert_notification_revision(&notification, &mut state_revision);
+                        if let ThreadNotification::InteractionChanged { interaction } =
+                            notification.notification
+                            && interaction.status() == InteractionStatus::Pending
+                        {
+                            return Ok::<_, anyhow::Error>(interaction);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .context("live pending question was not delivered")??;
+        let mut pending_count = 1;
+        let mut resolved = 0;
+        env.runtime
+            .resolve_interaction(
+                "live-question-answer".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                answer(),
+            )
+            .await?;
+        finish_question(
+            &mut feed,
+            &pending.interaction_id,
+            pending.revision,
+            state_revision,
+            &mut pending_count,
+            &mut resolved,
+        )
+        .await?;
+        assert_eq!(pending_count, 1);
+        assert_eq!(resolved, 1);
+        feed.close().await?;
+        feed.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    stage.release();
+    env.finish(result).await
+}
+
+async fn state_snapshot(feed: &mut ConversationFeed) -> Result<Box<ThreadSnapshot>> {
+    let ConversationEvent::State { update } =
+        feed.recv().await?.context("missing State baseline")?
+    else {
+        bail!("Set must be followed by the State baseline");
+    };
+    let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
+        bail!("first State must be a snapshot");
+    };
+    Ok(snapshot)
+}
+
+#[tokio::test]
+async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> Result<()> {
+    let plan = format!("# 待确认计划\n\n{}", "步骤\n".repeat(9000));
+    let stage = ReplyStage::new();
+    let Reply::Sse(frames) = support::tool_reply(
+        "plan_submit",
+        "feed-plan",
+        serde_json::json!({
+            "expectedRevision": 0, "plan": plan,
+        }),
+    ) else {
+        bail!("expected SSE tool reply")
+    };
+    let first = stage.gated(frames[..1].to_vec(), frames[1..].to_vec());
+    let mut env = support::Environment::new(
+        vec![
+            support::prompt_step("pending-plan-feed", 0, first),
+            support::prompt_step(
+                &plan,
+                1,
+                support::text_reply("approved and continued", "after-plan"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        // The long Plan crosses the storage chunk boundary. Keep its continuation within the
+        // fixture's declared window so this journey does not require a compaction response.
+        let config_store =
+            crate::config::ConfigStore::new(crate::config::ConfigPaths::from_config_dir(&env.home));
+        let mut config = config_store.load()?;
+        let account = config
+            .models
+            .accounts
+            .get_mut(&pl_model::config::AccountId::new("root-fixture")?)
+            .context("root fixture account")?;
+        let pl_model::config::AccountModelCatalogConfig::Explicit { models, .. } =
+            &mut account.catalog
+        else {
+            bail!("fixture account must have an explicit model catalog");
+        };
+        let model = models
+            .iter_mut()
+            .find(|model| model.model_id == support::MODEL)
+            .context("root fixture model")?;
+        model.context_window = Some(256_000);
+        model.max_context_window = Some(256_000);
+        model.max_output_tokens = Some(32_000);
+        config_store.save(&config)?;
+        env.restart().await?;
+        let started = env
+            .start(ThreadWorkspaceMode::Local, "pending-plan-feed")
+            .await?;
+        let id = &started.thread.id;
+        support::reached(&stage).await?;
+        let mut live = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut live).await?.placement, ChatPlacement::Set);
+        assert!(state_snapshot(&mut live).await?.interactions.is_empty());
+        stage.release();
+        let pending = tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(event) = live.recv().await? {
+                if let ConversationEvent::State { update } = event
+                    && let ThreadSubscriptionUpdate::Notification { notification } = *update
+                    && let ThreadNotification::InteractionChanged { interaction } =
+                        notification.notification
+                    && interaction.status() == InteractionStatus::Pending
+                {
+                    return Ok::<_, anyhow::Error>(*interaction);
+                }
+            }
+            bail!("Plan submission did not publish its pending interaction");
+        })
+        .await??;
+        assert!(matches!(
+            pending.scope.purpose,
+            InteractionPurpose::AgentSessionPlanConfirmation(_)
+        ));
+        assert!(
+            serde_json::to_vec(&pending)?.len() > 64 * 1024,
+            "cold restore must read multiple content chunks"
+        );
+        let completed = support::completed_prompt(&env.runtime, id, "pending-plan-feed").await?;
+        assert!(matches!(completed.state, TurnState::Completed(_)));
+        live.close().await?;
+        live.reader().close().await?;
+
+        let mut reopened = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut reopened).await?.placement, ChatPlacement::Set);
+        assert_eq!(
+            state_snapshot(&mut reopened).await?.interactions,
+            vec![pending.clone()]
+        );
+        reopened.close().await?;
+        reopened.reader().close().await?;
+
+        env.restart().await?;
+        assert!(env.runtime.threads.observed_thread(id).is_none());
+        let mut cold = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
+        assert_eq!(
+            state_snapshot(&mut cold).await?.interactions,
+            vec![pending.clone()]
+        );
+        assert!(
+            env.runtime.threads.observed_thread(id).is_none(),
+            "reading a pending Plan activated execution"
+        );
+        assert_eq!(env.root_provider.recorded().len(), 1);
+        cold.close().await?;
+        cold.reader().close().await?;
+
+        let mut continuation = env
+            .runtime
+            .subscribe_thread(ThreadSubscriptionRequest {
+                thread_id: id.clone(),
+            })
+            .await?;
+        let resolved = env
+            .runtime
+            .resolve_interaction(
+                "approve-feed-plan".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                InteractionResolution::UserInput(UserInputResolution {
+                    answers: [(
+                        AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                        UserInputAnswer {
+                            answers: vec!["Approve".into()],
+                        },
+                    )]
+                    .into(),
+                }),
+            )
+            .await?;
+        assert_eq!(resolved.interaction.status(), InteractionStatus::Resolved);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(update) = continuation.recv().await? {
+                if let ThreadSubscriptionUpdate::Notification { notification } = update
+                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                    && turn.id != completed.id
+                {
+                    anyhow::ensure!(
+                        matches!(turn.state, TurnState::Completed(_)),
+                        "approved continuation failed: {:?}",
+                        turn.state
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+            bail!("approved Plan did not complete its continuation");
+        })
+        .await??;
+        drop(continuation);
+        assert_eq!(env.root_provider.recorded().len(), 2);
+        let mut approved = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut approved).await?.placement, ChatPlacement::Set);
+        assert!(
+            state_snapshot(&mut approved).await?.interactions.is_empty(),
+            "answered Plan returned as pending"
+        );
+        approved.close().await?;
+        approved.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    stage.release();
+    env.finish(result).await
 }
 
 async fn terminal_state_after_set(

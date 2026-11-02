@@ -5,8 +5,6 @@
 //! 释放探测会话。普通检查与登录不发送 prompt；只有显式额度查询会在带 SDK session 路由的
 //! 探测会话中发送固定 `/usage`。这里不安装工具，也不声明文件系统或终端能力。
 
-use std::time::Duration;
-
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AuthMethod as SdkAuthMethod, AuthMethodId, AuthenticateRequest, CloseSessionRequest,
@@ -19,8 +17,9 @@ use agent_client_protocol::{
 
 use super::limits::{self, StreamGuard};
 use super::{
-    AuthAction, AuthError, AuthFailureKind, AuthMethod, AuthMethodKind, AuthOutcome, AuthProgress,
-    AuthRequest, AuthStage, CancellationToken, ServerInfo, UsageFailure, UsageReport, watch,
+    AuthAction, AuthCommand, AuthError, AuthFailureKind, AuthMethod, AuthMethodKind, AuthOutcome,
+    AuthProgress, AuthRequest, AuthStage, CancellationToken, CleanupBudget, ServerInfo,
+    UsageFailure, UsageReport, watch,
 };
 
 /// 参与 v1 协商的客户端名称。
@@ -36,6 +35,8 @@ pub(super) async fn negotiate(
         expected_server_version,
         probe_cwd,
         action,
+        mut commands,
+        cleanup,
         cancellation,
         progress,
     } = request;
@@ -51,7 +52,6 @@ pub(super) async fn negotiate(
             InitializeRequest::new(ProtocolVersion::V1)
                 .client_info(Implementation::new(CLIENT_NAME, env!("CARGO_PKG_VERSION"))),
             AuthStage::Initialize,
-            limits::INITIALIZE_BUDGET,
             AuthFailureKind::Protocol,
         )
         .await?;
@@ -74,22 +74,42 @@ pub(super) async fn negotiate(
         wire,
         probe_cwd: &probe_cwd,
         server: &server,
-        methods: &methods,
         close_supported: initialize
             .agent_capabilities
             .session_capabilities
             .close
             .is_some(),
         progress: &progress,
+        cleanup,
     };
 
-    match action {
-        AuthAction::Check => session.check().await,
-        AuthAction::QueryUsage => session.query_usage().await,
-        AuthAction::Authenticate { method_id } => {
-            session
-                .authenticate(&initialize.auth_methods, method_id)
-                .await
+    loop {
+        let outcome = match action {
+            AuthAction::Check => session.check().await?,
+            AuthAction::QueryUsage => session.query_usage().await?,
+        };
+        if let Some(outcome) = outcome {
+            return Ok(outcome);
+        }
+        publish(
+            &progress,
+            AuthProgress::Required {
+                server: server.clone(),
+                methods: methods.clone(),
+            },
+        );
+        let command = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(AuthError::cancelled(AuthStage::Authenticate)),
+            () = connection.incoming_closed() => return Err(AuthError::new(AuthFailureKind::Transport, AuthStage::Authenticate)),
+            command = commands.recv() => command.ok_or_else(|| AuthError::cancelled(AuthStage::Authenticate))?,
+        };
+        match command {
+            AuthCommand::Authenticate { method_id } => {
+                session
+                    .authenticate(&initialize.auth_methods, method_id)
+                    .await?;
+            }
         }
     }
 }
@@ -104,13 +124,12 @@ struct Wire<'a> {
 impl Wire<'_> {
     /// 业务请求：发送一次并等待响应，同时观察宿主取消。
     ///
-    /// 取消或超时会丢弃等待中的响应 future；SDK 在 `SentRequestCancellation` 的 `Drop` 中向
+    /// 取消会丢弃等待中的响应 future；SDK 在 `SentRequestCancellation` 的 `Drop` 中向
     /// 对端补发一次 `$/cancel_request`，因此不会留下无人等待的在途请求，也不重发该请求。
     async fn send<Req>(
         &self,
         request: Req,
         stage: AuthStage,
-        budget: Duration,
         peer_kind: AuthFailureKind,
     ) -> Result<Req::Response, AuthError>
     where
@@ -122,7 +141,7 @@ impl Wire<'_> {
         tokio::select! {
             biased;
             () = self.cancellation.cancelled() => Err(AuthError::cancelled(stage)),
-            outcome = self.exchange(request, stage, budget, peer_kind) => outcome,
+            outcome = self.exchange(request, stage, peer_kind) => outcome,
         }
     }
 
@@ -134,36 +153,36 @@ impl Wire<'_> {
         &self,
         request: Req,
         stage: AuthStage,
-        budget: Duration,
+        budget: &CleanupBudget,
         peer_kind: AuthFailureKind,
     ) -> Result<Req::Response, AuthError>
     where
         Req: JsonRpcRequest,
     {
-        self.exchange(request, stage, budget, peer_kind).await
+        tokio::time::timeout_at(budget.deadline(), self.exchange(request, stage, peer_kind))
+            .await
+            .map_err(|_| AuthError::timeout(stage))?
     }
 
-    /// 单次请求/响应的公共路径：发布请求、应用阶段预算、把对端错误映射为类型化失败。
+    /// 单次请求/响应的公共路径；由 SDK 在连接关闭时交付在途请求的失败。
     async fn exchange<Req>(
         &self,
         request: Req,
         stage: AuthStage,
-        budget: Duration,
         peer_kind: AuthFailureKind,
     ) -> Result<Req::Response, AuthError>
     where
         Req: JsonRpcRequest,
     {
         let pending = self.connection.send_request(request).block_task();
-        match tokio::time::timeout(budget, pending).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(error)) => Err(AuthError::peer_failure(
+        match pending.await {
+            Ok(response) => Ok(response),
+            Err(error) => Err(AuthError::peer_failure(
                 stage,
                 peer_kind,
                 error,
                 self.stream,
             )),
-            Err(_elapsed) => Err(AuthError::timeout(stage)),
         }
     }
 }
@@ -173,14 +192,14 @@ struct Session<'a> {
     wire: Wire<'a>,
     probe_cwd: &'a str,
     server: &'a Option<ServerInfo>,
-    methods: &'a [AuthMethod],
     close_supported: bool,
     progress: &'a watch::Sender<AuthProgress>,
+    cleanup: CleanupBudget,
 }
 
 impl Session<'_> {
     /// 只探测：探测会话成功即认证可用，`AuthRequired` 转为需要登录。
-    async fn check(self) -> Result<AuthOutcome, AuthError> {
+    async fn check(&self) -> Result<Option<AuthOutcome>, AuthError> {
         publish(self.progress, AuthProgress::Verifying);
         let session = self.probe().await?;
         self.finish(session, None).await
@@ -188,10 +207,10 @@ impl Session<'_> {
 
     /// 登录：核验实际方法后调用 `authenticate`，再用探测会话复核。
     async fn authenticate(
-        self,
+        &self,
         declared: &[SdkAuthMethod],
         method_id: String,
-    ) -> Result<AuthOutcome, AuthError> {
+    ) -> Result<(), AuthError> {
         let wanted = AuthMethodId::new(method_id.as_str());
         let Some(method) = declared.iter().find(|method| method.id() == &wanted) else {
             return Err(AuthError::unsupported_method());
@@ -202,20 +221,21 @@ impl Session<'_> {
             return Err(AuthError::unsupported_method());
         }
 
-        publish(self.progress, AuthProgress::Authenticating);
+        publish(
+            self.progress,
+            AuthProgress::Authenticating {
+                method_id: method_id.clone(),
+            },
+        );
         self.wire
             .send(
                 AuthenticateRequest::new(method_id),
                 AuthStage::Authenticate,
-                limits::AUTHENTICATE_BUDGET,
                 AuthFailureKind::Authentication,
             )
             .await?;
 
-        publish(self.progress, AuthProgress::Verifying);
-        // 登录响应成功但复核仍要求登录时，`finish` 返回 `Required` 而不是 `Verified`。
-        let session = self.probe().await?;
-        self.finish(session, None).await
+        Ok(())
     }
 
     /// 在带 SDK session 路由的探测会话中执行唯一允许的固定 prompt。
@@ -223,7 +243,7 @@ impl Session<'_> {
     /// `session/new` 仍是认证判定：`AuthRequired` 返回 `Required`，其它失败保持外层认证失败。
     /// 会话建立后，额度 RPC/报告失败只形成嵌套 [`UsageReport::Failed`]；取消与会话关闭失败仍然
     /// 是外层失败。关闭发生在 SDK session 路由释放前，随后连接层再负责整体排空。
-    async fn query_usage(self) -> Result<AuthOutcome, AuthError> {
+    async fn query_usage(&self) -> Result<Option<AuthOutcome>, AuthError> {
         publish(self.progress, AuthProgress::Verifying);
         let (started_tx, mut started_rx) = tokio::sync::oneshot::channel();
         let query = self
@@ -241,16 +261,10 @@ impl Session<'_> {
             });
         tokio::pin!(query);
 
-        // 在 closure 真正开始前，future 仍处于 `session/new`；只给这一阶段 PROBE_BUDGET。
-        let probe_deadline = tokio::time::sleep(limits::PROBE_BUDGET);
-        tokio::pin!(probe_deadline);
         tokio::select! {
             biased;
             () = self.wire.cancellation.cancelled() => {
                 return Err(AuthError::cancelled(AuthStage::Probe));
-            }
-            () = &mut probe_deadline => {
-                return Err(AuthError::timeout(AuthStage::Probe));
             }
             started = &mut started_rx => {
                 if started.is_err() {
@@ -272,24 +286,18 @@ impl Session<'_> {
         })?;
         completion.close?;
         let usage = completion.usage?;
-        Ok(AuthOutcome::Verified {
+        Ok(Some(AuthOutcome::Verified {
             server: self.server.clone(),
             usage: Some(usage),
-        })
+        }))
     }
 
     fn finish_query_start(
         &self,
         result: Result<QueryCompletion, RpcError>,
-    ) -> Result<AuthOutcome, AuthError> {
+    ) -> Result<Option<AuthOutcome>, AuthError> {
         match result {
-            Err(error) if error.code == agent_client_protocol::ErrorCode::AuthRequired => {
-                publish(self.progress, AuthProgress::Closing);
-                Ok(AuthOutcome::Required {
-                    server: self.server.clone(),
-                    methods: self.methods.to_vec(),
-                })
-            }
+            Err(error) if error.code == agent_client_protocol::ErrorCode::AuthRequired => Ok(None),
             Err(error) => Err(AuthError::peer_failure(
                 AuthStage::Probe,
                 AuthFailureKind::Probe,
@@ -398,18 +406,13 @@ impl Session<'_> {
 
     /// 在接入专属空工作区建立探测会话；`None` 表示服务端要求登录。
     ///
-    /// 取消或超时会让本次结果不可知；此时不重发 `session/new`，由宿主回收独占进程。
+    /// 取消或断连会让本次结果不可知；此时不重发 `session/new`，由宿主回收独占进程。
     async fn probe(&self) -> Result<Option<SessionId>, AuthError> {
         // `new` 已保证 `mcpServers` 为空，本阶段不向对端提供任何工具。
         let request = NewSessionRequest::new(self.probe_cwd);
         match self
             .wire
-            .send(
-                request,
-                AuthStage::Probe,
-                limits::PROBE_BUDGET,
-                AuthFailureKind::Probe,
-            )
+            .send(request, AuthStage::Probe, AuthFailureKind::Probe)
             .await
         {
             Ok(response) => Ok(Some(response.session_id)),
@@ -420,7 +423,7 @@ impl Session<'_> {
 
     /// 收束：发布关闭阶段，按已协商能力释放探测会话，再返回终态。
     ///
-    /// 已知探测会话必须拿到一次关闭尝试。这一路径不观察业务取消，只受 `CLOSE_BUDGET` 限制：
+    /// 已知探测会话必须拿到一次关闭尝试。这一路径不观察业务取消，只受宿主关闭预算限制：
     /// 用户取消登录不等于可以遗留远端 session。关闭只尝试一次，不重发；真实失败保留原类别
     /// （Transport/Timeout/ResourceLimit），其余远端关闭失败按 `Cleanup` 上报，整体不返回
     /// `Verified`。
@@ -428,20 +431,17 @@ impl Session<'_> {
         &self,
         session: Option<SessionId>,
         usage: Option<UsageReport>,
-    ) -> Result<AuthOutcome, AuthError> {
-        publish(self.progress, AuthProgress::Closing);
+    ) -> Result<Option<AuthOutcome>, AuthError> {
         let Some(session) = session else {
-            return Ok(AuthOutcome::Required {
-                server: self.server.clone(),
-                methods: self.methods.to_vec(),
-            });
+            return Ok(None);
         };
+        publish(self.progress, AuthProgress::Closing);
         self.close_session(session).await?;
         // 服务端未声明 `session/close` 时，探测会话由宿主回收独占进程。
-        Ok(AuthOutcome::Verified {
+        Ok(Some(AuthOutcome::Verified {
             server: self.server.clone(),
             usage,
-        })
+        }))
     }
 
     async fn close_session(&self, session: SessionId) -> Result<(), AuthError> {
@@ -450,7 +450,7 @@ impl Session<'_> {
                 .send_cleanup(
                     CloseSessionRequest::new(session),
                     AuthStage::Close,
-                    limits::CLOSE_BUDGET,
+                    &self.cleanup,
                     AuthFailureKind::Cleanup,
                 )
                 .await?;

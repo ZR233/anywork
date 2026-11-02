@@ -29,17 +29,20 @@
 
 | 层 | 应承担的工作 | 应避免的工作 |
 | --- | --- | --- |
-| Rust | 判定业务事实、校验与保存 | 为 Flutter 分组、折叠或布局建立协议 |
+| Rust | 自有领域的事实、校验与保存；外部事实按原协议适配 | 为 Flutter 分组、折叠或布局建立协议，或补造对端未承诺的保证 |
 | FRB adapter | DTO 与 SDK 类型映射、调用转发、句柄收束 | 业务 reducer、默认业务事实、第二份当前态 |
-| SDK domain／data | typed 值与端口；所属 Repository 唯一归约当前态 | Flutter／Riverpod／FRB 生成类型泄漏到领域 |
+| SDK domain／data | typed 值与端口；所属 Repository 唯一接纳，完整快照直接替换，确需 delta 的领域才归约 | Flutter／Riverpod／FRB 生成类型泄漏到领域 |
 | ViewModel／呈现 owner | 只读投影、必要的展示选择、UI 资源 | 把领域快照拆成伪事件再归约 |
 | Connector／View | 绑定动作与资源／消费不可变 props 和回调 | View 直接读写 Repository、调用 FRB 或在 build 中发业务请求 |
 | AppGraph | 应用实例装配和生命周期协调 | 跨实例可变单例或汇集全部业务数据的 store |
 
-命令响应若携带权威快照，也进入同一个 Repository 写入口，不能在 VM 先写一份“成功态”。
-草稿允许本地编辑，但保存结果由权威快照／事件确认，不能把本地 draft 当已保存值。
+可变列表的成员、顺序、窗口及通知一致性见[可观察查询](observable-queries.md)。
+命令响应只有在领域契约将其选为权威交付时，才将所携带的值送入对应资源的唯一接纳入口；
+独立观察是唯一交付的字段，回执只结算操作。不能在 VM 先写另一份“成功态”，也不要求每个命令额外查询确认。
+草稿允许本地编辑，保存按原协议的回执／事件结算，不把本地 draft 当已保存值，不强制回读。
+迟到结果只能结算原操作，不能修改新页面或新草稿。
 跨语言边界消费 typed DTO／union，不新增运行期 raw JSON 兼容入口。
-结构化接口调整同步迁移 Rust protocol、FRB DTO、SDK model、归约／投影、生成物和权威设计；
+结构化接口调整同步迁移 Rust protocol、FRB DTO、SDK model、接纳／投影、生成物和权威设计；
 线协议命名与基础类型直接遵循 `{workspace}/design/05-conventions.md` §5.1。
 
 ViewState 使用可显示文本、按钮状态、加载或失败等 UI 词汇。Session、feed、Future、permit、

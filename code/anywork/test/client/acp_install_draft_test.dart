@@ -16,7 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'accounts_view_models_test.dart';
 
 const release = AcpInstallReleaseView(
-  version: '1.4.1',
+  version: '1.4.5',
   target: 'linux-x86_64',
   archiveUrl: 'https://dl.google.com/agy-extensions/release.zip',
 );

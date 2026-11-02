@@ -125,13 +125,11 @@ pub(in crate::studio) async fn migrate_bot_identities(
             };
             let mut saved = decode_object::<SavedWorkspaceIdentity>(row.clone())?;
             if saved.identity.endpoint != WorkspaceEndpoint::Local
-                || (saved.identity.root != evidence.old_root
-                    && saved.identity.root != evidence.new_root)
+                || evidence.exact_path(&mut saved.identity.root).is_err()
             {
                 mapping.blocked.insert(thread.clone(), "frozen WorkspaceIdentity is not the exact local bot managed root; original binding was preserved".into());
                 continue;
             }
-            evidence.exact_path(&mut saved.identity.root)?;
             let payload = serde_json::to_string(&saved)?;
             let mut active = row.into_active_model();
             active.payload_hash = Set(pl_core::context::content_hash(payload.as_bytes()));

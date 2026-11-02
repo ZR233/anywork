@@ -93,6 +93,32 @@ final class _AcpTransport extends AccountsTestTransport {
     return reply;
   }
 
+  int continueCalls = 0;
+  String? lastMethod;
+  OperationId? lastContinueTarget;
+  @override
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  }) async {
+    continueCalls += 1;
+    lastMethod = methodId;
+    lastContinueTarget = targetOperationId;
+    return AcpAuthCommandReply(
+      receipt: _receipt(operationId, startRevision),
+      snapshot: _snapshot(
+        startRevision,
+        AcpAuthenticatingState(
+          operationId: targetOperationId.value,
+          methodId: methodId,
+        ),
+      ),
+    );
+  }
+
   @override
   Future<AcpAuthCommandReply> cancelAcpAuth({
     required OperationId operationId,
@@ -258,7 +284,22 @@ void main() {
       client,
       transport._snapshot(
         2,
-        const AcpVerifiedState(checkedAt: 2, server: null),
+        const AcpRequiredState(
+          operationId: 'op-auth',
+          server: null,
+          methods: [
+            AcpAuthMethodView(
+              id: 'browser',
+              name: 'Browser',
+              kind: AcpAuthMethodKindView.agent,
+            ),
+            AcpAuthMethodView(
+              id: 'oauth',
+              name: 'OAuth',
+              kind: AcpAuthMethodKindView.agent,
+            ),
+          ],
+        ),
       ),
     );
     transport.startRevision = 3;
@@ -266,11 +307,10 @@ void main() {
       const AcpAccountIdentity('acp-1'),
       methodId: 'browser',
     );
-    expect(transport.lastAction, isA<AcpAuthenticateActionView>());
-    expect(
-      (transport.lastAction as AcpAuthenticateActionView).methodId,
-      'browser',
-    );
+    expect(transport.continueCalls, 1);
+    expect(transport.startCalls, 1);
+    expect(transport.lastContinueTarget?.value, 'op-auth');
+    expect(transport.lastMethod, 'browser');
     expect(_operation(client).state.value.observed, isTrue);
 
     // topic 先给出在途 operation 身份：取消以该操作作为目标。

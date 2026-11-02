@@ -574,7 +574,10 @@ async fn build(
             if let Some(mapping) = journal.bot_roots.iter().find(|mapping| {
                 mapping.workspace_id == workspace.id
                     && workspace.ssh_alias.is_none()
-                    && workspace.path == mapping.old_root
+                    && bot_roots::same_path(
+                        Path::new(&workspace.path),
+                        Path::new(&mapping.old_root),
+                    )
                     && mapping
                         .threads
                         .values()

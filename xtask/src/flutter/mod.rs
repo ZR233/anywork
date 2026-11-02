@@ -258,6 +258,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         .integration_test
         .as_ref()
         .map(|path| {
+            let project = app_dir.canonicalize()?;
             let root = app_dir.join("integration_test").canonicalize()?;
             let path = app_dir.join(path).canonicalize()?;
             ensure!(
@@ -265,7 +266,10 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
                 "integration test target must be inside {}",
                 root.display()
             );
-            Ok::<_, anyhow::Error>(path.to_string_lossy().into_owned())
+            // Flutter's test discovery does not accept Windows device paths.
+            // Validate the canonical boundary above, then pass a project-relative
+            // target in the invocation's existing application working directory.
+            Ok::<_, anyhow::Error>(path.strip_prefix(project)?.to_string_lossy().into_owned())
         })
         .transpose()?;
     let run_args = if let Some(path) = integration_target.as_deref() {

@@ -15,9 +15,8 @@ import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 
 import '../../presentation/providers/thread_session_store.dart';
-import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/bootstrap_store.dart';
-import '../../presentation/providers/observe_client.dart';
+import '../conversation/interactions/state/interaction_payload.dart';
 
 part 'shell_view.g.dart';
 
@@ -239,7 +238,9 @@ AgentWorkspaceView? conversationWorkspace(
     modelRoute: session?.modelRoute,
     turn: session?.activeTurn,
     lastTurn: session?.workspace?.lastTurn,
-    activeInteraction: primaryInteraction(session?.interactions ?? const []),
+    activeInteraction: activePendingInteraction(
+      session?.interactions ?? const [],
+    ),
     composer: const ComposerThreadState.idle(),
     composerMode: thread.isAgent
         ? AgentComposerMode.runtimeDriven
@@ -252,54 +253,6 @@ AgentWorkspaceView? conversationWorkspace(
       agents: agents,
       threads: [thread, root],
     ),
-  );
-}
-
-/// 只读当前活动与独立领域状态，不拥有 feed 或第二正文镜像。
-class ConversationActivityInput {
-  const ConversationActivityInput({
-    required this.current,
-    required this.storage,
-    required this.interaction,
-  });
-
-  final CurrentProjection? current;
-  final ThreadStorageStateView? storage;
-  final PendingInteraction? interaction;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ConversationActivityInput &&
-          current == other.current &&
-          storage == other.storage &&
-          interaction == other.interaction;
-
-  @override
-  int get hashCode => Object.hash(current, storage, interaction);
-}
-
-@riverpod
-ConversationActivityInput? conversationActivityInput(Ref ref, String threadId) {
-  final session = ref.watch(threadSessionStoreProvider(threadId));
-  if (ref.read(anyworkClientProvider).conversations.visibleThreadId.value !=
-      threadId) {
-    return null;
-  }
-  final owner = ref
-      .read(anyworkClientProvider)
-      .conversations
-      .existingSession(threadId);
-  final current = owner == null
-      ? null
-      : observeClient(ref, owner.current, (_) => ref.invalidateSelf());
-  if (session.workspace == null && !session.hasSnapshot && current == null) {
-    return null;
-  }
-  return ConversationActivityInput(
-    current: current,
-    storage: session.storage,
-    interaction: primaryInteraction(session.interactions),
   );
 }
 
@@ -428,17 +381,6 @@ ProductTopicConnectionStateView? connectionFromSync(DomainSyncStatus sync) {
     errorMessage: sync.errorMessage,
     retryExhausted: sync.retryExhausted,
   );
-}
-
-PendingInteraction? primaryInteraction(List<PendingInteraction> interactions) {
-  if (interactions.isEmpty) return null;
-  final ordered = [...interactions]
-    ..sort(
-      (left, right) =>
-          interactionPriority(left.kind)
-              .compareTo(interactionPriority(right.kind)),
-    );
-  return ordered.first;
 }
 
 StudioThread? threadById(List<StudioThread> threads, String? id) {

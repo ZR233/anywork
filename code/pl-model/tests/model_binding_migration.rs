@@ -296,6 +296,7 @@ fn unknown_prepared_request_versions_fail_closed() {
 fn legacy_assistant_frame_migrates_its_binding() {
     let legacy = legacy_frame_payload(2);
     let output = pl_core::model::ModelStepOutput {
+        turn_action: Default::default(),
         content: vec![pl_core::context::ContextContent::Opaque { payload: legacy }],
         attempt_id: "old".into(),
         base_context_revision: 0,
@@ -305,6 +306,7 @@ fn legacy_assistant_frame_migrates_its_binding() {
     };
     assert!(model_response_receipt(&output).is_err());
     let output = pl_core::model::ModelStepOutput {
+        turn_action: Default::default(),
         attempt_id: "attempt".into(),
         base_context_revision: 0,
         content: vec![pl_core::context::ContextContent::Opaque {
@@ -373,6 +375,7 @@ fn legacy_assistant_frame_migrates_its_binding() {
 fn unknown_assistant_frame_versions_fail_closed() {
     for version in [1, 98, 99] {
         let output = pl_core::model::ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: "attempt".into(),
             base_context_revision: 0,
             content: vec![pl_core::context::ContextContent::Opaque {
@@ -573,6 +576,7 @@ fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
     );
     assert!(migrate_payload(&upgraded).unwrap().is_none());
     let output = pl_core::model::ModelStepOutput {
+        turn_action: Default::default(),
         attempt_id: "attempt-frozen".into(),
         base_context_revision: 7,
         content: vec![pl_core::context::ContextContent::Opaque { payload: upgraded }],

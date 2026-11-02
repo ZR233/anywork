@@ -6,8 +6,8 @@
 //!
 //! - **May migrate** (import a legacy checkpoint, delete the files it replaced, upgrade saved
 //!   representations): [`load_checkpoint_for_recovery`] and the explicit activation/recovery entries
-//!   that call it. Per design/17 a child that is not loaded is migrated by its own single history
-//!   writer before anyone reads it.
+//!   that call it, including cold archive preparation. Per design/17 a child that is not loaded
+//!   is migrated by its own single history writer before anyone reads it.
 //! - **Must never migrate**: [`load_checkpoint_read_only`] and every projection — directory listing,
 //!   thread snapshot and interaction reads. Explicit content handles and Turn pages first prepare
 //!   existing SQLite content at their own entry, then use these read-only projections. Unsupported
@@ -33,7 +33,7 @@ pub(crate) async fn load_checkpoint_read_only(
         .await
 }
 
-/// Explicit activation or parent continuation migrates history before decoding restart state.
+/// Explicit activation, parent continuation or archive prepares history before decoding restart state.
 /// This prepares storage only; it never installs an owner or executes the recovered Thread.
 ///
 /// Model-access extensions saved by a retired format are committed as the current representation
@@ -45,7 +45,7 @@ pub(crate) fn load_checkpoint_for_recovery<'a>(
     thread: &'a pl_protocol::Thread,
 ) -> impl std::future::Future<Output = Result<Option<ThreadCheckpoint>>> + Send + 'a {
     // Cold root/child recovery owns the import/model-preparation state on the heap. Every
-    // activation and parent continuation shares this boundary; polling and cancellation stay
+    // activation, parent continuation and archive shares this boundary; polling and cancellation stay
     // with the caller, rather than creating an independently running recovery task.
     Box::pin(async move {
         let history = store.history_for(&thread.workspace_id, &thread.id).await?;

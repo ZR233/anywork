@@ -389,6 +389,7 @@ mod tests {
             rejection: None,
         }];
         ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: "attempt".into(),
             base_context_revision: 1,
             content: vec![
@@ -564,6 +565,7 @@ mod tests {
             },
         ] {
             let output = ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: "attempt".into(),
                 base_context_revision: 1,
                 content: vec![],
@@ -628,6 +630,7 @@ mod tests {
             "model": "frozen-model"
         });
         let output = ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: "attempt".into(),
             base_context_revision: 1,
             tool_calls: vec![],

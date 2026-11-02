@@ -1,8 +1,6 @@
 //! 认证命令的阶段预算、入站字节预算与流层故障观察。
 //!
-//! 预算常量是本阶段的实现选择，不是协议契约：宿主可以按真实登录耗时与自身关闭预算调整，
-//! 但不改变成功判定。人工登录预算显著长于协商、探测与关闭，因为用户要在外部程序中完成
-//! 浏览器登录。
+//! 登录阶段不设置墙钟期限；关闭预算由宿主提供。这里仅保留额度回合与字节资源限制。
 
 use std::io;
 use std::pin::Pin;
@@ -13,25 +11,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// `initialize` 协商预算，包含对端程序冷启动时的自解包与模块加载。
-///
-/// 取得标准流不代表对端已就绪；Windows 官方发行程序可能在首次响应前超过 30 秒。
-/// 保留有界等待，并由请求层在整个等待期间观察取消。
-pub(super) const INITIALIZE_BUDGET: Duration = Duration::from_secs(3 * 60);
-/// `session/new` 探测预算。
-pub(super) const PROBE_BUDGET: Duration = Duration::from_secs(60);
-/// 固定 `/usage` 回合预算；只覆盖 prompt 请求及匹配会话的报告收集。
+/// 固定 `/usage` 回合预算；只覆盖 prompt 请求及报告收集，不限制登录流程。
 pub(super) const USAGE_QUERY_BUDGET: Duration = Duration::from_secs(60);
-/// 人工登录预算。
-pub(super) const AUTHENTICATE_BUDGET: Duration = Duration::from_secs(15 * 60);
-/// `session/close` 预算。
-pub(super) const CLOSE_BUDGET: Duration = Duration::from_secs(10);
-/// 前台协议步骤结束之后，SDK 收束连接的独立预算。
-///
-/// 前台结束后 SDK 仍要排空已接受的输出、flush/shutdown 物理写端并等待 transport 驱动完成，
-/// 而官方 SDK 的连接驱动明确没有隐式超时：对端不再读取管道时这一段会一直 Pending。这里给它
-/// 单独预算，只覆盖收束，不截断人工登录，也不从连接建立起算。
-pub(super) const DRAIN_BUDGET: Duration = Duration::from_secs(10);
 /// 单次认证命令允许消费的入站字节上限。
 pub(super) const INPUT_BYTE_BUDGET: u64 = 8 * 1024 * 1024;
 /// 固定 `/usage` 报告中允许保留的 agent text 总量。

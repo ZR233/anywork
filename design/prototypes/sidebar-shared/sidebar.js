@@ -429,7 +429,7 @@
             type="button"
             class="sb-new-session-btn"
             data-sb-action="standalone-start"
-            title="新建无需绑定项目的独立会话 (Ctrl+N)">
+            title="新建会话（进入新会话页，默认无项目，可在页内切换已有项目或新建项目 · Ctrl+N）">
             ${lucideIcon('square-pen')}
             <span>新建会话</span>
             <span class="sb-kbd">Ctrl+N</span>
@@ -1435,7 +1435,14 @@
       this.dialogEl.showModal();
     }
 
-    openAddProjectDialog() {
+    openAddProjectDialog(initialName = '') {
+      const cleanSeed = String(initialName || '').trim().replace(/[\\/:*?"<>|]+/g, '-');
+      if (cleanSeed) {
+        this.addWizardState.name = cleanSeed;
+        this.addWizardState.path = this.addWizardState.remote
+          ? `/srv/repos/${cleanSeed}`
+          : `C:\\Users\\dev\\work\\${cleanSeed}`;
+      }
       const renderWizard = () => {
         const w = this.addWizardState;
         const selectedHost = SSH_HOSTS.find(h => h.alias === w.sshAlias) || SSH_HOSTS[0];

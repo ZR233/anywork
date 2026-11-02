@@ -292,7 +292,7 @@ abstract final class AccountPreviewFixtures {
     selectedLoginMethod: 'synthetic-browser',
     canSelectLoginMethod: true,
     facts: [
-      AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.1 · linux-x64'),
+      AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.5 · linux-x64'),
     ],
   );
   static final list = AccountsListPresentation(

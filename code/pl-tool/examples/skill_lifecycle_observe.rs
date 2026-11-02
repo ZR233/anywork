@@ -75,6 +75,7 @@ impl ModelSession for HeldSkillCall {
                 let _ = release.await;
             }
             Ok(ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: Vec::new(),

@@ -10,6 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_mark
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -91,12 +92,92 @@ Finder get _rowTap => find
 
 void main() {
   testWidgets(
+    'Turn completion, failure and stop preserve distinct semantics without invented meta',
+    (tester) async {
+      for (final (outcome, icon) in [
+        ('completed', Icons.account_tree_outlined),
+        ('failed', Icons.error_outline),
+        ('cancelled', Icons.stop_circle_outlined),
+        ('interrupted', Icons.stop_circle_outlined),
+      ]) {
+        await _show(
+          tester,
+          _item('terminal-$outcome', 'turn', {
+            'outcome': {'kind': outcome},
+          }),
+        );
+        expect(find.byIcon(icon), findsOneWidget, reason: outcome);
+        final row = tester.widget<TimelineActivityRow>(
+          find.byType(TimelineActivityRow),
+        );
+        expect(row.meta, isNull);
+        expect(find.text('0s'), findsNothing);
+        expect(find.byType(Card), findsNothing);
+        expect(
+          tester
+              .widget<ExpansionTile>(find.byType(ExpansionTile))
+              .showTrailingIcon,
+          isFalse,
+        );
+      }
+    },
+  );
+
+  testWidgets(
+    'collapsed history processes keep the compact row height and grow with text scale',
+    (tester) async {
+      final cases = [
+        (_item('compact-thinking', 'thinking', {}), 28.0),
+        // Tools also expose a separate public-record disclosure row.
+        (_tool('builtin.exec@2'), 56.0),
+        (
+          _item('compact-plan', 'plan', {
+            'decision': 'approved',
+            'documentVersion': 3,
+          }),
+          28.0,
+        ),
+      ];
+      for (final (item, compactHeight) in cases) {
+        for (final scale in [1.0, 2.5]) {
+          await tester.pumpWidget(
+            _host(
+              Builder(
+                builder: (context) => MediaQuery(
+                  data: MediaQuery.of(context)
+                      .copyWith(textScaler: TextScaler.linear(scale)),
+                  child: ChatItemView(key: ValueKey(item.id), item: item),
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          final height = tester
+              .getSize(find.byKey(ValueKey('chat-item:${item.id}')))
+              .height;
+          expect(
+            height,
+            scale == 1
+                ? closeTo(compactHeight, .01)
+                : greaterThan(compactHeight),
+            reason: '${item.type} at text scale $scale',
+          );
+          expect(tester.takeException(), isNull);
+        }
+      }
+    },
+  );
+
+  testWidgets(
     'only exact current marker enables specialized command parsing; generic and unknown preserve public original',
     (tester) async {
       await _show(tester, _tool('builtin.exec@2', name: 'untrusted name'));
       expect(find.byType(TimelineToolDetails), findsOneWidget);
       final row = tester.widget<TimelineActivityRow>(
-        find.byType(TimelineActivityRow),
+        find.descendant(
+          of: find.byType(TimelineToolDetails),
+          matching: find.byType(TimelineActivityRow),
+        ),
       );
       expect(row.icon, Icons.terminal);
       expect(row.label, contains('printf proof'));
@@ -110,7 +191,10 @@ void main() {
         await _show(tester, _tool(marker));
         if (marker == 'generic@1') {
           final generic = tester.widget<TimelineActivityRow>(
-            find.byType(TimelineActivityRow),
+            find.descendant(
+              of: find.byType(TimelineToolDetails),
+              matching: find.byType(TimelineActivityRow),
+            ),
           );
           expect(generic.icon, Icons.build_outlined);
           expect(generic.label, isNot(contains('printf proof')));
@@ -158,7 +242,10 @@ void main() {
         );
         expect(find.byType(TimelineToolDetails), findsOneWidget, reason: name);
         final row = tester.widget<TimelineActivityRow>(
-          find.byType(TimelineActivityRow),
+          find.descendant(
+            of: find.byType(TimelineToolDetails),
+            matching: find.byType(TimelineActivityRow),
+          ),
         );
         expect(row.icon, icon, reason: name);
         await tester.tap(_rowTap);
@@ -254,18 +341,25 @@ void main() {
       );
       expect(
         tester
-            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow).first)
             .label,
-        contains('bounded summary'),
+        isNotEmpty,
       );
-      expect(find.text('reasoning proof'), findsNothing);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
+      expect(find.textContaining('bounded summary'), findsOneWidget);
       expect(find.text('reasoning proof'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow).first)
+            .expandable,
+        isFalse,
+        reason: 'Opening the parent group already exposes the thinking content',
+      );
       final cases = <(String, Map<String, Object?>, IconData)>[
         (
           'skill',
-          {'name': 'test skill', 'source': 'project'},
+          {
+            'activation': {'name': 'test skill', 'source': 'project'},
+          },
           Icons.auto_awesome_outlined,
         ),
         ('file', {'path': 'test.dart'}, Icons.description_outlined),
@@ -320,7 +414,11 @@ void main() {
           bodies: [_body('plan.document', 'plan proof')],
         ),
       );
-      expect(find.byType(Card), findsOneWidget);
+      expect(find.byType(Card), findsNothing);
+      expect(find.text('计划已批准'), findsOneWidget);
+      expect(find.text('plan proof'), findsNothing);
+      await tester.tap(find.text('计划已批准'));
+      await tester.pumpAndSettle();
       expect(find.text('plan proof'), findsOneWidget);
     },
   );
@@ -369,27 +467,63 @@ void main() {
           extra: {
             'userInput': {
               'questions': [
-                {'id': 'public', 'isSecret': false},
-                {'id': 'secret', 'isSecret': true},
+                {'id': 'public', 'isSecret': false, 'optionCount': 2},
+                {'id': 'secret', 'isSecret': true, 'optionCount': 0},
               ],
               'state': {
                 'kind': 'resolved',
                 'answers': [
-                  {'questionId': 'secret', 'redacted': true},
+                  {'questionId': 'secret', 'redacted': true, 'answerCount': 1},
+                  {'questionId': 'public', 'redacted': false, 'answerCount': 2},
                 ],
               },
             },
           },
           bodies: [
             _body('tool.arguments', '{}'),
-            _body('tool.user-input.question.0.header', 'public question'),
             _body('tool.user-input.answer.0.0', 'public answer'),
+            _body(
+              'tool.user-input.question.0.option.1.description',
+              'second detail',
+            ),
+            _body('tool.user-input.question.0.option.0.label', 'first option'),
+            _body('tool.user-input.question.0.body', 'public prompt'),
+            _body('tool.user-input.answer.0.1', 'second answer'),
+            _body('tool.user-input.question.0.header', 'public question'),
+            _body('tool.user-input.question.0.option.1.label', 'second option'),
+            _body(
+              'tool.user-input.question.0.option.0.description',
+              'first detail',
+            ),
             _body('tool.user-input.answer.1.0', 'SECRET'),
           ],
         ),
       );
+      expect(find.text('public question'), findsNothing);
+      await tester.tap(
+        find.byKey(StudioDriverKeys.timelineUserInput('tool:generic@1')),
+      );
+      await tester.pumpAndSettle();
       expect(find.text('public question'), findsOneWidget);
       expect(find.text('public answer'), findsOneWidget);
+      final ordered = [
+        'public question',
+        'public prompt',
+        '可选项',
+        'first option',
+        'first detail',
+        'second option',
+        'second detail',
+        '实际回答',
+        'public answer',
+        'second answer',
+      ];
+      for (var index = 1; index < ordered.length; index++) {
+        expect(
+          tester.getTopLeft(find.text(ordered[index])).dy,
+          greaterThan(tester.getTopLeft(find.text(ordered[index - 1])).dy),
+        );
+      }
       expect(find.text('敏感内容已隐藏'), findsOneWidget);
       expect(find.text('SECRET'), findsNothing);
       await tester.ensureVisible(find.text('公开原始记录'));

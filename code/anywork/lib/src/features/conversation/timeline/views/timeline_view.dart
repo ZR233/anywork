@@ -34,7 +34,7 @@ class TimelineView extends StatefulWidget {
     required this.remoteImageBuilder,
     this.planSummary,
     this.pendingPlanInteractionId,
-    this.readContent,
+    this.contentRangeBuilder,
     this.childrenBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
@@ -54,7 +54,7 @@ class TimelineView extends StatefulWidget {
   final Widget Function(BuildContext, String) remoteImageBuilder;
   final Widget? planSummary;
   final String? pendingPlanInteractionId;
-  final ChatContentRead? readContent;
+  final ChatContentRangeBuilder? contentRangeBuilder;
   final Widget Function(String parentId)? childrenBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
@@ -404,6 +404,11 @@ class _TimelineViewState extends State<TimelineView> {
                                         if (isRemoved == true) {
                                           return const SizedBox.shrink();
                                         }
+                                        final promptLike =
+                                            isSentByMe ||
+                                            chatItemPresentationOf(message)
+                                                    ?.authorId ==
+                                                'parentAgent';
                                         return ChatMessage(
                                           key: StudioDriverKeys.timelineRow(
                                             message.id,
@@ -415,27 +420,48 @@ class _TimelineViewState extends State<TimelineView> {
                                           groupStatus: groupStatus,
                                           horizontalPadding: 24,
                                           verticalPadding: 8,
-                                          child: isSentByMe
-                                              ? Container(
-                                                  constraints: const BoxConstraints(
-                                                    maxWidth: StudioLayout
-                                                        .conversationPromptWidth,
-                                                  ),
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 16,
-                                                        vertical: 10,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: context
-                                                        .colors
-                                                        .surfaceContainerLow,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          12,
+                                          child: promptLike
+                                              ? Align(
+                                                  alignment:
+                                                      AlignmentDirectional
+                                                          .centerEnd,
+                                                  child: Container(
+                                                    constraints:
+                                                        const BoxConstraints(
+                                                          maxWidth: StudioLayout
+                                                              .conversationPromptWidth,
                                                         ),
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 16,
+                                                          vertical: 10,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: context
+                                                          .colors
+                                                          .surfaceContainerLow,
+                                                      borderRadius:
+                                                          const BorderRadius.only(
+                                                            topLeft:
+                                                                Radius.circular(
+                                                                  16,
+                                                                ),
+                                                            topRight:
+                                                                Radius.circular(
+                                                                  16,
+                                                                ),
+                                                            bottomLeft:
+                                                                Radius.circular(
+                                                                  16,
+                                                                ),
+                                                            bottomRight:
+                                                                Radius.circular(
+                                                                  4,
+                                                                ),
+                                                          ),
+                                                    ),
+                                                    child: child,
                                                   ),
-                                                  child: child,
                                                 )
                                               : SizedBox(
                                                   width: double.infinity,
@@ -453,7 +479,8 @@ class _TimelineViewState extends State<TimelineView> {
                                       }) => ChatItemView(
                                         item: chatItemPresentationOf(message)!,
                                         bodyBuilder: _body,
-                                        readContent: widget.readContent,
+                                        contentRangeBuilder:
+                                            widget.contentRangeBuilder,
                                         childrenBuilder: widget.childrenBuilder,
                                         attachmentBuilder:
                                             widget.attachmentBuilder,

@@ -23,7 +23,10 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
         for mapping in mappings {
             if entry.id == mapping.workspace_id
                 && entry.ssh_alias.is_none()
-                && entry.path == mapping.old_root
+                && crate::studio::startup::storage_layout::bot_roots::same_path(
+                    std::path::Path::new(&entry.path),
+                    std::path::Path::new(&mapping.old_root),
+                )
                 && mapping
                     .threads
                     .values()

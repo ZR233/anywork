@@ -14,6 +14,7 @@ impl ModelSession for ImmediateModel {
     async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
         Ok(PreparedModelCall::new(async move {
             Ok(ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: vec![ContextContent::Text {

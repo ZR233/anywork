@@ -11,7 +11,8 @@ import '../domain/models/agent_workspace_view.dart';
 import '../features/conversation/timeline/state/chat_item_presentation.dart';
 import '../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../features/conversation/timeline/state/chat_payload_reading.dart';
-import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
+import '../features/conversation/interactions/state/interaction_payload.dart';
+import '../features/shell/shell_view.dart' show projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_state.dart';
 
@@ -126,7 +127,9 @@ StudioDriverFacts queryStudioDriverFacts(
       modelRoute: session?.modelRoute,
       turn: session?.activeTurn,
       lastTurn: session?.workspace?.lastTurn,
-      activeInteraction: primaryInteraction(session?.interactions ?? const []),
+      activeInteraction: activePendingInteraction(
+        session?.interactions ?? const [],
+      ),
       composer: threadComposer,
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven

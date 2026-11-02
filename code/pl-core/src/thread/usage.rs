@@ -66,6 +66,7 @@ mod tests {
             ..Default::default()
         };
         let output = ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: "attempt".into(),
             base_context_revision: 0,
             content: Vec::new(),

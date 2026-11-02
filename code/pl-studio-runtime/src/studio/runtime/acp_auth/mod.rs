@@ -16,6 +16,7 @@
 //! （见 design/28 §28.2–28.4、design/18 §18.2）。
 
 mod admission;
+mod continuation;
 mod mapping;
 mod operation;
 mod projection;

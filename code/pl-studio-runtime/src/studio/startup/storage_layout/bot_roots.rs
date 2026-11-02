@@ -3,6 +3,13 @@ use super::*;
 use crate::studio::catalog::CatalogEntry;
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 
+/// Compare recorded addresses without resolving a source already moved to backup.
+/// Use native path components after safe Windows verbatim-prefix simplification,
+/// never filesystem aliases or descendant/prefix matching.
+pub(in crate::studio) fn same_path(left: &Path, right: &Path) -> bool {
+    dunce::simplified(left) == dunce::simplified(right)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BotRootMove {
@@ -106,7 +113,7 @@ pub(super) async fn plan(
                     let diagnostic = if frozen.is_none() {
                         Some("bot checkpoint has no stable owner evidence; execution binding was preserved".into())
                     } else if entry.workspace_mode != pl_protocol::ThreadWorkspaceMode::Local
-                        || entry.workspace_path != old_root
+                        || !same_path(Path::new(&entry.workspace_path), Path::new(&old_root))
                     {
                         Some("bot execution binding is not the exact local managed root; original execution address was preserved".into())
                     } else {
@@ -349,9 +356,9 @@ pub(super) async fn migrate_workspace_completions(
             };
             let old = Path::new(&mapping.old_root).join(files.root());
             let current = Path::new(&mapping.new_root).join(files.root());
-            if content == old.to_string_lossy().as_bytes()
-                || content == current.to_string_lossy().as_bytes()
-            {
+            if std::str::from_utf8(&content).is_ok_and(|content| {
+                same_path(Path::new(content), &old) || same_path(Path::new(content), &current)
+            }) {
                 // A prior atomic replacement may have applied before its sync failed.
                 // Reconfirm that write before advancing the layout version on a retry.
                 session_layout::write_manifest(&marker, &current.to_string_lossy())
@@ -367,7 +374,10 @@ impl BotRootMove {
     fn validate(&self, paths: &StudioPaths) -> Result<()> {
         crate::bots::validate_bot_id(&self.bot_id)?;
         ensure!(
-            Path::new(&self.new_root) == paths.bot_dir(&self.bot_id).join("workspace"),
+            same_path(
+                Path::new(&self.new_root),
+                &paths.bot_dir(&self.bot_id).join("workspace")
+            ),
             "bot migration destination identity mismatch"
         );
         let expected = [
@@ -383,7 +393,9 @@ impl BotRootMove {
                 .join("workspace"),
         ];
         ensure!(
-            expected.iter().any(|old| old == Path::new(&self.old_root)),
+            expected
+                .iter()
+                .any(|old| same_path(old, Path::new(&self.old_root))),
             "bot migration source identity mismatch"
         );
         ensure!(
@@ -425,14 +437,12 @@ impl BotRootMove {
         Ok(())
     }
     pub(crate) fn exact_path(&self, value: &mut String) -> Result<()> {
-        if *value == self.old_root {
-            *value = self.new_root.clone();
-        } else {
-            ensure!(
-                *value == self.new_root,
-                "bot execution address differs from both exact migration roots"
-            );
-        }
+        ensure!(
+            same_path(Path::new(value), Path::new(&self.old_root))
+                || same_path(Path::new(value), Path::new(&self.new_root)),
+            "bot execution address differs from both exact migration roots"
+        );
+        value.clone_from(&self.new_root);
         Ok(())
     }
 }

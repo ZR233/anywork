@@ -43,6 +43,18 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 
 官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
+### 24.1.3 时间线呈现与官方集成测试
+
+时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
+
+迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除共享 Driver 人工诊断能力。
+
+`timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
+
+视觉证据必须来自本次相关运行，并标明原生平台或合成预览、视口及覆盖状态。截图采集使用官方框架能力或成熟平台截图工具，不为截图创建第二份产品状态；采集成功后仍须人工检查实际画面。概念稿仅作视觉参照，模拟 provider 和合成预览均不证明真实模型兼容，图片附件交付也不代替自动化断言和资源退出证据。
+
+手工布局诊断优先使用官方 [DevTools Inspector](https://docs.flutter.dev/tools/devtools/inspector)，AI 辅助运行时检查可使用官方 [Dart/Flutter MCP](https://docs.flutter.dev/ai/tools)。可重复功能交互采用 [integration_test](https://docs.flutter.dev/testing/integration-tests)，不把人工调试能力与自动化测试运行器混为一谈；MCP 暴露的 Driver 操作仍属于 Driver，不因接入 MCP 就声称完成 [Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)。截图须核对当前 SDK 和目标平台的实际支持：通过官方渲染 API（如 `RepaintBoundary.toImage`）取得的应用渲染表面不包含原生窗口装饰、系统菜单或平台视图，需要这些内容时另用平台截图能力。替换旧入口时只迁移已证明覆盖等价的范围，不为截图新增私有调试协议或修改用户工具配置。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。
@@ -135,7 +147,7 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 ## 24.6 其他观察入口与证据范围
 
 - 机器人本地协议对端、真实平台授权和客户端渲染是不同边界，见 [27](./27-bots.md#279-验收边界)。模拟平台或 CLI 自发自读不能证明真实产品回复；真实账号操作仍受明确授权与凭据脱敏约束。
-- ACP 安装和认证观察见 [28](./28-acp.md)。受控网络对端不授权关闭 TLS 校验或扩大生产下载来源。
+- ACP 安装和认证观察见 [28](./28-acp.md#2810-登录验收)。固定发行的发布摘要不可用合成 ZIP 替代；协议/Client 受控回归和真实官方准备、浏览器授权、额度及重启验证分别报告。受控网络对端不授权关闭 TLS、摘要校验或扩大生产下载来源。
 - 工作树关闭、存储迁移、上下文恢复及账号隔离的行为分别由对应产品设计定义。本地样例、旧接口结果和未完成采集不构成这些行为已经验证的证据。
 
 ## 24.7 流式输出的现实规模基准

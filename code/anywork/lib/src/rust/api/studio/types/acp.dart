@@ -173,16 +173,8 @@ class BridgeAcpAuthAccount {
           usage == other.usage;
 }
 
-@freezed
-sealed class BridgeAcpAuthAction with _$BridgeAcpAuthAction {
-  const BridgeAcpAuthAction._();
-
-  const factory BridgeAcpAuthAction.check() = BridgeAcpAuthAction_Check;
-  const factory BridgeAcpAuthAction.queryUsage() =
-      BridgeAcpAuthAction_QueryUsage;
-  const factory BridgeAcpAuthAction.authenticate({required String methodId}) =
-      BridgeAcpAuthAction_Authenticate;
-}
+/// 认证命令输入动作。
+enum BridgeAcpAuthAction { check, queryUsage }
 
 /// 认证命令的受理回执与受理时快照。
 class BridgeAcpAuthCommandReply {
@@ -346,6 +338,7 @@ sealed class BridgeAcpAuthState with _$BridgeAcpAuthState {
   const factory BridgeAcpAuthState.checking({required String operationId}) =
       BridgeAcpAuthState_Checking;
   const factory BridgeAcpAuthState.required_({
+    required String operationId,
     required List<BridgeAcpAuthMethod> methods,
 
     /// 协议观察；对端未提供 `agentInfo` 时为 `None`（未知），不用本地账号名冒充。

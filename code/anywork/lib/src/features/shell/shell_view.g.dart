@@ -439,7 +439,7 @@ final class ConversationWorkspaceProvider
 }
 
 String _$conversationWorkspaceHash() =>
-    r'22700fec2f1b3036e243a356ca64b568d08cd0a4';
+    r'13038da506c9f5f870ca9287ae0c9ae44599fd36';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -474,91 +474,6 @@ final class ConversationWorkspaceFamily extends $Family
 
   @override
   String toString() => r'conversationWorkspaceProvider';
-}
-
-@ProviderFor(conversationActivityInput)
-final conversationActivityInputProvider = ConversationActivityInputFamily._();
-
-final class ConversationActivityInputProvider
-    extends
-        $FunctionalProvider<
-          ConversationActivityInput?,
-          ConversationActivityInput?,
-          ConversationActivityInput?
-        >
-    with $Provider<ConversationActivityInput?> {
-  ConversationActivityInputProvider._({
-    required ConversationActivityInputFamily super.from,
-    required String super.argument,
-  }) : super(
-         retry: null,
-         name: r'conversationActivityInputProvider',
-         isAutoDispose: true,
-         dependencies: null,
-         $allTransitiveDependencies: null,
-       );
-
-  @override
-  String debugGetCreateSourceHash() => _$conversationActivityInputHash();
-
-  @override
-  String toString() {
-    return r'conversationActivityInputProvider'
-        ''
-        '($argument)';
-  }
-
-  @$internal
-  @override
-  $ProviderElement<ConversationActivityInput?> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  ConversationActivityInput? create(Ref ref) {
-    final argument = this.argument as String;
-    return conversationActivityInput(ref, argument);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(ConversationActivityInput? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<ConversationActivityInput?>(value),
-    );
-  }
-
-  @override
-  bool operator ==(Object other) {
-    return other is ConversationActivityInputProvider &&
-        other.argument == argument;
-  }
-
-  @override
-  int get hashCode {
-    return argument.hashCode;
-  }
-}
-
-String _$conversationActivityInputHash() =>
-    r'f7dadf36f59a48656233aba7c27c8aa526da01af';
-
-final class ConversationActivityInputFamily extends $Family
-    with $FunctionalFamilyOverride<ConversationActivityInput?, String> {
-  ConversationActivityInputFamily._()
-    : super(
-        retry: null,
-        name: r'conversationActivityInputProvider',
-        dependencies: null,
-        $allTransitiveDependencies: null,
-        isAutoDispose: true,
-      );
-
-  ConversationActivityInputProvider call(String threadId) =>
-      ConversationActivityInputProvider._(argument: threadId, from: this);
-
-  @override
-  String toString() => r'conversationActivityInputProvider';
 }
 
 @ProviderFor(persistencePanelView)

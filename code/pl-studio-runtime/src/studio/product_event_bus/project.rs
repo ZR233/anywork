@@ -58,17 +58,18 @@ impl ProductEventBus {
         if upserted.is_empty() && removed.is_empty() {
             return Ok(None);
         }
-        let mut index = self
-            .thread_index
-            .lock()
-            .expect("thread index lock poisoned");
-        index.update_projects(upserted, removed);
-        self.bump(&self.revisions.thread);
-        self.topics
-            .lock()
-            .expect("product topic channels lock poisoned")
-            .notify(&crate::StudioProductTopic::ThreadDirectory);
-        drop(index);
+        {
+            let mut index = self
+                .thread_index
+                .lock()
+                .expect("thread index lock poisoned");
+            index.update_projects(upserted, removed);
+            self.bump(&self.revisions.thread);
+            self.topics
+                .lock()
+                .expect("product topic channels lock poisoned")
+                .notify(&crate::StudioProductTopic::ThreadDirectory);
+        }
         self.apply_project_snapshot_delta(upserted, removed).await
     }
 
