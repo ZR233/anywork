@@ -15,7 +15,6 @@ import '../../lifecycle/resource_budget.dart';
 /// 在 bootstrap 完成后一次性持有；其余 topics 只随可见页面/面板按需租用。
 const List<ProductTopic> bridgeShellTopics = [
   ProjectDirectoryTopic(),
-  ThreadDirectoryTopic(),
   AgentDirectoryTopic(),
   SettingsConfigTopic(),
   RecoveryTopic(),

@@ -298,10 +298,13 @@ void main() {
   test('mirror admission failure withdraws visibility without signaling a missing owner', () async {
     final fixture = ConversationFixture(
       budget: ResourceBudget(
-        capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 1},
+        // The visible Conversation and its independent metadata each own one
+        // read model. A missing Conversation must still fail mirror admission.
+        capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 2},
       ),
     );
     final feed = await fixture.open(demand: _demand);
+    expect(fixture.client.budget.used(ResourceKind.readModel), 2);
     final targets = <String?>[];
     final observation = fixture.repository.visibleThreadId.watch(targets.add);
     expect(
@@ -678,14 +681,6 @@ void main() {
       expect(fixture.repository.sessionStates, isEmpty);
       expect(fixture.transport.opens, isEmpty);
       // Selection and visible demand are independent; neither stops business work.
-      fixture.client.threadDirectory.applyBaseline(
-        ThreadDirectoryPage(
-          threads: [testThread()],
-          nextCursor: null,
-          revision: 1,
-        ),
-        revision: 1,
-      );
       fixture.client.selection.selectThread(
         threadId: 'thread',
         workspaceId: 'project',

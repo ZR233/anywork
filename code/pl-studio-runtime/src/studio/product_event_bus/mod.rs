@@ -1,6 +1,6 @@
 //! Studio 低频产品状态 owner 与事件通道：类型定义、事件发射与 revision 机械。
 //!
-//! Project 目录基线装载与应用在 `project`，Thread 目录热集合、冷分页 overlay
+//! Project 目录基线装载与应用在 `project`，Thread 当前摘要、有序 ID 索引
 //! 与目录事实提交在 `thread_directory`，其余低频状态快照与事件发射在
 //! `snapshots`，topic 通道注册与分发路由在 `topics`。
 
@@ -10,13 +10,13 @@ mod snapshots;
 mod thread_directory;
 mod topics;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-use pl_protocol::{ObservedResource, Thread};
+use pl_protocol::ObservedResource;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::{
@@ -33,8 +33,8 @@ use topics::TopicChannels;
 ///
 /// 启动时以 `workspaces.toml` 建立 Project 小集合基线；运行期间 Project、Thread 与
 /// Agent 目录快照都由内存增量提交维护。所有 `read_*` 都是纯查询，活动事件不得
-/// 回读数据库覆盖热事实。Thread 目录是"活动热集合 + `catalog.toml` 冷分页 overlay"：
-/// `thread_index` 只保存仍有内存事实的 Thread，旧数据分页回源 `catalog.toml`；
+/// 回读数据库覆盖当前事实。Thread 目录在启动时从已加载的 Catalog 建立唯一摘要集合，
+/// `thread_index` 同步维护全部摘要、有序 ID 和查询所需的 Project 搜索投影；
 /// SQLite `thread`/`project` 表只是 write-behind 镜像，运行期不作为第二读事实源。
 ///
 /// GUI 订阅按 typed topic 登记（`subscribe_topic`）；runtime 内部消费者（如工具目录
@@ -52,9 +52,13 @@ pub struct ProductEventBus {
     persistence_snapshot: Arc<std::sync::Mutex<PersistenceStateSnapshot>>,
     persistence_queue: Arc<std::sync::Mutex<PersistenceQueuePublication>>,
     agents: Arc<Mutex<BTreeMap<String, StudioAgentDirectoryEntry>>>,
-    /// 活动热集合（thread id → 列表元数据）：驻留、钉住或
-    /// 目录 delta 尚未耐久化的 Thread；不含纯冷数据。
-    thread_index: Arc<std::sync::Mutex<HashMap<String, Thread>>>,
+    /// 唯一当前目录摘要；锁顺序为 index → child projection / writer / topics。
+    /// 不跨 I/O 或 await；持久化批次不反写已提交的较新摘要。
+    thread_index: Arc<std::sync::Mutex<thread_directory::ThreadDirectoryIndex>>,
+    /// Serialize durable commands only. Queries and hot writers never acquire this lock.
+    directory_commands: Arc<Mutex<()>>,
+    #[cfg(test)]
+    directory_test_pauses: Arc<thread_directory::tests::DirectoryTestPauses>,
     /// 已发布的 Mode catalog revision；按真变才发，避免重复装载空转发布。
     mode_catalog_revision: Arc<std::sync::Mutex<u64>>,
     child_interactions: Arc<std::sync::Mutex<ChildInteractionsProjection>>,
@@ -123,14 +127,33 @@ impl ProductEventBus {
             .map(|entry| entry.to_thread())
             .collect::<Vec<_>>();
         child_interactions::prepare_entries(&mut child_interactions, &directory);
-        Self {
+        let project_entries = store.workspaces().entries();
+        let query_projects = project_entries
+            .iter()
+            .map(|entry| crate::WorkspaceRecord {
+                id: entry.id.clone(),
+                kind: entry.kind,
+                name: entry.name.clone(),
+                path: entry.path.clone(),
+                ssh_alias: entry.ssh_alias.clone(),
+                updated_at: entry.updated_at,
+            })
+            .collect::<Vec<_>>();
+        let projects = query_projects
+            .iter()
+            .zip(project_entries.iter())
+            .filter(|(_, entry)| !entry.closed)
+            .map(|(project, _)| project.clone())
+            .collect::<Vec<_>>();
+        let thread_index = thread_directory::ThreadDirectoryIndex::new(directory, &query_projects);
+        let events = Self {
             store,
             writer,
             internal,
             topics: Arc::new(std::sync::Mutex::new(TopicChannels::default())),
             sequence: Arc::new(AtomicU64::new(0)),
             revisions: Arc::new(ProductStateRevisions::default()),
-            project_snapshot: Arc::new(Mutex::new(Vec::new())),
+            project_snapshot: Arc::new(Mutex::new(projects)),
             persistence_snapshot: Arc::new(std::sync::Mutex::new(
                 PersistenceStateSnapshot::default(),
             )),
@@ -138,10 +161,15 @@ impl ProductEventBus {
                 PersistenceQueuePublication::default(),
             )),
             agents: Arc::new(Mutex::new(BTreeMap::new())),
-            thread_index: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            thread_index: Arc::new(std::sync::Mutex::new(thread_index)),
+            directory_commands: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            directory_test_pauses: Arc::default(),
             mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
             child_interactions: Arc::new(std::sync::Mutex::new(child_interactions)),
-        }
+        };
+        events.initialize_revision(&events.revisions.thread);
+        events
     }
 
     /// 订阅一个 typed 产品 topic；通道在登记时创建，之后只接收该领域事件。

@@ -77,6 +77,38 @@ GUI 交互通过 `cargo xtask manual-gui` 的隔离模拟服务人工验收；�
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
 
+## 侧栏组件预览与集成测试
+
+侧栏纯入口为 `lib/src/features/shell/sidebar/sidebar_views.dart`，生产组件
+`StudioSidebar` 与头部、筛选、项目／会话行、菜单、分页状态和底栏共用同一实现。
+`lib/src/features/shell/previews/` 提供官方 Widget Previewer 入口，复用真实主题、
+本地化与合成不可变呈现值；搜索编辑器、筛选、展开、悬停和焦点由生产组件自己的
+Flutter `State` 管理，预览不启动 Client、ProviderScope 或 FRB。
+浏览器预览只证明呈现与局部交互，业务查询、命令和持久化由原生集成测试验证。
+
+从仓库根目录执行：
+
+```text
+cargo flutter widget-preview start --headless --no-devtools
+cargo xtask run-gui --integration-test integration_test/sidebar_test.dart
+```
+
+预览依赖覆盖的准备见下文。侧栏集成测试使用官方 `integration_test` 与 `WidgetTester`
+操作生产路由及真实 `AppGraph`，不启用旧 Driver binding 或 `requestData` 协议。
+运行者须提供独立的 `ANYWORK_HOME`、隔离且可写的合成项目根 `ANYWORK_SIDEBAR_PROJECTS`，
+以及本会话产物目录 `ANYWORK_SIDEBAR_ARTIFACTS`，不得指向真实用户数据。
+测试只在该根下创建全新子项目，拒绝覆盖已有项目目录；通过公开命令创建合成账号、项目和会话，
+模型对端仅为 loopback fixture；
+Linux 运行还须隔离 D-Bus、系统凭据服务与 XDG 目录，不能仅凭 `ANYWORK_HOME`
+假定 keyring 已隔离。无显示服务时在独立 Xvfb 中经 xtask 运行，并回收全部所属进程。
+
+测试截图使用 Flutter 官方 `RenderRepaintBoundary.toImage` 捕获真实生产 Flutter
+surface，不包含原生窗口装饰；同名 JSON 记录原生视图物理尺寸、DPR 与绘制尺寸。
+当前 Linux `integration_test` 没有 `captureScreenshot` 原生实现，不能将
+`takeScreenshot` 的 Dart 静态检查通过误认为桌面截图可用。
+原先侧栏宽度与键盘保存的专属 Driver 断言迁入该集成测试，未涉及的时间线和输入框
+Driver 旅程保持独立，不重复维护一套侧栏验证。
+
 ## 账号组件预览
 
 账号组件的官方预览分为三组入口：
@@ -148,7 +180,8 @@ dependency_overrides:
 再统一移除本地包、应用及预览 override，更新应用 lockfile 并完成相关图片与预览回归。
 
 预览证明的是组件解耦、Web 渲染和布局，不证明原生插件、FRB、凭据、持久化或进程关闭行为；
-这些仍需通过 `cargo xtask manual-gui` 和真实 Driver 验收，PR 产品截图也应来自原生程序。
+这些仍需通过原生集成测试或 `cargo xtask manual-gui` 验收；真实供应商的人工观察仍走
+既有入口。PR 产品截图应来自本次原生程序，而非浏览器预览。
 截图和诊断日志写入当前会话产物目录，不放入源码或预览缓存的 Git 提交。
 
 官方参考：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、

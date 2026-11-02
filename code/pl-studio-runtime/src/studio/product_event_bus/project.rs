@@ -14,8 +14,7 @@ use super::ProductEventBus;
 impl ProductEventBus {
     /// 启动命令显式建立目录初始 revision 与 Project 小集合；普通 read 不改变 revision。
     ///
-    /// Thread 目录不做启动全量装载：活动热集合由钉住集合和运行期目录 delta
-    /// 构成，旧数据在分页查询时回源 SQLite。
+    /// Thread 摘要已在 [`ProductEventBus::new`] 从 Catalog 全量建立。
     pub async fn initialize_directories(&self) -> Result<()> {
         self.initialize_revision(&self.revisions.project);
         self.initialize_revision(&self.revisions.thread);
@@ -23,7 +22,7 @@ impl ProductEventBus {
         let durable_projects = self.store.list_projects().await?;
         let mut projects = self.project_snapshot.lock().await;
         for project in durable_projects {
-            if !projects.iter().any(|hot| hot.id == project.id) {
+            if !projects.iter().any(|current| current.id == project.id) {
                 projects.push(project);
             }
         }
@@ -52,6 +51,28 @@ impl ProductEventBus {
     }
 
     pub(super) async fn apply_project_delta(
+        &self,
+        upserted: &[crate::WorkspaceRecord],
+        removed: &[ProjectRemoval],
+    ) -> Result<Option<StudioProductEventEnvelope>> {
+        if upserted.is_empty() && removed.is_empty() {
+            return Ok(None);
+        }
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        index.update_projects(upserted, removed);
+        self.bump(&self.revisions.thread);
+        self.topics
+            .lock()
+            .expect("product topic channels lock poisoned")
+            .notify(&crate::StudioProductTopic::ThreadDirectory);
+        drop(index);
+        self.apply_project_snapshot_delta(upserted, removed).await
+    }
+
+    pub(super) async fn apply_project_snapshot_delta(
         &self,
         upserted: &[crate::WorkspaceRecord],
         removed: &[ProjectRemoval],

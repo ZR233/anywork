@@ -351,6 +351,17 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarCloseProject => '关闭项目';
 
   @override
+  String get sidebarArchiveProjectConfirmTitle => '归档项目';
+
+  @override
+  String sidebarArchiveProjectConfirmBody(String project) {
+    return '归档“$project”将归档其会话、丢弃项目草稿并清理受管理的会话工作树。工作树中未提交或尚未整合的内容会永久丢失。是否继续？';
+  }
+
+  @override
+  String get sidebarArchiveProjectConfirmAction => '归档项目';
+
+  @override
   String get sidebarArchiveSession => '归档会话';
 
   @override

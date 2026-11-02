@@ -758,6 +758,24 @@ abstract class AppLocalizations {
   /// **'Close project'**
   String get sidebarCloseProject;
 
+  /// No description provided for @sidebarArchiveProjectConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive project'**
+  String get sidebarArchiveProjectConfirmTitle;
+
+  /// No description provided for @sidebarArchiveProjectConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Archiving “{project}” archives its sessions, discards the project draft, and cleans up managed session worktrees. Uncommitted or unintegrated content in those worktrees will be permanently lost. Continue?'**
+  String sidebarArchiveProjectConfirmBody(String project);
+
+  /// No description provided for @sidebarArchiveProjectConfirmAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive project'**
+  String get sidebarArchiveProjectConfirmAction;
+
   /// No description provided for @sidebarArchiveSession.
   ///
   /// In en, this message translates to:

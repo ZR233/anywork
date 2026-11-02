@@ -133,6 +133,16 @@
     }
   },
   "sidebarCloseProject": "Close project",
+  "sidebarArchiveProjectConfirmTitle": "Archive project",
+  "sidebarArchiveProjectConfirmBody": "Archiving “{project}” archives its sessions, discards the project draft, and cleans up managed session worktrees. Uncommitted or unintegrated content in those worktrees will be permanently lost. Continue?",
+  "@sidebarArchiveProjectConfirmBody": {
+    "placeholders": {
+      "project": {
+        "type": "String"
+      }
+    }
+  },
+  "sidebarArchiveProjectConfirmAction": "Archive project",
   "sidebarArchiveSession": "Archive session",
   "sidebarArchiveSessionFailed": "Could not archive this session.",
   "sidebarArchiveSessionBusy": "Could not archive this session. It may still be running.",

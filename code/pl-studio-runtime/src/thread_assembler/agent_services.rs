@@ -264,7 +264,6 @@ impl AgentServices {
             record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
             "only an active direct child can be resumed"
         );
-        self.events.warm_thread_index(vec![record.clone()]);
         let activated = owner
             .activate(
                 super::ThreadActivation {

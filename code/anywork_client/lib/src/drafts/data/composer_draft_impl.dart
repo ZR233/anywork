@@ -380,14 +380,12 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     _permit.release();
   }
 
-  String? get _workspaceId =>
-      _dependencies.conversations
-          .session(threadId)
-          .state
-          .workspace
-          ?.thread
-          .workspaceId ??
-      _dependencies.findThread(threadId)?.workspaceId;
+  String? get _workspaceId => _dependencies.conversations
+      .session(threadId)
+      .state
+      .workspace
+      ?.thread
+      .workspaceId;
 }
 
 final class FrozenComposerSubmission {

@@ -26,6 +26,7 @@ category: development
 | --- | --- |
 | 功能放哪层、基础库、Riverpod／Freezed、路由和草稿 | [基础栈与统一路由](references/project-stack-and-routing.md) |
 | 命令／观察／查询、版本、流控、恢复和关闭 | [数据交付与生命周期](references/data-delivery-and-lifecycle.md) |
+| 可变目录、过滤排序、查询窗口与后台变化 | [可观察查询](references/observable-queries.md) |
 | 内存与落盘交接、迁移、组件复用和验证范围 | [演进与验证](references/evolution-and-verification.md) |
 
 ## 开始改动前回答
@@ -38,6 +39,7 @@ category: development
    路由、组件、订阅、业务 Session 的生命周期不能互相代替。
 4. **能否删掉一层？** 优先复用现有领域 owner 与组件公开能力。
    若只是搬运同一状态或重复验证同一增量，先找原职责，而不是增加镜像或兜底刷新。
+   可变查询的成员、顺序、字段与窗口是否由同一权威结果交付，而非在页面拼接查询和事件？
 
 ## 与专项技能的分工
 

@@ -122,19 +122,12 @@ SidebarView sidebarView(Ref ref) {
   final projects =
       ref.watch(projectStoreProvider).projects?.values ??
       const <StudioProject>[];
-  final directory = ref.watch(threadDirectoryStoreProvider);
-  final threads = directory.window.threads;
   final recovery =
       ref.watch(recoveryStoreProvider).value?.values ??
       const <StudioRecoveryIssue>[];
   final modes =
       ref.watch(modeCatalogStoreProvider).value?.modes ??
       const <ThreadModeDescriptorView>[];
-  final selectedRootId = AgentDirectoryQueries.rootThreadId(
-    threadId: selection.selectedThreadId,
-    agents: ref.watch(projectStoreProvider).agents?.values ?? const [],
-    threads: [...threads, ...directory.overlayThreads],
-  );
   var busy = false;
   final selectedId = selection.selectedThreadId;
   if (selectedId != null && !selection.needsOpen) {
@@ -146,42 +139,44 @@ SidebarView sidebarView(Ref ref) {
             .isBusy ??
         false;
   }
-  return SidebarView.fromDirectories(
+  return SidebarView.fromProjects(
     projects: projects,
-    rootThreads: [
-      for (final thread in threads)
-        if (thread.isRoot) thread,
-    ],
     selectedProjectId: selection.selectedProjectId,
-    selectedRootThreadId: selectedRootId,
     isBusy: busy,
     recoveryIssues: recovery,
     modeDisplayNames: {for (final mode in modes) mode.id: mode.displayName},
-    directoryHasMore: directory.window.hasMore,
-    directoryIsLoading: directory.window.isLoading,
   );
 }
 
 @riverpod
 HeaderView headerView(Ref ref) {
   final selection = ref.watch(selectionStoreProvider);
-  final directory = ref.watch(threadDirectoryStoreProvider);
-  final threads = [...directory.window.threads, ...directory.overlayThreads];
   final projects = ref.watch(projectStoreProvider);
   final agents = projects.agents?.values ?? const <StudioAgentView>[];
-  final rootId = AgentDirectoryQueries.rootThreadId(
-    threadId: selection.selectedThreadId,
-    agents: agents,
-    threads: threads,
-  );
-  final root = threadById(threads, rootId);
+  final selectedId = selection.selectedThreadId;
+  final selected = selectedId == null
+      ? null
+      : ref.watch(threadMetadataStoreProvider(selectedId)).frame?.thread;
+  final rootId = selected?.effectiveRootThreadId;
+  final root = rootId == null
+      ? null
+      : rootId == selectedId
+      ? selected
+      : ref.watch(threadMetadataStoreProvider(rootId)).frame?.thread;
   final workspaceId = root?.workspaceId ?? selection.selectedProjectId;
-  final workspaceThreads = root == null
-      ? const <StudioThread>[]
-      : threadsForRoot(threads, root);
+  final workspaceAgents = AgentDirectoryQueries.forRoot(
+    rootThreadId: rootId,
+    agents: agents,
+    threads: [?root],
+  );
+  final workspaceThreads = [
+    ?root,
+    for (final agent in workspaceAgents)
+      if (agent.threadId != rootId)
+        ?ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.thread,
+  ];
   var runtime = shellEmptyRuntime;
   var pending = const <PendingInteraction>[];
-  final selectedId = selection.selectedThreadId;
   if (selectedId != null && !selection.needsOpen) {
     final session = ref.watch(threadSessionStoreProvider(selectedId));
     runtime = session.runtime ?? shellEmptyRuntime;
@@ -195,11 +190,7 @@ HeaderView headerView(Ref ref) {
     ),
     selectedProjectId: selection.selectedProjectId,
     workspaceThreads: workspaceThreads,
-    agents: AgentDirectoryQueries.forRoot(
-      rootThreadId: rootId,
-      agents: agents,
-      threads: threads,
-    ),
+    agents: workspaceAgents,
     selectedThreadId: selection.selectedThreadId,
     runtime: runtime,
     sessionCost: rootId == null
@@ -218,23 +209,19 @@ AgentWorkspaceView? conversationWorkspace(
   String threadId, {
   bool needsOpen = false,
 }) {
-  final directory = ref.watch(threadDirectoryStoreProvider);
-  final threads = [...directory.window.threads, ...directory.overlayThreads];
   ThreadSessionState? session;
   if (!needsOpen) {
     session = ref.watch(threadSessionStoreProvider(threadId));
   }
-  final thread = threadById(threads, threadId) ?? session?.workspace?.thread;
+  final thread = ref.watch(threadMetadataStoreProvider(threadId)).frame?.thread;
   if (thread == null) return null;
   final agents =
       ref.watch(projectStoreProvider).agents?.values ??
       const <StudioAgentView>[];
-  final rootId = AgentDirectoryQueries.rootThreadId(
-    threadId: threadId,
-    agents: agents,
-    threads: [...threads, thread],
-  );
-  final root = threadById(threads, rootId) ?? (thread.isRoot ? thread : null);
+  final rootId = thread.effectiveRootThreadId;
+  final root = rootId == threadId
+      ? thread
+      : ref.watch(threadMetadataStoreProvider(rootId)).frame?.thread;
   if (root == null) return null;
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;
@@ -263,7 +250,7 @@ AgentWorkspaceView? conversationWorkspace(
     agents: AgentDirectoryQueries.forRoot(
       rootThreadId: rootId,
       agents: agents,
-      threads: threads,
+      threads: [thread, root],
     ),
   );
 }
@@ -383,13 +370,8 @@ PersistencePanelView persistencePanelView(Ref ref) {
     final session = ref.watch(threadSessionStoreProvider(selectedId));
     final storage = session.storage;
     if (storage != null) {
-      final directory = ref.watch(threadDirectoryStoreProvider);
-      final title =
-          threadById([
-            ...directory.window.threads,
-            ...directory.overlayThreads,
-          ], selectedId)?.title.trim() ??
-          '';
+      final metadata = ref.watch(threadMetadataStoreProvider(selectedId));
+      final title = metadata.frame?.thread?.title.trim() ?? '';
       selectedStorage = ShellStorageFact(
         threadId: selectedId,
         label: title.isEmpty ? selectedId : title,

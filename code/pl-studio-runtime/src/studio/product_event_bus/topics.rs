@@ -48,13 +48,18 @@ impl TopicChannels {
     /// 判断新旧，因此同一通道内序列不连续不是 lag。
     pub(super) fn dispatch(&mut self, envelope: &StudioProductEventEnvelope) {
         let topic = StudioProductTopic::of_kind(&envelope.kind);
-        if let Some(signal) = self.signals.get(&topic) {
-            signal.send_replace(());
-        }
+        self.notify(&topic);
         if let Some(sender) = self.channels.get(&topic)
             && sender.send(envelope.clone()).is_err()
         {
             // 所有接收者都已离开：保留通道注册，等待下一个订阅者登记。
+        }
+    }
+
+    /// A query dependency can change without a Thread row delta.
+    pub(super) fn notify(&self, topic: &StudioProductTopic) {
+        if let Some(signal) = self.signals.get(topic) {
+            signal.send_replace(());
         }
     }
 }

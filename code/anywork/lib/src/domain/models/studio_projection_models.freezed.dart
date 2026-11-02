@@ -288,7 +288,7 @@ as PersistenceStateSnapshot,
 /// @nodoc
 mixin _$SidebarView {
 
- List<StudioProject> get projects; List<StudioThread> get rootThreads; String? get selectedProjectId; String? get selectedRootThreadId; bool get isBusy; Map<String, StudioRecoveryIssue> get projectRecoveryIssues; Map<String, StudioRecoveryIssue> get threadRecoveryIssues; Map<String, String> get modeDisplayNames; bool get directoryHasMore; bool get directoryIsLoading;
+ List<StudioProject> get projects; String? get selectedProjectId; bool get isBusy; Map<String, StudioRecoveryIssue> get projectRecoveryIssues; Map<String, String> get modeDisplayNames;
 /// Create a copy of SidebarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -300,20 +300,20 @@ $SidebarViewCopyWith<SidebarView> get copyWith => _$SidebarViewCopyWithImpl<Side
 @override
 bool operator ==(Object other) {
   final _this = this as SidebarView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is SidebarView&&const DeepCollectionEquality().equals(other.projects, _this.projects)&&const DeepCollectionEquality().equals(other.rootThreads, _this.rootThreads)&&(identical(other.selectedProjectId, _this.selectedProjectId) || other.selectedProjectId == _this.selectedProjectId)&&(identical(other.selectedRootThreadId, _this.selectedRootThreadId) || other.selectedRootThreadId == _this.selectedRootThreadId)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&const DeepCollectionEquality().equals(other.projectRecoveryIssues, _this.projectRecoveryIssues)&&const DeepCollectionEquality().equals(other.threadRecoveryIssues, _this.threadRecoveryIssues)&&const DeepCollectionEquality().equals(other.modeDisplayNames, _this.modeDisplayNames)&&(identical(other.directoryHasMore, _this.directoryHasMore) || other.directoryHasMore == _this.directoryHasMore)&&(identical(other.directoryIsLoading, _this.directoryIsLoading) || other.directoryIsLoading == _this.directoryIsLoading));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is SidebarView&&const DeepCollectionEquality().equals(other.projects, _this.projects)&&(identical(other.selectedProjectId, _this.selectedProjectId) || other.selectedProjectId == _this.selectedProjectId)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&const DeepCollectionEquality().equals(other.projectRecoveryIssues, _this.projectRecoveryIssues)&&const DeepCollectionEquality().equals(other.modeDisplayNames, _this.modeDisplayNames));
 }
 
 
 @override
 int get hashCode {
   final _this = this as SidebarView;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.projects),const DeepCollectionEquality().hash(_this.rootThreads),_this.selectedProjectId,_this.selectedRootThreadId,_this.isBusy,const DeepCollectionEquality().hash(_this.projectRecoveryIssues),const DeepCollectionEquality().hash(_this.threadRecoveryIssues),const DeepCollectionEquality().hash(_this.modeDisplayNames),_this.directoryHasMore,_this.directoryIsLoading);
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.projects),_this.selectedProjectId,_this.isBusy,const DeepCollectionEquality().hash(_this.projectRecoveryIssues),const DeepCollectionEquality().hash(_this.modeDisplayNames));
 }
 
 @override
 String toString() {
   final _this = this as SidebarView;
-  return 'SidebarView(projects: ${_this.projects}, rootThreads: ${_this.rootThreads}, selectedProjectId: ${_this.selectedProjectId}, selectedRootThreadId: ${_this.selectedRootThreadId}, isBusy: ${_this.isBusy}, projectRecoveryIssues: ${_this.projectRecoveryIssues}, threadRecoveryIssues: ${_this.threadRecoveryIssues}, modeDisplayNames: ${_this.modeDisplayNames}, directoryHasMore: ${_this.directoryHasMore}, directoryIsLoading: ${_this.directoryIsLoading})';
+  return 'SidebarView(projects: ${_this.projects}, selectedProjectId: ${_this.selectedProjectId}, isBusy: ${_this.isBusy}, projectRecoveryIssues: ${_this.projectRecoveryIssues}, modeDisplayNames: ${_this.modeDisplayNames})';
 }
 
 
@@ -324,7 +324,7 @@ abstract mixin class $SidebarViewCopyWith<$Res>  {
   factory $SidebarViewCopyWith(SidebarView value, $Res Function(SidebarView) _then) = _$SidebarViewCopyWithImpl;
 @useResult
 $Res call({
- List<StudioProject> projects, List<StudioThread> rootThreads, String? selectedProjectId, String? selectedRootThreadId, bool isBusy, Map<String, StudioRecoveryIssue> projectRecoveryIssues, Map<String, StudioRecoveryIssue> threadRecoveryIssues, Map<String, String> modeDisplayNames, bool directoryHasMore, bool directoryIsLoading
+ List<StudioProject> projects, String? selectedProjectId, bool isBusy, Map<String, StudioRecoveryIssue> projectRecoveryIssues, Map<String, String> modeDisplayNames
 });
 
 
@@ -341,19 +341,14 @@ class _$SidebarViewCopyWithImpl<$Res>
 
 /// Create a copy of SidebarView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? projects = null,Object? rootThreads = null,Object? selectedProjectId = freezed,Object? selectedRootThreadId = freezed,Object? isBusy = null,Object? projectRecoveryIssues = null,Object? threadRecoveryIssues = null,Object? modeDisplayNames = null,Object? directoryHasMore = null,Object? directoryIsLoading = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? projects = null,Object? selectedProjectId = freezed,Object? isBusy = null,Object? projectRecoveryIssues = null,Object? modeDisplayNames = null,}) {
   return _then(SidebarView(
 projects: null == projects ? _self.projects : projects // ignore: cast_nullable_to_non_nullable
-as List<StudioProject>,rootThreads: null == rootThreads ? _self.rootThreads : rootThreads // ignore: cast_nullable_to_non_nullable
-as List<StudioThread>,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
-as String?,selectedRootThreadId: freezed == selectedRootThreadId ? _self.selectedRootThreadId : selectedRootThreadId // ignore: cast_nullable_to_non_nullable
+as List<StudioProject>,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
 as String?,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,projectRecoveryIssues: null == projectRecoveryIssues ? _self.projectRecoveryIssues : projectRecoveryIssues // ignore: cast_nullable_to_non_nullable
-as Map<String, StudioRecoveryIssue>,threadRecoveryIssues: null == threadRecoveryIssues ? _self.threadRecoveryIssues : threadRecoveryIssues // ignore: cast_nullable_to_non_nullable
 as Map<String, StudioRecoveryIssue>,modeDisplayNames: null == modeDisplayNames ? _self.modeDisplayNames : modeDisplayNames // ignore: cast_nullable_to_non_nullable
-as Map<String, String>,directoryHasMore: null == directoryHasMore ? _self.directoryHasMore : directoryHasMore // ignore: cast_nullable_to_non_nullable
-as bool,directoryIsLoading: null == directoryIsLoading ? _self.directoryIsLoading : directoryIsLoading // ignore: cast_nullable_to_non_nullable
-as bool,
+as Map<String, String>,
   ));
 }
 
@@ -438,10 +433,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<StudioProject> projects,  List<StudioThread> rootThreads,  String? selectedProjectId,  String? selectedRootThreadId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, StudioRecoveryIssue> threadRecoveryIssues,  Map<String, String> modeDisplayNames,  bool directoryHasMore,  bool directoryIsLoading)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<StudioProject> projects,  String? selectedProjectId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, String> modeDisplayNames)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _SidebarView() when $default != null:
-return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.selectedRootThreadId,_that.isBusy,_that.projectRecoveryIssues,_that.threadRecoveryIssues,_that.modeDisplayNames,_that.directoryHasMore,_that.directoryIsLoading);case _:
+return $default(_that.projects,_that.selectedProjectId,_that.isBusy,_that.projectRecoveryIssues,_that.modeDisplayNames);case _:
   return orElse();
 
 }
@@ -459,10 +454,10 @@ return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.s
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<StudioProject> projects,  List<StudioThread> rootThreads,  String? selectedProjectId,  String? selectedRootThreadId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, StudioRecoveryIssue> threadRecoveryIssues,  Map<String, String> modeDisplayNames,  bool directoryHasMore,  bool directoryIsLoading)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<StudioProject> projects,  String? selectedProjectId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, String> modeDisplayNames)  $default,) {final _that = this;
 switch (_that) {
 case _SidebarView():
-return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.selectedRootThreadId,_that.isBusy,_that.projectRecoveryIssues,_that.threadRecoveryIssues,_that.modeDisplayNames,_that.directoryHasMore,_that.directoryIsLoading);case _:
+return $default(_that.projects,_that.selectedProjectId,_that.isBusy,_that.projectRecoveryIssues,_that.modeDisplayNames);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -479,10 +474,10 @@ return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.s
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<StudioProject> projects,  List<StudioThread> rootThreads,  String? selectedProjectId,  String? selectedRootThreadId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, StudioRecoveryIssue> threadRecoveryIssues,  Map<String, String> modeDisplayNames,  bool directoryHasMore,  bool directoryIsLoading)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<StudioProject> projects,  String? selectedProjectId,  bool isBusy,  Map<String, StudioRecoveryIssue> projectRecoveryIssues,  Map<String, String> modeDisplayNames)?  $default,) {final _that = this;
 switch (_that) {
 case _SidebarView() when $default != null:
-return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.selectedRootThreadId,_that.isBusy,_that.projectRecoveryIssues,_that.threadRecoveryIssues,_that.modeDisplayNames,_that.directoryHasMore,_that.directoryIsLoading);case _:
+return $default(_that.projects,_that.selectedProjectId,_that.isBusy,_that.projectRecoveryIssues,_that.modeDisplayNames);case _:
   return null;
 
 }
@@ -494,7 +489,7 @@ return $default(_that.projects,_that.rootThreads,_that.selectedProjectId,_that.s
 
 
 class _SidebarView extends SidebarView {
-  const _SidebarView({required  List<StudioProject> projects, required  List<StudioThread> rootThreads, required this.selectedProjectId, required this.selectedRootThreadId, required this.isBusy, required  Map<String, StudioRecoveryIssue> projectRecoveryIssues, required  Map<String, StudioRecoveryIssue> threadRecoveryIssues, required  Map<String, String> modeDisplayNames, this.directoryHasMore = false, this.directoryIsLoading = false}): _projects = projects,_rootThreads = rootThreads,_projectRecoveryIssues = projectRecoveryIssues,_threadRecoveryIssues = threadRecoveryIssues,_modeDisplayNames = modeDisplayNames,super._();
+  const _SidebarView({required  List<StudioProject> projects, required this.selectedProjectId, required this.isBusy, required  Map<String, StudioRecoveryIssue> projectRecoveryIssues, required  Map<String, String> modeDisplayNames}): _projects = projects,_projectRecoveryIssues = projectRecoveryIssues,_modeDisplayNames = modeDisplayNames,super._();
 
 
  final  List<StudioProject> _projects;
@@ -504,28 +499,13 @@ class _SidebarView extends SidebarView {
   return EqualUnmodifiableListView(_projects);
 }
 
- final  List<StudioThread> _rootThreads;
-@override List<StudioThread> get rootThreads {
-  if (_rootThreads is EqualUnmodifiableListView) return _rootThreads;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_rootThreads);
-}
-
 @override final  String? selectedProjectId;
-@override final  String? selectedRootThreadId;
 @override final  bool isBusy;
  final  Map<String, StudioRecoveryIssue> _projectRecoveryIssues;
 @override Map<String, StudioRecoveryIssue> get projectRecoveryIssues {
   if (_projectRecoveryIssues is EqualUnmodifiableMapView) return _projectRecoveryIssues;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableMapView(_projectRecoveryIssues);
-}
-
- final  Map<String, StudioRecoveryIssue> _threadRecoveryIssues;
-@override Map<String, StudioRecoveryIssue> get threadRecoveryIssues {
-  if (_threadRecoveryIssues is EqualUnmodifiableMapView) return _threadRecoveryIssues;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableMapView(_threadRecoveryIssues);
 }
 
  final  Map<String, String> _modeDisplayNames;
@@ -535,8 +515,6 @@ class _SidebarView extends SidebarView {
   return EqualUnmodifiableMapView(_modeDisplayNames);
 }
 
-@override@JsonKey() final  bool directoryHasMore;
-@override@JsonKey() final  bool directoryIsLoading;
 
 /// Create a copy of SidebarView
 /// with the given fields replaced by the non-null parameter values.
@@ -548,18 +526,18 @@ _$SidebarViewCopyWith<_SidebarView> get copyWith => __$SidebarViewCopyWithImpl<_
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _SidebarView&&const DeepCollectionEquality().equals(other.projects, _projects)&&const DeepCollectionEquality().equals(other.rootThreads, _rootThreads)&&(identical(other.selectedProjectId, selectedProjectId) || other.selectedProjectId == selectedProjectId)&&(identical(other.selectedRootThreadId, selectedRootThreadId) || other.selectedRootThreadId == selectedRootThreadId)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&const DeepCollectionEquality().equals(other.projectRecoveryIssues, _projectRecoveryIssues)&&const DeepCollectionEquality().equals(other.threadRecoveryIssues, _threadRecoveryIssues)&&const DeepCollectionEquality().equals(other.modeDisplayNames, _modeDisplayNames)&&(identical(other.directoryHasMore, directoryHasMore) || other.directoryHasMore == directoryHasMore)&&(identical(other.directoryIsLoading, directoryIsLoading) || other.directoryIsLoading == directoryIsLoading));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _SidebarView&&const DeepCollectionEquality().equals(other.projects, _projects)&&(identical(other.selectedProjectId, selectedProjectId) || other.selectedProjectId == selectedProjectId)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&const DeepCollectionEquality().equals(other.projectRecoveryIssues, _projectRecoveryIssues)&&const DeepCollectionEquality().equals(other.modeDisplayNames, _modeDisplayNames));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_projects),const DeepCollectionEquality().hash(_rootThreads),selectedProjectId,selectedRootThreadId,isBusy,const DeepCollectionEquality().hash(_projectRecoveryIssues),const DeepCollectionEquality().hash(_threadRecoveryIssues),const DeepCollectionEquality().hash(_modeDisplayNames),directoryHasMore,directoryIsLoading);
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_projects),selectedProjectId,isBusy,const DeepCollectionEquality().hash(_projectRecoveryIssues),const DeepCollectionEquality().hash(_modeDisplayNames));
 }
 
 @override
 String toString() {
-    return 'SidebarView(projects: $projects, rootThreads: $rootThreads, selectedProjectId: $selectedProjectId, selectedRootThreadId: $selectedRootThreadId, isBusy: $isBusy, projectRecoveryIssues: $projectRecoveryIssues, threadRecoveryIssues: $threadRecoveryIssues, modeDisplayNames: $modeDisplayNames, directoryHasMore: $directoryHasMore, directoryIsLoading: $directoryIsLoading)';
+    return 'SidebarView(projects: $projects, selectedProjectId: $selectedProjectId, isBusy: $isBusy, projectRecoveryIssues: $projectRecoveryIssues, modeDisplayNames: $modeDisplayNames)';
 }
 
 
@@ -570,7 +548,7 @@ abstract mixin class _$SidebarViewCopyWith<$Res> implements $SidebarViewCopyWith
   factory _$SidebarViewCopyWith(_SidebarView value, $Res Function(_SidebarView) _then) = __$SidebarViewCopyWithImpl;
 @override @useResult
 $Res call({
- List<StudioProject> projects, List<StudioThread> rootThreads, String? selectedProjectId, String? selectedRootThreadId, bool isBusy, Map<String, StudioRecoveryIssue> projectRecoveryIssues, Map<String, StudioRecoveryIssue> threadRecoveryIssues, Map<String, String> modeDisplayNames, bool directoryHasMore, bool directoryIsLoading
+ List<StudioProject> projects, String? selectedProjectId, bool isBusy, Map<String, StudioRecoveryIssue> projectRecoveryIssues, Map<String, String> modeDisplayNames
 });
 
 
@@ -587,19 +565,14 @@ class __$SidebarViewCopyWithImpl<$Res>
 
 /// Create a copy of SidebarView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? projects = null,Object? rootThreads = null,Object? selectedProjectId = freezed,Object? selectedRootThreadId = freezed,Object? isBusy = null,Object? projectRecoveryIssues = null,Object? threadRecoveryIssues = null,Object? modeDisplayNames = null,Object? directoryHasMore = null,Object? directoryIsLoading = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? projects = null,Object? selectedProjectId = freezed,Object? isBusy = null,Object? projectRecoveryIssues = null,Object? modeDisplayNames = null,}) {
   return _then(_SidebarView(
 projects: null == projects ? _self._projects : projects // ignore: cast_nullable_to_non_nullable
-as List<StudioProject>,rootThreads: null == rootThreads ? _self._rootThreads : rootThreads // ignore: cast_nullable_to_non_nullable
-as List<StudioThread>,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
-as String?,selectedRootThreadId: freezed == selectedRootThreadId ? _self.selectedRootThreadId : selectedRootThreadId // ignore: cast_nullable_to_non_nullable
+as List<StudioProject>,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
 as String?,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,projectRecoveryIssues: null == projectRecoveryIssues ? _self._projectRecoveryIssues : projectRecoveryIssues // ignore: cast_nullable_to_non_nullable
-as Map<String, StudioRecoveryIssue>,threadRecoveryIssues: null == threadRecoveryIssues ? _self._threadRecoveryIssues : threadRecoveryIssues // ignore: cast_nullable_to_non_nullable
 as Map<String, StudioRecoveryIssue>,modeDisplayNames: null == modeDisplayNames ? _self._modeDisplayNames : modeDisplayNames // ignore: cast_nullable_to_non_nullable
-as Map<String, String>,directoryHasMore: null == directoryHasMore ? _self.directoryHasMore : directoryHasMore // ignore: cast_nullable_to_non_nullable
-as bool,directoryIsLoading: null == directoryIsLoading ? _self.directoryIsLoading : directoryIsLoading // ignore: cast_nullable_to_non_nullable
-as bool,
+as Map<String, String>,
   ));
 }
 
