@@ -1,6 +1,9 @@
 //! Admission on the original serial owner, while its prepared call is still running.
 use super::*;
-use crate::model::{MemberRegistry, ModelMemberAdmission, ModelMemberError};
+use crate::model::{
+    MemberFact, MemberRegistry, ModelMemberAdmission, ModelMemberError, ObservedPartIdentity,
+    StartedKey, same_started_identity,
+};
 
 pub(super) struct MemberCall {
     pub(super) receiver: tokio::sync::mpsc::Receiver<ModelMemberAdmission>,
@@ -69,19 +72,39 @@ impl Owner {
                 rx.borrow().observation().generation
             });
         call.generation = generation;
-        let key = (member.generation, member.member_id.clone());
-        let invalid = member.turn_id != call.turn_id
-            || member.attempt_id != call.attempt_id
-            || member.generation != generation
-            || member.member_id.is_empty();
         let mut seen = call
             .seen
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let conflict = seen
-            .get(&key)
-            .is_some_and(|(old, _)| old != &member.payload);
+        let (invalid, conflict, duplicate) = match &member {
+            MemberFact::Completed(member) => {
+                let old = seen
+                    .completed
+                    .get(&(member.generation, member.member_id.clone()));
+                (
+                    member.turn_id != call.turn_id
+                        || member.attempt_id != call.attempt_id
+                        || member.generation != generation
+                        || member.member_id.is_empty(),
+                    old.is_some_and(|(old, _)| old != &member.payload),
+                    old.is_some(),
+                )
+            }
+            MemberFact::Started(member) => {
+                let old = seen
+                    .started
+                    .get(&(member.generation, StartedKey::of(&member.identity)));
+                (
+                    member.turn_id != call.turn_id
+                        || member.attempt_id != call.attempt_id
+                        || member.generation != generation
+                        || matches!(&member.identity, ObservedPartIdentity::Provider(p) if p.item_id.is_empty()),
+                    old.is_some_and(|(old, _)| !same_started_identity(old, &member.identity)),
+                    old.is_some(),
+                )
+            }
+        };
         if invalid || conflict || call.error.is_some() {
             let error = call
                 .error
@@ -93,19 +116,34 @@ impl Owner {
             let _ = reply.send(Err(ModelMemberError::Rejected(error)));
             return;
         }
-        if seen.contains_key(&key) {
+        if duplicate {
+            if let MemberFact::Started(member) = &member
+                && let ObservedPartIdentity::Provider(new) = &member.identity
+                && let Some((ObservedPartIdentity::Provider(old), _)) = seen
+                    .started
+                    .get_mut(&(member.generation, StartedKey::of(&member.identity)))
+            {
+                old.output_index = old.output_index.or(new.output_index);
+                old.item_kind = new.item_kind;
+            }
             let _ = reply.send(Ok(()));
             return;
         }
         // Fund the *whole* encoded effect before publishing, separately from the opaque allocation
         // that the registry still owns. Its claim can transfer this effect funding, not those
         // resident opaque bytes or the accumulator/progress and dedup metadata on the reservation.
+        let (completed, started) = match &member {
+            MemberFact::Completed(member) => (vec![member.clone()], vec![]),
+            MemberFact::Started(member) => (vec![], vec![member.clone()]),
+        };
         let effect = ThreadEffectBatch::between(
             &self.id,
             &self.published,
             &self.state,
             self.state.commit_sequence.saturating_add(1),
-            vec![member.clone()].into(),
+            completed.into(),
+            started.into(),
+            Arc::from([]),
         )
         .expect("a member always produces an effect");
         let funded = crate::model::encoded_member_bytes(&effect)
@@ -123,10 +161,26 @@ impl Owner {
             let _ = reply.send(Err(ModelMemberError::Rejected(error)));
             return;
         }
-        seen.insert(key, (member.payload.clone(), charge));
+        match &member {
+            MemberFact::Completed(member) => {
+                seen.completed.insert(
+                    (member.generation, member.member_id.clone()),
+                    (member.payload.clone(), charge),
+                );
+            }
+            MemberFact::Started(member) => {
+                seen.started.insert(
+                    (member.generation, StartedKey::of(&member.identity)),
+                    (member.identity.clone(), charge),
+                );
+            }
+        }
         drop(seen);
         let operation = call.attempt_id.clone();
-        self.pending_model_members.push(member);
+        match member {
+            MemberFact::Completed(member) => self.pending_model_members.push(member),
+            MemberFact::Started(member) => self.pending_model_member_starts.push(member),
+        }
         self.claim_output(operation);
         self.publish();
         // publish retains the obligation even if synchronous storage admission is refused.

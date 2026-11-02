@@ -24,7 +24,26 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-sdk.ChatMessage _text(String id, String text) => sdk.ChatMessage(
+sdk.ChatAtom _fixtureAtom({
+  required String id,
+  required sdk.PayloadData payload,
+}) => sdk.ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: sdk.ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: sdk.ChatAtomKind.receipt,
+  delivery: sdk.ChatDeliveryKind.independent,
+  lifecycle: const sdk.TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: sdk.ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: payload,
+);
+
+sdk.ChatAtom _text(String id, String text) => _fixtureAtom(
   id: id,
   payload: sdk.InlinePayload(
     bytes: utf8.encode(
@@ -44,7 +63,7 @@ sdk.ChatMessage _text(String id, String text) => sdk.ChatMessage(
   ),
 );
 
-sdk.ChatMessage _unknown(String id, {String? marker}) => sdk.ChatMessage(
+sdk.ChatAtom _unknown(String id, {String? marker}) => _fixtureAtom(
   id: id,
   payload: sdk.InlinePayload(
     bytes: utf8.encode(
@@ -72,7 +91,7 @@ void main() {
     (tester) async {
       ChatItemView skill(String id, Map<String, Object?> data) => ChatItemView(
         item: ChatItemPresentation.decode(
-          sdk.ChatMessage(
+          _fixtureAtom(
             id: id,
             payload: sdk.InlinePayload(
               bytes: utf8.encode(
@@ -317,12 +336,12 @@ void main() {
         await controls.adapter.applyBatch(
           sdk.ChatBatch(
             placement: sdk.ChatPlacement.set,
-            messages: [
+            entries: ([
               _text(
                 'image-only',
                 '![](https://example.invalid/only-image.png)',
               ),
-            ],
+            ]).map(sdk.ChatAtomEntry.new).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -389,12 +408,12 @@ void main() {
         await controls.adapter.applyBatch(
           sdk.ChatBatch(
             placement: sdk.ChatPlacement.set,
-            messages: [
+            entries: ([
               _text(
                 'text-and-image',
                 '**实际正文** ![](https://example.invalid/lazy.png)',
               ),
-            ],
+            ]).map(sdk.ChatAtomEntry.new).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -484,7 +503,9 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('placeholder')],
+          entries: ([_unknown('placeholder')])
+              .map(sdk.ChatAtomEntry.new)
+              .toList(),
         ),
       );
       await tester.pumpWidget(
@@ -505,7 +526,10 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [_text('actual-body', '正文布局见证'), _text('empty-body', '')],
+          entries: ([
+            _text('actual-body', '正文布局见证'),
+            _text('empty-body', ''),
+          ]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       await tester.pumpAndSettle();
@@ -599,7 +623,7 @@ void main() {
     'bounded range witness exposes explicit next and copies only the displayed decoded window',
     (tester) async {
       final controls = _Controls();
-      sdk.ChatMessage message(String database) => sdk.ChatMessage(
+      sdk.ChatAtom message(String database) => _fixtureAtom(
         id: 'window',
         payload: sdk.DeferredPayload(
           reference: sdk.ContentRef(
@@ -627,7 +651,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [message('old')],
+          entries: ([message('old')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       await tester.pumpWidget(
@@ -699,7 +723,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [message('new')],
+          entries: ([message('new')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       await tester.pump();
@@ -758,7 +782,10 @@ void main() {
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_text('text', '正文'), _unknown('unknown')],
+          entries: ([
+            _text('text', '正文'),
+            _unknown('unknown'),
+          ]).map(sdk.ChatAtomEntry.new).toList(),
           before: 'opaque',
         ),
       );
@@ -788,13 +815,13 @@ void main() {
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.prepend,
-          messages: [_text('older', '旧页')],
+          entries: ([_text('older', '旧页')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [_text('new', '新内容')],
+          entries: ([_text('new', '新内容')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       await tester.pumpAndSettle(
@@ -837,16 +864,16 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [
+          entries: ([
             _unknown('unknown', marker: 'builtin.exec@1'),
-            const sdk.ChatMessage(
+            _fixtureAtom(
               id: 'deferred',
               payload: sdk.DeferredPayload(
                 reference: reference,
                 byteLength: 900000,
               ),
             ),
-          ],
+          ]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       final requests = <sdk.ContentRange>[];
@@ -902,17 +929,22 @@ void main() {
   );
 
   testWidgets(
-    'real viewport fill waits for published cursor and stops at its startup budget',
+    'real viewport fills past eight unchanged layouts without operations until explicit EOF',
     (tester) async {
       final controls = _Controls();
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('initial')],
+          entries: ([_unknown('initial')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       var loads = 0;
-      var cursor = 'page:0';
+      String? cursor = 'page:0';
+      var operations = 0;
+      final subscription = controls.controller.operationsStream.listen(
+        (_) => operations++,
+      );
+      addTearDown(subscription.cancel);
       late StateSetter update;
       await tester.pumpWidget(
         StatefulBuilder(
@@ -925,35 +957,36 @@ void main() {
                 generation: 1,
                 mode: TimelineDisplayMode.live,
                 connection: TimelineConnectionPhase.ready,
-                hasOlder: true,
+                hasOlder: cursor != null,
                 olderCursor: cursor,
               ),
               onLoadOlder: () async {
                 loads++;
-                // SDK completion follows actual batch application and before publication,
-                // but the component consumes that publication in the next real frame.
-                await controls.adapter.applyBatch(
-                  sdk.ChatBatch(
-                    placement: sdk.ChatPlacement.prepend,
-                    messages: const [],
-                  ),
-                );
-                update(() => cursor = 'page:$loads');
+                // A page may only contribute to an existing collapsed item:
+                // no operation, no added height, but a new atomic boundary.
+                update(() => cursor = loads == 12 ? null : 'page:$loads');
               },
             );
           },
         ),
       );
       await tester.pumpAndSettle();
-      expect(loads, 8);
+      expect(loads, 12);
+      expect(operations, 0);
+      expect(controls.controller.messages, hasLength(1));
+      final position = controls.scrollController.position;
+      expect(position.maxScrollExtent, position.minScrollExtent);
+      expect(position.viewportDimension, greaterThan(0));
       await tester.pump(const Duration(seconds: 1));
       expect(
         loads,
-        8,
-        reason: 'No frame polling after startup budget exhaustion',
+        12,
+        reason: 'Explicit EOF may leave whitespace; no frame polling follows',
       );
       await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(controls.dispose);
+      final disposing = controls.dispose();
+      await tester.pump();
+      await disposing;
     },
   );
 
@@ -964,7 +997,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('initial')],
+          entries: ([_unknown('initial')]).map(sdk.ChatAtomEntry.new).toList(),
         ),
       );
       var loads = 0;
@@ -991,7 +1024,9 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')],
+          entries: ([for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')])
+              .map(sdk.ChatAtomEntry.new)
+              .toList(),
         ),
       );
       await tester.pumpAndSettle();

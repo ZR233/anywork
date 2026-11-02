@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
 import 'timeline_scope_driver.dart';
+import 'timeline_group_observation.dart';
 
 /// Real-provider journey for the asynchronous image tools.
 ///
@@ -240,8 +241,13 @@ Future<_GeneratedImage> _waitForGeneratedImage(
     var snapshot = await driver.readSnapshot();
     last = snapshot;
     if (_workspaceIdle(snapshot)) {
-      snapshot = await TimelineScopeDriver.session(driver).openLatest();
-      last = snapshot;
+      await for (final evidence in _imageEvidence(driver, snapshot)) {
+        final generated = _generatedFromSnapshot(evidence);
+        if (generated != null) {
+          await _writeJson('${output.path}/snapshot.json', evidence);
+          return generated;
+        }
+      }
     }
     final generated = _generatedFromSnapshot(snapshot);
     if (generated != null && _workspaceIdle(snapshot)) {
@@ -266,8 +272,13 @@ Future<_ImageCard> _waitForCard(
     var snapshot = await driver.readSnapshot();
     last = snapshot;
     if (_workspaceIdle(snapshot)) {
-      snapshot = await TimelineScopeDriver.session(driver).openLatest();
-      last = snapshot;
+      await for (final evidence in _imageEvidence(driver, snapshot)) {
+        final card = _cardFromSnapshot(evidence);
+        if (card != null) {
+          await _writeJson('${output.path}/card-snapshot.json', evidence);
+          return card;
+        }
+      }
     }
     final card = _cardFromSnapshot(snapshot);
     if (card != null && _workspaceIdle(snapshot)) {
@@ -331,22 +342,55 @@ _ImageCard? _cardFromSnapshot(Map<String, dynamic> snapshot) {
   return null;
 }
 
-/// Only the current, explicitly opened Children; no implicit history query.
-Iterable<Map<dynamic, dynamic>> _timelineItems(
-  Map<String, dynamic> snapshot,
-) sync* {
-  final timeline = TimelineObservation.parse(snapshot);
-  final turn = timeline.items.lastWhere(
-    (item) => item.kind == 'turn' && item.childrenParentId != null,
-  );
-  final child = timeline.childrenFor(turn.childrenParentId!);
-  if (child == null || !child.ready || child.appliedSets == 0) {
+/// Only Main receipts and mounted ordinary atomic windows; never Turn Children.
+Iterable<Map<dynamic, dynamic>> _timelineItems(Map<String, dynamic> snapshot) =>
+    timelineDisplayedAtoms(snapshot);
+
+/// Fresh-thread journey: inspect loaded work records in source/display order,
+/// including G1 before text and G2 after text. Each action reads one ordinary
+/// bounded page. Unread prefixes are an explicit incomplete-evidence failure.
+Stream<Map<String, dynamic>> _imageEvidence(
+  FlutterDriverSession driver,
+  Map<String, dynamic> initial,
+) async* {
+  yield initial;
+  final timeline = TimelineObservation.parse(initial);
+  if (timeline.hasOlder) {
     throw StateError(
-      'Latest completed image Turn has no ready expanded Children',
+      'Image evidence is incomplete: Main has an unloaded atomic prefix',
     );
   }
-  for (final item in child.items) {
-    yield item.frozenFields();
+  final actions = TimelineScopeDriver.session(driver);
+  for (final unit in timeline.items.where((item) => item.kind == 'workGroup')) {
+    var snapshot = await actions.setGroupExpanded(unit.id, true);
+    yield snapshot;
+    final raw = ((snapshot['timeline'] as Map)['items'] as List)
+        .cast<Map>()
+        .singleWhere((item) => item['id'] == unit.id);
+    final atomic = raw['atomic'];
+    if (atomic is! Map || atomic['loadedCount'] is! int) {
+      throw StateError('Image group lacks actual loaded atomic metadata');
+    }
+    for (var page = 0; page < 32; page++) {
+      final display = timelineGroupDisplays(snapshot)
+          .singleWhere((group) => group['unitId'] == unit.id);
+      final hasWindow = display['completionAnchor'] != null;
+      final missingProps =
+          (atomic['loadedCount'] as int) > (display['items'] as List).length;
+      if (hasWindow && display['before'] == null) break;
+      if (!hasWindow && !missingProps) break;
+      snapshot = await actions.loadGroupEarlier(unit.id);
+      yield snapshot;
+      if (page == 31 &&
+          timelineGroupDisplays(
+                snapshot,
+              ).singleWhere((group) => group['unitId'] == unit.id)['before'] !=
+              null) {
+        throw StateError(
+          'Image evidence budget exhausted with an unread ordinary prefix',
+        );
+      }
+    }
   }
 }
 

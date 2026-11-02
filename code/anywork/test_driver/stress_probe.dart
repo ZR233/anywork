@@ -247,25 +247,55 @@ Future<void> main(List<String> args) async {
             streamCompleted &&
             timeline.itemCount > 0 &&
             timeline.items.any((item) => item.isFinalAnswer)) {
-          final expanded = TimelineObservation.parse(
-            await TimelineScopeDriver.session(driver).openLatest(),
+          final actions = TimelineScopeDriver.session(driver);
+          var expanded = TimelineObservation.parse(
+            await actions.openAllLoaded(),
           );
-          final parent = expanded.items
-              .lastWhere((item) => item.kind == 'turn')
-              .childrenParentId!;
-          final child = expanded.childrenFor(parent)!;
-          if (!child.items.any((item) => item.kind == 'thinking')) {
+          final latest = expanded.items.lastWhere(
+            (item) => item.kind == 'workGroup',
+          );
+          final source = latest.foregroundTurnId;
+          if (source == null) {
+            throw StateError('Stress work has no actual foreground source');
+          }
+          TimelineGroupObservation? thinkingWindow;
+          var budget = 32;
+          for (final unit in expanded.items.where(
+            (item) =>
+                item.kind == 'workGroup' && item.foregroundTurnId == source,
+          )) {
+            while (true) {
+              final group = expanded.groups.singleWhere(
+                (group) => group.unitId == unit.id,
+              );
+              if (group.items.any((item) => item.kind == 'thinking')) {
+                thinkingWindow = group;
+                break;
+              }
+              if (group.completionAnchor != null && group.before == null) break;
+              if (budget-- <= 0) {
+                throw StateError(
+                  'Stress thinking evidence has an unread ordinary prefix',
+                );
+              }
+              expanded = TimelineObservation.parse(
+                await actions.loadGroupEarlier(unit.id),
+              );
+            }
+            if (thinkingWindow != null) break;
+          }
+          if (thinkingWindow == null) {
             throw StateError(
-              'Completed stress Turn has no thinking in its actual Children',
+              'Completed source has no thinking in observed ordinary windows',
             );
           }
           pagingSummary = {
             ...?pagingSummary,
             'thinkingScope': {
-              'parentId': child.parentId,
-              'generation': child.generation,
-              'appliedSets': child.appliedSets,
-              'itemIds': child.itemIds,
+              'unitId': thinkingWindow.unitId,
+              'generation': thinkingWindow.generation,
+              'completionAnchor': thinkingWindow.completionAnchor,
+              'itemIds': thinkingWindow.itemIds,
             },
           };
           await writePagingEvidence();

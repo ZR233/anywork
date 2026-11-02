@@ -3101,7 +3101,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
                 let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
                     anyhow::bail!("cold conversation did not publish its initial Chat");
                 };
-                assert!(batch.messages.is_empty());
+                assert!(batch.entries.is_empty());
                 feed.close().await?;
             } else {
                 assert!(runtime.list_thread_turns(&child.id, None, 10).await?.turns.is_empty());

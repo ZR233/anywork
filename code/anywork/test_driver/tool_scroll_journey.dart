@@ -12,6 +12,7 @@ import 'timeline_fill_journey.dart';
 import 'timeline_observation.dart';
 import 'timeline_scope_driver.dart';
 import 'timeline_history_evidence.dart';
+import 'timeline_group_observation.dart';
 import 'pointer_scroll.dart';
 import 'stress_start.dart' as start;
 import 'window_control.dart';
@@ -362,9 +363,16 @@ Future<void> main(List<String> args) async {
         final state = await snapshot();
         final timelineFact = TimelineObservation.parse(state);
         final key = (target as ByValueKey).keyValue as String;
-        final childTargets = timelineFact.children
-            .expand((child) => child.items)
-            .where(
+        final childTargets =
+            [
+              ...timelineFact.children.expand((child) => child.items),
+              for (final group in timelineGroupDisplays(state))
+                if (group['expanded'] == true)
+                  for (final item in group['items'] as List)
+                    TimelineItemObservation.parse(
+                      (item as Map).cast<String, dynamic>(),
+                    ),
+            ].where(
               (item) =>
                   key.contains(item.id) ||
                   item.attachments.any(
@@ -376,7 +384,7 @@ Future<void> main(List<String> args) async {
           continue;
         }
         final recordedTargets =
-            completeHistory?.childItems
+            completeHistory?.processItems
                 .where(
                   (item) =>
                       key == 'chat-item:${item.id}' ||
@@ -586,6 +594,27 @@ Future<void> main(List<String> args) async {
     }
     var scopeIndex = 0;
     final history = await historyReader.collect(
+      onGroupPage: (main, group) async {
+        final calls = [
+          for (final value in group['items'] as List)
+            if ((value as Map)['tool'] case final Map tool)
+              if (_expectedToolCalls.any(
+                (expected) => expected.callId == tool['callId'],
+              ))
+                tool['callId'],
+        ];
+        final expected = [
+          for (final call in _expectedToolCalls)
+            if (calls.contains(call.callId)) call.callId,
+        ];
+        if (jsonEncode(calls) != jsonEncode(expected)) {
+          throw StateError(
+            'Original tool order changed in mounted window ${group['unitId']}',
+          );
+        }
+        await File('${output.path}/tool-window-${scopeIndex++}.json')
+            .writeAsString(jsonEncode(group));
+      },
       onScope: (main, child) async {
         await File('${output.path}/tool-scope-${scopeIndex++}.json')
             .writeAsString(
@@ -638,9 +667,8 @@ Future<void> main(List<String> args) async {
     await File('${output.path}/fixture-snapshot.json')
         .writeAsString(jsonEncode(s));
     final loadedTimeline = history.main;
-    // 每个 canonical 工具调用都是独立消息，不再合并成活动组：按 fixture 的精确
-    // callId/name/status 集合判定无漏、无重、无陌生项，不依赖时间线顺序。
-    final toolItems = history.childItems
+    // 按实际挂载过的原子身份检查精确调用集合，不按顶层组行数推断调用数。
+    final toolItems = history.processItems
         .where((item) => item.kind == 'tool' && item.tool != null)
         .toList();
     final toolsByCallId = <String, TimelineItemObservation>{};
@@ -691,7 +719,7 @@ Future<void> main(List<String> args) async {
           'result': item.tool!.result,
         },
     ];
-    final reasoningItems = history.childItems
+    final reasoningItems = history.processItems
         .where((item) => item.kind == 'thinking')
         .toList();
     if (reasoningItems.length < 3) {
@@ -750,9 +778,13 @@ Future<void> main(List<String> args) async {
     }
     final imageItem = imageItems.first;
     final imageEntryFirst = imageEntries.first;
-    final firstParent = history.scopeContaining(imageItem.id).parentId;
+    final firstUnit = history.groups
+        .singleWhere(
+          (group) => group.items.any((item) => item.id == imageItem.id),
+        )
+        .unitId;
     final parentTurn = history.main.items.singleWhere(
-      (item) => item.childrenParentId == firstParent,
+      (item) => item.id == firstUnit,
     );
     final summary = find.byValueKey('timeline-row-${parentTurn.id}');
     final thumbnail = find.byValueKey('view-image-thumbnail-$imageEntryFirst');
@@ -761,17 +793,10 @@ Future<void> main(List<String> args) async {
 
     Future<void> showImage(TimelineItemObservation item) async {
       await revealItem(item.id);
-      final parent = history.scopeContaining(item.id).parentId;
-      final turn = TimelineObservation.parse(await snapshot()).items
-          .singleWhere((candidate) => candidate.childrenParentId == parent);
       final entry = '${item.id}:${item.tool!.attachments.single.id}';
       final target = find.byValueKey('view-image-thumbnail-$entry');
       await driver.scrollUntilVisible(
-        find.descendant(
-          of: find.byValueKey('chat-item:${turn.id}'),
-          matching: find.byType('Scrollable'),
-          firstMatchOnly: true,
-        ),
+        timeline,
         target,
         dyScroll: -80,
         timeout: const Duration(seconds: 20),
@@ -782,8 +807,10 @@ Future<void> main(List<String> args) async {
     final imageChecks = <Map<String, Object?>>[];
     for (final item in imageItems) {
       await showImage(item);
-      final scope = TimelineObservation.parse(await snapshot())
-          .childrenContaining(item.id);
+      final before = await snapshot();
+      final group = _mountedGroupContaining(before, item.id);
+      final generation = TimelineObservation.parse(before).generation;
+      final unitId = group['unitId'] as String;
       final entry = '${item.id}:${item.tool!.attachments.single.id}';
       final target = find.byValueKey('view-image-thumbnail-$entry');
       final dialog = find.byValueKey('view-image-dialog-$entry');
@@ -793,15 +820,19 @@ Future<void> main(List<String> args) async {
           .writeAsBytes(await driver.screenshot());
       await driver.sendCommand(RawTap(find.byValueKey('timeline-image-close')));
       await driver.waitForAbsent(dialog, timeout: const Duration(seconds: 10));
-      await scopes.setExpanded(scope.parentId, false);
+      await scopes.setGroupExpanded(unitId, false);
       await driver.waitForAbsent(target, timeout: const Duration(seconds: 10));
-      final closed = TimelineObservation.parse(await snapshot());
-      if (closed.childrenFor(scope.parentId) != null) {
-        throw StateError('Closed image scope retained its query qualification');
+      final closed = timelineGroupDisplays(await snapshot())
+          .where((value) => value['unitId'] == unitId);
+      if (closed.any(
+        (value) =>
+            value['expanded'] == true || (value['items'] as List).isNotEmpty,
+      )) {
+        throw StateError('Folded image retained a mounted atom window');
       }
       imageChecks.add({
-        'parentId': scope.parentId,
-        'generation': scope.generation,
+        'unitId': unitId,
+        'generation': generation,
         'itemId': item.id,
         'callId': item.tool!.callId,
         'attachmentId': item.tool!.attachments.single.id,
@@ -816,9 +847,9 @@ Future<void> main(List<String> args) async {
     }
     evidence['imageOrganization'] = {
       'simultaneouslyMountedThumbnails': 'notApplicable',
-      'groupExpansion': 'notApplicable',
+      'groupExpansion': 'actual ordinary window',
       'crossMountExpansionRetention': 'notApplicable',
-      'reason': 'Each actual Children display and item is visited explicitly; lazy rows may retire.',
+      'reason': 'Each actual bounded group window and atom is visited explicitly; lazy rows may retire.',
       'items': imageChecks,
     };
 
@@ -897,7 +928,8 @@ Future<void> main(List<String> args) async {
       });
       if (!rowMounted && !thumbnailMounted) {
         away = true;
-        if (state.childrenFor(firstParent) != null) {
+        if (timelineGroupDisplays(await snapshot())
+            .any((group) => group['unitId'] == firstUnit)) {
           throw StateError(
             'Unmounted image parent retained Children qualification',
           );
@@ -928,7 +960,10 @@ Future<void> main(List<String> args) async {
         'Main lease changed when explicitly reopening the image',
       );
     }
-    final returnedScope = imageReturned.childrenContaining(imageItem.id);
+    final returnedGroup = _mountedGroupContaining(
+      await snapshot(),
+      imageItem.id,
+    );
     final returnedDialog = find.byValueKey(
       'view-image-dialog-$imageEntryFirst',
     );
@@ -939,10 +974,13 @@ Future<void> main(List<String> args) async {
       returnedDialog,
       timeout: const Duration(seconds: 10),
     );
-    await scopes.setExpanded(returnedScope.parentId, false);
+    await scopes.setGroupExpanded(returnedGroup['unitId'] as String, false);
     await driver.waitForAbsent(thumbnail, timeout: const Duration(seconds: 10));
-    if (TimelineObservation.parse(await snapshot()).childrenFor(firstParent) !=
-        null) {
+    if (timelineGroupDisplays(await snapshot()).any(
+      (group) =>
+          group['unitId'] == returnedGroup['unitId'] &&
+          (group['expanded'] == true || (group['items'] as List).isNotEmpty),
+    )) {
       throw StateError(
         'Recycled image scope registered again after explicit close',
       );
@@ -953,7 +991,7 @@ Future<void> main(List<String> args) async {
       'sameMainLease': true,
       'crossMountExpansionRetention': 'notApplicable',
       'explicitReopenAfterActualRecycling': true,
-      'returnedGeneration': returnedScope.generation,
+      'returnedGeneration': imageReturned.generation,
       'dialogOpenedAndClosedAfterRecycling': true,
       'scopeUnregisteredAfterClose': true,
       'recycleSteps': recycleSteps,
@@ -1650,3 +1688,12 @@ Future<void> main(List<String> args) async {
     await driver.close();
   }
 }
+
+Map<String, dynamic> _mountedGroupContaining(
+  Map<String, dynamic> snapshot,
+  String itemId,
+) => timelineGroupDisplays(snapshot).singleWhere(
+  (group) =>
+      group['expanded'] == true &&
+      (group['items'] as List).cast<Map>().any((item) => item['id'] == itemId),
+);

@@ -15,6 +15,8 @@ import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
+import 'timeline_display_unit_view.dart';
+import 'timeline_content_range_view.dart';
 
 typedef ChatContentRangeBuilder = Widget Function(
   String itemId,
@@ -32,21 +34,21 @@ class ChatItemView extends StatefulWidget {
     required this.item,
     this.bodyBuilder,
     this.contentRangeBuilder,
-    this.childrenBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
+    this.onLoadEarlierGroup,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
   final ChatContentRangeBuilder? contentRangeBuilder;
-  final Widget Function(String parentId)? childrenBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
+  final Future<void> Function()? onLoadEarlierGroup;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -108,6 +110,29 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    if (item.isKnownEmptyText) return const SizedBox.shrink();
+    if (item.displayUnit case final unit?) {
+      return KeyedSubtree(
+        key: ValueKey('chat-item:${unit.id}'),
+        child: TimelineDisplayUnitView(
+          key: ValueKey(unit.id),
+          unit: unit,
+          onLoadEarlier: widget.onLoadEarlierGroup,
+          memberBuilder: (atom) => atom.payload == null
+              ? const Text('内容状态未知')
+              : ChatItemView(
+                  key: ValueKey(atom.id),
+                  item: ChatItemPresentation.decode(atom),
+                  bodyBuilder: widget.bodyBuilder,
+                  contentRangeBuilder: widget.contentRangeBuilder,
+                  attachmentBuilder: widget.attachmentBuilder,
+                  isDisplayActive: widget.isDisplayActive,
+                  monotonicMicros: widget.monotonicMicros,
+                  onContentLayout: widget.onContentLayout,
+                ),
+        ),
+      );
+    }
     developer.Timeline.instantSync(
       'conversation.row.build',
       arguments: {'itemId': item.id},
@@ -164,10 +189,10 @@ class _ChatItemViewState extends State<ChatItemView> {
     ),
     'agent' => _agent(context),
     'inference' => _inference(context),
-    'contextCompaction' => _record(
-      Icons.compress_outlined,
-      '上下文压缩 · ${item.data['beforeTokens'] ?? '?'} → ${item.data['afterTokens'] ?? '?'} tokens',
-      item.data,
+    'contextCompaction' => TimelineActivityRow(
+      icon: Icons.compress_outlined,
+      label: context.l10n.timelineContextCompacted,
+      expandable: false,
     ),
     'raw' => _raw(context),
     _ => _unavailable('未知内容类别：${item.type}', null),
@@ -210,13 +235,15 @@ class _ChatItemViewState extends State<ChatItemView> {
           padding: const EdgeInsetsDirectional.only(
             start: TimelineActivityRow.contentIndent,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final body in item.bodies) _body(body),
-              _outcomeNotice(item.data['outcome']),
-            ],
+          child: TimelineBodyReadIntent(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final body in item.bodies) _body(body),
+                _outcomeNotice(item.data['outcome']),
+              ],
+            ),
           ),
         ),
       ],
@@ -238,16 +265,47 @@ class _ChatItemViewState extends State<ChatItemView> {
     final Widget card;
     if (reading is DecodedToolCard) {
       final tool = reading.value;
+      final identity = item.atom?.tool;
+      if (identity != null && identity.callId != tool.toolCallId) {
+        return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
+      }
+      final contents = item.atom?.contents
+          .where(
+            (content) =>
+                content.role == ChatContentRole.toolArguments ||
+                content.role == ChatContentRole.toolOutput,
+          )
+          .toList();
+      final details = TimelineToolDetails(
+        item: tool,
+        declaredContents: contents == null || contents.isEmpty
+            ? null
+            : [
+                for (final content in contents)
+                  widget.contentRangeBuilder?.call(
+                        item.id,
+                        content.role.name,
+                        content.role == ChatContentRole.toolArguments
+                            ? '工具参数'
+                            : '工具输出',
+                        content.reference,
+                        _contentWitness,
+                      ) ??
+                      const Text('内容读取尚未就绪'),
+                if (tool.error != null) Text(tool.error!),
+              ],
+      );
       card = TimelineActivityTileTheme(
         child: tool.wait != null
             ? TimelineWaitPanel(
                 identity: item.id,
                 presentation: tool.wait!,
-                diagnostics: TimelineToolDetails(item: tool),
+                diagnostics: details,
               )
-            : timelineIsWebSearch(tool)
+            : timelineIsWebSearch(tool) &&
+                  (contents == null || contents.isEmpty)
             ? TimelineWebSearchToolCard(item: tool)
-            : TimelineToolDetails(item: tool),
+            : details,
       );
     } else {
       final unavailable = reading as UnavailableToolCard;
@@ -270,11 +328,6 @@ class _ChatItemViewState extends State<ChatItemView> {
         _media(),
         // References are explicit producer entries; no private receipt or arbitrary
         // JSON-field search is used to discover a body.
-        if (reading is DecodedToolCard) ...[
-          for (final body in _publicBodies)
-            if (body.reference != null) _body(body),
-          _rawRecord(),
-        ],
       ],
     );
   }
@@ -294,15 +347,7 @@ class _ChatItemViewState extends State<ChatItemView> {
           ? Icons.stop_circle_outlined
           : Icons.account_tree_outlined,
       title,
-      [
-        _outcomeNotice(outcome),
-        if (item.childrenParentId case final parent?)
-          if (widget.childrenBuilder case final builder?)
-            builder(parent)
-          else
-            const Text('子内容读取尚未就绪'),
-        _rawRecord(),
-      ],
+      [_outcomeNotice(outcome), _rawRecord()],
       issue: state == 'failed' || state == 'budgetLimited',
     );
   }

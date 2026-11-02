@@ -24,7 +24,7 @@ Widget rowApp(Widget child) => MaterialApp(
   home: Scaffold(body: SingleChildScrollView(child: child)),
 );
 ChatItemPresentation deferred(String database) => ChatItemPresentation.decode(
-  ChatMessage(
+  fixtureAtom(
     id: 'same-row',
     payload: DeferredPayload(
       reference: ContentRef(
@@ -116,7 +116,7 @@ void main() {
   );
 
   testWidgets(
-    'unrelated Append keeps the mounted row expansion and immutable card identity',
+    'unrelated Append keeps directly readable reasoning and immutable card identity',
     (tester) async {
       final controller = InMemoryChatController();
       final resources = TimelineImageResources(threadId: 'thread');
@@ -154,10 +154,12 @@ void main() {
         ),
       );
       await tester.pumpWidget(build());
-      expect(find.text('completed reasoning'), findsNothing);
-      await tester.tap(find.byType(ExpansionTile).first);
-      await tester.pumpAndSettle();
       expect(find.text('completed reasoning'), findsOneWidget);
+      expect(
+        find.byType(ExpansionTile),
+        findsNothing,
+        reason: 'Thinking is directly readable, not a second expansion',
+      );
       final old = controller.messages.single;
       final card = old.metadata![chatItemPresentationKey];
       await adapter.applyBatch(

@@ -173,6 +173,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       _controller!,
       generation: 1,
       imageResources: _images,
+      groupForeground: false,
     );
     _opened = _openingDone.future;
   }

@@ -200,6 +200,7 @@ pub(in super::super) async fn seed_current(
         .context("history identity missing")?
         .try_get::<String>("", "database_id")?;
     let mut prepared = PreparedCurrent {
+        source_changes: std::sync::Arc::from([]),
         projection: CurrentProjection::empty(watermark, ThreadStatus::Idle),
         changes: Arc::from([]),
         contents: Arc::from([]),
@@ -219,15 +220,7 @@ pub(in super::super) async fn seed_current(
     if let Some(turn) = crate::studio::thread_projection::project_active_turn(thread_id, state, 0)?
         && let Some(phase) = turn.phase()
     {
-        prepared.projection.active_turn = Some(CurrentTurnHead {
-            children_parent_id: Some(
-                pl_core::chat::ChatKey::new("turn", &turn.id)?
-                    .as_str()
-                    .to_owned(),
-            ),
-            id: turn.id,
-            phase,
-        });
+        prepared.projection.active_turn = Some(CurrentTurnHead { id: turn.id, phase });
     }
     let mut entries = Vec::new();
     let mut contents = Vec::new();

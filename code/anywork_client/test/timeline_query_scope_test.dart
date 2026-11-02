@@ -43,6 +43,27 @@ void main() {
       continuation: 'current-next',
     );
     final calls = <String>[];
+    const anchorDemand = ReadDemand(maxItems: 1, maxBytes: 4096);
+    final anchored = ChatBatch(
+      placement: ChatPlacement.prepend,
+      entries: [ChatAtomEntry(chatMessage(id: 'queried-anchor'))],
+      before: 'inclusive-next',
+    );
+    final acceptedBeforeQuery = List.of(fixture.consumers['thread']!.batches);
+    feed.reader.onAt = (completionSeq, before, demand) async {
+      expect(completionSeq, 17);
+      expect(before, 'inclusive:不透明');
+      expect(demand, same(anchorDemand));
+      calls.add('at');
+      return anchored;
+    };
+    feed.reader.onBefore = (completionSeq, before, demand) async {
+      expect(completionSeq, 17);
+      expect(before, 'exclusive:不透明');
+      expect(demand, same(anchorDemand));
+      calls.add('before');
+      return anchored;
+    };
     feed.reader.onManifest = (item, continuation, demand) async {
       expect(item, 'item');
       expect(continuation, 'manifest-before');
@@ -83,7 +104,28 @@ void main() {
       ),
       same(collection),
     );
-    expect(calls, ['manifest', 'content', 'current']);
+    expect(
+      await scope.readAt(
+        completionSeq: 17,
+        before: 'inclusive:不透明',
+        demand: anchorDemand,
+      ),
+      same(anchored),
+    );
+    expect(
+      await scope.readBefore(
+        completionSeq: 17,
+        before: 'exclusive:不透明',
+        demand: anchorDemand,
+      ),
+      same(anchored),
+    );
+    expect(
+      fixture.consumers['thread']!.batches,
+      acceptedBeforeQuery,
+      reason: 'Ordinary windows are queries, not main-history admission',
+    );
+    expect(calls, ['manifest', 'content', 'current', 'at', 'before']);
     expect(feed.acknowledgements, [1]);
     expect(fixture.transport.opens, hasLength(1));
     expect((await scope.close()).complete, isTrue);
@@ -114,7 +156,7 @@ void main() {
     expect(scope.pendingQueries, 1);
     final page = ChatBatch(
       placement: ChatPlacement.prepend,
-      messages: [],
+      entries: [],
       before: 'next',
     );
     reply.complete(page);
@@ -136,7 +178,7 @@ void main() {
       scope.loadOlder(before: 'before', demand: _demand),
       throwsA(same(failure)),
     );
-    final page = ChatBatch(placement: ChatPlacement.prepend, messages: []);
+    final page = ChatBatch(placement: ChatPlacement.prepend, entries: []);
     feed.reader.onOlder = (_, __) async => page;
     expect(
       await scope.loadOlder(before: 'before', demand: _demand),
@@ -153,6 +195,14 @@ void main() {
       final feed = await fixture.open(demand: _demand);
       final scope = fixture.session().content.openScope(generation: 1);
       scope.retire();
+      await expectLater(
+        scope.readAt(completionSeq: 17, demand: _demand),
+        throwsA(isA<StaleConversationScope>()),
+      );
+      await expectLater(
+        scope.readBefore(completionSeq: 17, demand: _demand),
+        throwsA(isA<StaleConversationScope>()),
+      );
       await expectLater(
         scope.loadOlder(before: 'before', demand: _demand),
         throwsA(isA<StaleConversationScope>()),
@@ -213,7 +263,7 @@ void main() {
           reply.complete(
             ChatBatch(
               placement: ChatPlacement.prepend,
-              messages: [chatMessage(id: 'stale')],
+              entries: [ChatAtomEntry(chatMessage(id: 'stale'))],
             ),
           );
         }

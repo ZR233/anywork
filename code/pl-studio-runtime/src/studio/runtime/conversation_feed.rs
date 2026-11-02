@@ -1,7 +1,10 @@
 //! Passive, scoped Chat delivery. A handle has exactly one Set and never resets in place.
 use super::{
     ConversationReader, StudioRuntime,
-    conversation_reader::{JsonBudget, ReadResources, core_demand, messages, query, resync},
+    conversation_reader::{
+        JsonBudget, ReadResources, annotate_atoms, annotate_sources, core_demand, entries, query,
+        resync,
+    },
     thread_observation::{ConversationCut, ConversationSource, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
@@ -35,6 +38,7 @@ pub struct ConversationFeed {
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
     cut: Option<Arc<ConversationCut>>,
+    cut_entry: usize,
     delivered: u64,
     seen_serial: u64,
     current: Option<CurrentProjection>,
@@ -99,6 +103,8 @@ impl StudioRuntime {
         let mut state_effect_floor = 0;
         let mut initial_turn = None;
         let mut initial_interactions = Vec::new();
+        let mut source_states = Vec::new();
+        let mut cold_sources = None;
         let (session, database_id, head, current, items, boundary) = if let Some((
             registration,
             state_rx,
@@ -148,6 +154,7 @@ impl StudioRuntime {
             state_effect_floor = source.current.projection.source_effect_seq;
             initial_turn = source.current.active_turn.clone();
             initial_interactions = source.current.interactions.to_vec();
+            source_states = source.current.source_states.to_vec();
             let database_id = history
                 .conversation_database_id()
                 .await?
@@ -218,6 +225,7 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    cold_sources = Some(cold.sources);
                     initial_interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
@@ -248,10 +256,23 @@ impl StudioRuntime {
         if !slot.is_current(position.epoch) {
             return Err(resync());
         }
+        let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
+        if let Some(sources) = cold_sources {
+            annotate_atoms(&mut initial_entries, &sources)?;
+        } else {
+            annotate_sources(
+                &mut initial_entries,
+                &history,
+                &source_states,
+                state_effect_floor,
+            )
+            .await?;
+        }
         let reader = ConversationReader::new(
             id,
             scope,
             head,
+            state_effect_floor,
             slot,
             position.epoch,
             ReadResources {
@@ -265,14 +286,14 @@ impl StudioRuntime {
         );
         let initial = ChatBatch {
             placement: ChatPlacement::Set,
-            messages: messages(items, database_id.as_deref().unwrap_or_default()),
+            entries: initial_entries,
             before: reader.before(boundary).await?,
             current: current.clone(),
         };
         let initial = reader.finish_batch(initial, demand)?;
         tracing::debug!(
             target: "conversation_work",
-            returned = initial.messages.len(),
+            returned = initial.entries.len(),
             elapsed_us = started.elapsed().as_micros() as u64,
             "read completed"
         );
@@ -323,6 +344,7 @@ impl StudioRuntime {
             last_turn,
             slot_changed,
             cut: None,
+            cut_entry: 0,
             delivered: head,
             seen_serial: initial_serial,
             current,
@@ -561,6 +583,41 @@ impl ConversationFeed {
                     continue;
                 }
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
+                if main && self.cut_entry < cut.handoff.entries.len() {
+                    let mut product = ChatBatch {
+                        placement: ChatPlacement::Append,
+                        entries: Vec::new(),
+                        before: None,
+                        current: Some(cut.handoff.projection_at(self.delivered)),
+                    };
+                    let mut next = self.cut_entry;
+                    for entry in cut
+                        .handoff
+                        .entries
+                        .iter()
+                        .skip(next)
+                        .take(self.demand.max_items as usize)
+                    {
+                        product.entries.push(entry.clone());
+                        if product.encoded_len()? > self.demand.max_bytes as usize {
+                            product.entries.pop();
+                            ensure!(
+                                !product.entries.is_empty(),
+                                core::ChatError::InvalidDemand(
+                                    "start/source envelope cannot fit demand".into()
+                                )
+                            );
+                            break;
+                        }
+                        next += 1;
+                    }
+                    let product = self.reader.finish_batch(product, self.demand)?;
+                    self.cut_entry = next;
+                    self.current = product.current.clone();
+                    return Ok(Some(ConversationEvent::Chat {
+                        batch: Box::new(product),
+                    }));
+                }
                 if main && self.delivered >= cut.handoff.main_through {
                     // The owner proves this suffix contains no further Main completion.
                     self.delivered = self.delivered.max(cut.head);
@@ -604,12 +661,19 @@ impl ConversationFeed {
                         self.delivered = cut.head;
                     }
                     if !batch.items.is_empty() || current.is_some() {
-                        let product = ChatBatch {
+                        let mut product = ChatBatch {
                             placement: ChatPlacement::Append,
-                            messages: messages(batch.items, &budget.database_id),
+                            entries: entries(batch.items, &budget.database_id)?,
                             before: None,
                             current: current.clone(),
                         };
+                        self.reader
+                            .annotate_source_states(
+                                &mut product.entries,
+                                &cut.handoff.after.sources,
+                                cut.handoff.after.source_effect_seq,
+                            )
+                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
                         if let Some(current) = current {
                             self.current = Some(current);
@@ -617,6 +681,7 @@ impl ConversationFeed {
                         if self.delivered == cut.head {
                             self.seen_serial = cut.serial;
                             self.cut = None;
+                            self.cut_entry = 0;
                         }
                         self.state_turn = true;
                         return Ok(Some(ConversationEvent::Chat {
@@ -626,7 +691,7 @@ impl ConversationFeed {
                 } else if main && self.current.as_ref() != Some(cut.handoff.after.as_ref()) {
                     let product = ChatBatch {
                         placement: ChatPlacement::Append,
-                        messages: Vec::new(),
+                        entries: Vec::new(),
                         before: None,
                         current: Some(cut.handoff.after.as_ref().clone()),
                     };
@@ -634,6 +699,7 @@ impl ConversationFeed {
                     self.current = product.current.clone();
                     self.seen_serial = cut.serial;
                     self.cut = None;
+                    self.cut_entry = 0;
                     self.state_turn = true;
                     return Ok(Some(ConversationEvent::Chat {
                         batch: Box::new(product),
@@ -641,6 +707,7 @@ impl ConversationFeed {
                 }
                 self.seen_serial = cut.serial;
                 self.cut = None;
+                self.cut_entry = 0;
                 continue;
             }
             if let Some(cuts) = self.cuts.as_mut() {

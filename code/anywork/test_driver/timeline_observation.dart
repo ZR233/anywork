@@ -6,6 +6,8 @@
 // （design/26 §26.9）。
 import 'dart:convert';
 
+import 'timeline_group_observation.dart';
+
 /// Canonical read-only observation of the currently published activity parts.
 ///
 /// This is decoded directly from `conversationActivity`; it does not cache or
@@ -278,6 +280,7 @@ final class TimelineObservation {
     required this.hasNewOutput,
     required this.items,
     required this.children,
+    required this.groups,
     required this.appliedSets,
     required this.appliedPrepends,
     required this.appliedAppends,
@@ -343,6 +346,13 @@ final class TimelineObservation {
             (child as Map).cast<String, dynamic>(),
           ),
       ],
+      groups: List.unmodifiable([
+        for (final group in timelineGroupDisplays(snapshot))
+          TimelineGroupObservation.parse(
+            group,
+            _int(map, 'generation', 'timeline'),
+          ),
+      ]),
       appliedSets: _intOrNull(map, 'appliedSets', 'timeline'),
       appliedPrepends: _intOrNull(map, 'appliedPrepends', 'timeline'),
       appliedAppends: _intOrNull(map, 'appliedAppends', 'timeline'),
@@ -384,6 +394,7 @@ final class TimelineObservation {
   final bool hasNewOutput;
   final List<TimelineItemObservation> items;
   final List<TimelineChildrenObservation> children;
+  final List<TimelineGroupObservation> groups;
   final int? appliedSets;
   final int? appliedPrepends;
   final int? appliedAppends;
@@ -392,10 +403,21 @@ final class TimelineObservation {
   /// Search only already expanded displays; this never flattens their ordering into Main.
   Iterable<TimelineItemObservation> get expandedItems sync* {
     yield* items;
+    for (final group in groups) {
+      if (!group.expanded || group.loading) continue;
+      if (group.error != null) {
+        throw StateError('Ordinary group read failed: ${group.error}');
+      }
+      yield* group.items;
+    }
     for (final child in children) {
       yield* child.items;
     }
   }
+
+  TimelineGroupObservation groupContainingItem(String id) => groups.singleWhere(
+    (group) => group.expanded && group.items.any((item) => item.id == id),
+  );
 
   TimelineChildrenObservation? childrenFor(String parentId) {
     for (final child in children) {
@@ -487,11 +509,28 @@ final class TimelineObservation {
     TimelineObservation previous, {
     required bool prepend,
   }) {
+    requireConsistentIds();
+    previous.requireConsistentIds();
+    var next = 0;
+    var retained =
+        threadId == previous.threadId && generation == previous.generation;
+    for (final id in previous.itemIds) {
+      while (next < itemIds.length && itemIds[next] != id) {
+        next++;
+      }
+      if (next == itemIds.length) {
+        retained = false;
+        break;
+      }
+      next++;
+    }
     final beforeCount = prepend
         ? previous.appliedPrepends
         : previous.appliedAppends;
     final afterCount = prepend ? appliedPrepends : appliedAppends;
-    if (!retainsContiguousWindow(previous) ||
+    // Ordinary completion pages may insert a new unit between loaded rows.
+    // Retain each old identity in order; contiguity is not a Main guarantee.
+    if (!retained ||
         previous.appliedSets == null ||
         previous.appliedSets! <= 0 ||
         appliedSets != previous.appliedSets ||
@@ -528,6 +567,28 @@ final class TimelineObservation {
     'appliedAppends': appliedAppends,
     'firstContentLayout': firstContentLayout?.toJson(),
   };
+}
+
+final class TimelineGroupObservation {
+  TimelineGroupObservation.parse(Map<String, dynamic> map, this.generation)
+    : unitId = map['unitId'] as String,
+      expanded = map['expanded'] as bool,
+      loading = map['loading'] as bool,
+      completionAnchor = map['completionAnchor'] as int?,
+      before = map['before'] as String?,
+      error = map['error'],
+      items = List.unmodifiable([
+        for (final item in map['items'] as List)
+          TimelineItemObservation.parse((item as Map).cast<String, dynamic>()),
+      ]);
+  final String unitId;
+  final int generation;
+  final bool expanded, loading;
+  final int? completionAnchor;
+  final String? before;
+  final Object? error;
+  final List<TimelineItemObservation> items;
+  List<String> get itemIds => items.map((item) => item.id).toList();
 }
 
 List<dynamic> _requiredList(
@@ -654,13 +715,15 @@ final class TimelineContentLayoutObservation {
 
 /// 一条 canonical item 的轻量 typed 预览（有界，不是全文）。
 final class TimelineItemObservation {
+  factory TimelineItemObservation.parse(Map<String, dynamic> map) =>
+      _parse(map);
+
   TimelineItemObservation._({
     required this.id,
     required this.sealedAt,
     required this.compatibility,
     required this.payloadByteLength,
     required this.presentationContract,
-    required this.childrenParentId,
     required this.diagnostic,
     required this.omittedBytes,
     required this.kind,
@@ -672,6 +735,7 @@ final class TimelineItemObservation {
     required this.tool,
     required this.userInput,
     required this.plan,
+    required this.atomic,
   });
 
   static TimelineItemObservation _parse(Map<String, dynamic> map) {
@@ -720,7 +784,6 @@ final class TimelineItemObservation {
         'presentationContract',
         'timeline item',
       ),
-      childrenParentId: _stringOrNull(map, 'childrenParentId', 'timeline item'),
       diagnostic: _stringOrNull(map, 'diagnostic', 'timeline item'),
       omittedBytes: _intOrNull(map, 'omittedBytes', 'timeline item'),
       kind: kind,
@@ -740,15 +803,25 @@ final class TimelineItemObservation {
       plan: plan is Map
           ? TimelinePlanObservation._parse(plan.cast<String, dynamic>())
           : null,
+      atomic: map['atomic'] is Map
+          ? Map.unmodifiable((map['atomic'] as Map).cast<String, dynamic>())
+          : null,
     );
   }
 
   final String id;
+  final Map<String, dynamic>? atomic;
+  String? get foregroundTurnId {
+    final source = atomic?['source'];
+    return source is Map && source['kind'] == 'foregroundTurn'
+        ? source['turnId'] as String?
+        : null;
+  }
+
   final int? sealedAt;
   final String compatibility;
   final int? payloadByteLength;
   final String? presentationContract;
-  final String? childrenParentId;
   final String? diagnostic;
   final int? omittedBytes;
   final String kind;
@@ -796,7 +869,6 @@ final class TimelineItemObservation {
     'compatibility': compatibility,
     'payloadByteLength': payloadByteLength,
     'presentationContract': presentationContract,
-    'childrenParentId': childrenParentId,
     'diagnostic': diagnostic,
     'omittedBytes': omittedBytes,
     'kind': kind,

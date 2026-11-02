@@ -3,6 +3,71 @@ import 'package:flutter_test/flutter_test.dart';
 import 'timeline_history_evidence.dart';
 
 void main() {
+  test('ordinary G1/text/G2 evidence visits only bounded mounted windows, never synthetic Children', () async {
+    final surface = _GroupSurface();
+    final evidence = await surface.reader().collect();
+    expect(evidence.children, isEmpty);
+    expect(evidence.groups.map((group) => group.unitId), ['G1', 'G2']);
+    expect(evidence.processItems.map((item) => item.id), [
+      'text',
+      'G1-last',
+      'G1-mid',
+      'G1-first',
+      'G2-last',
+      'G2-mid',
+      'G2-first',
+    ]);
+    expect(surface.actions, [
+      'expand:G1:true',
+      'read:G1:0',
+      'read:G1:1',
+      'expand:G1:false',
+      'expand:G2:true',
+      'read:G2:0',
+      'read:G2:1',
+      'expand:G2:false',
+    ]);
+    expect(
+      evidence.pages
+          .where((page) => page['unitId'] == 'G1')
+          .map((page) => page['after']),
+      ['cursor:G1', null],
+    );
+    expect((surface.snapshot['timeline'] as Map)['groups'], isEmpty);
+    // New presentation owner, different local key. Locate the original atom via
+    // new ordinary UI windows; do not restore the old unit key or opaque cursor.
+    surface.reopen();
+    surface.actions.clear();
+    final shown = await surface.reader().showItem(evidence, 'G1-first');
+    expect(surface.actions, [
+      'expand:reopened:true',
+      'read:reopened:0',
+      'read:reopened:1',
+    ]);
+    expect(
+      ((shown['timeline'] as Map)['groups'] as List).single['unitId'],
+      'reopened',
+    );
+  });
+
+  test('ordinary history cannot claim complete evidence on errors, budget or no progress', () async {
+    final noActions = _GroupSurface();
+    await expectLater(
+      noActions.reader(withActions: false).collect(),
+      throwsStateError,
+    );
+    final limited = _GroupSurface();
+    await expectLater(limited.reader(maxPages: 1).collect(), throwsStateError);
+    final stuck = _GroupSurface()..stuck = true;
+    await expectLater(stuck.reader().collect(), throwsStateError);
+    expect(
+      stuck.actions.where((action) => action.startsWith('read:')).length,
+      1,
+    );
+    final failed = _GroupSurface()..error = '真实读取失败';
+    await expectLater(failed.reader().collect(), throwsStateError);
+  });
+
   test(
     'collects each scope to explicit EOF and records before closing it',
     () async {
@@ -18,11 +83,9 @@ void main() {
       );
       expect(surface.actions, [
         'main-page',
-        'open:a',
         'child-page:a:a-before',
         'record:a',
         'close:a',
-        'open:b',
         'record:b',
         'close:b',
       ]);
@@ -72,10 +135,10 @@ void main() {
       );
       await expectLater(surface.reader().collect(), throwsStateError);
       expect(
-        surface.actions.where((action) => action == 'open:a'),
+        surface.actions.where((action) => action == 'child-page:a:a-before'),
         hasLength(1),
       );
-      expect(surface.actions, isNot(contains('open:b')));
+      expect(surface.actions, isNot(contains('close:a')));
     },
   );
 
@@ -109,12 +172,12 @@ void main() {
         surface.reader(maxPages: 1).collect(),
         throwsStateError,
       );
-      expect(surface.actions, ['main-page', 'open:a']);
+      expect(surface.actions, ['main-page']);
     },
   );
 
   test(
-    'reopening locates the Main parent then uses only the new scope cursor',
+    'an explicitly remounted business scope uses only its new actual cursor',
     () async {
       final surface = _HistorySurface();
       final reader = surface.reader();
@@ -126,14 +189,12 @@ void main() {
         before: 'new-main-before',
         generation: 8,
       );
+      surface.mountBusinessScopes();
       final current = await reader.showItem(recorded, 'a-old');
-      expect(surface.actions, [
-        'main-page',
-        'open:a',
-        'child-page:a:new-child-before',
-      ]);
-      final child =
-          ((current['timeline'] as Map)['children'] as List).single as Map;
+      expect(surface.actions, ['child-page:a:new-child-before']);
+      final child = ((current['timeline'] as Map)['children'] as List)
+          .cast<Map>()
+          .singleWhere((child) => child['parentId'] == 'a');
       expect(child['generation'], 31);
       expect(child['itemIds'], ['a-old', 'a-new']);
     },
@@ -145,17 +206,106 @@ void main() {
       surface.reader(retainClosed: true).collect(),
       throwsStateError,
     );
-    expect(surface.actions, isNot(contains('open:b')));
+    expect(surface.actions, isNot(contains('close:b')));
   });
 }
 
+final class _GroupSurface {
+  _GroupSurface() {
+    _setMain(['G1', 'text', 'G2']);
+  }
+  late Map<String, dynamic> snapshot;
+  final actions = <String>[];
+  String? active;
+  int page = 0;
+  bool stuck = false;
+  String? error;
+  bool reopened = false;
+  void _setMain(List<String> ids) {
+    snapshot = _snapshot(ids);
+    final timeline = snapshot['timeline'] as Map;
+    timeline['items'] = [
+      for (final id in ids)
+        {
+          ..._item(id),
+          'kind': id == 'text' ? 'text' : 'workGroup',
+          'atomic': {'loadedCount': 3},
+        },
+    ];
+    timeline['groups'] = <Object?>[];
+  }
+
+  void reopen() {
+    reopened = true;
+    _setMain(['reopened']);
+    (snapshot['timeline'] as Map)['generation'] = 8;
+  }
+
+  void _display() {
+    (snapshot['timeline'] as Map)['groups'] = active == null
+        ? <Object?>[]
+        : [
+            {
+              'unitId': active,
+              'expanded': true,
+              'loading': false,
+              'error': error,
+              'completionAnchor': page == 0 ? null : 10,
+              'before': page == 1 ? 'cursor:$active' : null,
+              'items': [
+                _item('${reopened ? 'G1' : active}-last'),
+                if (page > 0)
+                  _item(
+                    '${reopened ? 'G1' : active}-${page == 1 ? 'mid' : 'first'}',
+                  ),
+              ],
+            },
+          ];
+  }
+
+  TimelineHistoryReader reader({int maxPages = 24, bool withActions = true}) =>
+      TimelineHistoryReader(
+        maxPages: maxPages,
+        read: () async => snapshot,
+        loadMainOlder: () async => fail('No unloaded Main prefix'),
+        closeChildren: (_) async => fail('Work is not a Children parent'),
+        loadChildrenOlder: (_) async => fail('Work is not a Children parent'),
+        setGroupExpanded: !withActions
+            ? null
+            : (id, expanded) async {
+                actions.add('expand:$id:$expanded');
+                active = expanded ? id : null;
+                page = 0;
+                _display();
+              },
+        loadGroupEarlier: !withActions
+            ? null
+            : (id) async {
+                expect(id, active);
+                actions.add('read:$id:$page');
+                if (!stuck) page++;
+                _display();
+              },
+      );
+}
+
 class _HistorySurface {
-  _HistorySurface({this.pageChange});
+  _HistorySurface({this.pageChange}) {
+    mountBusinessScopes();
+  }
   final void Function(Map<String, dynamic>)? pageChange;
   final actions = <String>[];
   Map<String, dynamic> snapshot = _snapshot(['turn-b'], before: 'main-before');
   final firstChild = _child('a', ['a-new'], generation: 11, before: 'a-before');
   bool reopening = false;
+  void mountBusinessScopes() {
+    (snapshot['timeline'] as Map)['children'] = [
+      reopening
+          ? _child('a', ['a-new'], generation: 31, before: 'new-child-before')
+          : firstChild,
+      _child('b', ['b-only'], generation: 22),
+    ];
+  }
 
   TimelineHistoryReader reader({
     int maxPages = 24,
@@ -170,24 +320,9 @@ class _HistorySurface {
         prepends: 1,
         generation: reopening ? 8 : 7,
       );
+      mountBusinessScopes();
     },
-    openChildren: (parent) async {
-      actions.add('open:$parent');
-      final child = parent == 'a'
-          ? reopening
-                ? _child(
-                    'a',
-                    ['a-new'],
-                    generation: 31,
-                    before: 'new-child-before',
-                  )
-                : firstChild
-          : _child('b', ['b-only'], generation: 22);
-      // A single real display is present, as with a lazy parent viewport.
-      (snapshot['timeline'] as Map)['children'] = [child];
-    },
-    loadChildrenOlder: (turn, scope) async {
-      expect(turn.childrenParentId, scope.parentId);
+    loadChildrenOlder: (scope) async {
       actions.add('child-page:${scope.parentId}:${scope.olderCursor}');
       final child = _child(
         'a',
@@ -196,12 +331,18 @@ class _HistorySurface {
         prepends: 1,
       );
       pageChange?.call(child);
-      (snapshot['timeline'] as Map)['children'] = [child];
+      final children = (snapshot['timeline'] as Map)['children'] as List;
+      children[children.indexWhere(
+            (value) => (value as Map)['parentId'] == scope.parentId,
+          )] =
+          child;
     },
     closeChildren: (parent) async {
       actions.add('close:$parent');
       if (!retainClosed) {
-        (snapshot['timeline'] as Map)['children'] = <Object?>[];
+        ((snapshot['timeline'] as Map)['children'] as List).removeWhere(
+          (value) => (value as Map)['parentId'] == parent,
+        );
       }
     },
   );
@@ -211,11 +352,6 @@ Map<String, dynamic> _item(String id) => {
   'id': id,
   'kind': id.startsWith('turn-') ? 'turn' : 'tool',
   'channel': null,
-  'childrenParentId': id == 'turn-a'
-      ? 'a'
-      : id == 'turn-b'
-      ? 'b'
-      : null,
   'compatibility': 'current',
   'sealedAt': null,
   'omittedBytes': null,
@@ -275,5 +411,6 @@ Map<String, dynamic> _snapshot(
     'appliedAppends': 0,
     'firstContentLayout': null,
     'children': <Object?>[],
+    'groups': <Object?>[],
   },
 };

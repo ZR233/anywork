@@ -559,13 +559,20 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 在既有 SeaORM 序列中增加一次按需聊天内容迁移，衔接已发布完成历史；旧转换仅保留在迁移边界。普通运行只消费下列当前结构，schema 版号以代码常量为准，不双读双写 timeline_records 或保留旧 API 别名。
 
+展示工作组本身不触发迁移。只有原子轻量来源信息或普通查询确有缺口时，才按正式序列增加必要列/伴随索引；保全现有 item ID、seq、payload、真实 parent、内容 owner/ref 及附件，不重排原完成 seq。已保存 ordinal 仅证明可确认的来源顺序，未记录的精确 start/terminal 时点保持未知；无法关联的未终态来源明确诊断并原子回滚，不清空或强绑当前 Turn。Inference 原件与完整调用/执行历史保留，不因不进入普通过程展示而删除。
+
+数据库和 pending reader 不认识工作组、组成员关系、组关闭、展示可提交前缀、ready 位置或展示排序；不得将其换名为来源范围证明。普通原子按完成 seq/真实来源条件有界查询，组交接不写库，改变 Flutter 分组或平铺不改 schema/读取 API。只有确实发生的来源生命周期随原 effect/current 保存，不为工作组新增事件库、保存链路或恢复表。单页条数/字节继续有界，填屏允许沿原 cursor 逐页经过整个长组/Turn，成本归真实读取量，不额外 COUNT、flush 或解码隐藏全文。
+
+来源的 as-of 读取结果由 reader 附在普通 Atom 的 `source_state` 上，不作为冻结 metadata 或额外分页行保存；current-only 来源已包含在原 current 信封中。Children 只查询其已选择普通页涉及的来源，不附带或预读 Main 全局 current 的来源。两类读取都使用原切面与原预算，不异时拼接、裁剪 current 或以越限后拒绝代替正确的选页计量。
+
 ```sql
 CREATE TABLE conversation_items (
     seq         INTEGER PRIMARY KEY CHECK (seq > 0),
     item_id     TEXT NOT NULL UNIQUE,
     query_class TEXT NOT NULL,
     parent_id   TEXT,
-    payload     BLOB NOT NULL
+    payload     BLOB NOT NULL,
+    metadata    BLOB NOT NULL
 );
 CREATE INDEX conversation_items_by_class
     ON conversation_items(query_class, seq);
@@ -602,13 +609,15 @@ CREATE TABLE conversation_view_entries (
 ) WITHOUT ROWID;
 ```
 
-item 表仅保存查询/排序/身份五列；每会话已有独立库，不重复 thread_id。业务为原始 UTF-8 JSON payload，不设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
+item 表保存普通查询/排序/身份、原始 UTF-8 JSON payload 及轻量原子 metadata；每会话已有独立库，不重复 thread_id。metadata 由产品 producer 冻结，含无需解码 payload 即可取得的真实归属、顺序、生命周期和内容引用，不复制正文，也不含展示组或 ready 状态；Core 仅将其视为 opaque header bytes，产品按实际编码计入单页预算。不另设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
 
 contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 显式提交 manifest，不从未知业务 payload 猜引用。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文。active item 内容在 seal 时移交已有共享块与 manifest；目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留，current 内容归原 owner 退役且允许已接纳短读结束，不另建全局 GC。
 
-view singleton 只含 sourceEffectSeq、逻辑摘要、active turn/Plan/交互有界头部及引用；可能增长的集合按 collection/position 按需读，游标绑定集合 revision。不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。产品 owner 随真实事实维护，PreparedEffect 冻结原 effect 的 current/变更，writer 按序保存，不能提交时读取最新 live 替代而越过提交前缀。
+执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-冷打开在一个短读快照中取得轻量水位、current 和初始页，不调用完整 checkpoint decoder；普通版本/身份准入不执行 quick_check、不读 current_context、不触发 flush。完整性检查、迁移和执行恢复分别有显式边界；轻量投影缺失进入明确修复/迁移错误，不回退恢复全 checkpoint。独立只读池与 writer 同属 HistoryStore，保留创建/迁移及数据库身份屏障，不使用 immutable 忽略活跃写入。
+view singleton 只含 sourceEffectSeq、逻辑摘要、真实 source 状态、未终态 atom 及 active turn/Plan/交互有界头部和引用；不镜像已完成成员或未提交展示组。可能增长的集合按 collection/position 按需读，游标绑定集合 revision。不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。产品 owner 随真实事实维护，PreparedEffect 冻结原 effect 的 current/变更，writer 按序保存，不能提交时读取最新 live 替代而越过提交前缀。
+
+冷打开在一个短读快照中取得轻量水位、current、初始页和这些已选择原子/current 涉及的真实 source 状态；source 查询只按有界身份及捕获的 current.sourceEffectSeq 作 as-of 读取，不异时另查最新状态拼接切面，较晚结束不提前生效，切点内开始也不能丢失。不调用完整 checkpoint decoder；普通版本/身份准入不执行 quick_check、不读 current_context、不触发 flush。完整性检查、迁移和执行恢复分别有显式边界；轻量投影缺失进入明确修复/迁移错误，不回退恢复全 checkpoint。独立只读池与 writer 同属 HistoryStore，保留创建/迁移及数据库身份屏障，不使用 immutable 忽略活跃写入。
 
 检查点小头同时保存模型路由的窄派生投影：仅含原路由 selector、对应扩展 revision 及原机器人托管归属，不保存凭据、完整扩展集合、可用性或另一份运行状态。它由原 checkpoint writer 从同一冻结 effect 的扩展机械派生，与原检查点及保存水位在同一事务提交；不是可独立写入的第二路由来源。按需冷读在原短快照中读取该小头，不选取或解码 checkpoint payload。该结构变化使用正式 SeaORM 迁移；受支持旧库在迁移事务内从原检查点保全回填，缺失扩展保持缺失，坏记录拒绝迁移，失败不推进版本。普通当前格式读取不能以迁移名义重读完整 checkpoint，也不因读取触发保存或执行恢复。
 

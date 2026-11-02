@@ -124,7 +124,7 @@ void main() {
         reason: 'Settings navigation does not create a Thread',
       );
 
-      transport.seedChatMessages('thread-main', [
+      transport.seedChatAtoms('thread-main', [
         for (var i = 0; i < 40; i++) chatMessage('route-item-$i'),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
@@ -860,6 +860,26 @@ final class _RouteReader implements ConversationReader {
   final _RouteTurnTransport transport;
   @override
   String get threadId => inner.threadId;
+  @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) => inner.readAt(
+    completionSeq: completionSeq,
+    before: before,
+    demand: demand,
+  );
+  @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) => inner.readBefore(
+    completionSeq: completionSeq,
+    before: before,
+    demand: demand,
+  );
   @override
   Future<ChatBatch> loadOlder({
     required String before,

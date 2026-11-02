@@ -51,6 +51,8 @@ impl CurrentContent {
 #[derive(Debug)]
 pub(in crate::studio) struct CurrentState {
     pub projection: CurrentProjection,
+    /// Bounded real source facts from this owner cut, including not-yet-saved ends.
+    pub source_states: Arc<[ChatSourceState]>,
     pub contents: Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>>,
     materialized: OnceLock<Arc<ChatContents>>,
     pub entries: Arc<BTreeMap<(String, String), Arc<CurrentEntryWrite>>>,
@@ -68,6 +70,9 @@ pub(super) struct CurrentOwner {
     plan_extension_revision: Option<u64>,
     next_position: i64,
     prepared_collections: BTreeMap<String, PreparedCollection>,
+    sources: Arc<[ChatSourceState]>,
+    atoms: Vec<ChatAtom>,
+    restored_generations: BTreeMap<ChatContentKey, u64>,
 }
 struct PreparedCollection {
     revision: u64,
@@ -75,12 +80,41 @@ struct PreparedCollection {
 }
 
 impl CurrentOwner {
+    pub(super) fn restore_generation(
+        &mut self,
+        key: ChatContentKey,
+        generation: u64,
+    ) -> Result<()> {
+        ensure!(generation > 0, "saved active body has no generation");
+        ensure!(
+            self.restored_generations
+                .get(&key)
+                .is_none_or(|old| *old == generation),
+            "saved active body changed generation during restore"
+        );
+        self.restored_generations.insert(key, generation);
+        Ok(())
+    }
+    pub(super) fn provenance(&mut self, sources: Vec<ChatSourceState>, atoms: Vec<ChatAtom>) {
+        self.sources = sources.into();
+        self.atoms = atoms;
+    }
     pub(super) fn activity(&self) -> Option<ThreadActivity> {
         self.activity.current().cloned()
     }
     pub(super) fn retained_bytes(&self) -> u64 {
         self.activity
             .retained_bytes()
+            .saturating_add(
+                self.restored_generations
+                    .keys()
+                    .map(|key| {
+                        (key.owner.as_str().len() as u64)
+                            .saturating_add(key.key.len() as u64)
+                            .saturating_add(64)
+                    })
+                    .fold(0_u64, u64::saturating_add),
+            )
             .saturating_add(
                 self.state
                     .as_ref()
@@ -195,6 +229,7 @@ impl CurrentOwner {
                 projection: snapshot.projection.clone(),
                 changes: changes.into(),
                 contents: writes.into(),
+                source_changes: Arc::from([]),
             }),
             snapshot,
         ))
@@ -223,6 +258,16 @@ impl CurrentOwner {
             .ok_or_else(|| anyhow::anyhow!("current owner has no database identity"))?;
         let activity = self.activity.observe(&thread.id, state);
         let mut projection = CurrentProjection::empty(sequence, super::status(state));
+        projection.sources = self
+            .sources
+            .iter()
+            .filter(|source| {
+                matches!(source.lifecycle, ChatSourceLifecycle::Active)
+                    || source.ended.is_some_and(|at| at.effect_seq == sequence)
+            })
+            .cloned()
+            .collect();
+        projection.atoms = self.atoms.clone();
         projection.execution_present = true;
         projection.active = activity.as_ref().map(|activity| CurrentActivityHead {
             id: activity.identity.clone(),
@@ -250,11 +295,6 @@ impl CurrentOwner {
                 Ok(CurrentTurnHead {
                     id: turn.id.clone(),
                     phase,
-                    children_parent_id: Some(
-                        pl_core::chat::ChatKey::new("turn", &turn.id)?
-                            .as_str()
-                            .to_owned(),
-                    ),
                 })
             })
             .transpose()?;
@@ -512,6 +552,7 @@ impl CurrentOwner {
             .collect();
         let snapshot = Arc::new(CurrentState {
             projection: projection.clone(),
+            source_states: self.sources.clone(),
             contents: Arc::new(contents),
             materialized: OnceLock::new(),
             entries: Arc::new(entries),
@@ -520,6 +561,7 @@ impl CurrentOwner {
             interactions: interactions.into(),
         });
         self.state = Some(snapshot.clone());
+        self.restored_generations.clear();
         self.plan_extension_revision = plan_record.map(|record| record.revision);
         self.next_position = next_position;
         Ok(snapshot)
@@ -535,7 +577,7 @@ impl CurrentOwner {
             .state
             .as_ref()
             .and_then(|state| state.contents.get(&key));
-        let mut generation = 1;
+        let mut generation = self.restored_generations.get(&key).copied().unwrap_or(1);
         if let Some(old) = old {
             generation = old.descriptor.generation;
             if Arc::ptr_eq(&old.block, &block)
@@ -591,6 +633,14 @@ impl CurrentState {
                     .saturating_add(128)
             },
         );
+        let entries = entries
+            .saturating_add(
+                serde_json::to_vec(&self.projection).map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.source_states.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            );
         // An empty interaction slice owns no dynamic budget, exactly like every other empty
         // resident list: only a non-empty slice pays its fat-pointer shell here.
         if self.interactions.is_empty() {

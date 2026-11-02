@@ -1,7 +1,10 @@
-//! 按需聊天交付的唯一产品模型。完成顺序和源资格由 Rust owner 持有。
+//! 按需聊天交付的唯一产品模型。Rust 持有普通完成顺序与读取资格，Flutter 负责展示分组。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+mod atom;
+pub use atom::*;
 
 use crate::{
     AgentSessionPlanPhase, ThreadActivityKind, ThreadActivityToolState, ThreadStatus, TurnPhase,
@@ -55,7 +58,7 @@ impl ChatScope {
     pub fn query_class(&self) -> &'static str {
         match self {
             Self::Main => "conversation",
-            Self::Children { .. } => "activity",
+            Self::Children { .. } => "conversation",
         }
     }
 
@@ -103,14 +106,6 @@ pub enum ContentOwner {
     },
 }
 
-/// SQL/pending 完成记录不是这条对外消息；不在此复制 seq、class 或 parent。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ChatMessage {
-    pub id: String,
-    pub payload: PayloadData,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(
     tag = "kind",
@@ -139,7 +134,7 @@ pub enum ChatPlacement {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatBatch {
     pub placement: ChatPlacement,
-    pub messages: Vec<ChatMessage>,
+    pub entries: Vec<ChatEntry>,
     pub before: Option<String>,
     /// None 保持不变；具体快照内 active=None 才明确退役活动。
     pub current: Option<CurrentProjection>,
@@ -153,10 +148,10 @@ impl ChatBatch {
             (ChatPlacement::Set | ChatPlacement::Prepend, ChatScope::Children { .. })
             | (ChatPlacement::Prepend, ChatScope::Main) => self.current.is_none(),
             (ChatPlacement::Append, ChatScope::Main) => {
-                self.before.is_none() && (!self.messages.is_empty() || self.current.is_some())
+                self.before.is_none() && (!self.entries.is_empty() || self.current.is_some())
             }
             (ChatPlacement::Append, ChatScope::Children { .. }) => {
-                self.before.is_none() && self.current.is_none() && !self.messages.is_empty()
+                self.before.is_none() && self.current.is_none() && !self.entries.is_empty()
             }
         };
         if !valid {
@@ -185,6 +180,9 @@ pub struct CurrentProjection {
     pub execution_present: bool,
     pub active: Option<CurrentActivityHead>,
     pub active_turn: Option<CurrentTurnHead>,
+    /// Actual source states and bounded unfinished parts; no completed-tail/group mirror.
+    pub sources: Vec<ChatSourceState>,
+    pub atoms: Vec<ChatAtom>,
     pub plan: Option<CurrentPlanHead>,
     pub interactions: Option<CurrentCollectionRef>,
     pub previews: Vec<CurrentContentPreview>,
@@ -221,6 +219,8 @@ impl CurrentProjection {
             execution_present: false,
             active: None,
             active_turn: None,
+            sources: Vec::new(),
+            atoms: Vec::new(),
             plan: None,
             interactions: None,
             previews: Vec::new(),
@@ -234,8 +234,6 @@ impl CurrentProjection {
 pub struct CurrentTurnHead {
     pub id: String,
     pub phase: TurnPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub children_parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -331,7 +329,7 @@ mod tests {
     fn batch(placement: ChatPlacement) -> ChatBatch {
         ChatBatch {
             placement,
-            messages: Vec::new(),
+            entries: Vec::new(),
             before: None,
             current: None,
         }
@@ -373,15 +371,66 @@ mod tests {
             .is_err()
         );
         let mut value = batch(ChatPlacement::Prepend);
-        value.messages.push(ChatMessage {
+        value.entries.push(ChatEntry::Atom(Box::new(ChatAtom {
             id: "one".into(),
-            payload: PayloadData::Inline {
-                bytes: "中文🦀".as_bytes().to_vec(),
+            completion_item_id: Some("one".into()),
+            completion_seq: Some(1),
+            source: ChatSourceId::Input {
+                input_id: "one".into(),
             },
-        });
+            source_state: Some(ChatSourceState {
+                source: ChatSourceId::Input {
+                    input_id: "one".into(),
+                },
+                lifecycle: ChatSourceLifecycle::Ended {
+                    outcome: ChatTerminalOutcome::Completed,
+                },
+                started: None,
+                ended: None,
+            }),
+            source_order: None,
+            kind: ChatAtomKind::Input,
+            delivery: ChatDeliveryKind::Independent,
+            lifecycle: ChatAtomLifecycle::Terminal {
+                started: None,
+                ended: None,
+                outcome: ChatTerminalOutcome::Completed,
+            },
+            turn_id: None,
+            attempt_id: None,
+            tool: None,
+            text_channel: Some(crate::ThreadTextChannel::User),
+            started_at: None,
+            finished_at: None,
+            contents: Vec::new(),
+            payload: Some(PayloadData::Inline {
+                bytes: "中文🦀".as_bytes().to_vec(),
+            }),
+        })));
         assert!(value.encoded_len().unwrap() > minimum + "中文🦀".len());
         let round_trip: ChatBatch =
             serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(value, round_trip);
+    }
+
+    #[test]
+    fn source_only_append_does_not_require_a_completed_item_or_group_context() {
+        let mut value = batch(ChatPlacement::Append);
+        value.entries.push(ChatEntry::Source(ChatSourceState {
+            source: ChatSourceId::ForegroundTurn {
+                turn_id: "turn".into(),
+            },
+            lifecycle: ChatSourceLifecycle::Active,
+            started: Some(ChatFactPosition {
+                effect_seq: 4,
+                suborder: 0,
+            }),
+            ended: None,
+        }));
+        assert!(value.validate_for(&ChatScope::Main).is_ok());
+        assert_eq!(
+            serde_json::from_slice::<ChatBatch>(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            value,
+        );
     }
 }

@@ -26,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
+import 'support/fixture_gate.dart';
 
 const _prompt =
     'Local GUI question history fixture: confirm the release note wording';
@@ -33,16 +34,18 @@ const _styleAnswer = '轻量回执';
 const _notesAnswer = '第一行：发布说明保留两句结论与一条风险提示。\n第二行：这一段用来核对自由文本的换行与复制。';
 const _secretAnswer = 'sk-question-history-fixture';
 const _finalAnswer = '收到：按轻量回执整理发布说明，风险提示单独成句。';
+const _preservedDraft = '（回答完问题后继续沿用这段暂存草稿）\n保留换行与未发送状态。';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   final project = Platform.environment['ANYWORK_QUESTION_HISTORY_PROJECT'];
   final output = Platform.environment['ANYWORK_QUESTION_HISTORY_OUTPUT'];
-  if (project == null || output == null) {
+  final provider = Platform.environment['ANYWORK_QUESTION_HISTORY_PROVIDER'];
+  if (project == null || output == null || provider == null) {
     throw StateError(
       'Supply ANYWORK_QUESTION_HISTORY_PROJECT and '
-      'ANYWORK_QUESTION_HISTORY_OUTPUT',
+      'ANYWORK_QUESTION_HISTORY_OUTPUT and ANYWORK_QUESTION_HISTORY_PROVIDER',
     );
   }
   final reportFile = File('$output/question-history.json');
@@ -156,7 +159,38 @@ void main() {
     await graph.client.directoryCommands.openProject(project);
     graph.setConversationPageVisible(true);
 
+    report['nativeWindow'] = await configurePresentationWindow(tester);
     await _submitPrompt(tester, _prompt);
+    await fixtureGate(tester, Uri.parse(provider), 'questions-pending');
+    await _until(
+      tester,
+      () => graph.client.selection.state.selectedThreadId != null,
+      'accepted first input selects its real Thread',
+    );
+    await tester.pump();
+    final draftInput = find.byKey(const ValueKey('composer-input'));
+    await _until(
+      tester,
+      () => draftInput.evaluate().isNotEmpty,
+      'composer before questions',
+    );
+    await tester.enterText(draftInput, _preservedDraft);
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(draftInput).controller!.text,
+      _preservedDraft,
+    );
+    final draftThread = graph.client.selection.state.selectedThreadId!;
+    expect(
+      graph.client.drafts.composer(draftThread).state.draft,
+      _preservedDraft,
+    );
+    await fixtureGate(
+      tester,
+      Uri.parse(provider),
+      'questions-pending',
+      release: true,
+    );
     try {
       await _until(
         tester,
@@ -182,6 +216,17 @@ void main() {
       Error.throwWithStackTrace(error, stack);
     }
     expect(find.text('展示风格'), findsOneWidget);
+    expect(
+      graph.client.drafts.composer(draftThread).state.draft,
+      _preservedDraft,
+    );
+    expect(
+      find.byKey(const ValueKey('composer-input')),
+      findsNothing,
+      reason:
+          'Questions dock temporarily replaces, rather than clears, the draft',
+    );
+    await capturePresentation(tester, 'question-pending-dock.png');
     expect(find.text('这次时间线里的问答回执，你更想要哪种展示？'), findsOneWidget);
     await _tap(tester, find.byKey(StudioDriverKeys.userInputFirstOption));
     await _tap(tester, find.byKey(StudioDriverKeys.userInputSubmit));
@@ -210,6 +255,19 @@ void main() {
       'fixture continuation answer',
       timeout: const Duration(minutes: 3),
     );
+    await _until(
+      tester,
+      () =>
+          draftInput.evaluate().isNotEmpty &&
+          tester.widget<TextField>(draftInput).controller!.text ==
+              _preservedDraft,
+      'original unsent draft restored after answering',
+    );
+    expect(
+      graph.client.drafts.composer(draftThread).state.draft,
+      _preservedDraft,
+    );
+    await capturePresentation(tester, 'question-draft-restored.png');
     final receipt = await _questionReceipt(tester, graph);
     final receiptRoot = find.byKey(
       StudioDriverKeys.timelineUserInput(receipt.id),
@@ -272,6 +330,7 @@ void main() {
 
     report.addAll({
       'interactionLaidOut': true,
+      'draftPreservedAndRestored': true,
       'secretInputObscured': true,
       'continuationVisible': true,
       'receiptItemId': receipt.id,

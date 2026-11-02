@@ -1,7 +1,8 @@
 use super::{Observation, config, http, saved, sqlite, wire};
-use crate::cases::replies::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, chat_payload, chat_turn_outcome,
-    content_bytes,
+use crate::cases::replies::chat_turn_outcome;
+use crate::support::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_atom_payload, content_bytes,
+    turn_parent_key,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
@@ -10,7 +11,9 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ChatScope, ContentRef, ThreadStatus, TurnState};
+use pl_protocol::{
+    ChatAtomKind, ChatEntry, ChatScope, ChatSourceId, ContentRef, ThreadStatus, TurnState,
+};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -574,9 +577,15 @@ impl Observation<'_> {
                 let mut seen = std::collections::HashSet::new();
                 'pages: for _ in 0..256 {
                     charge_chat_batch(&page, &mut remaining)?;
-                    for message in &page.messages {
-                        let payload =
-                            chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+                    for atom in page.entries.iter().filter_map(|entry| match entry {
+                        ChatEntry::Atom(atom) => Some(atom),
+                        ChatEntry::Source(_) => None,
+                    }) {
+                        let Some(payload) =
+                            completed_atom_payload(&read, atom, &mut remaining, deadline).await?
+                        else {
+                            continue;
+                        };
                         if payload["type"] != "turn" {
                             continue;
                         }
@@ -967,23 +976,43 @@ impl Observation<'_> {
             let mut parent_id = None;
             'main: for _ in 0..256 {
                 charge_chat_batch(&page, &mut remaining)?;
-                for message in &page.messages {
-                    let payload =
-                        chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+                for atom in page.entries.iter().filter_map(|entry| match entry {
+                    ChatEntry::Atom(atom) => Some(atom),
+                    ChatEntry::Source(_) => None,
+                }) {
+                    let Some(payload) =
+                        completed_atom_payload(&read, atom, &mut remaining, deadline).await?
+                    else {
+                        continue;
+                    };
                     if payload["type"] == "turn"
                         && payload["data"]["inputId"].as_str() == Some(input_id.as_str())
                     {
                         ensure!(
+                            atom.kind == ChatAtomKind::TurnReceipt,
+                            "Turn payload was not labeled as a TurnReceipt atom"
+                        );
+                        let turn_id = atom
+                            .turn_id
+                            .as_deref()
+                            .context("TurnReceipt atom omitted its real turn_id")?;
+                        ensure!(
+                            payload["turnId"].as_str() == Some(turn_id),
+                            "TurnReceipt atom and payload turn identities disagree"
+                        );
+                        ensure!(
+                            matches!(
+                                &atom.source,
+                                ChatSourceId::ForegroundTurn { turn_id: source_turn }
+                                    if source_turn == turn_id
+                            ),
+                            "TurnReceipt source identity did not match its turn_id"
+                        );
+                        ensure!(
                             matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),
                             "refusal probe Turn did not complete"
                         );
-                        parent_id = Some(
-                            payload["data"]["childrenParentId"]
-                                .as_str()
-                                .filter(|id| !id.is_empty())
-                                .context("Turn omitted childrenParentId")?
-                                .to_owned(),
-                        );
+                        parent_id = Some(turn_parent_key(turn_id)?);
                         break 'main;
                     }
                 }
@@ -1008,9 +1037,15 @@ impl Observation<'_> {
             let mut seen = std::collections::HashSet::new();
             for _ in 0..256 {
                 charge_chat_batch(&page, &mut remaining)?;
-                for message in &page.messages {
-                    let payload =
-                        chat_payload(&children, &message.payload, &mut remaining, deadline).await?;
+                for atom in page.entries.iter().filter_map(|entry| match entry {
+                    ChatEntry::Atom(atom) => Some(atom),
+                    ChatEntry::Source(_) => None,
+                }) {
+                    let Some(payload) =
+                        completed_atom_payload(&children, atom, &mut remaining, deadline).await?
+                    else {
+                        continue;
+                    };
                     if payload["type"] != "tool" {
                         continue;
                     }
@@ -1083,8 +1118,15 @@ async fn cold_main_chat(
         let mut seen = std::collections::HashSet::new();
         for _ in 0..256 {
             charge_chat_batch(&page, remaining)?;
-            for message in &page.messages {
-                let payload = chat_payload(&read, &message.payload, remaining, deadline).await?;
+            for atom in page.entries.iter().filter_map(|entry| match entry {
+                ChatEntry::Atom(atom) => Some(atom),
+                ChatEntry::Source(_) => None,
+            }) {
+                let Some(payload) =
+                    completed_atom_payload(&read, atom, remaining, deadline).await?
+                else {
+                    continue;
+                };
                 payloads.push(payload);
             }
             let Some(before) = page.before.take() else {

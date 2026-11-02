@@ -196,11 +196,11 @@ void main() {
     final raw = '{"contract":"future/2","type":"thinking","data":{}}';
     await adapter.applyBatch(
       chatBatch([
-        ChatMessage(
+        fixtureAtom(
           id: 'unknown',
           payload: InlinePayload(bytes: utf8.encode(raw)),
         ),
-        ChatMessage(
+        fixtureAtom(
           id: 'bad',
           payload: InlinePayload(bytes: utf8.encode('{broken')),
         ),
@@ -220,7 +220,7 @@ void main() {
     );
     await adapter.applyBatch(
       chatBatch([
-        ChatMessage(
+        fixtureAtom(
           id: 'large',
           payload: DeferredPayload(reference: reference, byteLength: 123456),
         ),

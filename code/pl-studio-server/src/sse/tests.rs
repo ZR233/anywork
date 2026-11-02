@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatPlacement, ChatScope, PayloadData, ReadDemand,
-    studio::StudioErrorCode,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatEntry,
+    ChatFactPosition, ChatPlacement, ChatScope, ChatSourceId, ChatSourceLifecycle, ChatSourceState,
+    ChatTerminalOutcome, PayloadData, ReadDemand, studio::StudioErrorCode,
 };
 
 use super::*;
@@ -101,6 +102,7 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         "/?maxItems=-1&maxBytes=4096",
         "/?maxItems=7&maxBytes=4096&timelineEpoch=epoch-a",
         "/?maxItems=7&maxBytes=4096&appendSeq=7",
+        "/?maxItems=7&maxBytes=4096&currentMaxItems=3&currentMaxBytes=4096",
         "/?maxItems=7&maxBytes=4096&parent_id=parent-a",
         "/?maxItems=7&maxBytes=4096&unknown=1",
         "/?maxItems=7&maxItems=8&maxBytes=4096",
@@ -116,12 +118,52 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
 async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() -> Result<()> {
     let batch = ChatBatch {
         placement: ChatPlacement::Set,
-        messages: vec![ChatMessage {
-            id: "message-a".into(),
-            payload: PayloadData::Inline {
-                bytes: b"  body\n".to_vec(),
-            },
-        }],
+        entries: vec![
+            ChatEntry::Atom(Box::new(ChatAtom {
+                id: "member-a".into(),
+                completion_item_id: Some("message-a".into()),
+                completion_seq: Some(7),
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: "turn-a".into(),
+                },
+                source_state: None,
+                source_order: Some(3),
+                kind: ChatAtomKind::Text,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Terminal {
+                    started: Some(ChatFactPosition {
+                        effect_seq: 4,
+                        suborder: 0,
+                    }),
+                    ended: Some(ChatFactPosition {
+                        effect_seq: 5,
+                        suborder: 0,
+                    }),
+                    outcome: ChatTerminalOutcome::Completed,
+                },
+                turn_id: Some("turn-a".into()),
+                attempt_id: Some("attempt-a".into()),
+                tool: None,
+                text_channel: Some(pl_protocol::ThreadTextChannel::Final),
+                started_at: None,
+                finished_at: None,
+                contents: Vec::new(),
+                payload: Some(PayloadData::Inline {
+                    bytes: b"  body\n".to_vec(),
+                }),
+            })),
+            ChatEntry::Source(ChatSourceState {
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: "turn-a".into(),
+                },
+                lifecycle: ChatSourceLifecycle::Active,
+                started: Some(ChatFactPosition {
+                    effect_seq: 1,
+                    suborder: 0,
+                }),
+                ended: None,
+            }),
+        ],
         before: Some("opaque-before".into()),
         current: None,
     };
@@ -165,6 +207,8 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
     assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
     for suffix in [
         "chat/older",
+        "chat/before",
+        "chat/at",
         "contents/manifest",
         "contents/read",
         "contents/watch",

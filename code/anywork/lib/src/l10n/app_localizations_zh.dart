@@ -1714,6 +1714,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineLoadEarlier => '加载更早消息';
 
   @override
+  String get timelineActivityNotLoaded => '尚有活动未载入';
+
+  @override
   String get timelineBackToLive => '回到实时';
 
   @override
@@ -3731,7 +3734,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityPreparing => '准备中';
 
   @override
-  String get conversationActivityCompacting => '正在压缩';
+  String get conversationActivityCompacting => '正在压缩上下文';
 
   @override
   String get conversationActivityRunningTool => '执行中';
@@ -3800,7 +3803,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineActivityTitle => '思考与工具';
 
   @override
-  String get timelineContextCompacted => '上下文已压缩';
+  String get timelineContextCompacted => '已完成压缩';
 
   @override
   String timelineCompactionDetail(int before, int after) {

@@ -5,6 +5,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../test_driver/window_control.dart';
+
 const _environment = 'ANYWORK_PRESENTATION_SCREENSHOTS';
 final _safeFileName = RegExp(r'^[a-z0-9][a-z0-9-]*\.png$');
 
@@ -13,6 +15,57 @@ final _safeFileName = RegExp(r'^[a-z0-9][a-z0-9-]*\.png$');
 /// It does not provide business values, own application state or emulate a
 /// native window. Captures show the official integration_test render surface.
 const presentationCaptureKey = ValueKey('integration-presentation-surface');
+
+/// Request the concept's logical viewport through the existing PID-bound native
+/// window support. Never override the test view's metrics or surface size.
+Future<Map<String, Object?>> configurePresentationWindow(
+  WidgetTester tester,
+) async {
+  final view = tester.view;
+  WindowResizeResult? resized;
+  if (Platform.environment.containsKey(_environment)) {
+    final width = (1440 * view.devicePixelRatio).round();
+    final height = (1000 * view.devicePixelRatio).round();
+    resized = await tester.runAsync(
+      () async => resizeOwnedWindow(guiPid: pid, width: width, height: height),
+    );
+    expect(resized!.resized, isTrue, reason: resized.reason);
+    await tester.pump(const Duration(milliseconds: 300));
+    // GTK may include its native header in the client rectangle. Account for
+    // that measured difference once; do not pretend the render surface resized.
+    if (view.physicalSize.width.round() != width ||
+        view.physicalSize.height.round() != height) {
+      final applied = resized.applied!;
+      resized = await tester.runAsync(
+        () async => resizeOwnedWindow(
+          guiPid: pid,
+          width: applied.width + width - view.physicalSize.width.round(),
+          height: applied.height + height - view.physicalSize.height.round(),
+        ),
+      );
+      expect(resized!.resized, isTrue, reason: resized.reason);
+    }
+    final deadline = Stopwatch()..start();
+    while ((view.physicalSize.width / view.devicePixelRatio - 1440).abs() >=
+            1 ||
+        (view.physicalSize.height / view.devicePixelRatio - 1000).abs() >= 1) {
+      if (deadline.elapsed > const Duration(seconds: 5)) {
+        fail(
+          'Native concept viewport did not reach 1440x1000: '
+          '${view.physicalSize} at ${view.devicePixelRatio}',
+        );
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
+  }
+  return {
+    'width': view.physicalSize.width / view.devicePixelRatio,
+    'height': view.physicalSize.height / view.devicePixelRatio,
+    'devicePixelRatio': view.devicePixelRatio,
+    if (resized != null) 'appliedNativeGeometry': resized.applied?.toJson(),
+  };
+}
 
 Future<void> capturePresentation(WidgetTester tester, String fileName) async {
   final directory = Platform.environment[_environment];

@@ -6,6 +6,9 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/conversation/data/conversation_content_impl.dart';
 import 'package:anywork_client/src/lifecycle/resource_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
@@ -13,6 +16,8 @@ CurrentProjection _current(int source) => CurrentProjection(
   sourceEffectSeq: source,
   logicalStatus: ThreadStatusView.idle,
   executionPresent: false,
+  sources: const [],
+  atoms: const [],
   previews: const [],
   collections: const [],
 );
@@ -20,10 +25,23 @@ CurrentProjection _current(int source) => CurrentProjection(
 ChatBatch _batch(ChatPlacement placement, {int? current, String? before}) =>
     ChatBatch(
       placement: placement,
-      messages: [
-        ChatMessage(
-          id: '${placement.name}:${current ?? before}',
-          payload: InlinePayload(bytes: const [123, 125]),
+      entries: [
+        ChatAtomEntry(
+          ChatAtom(
+            id: '${placement.name}:${current ?? before}',
+            completionSeq: 1,
+            sourceOrder: 1,
+            source: const ForegroundTurnChatSource(turnId: 'turn'),
+            kind: ChatAtomKind.reasoning,
+            delivery: ChatDeliveryKind.foreground,
+            lifecycle: const TerminalChatAtom(
+              started: null,
+              ended: null,
+              outcome: ChatTerminalOutcome.completed,
+            ),
+            contents: const [],
+            payload: InlinePayload(bytes: const [123, 125]),
+          ),
         ),
       ],
       current: current == null ? null : _current(current),
@@ -31,6 +49,111 @@ ChatBatch _batch(ChatPlacement placement, {int? current, String? before}) =>
     );
 
 void main() {
+  for (final inclusive in [false, true]) {
+    test(
+      '${inclusive ? 'readAt' : 'readBefore'} is a pure qualified query, not an automatic history admission',
+      () async {
+        final h = _Harness()..attach();
+        final feed = await h.opened();
+        feed.send(
+          1,
+          ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+        );
+        await feed.ack(1);
+        final scope = h.owner.openScope(generation: 1);
+        final read = inclusive ? scope.readAt : scope.readBefore;
+        final result = read(
+          completionSeq: 47,
+          before: 'opaque-window',
+          demand: _demand,
+        );
+        final batch = _batch(ChatPlacement.prepend, before: 'next-window');
+        feed.reader.window.complete(batch);
+        expect(await result, same(batch));
+        expect(feed.reader.windowAnchor, 47);
+        expect(feed.reader.windowBefore, 'opaque-window');
+        expect(h.consumer.batches, hasLength(1));
+        expect(feed.reader.loads, 0);
+        expect(feed.acks, [1], reason: 'Queries are not feed frames');
+        expect((await h.owner.close()).complete, isTrue);
+      },
+    );
+  }
+  test(
+    'readBefore retires synchronously and joins its original pending operation',
+    () async {
+      final h = _Harness()..attach();
+      final feed = await h.opened();
+      feed.send(
+        1,
+        ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+      );
+      await feed.ack(1);
+      final scope = h.owner.openScope(generation: 1);
+      final query = scope.readBefore(completionSeq: 47, demand: _demand);
+      final rejected = expectLater(
+        query,
+        throwsA(isA<StaleConversationScope>()),
+      );
+      scope.retire();
+      var joined = false;
+      final close = scope.close().then((report) {
+        joined = true;
+        return report;
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(joined, isFalse);
+      feed.reader.window.complete(_batch(ChatPlacement.prepend));
+      await rejected;
+      expect((await close).complete, isTrue);
+      expect(h.budget.used(ResourceKind.pendingOperation), 0);
+      expect((await h.owner.close()).complete, isTrue);
+    },
+  );
+  test('real serial ACK does not wait for a work group endpoint, body, expansion or layout', () async {
+    final h = _Harness();
+    final controller = InMemoryChatController();
+    final presentation = TimelineMessageController(
+      controller,
+      generation: 1,
+      imageResources: TimelineImageResources(threadId: 'thread'),
+    );
+    h.attach(presentation);
+    final feed = await h.opened();
+    feed.send(
+      1,
+      ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+    );
+    await feed.ack(1).timeout(const Duration(seconds: 2));
+    expect(presentation.live.value.single.memberCount, 1);
+    expect(controller.messages, isEmpty);
+    feed.send(
+      2,
+      ConversationChatEvent(
+        batch: ChatBatch(
+          placement: ChatPlacement.append,
+          entries: const [
+            ChatSourceEntry(
+              ChatSourceState(
+                source: ForegroundTurnChatSource(turnId: 'turn'),
+                lifecycle: EndedChatSource(
+                  outcome: ChatTerminalOutcome.completed,
+                ),
+                started: null,
+                ended: null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    await feed.ack(2).timeout(const Duration(seconds: 2));
+    expect(presentation.live.value, isEmpty);
+    expect(controller.messages, hasLength(1));
+    expect((await h.owner.close()).complete, isTrue);
+    presentation.dispose();
+    controller.dispose();
+  });
   test('scope retirement rejects a page already queued behind component acceptance', () async {
     final h = _Harness();
     final accepting = Completer<void>();
@@ -247,12 +370,12 @@ void main() {
       feed.send(
         1,
         ConversationChatEvent(
-          batch: ChatBatch(placement: ChatPlacement.set, messages: const []),
+          batch: ChatBatch(placement: ChatPlacement.set, entries: const []),
         ),
       );
       await h.owner.ready;
       expect(h.owner.current.value, isNull);
-      expect(h.consumer.batches.single.messages, isEmpty);
+      expect(h.consumer.batches.single.entries, isEmpty);
       expect((await h.owner.close()).complete, isTrue);
     },
   );
@@ -471,8 +594,8 @@ final class _Harness {
   }
 
   late final ConversationContentImpl owner;
-  Observation attach() {
-    final lease = owner.attachConsumer(consumer, demand: _demand);
+  Observation attach([ConversationBatchConsumer? target]) {
+    final lease = owner.attachConsumer(target ?? consumer, demand: _demand);
     owner.setDemand(true);
     return lease;
   }
@@ -561,6 +684,31 @@ final class _Reader implements ConversationReader {
   @override
   String get threadId => 'thread';
   final page = Completer<ChatBatch>();
+  final window = Completer<ChatBatch>();
+  int? windowAnchor;
+  String? windowBefore;
+  @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) {
+    windowAnchor = completionSeq;
+    windowBefore = before;
+    return window.future;
+  }
+
+  @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) {
+    windowAnchor = completionSeq;
+    windowBefore = before;
+    return window.future;
+  }
+
   int loads = 0;
   ConversationContentWatch Function()? watchFactory;
   @override

@@ -10,6 +10,9 @@ import 'support/chat_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 
+Iterable<ChatAtom> _atoms(ChatBatch batch) =>
+    batch.entries.whereType<ChatAtomEntry>().map((entry) => entry.atom);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -119,10 +122,9 @@ void main() {
     );
     final iterator = StreamIterator(feed.events);
     try {
-      return (await nextChat(
-        feed,
-        iterator,
-      )).messages.map(ChatItemPresentation.decode).toList();
+      return _atoms(await nextChat(feed, iterator))
+          .map(ChatItemPresentation.decode)
+          .toList();
     } finally {
       await feed.close();
       await iterator.cancel();
@@ -184,9 +186,8 @@ void main() {
     try {
       final batch = await nextChat(feed, iterator);
       final item = ChatItemPresentation.decode(
-        batch.messages.singleWhere(
-          (message) => message.id == 'demo-plan:$interactionId',
-        ),
+        _atoms(batch)
+            .singleWhere((message) => message.id == 'demo-plan:$interactionId'),
       );
       final body = item.body(key)!;
       if (body.inline != null) return item.inlineText(key)!;
@@ -202,9 +203,92 @@ void main() {
     }
   }
 
+  test('ordinary one-item pages annotate source evidence without exceeding maxItems', () async {
+    final transport = DemoStudioTransport();
+    await transport.readBootstrap();
+    final first = chatMessage('one');
+    final second = chatMessage('two');
+    transport.seedChatAtoms(
+      'thread-main',
+      [first, second],
+      sources: [
+        for (final atom in [first, second])
+          ChatSourceState(
+            source: atom.source,
+            started: null,
+            ended: null,
+            lifecycle: const EndedChatSource(
+              outcome: ChatTerminalOutcome.completed,
+            ),
+          ),
+      ],
+    );
+    final feed = await transport.openConversationFeed(
+      'thread-main',
+      scope: const MainChatScope(),
+      demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+    );
+    final iterator = StreamIterator(feed.events);
+    try {
+      final set = await nextChat(feed, iterator);
+      expect(set.entries, hasLength(1));
+      expect(set.entries.single, isA<ChatAtomEntry>());
+      final atom = _atoms(set).single;
+      expect(atom.sourceState!.source, atom.source);
+      expect(atom.sourceState!.lifecycle, isA<EndedChatSource>());
+      final older = await feed.reader.loadOlder(
+        before: set.before!,
+        demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+      );
+      expect(older.entries, hasLength(1));
+      expect(_atoms(older).single.sourceState!.source, first.source);
+      final window = await feed.reader.readBefore(
+        completionSeq: atom.completionSeq!,
+        demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+      );
+      expect(window.entries, hasLength(1));
+      expect(
+        _atoms(window).single.sourceState!.lifecycle,
+        isA<EndedChatSource>(),
+      );
+      final inclusive = await feed.reader.readAt(
+        completionSeq: atom.completionSeq!,
+        demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+      );
+      expect(_atoms(inclusive).single.id, atom.id);
+      expect(inclusive.current, isNull);
+      expect(inclusive.placement, ChatPlacement.prepend);
+      expect(inclusive.before, isNotNull);
+      await expectLater(
+        feed.reader.readBefore(
+          completionSeq: atom.completionSeq!,
+          before: inclusive.before,
+          demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+        ),
+        throwsA(isA<StudioFailure>()),
+      );
+      await expectLater(
+        feed.reader.loadOlder(
+          before: inclusive.before!,
+          demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+        ),
+        throwsA(isA<StudioFailure>()),
+      );
+      final inclusiveOlder = await feed.reader.readAt(
+        completionSeq: atom.completionSeq!,
+        before: inclusive.before,
+        demand: const ReadDemand(maxItems: 1, maxBytes: 32768),
+      );
+      expect(_atoms(inclusiveOlder).single.id, first.id);
+    } finally {
+      await feed.close();
+      await iterator.cancel();
+    }
+  });
+
   test('single credit gates Set after State; reopen starts with a new Set rather than resume cursor', () async {
     final transport = await demo();
-    transport.seedChatMessages('thread-main', [chatMessage('first')]);
+    transport.seedChatAtoms('thread-main', [chatMessage('first')]);
     final feed = await transport.openConversationFeed(
       'thread-main',
       scope: const MainChatScope(),
@@ -228,15 +312,15 @@ void main() {
     expect(await second, isTrue);
     final set = (iterator.current.event as ConversationChatEvent).batch;
     expect(set.placement, ChatPlacement.set);
-    expect(set.messages.last.id, 'first');
+    expect(_atoms(set).last.id, 'first');
     await feed.acknowledge(iterator.current.deliverySequence);
-    transport.seedChatMessages('thread-main', [
+    transport.seedChatAtoms('thread-main', [
       chatMessage('second'),
       chatMessage('third'),
     ]);
     final append = await nextChat(feed, iterator);
     expect(append.placement, ChatPlacement.append);
-    expect(append.messages.map((message) => message.id), ['second', 'third']);
+    expect(_atoms(append).map((message) => message.id), ['second', 'third']);
     await feed.close();
     await iterator.cancel();
     final reopened = await transport.openConversationFeed(
@@ -248,7 +332,7 @@ void main() {
     final fresh = await nextChat(reopened, reopenedIterator);
     expect(fresh.placement, ChatPlacement.set);
     expect(
-      fresh.messages.map((message) => message.id),
+      _atoms(fresh).map((message) => message.id),
       containsAllInOrder(['first', 'second', 'third']),
     );
     await reopened.close();
@@ -264,7 +348,7 @@ void main() {
     );
     final iterator = StreamIterator(feed.events);
     await nextChat(feed, iterator);
-    transport.seedChatMessages('thread-main', [
+    transport.seedChatAtoms('thread-main', [
       chatMessage('member'),
       chatEnvelope(
         'turn-complete',
@@ -279,7 +363,7 @@ void main() {
     ]);
     final append = await nextChat(feed, iterator);
     expect(append.placement, ChatPlacement.append);
-    expect(append.messages.map((message) => message.id), [
+    expect(_atoms(append).map((message) => message.id), [
       'member',
       'turn-complete',
     ]);
@@ -290,7 +374,7 @@ void main() {
   test('original reader pages opaque payload byte windows and is cancelled with its feed', () async {
     final transport = await demo();
     final message = chatMessage('long', body: '中文🐱' * 3000);
-    transport.seedChatMessages('thread-main', [message]);
+    transport.seedChatAtoms('thread-main', [message]);
     final feed = await transport.openConversationFeed(
       'thread-main',
       scope: const MainChatScope(),
@@ -298,7 +382,7 @@ void main() {
     );
     final iterator = StreamIterator(feed.events);
     final set = await nextChat(feed, iterator);
-    final deferred = set.messages.single.payload as DeferredPayload;
+    final deferred = _atoms(set).single.payload as DeferredPayload;
     final first = await feed.reader.readContent(
       reference: deferred.reference,
       range: const ContentRange(offset: 0, maxBytes: 17),
@@ -328,14 +412,10 @@ void main() {
 
   test('duplicate producer identity is idempotent but conflicting payload is rejected', () async {
     final transport = await demo();
-    transport.seedChatMessages('thread-main', [
-      chatMessage('same', body: 'same'),
-    ]);
-    transport.seedChatMessages('thread-main', [
-      chatMessage('same', body: 'same'),
-    ]);
+    transport.seedChatAtoms('thread-main', [chatMessage('same', body: 'same')]);
+    transport.seedChatAtoms('thread-main', [chatMessage('same', body: 'same')]);
     expect(
-      () => transport.seedChatMessages('thread-main', [
+      () => transport.seedChatAtoms('thread-main', [
         chatMessage('same', body: 'different'),
       ]),
       throwsA(
@@ -405,9 +485,9 @@ void main() {
     final iterator = StreamIterator(feed.events);
     try {
       final batch = await nextChat(feed, iterator);
-      final message = batch.messages.singleWhere(
-        (message) => message.id == 'demo-user-input:secret-input',
-      );
+      final message = _atoms(
+        batch,
+      ).singleWhere((message) => message.id == 'demo-user-input:secret-input');
       final item = ChatItemPresentation.decode(message);
       expect(item.raw, isNot(contains(secret)));
       expect(item.raw, isNot(contains('Private header')));

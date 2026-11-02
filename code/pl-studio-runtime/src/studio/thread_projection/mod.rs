@@ -7,7 +7,6 @@ pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::billing_facts;
 mod activity;
 pub(in crate::studio) use activity::project_activity;
-mod compactions;
 mod completions;
 pub(crate) use completions::committed_finish;
 mod content;

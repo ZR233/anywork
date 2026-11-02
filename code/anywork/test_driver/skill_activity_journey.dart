@@ -224,13 +224,13 @@ class SkillActivityJourney {
     observations['firstPhaseHistory'] = <String, Object?>{
       'itemCount': timeline.main.itemCount,
       'skillNames': [
-        for (final item in timeline.childItems.where(
+        for (final item in timeline.processItems.where(
           (item) => item.kind == 'skill',
         ))
           _skillEvidence[item.id]!['name'],
       ],
       'skillViewCalls': [
-        for (final item in timeline.childItems)
+        for (final item in timeline.processItems)
           if (item.tool?.name == 'skill_view') item.id,
       ],
       'contextCompactions': timeline.main.ofKind('contextCompaction').length,
@@ -333,7 +333,7 @@ class SkillActivityJourney {
     final skill = _single(
       _windowSkillItems(_latestTurnItems(timeline), shortName),
     );
-    final group = _childrenFor(timeline, skill.id, 'cancel turn');
+    final group = _groupFor(timeline, skill.id, 'cancel turn');
     final paired = _requirePairing(timeline, group, skill, 'cancel turn');
     final pairedCall = timeline.item(paired)?.tool?.callId;
     if (pairedCall != callId) {
@@ -484,18 +484,21 @@ class SkillActivityJourney {
     _skillEvidence.clear();
     var scopeIndex = 0;
     final evidence = await _historyReader.collect(
-      onScope: (main, child) async {
-        await _collectSkillEvidenceForChild(child);
+      onGroupPage: (main, raw) async {
+        final child = main.groups.singleWhere(
+          (group) => group.unitId == raw['unitId'],
+        );
+        await _collectSkillEvidenceForGroup(child);
         for (final skill in child.items.where((item) => item.kind == 'skill')) {
           _requirePairing(main, child, skill, 'history evidence');
         }
         await File('${output.path}/$phase-history-scope-${scopeIndex++}.json')
             .writeAsString(
               jsonEncode({
-                'parentId': child.parentId,
+                'parentId': child.unitId,
                 'generation': child.generation,
-                'eof': child.olderCursor == null,
-                'itemIds': child.itemIds,
+                'eof': child.before == null,
+                'itemIds': child.items.map((item) => item.id).toList(),
                 'records': _fingerprintItems(child.items),
               }),
             );
@@ -545,10 +548,10 @@ class SkillActivityJourney {
       'records': _fingerprintItems(history.main.items),
     },
     'children': [
-      for (final child in history.children)
+      for (final child in history.groups)
         {
-          'parentId': child.parentId,
-          'itemIds': child.itemIds,
+          'parentId': child.unitId,
+          'itemIds': child.items.map((item) => item.id).toList(),
           'items': [for (final item in child.items) item.frozenFields()],
           'records': _fingerprintItems(child.items),
         },
@@ -649,7 +652,7 @@ class SkillActivityJourney {
         'actual   ${_canonicalJson(actual)}',
       );
     }
-    if (timeline.childItems.where((item) => item.kind == 'skill').isEmpty ||
+    if (timeline.processItems.where((item) => item.kind == 'skill').isEmpty ||
         timeline.main.ofKind('contextCompaction').isEmpty) {
       throw StateError(
         'reopened history lost its Skill or compaction items: '
@@ -657,7 +660,7 @@ class SkillActivityJourney {
       );
     }
     final failed = [
-      for (final call in timeline.childItems)
+      for (final call in timeline.processItems)
         if (call.tool?.name == 'skill_view' && call.status == 'failed') call,
     ];
     final failedCallIds = [for (final item in failed) item.tool!.callId]
@@ -686,7 +689,7 @@ class SkillActivityJourney {
     final window = _latestTurnItems(timeline);
     final skill = _single(_windowSkillItems(window, 'skill-activity-short'));
     final exec = _single(_windowToolItems(window, 'exec'));
-    final group = _childrenFor(timeline, skill.id, 'first turn');
+    final group = _groupFor(timeline, skill.id, 'first turn');
     _requirePairing(timeline, group, skill, 'first turn');
     final counts = _visibleCounts(timeline, group, 'first turn');
     if (counts.tools != 2 || counts.skills != 1) {
@@ -709,7 +712,7 @@ class SkillActivityJourney {
     };
     final settled = await _readExpandedLatest();
     final settledTimeline = _timeline(settled);
-    await _openChildren(settledTimeline.childrenContaining(skill.id));
+    await _openGroup(settledTimeline.groupContainingItem(skill.id));
     await capture('group-expanded');
     await _requireVisibleSkillRow(settledTimeline, skill, 'first turn');
     await driver.waitFor(
@@ -721,7 +724,7 @@ class SkillActivityJourney {
     await capture('skill-detail');
     checks['skillDetailReadable'] = true;
     await _collapseSkillDetails(skill.id, 'skill-activity-body-alpha');
-    await _closeChildren(skill.id);
+    await _closeGroup(skill.id);
     await capture('group-collapsed');
     final skills = activeSkills(settled);
     _requireNames(skills, const [
@@ -773,10 +776,9 @@ class SkillActivityJourney {
         'succeeded=${succeeded.length} failed=${failedCalls.length}',
       );
     }
-    final group = _childrenFor(timeline, short.first.id, 'mixed turn');
+    final group = _groupFor(timeline, short.first.id, 'mixed turn');
     for (final skill in [...short, long]) {
-      if (_childrenFor(timeline, skill.id, 'mixed turn').parentId !=
-          group.parentId) {
+      if (_groupFor(timeline, skill.id, 'mixed turn').unitId != group.unitId) {
         throw StateError('mixed turn split the skill rows across groups');
       }
     }
@@ -823,7 +825,7 @@ class SkillActivityJourney {
       'skills': counts.skills,
     };
     observations['mixedPairedCalls'] = pairedToolIds.toList();
-    await _openChildren(group);
+    await _openGroup(group);
     await _parkPointerForCleanCapture('mixed-group-expanded');
     await capture('mixed-group-expanded');
     for (final skill in [...short, long]) {
@@ -835,7 +837,7 @@ class SkillActivityJourney {
         timeout: const Duration(seconds: 15),
       );
     }
-    await _closeChildren(short.first.id);
+    await _closeGroup(short.first.id);
     final skills = activeSkills(settled);
     _requireNames(skills, const [
       'skill-activity-long-name-for-narrow-window-layout-review',
@@ -967,7 +969,7 @@ class SkillActivityJourney {
     final timeline = await _loadCompleteHistory();
     // Two long-name loads now exist; the newest one is this Turn's activation,
     // and the earlier one must stay readable as its own history item.
-    final longLoads = timeline.childItems
+    final longLoads = timeline.processItems
         .where(
           (item) =>
               item.kind == 'skill' &&
@@ -981,9 +983,11 @@ class SkillActivityJourney {
       );
     }
     final long = longLoads.last;
-    final group = timeline.scopeContaining(long.id);
-    _requirePairing(timeline.main, group, long, 'reload turn');
-    final counts = _visibleCounts(timeline.main, group, 'reload Turn');
+    await _historyReader.showItem(timeline, long.id);
+    final mounted = _timeline(await snapshot());
+    final group = mounted.groupContainingItem(long.id);
+    _requirePairing(mounted, group, long, 'reload turn');
+    final counts = _visibleCounts(mounted, group, 'reload Turn');
     if (counts.tools != 1 || counts.skills != 1) {
       throw StateError('reload lost original invocation or skill');
     }
@@ -997,7 +1001,7 @@ class SkillActivityJourney {
 
   Future<void> _layoutEvidence() async {
     final history = _lastHistoryEvidence!;
-    final target = history.childItems.lastWhere(
+    final target = history.processItems.lastWhere(
       (item) =>
           item.kind == 'skill' &&
           _skillEvidence[item.id]?['name'] ==
@@ -1013,8 +1017,8 @@ class SkillActivityJourney {
         1,
       ),
     ).last;
-    final group = _childrenFor(timeline, long.id, 'layout evidence');
-    await _openChildren(group);
+    final group = _groupFor(timeline, long.id, 'layout evidence');
+    await _openGroup(group);
     await _scrollRowIntoView(long.id);
     await capture('long-name-wide');
     final narrow = resizeOwnedWindow(
@@ -1373,16 +1377,40 @@ class SkillActivityJourney {
   /// Turn-scoped assertions use this window so an earlier load of the same skill
   /// can never be counted as part of the current Turn.
   List<TimelineItemObservation> _latestTurnItems(TimelineObservation timeline) {
-    final turn = timeline.items.lastWhere(
-      (item) => item.childrenParentId != null,
-    );
-    final child = timeline.childrenFor(turn.childrenParentId!);
-    if (child == null || !child.ready) {
-      throw StateError(
-        'latest Turn Children must be explicitly expanded before reading tools/skills',
-      );
+    final turn = timeline.items.reversed
+        .map((item) => item.foregroundTurnId)
+        .whereType<String>()
+        .firstOrNull;
+    if (turn == null) {
+      throw StateError('No observed foreground source for skill evidence');
     }
-    return child.items;
+    final sourceUnits = timeline.items.where(
+      (item) => item.kind == 'workGroup' && item.foregroundTurnId == turn,
+    );
+    for (final unit in sourceUnits) {
+      final displays = timeline.groups.where(
+        (group) => group.unitId == unit.id,
+      );
+      if (displays.length != 1 ||
+          !displays.single.expanded ||
+          displays.single.loading ||
+          displays.single.error != null) {
+        throw StateError(
+          'Latest source has an unread mounted work window: ${unit.id}',
+        );
+      }
+      final loaded = unit.atomic?['loadedCount'];
+      if (loaded is! int || loaded > displays.single.items.length) {
+        throw StateError(
+          'Latest source evidence is incomplete in its bounded window: ${unit.id}',
+        );
+      }
+    }
+    return timeline.expandedItems
+        .where(
+          (item) => item.kind != 'workGroup' && item.foregroundTurnId == turn,
+        )
+        .toList();
   }
 
   List<TimelineItemObservation> _windowSkillItems(
@@ -1430,13 +1458,13 @@ class SkillActivityJourney {
     return items.single;
   }
 
-  TimelineChildrenObservation _childrenFor(
+  TimelineGroupObservation _groupFor(
     TimelineObservation timeline,
     String sourceId,
     String label,
   ) {
-    final child = timeline.childrenContaining(sourceId);
-    if (!child.ready || child.appliedSets < 1 || child.error != null) {
+    final child = timeline.groupContainingItem(sourceId);
+    if (!child.expanded || child.loading || child.error != null) {
       throw StateError(
         '$label has no successfully admitted actual Children Set',
       );
@@ -1446,7 +1474,7 @@ class SkillActivityJourney {
 
   String _requirePairing(
     TimelineObservation timeline,
-    TimelineChildrenObservation child,
+    TimelineGroupObservation child,
     TimelineItemObservation skill,
     String label,
   ) {
@@ -1475,7 +1503,7 @@ class SkillActivityJourney {
 
   ({int tools, int skills}) _visibleCounts(
     TimelineObservation timeline,
-    TimelineChildrenObservation child,
+    TimelineGroupObservation child,
     String label,
   ) => (
     tools: child.items.where((item) => item.kind == 'tool').length,
@@ -1497,17 +1525,17 @@ class SkillActivityJourney {
     ),
   );
 
-  Future<void> _openChildren(TimelineChildrenObservation child) async {
-    await _scopes.setExpanded(child.parentId, true);
+  Future<void> _openGroup(TimelineGroupObservation child) async {
+    await _scopes.setGroupExpanded(child.unitId, true);
   }
 
-  Future<void> _closeChildren(String sourceId) async {
-    final child = _timeline(await snapshot()).childrenContaining(sourceId);
-    await _scopes.setExpanded(child.parentId, false);
+  Future<void> _closeGroup(String sourceId) async {
+    final child = _timeline(await snapshot()).groupContainingItem(sourceId);
+    await _scopes.setGroupExpanded(child.unitId, false);
   }
 
   Future<Map<String, dynamic>> _readExpandedLatest() async {
-    await _scopes.openLatest();
+    await _scopes.openAllLoaded();
     await _collectSkillEvidence();
     return snapshot();
   }
@@ -1515,13 +1543,13 @@ class SkillActivityJourney {
   Future<void> _collectSkillEvidence() async {
     final timeline = _timeline(await snapshot());
     _skillEvidence.clear();
-    for (final child in timeline.children) {
-      await _collectSkillEvidenceForChild(child);
+    for (final child in timeline.groups) {
+      await _collectSkillEvidenceForGroup(child);
     }
   }
 
-  Future<void> _collectSkillEvidenceForChild(
-    TimelineChildrenObservation child,
+  Future<void> _collectSkillEvidenceForGroup(
+    TimelineGroupObservation child,
   ) async {
     for (final item in child.items.where((item) => item.kind == 'skill')) {
       await _scopes.revealItem(item.id);
@@ -1588,7 +1616,7 @@ class SkillActivityJourney {
   /// only while expanded).
   Future<void> _expandSkillDetails(String skillId, String contentMarker) async {
     final timeline = _timeline(await snapshot());
-    final child = timeline.childrenContaining(skillId);
+    final child = timeline.groupContainingItem(skillId);
     final skill = child.items.singleWhere((item) => item.id == skillId);
     final call = _requirePairing(timeline, child, skill, 'skill details');
     await _scopes.revealItem(call);
@@ -1608,7 +1636,7 @@ class SkillActivityJourney {
 
   Future<void> _collapseSkillDetails(String skillId, String marker) async {
     final timeline = _timeline(await snapshot());
-    final child = timeline.childrenContaining(skillId);
+    final child = timeline.groupContainingItem(skillId);
     final skill = child.items.singleWhere((item) => item.id == skillId);
     final call = _requirePairing(timeline, child, skill, 'skill detail close');
     final header = find.descendant(
@@ -1655,7 +1683,7 @@ class SkillActivityJourney {
         '$label displayed skill name disagrees with its own public activation',
       );
     }
-    final child = timeline.childrenContaining(skill.id);
+    final child = timeline.groupContainingItem(skill.id);
     _requirePairing(timeline, child, skill, label);
   }
 
@@ -1838,13 +1866,13 @@ class SkillActivityJourney {
     final observed = <String, Object?>{
       'threadId': threadId,
       'skillNames': [
-        for (final item in timeline.childItems.where(
+        for (final item in timeline.processItems.where(
           (item) => item.kind == 'skill',
         ))
           _skillEvidence[item.id]!['name'],
       ],
       'skillViewCalls': [
-        for (final item in timeline.childItems)
+        for (final item in timeline.processItems)
           if (item.tool?.name == 'skill_view') item.id,
       ],
       'contextCompactions': timeline.main.ofKind('contextCompaction').length,

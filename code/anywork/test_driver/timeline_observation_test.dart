@@ -4,6 +4,46 @@ import 'cold_start_navigation.dart';
 import 'timeline_observation.dart';
 
 void main() {
+  test('mounted work windows expose actual typed source and never a synthetic Children parent', () {
+    final snapshot = _snapshot([
+      {
+        ..._item('local-unit', kind: 'workGroup'),
+        'atomic': {
+          'source': {'kind': 'foregroundTurn', 'turnId': 'real-turn'},
+        },
+      },
+    ]);
+    (snapshot['timeline'] as Map)['groups'] = [
+      {
+        'unitId': 'local-unit',
+        'expanded': true,
+        'loading': false,
+        'completionAnchor': 7,
+        'before': 'opaque-cursor',
+        'error': null,
+        'items': [
+          {
+            ..._item('opaque-member', kind: 'thinking'),
+            'atomic': {
+              'source': {'kind': 'foregroundTurn', 'turnId': 'real-turn'},
+              'sourceOrder': 3,
+              'completionSeq': 7,
+            },
+          },
+        ],
+      },
+    ];
+    final timeline = TimelineObservation.parse(snapshot);
+    final member = timeline.expandedItem('opaque-member')!;
+    expect(member.foregroundTurnId, 'real-turn');
+    expect(member.atomic!['sourceOrder'], 3);
+    expect(timeline.groupContainingItem(member.id).unitId, 'local-unit');
+    expect(timeline.groupContainingItem(member.id).before, 'opaque-cursor');
+    expect(timeline.children, isEmpty);
+    (snapshot['timeline'] as Map).remove('groups');
+    expect(() => TimelineObservation.parse(snapshot), throwsStateError);
+  });
+
   test('current payload types and body keys are not legacy-mapped', () {
     final timeline = TimelineObservation.parse(
       _snapshot([
@@ -107,8 +147,8 @@ void main() {
 
   test('Children retain their own controller order and acceptance counts', () {
     final snapshot = _snapshot([
-      {..._item('turn-a', kind: 'turn'), 'childrenParentId': 'parent-a'},
-      {..._item('turn-b', kind: 'turn'), 'childrenParentId': 'parent-b'},
+      _item('turn-a', kind: 'turn'),
+      _item('turn-b', kind: 'turn'),
     ]);
     (snapshot['timeline'] as Map)['children'] = [
       _children('parent-a', ['a2', 'a1'], generation: 31),
@@ -145,6 +185,18 @@ void main() {
       (prepend['timeline'] as Map)['appliedPrepends'] = 1;
       TimelineObservation.parse(prepend)
           .requireAcceptedOperation(before, prepend: true);
+      final middle = _snapshot([_item('b'), _item('middle'), _item('c')]);
+      (middle['timeline'] as Map)['appliedPrepends'] = 1;
+      TimelineObservation.parse(middle)
+          .requireAcceptedOperation(before, prepend: true);
+      final reordered = _snapshot([_item('c'), _item('middle'), _item('b')]);
+      (reordered['timeline'] as Map)['appliedPrepends'] = 1;
+      expect(
+        () =>
+            TimelineObservation.parse(reordered)
+                .requireAcceptedOperation(before, prepend: true),
+        throwsStateError,
+      );
       (prepend['timeline'] as Map)['appliedSets'] = 2;
       expect(
         () =>
@@ -312,6 +364,7 @@ Map<String, dynamic> _snapshot(
   'project': {'id': 'project', 'path': '/fixture'},
   'timeline': {
     'children': <Object?>[],
+    'groups': <Object?>[],
     'appliedSets': ready ? 1 : 0,
     'appliedPrepends': 0,
     'appliedAppends': 0,

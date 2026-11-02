@@ -44,7 +44,7 @@ use std::sync::Arc;
 /// kind and content index — so a late channel/output-index correction can never duplicate the same
 /// terminal identity into two observations.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum PartKey {
+pub(crate) enum PartKey {
     Aggregate(AggregateChannel),
     Provider {
         item_id: Arc<str>,
@@ -583,7 +583,7 @@ impl Edit<'_> {
 /// A summary block that reports no provider identity is a protocol error rather than an aggregate:
 /// summaries are always one part of a provider item, so aggregating one would merge it into the raw
 /// reasoning channel and lose the summary/raw distinction the terminal items keep.
-fn observation(
+pub(crate) fn observation(
     kind: ModelBlockKind,
     provider: Option<&ProviderBlockIdentity>,
 ) -> Result<(PartKey, ObservedPartIdentity), PureError> {
@@ -607,7 +607,7 @@ fn observation(
 }
 
 /// Observation identity of one provider item part, shared by block deltas and raw reasoning deltas.
-fn provider_observation(
+pub(crate) fn provider_observation(
     item_id: &str,
     item_kind: ObservedItemKind,
     part: ObservedPartKind,
@@ -630,7 +630,7 @@ fn provider_observation(
     )
 }
 
-fn part_key(identity: &ObservedPartIdentity) -> PartKey {
+pub(crate) fn part_key(identity: &ObservedPartIdentity) -> PartKey {
     match identity {
         ObservedPartIdentity::Aggregate { channel } => PartKey::Aggregate(*channel),
         ObservedPartIdentity::Provider(provider) => PartKey::Provider {
@@ -667,7 +667,7 @@ fn aggregate_channel(kind: ModelBlockKind) -> Option<AggregateChannel> {
     }
 }
 
-fn observed_part_kind(kind: CompletionPresentationPartKind) -> ObservedPartKind {
+pub(crate) fn observed_part_kind(kind: CompletionPresentationPartKind) -> ObservedPartKind {
     match kind {
         CompletionPresentationPartKind::OutputText => ObservedPartKind::OutputText,
         CompletionPresentationPartKind::ReasoningText => ObservedPartKind::ReasoningText,
@@ -685,7 +685,7 @@ fn presentation_part(kind: CompletionPresentationPartKind, content_index: u32) -
     }
 }
 
-fn text_channel(channel: TraceTextChannel) -> ModelTextChannel {
+pub(crate) fn text_channel(channel: TraceTextChannel) -> ModelTextChannel {
     match channel {
         TraceTextChannel::User => ModelTextChannel::User,
         TraceTextChannel::Commentary => ModelTextChannel::Commentary,

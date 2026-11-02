@@ -92,7 +92,7 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
             page.placement,
             crate::api::studio::types::BridgeChatPlacement::Prepend
         ));
-        ensure!(!page.messages.is_empty());
+        ensure!(!page.entries.is_empty());
         ensure!(page.current.is_none());
         ensure!(
             port.try_recv().is_err(),
@@ -111,7 +111,7 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
         );
         let page = facade.load_older(before.clone(), demand).await?;
         ensure!(
-            !page.messages.is_empty(),
+            !page.entries.is_empty(),
             "producer exit must not close the facade's read lease"
         );
         facade.close().await?;

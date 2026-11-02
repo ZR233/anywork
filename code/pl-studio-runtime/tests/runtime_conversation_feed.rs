@@ -6,8 +6,8 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentRange, ContentRef, PayloadData,
-    ReadDemand, ThreadWorkspaceMode,
+    ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentRange, ContentRef,
+    PayloadData, ReadDemand, ThreadWorkspaceMode,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{ReplyStage, responses_text};
@@ -76,8 +76,18 @@ async fn content(reader: &ConversationReader, reference: &ContentRef, len: u64) 
     Ok(bytes)
 }
 
-async fn envelope(reader: &ConversationReader, message: &ChatMessage) -> Result<serde_json::Value> {
-    let bytes = match &message.payload {
+fn atoms(entries: Vec<ChatEntry>) -> Vec<ChatAtom> {
+    entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(*atom),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn envelope(reader: &ConversationReader, message: &ChatAtom) -> Result<serde_json::Value> {
+    let bytes = match message.payload.as_ref().context("completed payload")? {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
             reference,
@@ -89,8 +99,8 @@ async fn envelope(reader: &ConversationReader, message: &ChatMessage) -> Result<
     Ok(value)
 }
 
-async fn history(reader: &ConversationReader, first: ChatBatch) -> Result<Vec<ChatMessage>> {
-    let mut messages = first.messages;
+async fn history(reader: &ConversationReader, first: ChatBatch) -> Result<Vec<ChatAtom>> {
+    let mut messages = atoms(first.entries);
     let mut before = first.before;
     while let Some(cursor) = before {
         let page = reader.load_older(&cursor, demand(7)).await?;
@@ -101,7 +111,7 @@ async fn history(reader: &ConversationReader, first: ChatBatch) -> Result<Vec<Ch
         );
         // A byte-limited short page is not EOF; a final empty page is legal.
         before = page.before;
-        messages.splice(0..0, page.messages);
+        messages.splice(0..0, atoms(page.entries));
     }
     let ids: HashSet<_> = messages.iter().map(|message| &message.id).collect();
     ensure!(
@@ -193,6 +203,8 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
             completed_prompt(&env.runtime, id, "feed-next").await?;
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set && first.current.is_some());
+            ensure!(first.entries.len() <= 1);
+            ensure!(first.encoded_len()? <= demand(1).max_bytes as usize);
             let current = first.current.as_ref().context("main current")?;
             let response = current
                 .previews
@@ -209,6 +221,11 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
                 _ => anyhow::bail!("active response has no stable Item owner"),
             };
             let old = history(&reader, first).await?;
+            ensure!(old.iter().all(|atom| {
+                atom.source_state
+                    .as_ref()
+                    .is_some_and(|source| source.source == atom.source)
+            }));
             ensure!(
                 !old.iter().any(|message| message.id == response_id),
                 "Set chased completions after its open cut"
@@ -218,11 +235,16 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
             loop {
                 let batch = chat(&mut feed).await?;
                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
-                let completes_response = batch
-                    .messages
-                    .iter()
-                    .any(|message| message.id == response_id);
-                for message in &batch.messages {
+                ensure!(batch.entries.len() <= 1);
+                ensure!(batch.encoded_len()? <= demand(1).max_bytes as usize);
+                let completed = atoms(batch.entries.clone());
+                ensure!(completed.iter().all(|atom| {
+                    atom.source_state
+                        .as_ref()
+                        .is_some_and(|source| source.source == atom.source)
+                }));
+                let completes_response = completed.iter().any(|message| message.id == response_id);
+                for message in &completed {
                     ensure!(
                         identities.insert(message.id.clone()),
                         "completion repeated across Set/Append"
@@ -319,7 +341,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                     let batch = chat(&mut feed).await?;
                     ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                     let mut completed = None;
-                    for message in &batch.messages {
+                    for message in &atoms(batch.entries.clone()) {
                         let value = envelope(feed.reader(), message).await?;
                         if value["type"] == "text"
                             && matches!(value["data"]["channel"].as_str(), Some("final" | "commentary"))
@@ -351,7 +373,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let queried = async {
                     let set = chat(&mut latest).await?;
                     ensure!(set.placement == ChatPlacement::Set);
-                    ensure!(set.messages.iter().any(|message| message.id == completed_id),
+                    ensure!(atoms(set.entries.clone()).iter().any(|message| message.id == completed_id),
                         "pending member was pushed but not independently queryable");
                     Ok(())
                 }.await;
@@ -488,7 +510,7 @@ async fn realistic_output_limit_many_items() -> Result<()> {
 
 async fn count_output(
     reader: &ConversationReader,
-    messages: &[ChatMessage],
+    messages: &[ChatAtom],
     identities: &mut HashSet<String>,
 ) -> Result<(usize, u64, Option<String>)> {
     let mut count = 0;
@@ -501,12 +523,7 @@ async fn count_output(
         );
         let value = envelope(reader, message).await?;
         if value["type"] == "turn" {
-            parent = Some(
-                value["data"]["childrenParentId"]
-                    .as_str()
-                    .context("terminal Turn children parent")?
-                    .to_owned(),
-            );
+            parent = message.turn_id.clone();
         }
         let response_text = value["type"] == "text"
             && matches!(
@@ -563,35 +580,25 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set);
             let mut identities = HashSet::new();
-            let (mut completed_items, mut body_bytes, initial_parent) = count_output(feed.reader(), &first.messages, &mut identities).await?;
+            let (mut completed_items, mut body_bytes, initial_parent) = count_output(feed.reader(), &atoms(first.entries.clone()), &mut identities).await?;
             let mut peak_batch = first.encoded_len()?;
-            let parent = tokio::time::timeout(Duration::from_secs(120), async {
+            let _terminal = tokio::time::timeout(Duration::from_secs(120), async {
                 if let Some(parent) = initial_parent { return Ok(parent); }
                 loop {
                     let batch = chat(&mut feed).await?;
                     ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                     peak_batch = peak_batch.max(batch.encoded_len()?);
                     ensure!(peak_batch <= demand(37).max_bytes as usize);
-                    let (count, bytes, parent) = count_output(feed.reader(), &batch.messages, &mut identities).await?;
+                    let (count, bytes, parent) = count_output(feed.reader(), &atoms(batch.entries.clone()), &mut identities).await?;
                     completed_items += count;
                     body_bytes += bytes;
                     if let Some(parent) = parent { break Ok::<_, anyhow::Error>(parent); }
                 }
             }).await.context("paced fixture feed exceeded its observation deadline")??;
-            let mut children = env.runtime.open_conversation_feed(&thread.thread.id, ChatScope::Children { parent_id: parent }, demand(37)).await?;
-            let read = async {
-                let first = chat(&mut children).await?;
-                ensure!(first.placement == ChatPlacement::Set && first.current.is_none());
-                let messages = history(children.reader(), first).await?;
-                let (count, bytes, _) = count_output(children.reader(), &messages, &mut identities).await?;
-                completed_items += count;
-                body_bytes += bytes;
-                ensure!(completed_items == item_count, "observed {completed_items}/{item_count} independent output members");
-                ensure!(body_bytes == (OUTPUT_TOKENS * 2) as u64, "public output body length mismatch: {body_bytes}");
-                eprintln!("realistic output: items={item_count}, reference_tokens={OUTPUT_TOKENS}, completed_items={completed_items}, body_bytes={body_bytes}, peak_chat_bytes={peak_batch}");
-                Ok(())
-            }.await;
-            finish_feed(&mut children, read).await
+            ensure!(completed_items == item_count, "observed {completed_items}/{item_count} independent output members");
+            ensure!(body_bytes == (OUTPUT_TOKENS * 2) as u64, "public output body length mismatch: {body_bytes}");
+            eprintln!("realistic output: items={item_count}, reference_tokens={OUTPUT_TOKENS}, completed_items={completed_items}, body_bytes={body_bytes}, peak_chat_bytes={peak_batch}");
+            Ok(())
         }.await;
         finish_feed(&mut feed, observed).await
     }.await;

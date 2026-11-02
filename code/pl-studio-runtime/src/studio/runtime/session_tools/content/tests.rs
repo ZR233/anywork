@@ -406,14 +406,19 @@ async fn tool_read_eof_keeps_qualification_until_explicit_or_tool_close_and_neve
         );
         let batch: ChatBatch = serde_json::from_value(page["chat"].clone())?;
         let item = batch
-            .messages
+            .entries
             .iter()
-            .find_map(|message| {
-                let pl_protocol::PayloadData::Inline { bytes } = &message.payload else {
+            .find_map(|entry| {
+                let pl_protocol::ChatEntry::Atom(message) = entry else {
+                    return None;
+                };
+                let Some(pl_protocol::PayloadData::Inline { bytes }) = &message.payload else {
                     return None;
                 };
                 let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-                (value["type"] == "text").then_some(message.id.clone())
+                (value["type"] == "text")
+                    .then(|| message.completion_item_id.clone())
+                    .flatten()
             })
             .context("public text item")?;
         let reference = text_reference(&reader, &item)

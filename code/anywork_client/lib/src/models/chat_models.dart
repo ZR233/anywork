@@ -6,6 +6,8 @@ import 'thread_directory_models.dart';
 import 'thread_models.dart' show ThreadTextChannel;
 import 'turn_models.dart';
 
+part 'chat_atom_models.dart';
+
 /// The caller's item and encoded-byte demand, mechanically mapped to the Rust protocol.
 final class ReadDemand {
   const ReadDemand({required this.maxItems, required this.maxBytes});
@@ -46,26 +48,19 @@ final class DeferredPayload extends PayloadData {
   final int byteLength;
 }
 
-final class ChatMessage {
-  const ChatMessage({required this.id, required this.payload});
-
-  final String id;
-  final PayloadData payload;
-}
-
 enum ChatPlacement { set, prepend, append }
 
 /// The sole message delivery model. Null current means retain the previous current snapshot.
 final class ChatBatch {
   ChatBatch({
     required this.placement,
-    required List<ChatMessage> messages,
+    required List<ChatEntry> entries,
     this.before,
     this.current,
-  }) : messages = List.unmodifiable(messages);
+  }) : entries = List.unmodifiable(entries);
 
   final ChatPlacement placement;
-  final List<ChatMessage> messages;
+  final List<ChatEntry> entries;
   final String? before;
   final CurrentProjection? current;
 }
@@ -168,11 +163,15 @@ final class CurrentProjection {
     required this.executionPresent,
     this.active,
     this.activeTurn,
+    required List<ChatSourceState> sources,
+    required List<ChatAtom> atoms,
     this.plan,
     this.interactions,
     required List<CurrentContentPreview> previews,
     required List<CurrentCollectionRef> collections,
-  }) : previews = List.unmodifiable(previews),
+  }) : sources = List.unmodifiable(sources),
+       atoms = List.unmodifiable(atoms),
+       previews = List.unmodifiable(previews),
        collections = List.unmodifiable(collections);
 
   final int sourceEffectSeq;
@@ -180,6 +179,8 @@ final class CurrentProjection {
   final bool executionPresent;
   final CurrentActivityHead? active;
   final CurrentTurnHead? activeTurn;
+  final List<ChatSourceState> sources;
+  final List<ChatAtom> atoms;
   final CurrentPlanHead? plan;
   final CurrentCollectionRef? interactions;
   final List<CurrentContentPreview> previews;
@@ -221,15 +222,10 @@ final class CurrentToolHead {
 }
 
 final class CurrentTurnHead {
-  const CurrentTurnHead({
-    required this.id,
-    required this.phase,
-    this.childrenParentId,
-  });
+  const CurrentTurnHead({required this.id, required this.phase});
 
   final String id;
   final StudioTurnActivity phase;
-  final String? childrenParentId;
 }
 
 final class CurrentPlanHead {

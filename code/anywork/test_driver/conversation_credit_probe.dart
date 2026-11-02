@@ -56,12 +56,19 @@ final class ConversationCreditProbe {
             batch.placement != ChatPlacement.append) {
           _failure = StateError('feed emitted a non-Append after Set');
         }
-        _baselineIds ??= [for (final message in batch.messages) message.id];
+        _baselineIds ??= [
+          for (final entry in batch.entries.whereType<ChatAtomEntry>())
+            entry.atom.id,
+        ];
         _frames.add({
           'deliverySequence': frame.deliverySequence,
           'event': 'chat',
           'placement': batch.placement.name,
-          'itemIds': [for (final message in batch.messages) message.id],
+          'entryCount': batch.entries.length,
+          'itemIds': [
+            for (final entry in batch.entries.whereType<ChatAtomEntry>())
+              entry.atom.id,
+          ],
         });
       } else {
         _frames.add({

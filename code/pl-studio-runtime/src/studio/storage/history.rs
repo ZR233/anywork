@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 13;
+const HISTORY_SCHEMA_VERSION: i64 = 14;
 
 pub(in crate::studio) mod conversation;
 
@@ -229,6 +229,8 @@ pub(in crate::studio) struct ColdConversation {
     pub head: u64,
     pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
     pub current: pl_protocol::CurrentProjection,
+    /// Actual lifecycle for the selected page/current sources at this transaction's effect cut.
+    pub sources: Vec<pl_protocol::ChatSourceState>,
     pub interactions: Vec<pl_protocol::InteractionRequest>,
     pub terminal_turn: Option<pl_protocol::Turn>,
     pub page: ChatHistoryPage,
@@ -661,6 +663,13 @@ impl HistoryStore {
             conversation::append_records(tx, completions.iter().map(AsRef::as_ref), false).await?;
             if write_seq == current {
                 conversation::current::verify(tx, current_view).await?;
+            } else {
+                conversation::sources::verify(
+                    tx,
+                    current_view.projection.source_effect_seq,
+                    &current_view.source_changes,
+                )
+                .await?;
             }
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
@@ -1410,6 +1419,49 @@ impl HistoryStore {
         Ok(page)
     }
 
+    /// Saved bounded current only, through the same identity/schema admission as other reads.
+    pub(crate) async fn conversation_current(
+        &self,
+    ) -> Result<Option<pl_protocol::CurrentProjection>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let current = conversation::current::read(&tx).await?;
+        tx.commit().await?;
+        Ok(Some(current))
+    }
+
+    /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
+    pub(crate) async fn conversation_sources(
+        &self,
+        sources: &[pl_protocol::ChatSourceId],
+        effect_cut: u64,
+    ) -> Result<Vec<pl_protocol::ChatSourceState>> {
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        pl_core::chat::ReadDemand::new(sources.len(), 1).validate()?;
+        let Some(connection) = self.reader().await? else {
+            let mut seen = std::collections::BTreeSet::new();
+            return Ok(sources
+                .iter()
+                .filter(|source| seen.insert((*source).clone()))
+                .cloned()
+                .map(|source| pl_protocol::ChatSourceState {
+                    source,
+                    lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
+                    started: None,
+                    ended: None,
+                })
+                .collect());
+        };
+        let tx = connection.db.begin().await?;
+        let states = conversation::sources::read(&tx, sources, effect_cut).await?;
+        tx.commit().await?;
+        Ok(states)
+    }
+
     pub(in crate::studio) async fn cold_conversation(
         &self,
         query: pl_core::chat::ChatQuery,
@@ -1429,9 +1481,9 @@ impl HistoryStore {
         // Cold callers budget an envelope with current=None. Main replaces its JSON null with
         // this projection; Children delivers no current. page consumes item-only demand and
         // must receive the remaining bytes after this single fixed-envelope reservation.
-        let current_bytes = if query.query_class == pl_protocol::ChatScope::Main.query_class()
-            && query.parent_id.is_none()
-        {
+        let include_current = query.query_class == pl_protocol::ChatScope::Main.query_class()
+            && query.parent_id.is_none();
+        let current_bytes = if include_current {
             serde_json::to_vec(&current)?
                 .len()
                 .saturating_sub(b"null".len())
@@ -1464,11 +1516,14 @@ impl HistoryStore {
             page.exhausted || !page.items.is_empty(),
             ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
         );
+        let sources =
+            conversation::sources::read_selected(&tx, &page, &current, include_current).await?;
         tx.commit().await?;
         Ok(Some(ColdConversation {
             database_id: connection.database_id.clone(),
             head,
             current,
+            sources,
             interactions,
             model_route,
             terminal_turn,
@@ -2766,6 +2821,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         "conversation_items",
         "conversation_contents",
         "conversation_view_entries",
+        "conversation_sources",
     ] {
         let count: i64 = db
             .query_one_raw(statement(
@@ -2778,7 +2834,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         ensure!(count == 0, "legacy fixture must not discard {table} facts");
     }
     db.execute_unprepared(
-        "DROP TABLE conversation_view_entries;
+        "DROP TABLE conversation_sources;
+         DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
@@ -2787,7 +2844,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
          DELETE FROM seaql_migrations
          WHERE version IN ('m20261029_000001_history_demand_conversation',
-                           'm20261101_000010_history_model_route_head')",
+                           'm20261101_000010_history_model_route_head',
+                           'm20261102_000001_history_atom_metadata')",
     )
     .await?;
     Ok(())
@@ -2796,6 +2854,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 #[cfg(test)]
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
     conversation::current::PreparedCurrent {
+        source_changes: std::sync::Arc::from([]),
         projection: pl_protocol::CurrentProjection::empty(
             sequence,
             pl_protocol::ThreadStatus::Idle,

@@ -75,6 +75,21 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
     required BridgeReadDemand demand,
   });
 
+  /// Reads the same bounded ordinary window including its observed completion anchor.
+  Future<BridgeChatBatch> readAt({
+    required BigInt completionSeq,
+    String? before,
+    required BridgeReadDemand demand,
+  });
+
+  /// Reads a bounded ordinary page before an observed completion position.
+  /// This continuation is independent of the original H0 history cursor and feed credit.
+  Future<BridgeChatBatch> readBefore({
+    required BigInt completionSeq,
+    String? before,
+    required BridgeReadDemand demand,
+  });
+
   Future<BridgeContentWindow> readContent({
     required BridgeContentRef reference,
     required BridgeContentRange range,

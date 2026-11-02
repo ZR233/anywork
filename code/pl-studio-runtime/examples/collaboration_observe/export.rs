@@ -1,7 +1,10 @@
 //! Paginated public Chat export; content is copied through bounded ranges.
 use super::super::evidence::{Evidence, MAX_ITEMS, Manifest, ThreadExport};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatPlacement, ChatScope, ContentRange, ContentRef, PayloadData, ReadDemand};
+use pl_protocol::{
+    ChatAtomKind, ChatAtomLifecycle, ChatEntry, ChatPlacement, ChatScope, ChatSourceId,
+    ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
+};
 use pl_studio_runtime::{ConversationEvent, ConversationReader, StudioRuntime};
 use std::{collections::HashSet, io::Write};
 
@@ -84,21 +87,45 @@ pub(super) async fn thread(
             loop {
                 budget.check()?;
                 evidence.check_limit(
-                    manifest.timeline_items + batch.messages.len() <= MAX_ITEMS,
-                    "chat message budget exceeded (10000)",
+                    manifest.timeline_items + batch.entries.len() <= MAX_ITEMS,
+                    "chat entry budget exceeded (10000)",
                 )?;
                 let page_prefix = format!("{prefix}/chat/{scope_index:03}/{page_index:05}");
                 evidence.json(&format!("{page_prefix}.json"), id, &batch)?;
                 // The existing evidence manifest counts all exported Chat scopes.
                 manifest.thread_exports[export_index].timeline_pages += 1;
-                for (item_index, message) in batch.messages.iter().enumerate() {
+                for (item_index, entry) in batch.entries.iter().enumerate() {
                     manifest.timeline_items += 1;
                     let item_prefix = format!("{page_prefix}-{item_index:03}");
-                    let raw = match &message.payload {
+                    let ChatEntry::Atom(atom) = entry else {
+                        evidence.json(&format!("{item_prefix}.source.json"), id, entry)?;
+                        continue;
+                    };
+                    let completion_id = atom.completion_item_id.as_deref();
+                    if matches!(&atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
+                        ensure!(
+                            atom.payload.is_none() && completion_id.is_none(),
+                            "active chat atom unexpectedly carried terminal payload identity"
+                        );
+                        evidence.json(&format!("{item_prefix}.active.json"), &atom.id, atom)?;
+                        manifest.unfinished.push(format!(
+                            "{id}: active chat atom {} exported as metadata only; it has no terminal payload",
+                            atom.id
+                        ));
+                        continue;
+                    }
+                    let Some(payload) = atom.payload.as_ref() else {
+                        anyhow::bail!(
+                            "{id}: terminal chat atom {} omitted its payload",
+                            atom.id
+                        );
+                    };
+                    let identity = completion_id.context("terminal atom omitted completion_item_id")?;
+                    let raw = match payload {
                         PayloadData::Inline { bytes } => {
                             evidence.raw(
                                 &format!("{item_prefix}.payload.json"),
-                                &message.id,
+                                identity,
                                 bytes,
                             )?;
                             Some(bytes.clone())
@@ -107,13 +134,21 @@ pub(super) async fn thread(
                             reference,
                             byte_length,
                         } => {
+                            ensure!(
+                                matches!(
+                                    &reference.target,
+                                    ContentTarget::ItemPayload { item_id }
+                                        if item_id.as_str() == identity
+                                ),
+                                "terminal atom payload reference did not match completion_item_id"
+                            );
                             copy_reference(
                                 &reader,
                                 reference,
                                 Some(*byte_length),
                                 evidence,
                                 &format!("{item_prefix}.payload.json"),
-                                &message.id,
+                                identity,
                                 budget,
                                 true,
                             )
@@ -127,17 +162,73 @@ pub(super) async fn thread(
                         .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
                         && value["contract"] == "anywork.chat/1"
                     {
+                        if let Some(turn_id) = atom.turn_id.as_deref()
+                            && let Some(payload_turn_id) = value["turnId"].as_str()
+                        {
+                            ensure!(
+                                turn_id == payload_turn_id,
+                                "atom metadata and frozen payload disagree on turn identity"
+                            );
+                        }
+                        let payload_kind = value["type"].as_str();
+                        let metadata_matches = match atom.kind {
+                            ChatAtomKind::Input | ChatAtomKind::Text => payload_kind == Some("text"),
+                            ChatAtomKind::Reasoning => {
+                                matches!(payload_kind, Some("thinking" | "inference"))
+                            }
+                            ChatAtomKind::ToolCall => payload_kind == Some("tool"),
+                            ChatAtomKind::FileChange => payload_kind == Some("file"),
+                            ChatAtomKind::Skill => payload_kind == Some("skill"),
+                            ChatAtomKind::Interaction => {
+                                payload_kind == Some("tool")
+                                    && value["data"]
+                                        .get("userInput")
+                                        .is_some_and(|input| !input.is_null())
+                            }
+                            ChatAtomKind::Plan => payload_kind == Some("plan"),
+                            ChatAtomKind::Compaction => payload_kind == Some("contextCompaction"),
+                            ChatAtomKind::TurnReceipt => payload_kind == Some("turn"),
+                            ChatAtomKind::Receipt | ChatAtomKind::Unknown => true,
+                        };
+                        ensure!(
+                            metadata_matches,
+                            "atom kind {:?} conflicts with frozen payload type {payload_kind:?}",
+                            atom.kind
+                        );
                         if value["type"] == "turn" {
-                            let parent = value["data"]["childrenParentId"]
+                            ensure!(
+                                atom.kind == ChatAtomKind::TurnReceipt,
+                                "Turn payload was not labeled as a TurnReceipt atom"
+                            );
+                            let turn_id = atom
+                                .turn_id
+                                .as_deref()
+                                .context("TurnReceipt atom omitted its real turn_id")?;
+                            let payload_turn_id = value["turnId"]
                                 .as_str()
-                                .context("terminal Turn omitted its public childrenParentId")?;
-                            if parents.insert(parent.to_owned()) {
+                                .context("Turn payload omitted its turn identity")?;
+                            ensure!(
+                                turn_id == payload_turn_id,
+                                "TurnReceipt atom and payload turn identities disagree"
+                            );
+                            ensure!(
+                                matches!(
+                                    &atom.source,
+                                    ChatSourceId::ForegroundTurn { turn_id: source_turn }
+                                        if source_turn.as_str() == turn_id
+                                ),
+                                "TurnReceipt source identity did not match its turn_id"
+                            );
+                            let parent = pl_core::chat::ChatKey::new("turn", turn_id)?
+                                .as_str()
+                                .to_owned();
+                            if parents.insert(parent.clone()) {
                                 evidence.check_limit(
                                     scopes.len() < MAX_ITEMS,
                                     "children scope budget exceeded",
                                 )?;
                                 scopes.push(ChatScope::Children {
-                                    parent_id: parent.to_owned(),
+                                    parent_id: parent,
                                 });
                             }
                         }
@@ -150,7 +241,7 @@ pub(super) async fn thread(
                                 )
                             ) {
                                 let path = format!("{item_prefix}.nonterminal.json");
-                                evidence.json(&path, &message.id, &value)?;
+                                evidence.json(&path, identity, &value)?;
                                 manifest.thread_exports[export_index].nonterminal_tools += 1;
                                 manifest.unfinished.push(format!(
                                     "{id}: exported tool has nonterminal/unknown state; see {path}"
@@ -165,14 +256,14 @@ pub(super) async fn thread(
                     loop {
                         let page = budget
                             .read(reader.list_contents(
-                                &message.id,
+                                identity,
                                 continuation.as_deref(),
                                 DEMAND,
                             ))
                             .await?;
                         evidence.json(
                             &format!("{item_prefix}.contents-{manifest_page:03}.json"),
-                            &message.id,
+                            identity,
                             &page,
                         )?;
                         for (body_index, entry) in page.entries.iter().enumerate() {
@@ -185,12 +276,12 @@ pub(super) async fn thread(
                                 None,
                                 evidence,
                                 &path,
-                                &message.id,
+                                identity,
                                 budget,
                                 false,
                             )
                             .await?;
-                            evidence.json(&format!("{path}.ref.json"), &message.id, entry)?;
+                            evidence.json(&format!("{path}.ref.json"), identity, entry)?;
                             manifest.thread_exports[export_index].detail_fields += 1;
                         }
                         ensure!(

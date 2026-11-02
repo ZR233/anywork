@@ -74,8 +74,11 @@ async fn public_history(
         let mut pages = Vec::new();
         loop {
             let mut page = Vec::new();
-            for message in batch.messages {
-                let raw = match message.payload {
+            for entry in batch.entries {
+                let pl_protocol::ChatEntry::Atom(message) = entry else {
+                    continue;
+                };
+                let raw = match message.payload.context("completed payload")? {
                     PayloadData::Inline { bytes } => bytes,
                     PayloadData::Deferred {
                         reference,

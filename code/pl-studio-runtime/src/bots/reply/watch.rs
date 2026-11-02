@@ -1,6 +1,6 @@
 //! One native feed, the same read lease, and one bounded target projection.
 
-use super::content::{Coverage, FinalError, ReplyItem, decode_message, demand, read_failure};
+use super::content::{Coverage, FinalError, ReplyItem, decode_entry, demand, read_failure};
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationEvent, ConversationFeed, ConversationReader, StudioRuntime};
 use pl_protocol::{
@@ -192,8 +192,15 @@ impl ReplyWatch {
         if self.pending.is_some() {
             return Err(gap("reply pending batch overwritten"));
         }
-        if self.turn_id.is_some() && batch.placement != ChatPlacement::Append {
-            self.coverage.page(batch.messages.len())?;
+        if batch.entries.len() > demand().max_items as usize {
+            return Err(gap("reply batch exceeded its entry budget"));
+        }
+        if self.turn_id.is_some() {
+            if batch.placement == ChatPlacement::Append {
+                self.coverage.admit(&batch.entries)?;
+            } else {
+                self.coverage.page(&batch.entries)?;
+            }
         }
         self.pending = Some(PendingChat {
             batch,
@@ -205,15 +212,15 @@ impl ReplyWatch {
 
     async fn finish_pending(&mut self) -> Result<(), FinalError> {
         while let Some(pending) = &self.pending {
-            if pending.next == pending.batch.messages.len() {
+            if pending.next == pending.batch.entries.len() {
                 break;
             }
             // Cancellation before this await returns leaves the original message
             // and its index intact. Retrying an immutable bounded read is idempotent.
             let item = if let Some(turn_id) = &self.turn_id {
-                decode_message(
+                decode_entry(
                     self.feed.reader(),
-                    &pending.batch.messages[pending.next],
+                    &pending.batch.entries[pending.next],
                     turn_id,
                 )
                 .await?

@@ -122,6 +122,41 @@ impl BridgeConversationFeed {
         Ok(batch)
     }
 
+    /// Reads a bounded ordinary page before an observed completion position.
+    /// This continuation is independent of the original H0 history cursor and feed credit.
+    pub async fn read_before(
+        &self,
+        completion_seq: u64,
+        before: Option<String>,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeChatBatch, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let batch = self
+            .inner
+            .reader
+            .read_before(completion_seq, before.as_deref(), chat::demand(demand))
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::batch(batch))
+    }
+
+    /// Reads the same bounded ordinary window including its observed completion anchor.
+    pub async fn read_at(
+        &self,
+        completion_seq: u64,
+        before: Option<String>,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeChatBatch, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let batch = self
+            .inner
+            .reader
+            .read_at(completion_seq, before.as_deref(), chat::demand(demand))
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::batch(batch))
+    }
+
     pub async fn list_contents(
         &self,
         item_id: String,

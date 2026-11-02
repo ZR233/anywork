@@ -4,12 +4,28 @@ use pl_provider_fixture::{Protocol, Reply, ReplyStage, RequestMatch, Step};
 use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
+mod atoms;
+mod observed_position;
+
+fn completed_atoms(batch: &ChatBatch) -> impl Iterator<Item = &ChatAtom> {
+    batch.entries.iter().filter_map(|entry| match entry {
+        ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(atom.as_ref()),
+        _ => None,
+    })
+}
 
 async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match feed.recv().await?.context("feed ended")? {
-                ConversationEvent::Chat { batch } => return Ok(*batch),
+                ConversationEvent::Chat { batch } => {
+                    assert!(
+                        batch.entries.len() <= feed.demand.max_items as usize,
+                        "total Atom/Source entries exceeded the caller's item budget"
+                    );
+                    assert!(batch.encoded_len()? <= feed.demand.max_bytes as usize);
+                    return Ok(*batch);
+                }
                 ConversationEvent::State { .. } => {}
             }
         }
@@ -658,7 +674,7 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
 }
 
 #[tokio::test]
-async fn one_effect_main_prefix_retires_only_delivered_previews_and_skips_activity_suffix()
+async fn one_effect_main_prefix_retires_only_delivered_previews_and_includes_reasoning()
 -> Result<()> {
     use crate::studio::{
         runtime::chat_item::BodyKey,
@@ -698,6 +714,36 @@ async fn one_effect_main_prefix_retires_only_delivered_previews_and_skips_activi
         let mut projection = LiveProjection::new();
         projection.bind_execution_history(channel.order_index(), history.clone())?;
         projection.bind_conversation_identity(database)?;
+        let turn = pl_core::thread::TurnRecord {
+            turn_id: "prefix-turn".into(),
+            input_id: None,
+            state: pl_core::thread::TurnState::Running,
+            elapsed_ms: None,
+            model_steps: 1,
+        };
+        let state = ThreadSnapshot {
+            turns: vec![turn.clone()].into(),
+            ..Default::default()
+        };
+        let starts = [("member-a", false), ("member-b", false), ("member-z", true)]
+            .into_iter()
+            .map(|(id, reasoning)| pl_core::model::ModelStartedMember {
+                turn_id: "prefix-turn".into(),
+                attempt_id: "prefix-attempt".into(),
+                ..atoms::start(id, reasoning)
+            })
+            .collect::<Vec<_>>();
+        let effect = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 1,
+            committed_at: 16,
+            turn: Some(turn),
+            model_member_starts: starts.into(),
+            ..Default::default()
+        };
+        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
+        projection.publish_prepared(&session, &mut prepared).await?;
+        assert_eq!(session.head_seq(), 0);
         let ids = ["member-a", "member-b"].map(|id| {
             presentation_id(
                 "prefix-attempt",
@@ -743,7 +789,9 @@ async fn one_effect_main_prefix_retires_only_delivered_previews_and_skips_activi
             .await?;
         let first = chat(&mut feed).await?;
         assert_eq!(first.placement, ChatPlacement::Set);
-        assert_eq!(first.current.context("Set current")?.previews.len(), 2);
+        let current = first.current.context("Set current")?;
+        assert_eq!(current.previews.len(), 2);
+        assert_eq!(current.atoms.len(), 3);
 
         let members = [
             ("member-a", "first", false),
@@ -795,22 +843,28 @@ async fn one_effect_main_prefix_retires_only_delivered_previews_and_skips_activi
         .collect::<Result<Vec<_>>>()?;
         let effect = ThreadEffectBatch {
             thread_id: thread.id.clone(),
-            sequence: 1,
+            sequence: 2,
             committed_at: 17,
             model_members: members.into(),
+            // The same reliable handoff also contains a real source-only fact. At K=1
+            // it needs its own frame and must not retire either undelivered preview.
+            context_compactions: vec![pl_core::thread::ContextCompactionEvent::Started {
+                operation_id: "prefix-compaction".into(),
+                turn_id: None,
+                attempt_id: None,
+            }]
+            .into(),
             ..Default::default()
         };
-        let (_, mut prepared) = projection
-            .prepare(&thread, &effect, &ThreadSnapshot::default(), false)
-            .await?;
+        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
         projection.publish_prepared(&session, &mut prepared).await?;
         assert_eq!(session.head_seq(), 3);
         let handoff = prepared
             .current_handoff
             .as_ref()
             .context("frozen handoff")?;
-        assert_eq!(handoff.main_through, 2);
-        assert_eq!(handoff.retirements.len(), 2);
+        assert_eq!(handoff.main_through, 3);
+        assert_eq!(handoff.retirements.len(), 3);
         source.publish_test_conversation(
             &session,
             prepared
@@ -821,30 +875,65 @@ async fn one_effect_main_prefix_retires_only_delivered_previews_and_skips_activi
             Some(handoff.clone()),
         )?;
 
+        let source_start = chat(&mut feed).await?;
+        assert!(matches!(
+            source_start.entries.as_slice(),
+            [ChatEntry::Source(state)]
+                if state.source == (ChatSourceId::Operation {
+                    operation_id: "prefix-compaction".into()
+                }) && state.lifecycle == ChatSourceLifecycle::Active
+        ));
+        let current = source_start.current.context("source-only current")?;
+        assert_eq!(current.previews.len(), 2);
+        assert_eq!(current.atoms.len(), 3);
+        assert_eq!(
+            feed.delivered, 0,
+            "source delivery advanced the completion prefix"
+        );
         let first = chat(&mut feed).await?;
-        assert_eq!(first.messages.len(), 1);
-        assert_eq!(first.messages[0].id, ids[0]);
+        assert_eq!(completed_atoms(&first).count(), 1);
+        assert_eq!(
+            completed_atoms(&first).next().context("first atom")?.id,
+            ids[0]
+        );
         let current = first.current.context("first prefix current")?;
-        assert_eq!(current.source_effect_seq, 1);
+        assert_eq!(current.source_effect_seq, 2);
         assert_eq!(current.previews.len(), 1);
+        assert_eq!(current.atoms.len(), 2);
+        assert!(current.atoms.iter().all(|atom| atom.id != ids[0]));
         assert_eq!(
             current.previews[0].id, ids[1],
             "undelivered member retired early"
         );
         let second = chat(&mut feed).await?;
-        assert_eq!(second.messages.len(), 1);
-        assert_eq!(second.messages[0].id, ids[1]);
+        assert_eq!(completed_atoms(&second).count(), 1);
+        assert_eq!(
+            completed_atoms(&second).next().context("second atom")?.id,
+            ids[1]
+        );
+        let current = second.current.context("second prefix current")?;
+        assert!(current.previews.is_empty());
+        assert_eq!(current.atoms.len(), 1);
+        assert_eq!(current.atoms[0].kind, ChatAtomKind::Reasoning);
+        let third = chat(&mut feed).await?;
+        assert_eq!(
+            completed_atoms(&third)
+                .next()
+                .context("reasoning atom")?
+                .kind,
+            ChatAtomKind::Reasoning
+        );
         assert!(
-            second
+            third
                 .current
                 .context("final Main current")?
-                .previews
+                .atoms
                 .is_empty()
         );
         assert_eq!(
             feed.delivered,
             session.head_seq(),
-            "scope-external suffix required another batch"
+            "ordinary Main did not deliver reasoning"
         );
         assert!(feed.cut.is_none());
         let interrupted = prepared
@@ -964,8 +1053,8 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
             let batch = chat(&mut feed).await?;
             assert_eq!(batch.placement, ChatPlacement::Append);
             assert!(batch.before.is_none());
-            for message in &batch.messages {
-                let payload = match &message.payload {
+            for message in completed_atoms(&batch) {
+                let payload = match message.payload.as_ref().context("completed payload")? {
                     PayloadData::Inline { bytes } => bytes.clone(),
                     PayloadData::Deferred {
                         reference,
@@ -1048,6 +1137,7 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
         assert!(
             idle_set
                 .current
+                .as_ref()
                 .context("idle current")?
                 .active_turn
                 .is_none()
@@ -1060,10 +1150,8 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
             bail!("active response did not retain its Item owner");
         };
         assert!(
-            idle_set
-                .messages
-                .iter()
-                .any(|message| &message.id == item_id),
+            completed_atoms(&idle_set)
+                .any(|message| message.completion_item_id.as_ref() == Some(item_id)),
             "idle open lost the pending response"
         );
         terminal_state_after_set(&mut idle, &completed).await?;
@@ -1145,7 +1233,7 @@ async fn cold_open_is_passive_and_absent_live_absent_revokes_old_read_qualificat
             .await?;
         let first = chat(&mut feed).await?;
         assert_eq!(first.placement, ChatPlacement::Set);
-        assert!(!first.messages.is_empty());
+        assert!(completed_atoms(&first).next().is_some());
         assert!(
             !first
                 .current

@@ -266,14 +266,17 @@ void main() {
     expect(session.state.runtime!.cacheUsage.sampleCount, 2);
     expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
-      fixture.consumers['thread']!.batches.single.messages.single.id,
+      (fixture.consumers['thread']!.batches.single.entries.single
+              as ChatAtomEntry)
+          .atom
+          .id,
       'item-100',
     );
     await feed.deliver(
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          messages: [chatMessage(id: 'next')],
+          entries: [ChatAtomEntry(chatMessage(id: 'next'))],
         ),
       ),
     );
@@ -582,7 +585,10 @@ void main() {
       final session = fixture.session();
       await session.content.ready;
       expect(
-        fixture.consumers['thread']!.batches.single.messages.single.id,
+        (fixture.consumers['thread']!.batches.single.entries.single
+                as ChatAtomEntry)
+            .atom
+            .id,
         'item-2',
       );
       expect(session.state.hasSnapshot, isFalse);
@@ -667,7 +673,10 @@ void main() {
         batch: chatSet(messages: [chatMessage(id: 'item-9')]),
       ),
     );
-    expect(consumer.batches.single.messages.single.id, 'item-9');
+    expect(
+      (consumer.batches.single.entries.single as ChatAtomEntry).atom.id,
+      'item-9',
+    );
     observation.cancel();
     await fixture.close();
     expect(budget.usage, isEmpty);
@@ -696,7 +705,10 @@ void main() {
         batch: chatSet(messages: [chatMessage(id: 'item-4')]),
       ),
     );
-    expect(consumer.batches.single.messages.single.id, 'item-4');
+    expect(
+      (consumer.batches.single.entries.single as ChatAtomEntry).atom.id,
+      'item-4',
+    );
     observation.cancel();
     await fixture.close();
   });

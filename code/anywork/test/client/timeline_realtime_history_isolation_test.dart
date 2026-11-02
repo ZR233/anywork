@@ -82,6 +82,8 @@ void main() {
     }
 
     final current = CurrentProjection(
+      sources: const [],
+      atoms: const [],
       sourceEffectSeq: 17,
       logicalStatus: ThreadStatusView.running,
       executionPresent: true,
@@ -231,7 +233,7 @@ void main() {
 
     // Positive control: the official Demo seed traverses a real Chat Append.
     final acksBeforeSeed = feed.acknowledgements.length;
-    transport.seedChatMessages(threadId, [chatMessage('isolation-completed')]);
+    transport.seedChatAtoms(threadId, [chatMessage('isolation-completed')]);
     await operationSeen.future.timeout(const Duration(seconds: 5));
     await feed
         .waitForAcknowledgements(acksBeforeSeed + 1)
@@ -302,6 +304,7 @@ final class _InjectingFeed implements ConversationFeed {
 
   @override
   String get threadId => inner.threadId;
+
   @override
   String get subscriptionId => inner.subscriptionId;
 
@@ -415,7 +418,35 @@ final class _CountingReader implements ConversationReader {
   final ConversationReader inner;
   int queries = 0;
   @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) {
+    queries++;
+    return inner.readAt(
+      completionSeq: completionSeq,
+      before: before,
+      demand: demand,
+    );
+  }
+
+  @override
   String get threadId => inner.threadId;
+  @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) {
+    queries++;
+    return inner.readBefore(
+      completionSeq: completionSeq,
+      before: before,
+      demand: demand,
+    );
+  }
+
   @override
   Future<ChatBatch> loadOlder({
     required String before,

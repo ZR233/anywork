@@ -1,7 +1,7 @@
 //! Small, product-owned current retirement facts for a reliable completion cut.
 use std::sync::Arc;
 
-use pl_protocol::CurrentProjection;
+use pl_protocol::{ChatEntry, CurrentProjection};
 
 /// Only an already-exposed preview needs per-item retirement metadata.
 #[derive(Debug, Clone)]
@@ -18,6 +18,8 @@ pub(in crate::studio) struct CurrentHandoff {
     pub before: Arc<CurrentProjection>,
     pub after: Arc<CurrentProjection>,
     pub retirements: Arc<[CurrentRetirement]>,
+    /// Actual start/source events, including effects that publish no completion seq.
+    pub entries: Arc<[ChatEntry]>,
 }
 
 impl CurrentHandoff {
@@ -34,6 +36,12 @@ impl CurrentHandoff {
                 .retirements
                 .iter()
                 .any(|retirement| retirement.item_id == preview.id && retirement.through <= through)
+        });
+        current.atoms.retain(|atom| {
+            !self
+                .retirements
+                .iter()
+                .any(|retirement| retirement.item_id == atom.id && retirement.through <= through)
         });
         current
     }

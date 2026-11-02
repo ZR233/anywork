@@ -302,7 +302,7 @@ void main() {
 }
 
 final class _Harness {
-  _Harness(List<ChatMessage> messages, {String? before})
+  _Harness(List<ChatAtom> messages, {String? before})
     : transport = _LeaseTransport(
         chatBatch(messages, before: before, current: chatCurrent()),
       ) {
@@ -336,7 +336,7 @@ final class _Harness {
     await transport.feed.accepted(1);
   }
 
-  Future<void> append(List<ChatMessage> messages) async {
+  Future<void> append(List<ChatAtom> messages) async {
     transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }

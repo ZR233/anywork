@@ -32,7 +32,8 @@ use crate::http;
 use crate::report::{self, CaseResult};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatScope, ContentRange, ContentRef, PayloadData, ReadDemand,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatEntry, ChatScope, ContentRange,
+    ContentRef, PayloadData, ReadDemand,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -1695,9 +1696,7 @@ async fn inbound_target_timeline(
         "cannot uniquely resolve inbound {message_id} on a truncated timeline page"
     );
     let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
-    let envelopes = batch
-        .messages
-        .iter()
+    let envelopes = terminal_atoms(&batch)
         .map(envelope)
         .collect::<Result<Vec<_>>>()?;
     let mut turns = envelopes
@@ -1727,8 +1726,15 @@ async fn inbound_target_timeline(
 
 /// Inspect only bounded metadata. A deferred envelope cannot prove uniqueness
 /// in this fixture and is reported as an uncovered shape, not silently omitted.
-fn envelope(item: &ChatMessage) -> Result<serde_json::Value> {
-    let PayloadData::Inline { bytes } = &item.payload else {
+fn envelope(item: &ChatAtom) -> Result<serde_json::Value> {
+    ensure!(
+        item.completion_item_id
+            .as_ref()
+            .is_some_and(|id| !id.is_empty()),
+        "fixture terminal member {} has no frozen completion identity",
+        item.id
+    );
+    let Some(PayloadData::Inline { bytes }) = &item.payload else {
         bail!(
             "fixture item {} has deferred metadata; target selection is not provable",
             item.id
@@ -1832,7 +1838,7 @@ async fn assert_canonical_final_blank(
         target.batch.before.is_none(),
         "cannot prove blank Final on a truncated timeline page for Turn {turn_id}"
     );
-    for item in &target.batch.messages {
+    for item in terminal_atoms(&target.batch) {
         let payload = envelope(item)?;
         if !is_channel(&payload, turn_id, "final") {
             continue;
@@ -1889,10 +1895,7 @@ fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<serde_json:
         target.batch.before.is_none(),
         "cannot prove unique {channel:?} for Turn {turn_id} on a truncated timeline page"
     );
-    let payloads = target
-        .batch
-        .messages
-        .iter()
+    let payloads = terminal_atoms(&target.batch)
         .map(envelope)
         .collect::<Result<Vec<_>>>()?;
     let mut items = payloads
@@ -1906,4 +1909,20 @@ fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<serde_json:
         "target Turn {turn_id} has multiple {channel:?} text items"
     );
     Ok(item)
+}
+
+/// Main includes work too; only terminal reply domains need envelope inspection.
+fn terminal_atoms(batch: &ChatBatch) -> impl Iterator<Item = &ChatAtom> {
+    batch.entries.iter().filter_map(|entry| match entry {
+        ChatEntry::Atom(atom)
+            if matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+                && matches!(
+                    atom.kind,
+                    ChatAtomKind::Text | ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
+                ) =>
+        {
+            Some(atom.as_ref())
+        }
+        _ => None,
+    })
 }

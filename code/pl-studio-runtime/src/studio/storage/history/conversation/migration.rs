@@ -317,6 +317,7 @@ pub(super) fn convert(
     }
     Ok(ChatItem::complete(
         ChatDraft {
+            metadata: Arc::from([]),
             item_id: id.into(),
             query_class: class.into(),
             parent_id,
@@ -376,7 +377,161 @@ pub(in super::super) async fn backfill(db: &impl ConnectionTrait, thread_id: &st
             thread_id,
             &database_id,
         )?;
-        append_records(db, std::iter::once(&item), true).await?;
+        append_published(db, &item).await?;
         after = seq;
     }
+}
+
+/// Frozen schema-12/13 fixture/import encoder. Ordinary writes use the current metadata column.
+pub(in super::super) async fn append_published(
+    db: &impl ConnectionTrait,
+    item: &ChatItem,
+) -> Result<()> {
+    let h = &item.header;
+    ensure!(
+        latest_append_seq(db).await?.checked_add(1) == Some(h.append_seq),
+        "legacy completion sequence is not contiguous"
+    );
+    db.execute_raw(statement(
+        "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload) VALUES(?,?,?,?,?)",
+        vec![integer(h.append_seq)?.into(),h.item_id.clone().into(),h.query_class.clone().into(),
+            h.parent_id.as_ref().map(|key|key.as_str().to_owned()).into(),item.payload.to_vec().into()],
+    )).await?;
+    write_contents(db, &h.item_id, &item.contents).await
+}
+
+/// Frozen schema-13 member directory, separate from its four-content preview window.
+pub(in super::super) struct LegacyActiveMember {
+    pub id: String,
+    pub source_order: Option<u64>,
+    pub contents: Vec<pl_protocol::ContentRef>,
+}
+
+pub(in super::super) async fn active_members(
+    db: &impl ConnectionTrait,
+    current: &pl_protocol::CurrentProjection,
+) -> Result<Vec<LegacyActiveMember>> {
+    use pl_protocol::{ContentOwner, ContentRef, ContentTarget};
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Entry {
+        owner: String,
+        key: String,
+        byte_length: u64,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Body {
+        reference: ContentRef,
+        byte_length: u64,
+        generation: u64,
+    }
+    let Some(collection) = current
+        .collections
+        .iter()
+        .find(|entry| entry.collection == "members")
+    else {
+        return Ok(Vec::new());
+    };
+    let mut after: Option<(i64, String)> = None;
+    let mut bytes = 0usize;
+    let mut members = Vec::new();
+    loop {
+        let (sql, values) = if let Some((position, id)) = &after {
+            (
+                "SELECT position,entry_id,payload FROM conversation_view_entries WHERE collection='members' AND (position,entry_id)>(?,?) ORDER BY position,entry_id LIMIT 1",
+                vec![(*position).into(), id.clone().into()],
+            )
+        } else {
+            (
+                "SELECT position,entry_id,payload FROM conversation_view_entries WHERE collection='members' ORDER BY position,entry_id LIMIT 1",
+                vec![],
+            )
+        };
+        let Some(row) = db.query_one_raw(statement(sql, values)).await? else {
+            break;
+        };
+        let id: String = row.try_get("", "entry_id")?;
+        let position: i64 = row.try_get("", "position")?;
+        let entry: Entry = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
+        let expected =
+            crate::studio::conversation_identity::content_owner_key(&ContentOwner::Current {
+                domain: "collection:members".into(),
+                id: id.clone(),
+                revision: collection.revision,
+            })?;
+        ensure!(
+            entry.owner == expected.as_str() && entry.key == "entry",
+            "legacy member entry owner/revision differs"
+        );
+        ensure!(
+            entry.byte_length <= pl_core::chat::MAX_READ_BYTES as u64,
+            "legacy member entry exceeds the content read budget; original database preserved"
+        );
+        let data = super::content::read_body_bytes(
+            db,
+            &pl_core::chat::ChatContentKey {
+                owner: expected,
+                key: entry.key,
+            },
+            0,
+            usize::try_from(entry.byte_length)?,
+        )
+        .await?;
+        let bodies: Vec<Body> = serde_json::from_slice(&data)?;
+        ensure!(
+            !bodies.is_empty(),
+            "legacy active member has no content references"
+        );
+        let mut contents = Vec::with_capacity(bodies.len());
+        for body in bodies {
+            // Bound retained references by a lower bound on the new current encoding,
+            // not by the old directory's larger generation/byteLength wrappers.
+            bytes = bytes
+                .checked_add(serde_json::to_vec(&body.reference)?.len())
+                .context("legacy member metadata size overflow")?;
+            ensure!(
+                bytes <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+                "legacy active members exceed current budget; original database preserved"
+            );
+            ensure!(
+                body.reference.database_id == collection.database_id,
+                "legacy member content belongs to another database"
+            );
+            let ContentTarget::Body {
+                owner: ContentOwner::Item { item_id },
+                key,
+            } = &body.reference.target
+            else {
+                anyhow::bail!("legacy member has no canonical item body owner");
+            };
+            ensure!(*item_id == id, "legacy member content owner differs");
+            let owner = ChatKey::new("item", &id)?;
+            let manifest = db
+                .query_one_raw(statement(
+                    "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+                    vec![owner.as_str().into(), key.clone().into()],
+                ))
+                .await?
+                .context("legacy member content manifest missing")?;
+            let descriptor = super::content::descriptor(
+                owner.as_str(),
+                key.clone(),
+                &manifest.try_get::<Vec<u8>>("", "payload")?,
+            )?;
+            ensure!(
+                descriptor.byte_length == body.byte_length
+                    && descriptor.generation == body.generation,
+                "legacy member content manifest differs"
+            );
+            contents.push(body.reference);
+        }
+        members.push(LegacyActiveMember {
+            id: id.clone(),
+            source_order: u64::try_from(position).ok().filter(|value| *value > 0),
+            contents,
+        });
+        after = Some((position, id));
+    }
+    Ok(members)
 }

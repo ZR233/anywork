@@ -25,16 +25,37 @@ void main() {
             batch: dto.BridgeChatBatch(
               placement: placement,
               before: 'opaque:中文:before',
-              messages: [
-                dto.BridgeChatMessage(
-                  id: 'inline',
-                  payload: dto.BridgePayloadData.inline(bytes: bytes),
+              entries: [
+                dto.BridgeChatEntry.source(
+                  dto.BridgeChatSourceState(
+                    source: _source,
+                    lifecycle: const dto.BridgeChatSourceLifecycle.active(),
+                    started: _position(1),
+                  ),
                 ),
-                dto.BridgeChatMessage(
-                  id: 'deferred',
-                  payload: dto.BridgePayloadData.deferred_(
+                _completedEntry(
+                  'inline',
+                  dto.BridgePayloadData.inline(bytes: bytes),
+                  completionSeq: 1,
+                  sourceOrder: 3,
+                ),
+                _completedEntry(
+                  'deferred',
+                  dto.BridgePayloadData.deferred_(
                     reference: _reference,
                     byteLength: BigInt.from(400000),
+                  ),
+                  completionSeq: 2,
+                  sourceOrder: 11,
+                ),
+                dto.BridgeChatEntry.source(
+                  dto.BridgeChatSourceState(
+                    source: _source,
+                    lifecycle: const dto.BridgeChatSourceLifecycle.ended(
+                      outcome: dto.BridgeChatTerminalOutcome.completed,
+                    ),
+                    started: _position(1),
+                    ended: _position(4),
                   ),
                 ),
               ],
@@ -53,12 +74,58 @@ void main() {
           isNull,
           reason: 'None must not become an empty projection',
         );
-        expect(batch.messages.map((message) => message.id), [
+        expect(batch.entries, [
+          isA<ChatSourceEntry>(),
+          isA<ChatAtomEntry>(),
+          isA<ChatAtomEntry>(),
+          isA<ChatSourceEntry>(),
+        ]);
+        final start = (batch.entries.first as ChatSourceEntry).state;
+        final end = (batch.entries.last as ChatSourceEntry).state;
+        expect(start.source, const ForegroundTurnChatSource(turnId: 'turn'));
+        expect(end.source, start.source);
+        expect(start.lifecycle, isA<ActiveChatSource>());
+        expect(start.started!.effectSeq, 1);
+        expect(start.ended, isNull);
+        expect(
+          end.lifecycle,
+          isA<EndedChatSource>().having(
+            (lifecycle) => lifecycle.outcome,
+            'outcome',
+            ChatTerminalOutcome.completed,
+          ),
+        );
+        expect(end.started!.effectSeq, 1);
+        expect(end.ended!.effectSeq, 4);
+        final atoms = batch.entries
+            .whereType<ChatAtomEntry>()
+            .map((entry) => entry.atom)
+            .toList();
+        expect(atoms.map((atom) => atom.id), [
+          'inline-member',
+          'deferred-member',
+        ]);
+        expect(atoms.map((atom) => atom.completionItemId), [
           'inline',
           'deferred',
         ]);
-        expect((batch.messages.first.payload as InlinePayload).bytes, bytes);
-        final deferred = batch.messages.last.payload as DeferredPayload;
+        expect(atoms.map((atom) => atom.completionSeq), [1, 2]);
+        expect(atoms.map((atom) => atom.sourceOrder), [3, 11]);
+        for (final atom in atoms) {
+          expect(atom.source, start.source);
+          expect(atom.turnId, 'turn');
+          expect(atom.sourceState, isNull, reason: 'FrozenNone stays absent');
+          expect(
+            atom.lifecycle,
+            isA<TerminalChatAtom>().having(
+              (lifecycle) => lifecycle.outcome,
+              'outcome',
+              ChatTerminalOutcome.completed,
+            ),
+          );
+        }
+        expect((atoms.first.payload as InlinePayload).bytes, bytes);
+        final deferred = atoms.last.payload as DeferredPayload;
         expect(deferred.byteLength, 400000);
         expect(deferred.reference.databaseId, 'database');
         expect(
@@ -92,8 +159,29 @@ void main() {
       const dto.BridgeReadDemand(maxItems: 20, maxBytes: 65536),
     ));
     expect(batch.placement, ChatPlacement.prepend);
-    expect(batch.messages.single.id, 'older');
+    final atom = (batch.entries.single as ChatAtomEntry).atom;
+    expect(atom.id, 'older-member');
+    expect(atom.completionItemId, 'older');
+    expect(atom.completionSeq, 1);
+    expect(atom.lifecycle, isA<TerminalChatAtom>());
     expect(batch.before, 'next:older');
+    final anchored = await reader.readAt(
+      completionSeq: 17,
+      before: 'inclusive:不透明',
+      demand: const ReadDemand(maxItems: 1, maxBytes: 4096),
+    );
+    expect(native.atRequests.single, (
+      BigInt.from(17),
+      'inclusive:不透明',
+      const dto.BridgeReadDemand(maxItems: 1, maxBytes: 4096),
+    ));
+    final anchor = (anchored.entries.single as ChatAtomEntry).atom;
+    expect(anchor.id, 'anchor-payload-member');
+    expect(anchor.completionItemId, 'anchor-payload');
+    expect(anchor.completionSeq, 17);
+    expect((anchor.payload as InlinePayload).bytes, utf8.encode('锚点原载荷'));
+    expect(anchored.current, isNull);
+    expect(anchored.before, 'inclusive:next');
     final manifest = await reader.listContents(
       itemId: 'deferred',
       continuation: 'manifest-next',
@@ -132,6 +220,10 @@ void main() {
       final feed = FrbConversationFeed(native);
       await expectLater(
         feed.reader.loadOlder(before: 'before', demand: chatDemand),
+        throwsA(_typedFailure),
+      );
+      await expectLater(
+        feed.reader.readAt(completionSeq: 17, demand: chatDemand),
         throwsA(_typedFailure),
       );
       expect(native.acks, isEmpty);
@@ -230,12 +322,45 @@ const _domainReference = ContentRef(
   target: ItemPayloadTarget(itemId: 'deferred'),
 );
 
+const _source = dto.BridgeChatSourceId.foregroundTurn(turnId: 'turn');
+
+dto.BridgeChatFactPosition _position(int effectSeq) =>
+    dto.BridgeChatFactPosition(effectSeq: BigInt.from(effectSeq), suborder: 0);
+
+// Native seam fixture only: member identity is not the completed payload id,
+// and the source order deliberately has gaps.
+dto.BridgeChatEntry _completedEntry(
+  String completionItemId,
+  dto.BridgePayloadData payload, {
+  required int completionSeq,
+  required int sourceOrder,
+}) => dto.BridgeChatEntry.atom(
+  dto.BridgeChatAtom(
+    id: '$completionItemId-member',
+    completionItemId: completionItemId,
+    completionSeq: BigInt.from(completionSeq),
+    source: _source,
+    sourceOrder: BigInt.from(sourceOrder),
+    kind: dto.BridgeChatAtomKind.text,
+    delivery: dto.BridgeChatDeliveryKind.foreground,
+    lifecycle: dto.BridgeChatAtomLifecycle.terminal(
+      started: _position(1),
+      ended: _position(completionSeq + 1),
+      outcome: dto.BridgeChatTerminalOutcome.completed,
+    ),
+    turnId: 'turn',
+    contents: const [],
+    payload: payload,
+  ),
+);
+
 // Only the generated/native seam is stubbed. All mapping, cancellation, retained
 // failure responsibility and retries above execute the production adapter.
 final class _GeneratedFeed implements wire.BridgeConversationFeed {
   final _frames = StreamController<dto.BridgeConversationFrame>();
   final acks = <BigInt>[];
   final olderRequests = <(String, dto.BridgeReadDemand)>[];
+  final atRequests = <(BigInt, String?, dto.BridgeReadDemand)>[];
   final manifestRequests = <(String, String?)>[];
   final contentRequests = <(dto.BridgeContentRef, dto.BridgeContentRange)>[];
   final watchCloseCalls = <String>[];
@@ -273,6 +398,30 @@ final class _GeneratedFeed implements wire.BridgeConversationFeed {
     required BigInt deliverySequence,
   }) => acks.add(deliverySequence);
   @override
+  Future<dto.BridgeChatBatch> readAt({
+    required BigInt completionSeq,
+    String? before,
+    required dto.BridgeReadDemand demand,
+  }) async {
+    atRequests.add((completionSeq, before, demand));
+    if (queryFailure case final failure?) throw failure;
+    return dto.BridgeChatBatch(
+      placement: dto.BridgeChatPlacement.prepend,
+      entries: [
+        _completedEntry(
+          'anchor-payload',
+          dto.BridgePayloadData.inline(
+            bytes: Uint8List.fromList(utf8.encode('锚点原载荷')),
+          ),
+          completionSeq: 17,
+          sourceOrder: 30,
+        ),
+      ],
+      before: 'inclusive:next',
+    );
+  }
+
+  @override
   Future<dto.BridgeChatBatch> loadOlder({
     required String before,
     required dto.BridgeReadDemand demand,
@@ -281,12 +430,12 @@ final class _GeneratedFeed implements wire.BridgeConversationFeed {
     if (queryFailure case final failure?) throw failure;
     return dto.BridgeChatBatch(
       placement: dto.BridgeChatPlacement.prepend,
-      messages: [
-        dto.BridgeChatMessage(
-          id: 'older',
-          payload: dto.BridgePayloadData.inline(
-            bytes: Uint8List.fromList([123, 125]),
-          ),
+      entries: [
+        _completedEntry(
+          'older',
+          dto.BridgePayloadData.inline(bytes: Uint8List.fromList([123, 125])),
+          completionSeq: 1,
+          sourceOrder: 3,
         ),
       ],
       before: 'next:older',

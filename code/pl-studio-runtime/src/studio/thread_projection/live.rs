@@ -404,9 +404,18 @@ impl PreparedEffect {
                     &record.contents,
                 ))
                 .saturating_add(RETAINED_ITEM_OVERHEAD)
+                .saturating_add(record.header.metadata.len() as u64)
         });
         retained_bytes(&self.items)
             .saturating_add(self.accounting.retained_bytes())
+            .saturating_add(
+                serde_json::to_vec(&self.current.projection)
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.current.source_changes.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
             .saturating_add(
                 self.current_state
                     .as_ref()
@@ -422,15 +431,17 @@ impl PreparedEffect {
                     .fold(0_u64, u64::saturating_add);
                 // Reserve every possible exposed-preview retirement before seq assignment;
                 // filling the bounded metadata after publish cannot increase this charge.
-                handoff
-                    .before
-                    .previews
-                    .iter()
-                    .fold(projections, |bytes, preview| {
+                handoff.before.previews.iter().fold(
+                    projections.saturating_add(
+                        serde_json::to_vec(handoff.entries.as_ref())
+                            .map_or(u64::MAX, |bytes| bytes.len() as u64),
+                    ),
+                    |bytes, preview| {
                         bytes
                             .saturating_add(preview.id.len() as u64)
                             .saturating_add(32)
-                    })
+                    },
+                )
             }))
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
@@ -439,6 +450,7 @@ impl PreparedEffect {
                 drafts.iter().fold(0_u64, |bytes, draft| {
                     bytes
                         .saturating_add(RETAINED_ITEM_OVERHEAD)
+                        .saturating_add(draft.metadata.len() as u64)
                         .saturating_add(completion_bytes(
                             &draft.item_id,
                             &draft.payload,
@@ -1140,7 +1152,14 @@ impl Fact {
 }
 
 /// Folds admitted writes into the live product facts and yields the changes each one made.
+mod provenance;
+#[cfg(test)]
+mod restore_tests;
+
 pub(in crate::studio) struct LiveProjection {
+    atom_starts: BTreeMap<String, pl_protocol::ChatAtom>,
+    source_states: BTreeMap<pl_protocol::ChatSourceId, pl_protocol::ChatSourceState>,
+    provenance_restored: bool,
     /// Canonical payloads of identities that can still change.
     ///
     /// A non-terminal item is updated by a later effect, and the newest Turn's tool items are
@@ -1229,6 +1248,9 @@ impl LiveProjection {
     /// observation, once, before any commit is projected.
     pub(in crate::studio) fn new() -> Self {
         Self {
+            atom_starts: BTreeMap::new(),
+            source_states: BTreeMap::new(),
+            provenance_restored: false,
             items: BTreeMap::new(),
             facts: BTreeMap::new(),
             results: BTreeMap::new(),
@@ -1329,6 +1351,7 @@ impl LiveProjection {
         ProjectionError,
     > {
         let active = self.current_texts();
+        self.sync_provenance()?;
         self.current
             .freeze(thread, state, sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))
@@ -1446,6 +1469,14 @@ impl LiveProjection {
             .saturating_add(self.previews_bytes)
             .saturating_add(self.revisions_bytes)
             .saturating_add(self.current.retained_bytes());
+        bytes = bytes
+            .saturating_add(
+                serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(&self.source_states.values().collect::<Vec<_>>())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            );
         for (turn_id, result) in &self.results {
             bytes = bytes
                 .saturating_add(turn_id.len() as u64)
@@ -1495,14 +1526,17 @@ impl LiveProjection {
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         self.ensure_database_identity().await?;
         let current_before = self.current_before(thread);
+        let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
-        let (items, review_delivery, completion_drafts) =
+        let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
+        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)?;
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let (current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -1513,6 +1547,7 @@ impl LiveProjection {
                 before: current_before,
                 after: Arc::new(current.projection.clone()),
                 retirements: Arc::from([]),
+                entries: provenance.0.into(),
             })),
             items,
             completions: Arc::from(Vec::new()),
@@ -1553,11 +1588,14 @@ impl LiveProjection {
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.ensure_database_identity().await?;
         let current_before = self.current_before(thread);
+        let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let (items, review_delivery, completion_drafts) =
+        let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
+        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)?;
         self.retire_effect_source(effect)?;
-        let (current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -1568,6 +1606,7 @@ impl LiveProjection {
                 before: current_before,
                 after: Arc::new(current.projection.clone()),
                 retirements: Arc::from([]),
+                entries: provenance.0.into(),
             })),
             items,
             completions: Arc::from(Vec::new()),
@@ -1703,9 +1742,7 @@ impl LiveProjection {
         // arrive stays on the identity it was shown on instead of being lost. A normally received
         // response always carries its complete provider parts in its own receipt, so its committed
         // content never depends on what a subscriber happened to observe.
-        if let Some(attempt) = &effect.attempt
-            && super::responses::keeps_bounded_preview(&attempt.outcome)
-        {
+        if let Some(attempt) = &effect.attempt {
             for (id, item) in
                 self.attempt_preview_items(&thread.id, &attempt.attempt_id, &attempt.turn_id)?
             {
@@ -1713,7 +1750,10 @@ impl LiveProjection {
                 // placement fact alone resolves to a release placeholder, so it must never beat the
                 // preview that still holds the streamed text; a canonical committed payload (this
                 // projection's own body) stays authoritative.
-                if !self.items.contains_key(&id) {
+                if !self.items.contains_key(&id)
+                    && (self.atom_starts.contains_key(&id)
+                        || super::responses::keeps_bounded_preview(&attempt.outcome))
+                {
                     existing.insert(id, item);
                 }
             }
@@ -1941,7 +1981,10 @@ impl LiveProjection {
             }
         }
         for item in items {
-            if !completion_ready(item) || self.order_index_of()?.is_sealed(&item.id) {
+            if !completion_ready(item)
+                || self.order_index_of()?.is_sealed(&item.id)
+                || matches!(item.state(), ThreadItemState::Inference(_))
+            {
                 continue;
             }
             drafts.push(
@@ -1992,17 +2035,30 @@ impl LiveProjection {
             .max()
             .unwrap_or(self.main_through)
             .max(self.main_through);
-        let retirements = handoff
+        let exposed = handoff
             .before
             .previews
             .iter()
-            .filter_map(|preview| {
-                records
+            .map(|preview| &preview.id)
+            .chain(handoff.before.atoms.iter().map(|atom| &atom.id))
+            .collect::<BTreeSet<_>>();
+        let record_atoms = records
+            .iter()
+            .map(|record| {
+                serde_json::from_slice::<pl_protocol::ChatAtom>(&record.header.metadata)
+                    .map(|atom| (atom, record.header.append_seq))
+                    .map_err(|error| ProjectionError::History(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let retirements = exposed
+            .into_iter()
+            .filter_map(|id| {
+                record_atoms
                     .iter()
-                    .find(|record| record.header.item_id == preview.id)
-                    .map(|record| super::CurrentRetirement {
-                        item_id: preview.id.clone(),
-                        through: record.header.append_seq,
+                    .find(|(atom, _)| &atom.id == id)
+                    .map(|(_, through)| super::CurrentRetirement {
+                        item_id: id.clone(),
+                        through: *through,
                     })
             })
             .collect::<Vec<_>>();
@@ -2011,6 +2067,7 @@ impl LiveProjection {
             before: handoff.before.clone(),
             after: handoff.after.clone(),
             retirements: retirements.into(),
+            entries: handoff.entries.clone(),
         });
         let prepared = Arc::make_mut(prepared);
         prepared.completions = records;
@@ -2070,6 +2127,7 @@ impl LiveProjection {
         self.stream_model_progress(thread, state).await?;
         self.stream_tool_progress(state)?;
         let active = self.current_texts();
+        self.sync_provenance()?;
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -2930,7 +2988,7 @@ impl LiveProjection {
     /// their own committed result or retained-fact release retires them.
     fn clear_model_previews(&mut self) {
         self.previews.retain(|id, preview| {
-            if preview.observed.is_none() {
+            if preview.observed.is_none() || self.atom_starts.contains_key(id) {
                 return true;
             }
             self.previews_bytes = self
@@ -2938,7 +2996,11 @@ impl LiveProjection {
                 .saturating_sub(preview_bytes(id, preview));
             false
         });
-        self.observed.clear();
+        self.observed.retain(|key, _| {
+            self.previews
+                .values()
+                .any(|preview| preview.observed.as_ref() == Some(key))
+        });
     }
 
     /// Adds one committed payload to the report facts of its Turn.
@@ -3260,7 +3322,16 @@ pub(super) fn observation_preview(
     part: &ObservedPart,
     lifecycle: &ThreadContentLifecycle,
 ) -> Option<(String, BodyKey, ThreadItemState)> {
-    Some(match part.identity() {
+    observation_start(attempt_id, generation, part.identity(), lifecycle)
+}
+
+fn observation_start(
+    attempt_id: &str,
+    generation: u32,
+    identity: &ObservedPartIdentity,
+    lifecycle: &ThreadContentLifecycle,
+) -> Option<(String, BodyKey, ThreadItemState)> {
+    Some(match identity {
         ObservedPartIdentity::Aggregate { channel } => {
             let id = aggregate_id(attempt_id, generation, *channel);
             match channel {

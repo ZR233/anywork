@@ -1,5 +1,6 @@
 //! Official, ordered history migrations. Format numbers are only legacy import markers.
 use super::*;
+mod atom_metadata;
 mod conversion;
 mod demand_conversation;
 mod model_route_head;
@@ -108,6 +109,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(model_route_head::RootModelRouteHead {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(atom_metadata::AtomMetadata),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -150,6 +152,7 @@ const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
 const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
 const DEMAND_CONVERSATION: &str = "m20261029_000001_history_demand_conversation";
 const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
+const ATOM_METADATA: &str = "m20261102_000001_history_atom_metadata";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -316,10 +319,12 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .iter()
         .any(|step| step.name() == DEMAND_CONVERSATION);
     let model_route_head_pending = pending.iter().any(|step| step.name() == MODEL_ROUTE_HEAD);
+    let metadata_pending = pending.iter().any(|step| step.name() == ATOM_METADATA);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         model_route_head_pending == (version < 13)
+            && metadata_pending == (version < 14)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
                 9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -331,7 +336,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12 | 13 => {
+                12..=14 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -356,10 +361,16 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
             validate_current(db, thread_id).await?;
         } else {
             demand_conversation::validate_tables(db).await?;
-            model_route_head::validate_source(db).await?;
+            if version == 12 {
+                model_route_head::validate_source(db).await?;
+            } else {
+                model_route_head::validate_tables(db).await?;
+            }
+            atom_metadata::validate_source(db).await?;
             ensure!(
                 pending.iter().all(|step| {
-                    step.name() == MODEL_ROUTE_HEAD || is_lifecycle_migration(step.name())
+                    matches!(step.name(), MODEL_ROUTE_HEAD | ATOM_METADATA)
+                        || is_lifecycle_migration(step.name())
                 }),
                 "schema 12 has pending earlier content migrations; existing data preserved"
             );
@@ -490,6 +501,7 @@ pub(super) async fn validate_identity_collations(db: &DatabaseConnection) -> Res
             &["owner_key", "content_key"][..],
         ),
         ("conversation_view_entries", &["collection", "entry_id"][..]),
+        ("conversation_sources", &["source_key"][..]),
     ] {
         if !manager.has_table(table).await? {
             continue;
@@ -540,6 +552,7 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
     );
     demand_conversation::validate_tables(db).await?;
     model_route_head::validate_tables(db).await?;
+    atom_metadata::validate_tables(db).await?;
     checkpoint::read_model_route_head(db).await?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
@@ -999,7 +1012,7 @@ impl MigrationTrait for CombinedContent {
                     // Later content steps are still pending at the format-10 boundary.
                     !matches!(
                         step.name(),
-                        COMBINED_CONTENT | DEMAND_CONVERSATION | MODEL_ROUTE_HEAD
+                        COMBINED_CONTENT | DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA
                     ) && !is_lifecycle_migration(step.name())
                 })
         {

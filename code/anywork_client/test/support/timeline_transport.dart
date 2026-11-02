@@ -5,15 +5,43 @@ import 'package:anywork_client/studio_client.dart';
 
 import 'directory_feed.dart';
 
-ChatMessage chatMessage({
+ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
+    ChatAtom(
+      id: id,
+      completionItemId: id,
+      source: ReceiptChatSource(receiptId: id),
+      sourceOrder: null,
+      kind: ChatAtomKind.receipt,
+      delivery: ChatDeliveryKind.independent,
+      lifecycle: const TerminalChatAtom(
+        started: null,
+        ended: null,
+        outcome: ChatTerminalOutcome.completed,
+      ),
+      contents: const [],
+      payload: payload,
+    );
+
+ChatAtom chatMessage({
   String id = 'item',
   String body = 'body',
   String? turnId = 'turn',
   String channel = 'final',
 }) {
   final inline = utf8.encode(body);
-  return ChatMessage(
+  return ChatAtom(
     id: id,
+    completionItemId: id,
+    source: ReceiptChatSource(receiptId: id),
+    sourceOrder: null,
+    kind: ChatAtomKind.text,
+    delivery: ChatDeliveryKind.independent,
+    lifecycle: const TerminalChatAtom(
+      started: null,
+      ended: null,
+      outcome: ChatTerminalOutcome.completed,
+    ),
+    contents: const [],
     payload: InlinePayload(
       bytes: utf8.encode(
         jsonEncode({
@@ -41,17 +69,19 @@ CurrentProjection emptyCurrent() => CurrentProjection(
   sourceEffectSeq: 0,
   logicalStatus: ThreadStatusView.idle,
   executionPresent: false,
+  sources: const [],
+  atoms: const [],
   previews: const [],
   collections: const [],
 );
 
 ChatBatch chatSet({
-  List<ChatMessage>? messages,
+  List<ChatAtom>? messages,
   String? before,
   CurrentProjection? current,
 }) => ChatBatch(
   placement: ChatPlacement.set,
-  messages: messages ?? [chatMessage()],
+  entries: (messages ?? [chatMessage()]).map(ChatAtomEntry.new).toList(),
   before: before,
   current: current ?? emptyCurrent(),
 );
@@ -189,6 +219,34 @@ class TestConversationReader implements ConversationReader {
   @override
   final String threadId;
   Future<ChatBatch> Function(String before, ReadDemand demand)? onOlder;
+  Future<ChatBatch> Function(
+    int completionSeq,
+    String? before,
+    ReadDemand demand,
+  )?
+  onBefore;
+  Future<ChatBatch> Function(
+    int completionSeq,
+    String? before,
+    ReadDemand demand,
+  )?
+  onAt;
+  @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) =>
+      onAt?.call(completionSeq, before, demand) ??
+      Future.error(UnsupportedError('Unscripted readAt'));
+  @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) =>
+      onBefore?.call(completionSeq, before, demand) ??
+      Future.error(UnsupportedError('Unscripted readBefore'));
   Future<ContentManifestPage> Function(
     String itemId,
     String? continuation,

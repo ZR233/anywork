@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::Engine as _;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -33,6 +34,7 @@ mod model_catalog;
 mod provider_usage;
 mod question_history;
 mod skill_activity;
+pub mod timeline_concept;
 mod wait_events;
 mod web_search;
 pub use context_replay_recovery::{
@@ -149,7 +151,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the optional delegation Driver
 /// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 32] = [
+pub const GUI_SCENARIOS: [&str; 33] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -160,6 +162,7 @@ pub const GUI_SCENARIOS: [&str; 32] = [
     "stress-body-large",
     "statistics",
     "realtime",
+    "timeline-concept",
     "history-lock",
     "history-fault",
     "plan-recovery",
@@ -1191,6 +1194,12 @@ pub enum RequestMatch {
         text: String,
         step: usize,
     },
+    /// One real user message must contain the text and these ordered PNG bodies.
+    PromptImages {
+        text: String,
+        png_sha256: Vec<String>,
+        step: usize,
+    },
     /// Exact answers plus the real client's opaque, nonempty decision identity.
     InteractionAnswers {
         text: String,
@@ -1227,6 +1236,11 @@ pub enum RequestMatch {
     ToolOutput {
         call_id: String,
         marker: String,
+        step: usize,
+    },
+    /// Every named foreground result must be present in the same continuation.
+    ToolOutputs {
+        outputs: Vec<(String, String)>,
         step: usize,
     },
     /// One terminal tool result, either returned directly or delivered after
@@ -1809,6 +1823,7 @@ struct AppState {
     model_catalog_hits: model_catalog::ModelCatalogHits,
     agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     delegation: delegation::Environment,
+    timeline_concept: Option<timeline_concept::Control>,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1834,6 +1849,8 @@ pub struct FixtureOptions {
     pub agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     /// Dedicated scripted-provider journey; never changes product routing.
     pub delegation: Option<delegation::Scenario>,
+    /// Explicit observation gates for the independent timeline concept script.
+    pub timeline_concept: Option<timeline_concept::Control>,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1895,6 +1912,7 @@ impl FixtureServer {
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
             agent_definitions: options.agent_definitions,
             delegation: delegation::Environment::new(options.delegation),
+            timeline_concept: options.timeline_concept,
         };
         let responses_route = if agent_definitions_enabled {
             post(agent_definitions::responses)
@@ -1908,6 +1926,10 @@ impl FixtureServer {
             post(handle)
         };
         let app = Router::new()
+            .route(
+                "/__timeline_concept/{stage}",
+                get(timeline_concept::reached).post(timeline_concept::release),
+            )
             .route(
                 "/v1/responses",
                 responses_route
@@ -4552,6 +4574,11 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                     RequestMatch::InteractionAnswers { text, step } => {
                         *step == index && question_history::matches_answers(prompt(body), text)
                     }
+                    RequestMatch::PromptImages {
+                        text,
+                        png_sha256,
+                        step,
+                    } => *step == index && prompt_images_match(body, text, png_sha256),
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
                             && body["input"]
@@ -4568,6 +4595,13 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                         marker,
                         step,
                     } => *step == index && tool_output_contains(body, call_id, marker),
+                    RequestMatch::ToolOutputs { outputs, step } => {
+                        *step == index
+                            && !outputs.is_empty()
+                            && outputs.iter().all(|(call_id, marker)| {
+                                tool_output_contains(body, call_id, marker)
+                            })
+                    }
                     RequestMatch::ToolCompletion {
                         call_id,
                         tool_id,
@@ -4637,6 +4671,7 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::PromptImages { text, .. }) => ("prompt_images", Some(text.clone())),
         Some(RequestMatch::EmptyContinuation {
             previous_response_id,
             ..
@@ -4649,6 +4684,16 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => ("tool_output", Some(format!("{call_id}:{marker}"))),
+        Some(RequestMatch::ToolOutputs { outputs, .. }) => (
+            "tool_outputs",
+            Some(
+                outputs
+                    .iter()
+                    .map(|(id, marker)| format!("{id}:{marker}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => ("tool_completion", Some(format!("{call_id}:{marker}"))),
@@ -4661,6 +4706,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
+        Some(RequestMatch::PromptImages {
+            text, png_sha256, ..
+        }) => prompt_images_match(body, text, png_sha256),
         Some(RequestMatch::InteractionAnswers { text, .. }) => {
             question_history::matches_answers(actual, text)
         }
@@ -4671,6 +4719,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolOutputs { outputs, .. }) => outputs
+            .iter()
+            .all(|(id, marker)| tool_output_contains(body, id, marker)),
         Some(RequestMatch::ToolCompletion {
             call_id,
             tool_id,
@@ -4738,6 +4789,46 @@ fn reject_diagnostic(
         delivery_seen,
         tool_output_seen,
     }
+}
+
+fn prompt_images_match(body: &Value, text: &str, png_sha256: &[String]) -> bool {
+    if png_sha256.is_empty() || prompt(body) != Some(text) {
+        return false;
+    }
+    let Some(content) = body["input"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .rev()
+                .find(|item| item["role"] == "user" && user_text(item) == Some(text))
+        })
+        .and_then(|item| item["content"].as_array())
+    else {
+        return false;
+    };
+    // Count only this input, never images from earlier inputs or tool results.
+    content.len() == png_sha256.len() + 1
+        && content[0]["type"] == "input_text"
+        && content
+            .iter()
+            .skip(1)
+            .zip(png_sha256)
+            .all(|(part, digest)| {
+                part["type"] == "input_image"
+                    && part["image_url"]
+                        .as_str()
+                        .and_then(|url| url.strip_prefix("data:image/png;base64,"))
+                        .and_then(|encoded| {
+                            base64::engine::general_purpose::STANDARD
+                                .decode(encoded)
+                                .ok()
+                        })
+                        .is_some_and(|bytes| {
+                            bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                                && hex::encode(Sha256::digest(&bytes)) == *digest
+                        })
+            })
 }
 
 fn prompt(body: &Value) -> Option<&str> {

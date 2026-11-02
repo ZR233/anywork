@@ -2,14 +2,15 @@
 //! parent wait → child terminal report. The same sequence resumes original IDs
 //! after the production process and future Profile configuration have changed.
 use super::{Observation, config, http, saved, wire};
-use crate::cases::replies::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes, chat_payload,
-    chat_turn_outcome, payload_bytes,
+use crate::cases::replies::chat_turn_outcome;
+use crate::support::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes,
+    completed_atom_payload, payload_bytes,
 };
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    AgentProfileSnapshot, AgentWorkspaceMode, ChatScope, ThreadActivityToolEntry, ThreadStatus,
-    ThreadWaitState, TurnState,
+    AgentProfileSnapshot, AgentWorkspaceMode, ChatEntry, ChatScope, ThreadActivityToolEntry,
+    ThreadStatus, ThreadWaitState, TurnState,
 };
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
@@ -229,9 +230,15 @@ impl Observation<'_> {
                 .open_chat(child, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
-            for message in &page.messages {
-                let payload =
-                    chat_payload(&read, &message.payload, &mut remaining, deadline).await?;
+            for atom in page.entries.iter().filter_map(|entry| match entry {
+                ChatEntry::Atom(atom) => Some(atom),
+                ChatEntry::Source(_) => None,
+            }) {
+                let Some(payload) =
+                    completed_atom_payload(&read, atom, &mut remaining, deadline).await?
+                else {
+                    continue;
+                };
                 if payload["type"] == "turn" && payload["turnId"].as_str() == Some(turn_id) {
                     ensure!(
                         matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),

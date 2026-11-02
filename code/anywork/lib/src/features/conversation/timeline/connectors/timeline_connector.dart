@@ -14,7 +14,6 @@ import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
-import 'timeline_children_connector.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -227,16 +226,6 @@ class _TimelineConnectorBody extends ConsumerWidget {
               return scope.readContent(reference: reference, range: range);
             },
           ),
-      childrenBuilder: (parentId) => TimelineChildrenConnector(
-        key: ValueKey((lease.generation, parentId)),
-        repository: ref.read(anyworkClientProvider).conversations,
-        threadId: threadId,
-        parentId: parentId,
-        registerDisplay: lease.registerChildrenDisplay,
-        isParentActive: active,
-        readAttachment: (id) =>
-            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
-      ),
       attachmentBuilder: (item) => TimelineAttachmentsConnector(
         key: ValueKey((lease.generation, item.id)),
         item: item,

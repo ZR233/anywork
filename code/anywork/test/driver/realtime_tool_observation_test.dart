@@ -9,7 +9,6 @@ Map<String, Object?> _item(String id, String status) => {
   'compatibility': 'current',
   'payloadByteLength': 100,
   'presentationContract': 'builtin.exec@2',
-  'childrenParentId': null,
   'diagnostic': null,
   'omittedBytes': 0,
   'kind': 'tool',
@@ -52,6 +51,7 @@ Map<String, dynamic> _snapshot({
     'olderError': null,
     'hasNewOutput': false,
     'items': <Object?>[],
+    'groups': <Object?>[],
     'children': [
       {
         'parentId': 'provided-parent',

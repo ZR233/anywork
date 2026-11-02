@@ -145,6 +145,14 @@ pub(crate) struct OlderRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PositionRequest {
+    pub completion_seq: u64,
+    pub before: Option<String>,
+    pub demand: ReadDemand,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManifestRequest {
     pub item_id: String,
     pub continuation: Option<String>,
@@ -185,6 +193,60 @@ pub(crate) async fn older(
             .owner
             .reader
             .load_older(&request.before, request.demand)
+            .await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/chat/before",
+    operation_id = "thread.readBefore",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = PositionRequest,
+    responses(StudioApiErrors, (status = 200, body = ChatBatch)))]
+pub(crate) async fn before(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<PositionRequest>,
+) -> Result<Json<ChatBatch>, ApiError> {
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    Ok(Json(
+        lease
+            .owner
+            .reader
+            .read_before(
+                request.completion_seq,
+                request.before.as_deref(),
+                request.demand,
+            )
+            .await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/chat/at",
+    operation_id = "thread.readAt",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = PositionRequest,
+    responses(StudioApiErrors, (status = 200, body = ChatBatch)))]
+pub(crate) async fn at(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<PositionRequest>,
+) -> Result<Json<ChatBatch>, ApiError> {
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    Ok(Json(
+        lease
+            .owner
+            .reader
+            .read_at(
+                request.completion_seq,
+                request.before.as_deref(),
+                request.demand,
+            )
             .await?,
     ))
 }

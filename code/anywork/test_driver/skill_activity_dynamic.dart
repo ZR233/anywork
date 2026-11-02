@@ -145,7 +145,7 @@ final class _DynamicSkillActivity {
     final skill = journey._single(
       journey._windowSkillItems(window, _dynamicViewedName),
     );
-    final group = journey._childrenFor(timeline, skill.id, 'dynamic Turn');
+    final group = journey._groupFor(timeline, skill.id, 'dynamic Turn');
     final paired = journey._requirePairing(
       timeline,
       group,
@@ -177,7 +177,7 @@ final class _DynamicSkillActivity {
       },
     };
 
-    await journey._openChildren(group);
+    await journey._openGroup(group);
     await _captureDetail(view, 'dynamic-view-new', skill: skill);
     await _captureDetail(
       _call('skill-dynamic-added-call', 'skills_list', 'succeeded'),
@@ -192,7 +192,7 @@ final class _DynamicSkillActivity {
       'dynamic-view-deleted',
     );
     journey.checks['dynamicCanonicalDetailsReadable'] = true;
-    await journey._closeChildren(skill.id);
+    await journey._closeGroup(skill.id);
     await journey._returnToLiveEdge();
   }
 
@@ -339,8 +339,8 @@ final class _DynamicSkillActivity {
     // be mounted before a real scroll can reveal it.
     final child = journey
         ._timeline(await journey.snapshot())
-        .childrenContaining(call.id);
-    await journey._openChildren(child);
+        .groupContainingItem(call.id);
+    await journey._openGroup(child);
     await journey._scopes.revealItem(call.id);
     final header = find.descendant(
       of: find.byValueKey('timeline-tool-details:${call.id}'),

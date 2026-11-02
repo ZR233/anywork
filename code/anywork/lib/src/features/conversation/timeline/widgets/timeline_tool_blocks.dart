@@ -277,12 +277,14 @@ class TimelineToolDetails extends StatelessWidget {
     this.inline = false,
     this.initiallyExpanded = false,
     this.onExpansionChanged,
+    this.declaredContents,
     super.key,
   });
 
   final TimelineToolPresentation item;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
+  final List<Widget>? declaredContents;
 
   /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
   /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
@@ -304,46 +306,48 @@ class TimelineToolDetails extends StatelessWidget {
     final showError =
         error != null && error.isNotEmpty && output?.trim() != error.trim();
     final diagnostics = _toolDiagnostics(context, item, tool);
-    final children = <Widget>[
-      if (diagnostics.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: Text(
-            diagnostics.join('\n'),
-            maxLines: 6,
-            overflow: TextOverflow.ellipsis,
-            style: context.text.bodySmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-              height: 1.4,
-              fontFamily: studioCodeFontFamily,
+    final children =
+        declaredContents ??
+        <Widget>[
+          if (diagnostics.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                diagnostics.join('\n'),
+                maxLines: 6,
+                overflow: TextOverflow.ellipsis,
+                style: context.text.bodySmall?.copyWith(
+                  color: context.colors.onSurfaceVariant,
+                  height: 1.4,
+                  fontFamily: studioCodeFontFamily,
+                ),
+              ),
             ),
-          ),
-        ),
-      if (arguments != null && arguments.trim().isNotEmpty)
-        StudioCodeBlock(
-          text: _prettyToolPayload(arguments),
-          language: context.l10n.timelineToolArguments,
-          maxHeight: 200,
-          margin: const EdgeInsets.only(top: 8),
-        ),
-      if (output != null && output.trim().isNotEmpty)
-        StudioCodeBlock(
-          text: _prettyToolPayload(output),
-          language: context.l10n.timelineToolOutput,
-          maxHeight: 280,
-          margin: const EdgeInsets.only(top: 8),
-        ),
-      if (showError)
-        Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            error,
-            style: context.text.bodySmall?.copyWith(
-              color: _toolDiagnosticColor(context, item),
+          if (arguments != null && arguments.trim().isNotEmpty)
+            StudioCodeBlock(
+              text: _prettyToolPayload(arguments),
+              language: context.l10n.timelineToolArguments,
+              maxHeight: 200,
+              margin: const EdgeInsets.only(top: 8),
             ),
-          ),
-        ),
-    ];
+          if (output != null && output.trim().isNotEmpty)
+            StudioCodeBlock(
+              text: _prettyToolPayload(output),
+              language: context.l10n.timelineToolOutput,
+              maxHeight: 280,
+              margin: const EdgeInsets.only(top: 8),
+            ),
+          if (showError)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                error,
+                style: context.text.bodySmall?.copyWith(
+                  color: _toolDiagnosticColor(context, item),
+                ),
+              ),
+            ),
+        ];
     if (inline) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

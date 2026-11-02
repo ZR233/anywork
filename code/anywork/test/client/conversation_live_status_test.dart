@@ -226,7 +226,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('正在压缩'), findsOneWidget);
+      expect(find.text('正在压缩上下文'), findsOneWidget);
       expect(find.text('思考中'), findsNothing);
       expect(find.text('压缩态不应呈现的详情'), findsNothing);
       expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsNothing);

@@ -7,7 +7,6 @@ import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
 import '../widgets/conversation_activity_bar.dart';
 import 'conversation_current_connector.dart';
-import 'timeline_children_connector.dart';
 
 /// Activity feature entry. The shell supplies identity, not display state,
 /// content builders or recovery controls.
@@ -37,32 +36,27 @@ class ConversationActivityConnector extends ConsumerWidget {
     ref.watch(timelineViewModelProvider(threadId));
     final timeline = ref.read(timelineSessionOwnerProvider);
     final lease = timeline.lease(threadId);
+    if (lease == null || !identical(lease.content, content)) {
+      return ConversationActivityBar(
+        view: state.view,
+        onExpandedChanged: StudioDriverState.publishActivityExpanded,
+      );
+    }
     return ConversationCurrentConnector(
-      key: ValueKey((threadId, content)),
+      key: ValueKey((threadId, content, lease.generation)),
       current: current,
       content: content,
       view: state.view,
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
-      registerDisplay: lease?.registerCurrentDisplay,
-      completedItemsBuilder: lease == null
-          ? null
-          : (parentId, retirement) => TimelineChildrenConnector(
-              key: ValueKey((lease.generation, parentId, retirement)),
-              repository: conversations,
-              threadId: threadId,
-              parentId: parentId,
-              parentRetirement: retirement,
-              registerDisplay: lease.registerChildrenDisplay,
-              isParentActive: () =>
-                  !lease.retirement.value &&
-                  identical(timeline.lease(threadId), lease) &&
-                  identical(lease.content, content),
-              readAttachment: (id) => ref
-                  .read(anyworkClientProvider)
-                  .readAttachmentBytes(threadId, id),
-            ),
+      registerDisplay: lease.registerCurrentDisplay,
+      units: lease.liveUnits,
+      activity: lease.activity,
+      loadActivity: () =>
+          timeline.loadActivity(threadId, generation: lease.generation),
+      images: lease.imageResources,
+      readAttachment: (id) =>
+          ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
       isDisplayActive: () =>
-          lease != null &&
           !lease.retirement.value &&
           identical(timeline.lease(threadId), lease) &&
           identical(lease.content, content),

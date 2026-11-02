@@ -7,19 +7,22 @@ import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork/src/shared/studio_code_block.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter/material.dart';
@@ -29,6 +32,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
+import 'support/timeline_observation.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -157,28 +161,35 @@ void main() {
       await scene.submit('Realtime delayed first token');
       await scene.untilKey(const ValueKey('conversation-activity'));
       await capturePresentation(tester, 'realtime-thinking.png');
-      await scene.untilKey(
-        const ValueKey('conversation-activity-response-stream'),
+      await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 20),
       );
       await capturePresentation(tester, 'realtime-streaming.png');
       await scene.completed(answer: 'realtime delayed first token');
 
       await scene.submit('Realtime reasoning then answer');
-      await scene.untilKey(const ValueKey('conversation-activity'));
+      await scene.until(
+        () =>
+            scene.observed.atoms.any(
+              (atom) => atom.kind == ChatAtomKind.reasoning,
+            ) ||
+            scene.observed.live
+                .expand((unit) => unit.members)
+                .any((atom) => atom.kind == ChatAtomKind.reasoning),
+        'real reasoning member admitted',
+      );
       await scene.completed(answer: 'realtime reasoning answer');
       await scene.openLatestTurnThinking();
       await capturePresentation(tester, 'realtime-reasoning.png');
-      await scene.closeLatestTurnChildren();
+      await scene.closeLatestTurnGroups();
 
       await scene.submit('Realtime long command');
       await scene.untilLaidOutCurrentTools(minimum: 2);
       await capturePresentation(tester, 'realtime-exec-wait.png');
       await scene.completed(answer: 'realtime long command complete');
 
-      final priorParallelTurns = scene.items
-          .where((item) => item.type == 'turn')
-          .map((item) => item.id)
+      final priorParallelAtoms = scene.observed.atoms
+          .map((atom) => atom.id)
           .toSet();
       await scene.submit('Realtime parallel tools');
       await scene.untilLaidOutCurrentTools(
@@ -195,14 +206,13 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-parallel-running.png');
       await scene.completed(answer: 'realtime parallel tools complete');
-      await scene.verifyExecReceipts(priorParallelTurns, const {
+      await scene.verifyExecReceipts(priorParallelAtoms, const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
       });
 
-      final priorHostCwdTurns = scene.items
-          .where((item) => item.type == 'turn')
-          .map((item) => item.id)
+      final priorHostCwdAtoms = scene.observed.atoms
+          .map((atom) => atom.id)
           .toSet();
       await scene.submit('Realtime host cwd command');
       await scene.untilLaidOutCurrentTools(
@@ -212,7 +222,7 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
-      await scene.verifyExecReceipts(priorHostCwdTurns, const {
+      await scene.verifyExecReceipts(priorHostCwdAtoms, const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
       });
 
@@ -223,13 +233,13 @@ void main() {
         'realtime-provider-error-collapsed.png',
       );
       final failedTurn = scene._latestTurn()!;
-      final failed = await scene.openTurnChildren(
+      final failed = await scene.openTurnReceipt(
         failedTurn,
         expectedOutcome: 'failed',
       );
       final failureText = find
           .descendant(
-            of: failed.row,
+            of: failed,
             matching: find.textContaining('realtime fixture provider error'),
           )
           .first;
@@ -243,17 +253,28 @@ void main() {
         'realtime fixture provider error',
       );
       await capturePresentation(tester, 'realtime-provider-error.png');
-      await scene.closeTurnChildren(failedTurn);
+      await scene.closeTurnReceipt(failedTurn);
       await scene.returnAfterReadingHistory();
 
       await scene.submit('Realtime cancellable stream');
-      await scene.untilKey(
-        const ValueKey('conversation-activity-response-stream'),
+      final cancelledText = await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 30),
       );
       await capturePresentation(tester, 'realtime-before-cancel.png');
       await scene.tap(find.byKey(StudioDriverKeys.composerStop));
       await scene.terminal('cancelled');
+      expect(
+        scene.observed.atoms.where((atom) => atom.id == cancelledText.id),
+        hasLength(1),
+        reason: 'accepted partial text survives cancellation',
+      );
+      expect(
+        scene.lease.currentDisplay?.windows.where(
+              (window) => window.id == cancelledText.id,
+            ) ??
+            const [],
+        isEmpty,
+      );
       await capturePresentation(tester, 'realtime-stopped.png');
 
       await scene.submit('Realtime continue after cancel');
@@ -295,7 +316,7 @@ final class _RealtimeScene {
   final WidgetTester tester;
   final AppGraph graph;
   String? _priorTurn;
-  final Set<(String, String, int)> _reloadedToolReferences = {};
+  late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
@@ -306,232 +327,257 @@ final class _RealtimeScene {
       .toList();
 
   Future<ChatItemPresentation> openLatestTurnThinking() async {
-    final turn = _latestTurn();
-    expect(turn, isNotNull);
-    final opened = await openTurnChildren(turn!);
-    ChatItemPresentation? thinking;
-    await until(() {
-      final children = opened.display;
-      if (children.error case final error?) throw StateError('$error');
-      if (!children.ready || !children.isCurrent) return false;
-      thinking = children.messages
-          .map(chatItemPresentationOf)
-          .whereType<ChatItemPresentation>()
-          .where((item) => item.type == 'thinking')
-          .lastOrNull;
-      return thinking != null &&
-          find
-              .descendant(
-                of: opened.row,
-                matching: find.byKey(ValueKey('chat-item:${thinking!.id}')),
-              )
-              .evaluate()
-              .isNotEmpty;
-    }, 'laid out thinking item in reasoning Turn Children');
-    expect(opened.display.appliedSets, 1);
-    return thinking!;
-  }
-
-  Future<({Finder row, Finder tree, TimelineChildrenDisplay display})>
-  openTurnChildren(
-    ChatItemPresentation turn, {
-    String expectedOutcome = 'completed',
-  }) async {
-    expect(turn.type, 'turn');
-    expect(turn.data['outcome'], isA<Map<String, Object?>>());
-    expect(
-      (turn.data['outcome'] as Map<String, Object?>)['kind'],
-      expectedOutcome,
-    );
-    final parentId = turn.childrenParentId;
-    expect(parentId, isNotNull);
-    final row = find.byWidgetPredicate(
-      (widget) => widget is ChatItemView && widget.item.id == turn.id,
-    );
-    if (row.evaluate().isEmpty) {
-      await tester.scrollUntilVisible(
-        row,
-        -200,
-        scrollable: find.byWidgetPredicate(
-          (widget) =>
-              widget is Scrollable &&
-              identical(widget.controller, lease.scrollController),
-        ),
-      );
-    }
-    final headers = find.descendant(of: row, matching: find.byType(ListTile));
-    await until(() => headers.evaluate().isNotEmpty, 'mounted terminal Turn');
-    final header = headers.first;
-    final childrenTree = find.descendant(
-      of: row,
-      matching: find.byType(TimelineChildrenConnector),
-    );
-    if (childrenTree.evaluate().isEmpty) {
-      await tap(header);
-    }
-    // Official ExpansionTile defaults to 200ms. Do not settle live spinners.
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(tester.takeException(), isNull);
-
-    TimelineChildrenDisplay? children;
-    await until(() {
-      if (childrenTree.evaluate().isEmpty) return false;
-      expect(childrenTree, findsOneWidget);
+    final turn = _latestTurn()!;
+    final groups = observed.workFor(turn.atom!.source).toList();
+    expect(groups, isNotEmpty);
+    final reasoning = groups
+        .expand((unit) => unit.members)
+        .where((atom) => atom.kind == ChatAtomKind.reasoning)
+        .toList();
+    expect(reasoning, isNotEmpty);
+    for (final atom in reasoning) {
+      final display = await observed.revealAtom(atom);
+      expect(display, isNotNull);
       expect(
-        tester.widget<TimelineChildrenConnector>(childrenTree).parentId,
-        parentId,
+        display!.atoms.where((member) => member.id == atom.id),
+        hasLength(1),
       );
-      children = lease.childrenDisplays
-          .where((display) => display.parentId == parentId)
-          .lastOrNull;
-      if (children?.error case final error?) throw StateError('$error');
-      return children?.ready == true && children?.isCurrent == true;
-    }, 'current terminal Turn Children');
-    expect(children!.appliedSets, 1);
-    return (row: row, tree: childrenTree, display: children!);
+      await until(
+        () => _laidOut(observed.atomRow(atom.id)),
+        'reasoning member in its original Main work segment',
+      );
+      final row = observed.atomRow(atom.id);
+      expect(tester.widget<ChatItemView>(row).item.type, 'thinking');
+      expect(display.error, isNull);
+    }
+    return ChatItemPresentation.decode(reasoning.last);
   }
 
-  Future<void> closeLatestTurnChildren() => closeTurnChildren(_latestTurn()!);
+  Future<void> closeLatestTurnGroups() =>
+      observed.closeSource(_latestTurn()!.atom!.source);
 
-  Future<void> closeTurnChildren(ChatItemPresentation turn) async {
-    final row = find.byWidgetPredicate(
-      (widget) => widget is ChatItemView && widget.item.id == turn.id,
-    );
-    final tree = find.descendant(
-      of: row,
-      matching: find.byType(TimelineChildrenConnector),
-    );
-    expect(tree, findsOneWidget);
-    await tap(find.descendant(of: row, matching: find.byType(ListTile)).first);
+  Future<Finder> openTurnReceipt(
+    ChatItemPresentation turn, {
+    required String expectedOutcome,
+  }) async {
+    expect(turn.atom!.kind, ChatAtomKind.turnReceipt);
+    expect((turn.data['outcome'] as Map)['kind'], expectedOutcome);
+    await observed.revealAtom(turn.atom!);
+    final row = observed.atomRow(turn.atom!.id);
+    final header = find
+        .descendant(of: row, matching: find.byType(TimelineActivityRow))
+        .first;
+    if (!tester.widget<TimelineActivityRow>(header).expanded) {
+      await tap(
+        find
+            .descendant(
+              of: row,
+              matching: find.byType(TimelineActivityDisclosure),
+            )
+            .first,
+      );
+    }
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
-    await until(
-      () =>
-          tree.evaluate().isEmpty &&
-          !lease.childrenDisplays.any(
-            (display) =>
-                display.parentId == turn.childrenParentId && display.isCurrent,
-          ),
-      'collapsed terminal Turn Children retired',
+    return row;
+  }
+
+  Future<void> closeTurnReceipt(ChatItemPresentation turn) async {
+    final row = observed.atomRow(turn.atom!.id);
+    final header = find
+        .descendant(of: row, matching: find.byType(TimelineActivityRow))
+        .first;
+    expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
+    await tap(
+      find
+          .descendant(
+            of: row,
+            matching: find.byType(TimelineActivityDisclosure),
+          )
+          .first,
     );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
+  }
+
+  Future<ContentWindow> readDeclaredRange(
+    ChatAtom atom,
+    ChatContentRole role,
+    String fragment,
+  ) async {
+    final reference = atom.contents
+        .singleWhere((content) => content.role == role)
+        .reference;
+    final connector = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineContentRangeConnector &&
+          widget.itemId == atom.id &&
+          widget.contentKey == role.name,
+    );
+    await until(
+      () => connector.evaluate().length == 1,
+      'declared ${role.name} range of ${atom.tool!.callId}',
+    );
+    final owner = tester.state(connector) as TimelineCurrentWindowDisplay;
+    expect(
+      contentReferenceIdentity(owner.reference),
+      contentReferenceIdentity(reference),
+    );
+    final read = find.byKey(
+      StudioDriverKeys.timelineContentOpen(atom.id, role.name),
+    );
+    if (owner.window == null) await tap(read);
+    await until(() {
+      if (owner.error case final error?) throw StateError('$error');
+      return owner.window != null;
+    }, 'accepted bounded ${role.name} window');
+    final window = owner.window!;
+    expect(window.offset, 0);
+    expect(window.sealed, isTrue);
+    expect(window.bytes, isNotEmpty);
+    expect(window.bytes.length, lessThanOrEqualTo(64 * 1024));
+    final text = utf8.decode(window.bytes);
+    expect(text, contains(fragment));
+    final rendered = find.byKey(
+      StudioDriverKeys.timelineContentWindow(atom.id, role.name),
+    );
+    await until(() => _laidOut(rendered), 'actual bounded body text');
+    await _revealTextFragment(tester, rendered, fragment);
+    expect(owner.window, same(window));
+    return window;
   }
 
   Future<void> verifyExecReceipts(
-    Set<String> priorTurnIds,
+    Set<String> priorAtomIds,
     Map<String, String> expected,
   ) async {
+    bool requestedResult(ChatAtom atom) {
+      if (priorAtomIds.contains(atom.id) ||
+          !expected.containsKey(atom.tool?.callId) ||
+          atom.payload == null) {
+        return false;
+      }
+      final reading = ChatItemPresentation.decode(atom).toolCard;
+      return reading is DecodedToolCard &&
+          reading.value.statusString == 'succeeded';
+    }
+
+    await until(
+      () => expected.keys.every(
+        (call) =>
+            observed.atoms
+                .where(requestedResult)
+                .where((atom) => atom.tool!.callId == call)
+                .length ==
+            1,
+      ),
+      'all exact completed exec receipts in real Main units',
+    );
+    final targets = observed.atoms.where(requestedResult).toList();
+    expect(
+      targets.map((atom) => atom.tool!.callId).toSet(),
+      expected.keys.toSet(),
+    );
+    expect(targets, hasLength(expected.length));
+    final controller = lease.controller;
+    final mainSets = lease.appliedSets;
     final witnessed = <String>{};
-    final turns = items
-        .where((item) => item.type == 'turn' && !priorTurnIds.contains(item.id))
-        .toList();
-    // The strict fixture has four Responses steps for this prompt and its deliveries.
-    expect(turns, isNotEmpty);
-    expect(turns.length, lessThanOrEqualTo(4));
     try {
-      for (final turn in turns) {
-        final opened = await openTurnChildren(turn);
-        final view = find.descendant(
-          of: opened.tree,
-          matching: find.byType(TimelineChildrenView),
+      for (final atom in targets) {
+        final group = await observed.revealAtom(atom);
+        final item = ChatItemPresentation.decode(atom);
+        final tool = (item.toolCard as DecodedToolCard).value;
+        final lastLine = expected[tool.toolCallId]!;
+        expect(tool.name, 'exec');
+        expect(tool.statusString, 'succeeded');
+        expect(tool.exitCode, 0);
+        expect(tool.output, contains(lastLine));
+        final details = find.descendant(
+          of: observed.atomRow(atom.id),
+          matching: find.byType(TimelineToolDetails),
         );
-        expect(view, findsOneWidget);
-        final controller = tester.widget<TimelineChildrenView>(view).controller;
-        final tools = opened.display.messages
-            .map(chatItemPresentationOf)
-            .whereType<ChatItemPresentation>()
-            .where((item) => item.type == 'tool');
-        for (final item in tools) {
-          final reading = item.toolCard;
-          if (reading is! DecodedToolCard) continue;
-          final tool = reading.value;
-          final lastLine = expected[tool.toolCallId];
-          if (lastLine == null || tool.statusString != 'succeeded') continue;
-          expect(tool.name, 'exec');
-          expect(tool.exitCode, 0);
-          expect(tool.output, contains(lastLine));
-          if (tool.toolCallId == 'realtime-host-cwd-call') {
-            final arguments =
-                jsonDecode(tool.arguments) as Map<String, dynamic>;
-            final cwd = arguments['cwd'] as String;
-            expect(cwd, isNotEmpty);
-            expect(tool.output, contains('realtime-host-cwd-actual:$cwd'));
-          }
-          final card = find.descendant(
-            of: opened.tree,
-            matching: find.byKey(ValueKey('chat-item:${item.id}')),
-          );
-          if (card.evaluate().isEmpty) {
-            await tester.scrollUntilVisible(
-              card,
-              120,
-              scrollable: find
-                  .descendant(of: view, matching: find.byType(Scrollable))
-                  .first,
-              maxScrolls: 20,
-            );
-          }
-          expect(_laidOut(card), isTrue);
-          final details = find.descendant(
-            of: card,
-            matching: find.byType(TimelineToolDetails),
-          );
-          expect(details, findsOneWidget);
-          final renderedTool = tester.widget<TimelineToolDetails>(details).item;
-          expect(renderedTool.toolCallId, tool.toolCallId);
-          expect(renderedTool.statusString, 'succeeded');
-          final outputLabel = AppLocalizations.of(tester.element(details))
-              .timelineToolOutput;
-          final output = find.descendant(
-            of: details,
-            matching: find.byWidgetPredicate(
-              (widget) =>
-                  widget is StudioCodeBlock &&
-                  widget.language == outputLabel &&
-                  widget.text.contains(lastLine),
-            ),
-          );
-          if (output.evaluate().isEmpty) {
-            await tap(
-              find
-                  .descendant(of: details, matching: find.byType(ListTile))
-                  .first,
-            );
-          }
-          await tester.pump(const Duration(milliseconds: 300));
-          expect(tester.takeException(), isNull);
-          await until(() => _laidOut(output), 'exact exec output block');
-          final text = find.descendant(
-            of: output,
-            matching: find.text(tester.widget<StudioCodeBlock>(output).text),
-          );
-          expect(text, findsOneWidget);
-          await _revealTextFragment(tester, text, lastLine);
-          expect(opened.display.error, isNull);
-          expect(opened.display.isCurrent, isTrue);
-          expect(opened.display.appliedSets, 1);
-          expect(
-            tester.widget<TimelineChildrenView>(view).controller,
-            same(controller),
-          );
-          witnessed.add(tool.toolCallId);
-          debugPrintSynchronously(
-            'Exec receipt laid out: '
-            '${jsonEncode({'callId': tool.toolCallId, 'state': tool.statusString, 'lastLine': lastLine, 'appliedSets': opened.display.appliedSets})}',
-          );
-          await capturePresentation(
-            tester,
-            'realtime-${tool.toolCallId}-succeeded.png',
-          );
+        expect(details, findsOneWidget);
+        final renderedTool = tester.widget<TimelineToolDetails>(details).item;
+        expect(renderedTool.toolCallId, tool.toolCallId);
+        expect(renderedTool.statusString, 'succeeded');
+        final disclosure = find
+            .descendant(
+              of: details,
+              matching: find.byType(TimelineActivityDisclosure),
+            )
+            .first;
+        final title = find
+            .descendant(
+              of: disclosure,
+              matching: find.byType(TimelineActivityRow),
+            )
+            .first;
+        if (!tester.widget<TimelineActivityRow>(title).expanded) {
+          await tap(disclosure);
         }
-        await closeTurnChildren(turn);
+        final output = await readDeclaredRange(
+          atom,
+          ChatContentRole.toolOutput,
+          lastLine,
+        );
+        final outputBorrow = tester.state(
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineContentRangeConnector &&
+                widget.itemId == atom.id &&
+                widget.contentKey == ChatContentRole.toolOutput.name,
+          ),
+        ) as TimelineCurrentWindowDisplay;
+        if (tool.toolCallId == 'realtime-host-cwd-call') {
+          final arguments = await readDeclaredRange(
+            atom,
+            ChatContentRole.toolArguments,
+            'cwd',
+          );
+          final cwd =
+              (jsonDecode(utf8.decode(arguments.bytes)) as Map)['cwd']
+                  as String;
+          expect(cwd, isNotEmpty);
+          expect(tool.output, contains('realtime-host-cwd-actual:$cwd'));
+        }
+        if (group != null) {
+          expect(group.error, isNull);
+          expect(group.expanded && group.isCurrent, isTrue);
+          expect(
+            group.atoms.where((member) => member.id == atom.id),
+            hasLength(1),
+          );
+        } else {
+          // A real independent/background result is its own Main receipt, not
+          // force-fit into the latest foreground group.
+          expect(observed.unitForAtom(atom.id).kind, TimelineUnitKind.receipt);
+        }
+        expect(lease.controller, same(controller));
+        expect(lease.appliedSets, mainSets);
+        expect(witnessed.add(tool.toolCallId), isTrue);
+        debugPrintSynchronously(
+          'Exec receipt laid out: ${jsonEncode({'callId': tool.toolCallId, 'atomId': atom.id, 'state': tool.statusString, 'sourceOrder': atom.sourceOrder, 'lastLine': lastLine, 'groupId': group?.unitId, 'outputBytes': output.bytes.length})}',
+        );
+        await capturePresentation(
+          tester,
+          'realtime-${tool.toolCallId}-succeeded.png',
+        );
+        if (group != null) {
+          await observed.closeGroup(group);
+        } else {
+          await tap(disclosure);
+        }
+        await until(
+          () => outputBorrow.window == null,
+          'collapsed member revokes its original bounded output borrow',
+        );
       }
       expect(witnessed, expected.keys.toSet());
       await returnAfterReadingHistory();
     } catch (_) {
       final scroll = lease.scrollController;
-      final latest = find.byKey(StudioDriverKeys.timelineReturnLive);
       debugPrintSynchronously(
-        'Exec receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'returnWidgets': latest.evaluate().length, 'returnHitTargets': latest.hitTestable().evaluate().length})}',
+        'Exec receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'witnessed': witnessed.toList()})}',
       );
       await capturePresentation(tester, 'realtime-exec-receipts-failure.png');
       rethrow;
@@ -676,140 +722,149 @@ final class _RealtimeScene {
     );
   }
 
+  Future<ChatAtom> untilReadableCurrentText({required Duration timeout}) async {
+    ChatAtom? accepted;
+    await until(
+      () {
+        final candidates = observed.live
+            .where((unit) => unit.kind == TimelineUnitKind.text)
+            .expand((unit) => unit.members)
+            .where(
+              (atom) =>
+                  atom.kind == ChatAtomKind.text &&
+                  atom.lifecycle is ActiveChatAtom,
+            );
+        for (final atom in candidates) {
+          final view = find.byWidgetPredicate(
+            (widget) =>
+                widget is ConversationCurrentWindowView &&
+                widget.id == atom.id &&
+                widget.error == null &&
+                widget.text.isNotEmpty,
+          );
+          if (!_laidOut(view)) continue;
+          final windows =
+              lease.currentDisplay?.windows
+                  .where((window) => window.id == atom.id)
+                  .toList() ??
+              const [];
+          for (final window in windows) {
+            if (window.error case final error?) throw StateError('$error');
+          }
+          if (windows.isEmpty ||
+              windows.every((window) => window.window == null)) {
+            continue;
+          }
+          expect(
+            atom.contents.any(
+              (content) => windows.any(
+                (window) =>
+                    contentReferenceIdentity(content.reference) ==
+                    contentReferenceIdentity(window.reference),
+              ),
+            ),
+            isTrue,
+          );
+          accepted = atom;
+          return true;
+        }
+        return false;
+      },
+      'readable production live text with its original content-window borrow',
+      timeout: timeout,
+    );
+    return accepted!;
+  }
+
+  Finder currentToolCard(ChatAtom atom) => atom.tool?.name == 'wait'
+      ? find.byWidgetPredicate(
+          (widget) => widget is TimelineWaitPanel && widget.identity == atom.id,
+        )
+      : find.byWidgetPredicate(
+          (widget) =>
+              widget is TimelineToolDetails &&
+              widget.item.id == atom.id &&
+              widget.item.toolCallId == atom.tool?.callId,
+        );
+
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
   }) async {
-    final activity = find.byKey(const ValueKey('conversation-activity'));
-    final collectionTitle = find.byKey(
-      StudioDriverKeys.currentCollection('tools'),
-    );
-    final reload = find.byKey(
-      StudioDriverKeys.currentCollectionReload('tools'),
-    );
     final clock = Stopwatch()..start();
-    String? priorDiagnostic;
-    var disclosureSettled = false;
+    var settled = !settleDisclosure;
     try {
       while (true) {
-        final current = lease.currentDisplay;
-        final collection = current?.collections
-            .where((display) => display.reference.collection == 'tools')
-            .lastOrNull;
-        // A real query error is terminal, never a reason to press reload.
-        if (collection?.error case final error?) throw StateError('$error');
-        final reference = collection?.reference;
-        final page = collection?.page;
-        final entries = page?.entries ?? const <CurrentCollectionEntry>[];
-        final runningExecIds = <String>{};
-        if (runningExecCallIds.isNotEmpty) {
-          for (final entry in entries) {
-            expect(entry.payload, isA<InlinePayload>());
-            final data = jsonDecode(
-              utf8.decode((entry.payload as InlinePayload).bytes),
-            ) as Map<String, dynamic>;
-            if (data['name'] == 'exec' && data['state'] == 'running') {
-              expect(data['callId'], entry.id);
-              runningExecIds.add(data['callId'] as String);
-            }
-          }
+        final units = observed.live
+            .where(
+              (unit) => unit.members.any(
+                (atom) => atom.kind == ChatAtomKind.toolCall,
+              ),
+            )
+            .toList();
+        for (final unit in units) {
+          await observed.openGroup(unit.id);
         }
-        final requiredEntries = runningExecCallIds.isEmpty
-            ? entries
-            : entries
-                  .where((entry) => runningExecCallIds.contains(entry.id))
+        final tools = observed.live
+            .expand((unit) => unit.members)
+            .where((atom) => atom.kind == ChatAtomKind.toolCall)
+            .toList();
+        final running = tools
+            .where(
+              (atom) =>
+                  atom.tool?.name == 'exec' && atom.lifecycle is ActiveChatAtom,
+            )
+            .map((atom) => atom.tool!.callId)
+            .toSet();
+        final required = runningExecCallIds.isEmpty
+            ? tools
+            : tools
+                  .where(
+                    (atom) => runningExecCallIds.contains(atom.tool?.callId),
+                  )
                   .toList();
-        final laidOut = requiredEntries.where((entry) {
-          final elements = find
-              .byKey(StudioDriverKeys.currentCollectionEntry('tools', entry.id))
-              .evaluate();
-          if (elements.length != 1) return false;
-          final render = elements.single.findRenderObject();
-          return render is RenderBox &&
-              render.attached &&
-              render.hasSize &&
-              !render.size.isEmpty;
-        }).length;
-        final identity = reference == null
-            ? null
-            : (reference.databaseId, reference.collection, reference.revision);
-        final diagnostic = <String, Object?>{
-          'minimum': minimum,
-          'reference': identity == null
-              ? null
-              : {
-                  'databaseId': identity.$1,
-                  'collection': identity.$2,
-                  'revision': identity.$3,
-                },
-          'currentExpanded': current?.expanded,
-          'expanded': collection?.expanded,
-          'loading': collection?.loading,
-          'pageRevision': page?.revision,
-          'entries': entries.length,
-          'laidOut': laidOut,
-          'reloadVisible': reload.hitTestable().evaluate().isNotEmpty,
-          'actualReload': false,
-          if (runningExecCallIds.isNotEmpty)
-            'exactRunningExecIds': runningExecIds
-                .intersection(runningExecCallIds)
-                .toList(),
-        };
-        final encoded = jsonEncode(diagnostic);
-        if (encoded != priorDiagnostic) {
-          debugPrintSynchronously('Realtime current tools: $encoded');
-          priorDiagnostic = encoded;
-        }
-        if (current?.expanded == true &&
-            collection?.expanded == true &&
-            page != null &&
-            page.revision == reference?.revision &&
-            entries.length >= minimum &&
-            laidOut == requiredEntries.length &&
-            runningExecIds.containsAll(runningExecCallIds)) {
-          // Recheck the same live UI contract after its finite disclosure animation.
-          if (settleDisclosure && !disclosureSettled) {
+        final laidOut = required
+            .where((atom) => _laidOut(currentToolCard(atom)))
+            .length;
+        if (tools.length >= minimum &&
+            required.isNotEmpty &&
+            laidOut == required.length &&
+            running.containsAll(runningExecCallIds)) {
+          if (!settled) {
             await tester.pump(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
-            disclosureSettled = true;
+            settled = true;
             continue;
           }
+          for (final call in runningExecCallIds) {
+            final atom = required.singleWhere(
+              (atom) => atom.tool?.callId == call,
+            );
+            final widget = tester.widget<TimelineToolDetails>(
+              find.byWidgetPredicate(
+                (widget) =>
+                    widget is TimelineToolDetails && widget.item.id == atom.id,
+              ),
+            );
+            expect(widget.item.statusString, 'running');
+          }
+          for (var index = 1; index < required.length; index++) {
+            expect(
+              tester.getTopLeft(currentToolCard(required[index])).dy,
+              greaterThanOrEqualTo(
+                tester.getTopLeft(currentToolCard(required[index - 1])).dy,
+              ),
+              reason: 'rendered tools retain the owner-provided member order',
+            );
+          }
+          debugPrintSynchronously(
+            'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
+          );
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
-          fail('Timed out waiting for $minimum production current tool cards');
-        }
-        final Finder? action;
-        if (current?.expanded != true) {
-          action = activity;
-        } else if (collection?.expanded != true) {
-          action = collectionTitle;
-        } else if (identity != null &&
-            collection?.loading == false &&
-            !_reloadedToolReferences.contains(identity) &&
-            reload.evaluate().length == 1 &&
-            tester.widget<TextButton>(reload).onPressed != null) {
-          action = reload;
-        } else {
-          action = null;
-        }
-        if (action != null && action.evaluate().length == 1) {
-          if (action.hitTestable().evaluate().length == 1) {
-            await tester.tap(action);
-            if (identical(action, reload)) {
-              _reloadedToolReferences.add(identity!);
-              debugPrintSynchronously(
-                'Realtime current tools: '
-                '${jsonEncode({...diagnostic, 'actualReload': true})}',
-              );
-            }
-          } else {
-            await Scrollable.ensureVisible(
-              tester.element(action),
-              alignment: 0.5,
-            );
-          }
+          fail('Timed out waiting for $minimum real current tool cards');
         }
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);

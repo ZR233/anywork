@@ -18,7 +18,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
       if (attemptChanged || state is! ChatReady<bool>) {
         _attempt = content.currentAttemptId;
         if (attemptChanged) {
-          _current = null;
           _explicitSources = const [];
           _offsets.clear();
         }
@@ -32,7 +31,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   final ConversationContent content;
   Observation? _connection;
   Object? _attempt;
-  CurrentProjection? _current;
   List<CurrentWindowSource> _explicitSources = const [];
   ConversationQueryScope? _scope;
   final Map<Object, CurrentWindowObservation> _windows = {};
@@ -42,7 +40,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   Future<void>? _joining;
   int _generation = 1;
   bool _expanded = false;
-  bool _responding = false;
   bool _closed = false;
   Object? cleanupError;
   String? invalidationNotice;
@@ -56,18 +53,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
       isCurrent ? _windows.values : const [];
   bool get expanded => _expanded;
   int get queryGeneration => _generation;
-
-  void synchronize(
-    CurrentProjection current, {
-    required bool responding,
-    required bool expanded,
-  }) {
-    if (_closed) return;
-    _current = current;
-    _responding = responding;
-    _expanded = expanded;
-    _reconcile();
-  }
 
   /// A mounted, explicitly expanded collection entry borrows its own scope.
   /// Only producer-declared body capabilities from the bounded page are accepted.
@@ -91,26 +76,9 @@ final class ConversationCurrentOwner extends ChangeNotifier {
 
   void _reconcile() {
     if (!isCurrent || cleanupError != null || _joining != null) return;
-    final current = _current;
     final wanted = <Object, CurrentWindowSource>{
       for (final source in _explicitSources)
         contentReferenceIdentity(source.reference): source,
-      for (final preview
-          in current?.previews ?? const <CurrentContentPreview>[])
-        if (_responding
-            ? preview.role == CurrentContentRole.response
-            : _expanded)
-          contentReferenceIdentity(preview.reference): CurrentWindowSource(
-            id: '${preview.id}:${preview.role.name}',
-            reference: preview.reference,
-            text: preview.text,
-          ),
-      if (_expanded && current?.plan?.document != null)
-        contentReferenceIdentity(current!.plan!.document!): CurrentWindowSource(
-          id: 'plan:${current.plan!.revision}',
-          reference: current.plan!.document!,
-          text: '',
-        ),
     };
     _offsets.removeWhere((key, _) => !wanted.containsKey(key));
     if (wanted.isEmpty && !_expanded) {
@@ -316,7 +284,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
       _closed = true;
       _connection?.cancel();
       _connection = null;
-      _current = null;
       _explicitSources = const [];
       _offsets.clear();
       _retireScope();

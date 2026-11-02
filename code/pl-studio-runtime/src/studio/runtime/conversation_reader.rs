@@ -22,6 +22,7 @@ pub(super) struct ReadLease {
     pub thread_id: String,
     pub scope: ChatScope,
     pub ceiling: u64,
+    pub effect_cut: u64,
     pub slot: Arc<ObservationSlot>,
     pub epoch: u64,
     cancel: CancellationToken,
@@ -83,6 +84,12 @@ enum CursorKind {
     Before {
         boundary: u64,
     },
+    ObservedPosition {
+        anchor: u64,
+        boundary: u64,
+        effect_cut: u64,
+        inclusive: bool,
+    },
     Manifest {
         item: String,
         after: String,
@@ -133,6 +140,7 @@ impl ConversationReader {
         id: String,
         scope: ChatScope,
         ceiling: u64,
+        effect_cut: u64,
         slot: Arc<ObservationSlot>,
         epoch: u64,
         resources: ReadResources,
@@ -143,6 +151,7 @@ impl ConversationReader {
                 id,
                 scope,
                 ceiling,
+                effect_cut,
                 slot,
                 epoch,
                 cancel: CancellationToken::new(),
@@ -252,6 +261,194 @@ impl ConversationReader {
             token,
         ))
     }
+    pub(super) async fn annotate_source_states(
+        &self,
+        entries: &mut [ChatEntry],
+        known: &[ChatSourceState],
+        effect_cut: u64,
+    ) -> Result<()> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let source = resources
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
+        let mut states = known.to_vec();
+        if let Some(source) = source {
+            states.extend(
+                source
+                    .current
+                    .source_states
+                    .iter()
+                    .filter(|state| !known.iter().any(|known| known.source == state.source))
+                    .cloned(),
+            );
+        }
+        tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            result = annotate_sources(entries, &resources.history, &states, effect_cut) => result?,
+        };
+        self.ensure()
+    }
+
+    /// Ordinary exclusive-seq window for a position observed after the original H0.
+    /// Its continuation never belongs to load_older's original history chain.
+    pub async fn read_before(
+        &self,
+        completion_seq: u64,
+        before: Option<&str>,
+        demand: ReadDemand,
+    ) -> Result<ChatBatch> {
+        self.read_observed_position(completion_seq, before, demand, false)
+            .await
+    }
+
+    /// Ordinary inclusive window, including the observed completion itself when in scope.
+    /// The continuation is independent of both read_before and the original H0.
+    pub async fn read_at(
+        &self,
+        completion_seq: u64,
+        before: Option<&str>,
+        demand: ReadDemand,
+    ) -> Result<ChatBatch> {
+        self.read_observed_position(completion_seq, before, demand, true)
+            .await
+    }
+
+    #[tracing::instrument(
+        target = "conversation_work", level = "debug", name = "conversation_read",
+        skip_all,
+        fields(operation = "observed", thread_id = self.thread_id(), lease_id = self.subscription_id(),
+            trace_id, inclusive, anchor = completion_seq, continuation = before.is_some(),
+            max_items = demand.max_items, max_bytes = demand.max_bytes)
+    )]
+    async fn read_observed_position(
+        &self,
+        completion_seq: u64,
+        before: Option<&str>,
+        demand: ReadDemand,
+        inclusive: bool,
+    ) -> Result<ChatBatch> {
+        let trace_id = crate::studio::ids::new_id("read");
+        tracing::Span::current().record("trace_id", &trace_id);
+        let started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", "read started");
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let source = resources
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
+        let (head, current_cut) = source
+            .as_ref()
+            .map_or((self.inner.ceiling, self.inner.effect_cut), |source| {
+                (source.head, source.current.projection.source_effect_seq)
+            });
+        if let Some(source) = &source {
+            ensure!(
+                source.session.epoch() == resources.session.epoch(),
+                resync()
+            );
+        }
+        ensure!(
+            completion_seq > 0 && completion_seq <= head,
+            core::ChatError::InvalidArgument(
+                "position is outside the published completion prefix".into()
+            )
+        );
+        let (boundary, effect_cut) = match before {
+            None => ((!inclusive).then_some(completion_seq), current_cut),
+            Some(token) => match self.cursor(resources, token)? {
+                CursorKind::ObservedPosition {
+                    anchor,
+                    boundary,
+                    effect_cut,
+                    inclusive: token_inclusive,
+                } if anchor == completion_seq
+                    && token_inclusive == inclusive
+                    && boundary > 0
+                    && (boundary < anchor || inclusive && boundary == anchor)
+                    && effect_cut <= current_cut =>
+                {
+                    (Some(boundary), effect_cut)
+                }
+                _ => {
+                    return Err(core::ChatError::InvalidArgument(
+                        "continuation belongs to another observed-position window".into(),
+                    )
+                    .into());
+                }
+            },
+        };
+        let reserve = self.token(
+            resources,
+            CursorKind::ObservedPosition {
+                anchor: completion_seq,
+                boundary: u64::MAX,
+                effect_cut,
+                inclusive,
+            },
+        )?;
+        let budget = JsonBudget::new(
+            resources.database_id.clone().unwrap_or_default(),
+            None,
+            reserve,
+        );
+        let page_query = query(&self.inner.scope)?;
+        let request = core::ChatPageRequest {
+            before: boundary.map(|append_seq| core::ChatCursor {
+                epoch: resources.session.epoch(),
+                query: page_query.clone(),
+                ceiling: completion_seq,
+                append_seq,
+            }),
+            query: page_query,
+            ceiling: Some(completion_seq),
+            demand: core_demand(demand)?,
+        };
+        let page = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            result = resources.session.page(request, &budget) => result?,
+        };
+        let mut entries = entries(page.items, &budget.database_id)?;
+        let known = source
+            .as_ref()
+            .map_or(&[][..], |source| source.current.source_states.as_ref());
+        tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            result = annotate_sources(&mut entries, &resources.history, known, effect_cut) => result?,
+        };
+        let before = page
+            .before
+            .map(|cursor| {
+                self.token(
+                    resources,
+                    CursorKind::ObservedPosition {
+                        anchor: completion_seq,
+                        boundary: cursor.append_seq,
+                        effect_cut,
+                        inclusive,
+                    },
+                )
+            })
+            .transpose()?;
+        let batch = self.finish_batch(
+            ChatBatch {
+                placement: ChatPlacement::Prepend,
+                entries,
+                before,
+                current: None,
+            },
+            demand,
+        )?;
+        tracing::debug!(
+            target: "conversation_work",
+            returned = batch.entries.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "read completed"
+        );
+        Ok(batch)
+    }
     #[tracing::instrument(
         target = "conversation_work", level = "debug", name = "conversation_read",
         skip_all,
@@ -294,9 +491,9 @@ impl ConversationReader {
                 &budget,
             )
             .await?;
-        let batch = ChatBatch {
+        let mut batch = ChatBatch {
             placement: ChatPlacement::Prepend,
-            messages: messages(page.items, &budget.database_id),
+            entries: entries(page.items, &budget.database_id)?,
             before: page
                 .before
                 .map(|cursor| {
@@ -310,10 +507,23 @@ impl ConversationReader {
                 .transpose()?,
             current: None,
         };
+        let source = r
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
+        annotate_sources(
+            &mut batch.entries,
+            &r.history,
+            source
+                .as_ref()
+                .map_or(&[], |source| source.current.source_states.as_ref()),
+            self.inner.effect_cut,
+        )
+        .await?;
         let batch = self.finish_batch(batch, demand)?;
         tracing::debug!(
             target: "conversation_work",
-            returned = batch.messages.len(),
+            returned = batch.entries.len(),
             elapsed_us = started.elapsed().as_micros() as u64,
             "read completed"
         );
@@ -323,9 +533,57 @@ impl ConversationReader {
         self.ensure()?;
         batch.validate_for(&self.inner.scope)?;
         ensure!(
-            batch.encoded_len()? <= demand.max_bytes as usize,
+            batch.entries.len() <= demand.max_items as usize,
+            core::ChatError::InvalidDemand("chat entry count exceeds demand".into())
+        );
+        for entry in &batch.entries {
+            if let ChatEntry::Atom(atom) = entry {
+                ensure!(
+                    atom.source_state
+                        .as_ref()
+                        .is_none_or(|state| state.source == atom.source),
+                    core::ChatError::Conflict(
+                        "source annotation identity differs from its atom".into()
+                    )
+                );
+            }
+        }
+        let encoded_bytes = batch.encoded_len()?;
+        ensure!(
+            encoded_bytes <= demand.max_bytes as usize,
             core::ChatError::InvalidDemand("encoded chat batch exceeds demand".into())
         );
+        if tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+            let (atom_entries, inline_payload_bytes) =
+                batch
+                    .entries
+                    .iter()
+                    .fold((0_usize, 0_usize), |counts, entry| {
+                        if let ChatEntry::Atom(atom) = entry {
+                            let bytes = match &atom.payload {
+                                Some(PayloadData::Inline { bytes }) => bytes.len(),
+                                _ => 0,
+                            };
+                            (counts.0 + 1, counts.1 + bytes)
+                        } else {
+                            counts
+                        }
+                    });
+            // This is a validated product batch, not an ACK or a disk-IO measurement.
+            // Reuse the mandatory budget encoding; diagnostics never read a body.
+            tracing::debug!(
+                target: "conversation_work",
+                thread_id = self.thread_id(),
+                lease_id = self.subscription_id(),
+                placement = ?batch.placement,
+                atom_entries,
+                source_entries = batch.entries.len() - atom_entries,
+                batch_encoded_bytes = encoded_bytes,
+                inline_payload_bytes,
+                has_before = batch.before.is_some(),
+                "bounded chat batch validated"
+            );
+        }
         Ok(batch)
     }
     pub async fn list_contents(
@@ -766,7 +1024,7 @@ impl JsonBudget {
     ) -> Self {
         let batch = ChatBatch {
             placement: ChatPlacement::Prepend,
-            messages: Vec::new(),
+            entries: Vec::new(),
             before: Some(continuation),
             current,
         };
@@ -795,11 +1053,26 @@ impl core::ChatBudget for JsonBudget {
                 byte_length: header.byte_length,
             },
         };
-        let base = serde_json::to_vec(&ChatMessage {
-            id: header.item_id.clone(),
-            payload,
-        })
-        .map_or(usize::MAX, |bytes| bytes.len().saturating_add(1));
+        let base = completion_atom(header, payload)
+            .and_then(|mut atom| {
+                atom.source_state = Some(ChatSourceState {
+                    source: atom.source.clone(),
+                    lifecycle: ChatSourceLifecycle::Ended {
+                        outcome: ChatTerminalOutcome::Transferred,
+                    },
+                    started: Some(ChatFactPosition {
+                        effect_seq: u64::MAX,
+                        suborder: u32::MAX,
+                    }),
+                    ended: Some(ChatFactPosition {
+                        effect_seq: u64::MAX,
+                        suborder: u32::MAX,
+                    }),
+                });
+                // A read-cut annotation is part of the single Atom's item budget, never another row.
+                Ok(serde_json::to_vec(&ChatEntry::Atom(Box::new(atom)))?)
+            })
+            .map_or(usize::MAX, |bytes| bytes.len().saturating_add(1));
         if mode == core::PayloadMode::Inline {
             base.saturating_add(
                 usize::try_from(header.byte_length)
@@ -839,12 +1112,103 @@ impl core::ChatBudget for JsonBudget {
         entry.saturating_add(continuation)
     }
 }
-pub(super) fn messages(items: Vec<core::ChatPageItem>, database_id: &str) -> Vec<ChatMessage> {
+pub(super) async fn annotate_sources(
+    entries: &mut [ChatEntry],
+    history: &HistoryStore,
+    known: &[ChatSourceState],
+    effect_cut: u64,
+) -> Result<()> {
+    let ids = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::Atom(atom) => Some(atom.source.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut states = Vec::with_capacity(ids.len());
+    let mut missing = Vec::new();
+    for id in ids {
+        if let Some(state) = known.iter().find(|state| state.source == id) {
+            // Legacy observed lifecycle without fact positions cannot be projected backwards
+            // from a newer owner cut. Its original as-of storage evidence remains authoritative.
+            if (state.started.is_none() && state.ended.is_none())
+                || (state.started.is_none()
+                    && state.ended.is_some_and(|at| at.effect_seq > effect_cut))
+            {
+                missing.push(id);
+                continue;
+            }
+            let mut state = state.clone();
+            if state.ended.is_some_and(|at| at.effect_seq > effect_cut) {
+                state.ended = None;
+                state.lifecycle = if state.started.is_some_and(|at| at.effect_seq <= effect_cut) {
+                    ChatSourceLifecycle::Active
+                } else {
+                    ChatSourceLifecycle::Unknown
+                };
+            }
+            if state.started.is_some_and(|at| at.effect_seq > effect_cut) {
+                state.started = None;
+                state.lifecycle = ChatSourceLifecycle::Unknown;
+            }
+            states.push(state);
+        } else {
+            missing.push(id);
+        }
+    }
+    states.extend(history.conversation_sources(&missing, effect_cut).await?);
+    annotate_atoms(entries, &states)
+}
+
+pub(super) fn annotate_atoms(entries: &mut [ChatEntry], states: &[ChatSourceState]) -> Result<()> {
+    let mut by_source = std::collections::BTreeMap::new();
+    for state in states {
+        if let Some(old) = by_source.insert(&state.source, state) {
+            ensure!(
+                old == state,
+                core::ChatError::Conflict("conflicting source states in one read cut".into())
+            );
+        }
+    }
+    for entry in entries {
+        let ChatEntry::Atom(atom) = entry else {
+            return Err(
+                core::ChatError::Conflict("ordinary page contains a source event".into()).into(),
+            );
+        };
+        ensure!(
+            atom.source_state
+                .as_ref()
+                .is_none_or(|state| state.source == atom.source),
+            core::ChatError::Conflict("source annotation identity differs from its atom".into())
+        );
+        let state = by_source.get(&atom.source).ok_or_else(|| {
+            core::ChatError::Conflict("read cut has no state for the atom's source identity".into())
+        })?;
+        atom.source_state = Some((*state).clone());
+    }
+    Ok(())
+}
+
+fn completion_atom(header: &core::ChatItemHeader, payload: PayloadData) -> Result<ChatAtom> {
+    let mut atom: ChatAtom = serde_json::from_slice(&header.metadata)?;
+    ensure!(
+        atom.completion_item_id.as_deref() == Some(header.item_id.as_str())
+            && atom.payload.is_none()
+            && atom.completion_seq.is_none()
+            && atom.source_state.is_none(),
+        "completion metadata does not name its frozen item"
+    );
+    atom.completion_seq = Some(header.append_seq);
+    atom.payload = Some(payload);
+    Ok(atom)
+}
+
+pub(super) fn entries(items: Vec<core::ChatPageItem>, database_id: &str) -> Result<Vec<ChatEntry>> {
     items
         .into_iter()
-        .map(|item| ChatMessage {
-            id: item.header.item_id,
-            payload: match item.payload {
+        .map(|item| {
+            let payload = match item.payload {
                 core::PayloadData::Inline(bytes) => PayloadData::Inline {
                     bytes: bytes.to_vec(),
                 },
@@ -858,7 +1222,11 @@ pub(super) fn messages(items: Vec<core::ChatPageItem>, database_id: &str) -> Vec
                     },
                     byte_length,
                 },
-            },
+            };
+            Ok(ChatEntry::Atom(Box::new(completion_atom(
+                &item.header,
+                payload,
+            )?)))
         })
         .collect()
 }

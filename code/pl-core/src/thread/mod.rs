@@ -32,7 +32,7 @@ pub use checkpoint::{
     ExtractedCheckpointBody, LegacyCheckpointBodySlot, LegacyCheckpointExternalBody,
     LegacyRequestAttempt, LegacyThreadCheckpoint, ThreadCheckpoint,
 };
-pub use journal::ThreadEffectBatch;
+pub use journal::{ContextCompactionEvent, ContextCompactionOutcome, ThreadEffectBatch};
 use owner::{Owner, PendingCall};
 pub use subscription::ThreadSubscription;
 use tokio_util::sync::CancellationToken;

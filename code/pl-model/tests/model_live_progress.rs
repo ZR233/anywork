@@ -11,8 +11,9 @@ use pl_core::context::{
     ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
 };
 use pl_core::model::{
-    AggregateChannel, ModelError, ModelFactory, ModelFailureKind, ModelProgress,
-    ModelProgressSender, ModelRequest, ObservedPartIdentity, ToolCallMode,
+    AggregateChannel, DynModelSession, ModelError, ModelFactory, ModelFailureKind, ModelProgress,
+    ModelProgressSender, ModelRequest, ModelSession as CoreModelSession, ObservedPartIdentity,
+    PreparedModelCall, ToolCallMode,
 };
 use pl_core::thread::{ModelStepLimit, ThreadHandle, TurnInput};
 use pl_core::tool::{
@@ -62,6 +63,391 @@ fn user_message(text: &str) -> Message {
         tool_calls: None,
         tool_result: None,
         metadata: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn normalized_part_starts_precede_completion_without_ending_prior_reasoning() {
+    use pl_core::model::{ObservedItemKind, ObservedPartKind};
+    use tokio_util::sync::CancellationToken;
+    let reached = CancellationToken::new();
+    let release = CancellationToken::new();
+    let reasoning = json!({"id":"reasoning","type":"reasoning","status":"completed",
+        "content":[{"type":"reasoning_text","text":"thinking"}],"summary":[]});
+    let text = json!({"id":"answer","type":"message","role":"assistant","status":"completed",
+        "content":[{"type":"output_text","text":"answer"}]});
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp, "part beginnings", 0, Reply::GatedSse {
+            before: vec![
+                json!({"type":"response.created","response":{"id":"beginnings","model":"live-fixture"}}),
+                json!({"type":"response.output_item.added","output_index":0,
+                    "item":{"id":"reasoning","type":"reasoning","summary":[]}}),
+                json!({"type":"response.reasoning_text.delta","item_id":"reasoning","content_index":0,"delta":"think"}),
+                json!({"type":"response.reasoning_text.delta","item_id":"reasoning","content_index":0,"delta":"ing"}),
+                json!({"type":"response.output_text.delta","item_id":"answer","content_index":0,"delta":"an"}),
+                json!({"type":"response.output_text.delta","item_id":"answer","content_index":0,"delta":"swer"}),
+            ],
+            reached: reached.clone(), release: release.clone(),
+            after: vec![
+                json!({"type":"response.output_item.done","output_index":0,"item":reasoning}),
+                json!({"type":"response.output_item.done","output_index":1,"item":text}),
+                json!({"type":"response.completed","response":{"id":"beginnings","model":"live-fixture","output":[reasoning,text]}}),
+            ],
+        },
+    )]).await.unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model("live-fixture", ModelTransportProfile::responses_http()),
+    )
+    .unwrap();
+    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .unwrap();
+    let thread = ThreadHandle::start("part-beginnings".into(), session).unwrap();
+    let task = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(user_turn("part beginnings")).await })
+    };
+    let mut subscription = thread.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), reached.cancelled())
+        .await
+        .unwrap();
+    let before = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let effects = thread.effects().await.unwrap();
+            if effects
+                .iter()
+                .map(|e| e.model_member_starts.len())
+                .sum::<usize>()
+                == 2
+            {
+                break effects;
+            }
+            subscription.next().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        before.iter().all(|e| e.model_members.is_empty()),
+        "text beginning must not fabricate reasoning completion"
+    );
+    assert!(
+        !thread
+            .snapshot()
+            .context
+            .records
+            .iter()
+            .any(|r| r.source == ContextSource::Assistant)
+    );
+    let starts: Vec<_> = before
+        .iter()
+        .flat_map(|e| e.model_member_starts.iter())
+        .collect();
+    for (start, id, kind) in [
+        (starts[0], "reasoning", ObservedPartKind::ReasoningText),
+        (starts[1], "answer", ObservedPartKind::OutputText),
+    ] {
+        let ObservedPartIdentity::Provider(identity) = &start.identity else {
+            panic!("real provider part");
+        };
+        assert_eq!(identity.item_id.as_ref(), id);
+        assert_eq!(identity.part, kind);
+        assert_eq!(identity.content_index, 0);
+        assert_eq!(
+            identity.output_index, None,
+            "late metadata does not fabricate an earlier index"
+        );
+    }
+    let ObservedPartIdentity::Provider(reasoning_start) = &starts[0].identity else {
+        unreachable!()
+    };
+    assert_eq!(reasoning_start.item_kind, ObservedItemKind::Reasoning);
+    release.cancel();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let after = thread.effects().await.unwrap();
+    assert_eq!(
+        after
+            .iter()
+            .map(|e| e.model_member_starts.len())
+            .sum::<usize>(),
+        2,
+        "multiple deltas and late final output indices do not repeat starts"
+    );
+    assert_eq!(
+        after.iter().map(|e| e.model_members.len()).sum::<usize>(),
+        2
+    );
+    let last_start = after
+        .iter()
+        .filter(|e| !e.model_member_starts.is_empty())
+        .map(|e| e.sequence)
+        .max()
+        .unwrap();
+    let first_complete = after
+        .iter()
+        .find(|e| !e.model_members.is_empty())
+        .unwrap()
+        .sequence;
+    assert!(last_start < first_complete);
+    thread.close().await.unwrap();
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn summary_delta_parts_start_once_before_item_done() {
+    exercise_summary_starts(true).await;
+}
+
+#[tokio::test]
+async fn summary_placeholder_does_not_start_a_part_when_text_begins() {
+    exercise_summary_starts(false).await;
+}
+
+async fn exercise_summary_starts(with_summary: bool) {
+    use pl_core::model::ObservedPartKind;
+    use tokio_util::sync::CancellationToken;
+    let reached = CancellationToken::new();
+    let release = CancellationToken::new();
+    let mut before = vec![
+        json!({"type":"response.created","response":{"id":"summary-starts","model":"live-fixture"}}),
+        json!({"type":"response.output_item.added","output_index":0,
+            "item":{"id":"reasoning","type":"reasoning","summary":[]}}),
+        json!({"type":"response.reasoning_text.delta","item_id":"reasoning","content_index":0,"delta":"thinking"}),
+    ];
+    if with_summary {
+        // Start index one first: the item-added placeholder must not preempt it with a fake zero.
+        for (index, delta) in [(1, "sec"), (1, "ond"), (0, "fir"), (0, "st")] {
+            before.push(json!({"type":"response.reasoning_summary_text.delta",
+                "item_id":"reasoning","summary_index":index,"delta":delta}));
+        }
+    }
+    before.extend([
+        json!({"type":"response.output_text.delta","item_id":"answer","content_index":0,"delta":"an"}),
+        json!({"type":"response.output_text.delta","item_id":"answer","content_index":0,"delta":"swer"}),
+    ]);
+    let summary = if with_summary {
+        vec![
+            json!({"type":"summary_text","text":"first"}),
+            json!({"type":"summary_text","text":"second"}),
+        ]
+    } else {
+        vec![]
+    };
+    let reasoning = json!({"id":"reasoning","type":"reasoning","status":"completed",
+        "content":[{"type":"reasoning_text","text":"thinking"}],"summary":summary});
+    let answer = json!({"id":"answer","type":"message","role":"assistant","status":"completed",
+        "content":[{"type":"output_text","text":"answer"}]});
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp, "summary beginnings", 0, Reply::GatedSse {
+            before, reached: reached.clone(), release: release.clone(),
+            after: vec![
+                json!({"type":"response.output_item.done","output_index":0,"item":reasoning}),
+                json!({"type":"response.output_item.done","output_index":1,"item":answer}),
+                json!({"type":"response.completed","response":{"id":"summary-starts","model":"live-fixture","output":[reasoning,answer]}}),
+            ],
+        },
+    )]).await.unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model("live-fixture", ModelTransportProfile::responses_http()),
+    )
+    .unwrap();
+    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .unwrap();
+    let thread = ThreadHandle::start("summary-beginnings".into(), session).unwrap();
+    let task = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(user_turn("summary beginnings")).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), reached.cancelled())
+        .await
+        .unwrap();
+    let mut subscription = thread.subscribe();
+    let prefix = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let effects = thread.effects().await.unwrap();
+            if effects
+                .iter()
+                .flat_map(|e| e.model_member_starts.iter())
+                .any(|start| {
+                    matches!(&start.identity, ObservedPartIdentity::Provider(p)
+                    if p.item_id.as_ref() == "answer")
+                })
+            {
+                break effects;
+            }
+            subscription.next().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let starts: Vec<_> = prefix
+        .iter()
+        .flat_map(|e| e.model_member_starts.iter())
+        .map(|start| {
+            let ObservedPartIdentity::Provider(part) = &start.identity else {
+                panic!("provider part");
+            };
+            (part.item_id.as_ref(), part.part, part.content_index)
+        })
+        .collect();
+    let mut expected = vec![("reasoning", ObservedPartKind::ReasoningText, 0)];
+    if with_summary {
+        expected.extend([
+            ("reasoning", ObservedPartKind::SummaryText, 1),
+            ("reasoning", ObservedPartKind::SummaryText, 0),
+        ]);
+    }
+    expected.push(("answer", ObservedPartKind::OutputText, 0));
+    assert_eq!(
+        starts, expected,
+        "only actual part deltas may supply summary beginnings"
+    );
+    assert!(
+        prefix.iter().all(|e| e.model_members.is_empty()),
+        "text beginning must not fabricate prior reasoning completion"
+    );
+    let snapshot = thread.snapshot();
+    assert_eq!(
+        snapshot.attempts.last().unwrap().status,
+        pl_core::thread::AttemptStatus::Running
+    );
+    assert!(snapshot.attempts.last().unwrap().usage.is_none());
+    assert!(
+        !snapshot
+            .context
+            .records
+            .iter()
+            .any(|r| r.source == ContextSource::Assistant)
+    );
+    release.cancel();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    assert_eq!(
+        effects
+            .iter()
+            .map(|e| e.model_member_starts.len())
+            .sum::<usize>(),
+        expected.len(),
+        "later deltas and final items must not duplicate starts"
+    );
+    assert_eq!(
+        effects.iter().map(|e| e.model_members.len()).sum::<usize>(),
+        2
+    );
+    assert!(
+        prefix
+            .iter()
+            .filter(|e| !e.model_member_starts.is_empty())
+            .all(|e| e.sequence
+                < effects
+                    .iter()
+                    .find(|e| !e.model_members.is_empty())
+                    .unwrap()
+                    .sequence)
+    );
+    thread.close().await.unwrap();
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn late_commentary_phase_corrects_text_metadata_without_final_authorization() {
+    use pl_core::thread::{AttemptOutcome, TurnOutcome};
+    for initial_phase in [None, Some("commentary"), Some("final_answer")] {
+        for with_members in [false, true] {
+            let mut added =
+                json!({"id":"phase-item","type":"message","role":"assistant","content":[]});
+            if let Some(phase) = initial_phase {
+                added["phase"] = json!(phase);
+            }
+            let done = json!({"id":"phase-item","type":"message","role":"assistant",
+                "phase":"commentary","status":"completed",
+                "content":[{"type":"output_text","text":"working"}]});
+            let fixture = FixtureServer::start(vec![Step::prompt(
+                Protocol::ResponsesHttp, "late phase", 0, Reply::Sse(vec![
+                    json!({"type":"response.created","response":{"id":"phase-response","model":"live-fixture"}}),
+                    json!({"type":"response.output_item.added","output_index":0,"item":added}),
+                    json!({"type":"response.output_text.delta","item_id":"phase-item","content_index":0,"delta":"work"}),
+                    json!({"type":"response.output_text.delta","item_id":"phase-item","content_index":0,"delta":"ing"}),
+                    json!({"type":"response.output_item.done","output_index":0,"item":done}),
+                    json!({"type":"response.completed","response":{"id":"phase-response","model":"live-fixture","output":[done]}}),
+                ]),
+            )]).await.unwrap();
+            let runtime = ModelRuntime::new_with_account_id(
+                "fixture",
+                ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+                model("live-fixture", ModelTransportProfile::responses_http()),
+            )
+            .unwrap();
+            if with_members {
+                let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+                    .open_session()
+                    .await
+                    .unwrap();
+                let thread = ThreadHandle::start("late-phase".into(), session).unwrap();
+                let result = thread.run_turn(user_turn("late phase")).await.unwrap();
+                assert_eq!(
+                    result.outcome,
+                    TurnOutcome::StepLimit,
+                    "a Text start is not authorization to finish a commentary-only turn"
+                );
+                let effects = thread.effects().await.unwrap();
+                assert_eq!(
+                    effects
+                        .iter()
+                        .map(|e| e.model_member_starts.len())
+                        .sum::<usize>(),
+                    1
+                );
+                let members: Vec<_> = effects
+                    .iter()
+                    .flat_map(|e| e.model_members.iter())
+                    .collect();
+                assert_eq!(members.len(), 1);
+                let receipt = pl_model::runtime::model_member_receipt(members[0]).unwrap();
+                assert_eq!(
+                    receipt.item.kind,
+                    CompletionPresentationItemKind::Text(TraceTextChannel::Commentary)
+                );
+                assert!(effects.iter().any(|e| matches!(
+                    e.attempt.as_ref().map(|a| &a.outcome),
+                    Some(AttemptOutcome::Committed(output))
+                        if output.turn_action == pl_core::model::ModelTurnAction::Continue
+                )));
+                thread.close().await.unwrap();
+            } else {
+                let response = runtime
+                    .complete(
+                        CompletionRequest::builder()
+                            .messages(vec![user_message("late phase")])
+                            .build(),
+                        ModelInvocationContext::new(ModelSession::default()),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.presentation_items.len(), 1);
+                assert_eq!(
+                    response.presentation_items[0].kind,
+                    CompletionPresentationItemKind::Text(TraceTextChannel::Commentary)
+                );
+                assert_eq!(response.presentation_items[0].parts[0].text, "working");
+            }
+            assert_eq!(fixture.finish().await.unwrap().len(), 1);
+        }
     }
 }
 
@@ -159,6 +545,19 @@ async fn authoritative_member_is_reliable_while_provider_stream_is_still_open() 
             Err(pl_core::thread::ThreadError::Cancelled)
         ));
         let effects = thread.effects().await.unwrap();
+        let beginnings: Vec<_> = effects
+            .iter()
+            .filter(|e| !e.model_member_starts.is_empty())
+            .collect();
+        assert_eq!(beginnings.len(), 1);
+        assert!(
+            beginnings[0].sequence
+                < effects
+                    .iter()
+                    .find(|e| !e.model_members.is_empty())
+                    .unwrap()
+                    .sequence
+        );
         assert_eq!(
             effects.iter().map(|e| e.model_members.len()).sum::<usize>(),
             1
@@ -224,6 +623,11 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
         .flat_map(|effect| effect.model_members.iter())
         .collect::<Vec<_>>();
     assert_eq!(members.len(), 1);
+    let beginnings: Vec<_> = effects
+        .iter()
+        .flat_map(|e| e.model_member_starts.iter())
+        .collect();
+    assert_eq!(beginnings.len(), 1);
     let receipt = model_member_receipt(members[0]).unwrap();
     let failed = effects
         .iter()
@@ -292,6 +696,25 @@ async fn reasoning_raw_and_summary_zero_indices_match_reliable_member_and_final_
     assert_eq!(receipt.state, ModelMemberState::Completed);
     assert_eq!(receipt.item.provider_item_id, "reasoning-both");
     assert_eq!(receipt.item.output_index, Some(3));
+    let starts: Vec<_> = effects
+        .iter()
+        .filter(|e| !e.model_member_starts.is_empty())
+        .collect();
+    assert_eq!(
+        starts
+            .iter()
+            .map(|e| e.model_member_starts.len())
+            .sum::<usize>(),
+        2
+    );
+    assert!(starts.iter().all(|e| {
+        e.sequence
+            < effects
+                .iter()
+                .find(|e| !e.model_members.is_empty())
+                .unwrap()
+                .sequence
+    }));
     assert_eq!(
         receipt.item.parts,
         vec![
@@ -839,38 +1262,60 @@ async fn chat_reasoning_content_streams_before_the_answer_as_its_own_channel() {
 
 #[tokio::test]
 async fn reasoning_delta_without_any_identity_fails_instead_of_inventing_an_item() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
+    for (delta, expected) in [
+        (
+            json!({"type":"response.reasoning_text.delta","content_index":0,"delta":"ponder"}),
+            "no item id",
+        ),
+        (
+            json!({"type":"response.reasoning_summary_text.delta","summary_index":3,"delta":"ponder"}),
+            "no item id",
+        ),
+        (
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"reasoning","delta":"ponder"}),
+            "no valid summary index",
+        ),
+        (
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"reasoning","summary_index":-1,"delta":"ponder"}),
+            "no valid summary index",
+        ),
+    ] {
+        let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "unidentified reasoning",
         0,
         Reply::Sse(vec![
             json!({"type":"response.created","response":{"id":"live-stream","model":"live-fixture"}}),
-            // Neither an item id nor an announced output index: the delta cannot be attributed.
-            json!({"type":"response.reasoning_text.delta","content_index":0,"delta":"ponder"}),
+            delta,
         ]),
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
-        model("live-fixture", ModelTransportProfile::responses_http()),
-    )
-    .expect("fixture endpoint is valid");
-    let failure = runtime
-        .complete(
-            CompletionRequest::builder()
-                .messages(vec![user_message("unidentified reasoning")])
-                .build(),
-            ModelInvocationContext::new(ModelSession::default()),
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("live-fixture", ModelTransportProfile::responses_http()),
         )
-        .await
-        .expect_err("an unassociable reasoning delta fails instead of fabricating an item");
-    assert!(
-        failure.to_string().contains("protocol error"),
-        "unexpected failure: {failure}"
-    );
-    let _ = fixture.shutdown().await;
+        .expect("fixture endpoint is valid");
+        let failure = runtime
+            .complete(
+                CompletionRequest::builder()
+                    .messages(vec![user_message("unidentified reasoning")])
+                    .build(),
+                ModelInvocationContext::new(ModelSession::default()),
+            )
+            .await
+            .expect_err("an unassociable reasoning delta fails instead of fabricating an item");
+        assert!(
+            failure.to_string().contains("protocol error"),
+            "unexpected failure: {failure}"
+        );
+        assert!(
+            failure.to_string().contains(expected),
+            "unexpected failure: {failure}"
+        );
+        let _ = fixture.shutdown().await;
+    }
 }
 
 fn legacy_binding() -> Value {
@@ -1129,9 +1574,10 @@ fn unknown_failure_receipt_versions_are_still_rejected() {
 ///
 /// Admission and durability always succeed: the only thing under test is the reservation the real
 /// adapter charges against, so the stream has to stop where the quota does and nowhere else.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct OutputQuotaStore {
     limit: u64,
+    charges: Arc<Mutex<Vec<u64>>>,
 }
 
 impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
@@ -1142,6 +1588,16 @@ impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
         max_bytes: u64,
     ) -> Result<u64, pl_core::thread::cold::ColdStoreError> {
         Ok(self.limit.min(max_bytes))
+    }
+
+    fn charge_operation_output(
+        &self,
+        _: &str,
+        _: &str,
+        total: u64,
+    ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        self.charges.lock().unwrap().push(total);
+        Ok(())
     }
 
     fn admit(
@@ -1161,69 +1617,262 @@ impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
     }
 }
 
-#[tokio::test]
-async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_quota() {
-    for limit in [410, 1000] {
-        let failed_body = "f".repeat(400);
-        let mut steps = vec![Step::prompt(
-            Protocol::ResponsesHttp,
-            "retry quota",
-            0,
-            Reply::Sse(vec![
-                json!({"type":"response.created","response":{"id":"partial","model":"reported-fixture"}}),
-                // An unfinished preview is replayable; an independently ended member is not.
-                json!({"type":"response.output_text.delta","output_index":0,"item_id":"same-item","content_index":0,"delta":failed_body}),
-            ]),
-        )];
-        if limit == 1000 {
-            steps.push(Step::prompt(Protocol::ResponsesHttp, "retry quota", 1, Reply::Sse(vec![
-                json!({"type":"response.created","response":{"id":"retry","model":"reported-fixture"}}),
-                json!({"type":"response.output_text.delta","output_index":0,"item_id":"same-item","content_index":0,"delta":"accepted retry body"}),
-                json!({"type":"response.output_item.added","output_index":1,"item":{"id":"tool-item","type":"function_call","name":"lookup","call_id":"discarded-call"}}),
-                json!({"type":"response.function_call_arguments.delta","item_id":"tool-item","call_id":"discarded-call","delta":"x".repeat(400)}),
-            ])));
-        }
-        let fixture = FixtureServer::start(steps).await.unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
-            "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
-            model("live-fixture", ModelTransportProfile::responses_http()),
-        )
+fn quota_text_prefix(body: &str) -> Vec<Value> {
+    vec![
+        json!({"type":"response.created","response":{"id":"partial","model":"reported-fixture"}}),
+        json!({"type":"response.output_text.delta","output_index":0,"item_id":"same-item","content_index":0,"delta":body}),
+    ]
+}
+
+fn quota_retry_prefix() -> Vec<Value> {
+    let mut events = quota_text_prefix("accepted retry body");
+    events.push(json!({"type":"response.output_item.added","output_index":1,
+        "item":{"id":"tool-item","type":"function_call","name":"lookup","call_id":"discarded-call"}}));
+    events
+}
+
+fn quota_arguments(body: &str) -> Value {
+    json!({"type":"response.function_call_arguments.delta","item_id":"tool-item",
+        "call_id":"discarded-call","delta":body})
+}
+
+fn quota_terminal_failure() -> Value {
+    json!({"type":"response.failed","response":{"id":"partial",
+        "error":{"code":"invalid_request_error","message":"quota control terminal"}}})
+}
+
+struct QuotaRun {
+    fixture: FixtureServer,
+    thread: ThreadHandle,
+    charges: Arc<Mutex<Vec<u64>>>,
+    progress: Arc<Mutex<Option<ModelProgressSender>>>,
+}
+
+/// Exposes the original producer's counters without implementing any of its accounting.
+struct MeteredSession {
+    inner: DynModelSession,
+    progress: Arc<Mutex<Option<ModelProgressSender>>>,
+}
+
+impl CoreModelSession for MeteredSession {
+    async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        *self.progress.lock().unwrap() = request.progress.clone();
+        self.inner.prepare(request).await
+    }
+
+    async fn close(&mut self) -> Result<(), ModelError> {
+        self.inner.close().await
+    }
+}
+
+async fn quota_thread(steps: Vec<Step>, limit: u64) -> QuotaRun {
+    let fixture = FixtureServer::start(steps).await.unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model("live-fixture", ModelTransportProfile::responses_http()),
+    )
+    .unwrap();
+    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
         .unwrap();
-        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
-            .open_session()
-            .await
-            .unwrap();
-        let thread = ThreadHandle::start("retry-quota-thread".into(), session).unwrap();
-        thread
-            .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
-                OutputQuotaStore { limit },
-            ))
+    let progress = Arc::new(Mutex::new(None));
+    let thread = ThreadHandle::start(
+        "retry-quota-thread".into(),
+        DynModelSession::new(MeteredSession {
+            inner: session,
+            progress: progress.clone(),
+        }),
+    )
+    .unwrap();
+    let charges = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
+            OutputQuotaStore {
+                limit,
+                charges: charges.clone(),
+            },
+        ))
+        .await
+        .unwrap();
+    QuotaRun {
+        fixture,
+        thread,
+        charges,
+        progress,
+    }
+}
+
+async fn measure_retry_prefix_cost(failed_body: &str) -> (u64, u64, u64) {
+    use tokio_util::sync::CancellationToken;
+    let first_reached = CancellationToken::new();
+    let first_release = CancellationToken::new();
+    let retry_reached = CancellationToken::new();
+    let retry_release = CancellationToken::new();
+    let recovery_reached = CancellationToken::new();
+    let recovery_release = CancellationToken::new();
+    let QuotaRun {
+        fixture,
+        thread,
+        charges,
+        progress,
+    } = quota_thread(
+        vec![
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "retry quota",
+                0,
+                Reply::GatedSse {
+                    before: quota_text_prefix(failed_body),
+                    reached: first_reached.clone(),
+                    release: first_release.clone(),
+                    after: vec![],
+                },
+            ),
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "retry quota",
+                1,
+                Reply::SegmentedSse {
+                    segments: vec![
+                        vec![quota_retry_prefix().remove(0)],
+                        quota_retry_prefix().into_iter().skip(1).collect(),
+                        vec![],
+                    ],
+                    gates: vec![
+                        (recovery_reached.clone(), recovery_release.clone()),
+                        (retry_reached.clone(), retry_release),
+                    ],
+                },
+            ),
+        ],
+        u64::MAX,
+    )
+    .await;
+    // The store still grants at most the original operation ceiling; this probe measures charges
+    // through the real port rather than reproducing envelope sizes or raising production limits.
+    let input = user_turn("retry quota");
+    let cancellation = input.cancellation.clone();
+    let task = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(input).await })
+    };
+    let mut costs = Vec::new();
+    let mut before_retry_body = 0;
+    let mut recovery_cost = 0;
+    for (generation, reached, body) in [
+        (0, &first_reached, failed_body),
+        (1, &retry_reached, "accepted retry body"),
+    ] {
+        tokio::time::timeout(Duration::from_secs(10), reached.cancelled())
             .await
             .unwrap();
         let mut subscription = thread.subscribe();
-        let runner = tokio::spawn({
-            let thread = thread.clone();
-            async move { thread.run_turn(user_turn("retry quota")).await }
-        });
-        let snapshot = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let snapshot = subscription.next().await.unwrap();
-                if snapshot.persistence.resume_required {
-                    break snapshot;
+                let snapshot = thread.snapshot();
+                let starts = thread.effects().await.unwrap();
+                if snapshot.model_progress.as_ref().is_some_and(|p| {
+                    p.progress.observation().generation == generation
+                        && p.progress
+                            .observed_part("same-item", PresentationPart::OutputText(0))
+                            .is_some_and(|part| part.text() == body)
+                }) && starts
+                    .iter()
+                    .flat_map(|e| e.model_member_starts.iter())
+                    .any(|s| s.generation == generation)
+                {
+                    break;
                 }
+                subscription.next().await.unwrap();
             }
         })
         .await
         .unwrap();
+        costs.push(*charges.lock().unwrap().last().unwrap());
+        if generation == 0 {
+            first_release.cancel();
+            tokio::time::timeout(Duration::from_secs(10), recovery_reached.cancelled())
+                .await
+                .unwrap();
+            before_retry_body = progress.lock().unwrap().as_ref().unwrap().charged_output();
+            recovery_cost = *charges.lock().unwrap().last().unwrap();
+            recovery_release.cancel();
+        } else {
+            assert_eq!(
+                progress.lock().unwrap().as_ref().unwrap().charged_output(),
+                before_retry_body + body.len() as u64,
+                "the new generation must charge its body above the original cumulative base"
+            );
+        }
+    }
+    cancellation.cancel();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    thread.close().await.unwrap();
+    fixture.shutdown().await.unwrap();
+    (costs[0], costs[1], recovery_cost)
+}
+
+#[tokio::test]
+async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_quota() {
+    let failed_body = "f".repeat(400);
+    let rejected_arguments = "x".repeat(400);
+    let (first_cost, retry_cost, recovery_cost) = measure_retry_prefix_cost(&failed_body).await;
+    // The first case stops exactly after admitted content: the next recovery metadata must not fit.
+    // The second admits the whole retried prefix, but not its last argument byte. These costs come
+    // from actual Thread output charges, including both starts and their reliable effect envelopes.
+    let retry_limit = retry_cost + rejected_arguments.len() as u64 - 1;
+    assert!(first_cost < retry_cost);
+    assert!(first_cost < recovery_cost && recovery_cost <= retry_cost);
+    for (retry, limit) in [(false, first_cost), (true, retry_limit)] {
+        let mut steps = vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry quota",
+            0,
+            Reply::Sse(quota_text_prefix(&failed_body)),
+        )];
+        if retry {
+            let mut events = quota_retry_prefix();
+            events.push(quota_arguments(&rejected_arguments));
+            events.push(quota_terminal_failure());
+            steps.push(Step::prompt(
+                Protocol::ResponsesHttp,
+                "retry quota",
+                1,
+                Reply::Sse(events),
+            ));
+        }
+        let QuotaRun {
+            fixture,
+            thread,
+            charges,
+            ..
+        } = quota_thread(steps, limit).await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                thread.run_turn(user_turn("retry quota"))
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        let snapshot = thread.snapshot();
+        assert!(
+            snapshot.persistence.resume_required,
+            "only the cumulative quota may stop this call"
+        );
         assert_eq!(
             snapshot.persistence.fault,
             Some(pl_core::thread::cold::StorageFaultKind::QueueFull)
         );
-        let _ = tokio::time::timeout(Duration::from_secs(5), runner)
-            .await
-            .unwrap()
-            .unwrap();
         let effects = thread.effects().await.unwrap();
         let error = effects
             .iter()
@@ -1238,14 +1887,26 @@ async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_qu
             .unwrap()
             .unwrap();
         assert_eq!(
-            receipt.model_observation.unwrap().reported_model.as_deref(),
+            receipt
+                .model_observation
+                .as_ref()
+                .unwrap()
+                .reported_model
+                .as_deref(),
             Some("reported-fixture"),
             "local recovery failure must retain provider identity"
         );
+        assert!(
+            !serde_json::to_string(&receipt)
+                .unwrap()
+                .contains(&rejected_arguments),
+            "refused argument bytes must not enter the retained receipt"
+        );
         let progress = receipt.partial_progress.unwrap();
-        if limit == 410 {
+        if !retry {
             assert_eq!(progress.observation().generation, 0);
             assert_eq!(progress.parts()[0].text(), failed_body);
+            assert_eq!(charges.lock().unwrap().last().copied(), Some(first_cost));
         } else {
             assert_eq!(progress.observation().generation, 1);
             assert_eq!(
@@ -1253,6 +1914,7 @@ async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_qu
                 failed_body
             );
             assert_eq!(progress.parts()[0].text(), "accepted retry body");
+            assert_eq!(charges.lock().unwrap().last().copied(), Some(retry_cost));
         }
         assert!(
             snapshot.tasks.is_empty(),
@@ -1260,13 +1922,59 @@ async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_qu
         );
         assert_eq!(
             fixture.finish().await.unwrap().len(),
-            if limit == 410 { 1 } else { 2 }
+            if retry { 2 } else { 1 }
         );
         tokio::time::timeout(Duration::from_secs(5), thread.close())
             .await
             .unwrap()
             .unwrap();
     }
+    // The exact same current-generation prefix and arguments fit without retained failed output.
+    // This control makes a reset-between-generations bug distinguishable from a one-delta overrun.
+    let mut fresh = quota_retry_prefix();
+    fresh.push(quota_arguments(&rejected_arguments));
+    fresh.push(quota_terminal_failure());
+    let QuotaRun {
+        fixture,
+        thread,
+        charges,
+        ..
+    } = quota_thread(
+        vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry quota",
+            0,
+            Reply::Sse(fresh),
+        )],
+        retry_limit,
+    )
+    .await;
+    assert!(thread.run_turn(user_turn("retry quota")).await.is_err());
+    assert!(
+        !thread.snapshot().persistence.resume_required,
+        "the same arguments plus current-generation overhead fit independently"
+    );
+    let fresh_cost = *charges.lock().unwrap().last().unwrap();
+    assert!(fresh_cost <= retry_limit);
+    assert!(retry_limit < retry_cost + rejected_arguments.len() as u64);
+    eprintln!(
+        "measured quota intervals: first={first_cost}, recovery={recovery_cost}, retry_prefix={retry_cost}, fresh_with_arguments={fresh_cost}, retry_limit={retry_limit}, refused_arguments={}",
+        rejected_arguments.len()
+    );
+    let effects = thread.effects().await.unwrap();
+    let error = effects
+        .iter()
+        .find_map(|e| match e.attempt.as_ref().map(|a| &a.outcome) {
+            Some(pl_core::thread::AttemptOutcome::Failed(error)) => Some(error),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        error.to_string().contains("quota control terminal"),
+        "{error}"
+    );
+    thread.close().await.unwrap();
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
 }
 
 /// A provider stream that outgrows the call's reliable output quota is cancelled with what it had.
@@ -1289,7 +1997,7 @@ async fn fixture_stream_past_the_reliable_output_quota_cancels_with_a_partial_re
             json!({"type":"response.output_text.delta","item_id":"message-1",
                 "output_index":0,"content_index":0,"delta":"answer"}),
             json!({"type":"response.output_text.delta","item_id":"message-1",
-                "output_index":0,"content_index":0,"delta":"again"}),
+                "output_index":0,"content_index":0,"delta":"again".repeat(4096)}),
         ]),
     )])
     .await
@@ -1307,7 +2015,11 @@ async fn fixture_stream_past_the_reliable_output_quota_cancels_with_a_partial_re
     let thread = ThreadHandle::start("quota-thread".into(), session).expect("thread starts");
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
-            OutputQuotaStore { limit: 8 },
+            // Include reliable start metadata, then refuse the oversized second text delta.
+            OutputQuotaStore {
+                limit: 16 * 1024,
+                ..Default::default()
+            },
         ))
         .await
         .expect("storage attaches");
@@ -1388,7 +2100,7 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
             json!({"type":"response.output_item.added","output_index":1,
                 "item":{"id":"item-7","type":"function_call","name":"lookup"}}),
             json!({"type":"response.function_call_arguments.delta","item_id":"item-7",
-                "call_id":"call-7","delta":"{\"term\":\"rust\"}"}),
+                "call_id":"call-7","delta":"x".repeat(16 * 1024)}),
         ]),
     )])
     .await
@@ -1404,10 +2116,13 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
         .await
         .expect("model session opens");
     let thread = ThreadHandle::start("tool-quota-thread".into(), session).expect("thread starts");
-    // The text delta ("answer", six bytes) fits; the fifteen-byte argument payload does not.
+    // Start metadata and the text delta fit; the oversized argument payload does not.
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
-            OutputQuotaStore { limit: 12 },
+            OutputQuotaStore {
+                limit: 16 * 1024,
+                ..Default::default()
+            },
         ))
         .await
         .expect("storage attaches");
@@ -1539,7 +2254,10 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
     let thread = ThreadHandle::start("staged-identity".into(), session).expect("thread starts");
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
-            OutputQuotaStore { limit: 25 },
+            OutputQuotaStore {
+                limit: 25,
+                ..Default::default()
+            },
         ))
         .await
         .expect("storage attaches");

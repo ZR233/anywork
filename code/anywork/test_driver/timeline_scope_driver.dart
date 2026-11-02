@@ -6,6 +6,7 @@ import 'flutter_driver_session.dart';
 import 'raw_tap.dart';
 import 'timeline_observation.dart';
 import 'timeline_history_evidence.dart';
+import 'timeline_group_observation.dart';
 import 'tool_probe.dart';
 
 /// Explicit UI actions over the real Main Turn and its registered Children.
@@ -72,20 +73,20 @@ final class TimelineScopeDriver {
   }) => TimelineHistoryReader(
     read: read,
     loadMainOlder: loadMainOlder,
-    openChildren: (parent) async {
-      await setExpanded(parent, true);
+    setGroupExpanded: (id, expanded) async {
+      await setGroupExpanded(id, expanded);
     },
-    closeChildren: (parent) async {
-      await setExpanded(parent, false);
+    loadGroupEarlier: (id) async {
+      await loadGroupEarlier(id);
     },
-    loadChildrenOlder: (turn, child) async {
+    loadChildrenOlder: (child) async {
       if (child.itemIds.isEmpty) {
         throw StateError('Children has a cursor but no UI item to reveal');
       }
       await revealItem(child.itemIds.first);
       await scrollOlder(
-        find.descendant(
-          of: find.byValueKey('chat-item:${turn.id}'),
+        find.ancestor(
+          of: find.byValueKey('chat-item:${child.itemIds.first}'),
           matching: find.byType('Scrollable'),
           firstMatchOnly: true,
         ),
@@ -94,19 +95,26 @@ final class TimelineScopeDriver {
   );
 
   Future<void> revealItem(String id) async {
-    final timeline = TimelineObservation.parse(await read());
+    final snapshot = await read();
+    final timeline = TimelineObservation.parse(snapshot);
     if (timeline.item(id) != null) {
       await reveal(find.byValueKey('chat-item:$id'));
       return;
     }
-    final child = timeline.childrenContaining(id);
-    final turn = timeline.items.singleWhere(
-      (item) => item.childrenParentId == child.parentId,
-    );
-    await reveal(find.byValueKey('timeline-row-${turn.id}'));
+    for (final group in timelineGroupDisplays(snapshot)) {
+      if (!(group['items'] as List).cast<Map>().any(
+        (item) => item['id'] == id,
+      )) {
+        continue;
+      }
+      await reveal(find.byValueKey('timeline-row-${group['unitId']}'));
+      await reveal(find.byValueKey('chat-item:$id'));
+      return;
+    }
+    timeline.childrenContaining(id); // Only a genuinely mounted business scope.
     await revealWithin(
-      find.descendant(
-        of: find.byValueKey('timeline-row-${turn.id}'),
+      find.ancestor(
+        of: find.byValueKey('chat-item:$id'),
         matching: find.byType('Scrollable'),
         firstMatchOnly: true,
       ),
@@ -116,69 +124,74 @@ final class TimelineScopeDriver {
 
   Future<Map<String, dynamic>> openLatest() async {
     final timeline = TimelineObservation.parse(await read());
-    final turns = timeline.items.where(
-      (item) => item.kind == 'turn' && item.childrenParentId != null,
-    );
+    final turns = timeline.items.where((item) => item.kind == 'workGroup');
     if (turns.isEmpty) {
-      throw StateError('Main has no actual completed Turn to expand');
+      throw StateError('Main has no actual completed work record to expand');
     }
-    return setExpanded(turns.last.childrenParentId!, true);
+    return setGroupExpanded(turns.last.id, true);
   }
 
   Future<Map<String, dynamic>> openAllLoaded() async {
     final initial = TimelineObservation.parse(await read());
-    for (final turn in initial.items) {
-      final parent = turn.childrenParentId;
-      if (parent != null) await setExpanded(parent, true);
+    for (final unit in initial.items) {
+      if (unit.kind == 'workGroup') await setGroupExpanded(unit.id, true);
     }
     return read();
   }
 
-  Future<Map<String, dynamic>> setExpanded(
-    String parentId,
+  Future<Map<String, dynamic>> setGroupExpanded(
+    String unitId,
     bool expanded,
   ) async {
-    final before = TimelineObservation.parse(await read());
-    final turn = before.items.singleWhere(
-      (item) => item.childrenParentId == parentId,
-    );
+    final initial = TimelineObservation.parse(await read());
     final header = find.ancestor(
-      of: find.descendant(
-        of: find.byValueKey('chat-item:${turn.id}'),
-        matching: find.byType('TimelineActivityRow'),
-        firstMatchOnly: true,
-      ),
-      // The inner presentational Row can have empty hit-test space at its
-      // center. The real ListTile owns this disclosure's interactive header.
+      of: find.byValueKey('source-unit-header:$unitId'),
       matching: find.byType('ListTile'),
       firstMatchOnly: true,
     );
     await reveal(header);
     final sample = ((await probe(header))['samples'] as List).last as Map;
     if (sample['expanded'] is! bool) {
-      throw StateError('Actual Turn header has no observable expansion state');
+      throw StateError('Group expansion is not observable');
     }
     if (sample['expanded'] != expanded) await tap(header);
-    final deadline = Stopwatch()..start();
-    while (deadline.elapsed < const Duration(seconds: 30)) {
+    return _waitGroup(initial, unitId, expanded: expanded);
+  }
+
+  Future<Map<String, dynamic>> loadGroupEarlier(String unitId) async {
+    final initial = TimelineObservation.parse(await read());
+    final button = find.byValueKey('source-unit-older:$unitId');
+    await reveal(button);
+    await tap(button);
+    return _waitGroup(initial, unitId, expanded: true);
+  }
+
+  Future<Map<String, dynamic>> _waitGroup(
+    TimelineObservation initial,
+    String id, {
+    required bool expanded,
+  }) async {
+    final clock = Stopwatch()..start();
+    while (clock.elapsed < const Duration(seconds: 30)) {
       final snapshot = await read();
       final timeline = TimelineObservation.parse(snapshot);
-      if (timeline.threadId != before.threadId ||
-          timeline.generation != before.generation) {
-        throw StateError('Turn display changed while expanding Children');
+      if (timeline.threadId != initial.threadId ||
+          timeline.generation != initial.generation) {
+        throw StateError('Display lease changed during ordinary window action');
       }
-      final child = timeline.childrenFor(parentId);
-      if (!expanded && child == null) return snapshot;
-      if (expanded && child != null) {
-        if (child.error != null) {
-          throw StateError('Children read failed: ${child.error}');
+      final matches = timelineGroupDisplays(snapshot)
+          .where((group) => group['unitId'] == id);
+      if (matches.length == 1) {
+        final group = matches.single;
+        if (group['error'] != null) {
+          throw StateError('Ordinary window failed: ${group['error']}');
         }
-        if (child.ready && child.appliedSets > 0) return snapshot;
+        if (group['expanded'] == expanded && group['loading'] == false) {
+          return snapshot;
+        }
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    throw StateError(
-      'Actual Children registration did not settle for $parentId',
-    );
+    throw StateError('Group $id did not settle');
   }
 }

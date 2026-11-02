@@ -65,8 +65,9 @@ pub enum PayloadMode {
 
 /// Host encoding contract. Costs are conservative upper bounds on actual encoded bytes, not RAM
 /// sizes. `fixed_bytes` reserves the batch/header/current/cursor; `item_bytes` includes identity,
-/// envelope, length and all encoding expansion. It must inspect headers only, remain synchronous,
-/// and never call Session or perform IO. There is deliberately no default codec or preview limit.
+/// opaque header metadata, envelope, length and all encoding expansion. It must inspect headers only,
+/// remain synchronous, and never call Session or perform IO. There is deliberately no default codec
+/// or preview limit.
 pub trait ChatBudget: Send + Sync {
     fn fixed_bytes(&self) -> usize;
     fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize;

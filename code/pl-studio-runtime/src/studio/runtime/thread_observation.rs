@@ -1040,6 +1040,7 @@ impl LiveOwner {
         let (seed_items, hidden) =
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
         projection.seed(seed_items, hidden);
+        projection.restore_current(&chat, &thread, snapshot).await?;
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1734,6 +1735,9 @@ impl LiveOwner {
         snapshot: &ThreadSnapshot,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
     ) {
+        if let Some(through) = persistence.and_then(|detail| detail.history_durable_sequence) {
+            self.projection.confirm_sources(through);
+        }
         let storage = persistence.map(|detail| storage_state(snapshot, detail));
         if storage == self.storage_published {
             return;
@@ -4621,6 +4625,7 @@ mod storage_fault_tests {
             projection: pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
             changes: Arc::from([]),
             contents: Arc::from([]),
+            source_changes: Arc::from([]),
         };
         history
             .commit_effect(

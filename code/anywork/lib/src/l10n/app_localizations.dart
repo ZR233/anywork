@@ -3314,6 +3314,12 @@ abstract class AppLocalizations {
   /// **'Load earlier messages'**
   String get timelineLoadEarlier;
 
+  /// No description provided for @timelineActivityNotLoaded.
+  ///
+  /// In en, this message translates to:
+  /// **'More activity to load'**
+  String get timelineActivityNotLoaded;
+
   /// No description provided for @timelineBackToLive.
   ///
   /// In en, this message translates to:
@@ -7047,7 +7053,7 @@ abstract class AppLocalizations {
   /// No description provided for @conversationActivityCompacting.
   ///
   /// In en, this message translates to:
-  /// **'Compacting'**
+  /// **'Compacting context'**
   String get conversationActivityCompacting;
 
   /// No description provided for @conversationActivityRunningTool.
@@ -7185,7 +7191,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineContextCompacted.
   ///
   /// In en, this message translates to:
-  /// **'Context compacted'**
+  /// **'Compaction completed'**
   String get timelineContextCompacted;
 
   /// No description provided for @timelineCompactionDetail.

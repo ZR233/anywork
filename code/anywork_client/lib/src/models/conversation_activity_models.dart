@@ -284,7 +284,16 @@ ConversationActivityView? projectConversationActivity({
     ThreadActivityKind.compacting => ConversationActivityKind.compacting,
     ThreadActivityKind.waitingApi => ConversationActivityKind.thinking,
     ThreadActivityKind.thinking => ConversationActivityKind.thinking,
-    ThreadActivityKind.responding => ConversationActivityKind.responding,
+    // The attempt can retain its coarse responding phase after a text part has
+    // ended. Only a real unfinished text atom still owns a live response.
+    ThreadActivityKind.responding =>
+      current.atoms.any(
+            (atom) =>
+                atom.kind == ChatAtomKind.text &&
+                atom.lifecycle is ActiveChatAtom,
+          )
+          ? ConversationActivityKind.responding
+          : ConversationActivityKind.thinking,
     ThreadActivityKind.planning => ConversationActivityKind.planning,
     ThreadActivityKind.runningTool => ConversationActivityKind.runningTool,
     ThreadActivityKind.awaitingApproval =>

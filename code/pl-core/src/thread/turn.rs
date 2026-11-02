@@ -327,7 +327,11 @@ impl Owner {
                     };
                     // The failed attempt already admitted its input. Reduce committed history,
                     // then let the next identified attempt proceed without consuming it again.
-                    if !self.recover_context(&next).await? {
+                    let failed_attempt_id = format!("{}:{step}", input.attempt_prefix);
+                    if !self
+                        .recover_context(&next, Some(&failed_attempt_id))
+                        .await?
+                    {
                         return Err(ThreadError::Model(error.clone()));
                     }
                     content = Vec::new();

@@ -65,6 +65,20 @@ abstract interface class ConversationQueryScope {
     required String before,
     required ReadDemand demand,
   });
+
+  /// Does not apply the returned window to the main history consumer or cursor.
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  });
+
+  /// Includes the observed completion; does not apply to the main consumer.
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  });
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,

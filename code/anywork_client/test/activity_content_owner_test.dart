@@ -12,6 +12,8 @@ CurrentProjection _active(int source) => CurrentProjection(
   sourceEffectSeq: source,
   logicalStatus: ThreadStatusView.running,
   executionPresent: true,
+  sources: const [],
+  atoms: const [],
   active: const CurrentActivityHead(
     id: 'activity',
     kind: ThreadActivityKind.thinking,
@@ -44,7 +46,7 @@ void main() {
       final retired = emptyCurrent();
       final completion = ChatBatch(
         placement: ChatPlacement.append,
-        messages: [chatMessage(id: 'completed-member')],
+        entries: [ChatAtomEntry(chatMessage(id: 'completed-member'))],
         current: retired,
       );
       feed.send(ConversationChatEvent(batch: completion));
@@ -72,7 +74,7 @@ void main() {
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          messages: [chatMessage(id: 'completed')],
+          entries: [ChatAtomEntry(chatMessage(id: 'completed'))],
         ),
       ),
     );
@@ -82,7 +84,7 @@ void main() {
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          messages: [],
+          entries: [],
           current: empty,
         ),
       ),
@@ -90,7 +92,7 @@ void main() {
     expect(fixture.session().current.value, same(empty));
     final batches = fixture.consumers['thread']!.batches;
     expect(batches.map((batch) => batch.before), ['opaque-before', null, null]);
-    expect(batches.last.messages, isEmpty);
+    expect(batches.last.entries, isEmpty);
     expect((await fixture.close()).complete, isTrue);
   });
 
@@ -154,7 +156,7 @@ void main() {
       open.result.complete(child);
       final set = ChatBatch(
         placement: ChatPlacement.set,
-        messages: [chatMessage(id: 'tool')],
+        entries: [ChatAtomEntry(chatMessage(id: 'tool'))],
       );
       await child.deliver(ConversationChatEvent(batch: set));
       await children.ready;

@@ -10,9 +10,11 @@ Runtime 的唯一产品投影持续消费可靠 effect，一次生成业务当�
 
 模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等、取消收束及活动退出顺序见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，不能把已结束成员保留在活动元数据直到 attempt 终态，或通过增大内容帧预算掩盖累积。
 
-会话 Chat 事件携带 [26](./26-timeline-content.md) 的同形 ChatBatch：完成消息和有界 current 快照同批交接，展开正文独立按范围订阅。State 保留输入、workspace、元数据等其他现役领域，不覆盖 Main Chat.current。低频产品 topic 按领域独立，目录身份只由目录所有者更新，不被迟到会话快照反写。
+会话 Chat 事件携带 [26](./26-timeline-content.md) 的同形 ChatBatch：原子和必要真实来源生命周期沿同一可靠序列交付，有界 current 与原子同切面；展开正文独立按范围订阅。真实 start、空 text part 和 terminal 不被可替换预览合并吞掉，也不能因完成 H 不变而漏交付。Rust 不提供工作组、组关闭、展示前缀/排序或组分页。State 保留输入、workspace、元数据等其他现役领域，不覆盖 Main Chat.current。低频产品 topic 按领域独立，目录身份只由目录所有者更新，不被迟到会话快照反写。
 
 open 先登记被动接收者，再捕获完成上界与 current 的一致切点，首个成功 Chat 为 Set，之后只有切点后的 Append。源资格失效或无法证明连续时终结原流并明确要求重同步，重新打开取得新 Set；不在原流 reset、不重放业务命令或旧 token。历史与当前态边界见 [26](./26-timeline-content.md)。
+
+前台展示阻挡不构成传输背压条件：接纳后的完成 props 可以退出有界呈现工作集，原子仍留在原完成集合。原 read lease 的排他 read_before 与包含锚点的 read_at 使用普通独立窗口恢复所需页，不能为恢复扩大 current、延迟 ACK 或另开可靠 feed；范围、未知结构和资源规则见 [26](./26-timeline-content.md#2682-整个未提交范围的资源边界)。
 
 ## 7.2 领域版本与实时内容
 
@@ -46,7 +48,7 @@ FRB 的消费确认与在途上限遵循 §7.10；HTTP 与原生消费者同样�
 
 SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型映射，ViewModel 只从已提交快照派生不可变 ViewState。Flutter 不把 snapshot 拆为伪事件再归约，也不保存 competing mirror。首帧、恢复和版本缺口仅更新受影响域，不清理草稿或无关状态。
 
-ChatBatch 通过 SDK domain 的单消费者接口交唯一 Flutter 呈现 owner，流和旧页共用串行 applyBatch；SDK 不保存历史尾部/分页缓存，Flutter 仅组件 ChatController 持消息。先接纳本批消息，再发布同批 current 和标记 ready，不等待 query、数据库、绘制或动画；具体语义归 [26](./26-timeline-content.md)。
+ChatBatch 通过 SDK domain 的单消费者接口交唯一 Flutter 呈现 owner，流和普通旧页共用串行 applyBatch；SDK 不分类/分组或保存历史尾部，已提交消息只由组件 ChatController 持有。先接纳轻量事实和合法引用、更新当前呈现、向 controller 提交可提交前缀/独立结果，再发布同批 current 并 ACK 连续接纳前缀。ACK 不等封组、下一页、query、数据库、用户展开、绘制或视口填满；长开放组跨 credit 窗口仍能收到后继事实，不用无限队列掩盖背压。布局后的补载通过原普通分页逐页推进，不延迟当前批接纳，具体语义归 [26](./26-timeline-content.md)。
 
 迟到结果按首次 await 前冻结的会话、incarnation、operationId、领域/草稿版本和附件归属结算。未知结果保留原意图，不自动重发。选择 null 仍为合法新会话草稿，流恢复或目录新增不能擅自选中历史会话。
 
@@ -74,6 +76,7 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 | 方法与 Thread 内路径 | 请求内容 | 返回内容 |
 | --- | --- | --- |
 | `POST /chat/older` | before、demand | Prepend ChatBatch |
+| `POST /chat/before` | completionSeq、可选 before、demand | 已观察完成位置之前的普通 Prepend 窗口；不改变原 H0 游标 |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |

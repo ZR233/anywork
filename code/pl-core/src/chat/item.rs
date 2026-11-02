@@ -130,6 +130,9 @@ pub struct ChatItemHeader {
     pub query_class: String,
     pub parent_id: Option<ChatKey>,
     pub byte_length: u64,
+    /// Producer-owned lightweight atomic provenance; Core never decodes it.
+    /// Empty is valid for generic consumers without a product envelope.
+    pub metadata: Arc<[u8]>,
 }
 
 /// Producer-supplied, immutable content ownership. Normal pages never clone this manifest.
@@ -140,6 +143,7 @@ pub struct ChatDraft {
     pub item_id: String,
     pub query_class: String,
     pub parent_id: Option<ChatKey>,
+    pub metadata: Arc<[u8]>,
     pub payload: Arc<[u8]>,
     pub contents: Arc<ChatContents>,
 }
@@ -154,6 +158,7 @@ impl ChatDraft {
             item_id: item_id.into(),
             query_class: query_class.into(),
             parent_id: None,
+            metadata: Arc::from([]),
             payload,
             contents: Arc::new(BTreeMap::new()),
         }
@@ -195,6 +200,7 @@ impl ChatItem {
                 query_class: draft.query_class,
                 parent_id: draft.parent_id,
                 byte_length: draft.payload.len() as u64,
+                metadata: draft.metadata,
             },
             payload: draft.payload,
             contents: draft.contents,
@@ -206,6 +212,7 @@ pub(crate) fn draft_matches_record(draft: &ChatDraft, record: &ChatItem) -> bool
     draft.item_id == record.header.item_id
         && draft.query_class == record.header.query_class
         && draft.parent_id == record.header.parent_id
+        && draft.metadata == record.header.metadata
         && draft.payload == record.payload
         && draft.contents == record.contents
 }

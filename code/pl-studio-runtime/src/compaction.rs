@@ -248,7 +248,25 @@ impl ContextPreparationHook for StudioCompaction {
         // ride only on the successful replacement: an unreached, failed, cancelled or rejected
         // preparation keeps its activation set, and historical Skill Items stay durable.
         let skill_clears = skill_activation_clears(&request.extensions);
-        request.enter_compacting();
+        if let Err(source) = request.enter_compacting().await {
+            // No provider work is allowed before reliable start admission. Keep the original
+            // owner/storage error as the cause; it is not a malformed model response.
+            let kind = match &source {
+                pl_core::thread::ThreadError::Cancelled | pl_core::thread::ThreadError::Closed => {
+                    pl_core::model::ModelFailureKind::Cancelled
+                }
+                _ => pl_core::model::ModelFailureKind::Unavailable,
+            };
+            return ContextPreparation::Failed {
+                error: pl_core::model::ModelError {
+                    kind,
+                    details: None,
+                    usage: Default::default(),
+                    source: Some(Box::new(source)),
+                },
+                mutations: Vec::new(),
+            };
+        }
         let mut model_request = request.model;
         model_request.context = request.committed_context;
         model_request.attempt_id = id.clone();

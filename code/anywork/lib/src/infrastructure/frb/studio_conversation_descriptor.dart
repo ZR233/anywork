@@ -12,14 +12,110 @@ ChatBatch _chatBatchFromFrb(frb_chat_types.BridgeChatBatch value) => ChatBatch(
     frb_chat_types.BridgeChatPlacement.prepend => ChatPlacement.prepend,
     frb_chat_types.BridgeChatPlacement.append => ChatPlacement.append,
   },
-  messages: value.messages
-      .map(
-        (item) =>
-            ChatMessage(id: item.id, payload: _payloadFromFrb(item.payload)),
-      )
-      .toList(),
+  entries: value.entries.map(_chatEntryFromFrb).toList(),
   before: value.before,
   current: value.current == null ? null : _currentFromFrb(value.current!),
+);
+
+ChatSourceId _chatSourceFromFrb(frb_chat_types.BridgeChatSourceId value) =>
+    switch (value) {
+      frb_chat_types.BridgeChatSourceId_ForegroundTurn(:final turnId) =>
+        ForegroundTurnChatSource(turnId: turnId),
+      frb_chat_types.BridgeChatSourceId_Input(:final inputId) =>
+        InputChatSource(inputId: inputId),
+      frb_chat_types.BridgeChatSourceId_BackgroundResult(:final messageId) =>
+        BackgroundResultChatSource(messageId: messageId),
+      frb_chat_types.BridgeChatSourceId_Operation(:final operationId) =>
+        OperationChatSource(operationId: operationId),
+      frb_chat_types.BridgeChatSourceId_Receipt(:final receiptId) =>
+        ReceiptChatSource(receiptId: receiptId),
+    };
+ChatFactPosition _chatPositionFromFrb(
+  frb_chat_types.BridgeChatFactPosition value,
+) => ChatFactPosition(
+  effectSeq: _exactTimelineInt(value.effectSeq, 'effect sequence'),
+  suborder: value.suborder,
+);
+ChatEntry _chatEntryFromFrb(frb_chat_types.BridgeChatEntry value) =>
+    switch (value) {
+      frb_chat_types.BridgeChatEntry_Atom(:final field0) => ChatAtomEntry(
+        _chatAtomFromFrb(field0),
+      ),
+      frb_chat_types.BridgeChatEntry_Source(:final field0) => ChatSourceEntry(
+        _chatSourceStateFromFrb(field0),
+      ),
+    };
+ChatSourceState _chatSourceStateFromFrb(
+  frb_chat_types.BridgeChatSourceState value,
+) => ChatSourceState(
+  source: _chatSourceFromFrb(value.source),
+  lifecycle: switch (value.lifecycle) {
+    frb_chat_types.BridgeChatSourceLifecycle_Unknown() =>
+      const UnknownChatSource(),
+    frb_chat_types.BridgeChatSourceLifecycle_Active() =>
+      const ActiveChatSource(),
+    frb_chat_types.BridgeChatSourceLifecycle_Ended(:final outcome) =>
+      EndedChatSource(outcome: ChatTerminalOutcome.values.byName(outcome.name)),
+  },
+  started: value.started == null ? null : _chatPositionFromFrb(value.started!),
+  ended: value.ended == null ? null : _chatPositionFromFrb(value.ended!),
+);
+ChatAtom _chatAtomFromFrb(frb_chat_types.BridgeChatAtom value) => ChatAtom(
+  id: value.id,
+  completionItemId: value.completionItemId,
+  completionSeq: _exactNullableTimelineInt(
+    value.completionSeq,
+    'completion sequence',
+  ),
+  source: _chatSourceFromFrb(value.source),
+  sourceState: value.sourceState == null
+      ? null
+      : _chatSourceStateFromFrb(value.sourceState!),
+  sourceOrder: _exactNullableTimelineInt(value.sourceOrder, 'source order'),
+  kind: ChatAtomKind.values.byName(value.kind.name),
+  delivery: ChatDeliveryKind.values.byName(value.delivery.name),
+  lifecycle: switch (value.lifecycle) {
+    frb_chat_types.BridgeChatAtomLifecycle_Active(
+      :final started,
+      :final status,
+    ) =>
+      ActiveChatAtom(
+        started: started == null ? null : _chatPositionFromFrb(started),
+        status: ChatActiveStatus.values.byName(status.name),
+      ),
+    frb_chat_types.BridgeChatAtomLifecycle_Terminal(
+      :final started,
+      :final ended,
+      :final outcome,
+    ) =>
+      TerminalChatAtom(
+        started: started == null ? null : _chatPositionFromFrb(started),
+        ended: ended == null ? null : _chatPositionFromFrb(ended),
+        outcome: ChatTerminalOutcome.values.byName(outcome.name),
+      ),
+  },
+  turnId: value.turnId,
+  attemptId: value.attemptId,
+  tool: value.tool == null
+      ? null
+      : ChatToolIdentity(callId: value.tool!.callId, name: value.tool!.name),
+  textChannel: value.textChannel == null
+      ? null
+      : ThreadTextChannel.values.byName(value.textChannel!.name),
+  startedAt: value.startedAt == null
+      ? null
+      : _exactSignedTimelineInt(value.startedAt!),
+  finishedAt: value.finishedAt == null
+      ? null
+      : _exactSignedTimelineInt(value.finishedAt!),
+  contents: [
+    for (final content in value.contents)
+      ChatAtomContent(
+        role: ChatContentRole.values.byName(content.role.name),
+        reference: _contentRefFromFrb(content.reference),
+      ),
+  ],
+  payload: value.payload == null ? null : _payloadFromFrb(value.payload!),
 );
 
 PayloadData _payloadFromFrb(frb_chat_types.BridgePayloadData value) =>
@@ -109,13 +205,14 @@ CurrentProjection _currentFromFrb(
   sourceEffectSeq: _exactTimelineInt(value.sourceEffectSeq, 'source effect'),
   logicalStatus: ThreadStatusView.values.byName(value.logicalStatus.name),
   executionPresent: value.executionPresent,
+  sources: value.sources.map(_chatSourceStateFromFrb).toList(),
+  atoms: value.atoms.map(_chatAtomFromFrb).toList(),
   active: value.active == null ? null : _currentActivityFromFrb(value.active!),
   activeTurn: value.activeTurn == null
       ? null
       : CurrentTurnHead(
           id: value.activeTurn!.id,
           phase: StudioTurnActivity.values.byName(value.activeTurn!.phase.name),
-          childrenParentId: value.activeTurn!.childrenParentId,
         ),
   plan: value.plan == null
       ? null
@@ -199,6 +296,42 @@ final class _FrbConversationReader implements ConversationReader {
     return FrbStudioTransport._bridgeCall(
       () async => _chatBatchFromFrb(
         await _feed._native.loadOlder(
+          before: before,
+          demand: _readDemandToFrb(demand),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _chatBatchFromFrb(
+        await _feed._native.readBefore(
+          completionSeq: BigInt.from(completionSeq),
+          before: before,
+          demand: _readDemandToFrb(demand),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _chatBatchFromFrb(
+        await _feed._native.readAt(
+          completionSeq: BigInt.from(completionSeq),
           before: before,
           demand: _readDemandToFrb(demand),
         ),

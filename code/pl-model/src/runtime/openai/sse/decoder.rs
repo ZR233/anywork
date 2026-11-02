@@ -216,7 +216,15 @@ impl OpenAiStreamDecoder {
                 // so multiple summaries of one item stay distinct parts instead of collapsing into
                 // index zero and overwriting each other.
                 let content_index = if is_summary {
-                    event.summary_index.unwrap_or(0).max(0) as u32
+                    let Some(index) = event
+                        .summary_index
+                        .and_then(|index| u32::try_from(index).ok())
+                    else {
+                        return self.protocol_failure(
+                            "provider stream protocol error: reasoning summary delta carries no valid summary index",
+                        );
+                    };
+                    index
                 } else {
                     event.content_index.unwrap_or(0).max(0) as u32
                 };

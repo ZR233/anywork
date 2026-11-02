@@ -278,20 +278,24 @@ impl Owner {
             content: Vec::new(),
             cancellation,
         };
-        if !self.recover_context(&input).await? {
+        if !self.recover_context(&input, None).await? {
             return Err(ThreadError::InvalidContext);
         }
         Ok(self.state.context.clone())
     }
 
     /// Reduces an already-admitted request after a typed service capacity refusal.
-    pub(super) async fn recover_context(&mut self, input: &StepInput) -> Result<bool, ThreadError> {
+    pub(super) async fn recover_context(
+        &mut self,
+        input: &StepInput,
+        source_attempt_id: Option<&str>,
+    ) -> Result<bool, ThreadError> {
         let result = async {
             self.enter_model_execution(ModelExecutionPhase::Admitting);
             self.ensure_model_admission(&input.cancellation).await?;
             let mut plan = self.tools.freeze();
-            self.enter_model_execution(ModelExecutionPhase::CompactingContext);
-            self.prepare_context(input, &mut plan, &[], true).await
+            self.prepare_context(input, &mut plan, &[], true, source_attempt_id)
+                .await
         }
         .await;
         self.state.model_execution = None;
@@ -366,7 +370,7 @@ impl Owner {
             self.apply_pending_runtime_facts()?;
             for refresh in 0..=1 {
                 let prepared = self
-                    .prepare_context(&input, &mut plan, &frozen_input, false)
+                    .prepare_context(&input, &mut plan, &frozen_input, false, None)
                     .await;
                 if refresh == 0
                     && matches!(
@@ -462,9 +466,8 @@ impl Owner {
                         && retry_of.is_none() =>
                 {
                     *recovery_used = true;
-                    self.enter_model_execution(ModelExecutionPhase::CompactingContext);
                     let compacted = self
-                        .prepare_context(&input, &mut plan, &frozen_input, true)
+                        .prepare_context(&input, &mut plan, &frozen_input, true, None)
                         .await?;
                     if !compacted {
                         return Err(ThreadError::Model(Arc::new(error)));

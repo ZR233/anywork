@@ -26,10 +26,12 @@ pub(super) struct Owner {
     pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
-    pub(super) compacting_progress: Option<watch::Receiver<bool>>,
+    pub(super) compaction_call: Option<context_preparation::CompactionCall>,
+    pub(super) pending_context_compactions: Vec<ContextCompactionEvent>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
     pub(super) model_members: Option<super::model_members::MemberCall>,
     pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,
+    pub(super) pending_model_member_starts: Vec<crate::model::ModelStartedMember>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
@@ -788,6 +790,8 @@ impl Owner {
             &self.state,
             sequence,
             std::mem::take(&mut self.pending_model_members).into(),
+            std::mem::take(&mut self.pending_model_member_starts).into(),
+            std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {
             // Nothing was committed, so no fact can take a reservation over: the claim is dropped
             // and the operation's own boundary releases its ceiling instead.

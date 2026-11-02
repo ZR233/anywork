@@ -224,7 +224,7 @@ Future<void> _runLive(
   final coldStartLatest = <String, Object?>{
     'live': true,
     'loadedItems': comparison.loadedCount,
-    'viewportFilled': latestPage['viewportFilled'],
+    'firstContentLaidOut': latestPage['firstContentLaidOut'],
     'pixelsAtTop': latestPage['pixelsAtTop'],
   };
   final pages = await scene.readDeepPages(comparison);
@@ -284,7 +284,7 @@ Future<void> _runRestart(
   final coldStartLatest = <String, Object?>{
     'live': true,
     'loadedItems': display.loadedCount,
-    'viewportFilled': latestPage['viewportFilled'],
+    'firstContentLaidOut': latestPage['firstContentLaidOut'],
     'pixelsAtTop': latestPage['pixelsAtTop'],
   };
   expect(
@@ -350,7 +350,7 @@ Future<void> _runRestart(
 }
 
 Map<String, Object?> _latestPage(TimelineDisplayLease display) => {
-  'viewportFilled': display.firstContentLayout != null,
+  'firstContentLaidOut': display.firstContentLayout != null,
   'atLiveEdge': display.mode == TimelineDisplayMode.live,
   'pixelsAtTop':
       !display.scrollController.hasClients ||

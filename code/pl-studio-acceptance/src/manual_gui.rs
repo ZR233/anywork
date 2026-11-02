@@ -8,6 +8,7 @@ mod question_history;
 mod realtime_presentation;
 mod shutdown;
 mod skill_activity;
+mod timeline_concept;
 mod timeline_history_20k;
 mod wait_events;
 mod web_search;
@@ -890,12 +891,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history-20k"
                     | "question-history"
                     | "realtime-presentation"
+                    | "timeline-concept"
                     | "stress-body-large"
                     | "wait-events"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, timeline-history-20k, question-history, realtime-presentation, \
+         timeline-history, timeline-history-20k, question-history, realtime-presentation, timeline-concept, \
          stress-body-large, wait-events and the delegation scenes"
     );
     ensure!(
@@ -973,6 +975,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "statistics"
             | "realtime"
             | "realtime-presentation"
+            | "timeline-concept"
             | "stress-body"
             | "stress-body-large"
             | "history-lock"
@@ -1392,6 +1395,36 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
+    }
+
+    if options.scenario == "timeline-concept" {
+        let project = working.path().join("timeline-concept-project");
+        let result = timeline_concept::run(
+            &timeline_concept::TimelineConceptScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+                capture_presentation,
+                provider_url: &ready.base_url,
+            },
+            fixture,
+        );
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed timeline-concept environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
     }
 
     if options.scenario == "realtime-presentation" {
@@ -2645,11 +2678,12 @@ fn run_timeline_history_scenario(
                 .with_context(|| format!("timeline-history {phase} report has no latest page"))?;
             ensure!(
                 report.get("latestPageOk") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("firstContentLaidOut")
+                        == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("atLiveEdge") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("hasOlder") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} latest display did not fill its viewport: \
+                "timeline-history {phase} latest display has no first content layout: \
                  {latest_page:?}"
             );
             let cold_start = report
@@ -2664,9 +2698,10 @@ fn run_timeline_history_scenario(
                         .get("loadedItems")
                         .and_then(serde_json::Value::as_u64)
                         .is_some_and(|items| items > 0)
-                    && cold_start.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && cold_start.get("firstContentLaidOut")
+                        == Some(&serde_json::Value::Bool(true))
                     && cold_start.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} cold start did not fill the latest viewport: \
+                "timeline-history {phase} cold start has no first content layout: \
                  {cold_start:?}"
             );
             let paging = report
@@ -3691,7 +3726,7 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     model.binding.set_transport(profile);
     model.binding.request.api_model = None;
-    if ready.scenario == "tool-scroll" {
+    if matches!(ready.scenario.as_str(), "tool-scroll" | "timeline-concept") {
         model.capabilities.input.push(ModelInputCapability::media(
             ModelModality::Image,
             vec![ModelInputSource::Local],
@@ -3705,7 +3740,10 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
     let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
-    endpoint.service_capabilities.remote_compaction = ready.scenario == "call-lifecycle-recovery";
+    endpoint.service_capabilities.remote_compaction = matches!(
+        ready.scenario.as_str(),
+        "call-lifecycle-recovery" | "timeline-concept"
+    );
     let mut models = vec![model];
     if ready.scenario == "gui" {
         // Distinct metadata in the same isolated account exercises the real
@@ -5042,7 +5080,17 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
             "failed to initialize isolated realtime project"
         );
         {
-            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true)?;
+            let native_exit = output.join("native-exit.json");
+            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true, &native_exit)?;
+            let launcher_pid = gui.child.id();
+            fs::write(
+                output.join("realtime-process-identity.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "launcherPid": launcher_pid,
+                    "actualGuiPid": null,
+                    "nativeExitReport": "native-exit.json",
+                }))?,
+            )?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
             let mut driver =
                 start_realtime_driver(app_dir, home, &vm_url, &project, output, working, &stage)?;
@@ -5058,6 +5106,24 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
                     "driver_not_started (see realtime-driver-errors.txt)".to_owned()
                 })
             );
+            let summary: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("realtime-summary.json"))?)?;
+            let gui_pid = summary["counts"]["nativeGuiPid"]
+                .as_u64()
+                .filter(|pid| *pid > 0)
+                .context("realtime Driver did not identify its actual native GUI")?;
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "realtime")?;
+            fs::write(
+                output.join("realtime-process-identity.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "launcherPid": launcher_pid,
+                    "actualGuiPid": gui_pid,
+                    "launcherExitCode": status.code(),
+                    "nativeExitReport": "native-exit.json",
+                }))?,
+            )?;
+            ensure!(status.success(), "realtime launcher failed with {status}");
+            require_native_exit(&native_exit, Some(gui_pid))?;
         }
         Ok(())
     })();
@@ -6962,13 +7028,22 @@ fn start_realtime_gui(
     home: &Path,
     log_path: &Path,
     credit_wait_diagnostics: bool,
+    native_exit_report: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--driver",
+            "--profile",
+            "--native-launch",
+            "--native-exit-report",
+        ])
+        .arg(native_exit_report)
         .env("ANYWORK_HOME", home);
     // §24.3: only the realtime journey raises the real conversation-credit
     // producer to debug for the Pending diagnostic; the warn floor for
@@ -7540,6 +7615,7 @@ mod scenario_cli_tests {
             "timeline-history",
             "question-history",
             "realtime-presentation",
+            "timeline-concept",
         ] {
             let options = ManualGuiOptions::try_parse_from(["acceptance", "--scenario", scenario])
                 .expect("supported native presentation scenario");

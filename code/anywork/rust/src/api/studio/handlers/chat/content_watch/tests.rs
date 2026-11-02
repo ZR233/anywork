@@ -46,6 +46,15 @@ fn range() -> BridgeContentRange {
     }
 }
 
+fn completed_payload_item_id(atom: &crate::api::studio::types::BridgeChatAtom) -> Option<&str> {
+    match (&atom.lifecycle, atom.completion_item_id.as_deref()) {
+        (crate::api::studio::types::BridgeChatAtomLifecycle::Terminal { .. }, Some(item_id)) => {
+            Some(item_id)
+        }
+        _ => None,
+    }
+}
+
 async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, BridgeContentRef)> {
     let mut native = env.feed().await?;
     let initial = loop {
@@ -63,8 +72,16 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
     };
     let mut page = chat::batch(*initial);
     loop {
-        for message in page.messages {
-            let manifest = facade.list_contents(message.id, None, demand).await?;
+        for entry in page.entries {
+            let crate::api::studio::types::BridgeChatEntry::Atom(atom) = entry else {
+                continue;
+            };
+            let Some(item_id) = completed_payload_item_id(&atom) else {
+                continue;
+            };
+            let manifest = facade
+                .list_contents(item_id.to_owned(), None, demand)
+                .await?;
             if let Some(entry) = manifest.entries.into_iter().next() {
                 let window = facade
                     .read_content(entry.reference.clone(), range())

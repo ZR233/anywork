@@ -408,8 +408,10 @@ pub(super) async fn get(
                 pending.push(value);
             }
         }
-        let execution=batch.messages.into_iter().rev().filter_map(|message| {
-            match message.payload {
+        let execution=batch.entries.into_iter().rev().filter_map(|entry| {
+            let pl_protocol::ChatEntry::Atom(message) = entry else { return None; };
+            let payload = message.payload?;
+            match payload {
                 pl_protocol::PayloadData::Deferred { .. }=>Some(serde_json::json!({"id":message.id,"kind":"deferred"})),
                 pl_protocol::PayloadData::Inline { bytes }=>match serde_json::from_slice::<serde_json::Value>(&bytes) {
                     Ok(value) if matches!(value["type"].as_str(),Some("turn"|"inference"))=>Some(serde_json::json!({"id":message.id,"kind":value["type"],
@@ -730,18 +732,34 @@ pub(super) async fn search(
                     anyhow::bail!("search lost its original exclusive boundary");
                 };
                 let end = page.before.is_none();
-                let Some(item) = page.messages.first() else {
+                let Some(item) = page.entries.iter().find_map(|entry| match entry {
+                    pl_protocol::ChatEntry::Atom(atom) if atom.completion_item_id.is_some() => {
+                        Some(atom)
+                    }
+                    _ => None,
+                }) else {
                     advance(&mut cursor, page.before, end);
                     continue;
                 };
-                let Some(reference) =
-                    search_read(cancel, text_reference(&reader, &item.id)).await?
+                let Some(reference) = search_read(
+                    cancel,
+                    text_reference(
+                        &reader,
+                        item.completion_item_id
+                            .as_deref()
+                            .context("completed item owner")?,
+                    ),
+                )
+                .await?
                 else {
                     advance(&mut cursor, page.before, end);
                     continue;
                 };
                 cursor.pending = Some(PendingText {
-                    item_id: item.id.clone(),
+                    item_id: item
+                        .completion_item_id
+                        .clone()
+                        .context("completed item owner")?,
                     reference,
                     offset: 0,
                     generation: None,

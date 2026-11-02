@@ -17,6 +17,7 @@ pub(in crate::studio) mod current;
 pub(super) mod migration;
 #[path = "conversation/range.rs"]
 mod range;
+pub(in super::super) mod sources;
 #[cfg(test)]
 #[path = "conversation/tests.rs"]
 mod tests;
@@ -41,6 +42,7 @@ fn header(row: &QueryResult) -> Result<ChatItemHeader> {
             .map(ChatKey::from_encoded)
             .transpose()?,
         byte_length: u64::try_from(row.try_get::<i64>("", "byte_length")?)?,
+        metadata: Arc::from(row.try_get::<Vec<u8>>("", "metadata")?),
     })
 }
 
@@ -59,7 +61,7 @@ pub(super) async fn latest_append_seq(db: &impl ConnectionTrait) -> Result<u64> 
 pub(super) async fn read_item(db: &impl ConnectionTrait, id: &str) -> Result<Option<ChatItem>> {
     let Some(row) = db
         .query_one_raw(statement(
-            "SELECT seq,item_id,query_class,parent_id,length(payload) AS byte_length,payload
+            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload
          FROM conversation_items WHERE item_id=?",
             vec![id.into()],
         ))
@@ -108,7 +110,7 @@ pub(super) async fn append_records<'a>(
                 "immutable completion identity conflict"
             );
             let old = db.query_one_raw(statement(
-                "SELECT seq,item_id,query_class,parent_id,length(payload) AS byte_length,payload
+                "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload
                  FROM conversation_items WHERE item_id=?", vec![h.item_id.clone().into()],
             )).await?.context("committed completion disappeared")?;
             ensure!(
@@ -148,10 +150,10 @@ pub(super) async fn append_records<'a>(
             "completion sequence is not contiguous"
         );
         db.execute_raw(statement(
-            "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload) VALUES(?,?,?,?,?)",
+            "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata) VALUES(?,?,?,?,?,?)",
             vec![integer(h.append_seq)?.into(), h.item_id.clone().into(), h.query_class.clone().into(),
                 h.parent_id.as_ref().map(|key| key.as_str().to_owned()).into(),
-                item.payload.to_vec().into()],
+                item.payload.to_vec().into(),h.metadata.to_vec().into()],
         )).await?;
         write_contents(db, &h.item_id, &item.contents).await?;
         head = h.append_seq;
@@ -170,7 +172,7 @@ pub(super) async fn page(
     integer(request.ceiling)?;
     integer(request.after)?;
     let mut sql = String::from(
-        "SELECT seq,item_id,query_class,parent_id,length(payload) AS byte_length
+        "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length
          FROM conversation_items WHERE seq<=? AND seq>?",
     );
     let mut values = vec![

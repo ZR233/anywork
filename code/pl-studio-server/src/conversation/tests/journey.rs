@@ -6,10 +6,10 @@ use anyhow::{Context, Result, bail, ensure};
 use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentManifestPage, ContentOwner,
-    ContentTarget, ContentWindow, CurrentCollectionPage, CurrentContentRole, CurrentProjection,
-    PayloadData, ReadDemand, ThreadNotification, ThreadSubscriptionRequest,
-    ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ChatAtom, ChatAtomKind, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentManifestPage,
+    ContentOwner, ContentTarget, ContentWindow, CurrentCollectionPage, CurrentContentRole,
+    CurrentProjection, PayloadData, ReadDemand, ThreadItemKind, ThreadNotification,
+    ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{
         CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
         SubmitPromptRequest,
@@ -31,12 +31,21 @@ use super::{ACCOUNT, AppState, DEADLINE, MODEL, configure};
 const FIRST: &str = "http-first";
 const NEXT: &str = "http-next";
 const SHUTDOWN: &str = "http-shutdown";
+const EXECUTION_HISTORY_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
+const EXECUTION_HISTORY_PAGE_LIMIT: usize = 64;
+const EXECUTION_HISTORY_MAX_PAGES: usize = 32;
+const EXECUTION_HISTORY_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 fn demand(items: u32) -> ReadDemand {
     ReadDemand {
         max_items: items,
         max_bytes: 256 * 1024,
     }
+}
+
+/// `ChatScope::Children.parent_id` carries Core's encoded `ChatKey("turn", id)`.
+fn turn_parent_key(turn_id: &str) -> String {
+    format!("{}:turn{turn_id}", "turn".len())
 }
 
 struct Environment {
@@ -385,9 +394,13 @@ async fn payload(
     env: &Environment,
     thread: &str,
     capability: &str,
-    message: &ChatMessage,
+    atom: &ChatAtom,
 ) -> Result<Value> {
-    let bytes = match &message.payload {
+    let payload = atom
+        .payload
+        .as_ref()
+        .context("completed atom omitted its frozen payload")?;
+    let bytes = match payload {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
             reference,
@@ -419,15 +432,19 @@ async fn all_history(
     thread: &str,
     capability: &str,
     first: ChatBatch,
-) -> Result<Vec<ChatMessage>> {
-    let mut messages = first.messages;
+) -> Result<Vec<ChatAtom>> {
+    let mut messages = first
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::Atom(atom) => Some(*atom),
+            ChatEntry::Source(_) => None,
+        })
+        .collect::<Vec<_>>();
     let mut before = first.before;
     for _ in 0..32 {
         let Some(cursor) = before else {
-            let ids = messages
-                .iter()
-                .map(|message| &message.id)
-                .collect::<HashSet<_>>();
+            let ids = messages.iter().map(|atom| &atom.id).collect::<HashSet<_>>();
             ensure!(ids.len() == messages.len(), "duplicate completed item");
             return Ok(messages);
         };
@@ -444,10 +461,111 @@ async fn all_history(
             batch.before.as_ref() != Some(&cursor),
             "nonadvancing cursor"
         );
-        messages.splice(0..0, batch.messages);
+        messages.splice(
+            0..0,
+            batch.entries.into_iter().filter_map(|entry| match entry {
+                ChatEntry::Atom(atom) => Some(*atom),
+                ChatEntry::Source(_) => None,
+            }),
+        );
         before = batch.before;
     }
     bail!("fixture history did not reach EOF within its finite budget")
+}
+
+async fn assert_execution_history_members(
+    runtime: &StudioRuntime,
+    thread: &str,
+    turn_id: &str,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let mut remaining_bytes = EXECUTION_HISTORY_OBSERVATION_BYTES;
+    let mut latest = (0usize, 0usize, 0usize);
+    loop {
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "execution-history save deadline elapsed for Turn {turn_id}: \
+             matching_turns={}, thinking={}, inference={}, remaining_bytes={remaining_bytes}",
+            latest.0,
+            latest.1,
+            latest.2
+        );
+        let mut cursor = None;
+        let mut matched_turns = 0;
+        let mut thinking = 0;
+        let mut inference = 0;
+        let mut reached_eof = false;
+        for _ in 0..EXECUTION_HISTORY_MAX_PAGES {
+            let page = match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                runtime.list_thread_turns(thread, cursor.as_deref(), EXECUTION_HISTORY_PAGE_LIMIT),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    bail!(
+                        "execution-history query deadline elapsed for Turn {turn_id}: \
+                         matching_turns={}, thinking={}, inference={}, remaining_bytes={remaining_bytes}",
+                        latest.0,
+                        latest.1,
+                        latest.2
+                    )
+                }
+            };
+            let encoded_bytes = serde_json::to_vec(&page)?.len();
+            remaining_bytes = remaining_bytes
+                .checked_sub(encoded_bytes)
+                .with_context(|| {
+                    format!(
+                        "execution-history observation byte budget exhausted for Turn {turn_id}: \
+                     matching_turns={matched_turns}, thinking={thinking}, inference={inference}"
+                    )
+                })?;
+            for history in page
+                .turns
+                .iter()
+                .filter(|history| history.turn.id == turn_id)
+            {
+                matched_turns += 1;
+                for item in &history.items {
+                    match item.kind() {
+                        ThreadItemKind::Thinking => thinking += 1,
+                        ThreadItemKind::Inference => inference += 1,
+                        _ => {}
+                    }
+                }
+            }
+            latest = (matched_turns, thinking, inference);
+            let next = page.next_cursor;
+            ensure!(
+                next.is_none() || next != cursor,
+                "execution-history cursor did not advance for Turn {turn_id}"
+            );
+            cursor = next;
+            if cursor.is_none() {
+                reached_eof = true;
+                break;
+            }
+        }
+        ensure!(
+            reached_eof,
+            "execution-history page budget exceeded for Turn {turn_id}: \
+             matching_turns={matched_turns}, thinking={thinking}, inference={inference}"
+        );
+        latest = (matched_turns, thinking, inference);
+        if matched_turns == 1 && thinking == 1 && inference == 1 {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        ensure!(
+            !remaining.is_zero() && remaining_bytes > 0,
+            "execution-history save deadline/resource budget exhausted for Turn {turn_id}: \
+             matching_turns={matched_turns}, thinking={thinking}, inference={inference}, \
+             remaining_bytes={remaining_bytes}"
+        );
+        tokio::time::sleep(EXECUTION_HISTORY_POLL.min(remaining)).await;
+    }
 }
 
 async fn current_with_response(body: &mut SseBody, first: ChatBatch) -> Result<CurrentProjection> {
@@ -531,42 +649,61 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         complete(&env.runtime, &thread, &first_stage, FIRST).await?;
         let (capability, mut main) = env.open(&thread, None, 1).await?;
         let first = main.chat().await?;
-        ensure!(first.placement == ChatPlacement::Set && !first.messages.is_empty());
+        let first_atoms = first
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, ChatEntry::Atom(_)))
+            .count();
+        ensure!(first.placement == ChatPlacement::Set && first_atoms > 0);
         first.validate_for(&ChatScope::Main)?;
         let original = env.lease(&thread, &capability)?;
         ensure!(original.owner.reader.subscription_id() == capability);
         drop(original);
         let history = all_history(&env, &thread, &capability, first.clone()).await?;
         ensure!(
-            history.len() > first.messages.len(),
+            history.len() > first_atoms,
             "older never returned real completed history"
         );
         let mut parent = None;
         let mut completed_body = None;
+        let mut main_thinking = 0;
+        let mut main_inference = 0;
         for message in &history {
             let value = payload(&env, &thread, &capability, message).await?;
-            ensure!(
-                !matches!(value["type"].as_str(), Some("thinking" | "inference")),
-                "activity item leaked to Main"
-            );
-            if value["type"] == "turn" {
-                parent = Some((
-                    value["data"]["childrenParentId"]
-                        .as_str()
-                        .context("frozen Turn children parent")?
-                        .to_owned(),
-                    value["turnId"]
-                        .as_str()
-                        .context("frozen Turn identity")?
-                        .to_owned(),
-                ));
+            match value["type"].as_str() {
+                Some("thinking") => main_thinking += 1,
+                Some("inference") => main_inference += 1,
+                _ => {}
             }
+            if value["type"] == "turn" {
+                ensure!(
+                    message.kind == ChatAtomKind::TurnReceipt,
+                    "Turn payload was not labeled as a TurnReceipt atom"
+                );
+                let turn_id = message
+                    .turn_id
+                    .as_deref()
+                    .context("TurnReceipt atom omitted its actual Turn identity")?;
+                ensure!(
+                    value["turnId"].as_str() == Some(turn_id),
+                    "TurnReceipt metadata and payload Turn identity disagree"
+                );
+                parent = Some((turn_parent_key(turn_id), turn_id.to_owned()));
+            }
+            let completion_item_id = message
+                .completion_item_id
+                .as_deref()
+                .context("completed atom omitted completion item identity")?;
             let manifest: ContentManifestPage = env
                 .query(
                     &thread,
                     &capability,
                     "contents/manifest",
-                    &json!({"itemId": message.id, "continuation": null, "demand": demand(8)}),
+                    &json!({
+                        "itemId": completion_item_id,
+                        "continuation": null,
+                        "demand": demand(8)
+                    }),
                 )
                 .await?;
             if value["type"] == "text"
@@ -575,6 +712,11 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 completed_body = Some(entry.reference.clone());
             }
         }
+        ensure!(
+            main_thinking == 1 && main_inference == 0,
+            "Main must contain exactly one real thinking atom and no copied inference: \
+             thinking={main_thinking}, inference={main_inference}"
+        );
         let reference = completed_body.context("real completed response manifest")?;
         let window: ContentWindow = env
             .query(
@@ -589,46 +731,71 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         ensure!(window.sealed && window.offset == 3 && window.bytes == old_text.as_bytes()[3..34]);
         ensure!(window.available_through == old_text.len() as u64);
         let (parent, turn_id) = parent.context("completed Turn parent and identity")?;
+        assert_execution_history_members(&env.runtime, &thread, &turn_id).await?;
         let (child_cap, mut children) = env.open(&thread, Some(&parent), 1).await?;
         let child_set = children.chat().await?;
         ensure!(child_set.placement == ChatPlacement::Set && child_set.current.is_none());
         let child_messages = all_history(&env, &thread, &child_cap, child_set).await?;
         ensure!(
             !child_messages.is_empty(),
-            "Children did not return the real reasoning member"
+            "Children omitted this Turn's real Main-member subset"
         );
-        let main_ids = history
+        let main_member_ids = history
             .iter()
-            .map(|message| &message.id)
+            .map(|atom| atom.id.clone())
             .collect::<HashSet<_>>();
-        ensure!(
-            child_messages
-                .iter()
-                .all(|message| !main_ids.contains(&message.id)),
-            "Main and Children mixed"
-        );
+        let main_ids = main_member_ids.clone();
+        let main_completion_ids = history
+            .iter()
+            .filter_map(|atom| atom.completion_item_id.clone())
+            .collect::<HashSet<_>>();
         let mut thinking = 0;
         let mut inferences = 0;
         for message in &child_messages {
             let value = payload(&env, &thread, &child_cap, message).await?;
             ensure!(
-                value["turnId"].as_str() == Some(turn_id.as_str()),
-                "another Turn's item leaked to Children: {}",
-                value["turnId"]
+                message.turn_id.as_deref() == Some(turn_id.as_str()),
+                "Children returned an atom whose metadata belongs to another Turn"
             );
             ensure!(
-                value["data"]["outcome"]["kind"] == "completed",
-                "Children returned a member without its completed frozen outcome"
+                main_member_ids.contains(&message.id)
+                    || message
+                        .completion_item_id
+                        .as_ref()
+                        .is_some_and(|id| main_completion_ids.contains(id)),
+                "Children atom was not a stable member/completion identity in Main"
+            );
+            ensure!(
+                value["turnId"].as_str() == Some(turn_id.as_str()),
+                "Children payload belongs to another Turn: {}",
+                value["turnId"]
             );
             match value["type"].as_str() {
-                Some("thinking") => thinking += 1,
+                Some("thinking") => {
+                    thinking += 1;
+                    ensure!(
+                        value["data"]["outcome"]["kind"] == "completed",
+                        "Children Thinking member is not complete"
+                    );
+                }
                 Some("inference") => inferences += 1,
-                kind => bail!("unexpected member from this finite reasoning response: {kind:?}"),
+                Some("turn") => {
+                    ensure!(
+                        value["data"]["outcome"]["kind"] == "completed",
+                        "Children TurnReceipt is not terminally completed"
+                    );
+                }
+                Some(
+                    "tool" | "text" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
+                    | "plan",
+                ) => {}
+                kind => bail!("unexpected member from this Turn's Children: {kind:?}"),
             }
         }
         ensure!(
-            thinking == 1 && inferences == 1,
-            "missing or repeated completed response member"
+            thinking == 1 && inferences == 0,
+            "Children must expose this Turn's thinking Main atom without an inference copy: \
+             thinking={thinking}, inference={inferences}"
         );
         env.submit(&thread, NEXT).await?;
         tokio::time::timeout(DEADLINE, growing.wait_reached()).await?;
@@ -679,7 +846,10 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .await?;
         ensure!(
             older.placement == ChatPlacement::Prepend
-                && !older.messages.is_empty()
+                && older
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry, ChatEntry::Atom(_)))
                 && older.current.is_none()
         );
         let active_id = match &response_ref.target {
@@ -758,15 +928,21 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         watch.end().await?;
         // Completion appends the same owned response, then retires current.
         let mut appended = HashSet::new();
+        let mut appended_completion_ids = HashSet::new();
         let mut response_seen = false;
         let mut retired = false;
         for _ in 0..64 {
             let batch = main.chat().await?;
             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
-            for message in &batch.messages {
-                ensure!(!main_ids.contains(&message.id) && appended.insert(message.id.clone()));
-                if message.id == active_id {
-                    response_seen = true;
+            for entry in &batch.entries {
+                if let ChatEntry::Atom(atom) = entry {
+                    ensure!(!main_ids.contains(&atom.id) && appended.insert(atom.id.clone()));
+                    if let Some(completion_item_id) = &atom.completion_item_id {
+                        ensure!(appended_completion_ids.insert(completion_item_id.clone()));
+                    }
+                    if atom.completion_item_id.as_deref() == Some(active_id.as_str()) {
+                        response_seen = true;
+                    }
                 }
             }
             if batch
@@ -785,48 +961,90 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         let (latest_cap, mut latest) = env.open(&thread, None, 1).await?;
         let latest_set = latest.chat().await?;
         ensure!(latest_set.placement == ChatPlacement::Set);
-        let terminal = latest_set
-            .messages
-            .last()
+        let terminal_atom = latest_set
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                ChatEntry::Atom(atom)
+                    if atom.kind == ChatAtomKind::TurnReceipt && atom.payload.is_some() =>
+                {
+                    Some(atom)
+                }
+                ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
+            })
             .context("latest completed Turn")?;
-        let terminal = payload(&env, &thread, &latest_cap, terminal).await?;
+        let next_turn_identity = terminal_atom
+            .turn_id
+            .as_deref()
+            .context("latest TurnReceipt atom omitted its actual Turn identity")?
+            .to_owned();
+        let next_parent = turn_parent_key(&next_turn_identity);
+        let terminal = payload(&env, &thread, &latest_cap, terminal_atom).await?;
         ensure!(
             terminal["type"] == "turn" && terminal["data"]["inputId"] == format!("input-{NEXT}")
         );
-        let next_parent = terminal["data"]["childrenParentId"]
-            .as_str()
-            .context("second frozen children parent")?;
         let next_turn = terminal["turnId"]
             .as_str()
             .context("second frozen Turn identity")?;
-        ensure!(next_parent != parent && next_turn != turn_id);
-        let (next_cap, mut next_children) = env.open(&thread, Some(next_parent), 1).await?;
+        ensure!(
+            next_turn_identity == next_turn,
+            "TurnReceipt parent identity and frozen Turn payload disagree"
+        );
+        ensure!(next_parent != parent && next_turn_identity != turn_id);
+        let (next_cap, mut next_children) = env.open(&thread, Some(&next_parent), 1).await?;
         let next_set = next_children.chat().await?;
         ensure!(next_set.placement == ChatPlacement::Set && next_set.current.is_none());
         let next_members = all_history(&env, &thread, &next_cap, next_set).await?;
         ensure!(
-            next_members.len() == 1,
-            "the second response must own exactly one inference"
+            !next_members.is_empty(),
+            "second Turn's Children omitted its ordinary Main subset"
         );
-        let first_members = child_messages
-            .iter()
-            .map(|message| &message.id)
-            .collect::<HashSet<_>>();
+        let mut next_turn_receipts = 0;
+        let mut next_inferences = 0;
         for message in &next_members {
             ensure!(
-                !first_members.contains(&message.id)
-                    && !main_ids.contains(&message.id)
-                    && !appended.contains(&message.id),
-                "another parent or Main item leaked to the second Children scope"
+                message.turn_id.as_deref() == Some(next_turn),
+                "second Children scope returned another Turn's atom metadata"
+            );
+            ensure!(
+                appended.contains(&message.id)
+                    || message
+                        .completion_item_id
+                        .as_ref()
+                        .is_some_and(|id| appended_completion_ids.contains(id)),
+                "second Children atom was not a stable member/completion identity in Main"
             );
             let value = payload(&env, &thread, &next_cap, message).await?;
             ensure!(
-                value["type"] == "inference"
-                    && value["turnId"] == next_turn
-                    && value["data"]["outcome"]["kind"] == "completed",
-                "second Children scope lost its frozen membership or terminal outcome"
+                value["turnId"] == next_turn,
+                "second Children payload belongs to another Turn"
             );
+            match value["type"].as_str() {
+                Some("inference") => next_inferences += 1,
+                Some("turn") => {
+                    next_turn_receipts += 1;
+                    ensure!(
+                        value["data"]["outcome"]["kind"] == "completed",
+                        "second TurnReceipt is not terminally completed"
+                    );
+                }
+                Some("thinking") => ensure!(
+                    value["data"]["outcome"]["kind"] == "completed",
+                    "second Thinking member is not terminally completed"
+                ),
+                Some(
+                    "tool" | "text" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
+                    | "plan",
+                ) => {}
+                kind => bail!("unexpected member from the second Turn's Children: {kind:?}"),
+            }
         }
+        ensure!(
+            next_turn_receipts == 1 && next_inferences == 0,
+            "second Children must retain its Main TurnReceipt without copying inference: \
+             receipts={next_turn_receipts}, inference={next_inferences}"
+        );
         let next_lease = env.lease(&thread, &next_cap)?;
         drop(next_children);
         tokio::time::timeout(DEADLINE, next_lease.owner.cancel.cancelled()).await?;

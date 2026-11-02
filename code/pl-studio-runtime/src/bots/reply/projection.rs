@@ -53,7 +53,7 @@ impl ReplyProjection {
             if existing
                 .iter()
                 .chain(&items[..index])
-                .any(|old| old.id == item.id)
+                .any(|old| old.id == item.id || old.member_id == item.member_id)
             {
                 return Err(gap("duplicate reply completion identity"));
             }
@@ -133,7 +133,7 @@ impl ReplyProjection {
         let bytes = self
             .current
             .iter()
-            .filter(|(id, _)| !self.items.iter().any(|item| item.id == *id))
+            .filter(|(id, _)| !self.items.iter().any(|item| item.member_id == *id))
             .try_fold(completed.unwrap_or(usize::MAX), |size, (_, text)| {
                 size.checked_add(text.len())
             });
@@ -182,7 +182,7 @@ impl ReplyProjection {
             }
         }
         for (id, preview) in &self.current {
-            if !self.items.iter().any(|item| item.id == *id) {
+            if !self.items.iter().any(|item| item.member_id == *id) {
                 text.push_str(preview);
             }
         }

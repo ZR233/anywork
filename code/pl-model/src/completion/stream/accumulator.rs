@@ -4,6 +4,10 @@
 //! `AgentEventSender`；生命周期合法性与工具调用增量分别由 `lifecycle` 与
 //! `tool_stream` 子状态机保证。
 
+use crate::runtime::model_part_identity::{
+    PartKey, observation, observed_part_kind, part_key, provider_observation, text_channel,
+};
+use pl_core::model::{AggregateChannel, ObservedItemKind, ObservedPartIdentity, ObservedPartKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -43,6 +47,8 @@ pub(crate) struct StreamCompletionAccumulator {
     presentation_bytes: usize,
     completed_member: Option<(usize, crate::runtime::ModelMemberState)>,
     presentation_states: HashMap<String, crate::runtime::ModelMemberState>,
+    started_members: std::collections::BTreeMap<PartKey, ObservedPartIdentity>,
+    pending_starts: Vec<ObservedPartIdentity>,
     text_output_bytes: usize,
     /// Charged high-water of each tool call's argument bytes, keyed by the accumulator identity the
     /// stream resolves an event to.
@@ -84,6 +90,8 @@ impl StreamCompletionAccumulator {
             presentation_bytes: 0,
             completed_member: None,
             presentation_states: HashMap::new(),
+            started_members: Default::default(),
+            pending_starts: Vec::new(),
             text_output_bytes: 0,
             tool_output_bytes: HashMap::new(),
             tool_stream: ToolStream::new(),
@@ -97,11 +105,22 @@ impl StreamCompletionAccumulator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(
         &mut self,
         stream_event: ModelStreamEvent,
         event_tx: &AgentEventSender,
     ) -> Result<()> {
+        for event in self.normalize(stream_event)? {
+            self.apply_normalized(event, event_tx)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn normalize(
+        &mut self,
+        stream_event: ModelStreamEvent,
+    ) -> Result<Vec<ModelStreamEvent>> {
         match &self.state {
             StreamAccumulatorState::Open(_) => {}
             StreamAccumulatorState::Completed(_) => {
@@ -116,19 +135,15 @@ impl StreamCompletionAccumulator {
                 )));
             }
         }
-        for stream_event in self.lifecycle.normalize(stream_event)? {
-            self.apply_normalized(stream_event, event_tx)?;
-            self.ensure_trace_sink()?;
-        }
-
-        Ok(())
+        self.lifecycle.normalize(stream_event)
     }
 
-    fn apply_normalized(
+    pub(crate) fn apply_normalized(
         &mut self,
         stream_event: ModelStreamEvent,
         event_tx: &AgentEventSender,
     ) -> Result<()> {
+        let starts = self.started_identities(&stream_event)?;
         match stream_event {
             ModelStreamEvent::BlockOpened {
                 id,
@@ -415,7 +430,131 @@ impl StreamCompletionAccumulator {
             }
         }
 
+        self.ensure_trace_sink()?;
+        // Only validated events may create reliable beginnings. The collector drains these before
+        // applying the next normalized event, including multiple events from one provider input.
+        for identity in starts {
+            self.record_member_start(identity)?;
+        }
         Ok(())
+    }
+
+    fn started_identities(&self, event: &ModelStreamEvent) -> Result<Vec<ObservedPartIdentity>> {
+        Ok(match event {
+            ModelStreamEvent::BlockOpened {
+                kind: kind @ ModelBlockKind::Text { .. },
+                provider,
+                ..
+            } => {
+                vec![observation(*kind, provider.as_ref())?.1]
+            }
+            // Responses currently opens one summary block for the entire reasoning item,
+            // synthesizing index zero even when no summary part was reported. It is not a
+            // reliable part boundary. The first accepted summary delta or a validated terminal
+            // part supplies the real identity instead.
+            ModelStreamEvent::BlockOpened {
+                kind: ModelBlockKind::ReasoningSummary,
+                ..
+            } => Vec::new(),
+            ModelStreamEvent::BlockDelta {
+                kind: kind @ ModelBlockKind::ReasoningSummary,
+                field: ModelBlockField::ReasoningSummary,
+                provider,
+                ..
+            } => vec![observation(*kind, provider.as_ref())?.1],
+            ModelStreamEvent::ReasoningRawDelta { provider, .. } => {
+                vec![match provider {
+                    Some(provider) => {
+                        provider_observation(
+                            &provider.item_id,
+                            ObservedItemKind::Reasoning,
+                            ObservedPartKind::ReasoningText,
+                            provider.content_index,
+                        )
+                        .1
+                    }
+                    None => ObservedPartIdentity::Aggregate {
+                        channel: AggregateChannel::Reasoning,
+                    },
+                }]
+            }
+            ModelStreamEvent::PresentationItem { item, .. } => {
+                let kind = match item.kind {
+                    crate::completion::CompletionPresentationItemKind::Text(channel) => {
+                        ObservedItemKind::Text(text_channel(channel))
+                    }
+                    crate::completion::CompletionPresentationItemKind::Reasoning => {
+                        ObservedItemKind::Reasoning
+                    }
+                };
+                item.parts
+                    .iter()
+                    .map(|part| {
+                        let mut identity = provider_observation(
+                            &item.provider_item_id,
+                            kind,
+                            observed_part_kind(part.kind),
+                            part.content_index,
+                        )
+                        .1;
+                        if let ObservedPartIdentity::Provider(provider) = &mut identity {
+                            provider.output_index = item.output_index;
+                        }
+                        identity
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        })
+    }
+
+    fn record_member_start(&mut self, identity: ObservedPartIdentity) -> Result<()> {
+        let key = part_key(&identity);
+        if let ObservedPartIdentity::Provider(provider) = &identity
+            && provider.item_id.is_empty()
+        {
+            return Err(PureError::LlmError("empty provider part identity".into()));
+        }
+        if let Some(old) = self.started_members.get_mut(&key) {
+            if let (ObservedPartIdentity::Provider(old), ObservedPartIdentity::Provider(new)) =
+                (&*old, &identity)
+                && (std::mem::discriminant(&old.item_kind)
+                    != std::mem::discriminant(&new.item_kind)
+                    || (old.output_index.is_some()
+                        && new.output_index.is_some()
+                        && old.output_index != new.output_index))
+            {
+                return Err(PureError::LlmError("conflicting model part start".into()));
+            }
+            if let (ObservedPartIdentity::Provider(old), ObservedPartIdentity::Provider(new)) =
+                (old, &identity)
+            {
+                old.output_index = old.output_index.or(new.output_index);
+                // A Text channel can be supplied/corrected by the authoritative terminal item.
+                // It is metadata, not a second part or an authorization to send a final answer.
+                old.item_kind = new.item_kind;
+            }
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&identity)
+            .map_err(|error| PureError::LlmError(error.to_string()))?
+            .len()
+            .saturating_mul(2)
+            .saturating_add(std::mem::size_of::<ObservedPartIdentity>() + 128);
+        self.presentation_bytes = self
+            .presentation_bytes
+            .checked_add(bytes)
+            .filter(|&bytes| bytes <= MAX_OUTPUT_BYTES)
+            .ok_or_else(|| {
+                PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
+            })?;
+        self.started_members.insert(key, identity.clone());
+        self.pending_starts.push(identity);
+        Ok(())
+    }
+
+    pub(crate) fn take_started_members(&mut self) -> Vec<ObservedPartIdentity> {
+        std::mem::take(&mut self.pending_starts)
     }
 
     pub(crate) fn take_presentation_items(&mut self) -> Vec<CompletionPresentationItem> {
@@ -947,14 +1086,79 @@ mod member_tests {
     }
 
     #[test]
+    fn summary_delta_identity_and_budget_are_checked_before_start() {
+        use super::super::event::ProviderBlockIdentity;
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        for exhausted in [false, true] {
+            let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+            let provider = ProviderBlockIdentity {
+                item_id: "real-reasoning".into(),
+                content_index: 3,
+            };
+            acc.apply(
+                ModelStreamEvent::reasoning_summary_started(
+                    "block".into(),
+                    None,
+                    Some(provider.clone()),
+                ),
+                &events,
+            )
+            .unwrap();
+            assert!(
+                acc.take_started_members().is_empty(),
+                "an item placeholder has no real part"
+            );
+            let provider = if exhausted {
+                acc.text_output_bytes = MAX_OUTPUT_BYTES;
+                Some(provider)
+            } else {
+                None
+            };
+            let error = acc
+                .apply(
+                    ModelStreamEvent::reasoning_summary_delta(
+                        "block".into(),
+                        3,
+                        "x".into(),
+                        provider,
+                    ),
+                    &events,
+                )
+                .unwrap_err();
+            if exhausted {
+                assert!(matches!(error, PureError::MemoryError(_)));
+            } else {
+                assert!(
+                    matches!(error, PureError::LlmError(message) if message.contains("no provider item identity"))
+                );
+            }
+            assert!(acc.take_started_members().is_empty());
+            assert!(acc.take_completed_member().is_none());
+            assert!(acc.reasoning_summary_parts.is_empty());
+        }
+    }
+
+    #[test]
     fn validated_member_is_frozen_before_handoff_and_final_reuses_it() {
         let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
         let item = member();
         apply(&mut acc, item.clone()).unwrap();
+        let starts = acc.take_started_members();
+        assert_eq!(
+            starts.len(),
+            1,
+            "only-final input starts its validated part before completion"
+        );
+        let ObservedPartIdentity::Provider(identity) = &starts[0] else {
+            panic!("provider part");
+        };
+        assert_eq!(identity.item_id.as_ref(), item.provider_item_id);
+        assert_eq!(identity.part, ObservedPartKind::SummaryText);
         let (completed, state) = acc.take_completed_member().unwrap();
         assert_eq!(completed, &item);
         assert_eq!(state, ModelMemberState::Interrupted);
         apply(&mut acc, item.clone()).unwrap();
+        assert!(acc.take_started_members().is_empty());
         assert!(
             acc.take_completed_member().is_none(),
             "same authority does not resubmit"
@@ -1008,6 +1212,7 @@ mod member_tests {
         for item in invalid {
             let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
             assert!(apply(&mut acc, item).is_err());
+            assert!(acc.take_started_members().is_empty());
             assert!(acc.take_completed_member().is_none());
             assert!(acc.presentation_items.is_empty());
         }
@@ -1024,6 +1229,7 @@ mod member_tests {
             .is_err()
         );
         assert!(acc.take_completed_member().is_none());
+        assert!(acc.take_started_members().is_empty());
         assert!(acc.presentation_items.is_empty());
     }
 }

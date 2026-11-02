@@ -17,20 +17,37 @@ pub struct ContextPreparationRequest {
     pub extensions: Arc<BTreeMap<String, ExtensionRecord>>,
     pub extension_sequence: u64,
     pub previous_usage: Option<PreviousContextUsage>,
-    compacting_sender: Option<watch::Sender<bool>>,
+    compacting_sender: tokio::sync::mpsc::Sender<CompactionAdmission>,
 }
 
 impl ContextPreparationRequest {
     /// Reports that context preparation has entered active context compaction.
     ///
-    /// While `before_step` is running, calling this method transitions the Thread's published
-    /// [`ModelExecutionPhase`] from [`ModelExecutionPhase::PreparingContext`] to
-    /// [`ModelExecutionPhase::CompactingContext`].
-    pub fn enter_compacting(&self) {
-        if let Some(sender) = &self.compacting_sender {
-            let _ = sender.send(true);
-        }
+    /// Success means the original owner retains the reliable start obligation before publishing
+    /// [`ModelExecutionPhase::CompactingContext`], not that storage has flushed it. Repeated calls
+    /// within this invocation are idempotent. Once sent, await the reply even during cancellation.
+    ///
+    /// # Errors
+    /// Returns closed ownership or the original storage admission failure.
+    pub async fn enter_compacting(&self) -> Result<(), ThreadError> {
+        let permit = self
+            .compacting_sender
+            .reserve()
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        let (reply, admitted) = oneshot::channel();
+        permit.send(reply);
+        admitted.await.map_err(|_| ThreadError::Closed)?
     }
+}
+
+type CompactionAdmission = oneshot::Sender<Result<(), ThreadError>>;
+
+pub(super) struct CompactionCall {
+    pub(super) receiver: tokio::sync::mpsc::Receiver<CompactionAdmission>,
+    operation_id: Option<String>,
+    turn_id: Option<String>,
+    attempt_id: Option<String>,
 }
 
 /// Candidate observation; validate the final input with [`Self::matches_input`] and its route.
@@ -136,10 +153,12 @@ impl Owner {
         plan: &mut crate::tool::opaque::ToolPlan,
         frozen_input: &[ContextRecord],
         force_compaction: bool,
+        source_attempt_id: Option<&str>,
     ) -> Result<bool, ThreadError> {
         let Some(hook) = self.context_preparation.clone() else {
             return Ok(false);
         };
+        let previous_phase = self.state.model_execution;
         let mut preview_records = self.state.context.records.to_vec();
         preview_records.extend_from_slice(frozen_input);
         let preview = ContextSnapshot {
@@ -157,6 +176,29 @@ impl Owner {
         preview.validate_complete()?;
         let expected_context_revision = self.state.context.revision;
         let expected_extension_sequence = self.state.extension_sequence;
+        let (compacting_sender, receiver) = tokio::sync::mpsc::channel(1);
+        // The preview may borrow an old turn id for protocol replay during idle compaction.
+        // Only actual resident active execution and an admitted attempt establish source links.
+        let turn_id = self
+            .state
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == input.turn_id && turn.state == TurnState::Running)
+            .map(|turn| turn.turn_id.clone());
+        let attempt_id = match source_attempt_id {
+            Some(source) => Some(
+                self.state
+                    .attempts
+                    .iter()
+                    .find(|attempt| {
+                        Some(&attempt.turn_id) == turn_id.as_ref() && attempt.attempt_id == source
+                    })
+                    .ok_or(ThreadError::InvalidIdentity)?
+                    .attempt_id
+                    .clone(),
+            ),
+            None => None,
+        };
         let request = ContextPreparationRequest {
             turn_input: self
                 .state
@@ -207,109 +249,218 @@ impl Owner {
                             origin: origin.clone(),
                         })
                 }),
-            compacting_sender: None,
+            compacting_sender,
         };
-        let (compacting_tx, compacting_rx) = watch::channel(force_compaction);
-        let mut request = request;
-        request.compacting_sender = Some(compacting_tx);
-        self.compacting_progress = Some(compacting_rx);
-        if force_compaction {
-            self.enter_model_execution(ModelExecutionPhase::CompactingContext);
-        }
+        self.compaction_call = Some(CompactionCall {
+            receiver,
+            operation_id: None,
+            turn_id,
+            attempt_id,
+        });
         let result = self
             .await_with_mailbox(crate::error_record::catch_boundary(
                 "context preparation",
-                hook.0.before_step(request),
+                async move {
+                    if force_compaction {
+                        request.enter_compacting().await?;
+                    }
+                    Ok::<_, ThreadError>(hook.0.before_step(request).await)
+                },
             ))
             .await;
-        self.compacting_progress = None;
-        let result = result.map_err(|source| {
-            ThreadError::Model(Arc::new(ModelError {
-                kind: crate::model::ModelFailureKind::ImplementationPanicked,
-                details: None,
-                usage: Default::default(),
-                source: Some(Box::new(source)),
-            }))
-        })?;
-        if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
-            let mutations = match result {
+        // Completion may win select in the same poll as a producer fills the slot. Close and drain
+        // it before interpreting the result; request clones never own the invocation's lifetime.
+        if let Some(call) = self.compaction_call.as_mut() {
+            call.receiver.close();
+        }
+        while let Some(reply) = self
+            .compaction_call
+            .as_mut()
+            .and_then(|call| call.receiver.try_recv().ok())
+        {
+            self.admit_context_compaction(reply);
+        }
+        let call = self
+            .compaction_call
+            .take()
+            .expect("preparation owns its admission");
+        let mut replacement_accepted = false;
+        let mut preparation_storage_error = None;
+        let result = (|| {
+            let result = result.map_err(|source| {
+                ThreadError::Model(Arc::new(ModelError {
+                    kind: crate::model::ModelFailureKind::ImplementationPanicked,
+                    details: None,
+                    usage: Default::default(),
+                    source: Some(Box::new(source)),
+                }))
+            })??;
+            if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
+                let mutations = match result {
+                    ContextPreparation::Prepared {
+                        rejected_mutations, ..
+                    } => rejected_mutations,
+                    ContextPreparation::Failed { mutations, .. } => mutations,
+                    ContextPreparation::Unchanged => Vec::new(),
+                };
+                self.commit_preparation_accounting(mutations, &mut preparation_storage_error)?;
+                return Err(ThreadError::Cancelled);
+            }
+            match result {
+                ContextPreparation::Unchanged => Ok(false),
+                ContextPreparation::Failed { error, mutations } => {
+                    self.commit_preparation_accounting(mutations, &mut preparation_storage_error)?;
+                    Err(ThreadError::Model(Arc::new(error)))
+                }
                 ContextPreparation::Prepared {
-                    rejected_mutations, ..
-                } => rejected_mutations,
-                ContextPreparation::Failed { mutations, .. } => mutations,
-                ContextPreparation::Unchanged => Vec::new(),
-            };
-            self.commit_preparation_accounting(mutations)?;
-            return Err(ThreadError::Cancelled);
-        }
-        match result {
-            ContextPreparation::Unchanged => Ok(false),
-            ContextPreparation::Failed { error, mutations } => {
-                self.commit_preparation_accounting(mutations)?;
-                Err(ThreadError::Model(Arc::new(error)))
-            }
-            ContextPreparation::Prepared {
-                expected_extension_sequence: producer_sequence,
-                rejected_mutations,
-                replacement,
-                facts,
-                mutations,
-                excluded_tool_ids,
-            } => {
-                if self.state.context.revision != expected_context_revision {
-                    self.commit_preparation_accounting(rejected_mutations)?;
-                    return Err(ThreadError::ContextConflict {
-                        expected: expected_context_revision,
-                        actual: self.state.context.revision,
-                    });
-                }
-                if producer_sequence != expected_extension_sequence
-                    || self.state.extension_sequence != expected_extension_sequence
-                {
-                    self.commit_preparation_accounting(rejected_mutations)?;
-                    return Err(ThreadError::ExtensionConflict {
-                        id: "context preparation".into(),
-                        expected: Some(expected_extension_sequence),
-                        actual: Some(self.state.extension_sequence),
-                    });
-                }
-                let compacted = replacement.as_ref().is_some_and(|replacement| {
-                    replacement.reason == ContextReplacementReason::Compaction
-                });
-                let mut candidate = self.state.clone();
-                let staged = (|| {
-                    if let Some(replacement) = replacement {
-                        // Validate/normalize current facts before restoring the new window, while
-                        // retaining the actually committed history as the replacement's predecessor.
-                        let committed = candidate.context.clone();
-                        super::facts::stage_facts(&mut candidate, facts)?;
-                        candidate.context = committed;
-                        super::replacement::stage_replacement(&mut candidate, replacement)?;
-                    } else {
-                        super::facts::stage_facts(&mut candidate, facts)?;
+                    expected_extension_sequence: producer_sequence,
+                    rejected_mutations,
+                    replacement,
+                    facts,
+                    mutations,
+                    excluded_tool_ids,
+                } => {
+                    if self.state.context.revision != expected_context_revision {
+                        self.commit_preparation_accounting(
+                            rejected_mutations,
+                            &mut preparation_storage_error,
+                        )?;
+                        return Err(ThreadError::ContextConflict {
+                            expected: expected_context_revision,
+                            actual: self.state.context.revision,
+                        });
                     }
-                    extensions::stage_extensions(&mut candidate, mutations)?;
-                    Ok::<_, ThreadError>(())
-                })();
-                if let Err(error) = staged {
-                    self.commit_preparation_accounting(rejected_mutations)?;
-                    return Err(error);
+                    if producer_sequence != expected_extension_sequence
+                        || self.state.extension_sequence != expected_extension_sequence
+                    {
+                        self.commit_preparation_accounting(
+                            rejected_mutations,
+                            &mut preparation_storage_error,
+                        )?;
+                        return Err(ThreadError::ExtensionConflict {
+                            id: "context preparation".into(),
+                            expected: Some(expected_extension_sequence),
+                            actual: Some(self.state.extension_sequence),
+                        });
+                    }
+                    let compacted = replacement.as_ref().is_some_and(|replacement| {
+                        replacement.reason == ContextReplacementReason::Compaction
+                    });
+                    let replaces_context = replacement.is_some();
+                    let mut candidate = self.state.clone();
+                    let staged = (|| {
+                        if let Some(replacement) = replacement {
+                            // Validate/normalize current facts before restoring the new window, while
+                            // retaining the actually committed history as the replacement's predecessor.
+                            let committed = candidate.context.clone();
+                            super::facts::stage_facts(&mut candidate, facts)?;
+                            candidate.context = committed;
+                            super::replacement::stage_replacement(&mut candidate, replacement)?;
+                        } else {
+                            super::facts::stage_facts(&mut candidate, facts)?;
+                        }
+                        extensions::stage_extensions(&mut candidate, mutations)?;
+                        Ok::<_, ThreadError>(())
+                    })();
+                    if let Err(error) = staged {
+                        self.commit_preparation_accounting(
+                            rejected_mutations,
+                            &mut preparation_storage_error,
+                        )?;
+                        return Err(error);
+                    }
+                    if candidate.context != self.state.context
+                        || candidate.runtime_facts != self.state.runtime_facts
+                        || candidate.extensions != self.state.extensions
+                    {
+                        self.state = candidate;
+                        self.publish();
+                        self.retain_preparation_storage_error(&mut preparation_storage_error);
+                    }
+                    replacement_accepted = replaces_context;
+                    plan.exclude_tools(&excluded_tool_ids);
+                    Ok(compacted)
                 }
-                if candidate.context != self.state.context
-                    || candidate.runtime_facts != self.state.runtime_facts
-                    || candidate.extensions != self.state.extensions
-                {
-                    self.state = candidate;
-                    self.publish();
-                }
-                plan.exclude_tools(&excluded_tool_ids);
-                Ok(compacted)
             }
+        })();
+        if let Some(operation_id) = call.operation_id {
+            let outcome = match &result {
+                Ok(_) if replacement_accepted => ContextCompactionOutcome::Changed {
+                    context_revision: self.state.context.revision,
+                },
+                Ok(_) => ContextCompactionOutcome::Unchanged,
+                Err(ThreadError::Cancelled) => ContextCompactionOutcome::Cancelled,
+                Err(error) => ContextCompactionOutcome::Failed {
+                    message: error.to_string(),
+                },
+            };
+            self.pending_context_compactions
+                .push(ContextCompactionEvent::Finished {
+                    operation_id,
+                    outcome,
+                });
+            self.publish();
+            self.state.model_execution = previous_phase;
+            self.publish_snapshot();
         }
+        // A publish retains its immutable pending obligation on refusal. Do not report a successful
+        // operation to the caller while its reliable handoff has faulted or admit new execution.
+        self.retain_preparation_storage_error(&mut preparation_storage_error);
+        if result.is_ok()
+            && let Some(error) = preparation_storage_error
+        {
+            return Err(ThreadError::Storage(error));
+        }
+        result
+    }
+
+    /// Every preparation commit is a storage safety point. A later publish may successfully retry
+    /// the pending batch and clear cold_error, but cannot erase the first failure or authorize
+    /// automatic continuation. This does not rewrite the actual canonical operation outcome.
+    fn retain_preparation_storage_error(
+        &mut self,
+        retained: &mut Option<Arc<cold::ColdStoreError>>,
+    ) {
+        if let Some(error) = self.cold_error.clone() {
+            retained.get_or_insert(error);
+            self.state.persistence.resume_required = true;
+            self.publish_snapshot();
+        }
+    }
+
+    pub(super) fn admit_context_compaction(&mut self, reply: CompactionAdmission) {
+        let Some(call) = self.compaction_call.as_mut() else {
+            let _ = reply.send(Err(ThreadError::Closed));
+            return;
+        };
+        if call.operation_id.is_none() {
+            let operation_id = format!(
+                "context-compaction:{}:{}",
+                self.id,
+                self.state.commit_sequence.saturating_add(1)
+            );
+            call.operation_id = Some(operation_id.clone());
+            self.pending_context_compactions
+                .push(ContextCompactionEvent::Started {
+                    operation_id,
+                    turn_id: call.turn_id.clone(),
+                    attempt_id: call.attempt_id.clone(),
+                });
+            self.publish();
+        }
+        if let Some(error) = self.cold_error.clone() {
+            self.state.persistence.resume_required = true;
+            self.publish_snapshot();
+            let _ = reply.send(Err(ThreadError::Storage(error)));
+            return;
+        }
+        self.enter_model_execution(ModelExecutionPhase::CompactingContext);
+        let _ = reply.send(Ok(()));
     }
     fn commit_preparation_accounting(
         &mut self,
         mut mutations: Vec<ExtensionMutation>,
+        storage_error: &mut Option<Arc<cold::ColdStoreError>>,
     ) -> Result<(), ThreadError> {
         if !mutations.is_empty() {
             // The producer has already incurred this accounting. A rejected candidate cannot
@@ -338,6 +489,7 @@ impl Owner {
             extensions::stage_extensions(&mut candidate, mutations)?;
             self.state = candidate;
             self.publish();
+            self.retain_preparation_storage_error(storage_error);
         }
         Ok(())
     }

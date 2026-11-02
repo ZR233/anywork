@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
@@ -25,18 +26,16 @@ ChatItemPresentation _item(
   String type,
   Map<String, Object?> data, {
   List<Map<String, Object?>> bodies = const [],
-}) => ChatItemPresentation.decode(
-  ChatMessage(
-    id: id,
-    payload: InlinePayload(
-      bytes: utf8.encode(
-        jsonEncode({
-          'contract': 'anywork.chat/1',
-          'type': type,
-          'data': data,
-          'bodies': bodies,
-        }),
-      ),
+}) => ChatItemPresentation.decodePayload(
+  id,
+  InlinePayload(
+    bytes: utf8.encode(
+      jsonEncode({
+        'contract': 'anywork.chat/1',
+        'type': type,
+        'data': data,
+        'bodies': bodies,
+      }),
     ),
   ),
 );
@@ -128,8 +127,8 @@ void main() {
     (tester) async {
       final cases = [
         (_item('compact-thinking', 'thinking', {}), 28.0),
-        // Tools also expose a separate public-record disclosure row.
-        (_tool('builtin.exec@2'), 56.0),
+        // One call has one semantic disclosure, including all public details.
+        (_tool('builtin.exec@2'), 28.0),
         (
           _item('compact-plan', 'plan', {
             'decision': 'approved',
@@ -382,11 +381,6 @@ void main() {
           },
           Icons.model_training_outlined,
         ),
-        (
-          'contextCompaction',
-          {'beforeTokens': 50, 'afterTokens': 20},
-          Icons.compress_outlined,
-        ),
         ('raw', {'notice': 'raw diagnostic'}, Icons.data_object_outlined),
       ];
       for (final (type, data, icon) in cases) {
@@ -424,38 +418,43 @@ void main() {
   );
 
   testWidgets(
-    'terminal children mount only while expanded and use the real opaque parent',
+    'completed compaction is a static single-line receipt, not another process disclosure',
     (tester) async {
-      final turn = _item('turn', 'turn', {
-        'outcome': {'kind': 'failed'},
-        'childrenParentId': 'opaque-parent',
-      });
-      var mounts = 0;
-      var disposes = 0;
-      await tester.pumpWidget(
-        _host(
-          ChatItemView(
-            item: turn,
-            childrenBuilder: (parent) {
-              expect(parent, 'opaque-parent');
-              return _Mount(
-                onMount: () => mounts++,
-                onDispose: () => disposes++,
-              );
-            },
-          ),
-        ),
+      await _show(
+        tester,
+        _item('compaction', 'contextCompaction', {
+          'beforeTokens': 50,
+          'afterTokens': 20,
+        }),
       );
-      await tester.pumpAndSettle();
-      expect(mounts, 0);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
-      expect(mounts, 1);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
-      expect(disposes, 1);
+      expect(find.text('已完成压缩'), findsOneWidget);
+      expect(find.byType(ExpansionTile), findsNothing);
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(row.active, isFalse);
+      expect(row.meta, isNull);
+      expect(find.textContaining('tokens'), findsNothing);
     },
   );
+
+  testWidgets('Turn receipt never opens an entire Turn as a work group', (
+    tester,
+  ) async {
+    final turn = _item('turn', 'turn', {
+      'outcome': {'kind': 'failed'},
+      'childrenParentId': 'opaque-parent',
+    });
+    await tester.pumpWidget(_host(ChatItemView(item: turn)));
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+    await tester.tap(_rowTap);
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+    await tester.tap(_rowTap);
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+  });
 
   testWidgets(
     'user-input receipt uses public manifest and suppresses secret/redacted answers',
@@ -628,28 +627,4 @@ void main() {
       failedResources.release();
     },
   );
-}
-
-class _Mount extends StatefulWidget {
-  const _Mount({required this.onMount, required this.onDispose});
-  final VoidCallback onMount, onDispose;
-  @override
-  State<_Mount> createState() => _MountState();
-}
-
-class _MountState extends State<_Mount> {
-  @override
-  void initState() {
-    super.initState();
-    widget.onMount();
-  }
-
-  @override
-  void dispose() {
-    widget.onDispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => const Text('children');
 }

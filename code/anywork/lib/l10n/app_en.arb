@@ -778,6 +778,7 @@
   "timelineJumpToLatest": "Jump to latest",
   "timelineNew": "New",
   "timelineLoadEarlier": "Load earlier messages",
+  "timelineActivityNotLoaded": "More activity to load",
   "timelineBackToLive": "Back to live",
   "timelineDetailUnavailable": "This content is no longer available",
   "timelineReconnecting": "Reconnecting messages… Current content is preserved.",
@@ -1915,7 +1916,7 @@
   "recoveryCheckFailed": "Conversation and workspace check did not complete",
   "agentRoleRetired": "This subagent role has been retired. History is read-only.",
   "conversationActivityPreparing": "Preparing",
-  "conversationActivityCompacting": "Compacting",
+  "conversationActivityCompacting": "Compacting context",
   "conversationActivityRunningTool": "Running",
   "conversationActivitySaveFailed": "Save failed",
   "conversationActivitySavePaused": "Saving paused",
@@ -1938,7 +1939,7 @@
   "settingsModelCatalogEmpty": "This account has no models.",
   "settingsModelCatalogRestartHint": "Restart the app to sync again.",
   "timelineActivityTitle": "Thinking and tools",
-  "timelineContextCompacted": "Context compacted",
+  "timelineContextCompacted": "Compaction completed",
   "timelineCompactionDetail": "Before: {before}; after: {after} tokens",
   "@timelineCompactionDetail": {
     "placeholders": {

@@ -4285,16 +4285,21 @@ class DemoStudioTransport extends StudioTransport
   /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
   /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
   @visibleForTesting
-  void seedChatMessages(
+  void seedChatAtoms(
     String threadId,
-    Iterable<ChatMessage> messages, {
+    Iterable<ChatAtom> atoms, {
     ChatScope scope = const MainChatScope(),
+    List<ChatSourceState> sources = const [],
   }) {
     _ensureDemoRunning();
     _demoWorkspace(threadId);
     var changed = false;
-    for (final message in messages) {
-      changed = _historyOf(threadId).accept(message, scope) || changed;
+    final history = _historyOf(threadId);
+    for (final source in sources) {
+      history.sourceStates[source.source] = source;
+    }
+    for (final atom in atoms) {
+      changed = history.accept(atom, scope) || changed;
     }
     if (changed) _publishContent(threadId);
   }

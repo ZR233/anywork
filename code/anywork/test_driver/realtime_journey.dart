@@ -408,6 +408,11 @@ class RealtimeJourney {
 
   Future<void> run() async {
     await mark('connected');
+    final guiPid = await _guiProcessId();
+    if (guiPid == null) {
+      throw StateError('realtime journey requires the actual native GUI pid');
+    }
+    counts['nativeGuiPid'] = guiPid;
     await _openProject();
     await observe('project_opened');
     await driver.requestData(
@@ -1550,29 +1555,24 @@ class RealtimeJourney {
     );
   }
 
-  /// 当前窗口不足以离底 200px 时，通过真实 Turn 行展开它自己的 Children。
+  /// 当前窗口不足以离底 200px 时，展开已加载的真实工作单元窗口。
   /// 不改写 pixels、不增造消息；展开和可滚范围都必须来自当前展示事实。
   Future<Map<String, Object?>> _expandLoadedActivityForScroll(
     TimelineObservation timeline,
   ) async {
     TimelineItemObservation? target;
     for (final item in timeline.items) {
-      if (item.kind == 'turn' && item.childrenParentId != null) target = item;
+      if (item.kind == 'workGroup') target = item;
     }
     if (target == null) {
       throw StateError(
-        'history direct send: no loaded Turn with a Children identity can provide '
+        'history direct send: no loaded work record can provide '
         'the required reading range (itemCount=${timeline.itemCount})',
       );
     }
     final itemId = target.id;
-    final childrenParentId = target.childrenParentId;
     final row = find.byValueKey('timeline-row-$itemId');
-    final summary = find.descendant(
-      of: find.byValueKey('chat-item:$itemId'),
-      matching: find.byType('TimelineActivityRow'),
-      firstMatchOnly: true,
-    );
+    final summary = find.byValueKey('source-unit-header:$itemId');
     await driver.scrollUntilVisible(
       find.byValueKey('timeline-scrollable'),
       summary,
@@ -1587,7 +1587,7 @@ class RealtimeJourney {
     await driver.waitFor(
       find.descendant(
         of: row,
-        matching: find.byType('TimelineChildrenConnector'),
+        matching: find.byType('TimelineDisplayUnitView'),
       ),
       timeout: const Duration(seconds: 20),
     );
@@ -1597,7 +1597,9 @@ class RealtimeJourney {
         return current != null &&
             current.threadId == timeline.threadId &&
             current.generation == timeline.generation &&
-            current.item(itemId)?.childrenParentId == childrenParentId &&
+            current.groups.any(
+              (group) => group.unitId == itemId && group.expanded,
+            ) &&
             (TimelineScrollObservation.optional(snapshot)?.maxScrollExtent ??
                     0) >
                 _minDetachedOffset;
@@ -1610,12 +1612,12 @@ class RealtimeJourney {
     final afterSample = (after['samples'] as List).last as Map;
     if (afterSample['expanded'] != true) {
       throw StateError(
-        'Turn Children collapsed before its reading range settled',
+        'Work window collapsed before its reading range settled',
       );
     }
     return <String, Object?>{
       'itemId': itemId,
-      'childrenParentId': childrenParentId,
+      'unitId': itemId,
       'expanded': afterSample['expanded'],
       'maxScrollExtent': scroll.maxScrollExtent,
       'pixels': scroll.pixels,

@@ -51,7 +51,23 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
-视觉证据必须来自本次相关运行，并标明原生平台或合成预览、视口及覆盖状态。截图采集使用官方框架能力或成熟平台截图工具，不为截图创建第二份产品状态；采集成功后仍须人工检查实际画面。概念稿仅作视觉参照，模拟 provider 和合成预览均不证明真实模型兼容，图片附件交付也不代替自动化断言和资源退出证据。
+[#272 A01–A28](https://github.com/ZR233/anywork/issues/272) 分层证明：Rust 验原子、真实生命周期、普通分页/保存切面及必要迁移；Dart 验唯一分组、空正文、晚终态、前后台顺序和受影响段局部重投影；纯 Flutter 验 controller 操作及真实布局需求，不依赖 FRB；少量官方原生集成证明跨层、中途打开、credit 与重开。不要在 Rust 测组关闭/展示前缀，也不把合成组件通过当保存链路通过。
+
+新增分页证据须含超过 8 页未满、整页合入同组/实时段且无新增 ChatOperation/高度不变时继续；短页/字节截页、空末页、cursor 无进展、读取失败与显式重试恢复；窗口/输入区/实时区/展开状态变化、零尺寸与不可见暂停；自动补载/滚动/Append 共用同方向 single-flight，旧页不覆盖新 current。全折叠历史可读到 EOF 后仍不满屏并保留空白，首批内容不等末页。逆序完成跨页须按来源位置局部插入/更新，不机械前插或全表 regroup，展示 key 仅当前 owner 内稳定。
+
+原 H0 后新增的长段须证明已观察 completion 位置可沿原 read lease 读取普通有界窗口，后续页保持窗口切面及 anchor，拒绝跨 lease/epoch/scope 或混用主历史 cursor；无工作组筛选、隐藏全文预读或 flush。查询接纳沿同一 Flutter mutation/reducer，不能覆盖主历史游标或 current，失效期间的晚返回不得应用到新 owner。
+
+条数门禁须覆盖 Atom 与独立 Source 混合交付，包含 maxItems=1 的真实分批及 current 退役；普通页来源注解不增加额外 entry。冷 Main 的 current-only 来源、不同原子来源的紧字节/Deferred 页，以及 Children 不读取全局 current 来源分别取证，不放宽需求或在越限后裁剪事实。
+
+十三个概念场景使用同故事本次原生页面对照。工具一个语义入口、思考组展开即读，真实多附件与三次单图调用区分；工具读取失败和媒体加载失败分别证明。性能分别报告首批有效内容可见（参考 p95≤500ms）与填满/EOF 总耗时、页数、原子数/字节、正文加载量。长折叠组允许逐页经过整个组/Turn，不将首批目标外推整体补满常数成本；不为填屏预读隐藏全文/媒体、COUNT 或 flush。
+
+首内容布局不等于满屏。集成采样须在同代次有效、可见且正尺寸的真实视口完成布局后，分别记录几何已满或明确 EOF；测试观察到的完成帧是带采样精度的上界，不冒充更早的内部完成时刻。主批次接纳数、实际读取请求数、累计返回原子数和驻留展示单元数分别命名，重复读取计入成本。`conversation_work` 的批次校验日志复用预算所需的编码长度，记录完整产品 JSON 批次字节及 Atom/Source 条数；它不是传输 ACK、FRB 编码字节或物理磁盘 IO。Inline 载荷返回量和正文 range 请求/返回量分别汇总，失败或缺失记录不填零。
+
+官方原生集成的 SDK 关闭和测试运行器退出不能替代 GUI 自然退出证明。独立 realtime Driver 专项沿原 profile 入口使用原生启动与退出报告，关联运行器 PID、Driver 观察的实际 GUI PID 和 `anywork-native-exit/1`，等待真实退出并检查子孙及强制回收记录；超时清理仍须保留，不能改报自行收束。该专项报告不冒充同场官方集成的 OS 退出证据。
+
+未提交资源回归须包含一个晚终态首成员与持续交替的完成正文/工作段，按总条数、实际编码字节及 lastCompletion/anchor/闭包等全部持有者核验，而非只测一个连续工作组。驱逐后沿真实 read_at 位置逐页恢复，验证锚点自身、原 payload 身份、空正文分隔、前台局部顺序及独立后台结果；非 EOF 的归属未知不能当协议错误或吞页。保留成功/失败/取消及折叠后迟到回调的资格证据，报告实际恢复页数和重复读，不用末尾几项成功代替完整恢复证明。
+
+视觉证据必须来自本次相关运行，并标明原生平台或合成预览、视口及覆盖状态。截图复用当前 Flutter 渲染捕获入口，不为本任务新增平台桌面截图链路，不为截图创建第二份产品状态；采集成功后仍须人工检查实际画面。概念稿仅作视觉参照，模拟 provider 和合成预览均不证明真实模型兼容，图片附件交付也不代替自动化断言和资源退出证据。
 
 手工布局诊断优先使用官方 [DevTools Inspector](https://docs.flutter.dev/tools/devtools/inspector)，AI 辅助运行时检查可使用官方 [Dart/Flutter MCP](https://docs.flutter.dev/ai/tools)。可重复功能交互采用 [integration_test](https://docs.flutter.dev/testing/integration-tests)，不把人工调试能力与自动化测试运行器混为一谈；MCP 暴露的 Driver 操作仍属于 Driver，不因接入 MCP 就声称完成 [Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)。截图须核对当前 SDK 和目标平台的实际支持：通过官方渲染 API（如 `RepaintBoundary.toImage`）取得的应用渲染表面不包含原生窗口装饰、系统菜单或平台视图，需要这些内容时另用平台截图能力。替换旧入口时只迁移已证明覆盖等价的范围，不为截图新增私有调试协议或修改用户工具配置。
 

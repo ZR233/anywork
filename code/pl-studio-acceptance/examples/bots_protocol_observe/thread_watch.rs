@@ -265,7 +265,7 @@ impl ThreadWatch {
                     let batch: ChatBatch = decode(&event.data, "chat")?;
                     batch.validate_for(&ChatScope::Main)?;
                     ensure!(
-                        batch.messages.len() <= CHAT_DEMAND.max_items as usize
+                        batch.entries.len() <= CHAT_DEMAND.max_items as usize
                             && batch.encoded_len()? <= CHAT_DEMAND.max_bytes as usize,
                         "thread SSE Chat exceeded its explicit demand"
                     );

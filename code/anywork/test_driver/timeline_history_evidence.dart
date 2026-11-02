@@ -1,6 +1,18 @@
 import 'dart:convert';
 
 import 'timeline_observation.dart';
+import 'timeline_group_observation.dart';
+
+/// Host-only evidence accumulated while bounded ordinary windows were mounted.
+/// This is not a Children scope or a product-side member collection.
+final class TimelineGroupHistoryEvidence {
+  TimelineGroupHistoryEvidence(
+    this.unitId,
+    Iterable<TimelineItemObservation> items,
+  ) : items = List.unmodifiable(items);
+  final String unitId;
+  final List<TimelineItemObservation> items;
+}
 
 /// Host test evidence captured while each real display was qualified. It is
 /// never supplied to a product controller or treated as currently mounted UI.
@@ -9,12 +21,22 @@ final class TimelineHistoryEvidence {
     this.main,
     List<TimelineChildrenObservation> children, {
     List<Map<String, Object?>> pages = const [],
+    List<TimelineGroupHistoryEvidence> groups = const [],
   }) : children = List.unmodifiable(children),
+       groups = List.unmodifiable(groups),
        pages = List.unmodifiable(pages);
 
   final TimelineObservation main;
   final List<TimelineChildrenObservation> children;
   final List<Map<String, Object?>> pages;
+  final List<TimelineGroupHistoryEvidence> groups;
+  Iterable<TimelineItemObservation> get processItems sync* {
+    yield* main.items.where((item) => item.kind != 'workGroup');
+    yield* childItems;
+    for (final group in groups) {
+      yield* group.items;
+    }
+  }
 
   TimelineChildrenObservation scopeContaining(String itemId) =>
       children.singleWhere((scope) => scope.itemIds.contains(itemId));
@@ -25,6 +47,13 @@ final class TimelineHistoryEvidence {
   Map<String, Object?> inventory() => {
     'main': {'itemIds': main.itemIds, 'eof': !main.hasOlder},
     'pages': pages,
+    'groups': [
+      for (final group in groups)
+        {
+          'unitId': group.unitId,
+          'itemIds': group.items.map((item) => item.id).toList(),
+        },
+    ],
     'children': [
       for (final child in children)
         {
@@ -45,20 +74,20 @@ final class TimelineHistoryReader {
   TimelineHistoryReader({
     required this.read,
     required this.loadMainOlder,
-    required this.openChildren,
     required this.loadChildrenOlder,
-    required this.closeChildren,
+    this.closeChildren,
+    this.setGroupExpanded,
+    this.loadGroupEarlier,
     this.maxPages = 24,
     this.pageTimeout = const Duration(seconds: 90),
   });
 
   final Future<Map<String, dynamic>> Function() read;
   final Future<void> Function() loadMainOlder;
-  final Future<void> Function(String parentId) openChildren, closeChildren;
-  final Future<void> Function(
-    TimelineItemObservation turn,
-    TimelineChildrenObservation scope,
-  )
+  final Future<void> Function(String parentId)? closeChildren;
+  final Future<void> Function(String unitId, bool expanded)? setGroupExpanded;
+  final Future<void> Function(String unitId)? loadGroupEarlier;
+  final Future<void> Function(TimelineChildrenObservation scope)
   loadChildrenOlder;
   final int maxPages;
   final Duration pageTimeout;
@@ -83,7 +112,7 @@ final class TimelineHistoryReader {
     for (final item in main.items) {
       if (item.compatibility != 'current') {
         throw StateError(
-          'Cannot enumerate possible Turn parents from ${item.compatibility} Main item ${item.id}',
+          'Cannot enumerate history from ${item.compatibility} Main item ${item.id}',
         );
       }
     }
@@ -110,7 +139,7 @@ final class TimelineHistoryReader {
         (!allowPrepend && current.itemCount != original.itemCount)) {
       throw StateError('Main lease changed during history evidence collection');
     }
-    _retained(original.items, current.items);
+    _retained(original.items, current.items, allowInsertion: true);
   }
 
   TimelineChildrenObservation _child(
@@ -184,6 +213,8 @@ final class TimelineHistoryReader {
       TimelineChildrenObservation scope,
     )?
     onScope,
+    Future<void> Function(TimelineObservation, Map<String, dynamic>)?
+    onGroupPage,
   }) async {
     var remaining = maxPages;
     final pages = <Map<String, Object?>>[];
@@ -211,21 +242,73 @@ final class TimelineHistoryReader {
         'appliedPrependsBefore': before.appliedPrepends,
         'appliedPrependsAfter': main.appliedPrepends,
         'prependedIds': main.itemIds
-            .take(main.itemCount - before.itemCount)
+            .where((id) => !before.itemIds.contains(id))
             .toList(),
       });
     }
     final children = <TimelineChildrenObservation>[];
+    final groups = <TimelineGroupHistoryEvidence>[];
+    for (final unit in main.items.where((item) => item.kind == 'workGroup')) {
+      final expand = setGroupExpanded;
+      final earlier = loadGroupEarlier;
+      if (expand == null || earlier == null) {
+        throw StateError(
+          'History is incomplete: ordinary group UI actions are unavailable',
+        );
+      }
+      await expand(unit.id, true);
+      final items = <String, TimelineItemObservation>{};
+      while (true) {
+        final snapshot = await read();
+        final current = _main(snapshot);
+        _sameMain(main, current);
+        final group = _group(snapshot, unit.id);
+        for (final value in group['items'] as List) {
+          final item = TimelineItemObservation.parse(
+            (value as Map).cast<String, dynamic>(),
+          );
+          final previous = items[item.id];
+          if (previous != null &&
+              jsonEncode(previous.frozenFields()) !=
+                  jsonEncode(item.frozenFields())) {
+            throw StateError(
+              'Ordinary window changed completed atom ${item.id}',
+            );
+          }
+          items[item.id] = item;
+        }
+        await onGroupPage?.call(current, group);
+        if (!_needsEarlier(snapshot, unit.id, group)) break;
+        usePage();
+        final before = group['before'];
+        final anchor = group['completionAnchor'];
+        await earlier(unit.id);
+        final afterSnapshot = await read();
+        _sameMain(main, _main(afterSnapshot));
+        final after = _group(afterSnapshot, unit.id);
+        if (after['completionAnchor'] == anchor && after['before'] == before) {
+          throw StateError('Ordinary window did not advance its actual cursor');
+        }
+        pages.add({
+          'unitId': unit.id,
+          'mainGeneration': main.generation,
+          'completionAnchor': after['completionAnchor'],
+          'before': before,
+          'after': after['before'],
+        });
+      }
+      groups.add(TimelineGroupHistoryEvidence(unit.id, items.values));
+      await expand(unit.id, false);
+    }
     final parents = <String>{};
     final identities = main.itemIds.toSet();
-    for (final turn in main.items.where(
-      (item) => item.childrenParentId != null,
-    )) {
-      final parent = turn.childrenParentId!;
-      if (turn.kind != 'turn' || !parents.add(parent)) {
-        throw StateError('Main contains an invalid/duplicated Turn parent');
+    // Only explicitly mounted genuine business scopes are observable. Main
+    // payloads do not advertise a Turn/work-group parent or authorize opening it.
+    for (final mounted in main.children) {
+      final parent = mounted.parentId;
+      if (!parents.add(parent)) {
+        throw StateError('Main contains a duplicated real business parent');
       }
-      await openChildren(parent);
       var current = _main(await read());
       _sameMain(main, current);
       var child = _child(current, parent);
@@ -233,7 +316,7 @@ final class TimelineHistoryReader {
         final before = child;
         if (!child.loadingOlder) {
           usePage();
-          await loadChildrenOlder(turn, child);
+          await loadChildrenOlder(child);
         }
         child = await _awaitChild(main, child);
         pages.add({
@@ -264,14 +347,21 @@ final class TimelineHistoryReader {
         throw StateError('Children changed after EOF evidence capture');
       }
       children.add(child);
-      await closeChildren(parent);
+      final close = closeChildren;
+      if (close == null) continue;
+      await close(parent);
       current = _main(await read());
       _sameMain(main, current);
       if (current.childrenFor(parent) != null) {
         throw StateError('Closed Children $parent still registered');
       }
     }
-    return TimelineHistoryEvidence(main, children, pages: pages);
+    return TimelineHistoryEvidence(
+      main,
+      children,
+      pages: pages,
+      groups: groups,
+    );
   }
 
   /// A later UI visit starts with its new actual Set, then pages only that scope.
@@ -280,36 +370,101 @@ final class TimelineHistoryReader {
     TimelineHistoryEvidence evidence,
     String itemId,
   ) async {
+    if (evidence.main.itemIds.contains(itemId)) {
+      var main = _main(await read());
+      if (main.threadId != evidence.main.threadId) {
+        throw StateError('Historical item belongs to another Thread');
+      }
+      var remaining = maxPages;
+      while (!main.itemIds.contains(itemId)) {
+        if (!main.hasOlder || remaining-- <= 0) {
+          throw StateError('Reopened Main is incomplete');
+        }
+        await loadMainOlder();
+        main = await _awaitMain(main);
+      }
+      final expected = evidence.main.items.singleWhere(
+        (item) => item.id == itemId,
+      );
+      final actual = main.items.singleWhere((item) => item.id == itemId);
+      if (jsonEncode(expected.frozenFields()) !=
+          jsonEncode(actual.frozenFields())) {
+        throw StateError('Reopened Main item $itemId changed completed data');
+      }
+      return read();
+    }
+    final recordedGroup = evidence.groups
+        .where((group) => group.items.any((item) => item.id == itemId))
+        .firstOrNull;
+    if (recordedGroup != null) {
+      final expected = recordedGroup.items.singleWhere(
+        (item) => item.id == itemId,
+      );
+      var main = _main(await read());
+      if (main.threadId != evidence.main.threadId) {
+        throw StateError('Historical item belongs to another Thread');
+      }
+      var remaining = maxPages;
+      while (main.hasOlder) {
+        if (remaining-- <= 0) {
+          throw StateError('Reopened Main evidence is incomplete');
+        }
+        await loadMainOlder();
+        main = await _awaitMain(main);
+      }
+      final expand = setGroupExpanded;
+      final earlier = loadGroupEarlier;
+      if (expand == null || earlier == null) {
+        throw StateError('Ordinary group actions unavailable');
+      }
+      // Owner-local keys are not stable across reopening. Search only actually
+      // mounted bounded windows, never restore a captured cursor or fake parent.
+      for (final unit in main.items.where((item) => item.kind == 'workGroup')) {
+        await expand(unit.id, true);
+        while (true) {
+          final snapshot = await read();
+          _sameMain(main, _main(snapshot));
+          final group = _group(snapshot, unit.id);
+          final matches = (group['items'] as List).cast<Map>().where(
+            (item) => item['id'] == itemId,
+          );
+          if (matches.isNotEmpty) {
+            final actual = TimelineItemObservation.parse(
+              matches.single.cast<String, dynamic>(),
+            );
+            if (jsonEncode(expected.frozenFields()) !=
+                jsonEncode(actual.frozenFields())) {
+              throw StateError('Reopened atom $itemId changed completed data');
+            }
+            return snapshot;
+          }
+          if (!_needsEarlier(snapshot, unit.id, group)) break;
+          if (remaining-- <= 0) {
+            throw StateError('Reopened ordinary prefix is incomplete');
+          }
+          final before = group['before'];
+          final anchor = group['completionAnchor'];
+          await earlier(unit.id);
+          final after = _group(await read(), unit.id);
+          if (after['before'] == before &&
+              after['completionAnchor'] == anchor) {
+            throw StateError('Reopened ordinary window made no progress');
+          }
+        }
+        await expand(unit.id, false);
+      }
+      throw StateError(
+        'Original atom $itemId missing from reopened ordinary windows',
+      );
+    }
     final recorded = evidence.scopeContaining(itemId);
     var main = _main(await read());
     if (main.threadId != evidence.main.threadId) {
       throw StateError('Historical item belongs to another Thread');
     }
     var pages = 0;
-    while (!main.items.any(
-      (item) => item.childrenParentId == recorded.parentId,
-    )) {
-      if (main.olderCursor == null || pages++ >= maxPages) {
-        throw StateError('Original Turn parent missing from reopened Main');
-      }
-      await loadMainOlder();
-      main = await _awaitMain(main);
-    }
-    // Locate the current Main Message before asking the UI to reveal its header.
-    await openChildren(recorded.parentId);
-    final current = _main(await read());
-    _sameMain(main, current);
-    main = current;
-    final turn = main.items.singleWhere(
-      (item) => item.childrenParentId == recorded.parentId,
-    );
-    final originalTurn = evidence.main.items.singleWhere(
-      (item) => item.childrenParentId == recorded.parentId,
-    );
-    if (jsonEncode(turn.frozenFields()) !=
-        jsonEncode(originalTurn.frozenFields())) {
-      throw StateError('Reopened Children belongs to a changed original Turn');
-    }
+    // The original business owner must mount this scope explicitly. Never
+    // discover/reopen it through a removed Turn payload field.
     var child = _child(main, recorded.parentId);
     while (!child.itemIds.contains(itemId)) {
       if (child.olderCursor == null || pages++ >= maxPages) {
@@ -317,7 +472,7 @@ final class TimelineHistoryReader {
           'Original item $itemId missing from reopened Children',
         );
       }
-      await loadChildrenOlder(turn, child);
+      await loadChildrenOlder(child);
       child = await _awaitChild(main, child);
     }
     final expected = recorded.items.singleWhere((item) => item.id == itemId);
@@ -334,18 +489,51 @@ final class TimelineHistoryReader {
   }
 }
 
+Map<String, dynamic> _group(Map<String, dynamic> snapshot, String id) {
+  final group = timelineGroupDisplays(snapshot)
+      .singleWhere((group) => group['unitId'] == id);
+  if (group['error'] != null ||
+      group['loading'] != false ||
+      group['expanded'] != true) {
+    throw StateError('Ordinary window $id is not qualified: ${group['error']}');
+  }
+  return group;
+}
+
+bool _needsEarlier(
+  Map<String, dynamic> snapshot,
+  String id,
+  Map<String, dynamic> group,
+) {
+  if (group['completionAnchor'] != null) return group['before'] != null;
+  final raw = ((snapshot['timeline'] as Map)['items'] as List)
+      .cast<Map>()
+      .singleWhere((item) => item['id'] == id);
+  final atomic = raw['atomic'];
+  if (atomic is! Map || atomic['loadedCount'] is! int) {
+    throw StateError('Ordinary group lacks actual loaded metadata');
+  }
+  return (atomic['loadedCount'] as int) > (group['items'] as List).length;
+}
+
 void _retained(
   List<TimelineItemObservation> before,
-  List<TimelineItemObservation> after,
-) {
+  List<TimelineItemObservation> after, {
+  bool allowInsertion = false,
+}) {
   if (after.length < before.length) {
     throw StateError('Paging dropped previously loaded identities');
   }
-  final offset = after.length - before.length;
-  for (var index = 0; index < before.length; index++) {
-    if (jsonEncode(before[index].frozenFields()) !=
-        jsonEncode(after[offset + index].frozenFields())) {
+  var next = allowInsertion ? 0 : after.length - before.length;
+  for (final item in before) {
+    while (next < after.length && after[next].id != item.id) {
+      next++;
+    }
+    if (next == after.length ||
+        jsonEncode(item.frozenFields()) !=
+            jsonEncode(after[next].frozenFields())) {
       throw StateError('Paging reordered or changed an original item');
     }
+    next++;
   }
 }

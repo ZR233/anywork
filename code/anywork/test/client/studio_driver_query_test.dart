@@ -1425,7 +1425,6 @@ void main() {
     final currentBorrow = _BorrowedCurrentDisplay(
       isEligible: () => currentEligible,
       turnId: 'borrowed-turn',
-      childrenParentId: 'borrowed-parent',
       activityId: 'borrowed-activity',
       collections: [tools, notReady],
       windows: [
@@ -1457,7 +1456,7 @@ void main() {
     final unregisterCurrent = lease.registerCurrentDisplay(currentBorrow);
     final projectedCurrent = currentTimelineJson()['current'] as Map;
     expect(projectedCurrent['turnId'], 'borrowed-turn');
-    expect(projectedCurrent['childrenParentId'], 'borrowed-parent');
+    expect(projectedCurrent.containsKey('childrenParentId'), isFalse);
     expect(projectedCurrent['activityId'], 'borrowed-activity');
     expect(projectedCurrent['expanded'], isTrue);
     final projectedTools =
@@ -2398,15 +2397,12 @@ final class _BorrowedCurrentDisplay implements TimelineCurrentDisplay {
     required this.activityId,
     required this.collections,
     required this.windows,
-    this.childrenParentId,
   });
   final bool Function() isEligible;
   @override
   bool get isCurrent => isEligible();
   @override
   final String? turnId;
-  @override
-  final String? childrenParentId;
   @override
   final String? activityId;
   @override
@@ -2508,7 +2504,7 @@ Map<String, Object?> _attachment(ThreadAttachmentView value) => {
   'byteSize': value.byteSize,
   'filename': value.filename,
 };
-ChatMessage _textItem(
+ChatAtom _textItem(
   String id,
   String channel, {
   int? sealedAt,
@@ -2527,7 +2523,7 @@ ChatMessage _textItem(
   },
   bodies: [inlineBody('body', 'body-$id')],
 );
-ChatMessage _toolItem(
+ChatAtom _toolItem(
   String id, {
   String name = 'ask_user',
   String result = '',

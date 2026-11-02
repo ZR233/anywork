@@ -21,19 +21,17 @@ abstract final class TimelinePreviewFixtures {
     Map<String, Object?> data, {
     List<Map<String, Object?>> bodies = const [],
     String contract = 'anywork.chat/1',
-  }) => ChatItemPresentation.decode(
-    ChatMessage(
-      id: id,
-      payload: InlinePayload(
-        bytes: utf8.encode(
-          jsonEncode({
-            'contract': contract,
-            'type': type,
-            'data': data,
-            'bodies': bodies,
-            'sealedAt': 1735689600,
-          }),
-        ),
+  }) => ChatItemPresentation.decodePayload(
+    id,
+    InlinePayload(
+      bytes: utf8.encode(
+        jsonEncode({
+          'contract': contract,
+          'type': type,
+          'data': data,
+          'bodies': bodies,
+          'sealedAt': 1735689600,
+        }),
       ),
     ),
   );

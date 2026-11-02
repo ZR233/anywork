@@ -34,6 +34,24 @@ fn completion_freezes_opaque_payload_and_explicit_large_body_without_embedding_f
     assert_eq!(envelope["bodies"][0]["byteLength"], body.len() as u64);
     assert!(envelope["bodies"][0].get("inline").is_none());
     assert_eq!(draft.query_class, "conversation");
+    let atom: pl_protocol::ChatAtom = serde_json::from_slice(&draft.metadata)?;
+    assert_eq!(atom.id, item.id);
+    assert_eq!(atom.completion_item_id.as_deref(), Some(item.id.as_str()));
+    assert_eq!(atom.completion_seq, None);
+    assert_eq!(atom.source_state, None);
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&draft.metadata)?
+            .get("sourceState")
+            .is_none()
+    );
+    assert_eq!(atom.payload, None);
+    assert_eq!(
+        atom.source,
+        pl_protocol::ChatSourceId::ForegroundTurn {
+            turn_id: "turn:a:b".into()
+        }
+    );
+    assert_eq!(atom.contents.len(), 1);
     assert_eq!(draft.parent_id, Some(ChatKey::new("turn", "turn:a:b")?));
     assert!(draft.payload.len() < 2048);
     let reference: ContentRef = serde_json::from_value(envelope["bodies"][0]["reference"].clone())?;
@@ -62,6 +80,55 @@ fn completion_freezes_opaque_payload_and_explicit_large_body_without_embedding_f
         "汉📖".as_bytes()
     );
     assert_eq!(completion_draft(&item, 7, "database")?, draft);
+    Ok(())
+}
+
+#[test]
+fn background_handoff_keeps_member_identity_and_the_distinct_receipt_content_owner() -> Result<()> {
+    let item = ThreadItem::new(
+        "tool:4:call".into(),
+        "thread".into(),
+        "turn".into(),
+        7,
+        1,
+        10,
+        11,
+        ThreadItemState::Tool(ThreadToolItem::new(
+            ThreadToolInvocation::new("call".into(), "arbitrary".into(), "{}".into()),
+            ThreadToolState::Running(pl_protocol::RunningThreadTool::new(String::new())),
+        )),
+    );
+    let draft = background_started_draft(&item, "task", "accepted", 3, 12, "database")?;
+    let atom: pl_protocol::ChatAtom = serde_json::from_slice(&draft.metadata)?;
+    assert_eq!(atom.id, item.id);
+    assert_ne!(draft.item_id, atom.id);
+    assert_eq!(
+        atom.completion_item_id.as_deref(),
+        Some(draft.item_id.as_str())
+    );
+    assert_eq!(
+        atom.delivery,
+        pl_protocol::ChatDeliveryKind::BackgroundHandoff
+    );
+    assert_eq!(atom.source_state, None);
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&draft.metadata)?
+            .get("sourceState")
+            .is_none()
+    );
+    assert!(matches!(
+        atom.lifecycle,
+        pl_protocol::ChatAtomLifecycle::Terminal {
+            outcome: pl_protocol::ChatTerminalOutcome::Transferred,
+            ..
+        }
+    ));
+    for content in &atom.contents {
+        assert!(matches!(&content.reference.target, ContentTarget::Body {
+            owner: ContentOwner::Item { item_id }, ..
+        } if item_id == &draft.item_id));
+    }
+    assert_eq!(atom.contents.len(), 2);
     Ok(())
 }
 
@@ -112,7 +179,7 @@ fn tool_contract_is_frozen_from_the_real_invocation_not_its_name() -> Result<()>
             )),
         );
         let draft = completion_draft(&item, 3, "database")?;
-        assert_eq!(draft.query_class, "activity");
+        assert_eq!(draft.query_class, "conversation");
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
         assert_eq!(
             envelope["data"]["invocation"]["presentationContract"],

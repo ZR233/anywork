@@ -115,7 +115,6 @@ List<Map<String, Object?>> _timelineItems(Map<String, dynamic> snapshot) {
         'compatibility': item.compatibility,
         'payloadByteLength': item.payloadByteLength,
         'presentationContract': item.presentationContract,
-        'childrenParentId': item.childrenParentId,
         'diagnostic': item.diagnostic,
         'kind': item.kind,
         'status': item.status,

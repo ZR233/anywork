@@ -81,6 +81,5 @@ void main() {
       'data': {'startedAt': 1700000000},
     });
     expect(item.createdAt, isNull);
-    expect(item.childrenParentId, isNull);
   });
 }

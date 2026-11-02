@@ -107,6 +107,7 @@ impl ConversationPublication {
                 before: projection.clone(),
                 after: projection,
                 retirements: Arc::from([]),
+                entries: Arc::from([]),
             })
         });
         let source = Arc::new(ConversationSource {
@@ -147,6 +148,7 @@ impl ConversationPublication {
                 "mainThrough":source.handoff.main_through,
                 "before":source.handoff.before,
                 "after":source.handoff.after,
+                "entries":source.handoff.entries,
                 "retirements":retirements,
             }))?
             .len()

@@ -5,6 +5,7 @@ import 'package:anywork_client/models.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import 'chat_payload_reading.dart';
+import 'timeline_display_unit.dart';
 
 const chatItemPresentationKey = 'chatItemPresentation';
 
@@ -27,9 +28,10 @@ final class ChatItemPresentation {
     this.byteLength,
     this.createdAt,
     this.authorId = 'unknown',
-    this.childrenParentId,
     this.presentationContract,
     this.diagnostic,
+    this.displayUnit,
+    this.atom,
   });
 
   final String id;
@@ -42,10 +44,19 @@ final class ChatItemPresentation {
   final int? byteLength;
   final DateTime? createdAt;
   final String authorId;
-  final String? childrenParentId;
   final String? presentationContract;
   final String? diagnostic;
+  final TimelineDisplayUnit? displayUnit;
+  final ChatAtom? atom;
   late final ToolCardReading toolCard = readToolCard(this);
+
+  /// Structural empty text still exists in owner metadata. Deferred/unknown
+  /// content is never assumed empty.
+  bool get isKnownEmptyText =>
+      type == 'text' &&
+      compatibility == ChatItemCompatibility.current &&
+      bodies.every((body) => body.byteLength == 0) &&
+      attachments.isEmpty;
 
   ChatBodyPresentation? body(String key) =>
       bodies.where((body) => body.key == key).firstOrNull;
@@ -66,11 +77,44 @@ final class ChatItemPresentation {
         : null,
   );
 
-  static ChatItemPresentation decode(ChatMessage message) {
+  static ChatItemPresentation decode(ChatAtom message) {
     final payload = message.payload;
+    if (payload == null) {
+      throw const FormatException('Atom has no completion payload');
+    }
+    final value = decodePayload(message.id, payload);
+    return ChatItemPresentation(
+      id: value.id,
+      compatibility: value.compatibility,
+      type: value.type,
+      data: value.data,
+      bodies: value.bodies,
+      raw: value.raw,
+      reference: value.reference,
+      byteLength: value.byteLength,
+      createdAt: value.createdAt,
+      authorId: value.authorId,
+      presentationContract: value.presentationContract,
+      diagnostic: value.diagnostic,
+      atom: message,
+    );
+  }
+
+  static ChatItemPresentation forUnit(TimelineDisplayUnit unit) =>
+      ChatItemPresentation(
+        id: unit.id,
+        compatibility: ChatItemCompatibility.current,
+        type: 'displayUnit',
+        data: const {},
+        bodies: const [],
+        authorId: 'assistant',
+        displayUnit: unit,
+      );
+
+  static ChatItemPresentation decodePayload(String id, PayloadData payload) {
     if (payload is DeferredPayload) {
       return ChatItemPresentation(
-        id: message.id,
+        id: id,
         compatibility: ChatItemCompatibility.deferred,
         type: 'deferred',
         data: const {},
@@ -90,7 +134,7 @@ final class ChatItemPresentation {
       final data = json['data'];
       if (json['contract'] != 'anywork.chat/1') {
         return ChatItemPresentation(
-          id: message.id,
+          id: id,
           compatibility: ChatItemCompatibility.unknown,
           type: type is String ? type : 'unknown',
           data: const {},
@@ -161,7 +205,7 @@ final class ChatItemPresentation {
             }
           : 'unknown';
       return ChatItemPresentation(
-        id: message.id,
+        id: id,
         compatibility: ChatItemCompatibility.current,
         type: type,
         data: Map.unmodifiable(data),
@@ -169,13 +213,12 @@ final class ChatItemPresentation {
         raw: raw,
         createdAt: createdAt,
         authorId: author,
-        childrenParentId: data['childrenParentId'] as String?,
         presentationContract: marker as String?,
       );
     } on FormatException catch (error) {
-      return _malformed(message.id, raw, error.message);
+      return _malformed(id, raw, error.message);
     } on TypeError catch (error) {
-      return _malformed(message.id, raw, error.toString());
+      return _malformed(id, raw, error.toString());
     }
   }
 

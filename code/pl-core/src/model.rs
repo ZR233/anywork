@@ -14,8 +14,11 @@ use crate::chat::PresentationPart;
 use crate::context::{ContextContent, ContextSnapshot, OpaquePayload};
 
 mod member;
-pub(crate) use member::{MemberRegistry, ModelMemberAdmission, encoded_member_bytes};
-pub use member::{ModelCompletedMember, ModelMemberError, ModelMemberSender};
+pub(crate) use member::{
+    MemberFact, MemberRegistry, ModelMemberAdmission, StartedKey, encoded_member_bytes,
+    same_started_identity,
+};
+pub use member::{ModelCompletedMember, ModelMemberError, ModelMemberSender, ModelStartedMember};
 
 /// Factory for independent Thread sessions. Clients may share pools, but never mutable history.
 pub trait Model: Send + Sync + 'static {

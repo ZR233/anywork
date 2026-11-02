@@ -45,6 +45,8 @@ pub(crate) struct PreparedCurrent {
     pub projection: CurrentProjection,
     pub changes: Arc<[CurrentEntryChange]>,
     pub contents: Arc<[CurrentContentWrite]>,
+    /// Real source starts/ends from this effect, not group boundaries or presentation state.
+    pub source_changes: Arc<[pl_protocol::ChatSourceState]>,
 }
 
 pub(in super::super) fn validate_database(
@@ -66,6 +68,12 @@ pub(in super::super) fn validate_database(
         .iter()
         .filter_map(|plan| plan.document.as_ref())
         .chain(projection.previews.iter().map(|preview| &preview.reference))
+        .chain(
+            projection
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.contents.iter().map(|content| &content.reference)),
+        )
     {
         ensure!(
             reference.database_id == database_id,
@@ -179,6 +187,18 @@ pub(crate) async fn apply(
         .iter()
         .filter_map(|p| p.document.as_ref())
         .chain(current.projection.previews.iter().map(|p| &p.reference))
+        .chain(
+            current
+                .projection
+                .atoms
+                .iter()
+                .flat_map(|atom: &pl_protocol::ChatAtom| {
+                    atom.contents
+                        .iter()
+                        .map(|content: &pl_protocol::ChatAtomContent| &content.reference)
+                }),
+        )
+        .collect::<Vec<_>>()
     {
         let exists = match &reference.target {
             pl_protocol::ContentTarget::ItemPayload { item_id } => db
@@ -232,6 +252,7 @@ pub(crate) async fn apply(
     }
     retire_current_contents(db, &live_keys).await?;
     retire_unsealed_items(db, &live_keys).await?;
+    super::sources::apply(db, write_seq, &current.source_changes).await?;
     db.execute_raw(statement(
         "INSERT INTO conversation_view_state(singleton_id,payload) VALUES(1,?)
          ON CONFLICT(singleton_id) DO UPDATE SET payload=excluded.payload",
@@ -306,6 +327,12 @@ pub(crate) async fn read(db: &impl ConnectionTrait) -> Result<CurrentProjection>
 }
 
 pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent) -> Result<()> {
+    super::sources::verify(
+        db,
+        current.projection.source_effect_seq,
+        &current.source_changes,
+    )
+    .await?;
     let row = db
         .query_one_raw(statement(
             "SELECT payload FROM conversation_view_state WHERE singleton_id=1",

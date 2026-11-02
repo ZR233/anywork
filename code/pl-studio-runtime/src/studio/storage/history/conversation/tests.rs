@@ -5,7 +5,7 @@ use pl_core::chat::{
 };
 use sea_orm::{Database, DatabaseConnection, TransactionTrait};
 
-struct Budget;
+pub(super) struct Budget;
 impl ChatBudget for Budget {
     fn fixed_bytes(&self) -> usize {
         0
@@ -36,6 +36,11 @@ async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
     )
     .await?;
     db.execute_unprepared(migration::CREATE_SCHEMA).await?;
+    db.execute_unprepared(
+        "ALTER TABLE conversation_items ADD COLUMN metadata BLOB NOT NULL DEFAULT X''",
+    )
+    .await?;
+    db.execute_unprepared(sources::CREATE_SCHEMA).await?;
     Ok((dir, db))
 }
 
@@ -46,13 +51,112 @@ fn item(seq: u64, class: &str, payload: &[u8]) -> ChatItem {
     )
 }
 
+pub(super) fn metadata(id: &str) -> Arc<[u8]> {
+    serde_json::to_vec(&pl_protocol::ChatAtom {
+        id: id.into(),
+        completion_item_id: Some(id.into()),
+        completion_seq: None,
+        source_state: None,
+        source: pl_protocol::ChatSourceId::Receipt {
+            receipt_id: id.into(),
+        },
+        source_order: None,
+        kind: pl_protocol::ChatAtomKind::Unknown,
+        delivery: pl_protocol::ChatDeliveryKind::Independent,
+        lifecycle: pl_protocol::ChatAtomLifecycle::Terminal {
+            started: None,
+            ended: None,
+            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+        },
+        turn_id: None,
+        attempt_id: None,
+        tool: None,
+        text_channel: None,
+        started_at: None,
+        finished_at: None,
+        contents: vec![],
+        payload: None,
+    })
+    .unwrap()
+    .into()
+}
+
+#[tokio::test]
+async fn metadata_budget_deferred_keyset_and_immutable_blob_conflicts() -> Result<()> {
+    struct MetadataBudget;
+    impl ChatBudget for MetadataBudget {
+        fn fixed_bytes(&self) -> usize {
+            0
+        }
+        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
+            header.metadata.len()
+                + match mode {
+                    PayloadMode::Inline => 64 + header.byte_length as usize,
+                    PayloadMode::Deferred => 64,
+                }
+        }
+        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
+            unreachable!()
+        }
+    }
+    let (_dir, db) = fixture().await?;
+    let mut first = item(1, "conversation", &[255; 256 * 1024]);
+    first.header.metadata = metadata("item:1");
+    let mut second = item(2, "conversation", b"opaque neighbour");
+    second.header.metadata = metadata("item:2");
+    append_records(&db, [&first, &second], true).await?;
+    append_records(&db, [&first, &second], false).await?;
+    let mut changed = first.clone();
+    changed.header.metadata = Arc::from(b"same payload, different metadata".as_slice());
+    assert!(append_records(&db, [&changed], false).await.is_err());
+    let exact = MetadataBudget.item_bytes(&first.header, PayloadMode::Deferred);
+    let request = ChatHistoryRequest {
+        query: Some(ChatQuery::new("conversation", None)),
+        after: 0,
+        before: Some(2),
+        ceiling: 2,
+        demand: ReadDemand::new(2, exact),
+    };
+    let selected = page(&db, &request, &MetadataBudget, false).await?;
+    assert!(selected.exhausted);
+    assert_eq!(selected.items.len(), 1);
+    assert_eq!(selected.items[0].header, first.header);
+    assert!(matches!(
+        selected.items[0].payload,
+        PayloadData::Deferred {
+            byte_length: 262144,
+            ..
+        }
+    ));
+    let under = ChatHistoryRequest {
+        demand: ReadDemand::new(2, exact - 1),
+        ..request.clone()
+    };
+    let selected = page(&db, &under, &MetadataBudget, false).await?;
+    assert!(selected.items.is_empty());
+    assert!(!selected.exhausted, "byte truncation is not EOF");
+    let remaining = ChatHistoryRequest {
+        after: 1,
+        before: None,
+        demand: ReadDemand::new(2, 4096),
+        ..request
+    };
+    let selected = page(&db, &remaining, &MetadataBudget, true).await?;
+    assert_eq!(selected.items.len(), 1);
+    assert_eq!(selected.items[0].header.metadata, second.header.metadata);
+    assert!(
+        matches!(&selected.items[0].payload, PayloadData::Inline(bytes) if bytes.as_ref()==b"opaque neighbour")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<()> {
     let (_dir, db) = fixture().await?;
     let a = item(1, "conversation", b"small");
-    let mut b = item(2, "activity", &vec![b'x'; 128 * 1024]);
+    let mut b = item(2, "conversation", &vec![b'x'; 128 * 1024]);
     b.header.parent_id = Some(ChatKey::new("turn", "id:with:colons")?);
-    let c = item(3, "conversation", &vec![b'y'; 128 * 1024]);
+    let c = item(3, "diagnostic", &vec![b'y'; 128 * 1024]);
     append_records(&db, [&a, &b, &c], true).await?;
     let request = ChatHistoryRequest {
         query: Some(ChatQuery::new("conversation", None)),
@@ -68,7 +172,7 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
             .iter()
             .map(|item| item.header.append_seq)
             .collect::<Vec<_>>(),
-        [1, 3]
+        [1, 2]
     );
     assert!(matches!(
         selected_page.items[0].payload,
@@ -84,7 +188,7 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
     );
     let children = ChatHistoryRequest {
         query: Some(ChatQuery::new(
-            "activity",
+            "conversation",
             Some(ChatKey::new("turn", "id:with:colons")?),
         )),
         demand: ReadDemand::new(4, 200),
@@ -110,8 +214,8 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
 #[tokio::test]
 async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Result<()> {
     use pl_protocol::{
-        ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentTarget, CurrentCollectionRef,
-        CurrentProjection, PayloadData as WirePayload,
+        ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentTarget,
+        CurrentCollectionRef, CurrentProjection, PayloadData as WirePayload,
     };
 
     struct ColdBudget {
@@ -135,12 +239,18 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
                     byte_length: header.byte_length,
                 },
             };
-            let base = serde_json::to_vec(&ChatMessage {
-                id: header.item_id.clone(),
-                payload,
-            })
-            .unwrap()
-            .len();
+            let mut atom: ChatAtom = serde_json::from_slice(&header.metadata).unwrap();
+            atom.completion_seq = Some(header.append_seq);
+            atom.source_state = Some(pl_protocol::ChatSourceState {
+                source: atom.source.clone(),
+                lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
+                started: None,
+                ended: None,
+            });
+            atom.payload = Some(payload);
+            let base = serde_json::to_vec(&ChatEntry::Atom(Box::new(atom)))
+                .unwrap()
+                .len();
             if mode == PayloadMode::Inline && header.byte_length != 0 {
                 // Each JSON byte uses at most three digits, plus inter-byte commas.
                 base + header.byte_length as usize * 4 - 1
@@ -161,11 +271,18 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
             placement: ChatPlacement::Set,
             before: None,
             current,
-            messages: items
+            entries: items
                 .iter()
-                .map(|item| ChatMessage {
-                    id: item.header.item_id.clone(),
-                    payload: match &item.payload {
+                .map(|item| {
+                    let mut atom: ChatAtom = serde_json::from_slice(&item.header.metadata).unwrap();
+                    atom.completion_seq = Some(item.header.append_seq);
+                    atom.source_state = Some(pl_protocol::ChatSourceState {
+                        source: atom.source.clone(),
+                        lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
+                        started: None,
+                        ended: None,
+                    });
+                    atom.payload = Some(match &item.payload {
                         PayloadData::Inline(bytes) => WirePayload::Inline {
                             bytes: bytes.to_vec(),
                         },
@@ -181,7 +298,8 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
                             },
                             byte_length: *byte_length,
                         },
-                    },
+                    });
+                    ChatEntry::Atom(Box::new(atom))
                 })
                 .collect(),
         }
@@ -193,11 +311,14 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
     store.prepare_write().await?;
     let database_id = store.conversation_database_id().await?.unwrap();
     let parent = ChatKey::new("turn", "target:parent")?;
-    let main_item = item(1, "conversation", &[255; 2048]);
-    let mut child_item = item(2, "activity", &[255; 2048]);
+    let mut main_item = item(1, "conversation", &[255; 2048]);
+    let mut child_item = item(2, "conversation", &[255; 2048]);
     child_item.header.parent_id = Some(parent.clone());
-    let mut other_child = item(3, "activity", &[255; 2048]);
+    let mut other_child = item(3, "conversation", &[255; 2048]);
     other_child.header.parent_id = Some(ChatKey::new("turn", "other:parent")?);
+    for item in [&mut main_item, &mut child_item, &mut other_child] {
+        item.header.metadata = metadata(&item.header.item_id);
+    }
     let mut projection = CurrentProjection::empty(0, pl_protocol::ThreadStatus::Idle);
     projection.collections.push(CurrentCollectionRef {
         database_id: database_id.clone(),
@@ -224,7 +345,7 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
             },
             &child_item,
         ),
-        (ChatScope::Main, &main_item),
+        (ChatScope::Main, &other_child),
     ] {
         let main = scope == ChatScope::Main;
         let expected = ChatPageItem {
@@ -260,7 +381,7 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
         assert_eq!(cold.database_id, database_id);
         assert_eq!(cold.head, 3);
         assert_eq!(cold.current, projection);
-        assert!(cold.page.exhausted);
+        assert_eq!(cold.page.exhausted, !main);
         assert_eq!(cold.page.items, [expected]);
         let actual = wire_batch(
             &cold.database_id,
@@ -268,6 +389,12 @@ async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Re
             &cold.page.items,
         );
         actual.validate_for(&scope)?;
+        assert_eq!(
+            actual.entries.len(),
+            1,
+            "page source annotation must not create a second entry"
+        );
+        assert!(matches!(&actual.entries[0], ChatEntry::Atom(atom) if atom.source_state.is_some()));
         assert_eq!(actual.encoded_len()?, minimum);
         assert!(
             actual.encoded_len()? <= minimum,
@@ -515,6 +642,7 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
     let entries = [(37, "first"), (900, "second")];
     let body: Arc<[u8]> = Arc::from(vec![255; 64 * 1024]);
     let prepared = current::PreparedCurrent {
+        source_changes: Arc::from([]),
         projection,
         changes: entries
             .iter()
@@ -668,6 +796,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 revision,
             });
         Ok(current::PreparedCurrent {
+            source_changes: Arc::from([]),
             projection,
             changes: Arc::from([
                 current::CurrentEntryChange::Clear {
@@ -1107,7 +1236,20 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         collection: "interactions".into(),
         revision: 1,
     });
+    let source = pl_protocol::ChatSourceId::ForegroundTurn {
+        turn_id: "actual-turn".into(),
+    };
+    let source_state = pl_protocol::ChatSourceState {
+        source: source.clone(),
+        lifecycle: pl_protocol::ChatSourceLifecycle::Active,
+        started: Some(pl_protocol::ChatFactPosition {
+            effect_seq: 1,
+            suborder: 2,
+        }),
+        ended: None,
+    };
     let prepared = current::PreparedCurrent {
+        source_changes: Arc::from([source_state.clone()]),
         projection,
         changes: Arc::from([current::CurrentEntryChange::Put(
             current::CurrentEntryWrite {
@@ -1121,7 +1263,17 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
     };
     let tx = db.begin().await?;
     assert!(current::apply(&tx, 2, &prepared).await.is_err());
+    append_records(
+        &tx,
+        [&item(1, "conversation", b"same-effect completion")],
+        true,
+    )
+    .await?;
     current::apply(&tx, 1, &prepared).await?;
+    assert_eq!(
+        sources::read(&tx, std::slice::from_ref(&source), 1).await?,
+        [source_state]
+    );
     assert!(
         current::read(&tx).await.is_err(),
         "current cannot exceed watermark"
@@ -1166,6 +1318,7 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         &tx,
         1,
         &current::PreparedCurrent {
+            source_changes: std::sync::Arc::from([]),
             projection: prepared.projection.clone(),
             changes: Arc::from([
                 current::CurrentEntryChange::Remove {
@@ -1181,6 +1334,11 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
     )
     .await?;
     tx.rollback().await?;
+    assert_eq!(latest_append_seq(&db).await?, 0);
+    assert!(matches!(
+        sources::read(&db, &[source], 1).await?[0].lifecycle,
+        pl_protocol::ChatSourceLifecycle::Unknown
+    ));
     assert!(
         current::read(&db).await.is_err(),
         "rolled-back current is absent, not checkpoint fallback"

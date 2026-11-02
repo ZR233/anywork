@@ -76,7 +76,7 @@ impl ChatRead {
             "older conversation response is not a current-free Prepend"
         );
         ensure!(
-            batch.messages.len() <= demand.max_items as usize
+            batch.entries.len() <= demand.max_items as usize
                 && batch.encoded_len()? <= demand.max_bytes as usize,
             "older conversation response exceeded demand"
         );

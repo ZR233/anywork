@@ -131,20 +131,30 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             }
         };
         let admission = async {
-            accumulator.apply(event, event_tx)?;
-            if let Some((item, state)) = accumulator.take_completed_member()
-                && let Some(sender) = members.as_ref()
-            {
-                let payload = crate::runtime::ModelMemberReceipt::encode(item, state)
-                    .map_err(|error| PureError::LlmError(error.to_string()))?;
-                // No cancellation select here: a fact already sent belongs to this original call
-                // until the owner's explicit admission reply. Do not poll another provider event.
-                sender
-                    .submit(generation, item.provider_item_id.clone(), payload)
-                    .await
-                    .map_err(|error| PureError::LlmError(error.to_string()))?;
-                if let Some(admitted) = member_admitted {
-                    admitted.store(true, std::sync::atomic::Ordering::Release);
+            for event in accumulator.normalize(event)? {
+                accumulator.apply_normalized(event, event_tx)?;
+                for identity in accumulator.take_started_members() {
+                    if let Some(sender) = members.as_ref() {
+                        sender
+                            .start(generation, identity)
+                            .await
+                            .map_err(|error| PureError::LlmError(error.to_string()))?;
+                    }
+                }
+                if let Some((item, state)) = accumulator.take_completed_member()
+                    && let Some(sender) = members.as_ref()
+                {
+                    let payload = crate::runtime::ModelMemberReceipt::encode(item, state)
+                        .map_err(|error| PureError::LlmError(error.to_string()))?;
+                    // No cancellation select here: a fact already sent belongs to this original call
+                    // until the owner's explicit admission reply. Do not poll another provider event.
+                    sender
+                        .submit(generation, item.provider_item_id.clone(), payload)
+                        .await
+                        .map_err(|error| PureError::LlmError(error.to_string()))?;
+                    if let Some(admitted) = member_admitted {
+                        admitted.store(true, std::sync::atomic::Ordering::Release);
+                    }
                 }
             }
             Ok::<(), PureError>(())

@@ -72,6 +72,32 @@ final class ConversationReadScope implements ConversationQueryScope {
   }
 
   @override
+  Future<ChatBatch> readBefore({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) => _run(
+    () => _reader.readBefore(
+      completionSeq: completionSeq,
+      before: before,
+      demand: demand,
+    ),
+  );
+
+  @override
+  Future<ChatBatch> readAt({
+    required int completionSeq,
+    String? before,
+    required ReadDemand demand,
+  }) => _run(
+    () => _reader.readAt(
+      completionSeq: completionSeq,
+      before: before,
+      demand: demand,
+    ),
+  );
+
+  @override
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,

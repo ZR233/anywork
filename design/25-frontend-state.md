@@ -162,7 +162,7 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。唯一 ChatMessage/ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 包装为组件 Message.custom；呈现 card 只随该 Message.metadata 持有，不保留第二份 raw item/map/分组索引。SDK 只留有界未交付批次，必要呈现状态为不透明 before、请求/选择代次、single-flight、在途/错误和展开/滚动意图；无客户端全局完成 cursor、coverage/page proof/字段修订或通用重排账本，具体语义见 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。原子/真实生命周期 ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 唯一呈现 owner 在原 applyBatch 内分类、分段、交接；一工作组是一 Message.custom，原子页不等于组件消息页。已提交呈现只由 controller 的 Message.metadata 持有，当前仅留需求内片段、内容引用和普通读取位置，不保存 rawAtoms/groups/messages 三份完整历史或无界 ID/member map。SDK 不分类/分组，只保原有界传输及串行接纳。必要状态含 before、请求/选择代次、single-flight、错误和展开/滚动意图，不引入全局完成 cursor、展示 page proof 或通用重排账本，见 [26](./26-timeline-content.md)。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -396,7 +396,13 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权和恢复边界，不要求五个 Session/连接。Main Chat.current 是活动展示的唯一写入口，State 保留其他现役领域，Children 不写全局 current。共享 owner 不另存可写全量镜像；loadOlder 和内容查询用独立 read lease，在应用队列外执行，不竞争 recv/credit 锁。transport/ACK 仍只归 feed owner，见 [07](./07-streaming.md)。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 只协调组件 controller、分页及同批 current 交接，不持另一份历史集合；状态栏读已提交 CurrentProjection，不归约原始 Begin/Text/Commit。
+原 query scope 的 `readBefore(completionSeq, before?, demand)` 读取已观察位置之前的普通原子窗口；`readAt` 使用相同参数读取包含该位置自身的窗口，供已驱逐完成 props 的合法重取。两者支持原 H0 之后新增的完成事实，不开启另一条 feed，也不自动更新 SDK 主历史 consumer。返回结果由 Flutter 原展示 lease 的既有串行 mutation 入口交给同一呈现 reducer；主历史游标/current 与各类窗口游标分开，不以临时选择或另一个 owner 接纳旧结果。普通窗口边界及资格见 [26](./26-timeline-content.md)。
+
+全部未提交完成 props 共用展示 demand 的总条数/字节边界，不逐工作段各分配预算。未物化内容只留有界普通区间恢复状态，使用原 lease 逐页重取；未知结构以局部片段保留，不能拒绝合法页、猜合组或建立每成员/每段的永久骨架。真实未终态事实和已交给 controller 的历史分别沿各自原 owner 管理，ACK 不等待物化；细节及局部 UI 资格见 [26](./26-timeline-content.md#2682-整个未提交范围的资源边界)。
+
+普通 Atom 的可空 `sourceState` 是相同读取切面的真实来源状态，不是独立完成项；SDK/FRB 机械保留，原呈现接纳入口按身份校验后与 `current.sources`、可靠 Source 事件使用同一来源归约。所有独立 entries 都计入 maxItems，不为来源证据增加一套事件流、信用或组范围模型。
+
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 在原接纳入口唯一处理分组、当前未提交段、前台提交前缀及 controller 操作；ConversationCurrentOwner 保留内容窗口/订阅职责，不独立决定同组生命周期。两者不归约原始 token，不持第二权威历史。View 只根据每批实际布局和尺寸变化请求普通旧页，复用原 single-flight，未满且 cursor 前进就继续，无总页数上限；ACK 在呈现接纳后推进，不等封组、布局或填屏。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
