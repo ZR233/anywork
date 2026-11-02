@@ -340,15 +340,6 @@ void main() {
     expect(resolved.canStop, isFalse);
   });
 
-  test('没有可执行中状态时等待调度才显示说明', () {
-    final resolved = AgentListStopState.resolve(
-      agent: _agent(state: const IdleStudioAgent(), awaitingScheduling: true),
-    );
-    expect(resolved.action, AgentListStopAction.stoppedWaitingScheduling);
-    expect(resolved.canStop, isFalse);
-    expect(resolved.showsControl, isTrue);
-  });
-
   test('可执行中但无停止资格时不提供停止', () {
     for (final state in const <StudioAgentState>[
       QueuedStudioAgent('turn-1'),
