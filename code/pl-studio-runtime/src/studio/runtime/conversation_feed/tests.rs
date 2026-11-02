@@ -23,6 +23,201 @@ fn demand() -> ReadDemand {
     }
 }
 
+async fn state_snapshot(feed: &mut ConversationFeed) -> Result<Box<ThreadSnapshot>> {
+    let ConversationEvent::State { update } =
+        feed.recv().await?.context("missing State baseline")?
+    else {
+        bail!("Set must be followed by the State baseline");
+    };
+    let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
+        bail!("first State must be a snapshot");
+    };
+    Ok(snapshot)
+}
+
+#[tokio::test]
+async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> Result<()> {
+    let plan = format!("# 待确认计划\n\n{}", "步骤\n".repeat(9000));
+    let stage = ReplyStage::new();
+    let Reply::Sse(frames) = support::tool_reply(
+        "plan_submit",
+        "feed-plan",
+        serde_json::json!({
+            "expectedRevision": 0, "plan": plan,
+        }),
+    ) else {
+        bail!("expected SSE tool reply")
+    };
+    let first = stage.gated(frames[..1].to_vec(), frames[1..].to_vec());
+    let mut env = support::Environment::new(
+        vec![
+            support::prompt_step("pending-plan-feed", 0, first),
+            support::prompt_step(
+                &plan,
+                1,
+                support::text_reply("approved and continued", "after-plan"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        // The long Plan crosses the storage chunk boundary. Keep its continuation within the
+        // fixture's declared window so this journey does not require a compaction response.
+        let config_store =
+            crate::config::ConfigStore::new(crate::config::ConfigPaths::from_config_dir(&env.home));
+        let mut config = config_store.load()?;
+        let account = config
+            .models
+            .accounts
+            .get_mut(&pl_model::config::AccountId::new("root-fixture")?)
+            .context("root fixture account")?;
+        let pl_model::config::AccountModelCatalogConfig::Explicit { models, .. } =
+            &mut account.catalog
+        else {
+            bail!("fixture account must have an explicit model catalog");
+        };
+        let model = models
+            .iter_mut()
+            .find(|model| model.model_id == support::MODEL)
+            .context("root fixture model")?;
+        model.context_window = Some(256_000);
+        model.max_context_window = Some(256_000);
+        model.max_output_tokens = Some(32_000);
+        config_store.save(&config)?;
+        env.restart().await?;
+        let started = env
+            .start(ThreadWorkspaceMode::Local, "pending-plan-feed")
+            .await?;
+        let id = &started.thread.id;
+        support::reached(&stage).await?;
+        let mut live = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut live).await?.placement, ChatPlacement::Set);
+        assert!(state_snapshot(&mut live).await?.interactions.is_empty());
+        stage.release();
+        let pending = tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(event) = live.recv().await? {
+                if let ConversationEvent::State { update } = event
+                    && let ThreadSubscriptionUpdate::Notification { notification } = *update
+                    && let ThreadNotification::InteractionChanged { interaction } =
+                        notification.notification
+                    && interaction.status() == InteractionStatus::Pending
+                {
+                    return Ok::<_, anyhow::Error>(*interaction);
+                }
+            }
+            bail!("Plan submission did not publish its pending interaction");
+        })
+        .await??;
+        assert!(matches!(
+            pending.scope.purpose,
+            InteractionPurpose::AgentSessionPlanConfirmation(_)
+        ));
+        assert!(
+            serde_json::to_vec(&pending)?.len() > 64 * 1024,
+            "cold restore must read multiple content chunks"
+        );
+        let completed = support::completed_prompt(&env.runtime, id, "pending-plan-feed").await?;
+        assert!(matches!(completed.state, TurnState::Completed(_)));
+        live.close().await?;
+        live.reader().close().await?;
+
+        let mut reopened = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut reopened).await?.placement, ChatPlacement::Set);
+        assert_eq!(
+            state_snapshot(&mut reopened).await?.interactions,
+            vec![pending.clone()]
+        );
+        reopened.close().await?;
+        reopened.reader().close().await?;
+
+        env.restart().await?;
+        assert!(env.runtime.threads.observed_thread(id).is_none());
+        let mut cold = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
+        assert_eq!(
+            state_snapshot(&mut cold).await?.interactions,
+            vec![pending.clone()]
+        );
+        assert!(
+            env.runtime.threads.observed_thread(id).is_none(),
+            "reading a pending Plan activated execution"
+        );
+        assert_eq!(env.root_provider.recorded().len(), 1);
+        cold.close().await?;
+        cold.reader().close().await?;
+
+        let mut continuation = env
+            .runtime
+            .subscribe_thread(ThreadSubscriptionRequest {
+                thread_id: id.clone(),
+            })
+            .await?;
+        let resolved = env
+            .runtime
+            .resolve_interaction(
+                "approve-feed-plan".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                InteractionResolution::UserInput(UserInputResolution {
+                    answers: [(
+                        AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                        UserInputAnswer {
+                            answers: vec!["Approve".into()],
+                        },
+                    )]
+                    .into(),
+                }),
+            )
+            .await?;
+        assert_eq!(resolved.interaction.status(), InteractionStatus::Resolved);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(update) = continuation.recv().await? {
+                if let ThreadSubscriptionUpdate::Notification { notification } = update
+                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                    && turn.id != completed.id
+                {
+                    anyhow::ensure!(
+                        matches!(turn.state, TurnState::Completed(_)),
+                        "approved continuation failed: {:?}",
+                        turn.state
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+            bail!("approved Plan did not complete its continuation");
+        })
+        .await??;
+        drop(continuation);
+        assert_eq!(env.root_provider.recorded().len(), 2);
+        let mut approved = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut approved).await?.placement, ChatPlacement::Set);
+        assert!(
+            state_snapshot(&mut approved).await?.interactions.is_empty(),
+            "answered Plan returned as pending"
+        );
+        approved.close().await?;
+        approved.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    stage.release();
+    env.finish(result).await
+}
+
 async fn terminal_state_after_set(
     feed: &mut ConversationFeed,
     expected: &pl_protocol::Turn,

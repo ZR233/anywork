@@ -564,6 +564,22 @@ impl CurrentOwner {
 }
 
 impl CurrentState {
+    /// State bootstrap borrows the same cut as Chat.current, including pending decisions.
+    pub(in crate::studio) fn pending_interactions(&self) -> Result<Vec<InteractionRequest>> {
+        let mut pending = Vec::new();
+        for entry in self
+            .by_position
+            .values()
+            .filter(|entry| entry.collection == "interactions")
+        {
+            let interaction: InteractionRequest = serde_json::from_slice(&entry.payload)?;
+            if interaction.status() == InteractionStatus::Pending {
+                pending.push(interaction);
+            }
+        }
+        Ok(pending)
+    }
+
     fn materialized_contents(&self) -> Arc<ChatContents> {
         self.materialized
             .get_or_init(|| {

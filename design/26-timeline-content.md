@@ -109,7 +109,9 @@ slot 已安装而首次 publication 尚未就绪时，open 同时借用该 owner
 
 保留现役 Frame 的 thread/subscription/delivery sequence 和 State/Failure/Closed，只把 ContentBaseline/ContentUpdate/ActivityContent 合为 Chat。State 继续同步输入、workspace、元数据等其他领域，但不拼正文、推断 terminal 或覆盖 Main Chat.current；Children 不倒灌 Main current。
 
-原可靠 pending handoff 必须冻结同一 effect 的类型化 State 变化，不以准备当刻有无订阅者决定是否保留。订阅者可在准备与可靠交接之间登记；该窗口不能丢失 Turn/交互事实，也不能仅因当刻无订阅者而制造正常流的连续性失败。冻结变化仍计入原 handoff 预算，交接成功才发布，不增加队列或上限；外层传输信封仍按实际订阅需求构造。确实缺少未被基线覆盖的可靠 State 事实时，继续明确重同步，不从 current、progress 或完成正文重建。
+原可靠 pending handoff 必须冻结同一 effect 的类型化 State 变化，不以准备当刻有无订阅者决定是否保留。订阅者可在准备与可靠交接之间登记；该窗口不能丢失 Turn/交互事实，也不能仅因当刻无订阅者而制造正常流的连续性失败。冻结变化仍计入原 handoff 预算，交接成功才发布，不增加队列或上限；外层传输信封仍按实际订阅需求构造。确实缺少未被基线覆盖的可靠 State 事实时，继续明确重同步，不从 current 的逻辑状态或活动预览、progress 或完成正文推断这些事件。
+
+State 首帧必须保留同一读取切点的完整待决交互，不能用空集合代替已被首帧水位覆盖的交互事件。热读取从原 current owner 的规范交互集合解码，冷读取在取得 current 与初始页的同一短事务内读取已保存的交互集合；不读取完整 checkpoint、不激活执行。计划确认、普通问答与权限审批沿原身份交付，解码或内容读取失败明确传播，不能静默丢掉待决项。后续决议继续由既有 State 事件发布，不从完成回执重建可操作的交互。
 
 ## 26.7 内容与 current 集合按需读取
 
