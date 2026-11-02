@@ -9,7 +9,7 @@ import 'package:anywork/src/presentation/providers/composer_draft_controller.dar
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart'
     show CloseReport, DomainSyncPhase, FailedComposerThreadState, ResourceKind;
 import 'package:flutter_riverpod/flutter_riverpod.dart';

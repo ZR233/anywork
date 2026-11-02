@@ -1,4 +1,4 @@
-part of 'studio_api.dart';
+part of 'studio_demo_api.dart';
 
 /// Demo/preview 使用的 ACP 目录：官方 server 契约与安装说明由真实 catalog 拥有，
 /// 这里只是 demo 的 typed 替身，不参与生产判定。

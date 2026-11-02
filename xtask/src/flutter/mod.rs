@@ -161,6 +161,16 @@ pub(crate) fn verify_gui() -> Result<()> {
         &["analyze", "--no-pub"],
         DemoMode::Native,
     )?;
+    run_tool(
+        "dart",
+        &[
+            "--packages=.dart_tool/package_config.json",
+            "../../xtask/dart/client_boundary_check.dart",
+            "--ui-closure",
+            "../..",
+        ],
+        &app_dir,
+    )?;
     Ok(())
 }
 

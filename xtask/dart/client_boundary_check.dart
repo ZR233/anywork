@@ -8,14 +8,24 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 void main(List<String> arguments) {
-  if (arguments.length != 1) {
-    stderr.writeln('usage: client_boundary_check.dart <workspace-root>');
+  final uiClosure = arguments.isNotEmpty && arguments.first == '--ui-closure';
+  final rest = uiClosure ? arguments.skip(1).toList() : arguments;
+  if (rest.length != 1) {
+    stderr.writeln(
+      'usage: client_boundary_check.dart [--ui-closure] <workspace-root>',
+    );
     exitCode = 64;
     return;
   }
-  final root = Directory(
-    Directory(arguments.single).resolveSymbolicLinksSync(),
-  );
+  final root = Directory(Directory(rest.single).resolveSymbolicLinksSync());
+  if (uiClosure) {
+    _runUiImportClosure(root);
+    return;
+  }
+  _runClientBoundary(root);
+}
+
+void _runClientBoundary(Directory root) {
   final client = Directory('${root.path}/code/anywork_client/lib');
   final app = Directory('${root.path}/code/anywork/lib');
   final diagnostics = <String>[];
@@ -59,6 +69,54 @@ void main(List<String> arguments) {
     return;
   }
   stdout.writeln('Client boundary check passed ($checked source files)');
+}
+
+void _runUiImportClosure(Directory root) {
+  final ui = Directory('${root.path}/code/anywork/test/ui');
+  if (!ui.existsSync()) {
+    stderr.writeln('required UI test directory is missing: ${ui.path}');
+    exitCode = 1;
+    return;
+  }
+  final entries =
+      ui
+          .listSync(recursive: true, followLinks: false)
+          .whereType<File>()
+          .map((file) => _normalized(file.absolute.path))
+          .where(
+            (path) =>
+                path.endsWith('_test.dart') ||
+                path.endsWith('/flutter_test_config.dart'),
+          )
+          .map((path) => path.substring(_normalized(root.path).length + 1))
+          .toList()
+        ..sort();
+  if (entries.isEmpty) {
+    stderr.writeln('UI import closure discovered no test/ui entries');
+    exitCode = 1;
+    return;
+  }
+  final cache = <String, String?>{};
+  String? read(String relative) {
+    if (cache.containsKey(relative)) return cache[relative];
+    final file = File('${root.path}/$relative');
+    final source = file.existsSync() ? file.readAsStringSync() : null;
+    cache[relative] = source;
+    return source;
+  }
+
+  final diagnostics = checkUiImportClosure(entries: entries, read: read);
+  if (diagnostics.isNotEmpty) {
+    stderr.writeln(diagnostics.join('\n'));
+    stderr.writeln(
+      'UI import closure check failed (${diagnostics.length} errors)',
+    );
+    exitCode = 1;
+    return;
+  }
+  stdout.writeln(
+    'UI import closure check passed (${entries.length} test entries)',
+  );
 }
 
 /// Parses one source file with exactly the rules used by verify-client.
@@ -134,6 +192,120 @@ String _sourcePath(String from, String uri) {
   }
   return Uri(path: from).resolve(uri).toString();
 }
+
+/// Reachable import/export/part graph from `test/ui` entries. Fixture tests
+/// inject the same walk used by `verify-gui --ui-closure`.
+List<ClientBoundaryDiagnostic> checkUiImportClosure({
+  required Iterable<String> entries,
+  required String? Function(String path) read,
+}) {
+  final diagnostics = <ClientBoundaryDiagnostic>[];
+  for (final entry in entries) {
+    final visited = <String>{};
+    void walk(String path, List<String> chain) {
+      if (!visited.add(path)) return;
+      final source = read(path);
+      if (source == null) {
+        if (_isUiFollowedPath(path)) {
+          diagnostics.add(
+            ClientBoundaryDiagnostic(
+              path: path,
+              line: 1,
+              column: 1,
+              rule: 'UI-FRB',
+              message:
+                  'reachable Dart source is missing: $path '
+                  '(from ${[...chain, path].join(' -> ')})',
+            ),
+          );
+        }
+        return;
+      }
+      final parsed = parseString(
+        content: source,
+        path: path,
+        throwIfDiagnostics: false,
+      );
+      void report(int offset, String message) {
+        final location = parsed.lineInfo.getLocation(offset);
+        diagnostics.add(
+          ClientBoundaryDiagnostic(
+            path: path,
+            line: location.lineNumber,
+            column: location.columnNumber,
+            rule: 'UI-FRB',
+            message: message,
+          ),
+        );
+      }
+
+      for (final error in parsed.errors) {
+        report(error.offset, error.message);
+      }
+      parsed.unit.accept(
+        _UiImportVisitor(
+          onUri: (offset, uri) {
+            _follow(offset, uri, path, chain, report, walk);
+          },
+          onPartOf: (offset, uri) {
+            if (uri == null) return;
+            _follow(offset, uri, path, chain, report, walk);
+          },
+        ),
+      );
+    }
+
+    walk(_normalized(entry), const []);
+  }
+  return List.unmodifiable(diagnostics);
+}
+
+void _follow(
+  int offset,
+  String uri,
+  String path,
+  List<String> chain,
+  void Function(int offset, String message) report,
+  void Function(String path, List<String> chain) walk,
+) {
+  final trail = [...chain, path].join(' -> ');
+  if (_isForbiddenUiUri(uri)) {
+    report(
+      offset,
+      'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+    );
+    return;
+  }
+  if (!_isFollowedUiUri(uri)) return;
+  final resolved = _normalized(_sourcePath(path, uri));
+  if (_isForbiddenUiPath(resolved) || _isForbiddenUiUri(uri)) {
+    report(
+      offset,
+      'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+    );
+    return;
+  }
+  if (_isUiFollowedPath(resolved)) {
+    walk(resolved, [...chain, path]);
+  }
+}
+
+bool _isForbiddenUiUri(String uri) =>
+    uri.startsWith('package:flutter_rust_bridge') ||
+    uri.contains('/src/rust/') ||
+    uri.contains('frb_generated') ||
+    uri.contains('RustLib');
+
+bool _isForbiddenUiPath(String path) =>
+    path.contains('/lib/src/rust/') || path.contains('/infrastructure/frb/');
+
+bool _isFollowedUiUri(String uri) =>
+    uri.startsWith('package:anywork/') ||
+    !(uri.startsWith('package:') || uri.startsWith('dart:'));
+
+bool _isUiFollowedPath(String path) =>
+    path.startsWith('code/anywork/lib/') ||
+    path.startsWith('code/anywork/test/');
 
 bool _isAccountPresentation(String path) =>
     path == '${_accountsRoot}accounts_views.dart' ||
@@ -545,5 +717,49 @@ final class _LifecycleCalls extends RecursiveAstVisitor<void> {
   void visitMethodInvocation(MethodInvocation node) {
     names.add(node.methodName.name);
     super.visitMethodInvocation(node);
+  }
+}
+
+typedef _UriReport = void Function(int offset, String uri);
+
+final class _UiImportVisitor extends RecursiveAstVisitor<void> {
+  _UiImportVisitor({required this.onUri, required this.onPartOf});
+
+  final _UriReport onUri;
+  final void Function(int offset, String? uri) onPartOf;
+
+  @override
+  void visitImportDirective(ImportDirective node) {
+    _emit(node.uri);
+    for (final configuration in node.configurations) {
+      _emit(configuration.uri);
+    }
+    super.visitImportDirective(node);
+  }
+
+  @override
+  void visitExportDirective(ExportDirective node) {
+    _emit(node.uri);
+    for (final configuration in node.configurations) {
+      _emit(configuration.uri);
+    }
+    super.visitExportDirective(node);
+  }
+
+  @override
+  void visitPartDirective(PartDirective node) {
+    _emit(node.uri);
+    super.visitPartDirective(node);
+  }
+
+  @override
+  void visitPartOfDirective(PartOfDirective node) {
+    onPartOf(node.offset, node.uri?.stringValue);
+    super.visitPartOfDirective(node);
+  }
+
+  void _emit(StringLiteral literal) {
+    final uri = literal.stringValue;
+    if (uri != null) onUri(literal.offset, uri);
   }
 }

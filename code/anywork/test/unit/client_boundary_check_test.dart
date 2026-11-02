@@ -368,4 +368,57 @@ void ignore() {
     expect(diagnostics.map((d) => d.rule), contains('SYNTAX'));
     expect(diagnostics.first.toString(), contains('$_client:1:'));
   });
+
+  test('UI import closure rejects a reachable FRB adapter', () {
+    const entry = 'code/anywork/test/ui/page_test.dart';
+    const page = 'code/anywork/lib/src/app/anywork_app.dart';
+    final sources = <String, String>{
+      entry: "import 'package:anywork/src/app/anywork_app.dart';",
+      page: "import '../infrastructure/frb/studio_api.dart';",
+    };
+    final diagnostics = checkUiImportClosure(
+      entries: [entry],
+      read: (path) => sources[path],
+    );
+    expect(diagnostics.map((d) => d.rule), contains('UI-FRB'));
+    expect(diagnostics.first.message, contains('studio_api.dart'));
+  });
+
+  test('UI import closure rejects a conditional FRB export', () {
+    const entry = 'code/anywork/test/ui/page_test.dart';
+    const page = 'code/anywork/lib/src/app/anywork_app.dart';
+    const safe = 'code/anywork/lib/src/app/safe.dart';
+    final sources = <String, String>{
+      entry: "import 'package:anywork/src/app/anywork_app.dart';",
+      page:
+          "export 'safe.dart' if (dart.library.io) "
+          "'package:flutter_rust_bridge/flutter_rust_bridge.dart';",
+      safe: '',
+    };
+    final diagnostics = checkUiImportClosure(
+      entries: [entry],
+      read: (path) => sources[path],
+    );
+    expect(diagnostics.map((d) => d.rule), contains('UI-FRB'));
+    expect(
+      diagnostics.map((d) => d.message).join('\n'),
+      contains('flutter_rust_bridge'),
+    );
+  });
+
+  test('UI import closure allows a Dart Demo transport', () {
+    const entry = 'code/anywork/test/ui/page_test.dart';
+    const support = 'code/anywork/test/support/recording_demo_transport.dart';
+    const demo =
+        'code/anywork/lib/src/infrastructure/demo/studio_demo_api.dart';
+    final sources = <String, String>{
+      entry: "import '../support/recording_demo_transport.dart';",
+      support: "import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';",
+      demo: "import 'package:anywork_client/studio_ports.dart';",
+    };
+    expect(
+      checkUiImportClosure(entries: [entry], read: (path) => sources[path]),
+      isEmpty,
+    );
+  });
 }

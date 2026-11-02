@@ -665,7 +665,8 @@ class FrbStudioTransport
 
   /// 协调器在合并 Dart 侧关闭阶段问题之后调用：只要最终报告不是可靠 Clean/NotStarted，
   /// 就撤销安全 dispose，绝不在仍有 Dart 订阅或事件循环占用时释放 RustLib。
-  static void revokeSafeDispose() {
+  @override
+  void revokeSafeDispose() {
     _safeToDisposeAfterShutdown = false;
   }
 
@@ -1134,7 +1135,8 @@ class FrbStudioTransport
   /// 当 [error] 正是早期退出封闭 core 记录的原始失败时，返回其 memoized typed issue（协调器
   /// 据此复用同一 correlation，绝不重复生成 / 重复记录）；否则（测试替身自抛的失败）返回
   /// `null`，由调用方走自身脱敏诊断路径。
-  static StudioShutdownIssue? recordedBeginExitIssue(Object error) {
+  @override
+  StudioShutdownIssue? recordedBeginExitIssue(Object error) {
     final issue = _beginExitIssue;
     return issue != null && identical(error, _beginExitFailure) ? issue : null;
   }
@@ -1203,7 +1205,8 @@ class FrbStudioTransport
   ///
   /// 调用方必须先收束/取消所有 Dart 订阅，之后这里才在必要时真正 `RustLib.dispose()`：
   /// dispose 早于订阅取消正是桥在退出时挂起的点。
-  static Future<void> finishShutdownDiagnostics() async {
+  @override
+  Future<void> finishShutdownDiagnostics() async {
     if (_rustInitialized) {
       try {
         await _bridgeCall(frb.finishShutdownDiagnostics);

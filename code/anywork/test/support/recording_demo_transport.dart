@@ -1,8 +1,7 @@
 import 'dart:async';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork_client/models.dart';
-import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
+import 'package:anywork_client/studio_client.dart';
 
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends DemoStudioTransport {

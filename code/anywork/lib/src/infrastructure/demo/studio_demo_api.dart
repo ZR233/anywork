@@ -1,4 +1,60 @@
-part of 'studio_api.dart';
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts_ports.dart';
+import 'package:anywork_client/acp_ports.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/model_directory.dart';
+import 'package:anywork_client/studio_ports.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+import '../../domain/models/studio_models.dart';
+import '../../platform/error_log.dart';
+import 'accounts/demo_account_observation.dart';
+
+part 'studio_demo_conversation.dart';
+part 'studio_demo_settings.dart';
+
+const _conversationClosedFailure = StudioFailure(
+  code: StudioFailureCode.cancelled,
+  message: 'The conversation feed is closed',
+  retryable: false,
+  correlationId: 'client-conversation-closed',
+);
+const _conversationQueryFailure = StudioFailure(
+  code: StudioFailureCode.invalidArgument,
+  message: 'The conversation query is invalid',
+  retryable: false,
+  correlationId: 'client-conversation-query',
+);
+
+ThreadRuntimeView _emptyRuntimeView() {
+  return const ThreadRuntimeView(
+    modelId: '',
+    contextTokens: 0,
+    contextWindow: 0,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
+  );
+}
+
+Object _studioFailure(Object error) {
+  return switch (error) {
+    final StudioFailure failure => failure,
+    _ => StudioFailure(
+      code: StudioFailureCode.internal,
+      message: error.toString(),
+      retryable: false,
+      correlationId: newStudioCorrelationId(),
+    ),
+  };
+}
 
 const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
   title: '任务流程',

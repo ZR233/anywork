@@ -31,7 +31,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
-import 'accounts_view_models_test.dart';
+import '../unit/accounts_view_models_test.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';

@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/accounts/types.dart'
     as frb_accounts;

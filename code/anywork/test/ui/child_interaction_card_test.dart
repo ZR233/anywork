@@ -5,7 +5,7 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';

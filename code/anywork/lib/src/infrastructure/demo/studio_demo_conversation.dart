@@ -1,4 +1,4 @@
-part of 'studio_api.dart';
+part of 'studio_demo_api.dart';
 
 // Frozen only at Demo's Plan request producer boundary. Legacy seeded requests
 // can lack document identity; their completion never borrows the current Plan.

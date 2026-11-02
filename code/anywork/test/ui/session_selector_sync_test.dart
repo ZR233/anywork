@@ -12,7 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';

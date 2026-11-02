@@ -92,6 +92,20 @@ abstract class StudioTransport
     required int budgetMs,
   }) async => const [];
 
+  /// Memoized early-exit issue for this transport, if [error] is the original
+  /// failure already recorded by [beginRuntimeExit]. Dart-only transports
+  /// return null so the coordinator records its own diagnostic.
+  StudioShutdownIssue? recordedBeginExitIssue(Object error) => null;
+
+  /// Called when the merged exit report is not a reliable Clean. FRB uses this
+  /// to keep RustLib until Dart subscriptions settle; Dart-only transports
+  /// have nothing to revoke.
+  void revokeSafeDispose() {}
+
+  /// Independent diagnostic teardown after Dart subscriptions have joined.
+  /// FRB may dispose RustLib here; Dart-only transports are a no-op.
+  Future<void> finishShutdownDiagnostics() async {}
+
   Future<RecoveryStateSnapshot> retryRecovery();
 
   /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。

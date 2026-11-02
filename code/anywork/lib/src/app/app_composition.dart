@@ -1,4 +1,5 @@
 import '../infrastructure/demo/statistics/demo_statistics_feed.dart';
+import '../infrastructure/demo/studio_demo_api.dart';
 import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
 import '../infrastructure/frb/studio_api.dart';
 import '../infrastructure/frb/studio_update_api.dart';
@@ -26,9 +27,7 @@ AppGraph createProductionAppGraph({
 }
 
 /// In-process demo composition. Used by the demo entry and adapter tests.
-AppGraph createDemoAppGraph({
-  ClipboardImageStager? clipboardImageStager,
-}) {
+AppGraph createDemoAppGraph({ClipboardImageStager? clipboardImageStager}) {
   return AppGraph(
     transport: DemoStudioTransport(lspActivityLoop: true),
     statisticsFeed: DemoStatisticsFeedPort(),

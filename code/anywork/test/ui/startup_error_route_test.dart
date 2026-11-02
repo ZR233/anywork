@@ -2,7 +2,6 @@ import '../support/test_statistics_feed.dart';
 
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -27,21 +26,13 @@ void main() {
       transport: transport,
       clientId: 'startup-route',
     );
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, (
-      call,
-    ) async {
-      return call.method == 'beginExit' ? 30000 : null;
-    });
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       await pumpClientFuture(
         tester,
-        StudioExitCoordinator.requestExit(),
+        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
         'startup failure teardown',
       );
-      messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, null);
     });
     await tester.pumpWidget(
       ProviderScope(
@@ -69,6 +60,13 @@ void main() {
     expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
     expect(transport.attempts, 2);
     expect(tester.takeException(), isNull);
+    // testWidgets 在测试体结束后才检查未完成定时器；主题订阅的稳定窗口必须在此之前关闭。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpClientFuture(
+      tester,
+      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      'startup failure close',
+    );
   });
 }
 

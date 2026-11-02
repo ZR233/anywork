@@ -4,7 +4,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

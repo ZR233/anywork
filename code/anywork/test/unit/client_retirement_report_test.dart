@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart'
+import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart'
     show DemoStudioTransport;
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
