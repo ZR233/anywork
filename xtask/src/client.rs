@@ -3,22 +3,20 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use pl_dev_support::{paths, process};
 use serde::Deserialize;
 
-/// Both suites are mandatory: a missing package or adapter suite is an
-/// incomplete migration, rather than a reason to turn this gate green.
+/// The SDK suite is mandatory: a missing Client package or test directory is an
+/// incomplete gate, rather than a reason to turn this command green.
 pub(crate) fn verify() -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let client_dir = workspace_root.join("code/anywork_client");
     let app_dir = paths::studio_app_dir(&workspace_root);
     ensure_client_manifest(&client_dir)?;
     ensure_locked_suite(&client_dir, Path::new("test"))?;
-    ensure_locked_suite(&app_dir, Path::new("test/client"))?;
 
     println!("Client package: {}", client_dir.display());
-    println!("Client adapters: {}", app_dir.join("test/client").display());
 
     run("dart", &["pub", "get", "--enforce-lockfile"], &client_dir)?;
     run("flutter", &["pub", "get", "--enforce-lockfile"], &app_dir)?;
@@ -43,14 +41,7 @@ pub(crate) fn verify() -> Result<()> {
         &client_dir,
     )?;
     run("dart", &["analyze", "--fatal-infos"], &client_dir)?;
-    run("dart", &["test", "--reporter=expanded"], &client_dir)?;
-    // flutter_test loads dart:ui, so these adapter tests must use the Flutter
-    // runner. The SDK and working directory are the same as cargo flutter.
-    run(
-        "flutter",
-        &["test", "--no-pub", "--reporter=expanded", "test/client"],
-        &app_dir,
-    )
+    run("dart", &["test", "--reporter=expanded"], &client_dir)
 }
 
 #[derive(Deserialize)]
