@@ -13,6 +13,7 @@ KNOWN_JOBS = (
     "pr-title",
     "release-configuration",
     "rust-quality",
+    "rust-deterministic",
     "linux-environment",
     "studio-server-linux",
     "flutter-quality",

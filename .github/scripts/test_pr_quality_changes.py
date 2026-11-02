@@ -42,6 +42,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertEqual(plan["plan"], "docs-only")
         self.assertTrue(plan["docs_policy"])
         self.assertFalse(plan["rust_quality"])
+        self.assertFalse(plan["rust_deterministic"])
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["flutter_quality"])
         self.assertFalse(plan["macos_desktop"])
@@ -57,12 +58,14 @@ class PlanFromPathsTest(unittest.TestCase):
     def test_rust_only_selects_rust_and_linux(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="pull_request")
         self.assertTrue(plan["rust_quality"])
+        self.assertTrue(plan["rust_deterministic"])
         self.assertTrue(plan["linux_environment"])
         self.assertFalse(plan["release_configuration"])
         self.assertFalse(plan["flutter_quality"])
         self.assertFalse(plan["macos_desktop"])
         self.assertFalse(plan["docs_policy"])
         self.assertIn("rust-quality", plan["required_jobs"])
+        self.assertIn("rust-deterministic", plan["required_jobs"])
         self.assertIn("studio-server-linux", plan["required_jobs"])
 
     def test_ui_only_selects_flutter(self):
@@ -72,6 +75,7 @@ class PlanFromPathsTest(unittest.TestCase):
         )
         self.assertTrue(plan["flutter_quality"])
         self.assertFalse(plan["rust_quality"])
+        self.assertFalse(plan["rust_deterministic"])
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["macos_desktop"])
 
@@ -94,6 +98,7 @@ class PlanFromPathsTest(unittest.TestCase):
             plan = plan_from_paths([path], event_name="push")
             self.assertEqual(plan["plan"], "full", path)
             self.assertTrue(plan["rust_quality"], path)
+            self.assertTrue(plan["rust_deterministic"], path)
             self.assertTrue(plan["flutter_quality"], path)
             self.assertTrue(plan["macos_desktop"], path)
 
@@ -103,6 +108,7 @@ class PlanFromPathsTest(unittest.TestCase):
         for plan in (empty, unknown):
             self.assertEqual(plan["plan"], "full")
             self.assertTrue(plan["rust_quality"])
+            self.assertTrue(plan["rust_deterministic"])
             self.assertTrue(plan["flutter_quality"])
             self.assertTrue(plan["macos_desktop"])
             self.assertTrue(plan["docs_policy"])
@@ -115,6 +121,7 @@ class PlanFromPathsTest(unittest.TestCase):
         )
         self.assertTrue(plan["docs_policy"])
         self.assertTrue(plan["rust_quality"])
+        self.assertTrue(plan["rust_deterministic"])
         self.assertFalse(plan["flutter_quality"])
 
     def test_github_output_uses_true_false(self):

@@ -27,6 +27,7 @@ jobs:
       docs_policy: ${{ steps.plan.outputs.docs_policy }}
       release_configuration: ${{ steps.plan.outputs.release_configuration }}
       rust_quality: ${{ steps.plan.outputs.rust_quality }}
+      rust_deterministic: ${{ steps.plan.outputs.rust_deterministic }}
       linux_environment: ${{ steps.plan.outputs.linux_environment }}
       flutter_quality: ${{ steps.plan.outputs.flutter_quality }}
       macos_desktop: ${{ steps.plan.outputs.macos_desktop }}
@@ -217,27 +218,58 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Check standalone core without database features
-        run: cargo check -p pl-core --no-default-features --all-targets
-
-      - name: Check core SQLite backend
-        run: cargo check -p pl-core --no-default-features --features sqlite --all-targets
+        run: cargo check --locked -p pl-core --no-default-features --all-targets
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test pl-model public API
-        run: cargo test -p pl-model
-
-      - name: Test pl-core public API
-        run: cargo test -p pl-core --features sqlite
-
-      - name: Test pl-patch semantics
-        run: cargo test -p pl-patch
 
       # TOML schema admission and credential/file commit recovery also depend on the
       # Windows atomic replacement boundary; Linux-only Studio tests are not sufficient.
       - name: Test Studio migrations and recovery on Windows
         run: cargo test --locked -p pl-studio-runtime --lib
+
+  rust-deterministic:
+    name: rust-deterministic
+    needs:
+      - changes
+      - linux-environment
+    if: needs.changes.outputs.rust_deterministic == 'true' && needs.linux-environment.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download same-run candidate environment
+        if: needs.linux-environment.outputs.artifactId != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.linux-environment.outputs.artifactId }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/linux-build-image
+
+      - name: Verify exact environment identity
+        env:
+          LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
+          LINUX_IMAGE_ID: ${{ needs.linux-environment.outputs.imageId }}
+          LINUX_IMAGE_ARTIFACT_ID: ${{ needs.linux-environment.outputs.artifactId }}
+          LINUX_IMAGE_ARCHIVE_SHA256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+        run: bash .github/scripts/linux-build-handoff.sh
+
+      - name: Test workspace with locked SQLite profile
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+            cargo install --path code/pl-remote-helper --locked --debug --target-dir "$PWD/target" --root "$PWD/target/local-worker"
+            export PATH="$PWD/target/local-worker/bin:$PATH"
+            cargo test --locked --workspace --features pl-core/sqlite
+          '
 
   linux-environment:
     name: Prepare exact Linux build environment
@@ -285,14 +317,10 @@ jobs:
           LINUX_IMAGE_ARCHIVE_SHA256: ${{ needs.linux-environment.outputs.archiveSha256 }}
         run: bash .github/scripts/linux-build-handoff.sh
 
-      # One container retains the locally installed worker across build and tests.
-      - name: Build server and test Studio with the matching local worker
+      - name: Build server in the matching Linux environment
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             cargo build -p pl-studio-server
-            cargo install --path code/pl-remote-helper --locked --debug --target-dir "$PWD/target" --root "$PWD/target/local-worker"
-            export PATH="$PWD/target/local-worker/bin:$PATH"
-            cargo test -p pl-studio-runtime
           '
 
   flutter-quality:
@@ -434,6 +462,7 @@ jobs:
       - pr-title
       - release-configuration
       - rust-quality
+      - rust-deterministic
       - linux-environment
       - studio-server-linux
       - flutter-quality
@@ -456,6 +485,7 @@ jobs:
           PR_TITLE_RESULT: ${{ needs.pr-title.result }}
           RELEASE_CONFIGURATION_RESULT: ${{ needs.release-configuration.result }}
           RUST_QUALITY_RESULT: ${{ needs.rust-quality.result }}
+          RUST_DETERMINISTIC_RESULT: ${{ needs.rust-deterministic.result }}
           LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
           STUDIO_SERVER_LINUX_RESULT: ${{ needs.studio-server-linux.result }}
           FLUTTER_QUALITY_RESULT: ${{ needs.flutter-quality.result }}

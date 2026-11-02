@@ -19,6 +19,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "pr-title": "skipped",
         "release-configuration": "skipped",
         "rust-quality": "skipped",
+        "rust-deterministic": "skipped",
         "linux-environment": "skipped",
         "studio-server-linux": "skipped",
         "flutter-quality": "skipped",
@@ -38,10 +39,11 @@ class GateEvaluateTest(unittest.TestCase):
 
     def test_required_skip_from_upstream_fails(self):
         errors = evaluate(
-            ["changes", "rust-quality", "linux-environment", "studio-server-linux"],
+            ["changes", "rust-quality", "rust-deterministic", "linux-environment", "studio-server-linux"],
             _results(
                 **{
                     "rust-quality": "failure",
+                    "rust-deterministic": "skipped",
                     "linux-environment": "skipped",
                     "studio-server-linux": "skipped",
                 }
