@@ -97,7 +97,7 @@ pub(crate) struct RunGuiOptions {
     /// directory (or used as-is when absolute). It must be a real file and is
     /// passed to the Flutter build as its `-t` target.
     #[arg(long, value_name = "PATH", requires = "native_launch")]
-    pub(crate) native_launch_driver_target: Option<std::path::PathBuf>,
+    pub(crate) native_launch_target: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

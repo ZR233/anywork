@@ -33,7 +33,7 @@ enum DemoMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlutterProcessMode {
     Batch,
-    ResidentDriver,
+    Resident,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,7 +209,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
             &mut command,
             FlutterInvocation {
                 demo_mode: DemoMode::Native,
-                process_mode: FlutterProcessMode::ResidentDriver,
+                process_mode: FlutterProcessMode::Resident,
                 bridge_artifacts: None,
                 remote_helper_bundle_dir: None,
                 log_level: options.log_level,
@@ -276,41 +276,20 @@ fn run_gui_native_launch(
     print_context(workspace_root, app_dir);
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies(workspace_root, app_dir)?;
-    let demo_mode = if options.demo {
-        DemoMode::Demo
-    } else {
-        DemoMode::Native
-    };
+    let spec = NativeLaunchSpec::from_options(app_dir, &options)?;
+    let demo_mode = spec.demo_mode;
     let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
-    // Temporary native tests may still pass a dedicated target. It must be a
-    // real file so a typo fails the launch instead of silently building lib/main.dart.
-    let launch_target = match options.native_launch_driver_target.as_deref() {
-        Some(path) => {
-            let path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                app_dir.join(path)
-            };
-            ensure!(
-                path.is_file(),
-                "native-launch target does not exist: {}",
-                path.display()
-            );
-            path.to_string_lossy().into_owned()
-        }
-        None => "lib/main.dart".to_owned(),
-    };
     let build_args = run_native_launch_args(
         target,
         &version_define,
-        options.profile,
-        &launch_target,
-        options.capture,
+        spec.profile,
+        &spec.entrypoint,
+        spec.capture,
     );
     let bridge_artifacts = prepare_bridge_artifacts(
         workspace_root,
         demo_mode,
-        if options.profile {
+        if spec.profile {
             BridgeConfiguration::Profile
         } else {
             BridgeConfiguration::Debug
@@ -329,7 +308,7 @@ fn run_gui_native_launch(
         },
     )?;
 
-    let bundle_dir = target.native_bundle_dir(app_dir, options.profile);
+    let bundle_dir = target.native_bundle_dir(app_dir, spec.profile);
     let executable = bundle_dir.join(target.executable_name());
     ensure!(
         executable.is_file(),
@@ -342,7 +321,7 @@ fn run_gui_native_launch(
         &mut command,
         FlutterInvocation {
             demo_mode,
-            process_mode: FlutterProcessMode::ResidentDriver,
+            process_mode: FlutterProcessMode::Resident,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
@@ -354,7 +333,7 @@ fn run_gui_native_launch(
     let native_started = std::time::Instant::now();
     let exit = process::run_resident_reporting(&mut command, &display)?;
     let report = NativeExitReport::from_exit(&exit, native_started.elapsed());
-    if let Some(path) = options.native_exit_report.as_deref() {
+    if let Some(path) = spec.report.as_deref() {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -423,16 +402,61 @@ impl NativeExitReport {
     }
 }
 
+/// Launch contract for a directly started debug/profile artifact.
+///
+/// Entrypoint, build mode, capture, and the native exit report are explicit.
+/// Driver targets and disabled VM service auth codes are not part of this
+/// contract; capture uses the ordinary authenticated VM service.
+struct NativeLaunchSpec {
+    entrypoint: String,
+    profile: bool,
+    capture: bool,
+    demo_mode: DemoMode,
+    report: Option<PathBuf>,
+}
+
+impl NativeLaunchSpec {
+    fn from_options(app_dir: &Path, options: &RunGuiOptions) -> Result<Self> {
+        let entrypoint = match options.native_launch_target.as_deref() {
+            Some(path) => {
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    app_dir.join(path)
+                };
+                ensure!(
+                    path.is_file(),
+                    "native-launch target does not exist: {}",
+                    path.display()
+                );
+                path.to_string_lossy().into_owned()
+            }
+            None => "lib/main.dart".to_owned(),
+        };
+        Ok(Self {
+            entrypoint,
+            profile: options.profile,
+            capture: options.capture,
+            demo_mode: if options.demo {
+                DemoMode::Demo
+            } else {
+                DemoMode::Native
+            },
+            report: options.native_exit_report.clone(),
+        })
+    }
+}
+
 /// Enables the VM service for a directly launched debug/profile artifact.
 ///
 /// The launch tool delivers these to the engine through `FLUTTER_ENGINE_SWITCH_*`
 /// rather than command-line arguments (`desktop_device.dart`
-/// `_computeEnvironment`), so the Driver can still reach the real native host.
+/// `_computeEnvironment`). Auth codes stay enabled so capture uses the ordinary
+/// authenticated VM service.
 fn configure_native_engine_environment(command: &mut Command) {
-    command.env("FLUTTER_ENGINE_SWITCHES", "3");
+    command.env("FLUTTER_ENGINE_SWITCHES", "2");
     command.env("FLUTTER_ENGINE_SWITCH_1", "enable-dart-profiling=true");
-    command.env("FLUTTER_ENGINE_SWITCH_2", "disable-service-auth-codes=true");
-    command.env("FLUTTER_ENGINE_SWITCH_3", "enable-checked-mode=true");
+    command.env("FLUTTER_ENGINE_SWITCH_2", "enable-checked-mode=true");
 }
 
 fn run_native_launch_args<'a>(
@@ -612,7 +636,7 @@ fn run_flutter_with_process_mode(
     configure_flutter_environment(&mut command, invocation);
     match invocation.process_mode {
         FlutterProcessMode::Batch => process::run_checked(&mut command, &display),
-        FlutterProcessMode::ResidentDriver => process::run_resident_checked(&mut command, &display),
+        FlutterProcessMode::Resident => process::run_resident_checked(&mut command, &display),
     }
 }
 
