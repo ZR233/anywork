@@ -47,6 +47,9 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   AccountStrings _strings = const AccountStrings.empty();
   String? _selectedMethod;
   String? _error;
+  Object? _templateError;
+  bool _loadingTemplates = false;
+  Future<void>? _templateLoadFuture;
   AcpCommandNotice? _authNotice;
   int _sequence = 0;
   int? _preparing;
@@ -94,8 +97,42 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         observation.cancel();
       }
     });
+    if (_template == null) unawaited(_loadTemplates());
     return _derive();
   }
+
+  Future<void> _loadTemplates() {
+    if (_finished) return Future<void>.value();
+    if (_templateLoadFuture case final inflight?) return inflight;
+    _loadingTemplates = true;
+    late final Future<void> task;
+    task = () async {
+      try {
+        await _service.loadTemplates();
+        if (ref.mounted && !_finished) {
+          _templateError = _template == null
+              ? StateError('ACP account template unavailable')
+              : null;
+        }
+      } catch (error) {
+        if (ref.mounted && !_finished) {
+          _templateError = error;
+        }
+      } finally {
+        if (identical(_templateLoadFuture, task)) {
+          _templateLoadFuture = null;
+        }
+        _loadingTemplates = false;
+        _publish();
+      }
+    }();
+    _templateLoadFuture = task;
+    return task;
+  }
+
+  Future<void> retry() => _templateError != null || _loadingTemplates
+      ? _loadTemplates()
+      : authenticate();
 
   AcpAccountTemplateView? get _template =>
       _service.templates.value.template(_provider);
@@ -143,9 +180,12 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
 
   /// Only a user action (including explicitly selecting a template) calls this.
   Future<void> prepare() async {
-    if (_preparing != null ||
-        _finished ||
-        _template?.automaticInstall.isAvailable != true) {
+    if (_preparing != null || _finished) return;
+    if (_template == null && _templateError == null) {
+      await _loadTemplates();
+      if (!ref.mounted || _finished || _preparing != null) return;
+    }
+    if (_template?.automaticInstall.isAvailable != true) {
       return;
     }
     final known = _service.install.value;
@@ -442,6 +482,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   }
 
   AccountAcpViewState _derive() {
+    final templateError = _templateError;
     final install = _install;
     final auth = _auth;
     final preparing = install.isBusy || _preparing != null;
@@ -516,6 +557,13 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       if (_template?.installUrl.isNotEmpty == true) AcpAccountAction.openGuide,
       if (_template?.termsUrl.isNotEmpty == true) AcpAccountAction.openTerms,
     ];
+    if (_templateError != null &&
+        !_loadingTemplates &&
+        !preparing &&
+        !auth.isBusy &&
+        !actions.contains(AcpAccountAction.retry)) {
+      actions.add(AcpAccountAction.retry);
+    }
     final primary = [
       AcpAccountAction.usePrepared,
       AcpAccountAction.prepare,
@@ -536,6 +584,9 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     final localError =
         _error ??
         notice?.summary ??
+        (templateError == null
+            ? null
+            : safeAccountError(templateError, _strings)) ??
         _service.auth.value.failure?.message ??
         _service.install.value.failure?.message;
     final canonicalError = showInstall && install is AcpInstallFailedState
@@ -553,6 +604,11 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       connectionRevision: _key.connectionRevision,
       strings: _strings,
     );
+    final subtitleText =
+        auth is AcpCancelledState ||
+            (showInstall && install is AcpInstallCancelledState)
+        ? _strings['acp.subtitle.cancelled']
+        : _strings['acp.subtitle.${phase.name}'];
     return AccountAcpViewState(
       preparedForEditor: _preparedForEditor,
       claimedOperationId: _intent.operationId,
@@ -568,6 +624,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
                   (showInstall && install is AcpInstallCancelledState)
             ? _strings['acp.cancelled']
             : _strings['acp.${phase.name}'],
+        subtitle: subtitleText.isEmpty ? null : subtitleText,
         message: _template?.automaticInstall.isAvailable == false && showInstall
             ? _strings['unsupportedPlatform']
             : preparing
@@ -630,7 +687,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         primaryAction: primary,
         loginMethods: [
           for (final method in methods)
-            AcpLoginMethodPresentation(id: method.id, label: method.name),
+            AcpLoginMethodPresentation(
+              id: method.id,
+              label: method.name,
+              description: _strings['acp.method.${method.id}'].isNotEmpty
+                  ? _strings['acp.method.${method.id}']
+                  : method.description,
+              recommended: method.id == 'oauth-personal',
+            ),
         ],
         selectedLoginMethod: selected,
         canSelectLoginMethod:

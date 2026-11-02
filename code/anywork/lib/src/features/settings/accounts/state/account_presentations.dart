@@ -467,6 +467,8 @@ abstract class AcpLoginMethodPresentation with _$AcpLoginMethodPresentation {
   const factory AcpLoginMethodPresentation({
     required String id,
     required String label,
+    String? description,
+    @Default(false) bool recommended,
   }) = _AcpLoginMethodPresentation;
 }
 
@@ -478,6 +480,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
   const factory AcpAccountPresentation({
     required AcpPresentationPhase phase,
     required String status,
+    String? subtitle,
     @Default(AcpUsagePresentation()) AcpUsagePresentation usage,
     String? message,
     String? error,
@@ -608,6 +611,7 @@ abstract class AcpAccountEditorPresentation
     String? iconKey,
     required AccountTextPresentation name,
     required AcpAccountPresentation preparation,
+    @Default(false) bool prepared,
     @Default(false) bool dirty,
     @Default(false) bool saving,
     @Default(false) bool canSave,
