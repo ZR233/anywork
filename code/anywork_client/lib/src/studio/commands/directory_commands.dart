@@ -26,7 +26,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         await _api.activateProject(project.id);
       }
       if (!_ownsNavigation(intent)) return;
-      _selectProjectDefault(project.id);
+      await _selectProjectDefault(project.id);
     });
   }
 
@@ -49,7 +49,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
           await _api.activateProject(project.id);
         }
         if (!_ownsNavigation(intent)) return false;
-        _selectProjectDefault(project.id);
+        await _selectProjectDefault(project.id);
         final selected = project;
         return selected.id == project.id &&
             selected.sshAlias == alias &&
@@ -72,14 +72,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         await _api.activateProject(workspaceId);
       }
       if (!_ownsNavigation(intent)) return;
-      _selectProjectDefault(workspaceId);
+      await _selectProjectDefault(workspaceId);
     });
   }
 
   Future<void> selectThread(String threadId) {
     return _navigate((_) async {
-      final thread = _directoryThread(threadId);
-      if (thread == null) return;
+      final thread = await _requireThread(threadId);
       _throwIfAccessBlocked(
         workspaceId: thread.workspaceId,
         threadId: threadId,
@@ -106,45 +105,41 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       workspaceId: selected.selectedProjectId,
       threadId: threadId,
     );
-    final root = _selectedRootId();
-    if (root == null ||
-        !_rootMembers(root).any((agent) => agent.threadId == threadId))
+    final selectedId = selected.selectedThreadId;
+    final selectedThread = selectedId == null
+        ? null
+        : await _readThread(selectedId);
+    if (!_ownsNavigation(intent) ||
+        !identical(_client.selection.state, selected)) {
       return;
+    }
+    final root = AgentDirectoryQueries.rootThreadId(
+      threadId: selectedId,
+      agents: _client.project.state.agents?.values ?? const [],
+      threads: [if (selectedThread != null) selectedThread],
+    );
+    if (root == null ||
+        !_rootMembers(root).any((agent) => agent.threadId == threadId)) {
+      return;
+    }
     bool isCurrent() =>
         _ownsNavigation(intent) &&
         identical(_client.selection.state, selected) &&
-        _selectedRootId() == root &&
         _rootMembers(root).any((agent) => agent.threadId == threadId);
-    var target = _directoryThread(threadId);
-    if (target == null) {
-      try {
-        target = await _api.readThread(threadId);
-      } catch (_) {
-        if (!isCurrent()) return;
-        rethrow;
-      }
-      // A newer intent revokes publication immediately, even before its
-      // command reaches the front of the serial lane. Still join this read.
-      if (!_ownsNavigation(intent) ||
-          !identical(_client.selection.state, selected)) {
-        return;
-      }
-      _throwIfAccessBlocked(
-        workspaceId: selected.selectedProjectId,
-        threadId: threadId,
+    final target = await _requireThread(threadId);
+    if (!isCurrent()) return;
+    _throwIfAccessBlocked(
+      workspaceId: selected.selectedProjectId,
+      threadId: threadId,
+    );
+    if (target.effectiveRootThreadId != root ||
+        target.workspaceId != selected.selectedProjectId) {
+      throw const StudioFailure(
+        code: StudioFailureCode.protocol,
+        message: 'Selected agent metadata did not match its canonical root',
+        retryable: false,
+        correlationId: 'client-select-agent',
       );
-      if (!isCurrent()) return;
-      if (target.id != threadId ||
-          target.effectiveRootThreadId != root ||
-          target.workspaceId != selected.selectedProjectId) {
-        throw const StudioFailure(
-          code: StudioFailureCode.protocol,
-          message: 'Selected agent metadata did not match its canonical root',
-          retryable: false,
-          correlationId: 'client-select-agent',
-        );
-      }
-      _client.threadDirectory.mergeOverlayThreads([target]);
     }
     if (target.effectiveRootThreadId != root ||
         target.workspaceId != selected.selectedProjectId)
@@ -169,10 +164,8 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         workspaceId: selection.selectedProjectId,
         threadId: threadId,
       );
-      if (_directoryThread(threadId) == null) {
-        await _selectAgentThread(threadId, intent);
-        return;
-      }
+      await _requireThread(threadId);
+      if (!_ownsNavigation(intent)) return;
       _client.selection.markOpened();
     });
   }
@@ -249,8 +242,9 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   Future<void> restoreThread(String threadId) {
     return _navigate((intent) async {
+      final existing = await _readThread(threadId);
       _throwIfAccessBlocked(
-        workspaceId: _workspaceIdForThread(threadId),
+        workspaceId: _workspaceIdForThread(threadId, existing),
         threadId: threadId,
       );
       final thread = await _api.restoreThread(threadId);
@@ -272,57 +266,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     }
     return _lane.enqueue(() async {
       if (_selectedProjectBusy(workspaceId)) return;
-      // 只记录当前已加载窗口中的该项目会话。分页窗口之外的 id 不能当成已删除。
-      final loadedIds = _client.threadDirectory.state.window.threads
-          .where((thread) => thread.workspaceId == workspaceId)
-          .map((thread) => thread.id)
-          .toSet();
       // Capture logical draft owners before directory removal can arrive.
       final draftOwners = _client.drafts.projectComposers(workspaceId);
       await _api.archiveProject(workspaceId);
       if (_client.isClosed) return;
       await _client.drafts.discardProjectDrafts(workspaceId, draftOwners);
-      for (final id in loadedIds) {
-        if (_client.selection.state.selectedThreadId == id) {
-          _client.conversations.setVisibleThread(null);
-        }
-      }
-    });
-  }
-
-  Future<ThreadDirectoryPage> queryThreads(
-    DirectoryQuery query, {
-    String? cursor,
-    int limit = 50,
-  }) => _lane.run(() async {
-    final page = await _api.queryThreads(query, cursor: cursor, limit: limit);
-    if (!_client.isClosed) {
-      // 搜索命中但不在当前窗口的线程并入 overlay，保证 selectThread 可定位。
-      _client.threadDirectory.mergeOverlayThreads(page.threads);
-    }
-    return page;
-  });
-
-  Future<void> loadMoreThreads() {
-    return _lane.enqueue(() async {
-      final directory = _client.threadDirectory.state;
-      if (!directory.loaded ||
-          directory.window.isLoading ||
-          !directory.hasMore) {
-        return;
-      }
-      final store = _client.threadDirectory;
-      store.setLoading(true);
-      _setLoadMoreError(null);
-      try {
-        final page = await _api.listThreadsPage(cursor: directory.nextCursor);
-        if (_client.isClosed) return;
-        store.appendPage(page);
-      } catch (error) {
-        if (_client.isClosed) return;
-        _client.threadDirectory.setLoading(false);
-        _setLoadMoreError(error.toString());
-        rethrow;
+      if (_client.selection.state.selectedProjectId == workspaceId) {
+        _client.conversations.setVisibleThread(null);
       }
     });
   }
@@ -418,8 +368,9 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     String threadId,
     int faultGeneration,
   ) => _lane.run(() async {
+    final thread = await _readThread(threadId);
     _throwIfExecutionBlocked(
-      workspaceId: _workspaceIdForThread(threadId),
+      workspaceId: _workspaceIdForThread(threadId, thread),
       threadId: threadId,
     );
     return _api.resumeThreadHistory(threadId, faultGeneration);
@@ -472,8 +423,12 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     });
   }
 
-  void _selectProjectDefault(String workspaceId) {
-    final threadId = _client.threadDirectory.state.window.threads
+  Future<void> _selectProjectDefault(String workspaceId) async {
+    final frame = await _readThreads(
+      DirectoryQuery(workspaceId: workspaceId),
+      DirectoryWindow(),
+    );
+    final threadId = frame.threads
         .where(
           (thread) =>
               thread.isRoot &&
@@ -496,35 +451,57 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     }
   }
 
-  StudioThread? _directoryThread(String threadId) {
-    final directory = _client.threadDirectory.state;
-    for (final thread in directory.window.threads) {
-      if (thread.id == threadId) return thread;
-    }
-    for (final thread in directory.overlayThreads) {
-      if (thread.id == threadId) return thread;
-    }
-    return null;
-  }
-
-  String? _selectedRootId() => AgentDirectoryQueries.rootThreadId(
-    threadId: _client.selection.state.selectedThreadId,
-    agents: _client.project.state.agents?.values ?? const [],
-    threads: [
-      ..._client.threadDirectory.state.window.threads,
-      ..._client.threadDirectory.state.overlayThreads,
-    ],
-  );
-
   List<StudioAgentView> _rootMembers(String rootId) =>
       AgentDirectoryQueries.forRoot(
         rootThreadId: rootId,
         agents: _client.project.state.agents?.values ?? const [],
-        threads: [
-          ..._client.threadDirectory.state.window.threads,
-          ..._client.threadDirectory.state.overlayThreads,
-        ],
       );
+
+  Future<StudioThread?> _readThread(String threadId) async {
+    final observation = _client.threadDirectory.observeThread(threadId);
+    try {
+      var state = observation.state.value;
+      if (state.isLoading) {
+        state = await observation.state.waitFor((value) => !value.isLoading);
+      }
+      if (state.error case final error?) throw error;
+      return state.frame?.thread;
+    } finally {
+      await observation.release();
+    }
+  }
+
+  Future<StudioThread> _requireThread(String threadId) async {
+    final thread = await _readThread(threadId);
+    if (thread != null) return thread;
+    throw StudioFailure(
+      code: StudioFailureCode.notFound,
+      message: 'Thread metadata is unavailable: $threadId',
+      retryable: false,
+      correlationId: 'client-thread-metadata',
+    );
+  }
+
+  Future<ThreadDirectoryFrame> _readThreads(
+    DirectoryQuery query,
+    DirectoryWindow window,
+  ) async {
+    final observation = _client.threadDirectory.observeThreads(query, window);
+    try {
+      var state = observation.state.value;
+      if (state.isLoading) {
+        state = await observation.state.waitFor((value) => !value.isLoading);
+      }
+      if (state.error case final error?) throw error;
+      final frame = state.frame;
+      if (frame == null) {
+        throw StateError('Directory observation closed without a frame');
+      }
+      return frame;
+    } finally {
+      await observation.release();
+    }
+  }
 
   bool _selectedProjectBusy(String workspaceId) {
     final selection = _client.selection.state;
@@ -574,8 +551,8 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     if (issue != null) throw issue.blockedFailure();
   }
 
-  String? _workspaceIdForThread(String threadId) {
-    final directoryProjectId = _directoryThread(threadId)?.workspaceId;
+  String? _workspaceIdForThread(String threadId, StudioThread? metadata) {
+    final directoryProjectId = metadata?.workspaceId;
     if (directoryProjectId != null) return directoryProjectId;
     final workspaceProjectId = _client.conversations
         .sessionState(threadId)
@@ -591,11 +568,6 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   bool _shouldActivateProject(String workspaceId) =>
       _executionBlocker(workspaceId: workspaceId) == null;
-
-  void _setLoadMoreError(String? message) {
-    if (state.loadMoreError == message) return;
-    state = state.copyWith(loadMoreError: message);
-  }
 
   void _setStandalonePreparation({
     required bool isPreparing,

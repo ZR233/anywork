@@ -377,6 +377,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarCloseProject => 'Close project';
 
   @override
+  String get sidebarArchiveProjectConfirmTitle => 'Archive project';
+
+  @override
+  String sidebarArchiveProjectConfirmBody(String project) {
+    return 'Archiving “$project” archives its sessions, discards the project draft, and cleans up managed session worktrees. Uncommitted or unintegrated content in those worktrees will be permanently lost. Continue?';
+  }
+
+  @override
+  String get sidebarArchiveProjectConfirmAction => 'Archive project';
+
+  @override
   String get sidebarArchiveSession => 'Archive session';
 
   @override
@@ -3607,6 +3618,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarStandaloneSessions => 'Non-project sessions';
+
+  @override
+  String get sidebarNewStandaloneSession => 'New non-project session';
 
   @override
   String get sidebarStandaloneEmpty => 'No non-project sessions yet.';

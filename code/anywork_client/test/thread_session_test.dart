@@ -489,10 +489,8 @@ void main() {
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),
     );
-    fixture.client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: [changed], nextCursor: null, revision: 1),
-      revision: 1,
-    );
+    fixture.transport.emitThread(changed, 'thread', revision: 1);
+    await Future<void>.delayed(Duration.zero);
     expect(session.state.workspace!.thread, same(changed));
     expect(session.state.revision, 12);
     expect(session.state.hasSnapshot, isTrue);

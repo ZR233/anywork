@@ -332,7 +332,6 @@ impl AgentServices {
             },
         );
         drop(state);
-        self.events.warm_thread_index(vec![record.clone()]);
         Ok(thread)
     }
 }

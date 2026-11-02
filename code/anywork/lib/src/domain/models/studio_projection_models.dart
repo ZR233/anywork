@@ -28,27 +28,18 @@ abstract class SidebarView with _$SidebarView {
 
   const factory SidebarView({
     required List<StudioProject> projects,
-    required List<StudioThread> rootThreads,
     required String? selectedProjectId,
-    required String? selectedRootThreadId,
     required bool isBusy,
     required Map<String, StudioRecoveryIssue> projectRecoveryIssues,
-    required Map<String, StudioRecoveryIssue> threadRecoveryIssues,
     required Map<String, String> modeDisplayNames,
-    @Default(false) bool directoryHasMore,
-    @Default(false) bool directoryIsLoading,
   }) = _SidebarView;
 
-  factory SidebarView.fromDirectories({
+  factory SidebarView.fromProjects({
     required List<StudioProject> projects,
-    required List<StudioThread> rootThreads,
     required String? selectedProjectId,
-    required String? selectedRootThreadId,
     required bool isBusy,
     required List<StudioRecoveryIssue> recoveryIssues,
     required Map<String, String> modeDisplayNames,
-    required bool directoryHasMore,
-    required bool directoryIsLoading,
   }) {
     final projectRecoveryIssues = <String, StudioRecoveryIssue>{};
     for (final project in projects) {
@@ -58,44 +49,14 @@ abstract class SidebarView with _$SidebarView {
       ).firstOrNull;
       if (issue != null) projectRecoveryIssues[project.id] = issue;
     }
-    final threadRecoveryIssues = <String, StudioRecoveryIssue>{};
-    for (final thread in rootThreads) {
-      final issue = recoveryIssuesForTarget(
-        recoveryIssues,
-        workspaceId: thread.workspaceId,
-        threadId: thread.id,
-      ).firstOrNull;
-      if (issue != null) threadRecoveryIssues[thread.id] = issue;
-    }
     return SidebarView(
       projects: projects,
-      rootThreads: rootThreads,
       selectedProjectId: selectedProjectId,
-      selectedRootThreadId: selectedRootThreadId,
       isBusy: isBusy,
       projectRecoveryIssues: projectRecoveryIssues,
-      threadRecoveryIssues: threadRecoveryIssues,
       modeDisplayNames: modeDisplayNames,
-      directoryHasMore: directoryHasMore,
-      directoryIsLoading: directoryIsLoading,
     );
   }
-
-  factory SidebarView.fromState(StudioState state) =>
-      SidebarView.fromDirectories(
-        projects: state.projects,
-        rootThreads: state.rootThreads,
-        selectedProjectId: state.selectedProjectId,
-        selectedRootThreadId: state.selectedRootThread?.id,
-        isBusy: state.isBusy,
-        recoveryIssues: state.recoveryIssues,
-        modeDisplayNames: {
-          for (final mode in state.threadModeCatalog.modes)
-            mode.id: mode.displayName,
-        },
-        directoryHasMore: state.threadDirectory.hasMore,
-        directoryIsLoading: state.threadDirectory.isLoading,
-      );
 }
 
 @freezed

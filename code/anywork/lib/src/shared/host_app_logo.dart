@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../platform/host_app_icons.dart';
+import 'host_app_artwork.dart';
 
 /// Displays the native artwork for an external host application.
 ///
@@ -23,14 +24,6 @@ class HostAppLogo extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bytes = ref.watch(hostAppIconProvider(app)).value;
-    if (bytes == null) return Icon(fallback, size: size);
-    return Image.memory(
-      bytes,
-      width: size,
-      height: size,
-      fit: BoxFit.contain,
-      filterQuality: FilterQuality.medium,
-      errorBuilder: (_, error, stackTrace) => Icon(fallback, size: size),
-    );
+    return HostAppArtwork(bytes: bytes, fallback: fallback, size: size);
   }
 }

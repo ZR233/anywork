@@ -107,9 +107,8 @@ impl StudioThreadFactory {
         }
         saved?;
         self.services
-            .store
-            .catalog()
-            .project_explicit_close(&thread.id)
+            .product_events
+            .commit_explicit_close(&thread.id)
             .await?;
         Ok(record)
     }
@@ -204,15 +203,15 @@ impl StudioThreadFactory {
                 "explicit close projection requires canonical intent"
             );
             self.services
-                .store
-                .catalog()
-                .project_explicit_close(&thread.id)
+                .product_events
+                .commit_explicit_close(&thread.id)
                 .await?;
-            let mut projected = self
+            let baseline = self
                 .services
                 .product_events
                 .thread_snapshot(&thread.id)
-                .unwrap_or_else(|| thread.clone());
+                .context("closing child is missing from the directory owner")?;
+            let mut projected = baseline.clone();
             projected.status = if snapshot.lifecycle == pl_core::thread::ThreadLifecycle::Closed {
                 pl_protocol::ThreadStatus::Closed
             } else {
@@ -220,10 +219,7 @@ impl StudioThreadFactory {
             };
             self.services
                 .product_events
-                .commit_directory(crate::studio::store::directory::DirectoryDelta {
-                    thread_upserts: vec![projected],
-                    ..Default::default()
-                })
+                .commit_thread_update(baseline, projected)
                 .await?;
             Ok::<_, anyhow::Error>(())
         }

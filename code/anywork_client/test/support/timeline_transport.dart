@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 
+import 'directory_feed.dart';
+
 ChatMessage chatMessage({
   String id = 'item',
   String body = 'body',
@@ -362,7 +364,8 @@ class TestContentWatch implements ConversationContentWatch {
   }
 }
 
-class TestConversationTransport implements StudioTransport {
+class TestConversationTransport extends StudioTransport
+    with DirectoryFeedFixture {
   final List<
     ({
       String threadId,

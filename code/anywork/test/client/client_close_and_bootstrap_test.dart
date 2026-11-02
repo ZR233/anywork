@@ -6,6 +6,7 @@ import 'package:anywork/src/app/app_graph.dart';
 
 import 'support/test_statistics_feed.dart';
 
+import 'support/chat_fixtures.dart';
 import 'support/recording_demo_transport.dart';
 
 class _CatalogFailureTransport extends RecordingDemoTransport {
@@ -33,12 +34,31 @@ class _LateBootstrapTransport extends RecordingDemoTransport {
 void main() {
   test('closing a project discards only its logical drafts and releases their permits', () async {
     final transport = RecordingDemoTransport();
-    final client = AnyworkClient(
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'project-close',
     );
+    final client = graph.client;
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    );
     await client.bootstrap();
     final workspaceId = client.selection.state.selectedProjectId!;
+    final rootMetadata = client.threadDirectory.observeThread('thread-main');
+    final rootFrame = await rootMetadata.state
+        .waitFor((state) => state.frame?.thread != null)
+        .timeout(const Duration(seconds: 5));
+    expect(rootFrame.frame!.thread!.workspaceId, workspaceId);
+    addTearDown(rootMetadata.release);
+    graph.timeline.updateReadDemand(chatDemand);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread('thread-main');
+    final session = client.conversations.session('thread-main');
+    await session.source
+        .waitFor((state) => state.workspace?.thread.workspaceId == workspaceId)
+        .timeout(const Duration(seconds: 5));
     client.drafts.startDraft.updateDraft(workspaceId, 'closed project draft');
     final composer = client.drafts.composer('thread-main')
       ..updateDraft('closed Thread draft');

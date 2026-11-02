@@ -8,55 +8,103 @@ part of 'thread_directory_store.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Riverpod owns this display observation; the Client owns the resource.
+/// Metadata is independent of list membership, filtering and pagination.
 
-@ProviderFor(threadDirectoryStore)
-final threadDirectoryStoreProvider = ThreadDirectoryStoreProvider._();
+@ProviderFor(threadMetadataStore)
+final threadMetadataStoreProvider = ThreadMetadataStoreFamily._();
 
-/// Riverpod owns this display observation; the Client owns the resource.
+/// Metadata is independent of list membership, filtering and pagination.
 
-final class ThreadDirectoryStoreProvider
+final class ThreadMetadataStoreProvider
     extends
         $FunctionalProvider<
-          ThreadDirectoryStoreState,
-          ThreadDirectoryStoreState,
-          ThreadDirectoryStoreState
+          DirectoryObservationState<ThreadMetadataFrame>,
+          DirectoryObservationState<ThreadMetadataFrame>,
+          DirectoryObservationState<ThreadMetadataFrame>
         >
-    with $Provider<ThreadDirectoryStoreState> {
-  /// Riverpod owns this display observation; the Client owns the resource.
-  ThreadDirectoryStoreProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'threadDirectoryStoreProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
+    with $Provider<DirectoryObservationState<ThreadMetadataFrame>> {
+  /// Metadata is independent of list membership, filtering and pagination.
+  ThreadMetadataStoreProvider._({
+    required ThreadMetadataStoreFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'threadMetadataStoreProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
 
   @override
-  String debugGetCreateSourceHash() => _$threadDirectoryStoreHash();
+  String debugGetCreateSourceHash() => _$threadMetadataStoreHash();
+
+  @override
+  String toString() {
+    return r'threadMetadataStoreProvider'
+        ''
+        '($argument)';
+  }
 
   @$internal
   @override
-  $ProviderElement<ThreadDirectoryStoreState> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
+  $ProviderElement<DirectoryObservationState<ThreadMetadataFrame>>
+  $createElement($ProviderPointer pointer) => $ProviderElement(pointer);
 
   @override
-  ThreadDirectoryStoreState create(Ref ref) {
-    return threadDirectoryStore(ref);
+  DirectoryObservationState<ThreadMetadataFrame> create(Ref ref) {
+    final argument = this.argument as String;
+    return threadMetadataStore(ref, argument);
   }
 
   /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(ThreadDirectoryStoreState value) {
+  Override overrideWithValue(
+    DirectoryObservationState<ThreadMetadataFrame> value,
+  ) {
     return $ProviderOverride(
       origin: this,
-      providerOverride: $SyncValueProvider<ThreadDirectoryStoreState>(value),
+      providerOverride:
+          $SyncValueProvider<DirectoryObservationState<ThreadMetadataFrame>>(
+            value,
+          ),
     );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is ThreadMetadataStoreProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
   }
 }
 
-String _$threadDirectoryStoreHash() =>
-    r'20c0e15e3ee3b95f5644aa65b62e7ef3d3b99221';
+String _$threadMetadataStoreHash() =>
+    r'8fd7f4a4ec9ae074cd0e9dc346f5250b5a1f35f0';
+
+/// Metadata is independent of list membership, filtering and pagination.
+
+final class ThreadMetadataStoreFamily extends $Family
+    with
+        $FunctionalFamilyOverride<
+          DirectoryObservationState<ThreadMetadataFrame>,
+          String
+        > {
+  ThreadMetadataStoreFamily._()
+    : super(
+        retry: null,
+        name: r'threadMetadataStoreProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// Metadata is independent of list membership, filtering and pagination.
+
+  ThreadMetadataStoreProvider call(String threadId) =>
+      ThreadMetadataStoreProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'threadMetadataStoreProvider';
+}

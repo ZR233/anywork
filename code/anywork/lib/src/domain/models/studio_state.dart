@@ -78,7 +78,7 @@ class StudioState {
   final String? selectedProjectId;
   final String? selectedThreadId;
   final ProjectDirectoryState projectDirectory;
-  final ThreadDirectoryWindow threadDirectory;
+  final ThreadDirectoryFrame threadDirectory;
   final AgentDirectoryState agentDirectory;
   final SettingsStateSnapshot settingsState;
   final RecoveryStateSnapshot recoveryState;
@@ -345,7 +345,7 @@ class StudioState {
     Object? selectedProjectId = _studioStateUnset,
     Object? selectedThreadId = _studioStateUnset,
     ProjectDirectoryState? projectDirectory,
-    ThreadDirectoryWindow? threadDirectory,
+    ThreadDirectoryFrame? threadDirectory,
     AgentDirectoryState? agentDirectory,
     SettingsStateSnapshot? settingsState,
     AccountsState? accountsState,

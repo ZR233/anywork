@@ -393,7 +393,7 @@ impl StudioRuntime {
         let directory_commit = self
             .agent_facility
             .product_events
-            .commit_observed_thread(directory)
+            .commit_observed_thread_mode(&thread_id, directory.mode, directory.updated_at)
             .await;
         let result = match (binding_error, directory_commit) {
             (None, Ok(directory_commit)) => self

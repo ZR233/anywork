@@ -47,12 +47,11 @@ final class DraftsRepositoryImpl implements DraftsRepository {
   List<ComposerDraftOwner> projectComposers(String workspaceId) =>
       List.unmodifiable([
         for (final owner in _composers.values)
-          if ((dependencies.conversations
-                      .sessionState(owner.threadId)
-                      ?.workspace
-                      ?.thread
-                      .workspaceId ??
-                  dependencies.findThread(owner.threadId)?.workspaceId) ==
+          if (dependencies.conversations
+                  .sessionState(owner.threadId)
+                  ?.workspace
+                  ?.thread
+                  .workspaceId ==
               workspaceId)
             owner,
       ]);

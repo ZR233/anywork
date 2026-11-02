@@ -214,6 +214,195 @@ frb_accounts.BridgeAccountTextPatch _textPatchInput(AccountTextPatch patch) =>
         const frb_accounts.BridgeAccountTextPatch.restore(),
     };
 
+final class _FrbThreadsObservation implements ThreadsObservationHandle {
+  _FrbThreadsObservation(this.transport, this.query, this.window) {
+    registration = _DartSubscription(
+      'thread-directory:$query:$window',
+      _release,
+      transport._forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    transport._trackDartSubscription(registration);
+  }
+
+  final FrbStudioTransport transport;
+  final DirectoryQuery query;
+  final DirectoryWindow window;
+  late final _DartSubscription registration;
+  final Completer<void> _opened = Completer<void>();
+  frb_directory_feed.BridgeThreadsObservation? _handle;
+  Future<ThreadDirectoryFrame?>? _next;
+  bool _stop = false;
+
+  Future<void> open() async {
+    try {
+      final handle = await FrbStudioTransport._bridgeCall(
+        () => frb_directory_feed.openThreadsObservation(
+          query: frb_directory_types.BridgeThreadDirectoryQuery(
+            workspaceId: query.workspaceId,
+            search: query.search,
+            archived: query.archived,
+            filter: switch (query.filter) {
+              DirectoryFilter.all =>
+                frb_directory_types.BridgeThreadDirectoryFilter.all,
+              DirectoryFilter.running =>
+                frb_directory_types.BridgeThreadDirectoryFilter.running,
+              DirectoryFilter.attention =>
+                frb_directory_types.BridgeThreadDirectoryFilter.attention,
+            },
+            threadIds: query.threadIds,
+            excludedThreadIds: query.excludedThreadIds,
+          ),
+          window: frb_directory_types.BridgeThreadDirectoryWindow(
+            before: window.before,
+            limit: window.limit,
+          ),
+        ),
+      );
+      _handle = handle;
+      if (_stop || registration.cancelRequested) handle.requestClose();
+    } finally {
+      _opened.complete();
+      registration.markCreated();
+    }
+  }
+
+  @override
+  Future<ThreadDirectoryFrame?> next() {
+    if (_stop || registration.cancelRequested) return Future.value(null);
+    if (_next != null) {
+      return Future.error(StateError('Directory next is already in flight'));
+    }
+    final work = () async {
+      await _opened.future;
+      final handle = _handle;
+      if (handle == null || _stop || registration.cancelRequested) return null;
+      final frame = await FrbStudioTransport._bridgeCall(handle.next);
+      return frame == null ? null : _threadDirectoryFrameFromFrb(frame);
+    }();
+    _next = work;
+    unawaited(
+      work.then<void>(
+        (_) {
+          _next = null;
+        },
+        onError: (Object _, StackTrace _) {
+          _next = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  @override
+  void requestClose() {
+    _stop = true;
+    _handle?.requestClose();
+  }
+
+  Future<void> _release() async {
+    requestClose();
+    await _opened.future;
+    final handle = _handle;
+    if (handle != null) {
+      handle.requestClose();
+      await FrbStudioTransport._bridgeCall(handle.close);
+    }
+    final pending = _next;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+  }
+
+  @override
+  Future<void> close() => registration.beginCancel();
+}
+
+final class _FrbThreadObservation implements ThreadObservationHandle {
+  _FrbThreadObservation(this.transport, this.threadId) {
+    registration = _DartSubscription(
+      'thread-metadata:$threadId',
+      _release,
+      transport._forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    transport._trackDartSubscription(registration);
+  }
+
+  final FrbStudioTransport transport;
+  final String threadId;
+  late final _DartSubscription registration;
+  final Completer<void> _opened = Completer<void>();
+  frb_directory_feed.BridgeThreadObservation? _handle;
+  Future<ThreadMetadataFrame?>? _next;
+  bool _stop = false;
+
+  Future<void> open() async {
+    try {
+      final handle = await FrbStudioTransport._bridgeCall(
+        () => frb_directory_feed.openThreadObservation(threadId: threadId),
+      );
+      _handle = handle;
+      if (_stop || registration.cancelRequested) handle.requestClose();
+    } finally {
+      _opened.complete();
+      registration.markCreated();
+    }
+  }
+
+  @override
+  Future<ThreadMetadataFrame?> next() {
+    if (_stop || registration.cancelRequested) return Future.value(null);
+    if (_next != null) {
+      return Future.error(
+        StateError('Thread metadata next is already in flight'),
+      );
+    }
+    final work = () async {
+      await _opened.future;
+      final handle = _handle;
+      if (handle == null || _stop || registration.cancelRequested) return null;
+      final frame = await FrbStudioTransport._bridgeCall(handle.next);
+      return frame == null ? null : _threadMetadataFrameFromFrb(frame);
+    }();
+    _next = work;
+    unawaited(
+      work.then<void>(
+        (_) {
+          _next = null;
+        },
+        onError: (Object _, StackTrace _) {
+          _next = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  @override
+  void requestClose() {
+    _stop = true;
+    _handle?.requestClose();
+  }
+
+  Future<void> _release() async {
+    requestClose();
+    await _opened.future;
+    final handle = _handle;
+    if (handle != null) {
+      handle.requestClose();
+      await FrbStudioTransport._bridgeCall(handle.close);
+    }
+    final pending = _next;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+  }
+
+  @override
+  Future<void> close() => registration.beginCancel();
+}
+
 final class _FrbAccountDomainObservation implements AccountDomainObservation {
   _FrbAccountDomainObservation(this.transport, this.target) {
     registration = _DartSubscription(
@@ -1513,46 +1702,48 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ThreadDirectoryPage> listThreadsPage({
-    String? cursor,
-    int limit = 50,
-  }) async {
+  Future<ThreadsObservationHandle> openThreadsObservation(
+    DirectoryQuery query,
+    DirectoryWindow window,
+  ) async {
     await _ensureReady();
-    final page = await _bridgeCall(
-      () => frb.listThreadsPage(
-        request: frb.BridgeListThreadsPageRequest(
-          cursor: cursor,
-          limit: limit.clamp(1, 100),
+    if (_dartSubscriptionsSealed) {
+      throw StateError('Studio transport is closed');
+    }
+    final observation = _FrbThreadsObservation(this, query, window);
+    try {
+      await observation.open();
+      return observation;
+    } catch (_) {
+      unawaited(
+        observation.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
         ),
-      ),
-    );
-    return _threadDirectoryPageFromFrb(page);
+      );
+      rethrow;
+    }
   }
 
   @override
-  Future<ThreadDirectoryPage> queryThreads(
-    DirectoryQuery query, {
-    String? cursor,
-    int limit = 50,
-  }) async {
+  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
     await _ensureReady();
-    final page = await _bridgeCall(
-      () => frb.queryThreads(
-        request: frb.BridgeDirectoryQuery(
-          workspaceId: query.workspaceId,
-          search: query.search,
-          archived: query.archived,
-          filter: switch (query.filter) {
-            DirectoryFilter.all => frb.BridgeDirectoryFilter.all,
-            DirectoryFilter.running => frb.BridgeDirectoryFilter.running,
-            DirectoryFilter.attention => frb.BridgeDirectoryFilter.attention,
-          },
-          cursor: cursor,
-          limit: limit.clamp(1, 100),
+    if (_dartSubscriptionsSealed) {
+      throw StateError('Studio transport is closed');
+    }
+    final observation = _FrbThreadObservation(this, threadId);
+    try {
+      await observation.open();
+      return observation;
+    } catch (_) {
+      unawaited(
+        observation.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
         ),
-      ),
-    );
-    return _threadDirectoryPageFromFrb(page);
+      );
+      rethrow;
+    }
   }
 
   @override
@@ -1561,15 +1752,6 @@ class FrbStudioTransport
     return _threadFromFrb(
       await _bridgeCall(() => frb.restoreThread(threadId: threadId)),
     );
-  }
-
-  @override
-  Future<StudioThread> readThread(String threadId) async {
-    await _ensureReady();
-    final snapshot = await _bridgeCall(
-      () => frb.readThread(threadId: threadId),
-    );
-    return _threadFromFrb(snapshot.thread);
   }
 
   @override

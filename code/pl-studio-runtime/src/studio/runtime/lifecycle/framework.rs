@@ -113,9 +113,6 @@ impl StudioRuntime {
             match self.threads.evict_idle(&thread_id).await {
                 Ok(true) => {
                     self.residency.remove(&thread_id).await;
-                    self.agent_facility
-                        .product_events
-                        .evict_thread_entry(&thread_id);
                 }
                 Ok(false) => self.residency.touch(&thread_id).await,
                 Err(error) => {

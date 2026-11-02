@@ -106,49 +106,10 @@ impl StudioRuntime {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<StudioThreadDirectoryPage> {
-        let mut page = self
-            .agent_facility
+        self.agent_facility
             .product_events
             .query_threads(query, cursor, limit)
-            .await?;
-        if cursor.is_none() && !query.archived {
-            let settings = self.config_runtime.read()?;
-            let projects = self.agent_facility.product_events.project_snapshot().await;
-            let mut pinned = Vec::new();
-            for id in &settings.config.ui.pinned_thread_ids {
-                let thread = match self.agent_facility.product_events.thread_snapshot(id) {
-                    Some(thread) => Some(thread),
-                    None => self
-                        .store
-                        .read_thread(id)
-                        .await?
-                        .map(pl_protocol::Thread::from),
-                };
-                if let Some(thread) = thread {
-                    let project_matches = projects
-                        .iter()
-                        .find(|project| project.id == thread.workspace_id)
-                        .is_some_and(|project| {
-                            query.search.as_ref().is_some_and(|search| {
-                                format!("{} {}", project.name, project.path)
-                                    .to_lowercase()
-                                    .contains(&search.trim().to_lowercase())
-                            })
-                        });
-                    if query.matches(&thread, project_matches) {
-                        pinned.push(thread);
-                    }
-                }
-            }
-            page.state = page.state.map(|mut data| {
-                data.threads
-                    .retain(|thread| !pinned.iter().any(|pin| pin.id == thread.id));
-                pinned.extend(data.threads);
-                data.threads = pinned;
-                data
-            });
-        }
-        Ok(page)
+            .await
     }
 
     /// Reads one canonical Thread without activating its actor.

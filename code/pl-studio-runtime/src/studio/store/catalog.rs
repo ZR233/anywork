@@ -1,45 +1,17 @@
 //! `StudioStore` 上的轻量会话目录入口。
 //!
-//! 冷分页、搜索、归档范围与关联补全都只消费 `catalog.toml`，不读取任何会话
+//! 本模块负责已提交摘要的持久化，不承担运行期目录查询；不读取任何会话
 //! `state.toml`/`history.sqlite`（design/17 §17.1、§17.2）。目录 mutation 的唯一
 //! 命令通道是 `ProductEventBus::commit_directory`：它同步写入本模块的 `catalog.toml`
 //! 事实，write-behind 队列再把同一 delta 异步落到 SQLite 镜像并幂等重放 TOML。
 
-use std::collections::HashSet;
-
 use anyhow::Result;
-use pl_protocol::Thread;
-use pl_protocol::studio::ThreadDirectoryQuery;
 
 use crate::studio::catalog::CatalogEntry;
 use crate::studio::store::StudioStore;
-use crate::studio::store::directory::{DirectoryDelta, ThreadDirectoryCursor};
+use crate::studio::store::directory::DirectoryDelta;
 
 impl StudioStore {
-    /// 未归档 root 会话的冷分页（`(last_user_message_at ?? created_at, id)` 降序 keyset）。
-    pub(in crate::studio) async fn catalog_page_active(
-        &self,
-        cursor: Option<&ThreadDirectoryCursor>,
-        limit: usize,
-    ) -> Result<Vec<Thread>> {
-        let key = cursor.map(|cursor| (cursor.sort_time, cursor.id.clone()));
-        Ok(self.catalog().page_active(key.as_ref(), limit))
-    }
-
-    /// 带搜索/过滤的冷分页；`project_matches` 是 Project 名称/路径命中的 id 集合。
-    pub(in crate::studio) async fn catalog_query(
-        &self,
-        query: &ThreadDirectoryQuery,
-        project_matches: &HashSet<String>,
-        cursor: Option<&ThreadDirectoryCursor>,
-        limit: usize,
-    ) -> Result<Vec<Thread>> {
-        let key = cursor.map(|cursor| (cursor.sort_time, cursor.id.clone()));
-        Ok(self
-            .catalog()
-            .page(query, project_matches, key.as_ref(), limit))
-    }
-
     /// 把一次目录 delta 幂等写入 canonical TOML 目录事实源（`workspaces.toml` + `catalog.toml`）。
     ///
     /// 这是目录摘要持久化的唯一实现：命令通道（`ProductEventBus::commit_directory`）同步调用

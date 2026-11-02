@@ -10,13 +10,16 @@ import 'package:test/test.dart';
 import 'package:anywork_client/accounts_ports.dart';
 
 import 'support/accounts_test_runtime.dart';
+import 'support/directory_feed.dart';
 
 const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
-final class _DraftTransport extends AccountsTestTransport {
+final class _DraftTransport extends AccountsTestTransport
+    with DirectoryFeedFixture {
   _DraftTransport() {
+    seedThread(_thread());
     addTearDown(() => frames.close());
     addTearDown(() => _startEvents?.close());
   }
@@ -684,12 +687,20 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
-    // The visible root page keeps one child-interactions observer share;
-    // releasing the page withdraws it before the budget conservation check.
+    // The visible root page releases its child-interactions share. The new
+    // Conversation still owns exactly one independent metadata observation.
     client.conversations.setVisibleThread(null);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
-    expect(client.budget.used(ResourceKind.observer), initialObservers);
+    expect(
+      client.budget.usage.where(
+        (usage) =>
+            usage.kind == ResourceKind.observer &&
+            usage.owner == 'directory-observer:thread:new-thread',
+      ),
+      hasLength(1),
+    );
+    expect(client.budget.used(ResourceKind.observer), initialObservers + 1);
     selected.cancel();
     await _close(client, transport);
   });
@@ -910,12 +921,11 @@ void main() {
 
   test('child conversation is read-only before submission preparation or attachment admission', () async {
     final transport = _DraftTransport();
+    transport.seedThread(_thread('thread', 'parent'));
     final client = await _client(transport);
     await client.conversations
         .session('thread')
-        .deliverWorkspace(
-          _workspace(thread: _thread().copyWith(parentThreadId: 'parent')),
-        );
+        .deliverWorkspace(_workspace(thread: _thread('thread', 'parent')));
     final owner = client.drafts.composer('thread');
     owner.updateDraft('  子会话只读\n');
     var prepared = false;
@@ -1909,10 +1919,13 @@ void main() {
     final client = await _client(
       transport,
       budget: ResourceBudget(
-        capacities: {...ResourceBudget().capacities, ResourceKind.observer: 0},
+        // Existing metadata and child-interactions demands consume both slots;
+        // the pre-dispatch input evidence must still be the rejected acquire.
+        capacities: {...ResourceBudget().capacities, ResourceKind.observer: 2},
       ),
     );
     await client.conversations.session('thread').deliverWorkspace(_workspace());
+    expect(client.budget.used(ResourceKind.observer), 2);
     final owner = client.drafts.composer('thread');
     owner.updateDraft('keep after observation admission failure');
     await owner.addLocalAttachments(['/payload.bin']);
@@ -1920,7 +1933,14 @@ void main() {
     expect(transport.promptCalls, 0);
     final operation = client.mutations.operations.single;
     expect(operation.phase, OperationPhase.rejected);
-    expect(operation.error, isA<ResourceBudgetExceeded>());
+    expect(
+      operation.error,
+      isA<ResourceBudgetExceeded>().having(
+        (error) => error.kind,
+        'rejected resource kind',
+        ResourceKind.observer,
+      ),
+    );
     expect(operation.receipt, isNull);
     expect(owner.state.draft, 'keep after observation admission failure');
     expect(owner.state.attachments.single.id, 'attachment-1-0');
@@ -2399,12 +2419,9 @@ void main() {
   test('project recovery and exact child issues still permit healthy root selection, history and accepted submit', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
-    client.threadDirectory.applyWindow(
-      ThreadDirectoryWindow(
-        threads: [_thread(), _thread('child-thread', 'thread')],
-        revision: 1,
-      ),
-    );
+    transport
+      ..seedThread(_thread())
+      ..seedThread(_thread('child-thread', 'thread'));
     final session = client.conversations.session('thread');
     await session.deliverWorkspace(_workspace());
     client.recovery.apply(
@@ -2669,12 +2686,9 @@ void main() {
     client.project.applyProjectDirectory(
       ProjectDirectoryState(values: [_project, otherProject], revision: 2),
     );
-    client.threadDirectory.applyWindow(
-      ThreadDirectoryWindow(
-        threads: [_thread(), _thread('affected-thread')],
-        revision: 1,
-      ),
-    );
+    transport
+      ..seedThread(_thread())
+      ..seedThread(_thread('affected-thread'));
     final session = client.conversations.session('thread');
     await session.deliverWorkspace(_workspace());
     client.recovery.apply(
@@ -2836,9 +2850,7 @@ void main() {
   test('multiple application, project and thread issues select the exact blocking owner and preserve composer state', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
-    client.threadDirectory.applyWindow(
-      ThreadDirectoryWindow(threads: [_thread()], revision: 1),
-    );
+    transport.seedThread(_thread());
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     client.recovery.apply(
       RecoveryStateSnapshot(
@@ -3019,15 +3031,17 @@ void main() {
       () async {
         final transport = _DraftTransport();
         final client = await _client(transport);
-        client.threadDirectory.applyWindow(
-          ThreadDirectoryWindow(
-            threads: [
-              _thread().copyWith(status: status),
-              _thread('closed-child', 'thread').copyWith(status: status),
-            ],
-            revision: 1,
-          ),
-        );
+        transport
+          ..emitThread(
+            _thread().copyWith(status: status),
+            'thread',
+            revision: 2,
+          )
+          ..emitThread(
+            _thread('closed-child', 'thread').copyWith(status: status),
+            'closed-child',
+            revision: 2,
+          );
         final session = client.conversations.session('thread');
         await session.deliverWorkspace(
           _workspace(thread: _thread().copyWith(status: status)),
@@ -3060,17 +3074,14 @@ void main() {
             ),
           ),
         );
-        client.threadDirectory.applyWindow(
-          ThreadDirectoryWindow(
-            threads: [
-              _thread(),
-              _thread('closed-child', 'thread').copyWith(status: status),
-            ],
-            revision: 2,
-          ),
-        );
+        transport.emitThread(_thread(), 'thread', revision: 2);
+        await Future<void>.delayed(Duration.zero);
         await session.deliverWorkspace(_workspace(revision: 2));
         expect(client.conversations.existingSession('closed-child'), isNull);
+        final childMetadata = client.threadDirectory.observeThread(
+          'closed-child',
+        );
+        await childMetadata.state.waitFor((state) => !state.isLoading);
         expect(
           () => client.threadCommands.resolveChildInteraction(
             'thread',
@@ -3085,6 +3096,7 @@ void main() {
             ),
           ),
         );
+        await childMetadata.release();
         expect(client.conversations.existingSession('closed-child'), isNull);
         expect(client.drafts.existingComposer('closed-child'), isNull);
         await owner.discard();

@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 import 'support/accounts_test_runtime.dart';
+import 'support/directory_feed.dart';
 import 'support/timeline_transport.dart';
 
 const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
@@ -95,8 +96,10 @@ final class _ArchiveCall {
 
 /// Only the external owner response is controlled. Operation allocation,
 /// command lanes, reducers, observation barriers and overlays are production.
-final class _Transport extends AccountsTestTransport {
+final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   _Transport() {
+    directoryOwnerEpoch = _epoch;
+    seedThread(_thread());
     addTearDown(() => modes.close());
     addTearDown(() => routes.close());
     addTearDown(() => stops.close());
@@ -759,7 +762,7 @@ StudioBootstrap _bootstrap(String epoch, SettingsStateSnapshot settings) =>
     StudioBootstrap(
       ownerEpoch: epoch,
       projectDirectory: ProjectDirectoryState(values: [_project], revision: 1),
-      threadDirectory: ThreadDirectoryWindow(threads: [_thread()], revision: 1),
+      threadDirectory: ThreadDirectoryPage(threads: [_thread()], revision: 1),
       agentDirectory: AgentDirectoryState(revision: 1),
       settingsState: settings,
       recoveryState: RecoveryStateSnapshot(revision: 1),
@@ -1959,10 +1962,7 @@ void main() {
           values: [_project],
           revision: 1,
         ),
-        threadDirectory: ThreadDirectoryWindow(
-          threads: [_thread()],
-          revision: 1,
-        ),
+        threadDirectory: ThreadDirectoryPage(threads: [_thread()], revision: 1),
         agentDirectory: AgentDirectoryState(revision: 1),
         settingsState: _settings(1),
         recoveryState: RecoveryStateSnapshot(
@@ -2743,11 +2743,12 @@ void main() {
           await client.conversations
               .session('thread')
               .deliverWorkspace(_workspace(revision: 2));
-          client.threadDirectory.applyDelta(
+          transport.emitThread(
+            _thread(mode: ThreadModeId.task),
+            'thread',
             revision: 2,
-            upserted: [_thread(mode: ThreadModeId.task)],
-            removed: const [],
           );
+          await Future<void>.delayed(Duration.zero);
         }
         call.reply.complete(ThreadModeCommandReply(receipt: receipt));
         await changing;
@@ -2773,11 +2774,12 @@ void main() {
               revision: 200,
             ),
           );
-          client.threadDirectory.applyDelta(
+          transport.emitThread(
+            _thread(mode: ThreadModeId.task),
+            'thread',
             revision: 2,
-            upserted: [_thread(mode: ThreadModeId.task)],
-            removed: const [],
           );
+          await Future<void>.delayed(Duration.zero);
           expect(
             operation.state.value.observed,
             isFalse,
@@ -3067,11 +3069,7 @@ void main() {
     () async {
       final transport = _Transport();
       final client = await _client(transport);
-      client.threadDirectory.applyDelta(
-        revision: 2,
-        upserted: [_childThread()],
-        removed: const [],
-      );
+      transport.seedThread(_childThread());
       client.project.applyAgentDirectory(
         AgentDirectoryState(
           revision: 2,
@@ -4167,12 +4165,12 @@ void main() {
             ),
           );
         } else if (blocked == 'closed') {
-          client.threadDirectory.applyWindow(
-            ThreadDirectoryWindow(
-              threads: [_thread().copyWith(status: ThreadStatusView.closing)],
-              revision: 2,
-            ),
+          transport.emitThread(
+            _thread().copyWith(status: ThreadStatusView.closing),
+            'thread',
+            revision: 2,
           );
+          await Future<void>.delayed(Duration.zero);
         } else {
           await client.conversations
               .session('thread')
@@ -4223,9 +4221,8 @@ void main() {
             RecoveryStateSnapshot(revision: 3, values: const []),
           );
         } else if (blocked == 'closed') {
-          client.threadDirectory.applyWindow(
-            ThreadDirectoryWindow(threads: [_thread()], revision: 3),
-          );
+          transport.emitThread(_thread(), 'thread', revision: 3);
+          await Future<void>.delayed(Duration.zero);
         } else {
           await client.conversations
               .session('thread')
@@ -4727,10 +4724,7 @@ void main() {
     final transport = _Transport();
     final client = await _client(transport);
 
-    expect(
-      client.threadDirectory.mergeOverlayThreads([_childThread()]),
-      isTrue,
-    );
+    transport.emitThread(_childThread(), 'child', revision: 2);
     await expectLater(
       client.threadCommands.continueThread(
         'child',
@@ -5097,10 +5091,7 @@ void main() {
   test('a child session cannot host its own decision', () async {
     final transport = _Transport();
     final client = await _client(transport);
-    expect(
-      client.threadDirectory.mergeOverlayThreads([_childThread()]),
-      isTrue,
-    );
+    transport.seedThread(_childThread());
     final summary = _childSummary(revision: 1);
     await expectLater(
       client.threadCommands.resolveChildInteraction(

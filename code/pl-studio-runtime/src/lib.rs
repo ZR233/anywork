@@ -104,8 +104,9 @@ pub use studio::{
     StudioRuntimeSnapshot, StudioRuntimeStateKind, StudioStartNewThreadResponse,
     StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
     StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeInspection,
-    StudioWorktreeRecoveryPreview, ThreadPreparationObserver, ThreadPreparationProgress,
-    ThreadPreparationStage, ThreadRecord, WorkspaceRecord,
+    StudioWorktreeRecoveryPreview, ThreadMetadataObservation, ThreadPreparationObserver,
+    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, ThreadsObservation,
+    WorkspaceRecord,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

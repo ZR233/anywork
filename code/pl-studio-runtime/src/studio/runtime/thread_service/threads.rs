@@ -338,6 +338,7 @@ impl StudioRuntime {
         if thread.archived {
             bail!("archived Threads cannot be renamed");
         }
+        let baseline = thread.clone();
         // A user edit is authoritative: stop the best-effort Explorer task
         // before publishing the canonical manual title.
         self.title_tasks
@@ -349,13 +350,18 @@ impl StudioRuntime {
         let committed = self
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta {
-                thread_upserts: vec![thread.clone()],
-                ..Default::default()
-            })
+            .commit_thread_update(baseline, thread)
             .await?;
+        let crate::StudioProductEventKind::ThreadDirectoryChanged(delta) = &committed.kind else {
+            bail!("thread rename did not publish its directory result");
+        };
+        let thread = delta
+            .upserted
+            .iter()
+            .find(|thread| thread.id == thread_id)
+            .ok_or_else(|| anyhow::anyhow!("thread rename result is missing its identity"))?;
         Ok(RenameThreadCommandReply {
-            thread: ThreadRecord::from_directory_thread(thread),
+            thread: ThreadRecord::from_directory_thread(thread.clone()),
             receipt: self.command_receipt(
                 operation_id,
                 changed,
@@ -394,14 +400,12 @@ impl StudioRuntime {
         {
             return Ok(());
         }
+        let baseline = thread.clone();
         thread.title = title.to_string();
         thread.updated_at = crate::studio::unix_seconds();
         self.agent_facility
             .product_events
-            .commit_directory(DirectoryDelta {
-                thread_upserts: vec![thread],
-                ..Default::default()
-            })
+            .commit_thread_update(baseline, thread)
             .await?;
         Ok(())
     }
@@ -741,17 +745,6 @@ impl StudioRuntime {
             let right = b.last_user_message_at.unwrap_or(b.created_at);
             right.cmp(&left).then_with(|| b.id.cmp(&a.id))
         });
-        let mut entries = roots
-            .iter()
-            .chain(tree.iter())
-            .cloned()
-            .map(pl_protocol::Thread::from)
-            .collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.id.cmp(&right.id));
-        entries.dedup_by(|left, right| left.id == right.id);
-        self.agent_facility
-            .product_events
-            .warm_thread_index(entries);
         Ok(Some((root, roots, tree)))
     }
 

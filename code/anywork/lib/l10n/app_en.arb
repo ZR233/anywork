@@ -133,6 +133,16 @@
     }
   },
   "sidebarCloseProject": "Close project",
+  "sidebarArchiveProjectConfirmTitle": "Archive project",
+  "sidebarArchiveProjectConfirmBody": "Archiving “{project}” archives its sessions, discards the project draft, and cleans up managed session worktrees. Uncommitted or unintegrated content in those worktrees will be permanently lost. Continue?",
+  "@sidebarArchiveProjectConfirmBody": {
+    "placeholders": {
+      "project": {
+        "type": "String"
+      }
+    }
+  },
+  "sidebarArchiveProjectConfirmAction": "Archive project",
   "sidebarArchiveSession": "Archive session",
   "sidebarArchiveSessionFailed": "Could not archive this session.",
   "sidebarArchiveSessionBusy": "Could not archive this session. It may still be running.",
@@ -1758,6 +1768,7 @@
   "sidebarNoResults": "No matching projects or sessions",
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
   "sidebarStandaloneSessions": "Non-project sessions",
+  "sidebarNewStandaloneSession": "New non-project session",
   "sidebarStandaloneEmpty": "No non-project sessions yet.",
   "sidebarStandalonePrepareFailed": "Couldn't prepare a workspace: {error}. Select New session to retry.",
   "@sidebarStandalonePrepareFailed": {

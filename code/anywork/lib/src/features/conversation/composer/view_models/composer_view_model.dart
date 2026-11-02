@@ -180,18 +180,10 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final draft = ref.watch(composerDraftControllerProvider(threadId));
     final settings = ref.watch(settingsStoreProvider);
     final accounts = ref.watch(modelSelectionAccountsProvider);
-    final directory = ref.watch(threadDirectoryStoreProvider);
+    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
     final attachments = ref.watch(attachmentDraftsProvider);
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final threads = [...directory.window.threads, ...directory.overlayThreads];
-    // The directory is paginated; the destination's own canonical session also
-    // supplies its identity without selecting or adding a directory entry.
-    final thread =
-        ModelRouteQueries.threadIdentity(
-          threadId: threadId,
-          directory: threads,
-        ) ??
-        session.workspace?.thread;
+    final thread = metadata.frame?.thread;
     final workspaceId = thread?.workspaceId;
     // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
@@ -225,6 +217,11 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final agents =
         ref.watch(projectStoreProvider).agents?.values ??
         const <StudioAgentView>[];
+    final children = AgentDirectoryQueries.forRoot(
+      rootThreadId: (thread?.isRoot ?? false) ? threadId : null,
+      agents: agents,
+      threads: [?thread],
+    );
     final storage = session.storage;
     return ComposerDockViewState(
       thread: thread,
@@ -261,16 +258,13 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
           : const [],
       childInteractionSync: childInteractions?.canonical.sync,
       childInteractionSources: {
-        for (final agent in AgentDirectoryQueries.forRoot(
-          rootThreadId: (thread?.isRoot ?? false) ? threadId : null,
-          agents: agents,
-          threads: threads,
-        ))
+        for (final agent in children)
           agent.threadId: _childSourceLabel(
             agent,
-            threads
-                .where((candidate) => candidate.id == agent.threadId)
-                .firstOrNull,
+            ref
+                .watch(threadMetadataStoreProvider(agent.threadId))
+                .frame
+                ?.thread,
           ),
       },
       modelRoute: canonicalRoute,

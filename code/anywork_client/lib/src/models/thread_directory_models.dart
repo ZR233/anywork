@@ -1,5 +1,6 @@
 import 'studio_enums.dart';
 import 'delegation_models.dart';
+import '../contracts/stamps.dart';
 
 enum ThreadStatusView {
   idle,
@@ -161,7 +162,7 @@ class StudioThread {
   }
 }
 
-/// 一次目录分页查询的结果页；`revision` 是目录领域水位。
+/// Bootstrap 的原始传输页；不注入或归约到 scoped 目录观察。
 class ThreadDirectoryPage {
   const ThreadDirectoryPage({
     required this.threads,
@@ -176,128 +177,71 @@ class ThreadDirectoryPage {
   bool get hasMore => nextCursor != null;
 }
 
-/// 侧栏会话目录的有界分页窗口。
-///
-/// 只保留已加载页的条目；触底通过 `nextCursor` 继续加载，目录增量按身份
-/// 原位合并（新会话前置、归档移除），未加载条目的增量直接忽略。
-/// `revision` 是目录领域水位：基线与增量都只按它前进，旧事实被拒绝。
-class ThreadDirectoryWindow {
-  const ThreadDirectoryWindow({
-    this.threads = const [],
-    this.nextCursor,
-    this.hasMore = false,
-    this.isLoading = false,
-    this.revision = 0,
-  });
+final class DirectoryWindow {
+  DirectoryWindow({this.before, this.limit = 20}) {
+    if (limit < 1 || limit > maxLimit) {
+      throw ArgumentError.value(
+        limit,
+        'limit',
+        'must be between 1 and $maxLimit',
+      );
+    }
+  }
 
+  static const int maxLimit = 100;
+  static const int maxFrameBytes = 256 * 1024;
+
+  final String? before;
+  final int limit;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DirectoryWindow &&
+      before == other.before &&
+      limit == other.limit;
+
+  @override
+  int get hashCode => Object.hash(before, limit);
+}
+
+final class ThreadDirectoryFrame {
+  ThreadDirectoryFrame({
+    required this.query,
+    required this.window,
+    required this.stamp,
+    required List<StudioThread> threads,
+    this.nextCursor,
+  }) : threads = List.unmodifiable(threads) {
+    if (stamp.resourceKey != 'thread-directory') {
+      throw ArgumentError.value(stamp.resourceKey, 'stamp.resourceKey');
+    }
+  }
+
+  final DirectoryQuery query;
+  final DirectoryWindow window;
+  final ResourceStamp stamp;
   final List<StudioThread> threads;
   final String? nextCursor;
-  final bool hasMore;
-  final bool isLoading;
-  final int revision;
+}
 
-  ThreadDirectoryWindow copyWith({
-    List<StudioThread>? threads,
-    Object? nextCursor = _sentinel,
-    bool? hasMore,
-    bool? isLoading,
-    int? revision,
+final class ThreadMetadataFrame {
+  ThreadMetadataFrame({
+    required this.threadId,
+    required this.stamp,
+    required this.thread,
   }) {
-    return ThreadDirectoryWindow(
-      threads: threads ?? this.threads,
-      nextCursor: identical(nextCursor, _sentinel)
-          ? this.nextCursor
-          : nextCursor as String?,
-      hasMore: hasMore ?? this.hasMore,
-      isLoading: isLoading ?? this.isLoading,
-      revision: revision ?? this.revision,
-    );
-  }
-
-  /// 基线首页合并：首页内容以基线为准，已加载的更远（更旧）页保留不清空。
-  ///
-  /// 基线是订阅建立后的 canonical 首页；它不能冒充全量目录，也不得把用户已
-  /// 触底加载的更旧页裁掉。旧基线（`revision` 不前进）原样返回。
-  ThreadDirectoryWindow applyBaselinePage(
-    ThreadDirectoryPage page, {
-    required int revision,
-  }) {
-    if (revision <= this.revision) return this;
-    final baseIds = {for (final thread in page.threads) thread.id};
-    final last = page.threads.lastOrNull;
-    final retainedOlder = [
-      for (final thread in threads)
-        if (!baseIds.contains(thread.id) &&
-            (last == null || _sortsAfter(thread, last)))
-          thread,
-    ];
-    return copyWith(
-      threads: [...page.threads, ...retainedOlder],
-      nextCursor: page.nextCursor,
-      hasMore: page.hasMore,
-      revision: revision,
-    );
-  }
-
-  /// 增量合并：已加载条目原位替换；比当前窗口最新条目更新的前置；
-  /// 其余（窗口未覆盖的更旧条目）忽略。
-  ThreadDirectoryWindow applyDelta({
-    required int revision,
-    required List<StudioThread> upserted,
-    required List<String> removed,
-  }) {
-    if (revision < this.revision) return this;
-    if (upserted.isEmpty && removed.isEmpty) {
-      return revision == this.revision ? this : copyWith(revision: revision);
+    if (stamp.resourceKey != 'thread-directory') {
+      throw ArgumentError.value(stamp.resourceKey, 'stamp.resourceKey');
     }
-    final removedSet = removed.toSet();
-    final upsertedById = {for (final thread in upserted) thread.id: thread};
-    final retained = [
-      for (final thread in threads)
-        if (!removedSet.contains(thread.id))
-          upsertedById.remove(thread.id) ?? thread,
-    ];
-    final newThreads =
-        upsertedById.values.where((thread) => !thread.archived).toList()
-          ..sort(StudioThread.compareDirectoryOrder);
-    final prependable = newThreads.where((thread) {
-      if (retained.isEmpty) return true;
-      final first = retained.first;
-      return thread.directorySortTime.isAfter(first.directorySortTime) ||
-          (thread.directorySortTime.isAtSameMomentAs(first.directorySortTime) &&
-              thread.id.compareTo(first.id) > 0);
-    }).toList();
-    return copyWith(threads: [...prependable, ...retained], revision: revision);
+    if (thread != null && thread!.id != threadId) {
+      throw ArgumentError.value(thread!.id, 'thread.id');
+    }
   }
 
-  ThreadDirectoryWindow appendPage(ThreadDirectoryPage page) {
-    final loaded = {...threads.map((thread) => thread.id)};
-    final appended = page.threads
-        .where((thread) => !loaded.contains(thread.id))
-        .toList();
-    return copyWith(
-      threads: [...threads, ...appended],
-      nextCursor: page.nextCursor,
-      hasMore: page.hasMore,
-      isLoading: false,
-      // 追加页携带查询时的目录水位；只前进不回退（页本身不驱动目录事件）。
-      revision: page.revision > revision ? page.revision : revision,
-    );
-  }
+  final String threadId;
+  final ResourceStamp stamp;
+  final StudioThread? thread;
 }
-
-/// 目录序为 `(directorySortTime, id)` 倒序；[candidate] 是否排在 [anchor] 之后（更旧）。
-///
-/// 与 [StudioThread.compareDirectoryOrder] 使用同一 canonical 排序键（最近用户消息时间，
-/// 缺失回落到创建时间），保证分页窗口的前置/保留判定与目录排序一致。
-bool _sortsAfter(StudioThread candidate, StudioThread anchor) {
-  final byTime = candidate.directorySortTime.compareTo(
-    anchor.directorySortTime,
-  );
-  return byTime < 0 || (byTime == 0 && candidate.id.compareTo(anchor.id) < 0);
-}
-
-const Object _sentinel = Object();
 
 /// 关机阶段的只读分类；canonical 状态由 [StudioShutdownProgress] 的 sealed variant 表达。
 enum StudioShutdownPhase {
@@ -366,35 +310,96 @@ class DirectoryQuery {
     this.search,
     this.archived = false,
     this.filter = DirectoryFilter.all,
+  }) : threadIds = null,
+       excludedThreadIds = const [];
+
+  factory DirectoryQuery.withThreadIds({
+    String? workspaceId,
+    String? search,
+    bool archived = false,
+    DirectoryFilter filter = DirectoryFilter.all,
+    Iterable<String>? threadIds,
+    Iterable<String> excludedThreadIds = const [],
+  }) {
+    return DirectoryQuery._(
+      workspaceId: workspaceId,
+      search: search,
+      archived: archived,
+      filter: filter,
+      threadIds: threadIds == null
+          ? null
+          : _normalizeDirectoryIds(threadIds, 'threadIds'),
+      excludedThreadIds: _normalizeDirectoryIds(
+        excludedThreadIds,
+        'excludedThreadIds',
+      ),
+    );
+  }
+
+  const DirectoryQuery._({
+    this.workspaceId,
+    this.search,
+    required this.archived,
+    required this.filter,
+    required this.threadIds,
+    required this.excludedThreadIds,
   });
+
+  static const int maxIdFilterItems = 64;
+
   final String? workspaceId;
   final String? search;
   final bool archived;
   final DirectoryFilter filter;
+  final List<String>? threadIds;
+  final List<String> excludedThreadIds;
 
-  bool matches(StudioThread thread, List<StudioProject> projects) {
-    if (!thread.isRoot ||
-        thread.archived != archived ||
-        (workspaceId != null && thread.workspaceId != workspaceId)) {
-      return false;
-    }
-    if (filter == DirectoryFilter.running &&
-        (!thread.status.isActive ||
-            thread.status == ThreadStatusView.waitingInteraction)) {
-      return false;
-    }
-    if (filter == DirectoryFilter.attention &&
-        thread.status != ThreadStatusView.waitingInteraction &&
-        thread.status != ThreadStatusView.faulted) {
-      return false;
-    }
-    final term = search?.trim().toLowerCase() ?? '';
-    final project = projects
-        .where((p) => p.id == thread.workspaceId)
-        .firstOrNull;
-    return term.isEmpty ||
-        thread.title.toLowerCase().contains(term) ||
-        (project != null &&
-            '${project.name} ${project.path}'.toLowerCase().contains(term));
+  @override
+  bool operator ==(Object other) =>
+      other is DirectoryQuery &&
+      workspaceId == other.workspaceId &&
+      search == other.search &&
+      archived == other.archived &&
+      filter == other.filter &&
+      _stringListsEqual(threadIds, other.threadIds) &&
+      _stringListsEqual(excludedThreadIds, other.excludedThreadIds);
+
+  @override
+  int get hashCode => Object.hash(
+    workspaceId,
+    search,
+    archived,
+    filter,
+    threadIds == null,
+    Object.hashAll(threadIds ?? const <String>[]),
+    Object.hashAll(excludedThreadIds),
+  );
+}
+
+List<String> _normalizeDirectoryIds(
+  Iterable<String> source,
+  String argumentName,
+) {
+  final ids = List<String>.of(source);
+  if (ids.length > DirectoryQuery.maxIdFilterItems ||
+      ids.any((id) => id.trim().isEmpty)) {
+    throw ArgumentError.value(
+      source,
+      argumentName,
+      'requires at most 64 nonempty identities',
+    );
   }
+  ids.sort();
+  return List.unmodifiable(ids.toSet());
+}
+
+bool _stringListsEqual(List<String>? left, List<String>? right) {
+  if (identical(left, right)) return true;
+  if (left == null || right == null || left.length != right.length) {
+    return false;
+  }
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }
