@@ -2,18 +2,16 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
+import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
-import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
-import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -90,19 +88,14 @@ void main() {
     testWidgets('$name: bounded cold read, actual layout and independent page', (
       tester,
     ) async {
-      final router = createApplicationRouter();
       addTearDown(() async {
-        try {
-          graph.setConversationPageVisible(false);
-          await tester.pumpWidget(const SizedBox());
-          await _until(
-            tester,
-            () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-            'all read handles joined',
-          );
-        } finally {
-          router.dispose();
-        }
+        graph.setConversationPageVisible(false);
+        await tester.pumpWidget(const SizedBox());
+        await _until(
+          tester,
+          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
+          'all read handles joined',
+        );
       });
       await binding.traceAction(
         () async {
@@ -115,13 +108,7 @@ void main() {
           await tester.pumpWidget(
             UncontrolledProviderScope(
               container: container,
-              child: MaterialApp.router(
-                theme: pureStudioTheme(),
-                locale: const Locale('zh'),
-                localizationsDelegates: AppLocalizations.localizationsDelegates,
-                supportedLocales: AppLocalizations.supportedLocales,
-                routerConfig: router,
-              ),
+              child: const AnyworkApp(enableDesktopHost: false),
             ),
           );
           TimelineDisplayLease? lease() => graph.timeline.lease(threadId);
