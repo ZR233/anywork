@@ -27,13 +27,10 @@ AppGraph createProductionAppGraph({
 
 /// In-process demo composition. Used by the demo entry and adapter tests.
 AppGraph createDemoAppGraph({
-  bool driver = false,
   ClipboardImageStager? clipboardImageStager,
 }) {
   return AppGraph(
-    transport: driver
-        ? DriverDemoStudioTransport(lspActivityLoop: true)
-        : DemoStudioTransport(lspActivityLoop: true),
+    transport: DemoStudioTransport(lspActivityLoop: true),
     statisticsFeed: DemoStatisticsFeedPort(),
     startupHost: ImmediateStudioStartupHost(),
     clipboardImageStager: clipboardImageStager,

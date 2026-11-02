@@ -84,7 +84,7 @@ void main() {
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
   final graph = const bool.fromEnvironment('ANYWORK_DEMO')
-      ? createDemoAppGraph(driver: true)
+      ? createDemoAppGraph()
       : createProductionAppGraph();
   _container = ProviderContainer(
     overrides: [
