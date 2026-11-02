@@ -4,11 +4,11 @@ import 'dart:ui' as ui;
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 
-import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/studio_driver_keys.dart';
 import '../state/timeline_image_resources.dart';
 import '../state/chat_item_presentation.dart';
 import '../widgets/content_layout_witness.dart';
+import '../widgets/timeline_attachments_view.dart';
+import '../widgets/timeline_image_view.dart';
 
 /// Mounted media borrows a lease-owned attempt. The item reference ledger, not
 /// widget mount/unmount, determines when shared bytes are released.
@@ -39,8 +39,6 @@ class _TimelineImageConnectorState extends State<TimelineImageConnector> {
   Future<(Uint8List, int, int)>? _read;
 
   ThreadAttachmentView get _attachment => widget.attachment;
-  String get _entryId =>
-      StudioDriverKeys.toolImageEntryId(widget.itemId, _attachment.id);
   bool get _isTool => widget.isTool;
 
   @override
@@ -125,90 +123,20 @@ class _TimelineImageConnectorState extends State<TimelineImageConnector> {
     return FutureBuilder<(Uint8List, int, int)>(
       future: _read,
       builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return TextButton.icon(
-            key: StudioDriverKeys.timelineImageRetry(
-              _isTool ? _entryId : _attachment.id,
-            ),
-            onPressed: widget.isActive() ? _retry : null,
-            icon: const Icon(Icons.refresh),
-            label: Text('图片读取失败：${snapshot.error}，重试'),
-          );
-        }
         final image = snapshot.data;
-        if (image == null) {
-          return const SizedBox(
-            height: 120,
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          );
-        }
-        final (bytes, width, height) = image;
-        return GestureDetector(
-          key: StudioDriverKeys.viewImageThumbnail(
-            _isTool ? _entryId : _attachment.id,
-          ),
-          onTap: () => _showOriginal(context),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 360),
-            child: Image(
-              key: ValueKey((widget.resources.threadId, _attachment.id)),
-              image: ResizeImage.resizeIfNeeded(720, null, MemoryImage(bytes)),
-              fit: BoxFit.contain,
-              width: width.toDouble(),
-              height: height.toDouble(),
-            ),
-          ),
+        return TimelineImageView(
+          itemId: widget.itemId,
+          attachment: _attachment,
+          isTool: _isTool,
+          active: widget.isActive(),
+          imageIdentity: (widget.resources.threadId, _attachment.id),
+          bytes: image?.$1,
+          width: image?.$2,
+          height: image?.$3,
+          error: snapshot.error,
+          onRetry: _retry,
         );
       },
-    );
-  }
-
-  Future<void> _showOriginal(BuildContext context) async {
-    if (!widget.isActive()) return;
-    final read = _read ??= _startThumbnail();
-    (Uint8List, int, int) image;
-    try {
-      image = await read;
-    } catch (error) {
-      if (context.mounted && widget.isActive() && identical(read, _read)) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.toString())));
-      }
-      return;
-    }
-    if (!context.mounted || !widget.isActive() || !identical(read, _read)) {
-      return;
-    }
-    final bytes = image.$1;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => Dialog(
-        key: _isTool
-            ? StudioDriverKeys.viewImageDialog(_entryId)
-            : StudioDriverKeys.timelineImageDialog(_attachment.id),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(_attachment.filename ?? _attachment.mediaType),
-                ),
-                IconButton(
-                  key: StudioDriverKeys.timelineImageClose,
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            Expanded(
-              child: InteractiveViewer(
-                maxScale: 8,
-                child: Image.memory(bytes, fit: BoxFit.contain),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -225,7 +153,7 @@ class TimelineAttachmentsConnector extends StatefulWidget {
   });
   final ChatItemPresentation item;
   final TimelineImageResources resources;
-  final Future<Uint8List> Function(String attachmentId) readAttachment;
+  final Future<Uint8List> Function(String attachmentId)? readAttachment;
   final bool Function() isActive;
   @override
   State<TimelineAttachmentsConnector> createState() =>
@@ -272,47 +200,21 @@ class _TimelineAttachmentsConnectorState
   @override
   Widget build(BuildContext context) {
     if (_error != null) return Text('附件字段无法解析：$_error');
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final attachment in _attachments)
-          if (attachment.modality == AttachmentModalityView.image)
-            SizedBox(
-              width: 120,
-              height: 120,
-              child: TimelineImageConnector(
-                key: ValueKey((widget.resources, attachment.id)),
-                itemId: widget.item.id,
-                attachment: attachment,
-                isTool: widget.item.type == 'tool',
-                resources: widget.resources,
-                readBytes: () => widget.readAttachment(attachment.id),
-                isActive: widget.isActive,
-              ),
-            )
-          else
-            SizedBox(
-              width: 280,
-              child: Material(
-                type: MaterialType.transparency,
-                child: ListTile(
-                  leading: Icon(
-                    attachment.modality == AttachmentModalityView.video
-                        ? Icons.movie_outlined
-                        : Icons.insert_drive_file_outlined,
-                  ),
-                  title: Text(
-                    attachment.filename ??
-                        context.attachmentModalityLabel(attachment.modality),
-                  ),
-                  subtitle: Text(
-                    '${attachment.mediaType} · ${attachment.byteSize} B',
-                  ),
-                ),
-              ),
-            ),
-      ],
+    return TimelineAttachmentsView(
+      attachments: _attachments,
+      imageBuilder: (attachment) {
+        final read = widget.readAttachment;
+        if (read == null) return const Text('图片读取尚未就绪');
+        return TimelineImageConnector(
+          key: ValueKey((widget.resources, attachment.id)),
+          itemId: widget.item.id,
+          attachment: attachment,
+          isTool: widget.item.type == 'tool',
+          resources: widget.resources,
+          readBytes: () => read(attachment.id),
+          isActive: widget.isActive,
+        );
+      },
     );
   }
 }

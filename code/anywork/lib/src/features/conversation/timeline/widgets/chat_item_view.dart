@@ -1,10 +1,8 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
@@ -12,8 +10,6 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
-import '../state/content_reference_identity.dart';
-import '../state/timeline_display_diagnostics.dart';
 import 'reasoning_summary.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
@@ -21,9 +17,12 @@ import 'timeline_plain_text.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
 
-typedef ChatContentRead = Future<ContentWindow> Function(
+typedef ChatContentRangeBuilder = Widget Function(
+  String itemId,
+  String contentKey,
+  String label,
   ContentRef reference,
-  ContentRange range,
+  Widget Function(String text, Widget child) witness,
 );
 
 /// One immutable producer item, one custom Message. Disclosures and decoded
@@ -33,33 +32,27 @@ class ChatItemView extends StatefulWidget {
     super.key,
     required this.item,
     this.bodyBuilder,
-    this.readContent,
+    this.contentRangeBuilder,
     this.childrenBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
-    this.registerWindowDisplay,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
-  final ChatContentRead? readContent;
+  final ChatContentRangeBuilder? contentRangeBuilder;
   final Widget Function(String parentId)? childrenBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
-
-  /// Borrows the actual expanded range view; registering does not read or retain another window.
-  final VoidCallback Function(TimelineCurrentWindowDisplay display)?
-  registerWindowDisplay;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
 
 class _ChatItemViewState extends State<ChatItemView> {
-  bool _expanded = false;
   ChatItemPresentation get item => widget.item;
   Set<int> get _sensitiveQuestions {
     final input = item.data['userInput'];
@@ -99,15 +92,21 @@ class _ChatItemViewState extends State<ChatItemView> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text('敏感字段已隐藏，仅展示公开 metadata'),
-            _metadata(item.data),
+            _metadata({
+              'type': item.type,
+              if (item.data['userInput']
+                  case final Map<String, Object?> userInput)
+                'userInput': {
+                  'interactionId': userInput['interactionId'],
+                  'questionCount': userInput['questions'] is List
+                      ? (userInput['questions'] as List).length
+                      : 0,
+                  if (userInput['state'] case final Map<String, Object?> state)
+                    'state': {'kind': state['kind']},
+                },
+            }),
           ],
         );
-  @override
-  void didUpdateWidget(covariant ChatItemView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.item.id != item.id) _expanded = false;
-  }
-
   @override
   Widget build(BuildContext context) {
     developer.Timeline.instantSync(
@@ -115,17 +114,14 @@ class _ChatItemViewState extends State<ChatItemView> {
       arguments: {'itemId': item.id},
     );
     if (item.reference case final reference?) {
-      return _ContentRangeView(
-        key: ValueKey('deferred:${item.id}'),
-        itemId: item.id,
-        contentKey: 'payload',
-        label: '按需查看原文 · ${item.byteLength} 字节',
-        reference: reference,
-        read: widget.readContent,
-        isDisplayActive: widget.isDisplayActive,
-        witness: _contentWitness,
-        registerDisplay: widget.registerWindowDisplay,
-      );
+      return widget.contentRangeBuilder?.call(
+            item.id,
+            'payload',
+            '按需查看原文 · ${item.byteLength} 字节',
+            reference,
+            _contentWitness,
+          ) ??
+          const Text('内容读取尚未就绪');
     }
     if (item.compatibility != ChatItemCompatibility.current) {
       return _unavailable(
@@ -143,7 +139,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     }
     return ConstrainedBox(
       key: ValueKey('chat-item:${item.id}'),
-      constraints: const BoxConstraints(minHeight: 40),
+      constraints: const BoxConstraints(minHeight: 28),
       child: Material(type: MaterialType.transparency, child: content),
     );
   }
@@ -212,6 +208,16 @@ class _ChatItemViewState extends State<ChatItemView> {
   }
 
   Widget _tool(BuildContext context) {
+    final input = item.data['userInput'];
+    if (input != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _questionReceipt(context, chatObject(input, 'userInput')),
+          _media(),
+        ],
+      );
+    }
     final reading = item.toolCard;
     final Widget card;
     if (reading is DecodedToolCard) {
@@ -241,13 +247,10 @@ class _ChatItemViewState extends State<ChatItemView> {
       };
       card = _unavailable(label, unavailable.reason);
     }
-    final input = item.data['userInput'];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         card,
-        if (input != null)
-          _questionReceipt(context, chatObject(input, 'userInput')),
         _media(),
         // References are explicit producer entries; no private receipt or arbitrary
         // JSON-field search is used to discover a body.
@@ -290,22 +293,14 @@ class _ChatItemViewState extends State<ChatItemView> {
       'resolved' => context.l10n.planReceiptAnswered,
       _ => '计划 · $decision',
     };
-    return Card(
+    final version = item.data['documentVersion'];
+    final summary = version is int ? '$label · v$version' : label;
+    return KeyedSubtree(
       key: StudioDriverKeys.timelinePlanReceipt(item.id),
-      elevation: 0,
-      color: context.colors.surfaceContainerLow,
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(label, style: context.text.titleSmall),
-            for (final body in item.bodies) _body(body),
-            _rawRecord(),
-          ],
-        ),
-      ),
+      child: _disclosure(Icons.checklist_rtl, summary, [
+        for (final body in item.bodies) _body(body),
+        _rawRecord(),
+      ]),
     );
   }
 
@@ -316,31 +311,24 @@ class _ChatItemViewState extends State<ChatItemView> {
     final answers = state['answers'] is List
         ? state['answers'] as List
         : const [];
-    return Card(
+    final title = state['kind'] == 'cancelled'
+        ? context.l10n.timelineUserInputCancelled
+        : context.l10n.timelineUserInputAnswered;
+    return KeyedSubtree(
       key: StudioDriverKeys.timelineUserInput(item.id),
-      elevation: 0,
-      color: context.colors.surfaceContainerLow,
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              state['kind'] == 'cancelled'
-                  ? context.l10n.timelineUserInputCancelled
-                  : context.l10n.timelineUserInputAnswered,
-              style: context.text.titleSmall,
+      child: _disclosure(
+        Icons.question_answer_outlined,
+        '$title · ${questions.length} 个问题',
+        [
+          for (var index = 0; index < questions.length; index++)
+            _question(
+              context,
+              chatObject(questions[index], 'question'),
+              index,
+              answers,
             ),
-            for (var index = 0; index < questions.length; index++)
-              _question(
-                context,
-                chatObject(questions[index], 'question'),
-                index,
-                answers,
-              ),
-          ],
-        ),
+          _rawRecord(),
+        ],
       ),
     );
   }
@@ -360,16 +348,75 @@ class _ChatItemViewState extends State<ChatItemView> {
     final redacted =
         question['isSecret'] == true ||
         (answer is Map<String, Object?> && answer['redacted'] == true);
-    if (redacted) return const Text('敏感内容已隐藏');
+    if (redacted) {
+      return const Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: Text('敏感内容已隐藏'),
+      );
+    }
+    // The producer uses null for an absent option list, distinct from an
+    // explicitly empty list. Neither has option bodies to display.
+    final optionCount = question['optionCount'] == null
+        ? 0
+        : chatInteger(question['optionCount'], 'question.optionCount');
+    final answerCount = answer == null
+        ? 0
+        : chatInteger(answer['answerCount'], 'answer.answerCount');
+    if (optionCount < 0 || answerCount < 0) {
+      throw const FormatException('问题选项和回答数量不能为负数');
+    }
+    // Every declared option/answer has a body entry, including empty text.
+    // Reject impossible counts before constructing widgets from metadata.
+    if (optionCount > item.bodies.length || answerCount > item.bodies.length) {
+      throw const FormatException('问题选项和回答数量超出正文清单');
+    }
+    final questionKey = 'tool.user-input.question.$index';
+    Iterable<ChatBodyPresentation> field(String key) =>
+        item.bodies.where((body) => body.key == key);
+    final labelStyle = context.text.labelSmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+    );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final body in item.bodies)
-            if (body.key.startsWith('tool.user-input.question.$index.') ||
-                body.key.startsWith('tool.user-input.answer.$index.'))
-              _body(body),
+          Text('问题 ${index + 1}', style: context.text.titleSmall),
+          for (final key in ['$questionKey.header', '$questionKey.body'])
+            for (final body in field(key)) _body(body),
+          if (optionCount > 0) ...[
+            const SizedBox(height: 6),
+            Text('可选项', style: labelStyle),
+            for (var option = 0; option < optionCount; option++)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(start: 12, top: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${option + 1}. ', style: labelStyle),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final key in [
+                            '$questionKey.option.$option.label',
+                            '$questionKey.option.$option.description',
+                          ])
+                            for (final body in field(key)) _body(body),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          if (answer != null) ...[
+            const SizedBox(height: 6),
+            Text('实际回答', style: labelStyle),
+            for (var value = 0; value < answerCount; value++)
+              for (final body in field('tool.user-input.answer.$index.$value'))
+                _body(body),
+          ],
         ],
       ),
     );
@@ -445,54 +492,40 @@ class _ChatItemViewState extends State<ChatItemView> {
     );
   }
 
-  Widget _media() {
-    final builder = widget.attachmentBuilder;
-    if (builder != null) return builder(item);
-    // Preview hosts can show public attachment metadata without platform IO.
-    try {
-      return Column(
-        children: [
-          for (final attachment in item.attachments)
-            ListTile(
-              title: Text(attachment.filename ?? attachment.id),
-              subtitle: Text(
-                '${attachment.mediaType} · ${attachment.byteSize} B',
-              ),
-            ),
-        ],
-      );
-    } on FormatException catch (error) {
-      return Text('附件字段无法解析：${error.message}');
-    }
-  }
+  Widget _media() =>
+      widget.attachmentBuilder?.call(item) ?? const SizedBox.shrink();
 
   Widget _rawRecord() => Material(
     type: MaterialType.transparency,
-    child: ExpansionTile(
-      title: const Text('公开原始记录'),
-      children: [
-        for (final body in _publicBodies) _body(body, code: true),
-        _publicEnvelope(),
-      ],
-    ),
-  );
-  Widget _unavailable(String title, String? diagnostic) => ConstrainedBox(
-    constraints: const BoxConstraints(minHeight: 40),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        InkWell(
-          onTap: () => setState(() => _expanded = !_expanded),
-          child: TimelineActivityRow(label: title, expanded: _expanded),
+    child: TimelineActivityTileTheme(
+      child: ExpansionTile(
+        dense: true,
+        minTileHeight: 28,
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsetsDirectional.only(start: 28, bottom: 8),
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        title: const TimelineActivityRow(
+          icon: Icons.data_object_outlined,
+          label: '公开原始记录',
+          expandable: false,
         ),
-        if (_expanded) ...[
-          if (diagnostic != null) Text(diagnostic),
-          for (final body in _publicBodies)
-            _body(body, code: item.type == 'tool'),
+        children: [
+          for (final body in _publicBodies) _body(body, code: true),
           _publicEnvelope(),
         ],
-      ],
+      ),
     ),
+  );
+  Widget _unavailable(String title, String? diagnostic) => _disclosure(
+    Icons.info_outline,
+    title,
+    [
+      if (diagnostic != null) Text(diagnostic),
+      for (final body in _publicBodies) _body(body, code: item.type == 'tool'),
+      _publicEnvelope(),
+    ],
   );
   Widget _disclosure(
     IconData icon,
@@ -501,38 +534,33 @@ class _ChatItemViewState extends State<ChatItemView> {
     bool issue = false,
   }) => TimelineActivityTileTheme(
     child: ExpansionTile(
-      initiallyExpanded: _expanded,
+      key: ValueKey(('item-disclosure', item.id)),
       maintainState: false,
-      showTrailingIcon: false,
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsetsDirectional.only(start: 28),
       minTileHeight: 28,
       dense: true,
       shape: const Border(),
       collapsedShape: const Border(),
-      onExpansionChanged: (value) => setState(() => _expanded = value),
       title: TimelineActivityRow(
         icon: icon,
         label: title,
         isIssue: issue,
-        expanded: _expanded,
+        expandable: false,
       ),
       children: children,
     ),
   );
   Widget _body(ChatBodyPresentation body, {bool code = false}) {
     if (body.reference case final reference?) {
-      return _ContentRangeView(
-        key: ValueKey('body:${item.id}:${body.key}'),
-        itemId: item.id,
-        contentKey: body.key,
-        label: '${body.key} · ${body.byteLength} 字节',
-        reference: reference,
-        read: widget.readContent,
-        isDisplayActive: widget.isDisplayActive,
-        witness: _contentWitness,
-        registerDisplay: widget.registerWindowDisplay,
-      );
+      return widget.contentRangeBuilder?.call(
+            item.id,
+            body.key,
+            '${body.key} · ${body.byteLength} 字节',
+            reference,
+            _contentWitness,
+          ) ??
+          Text('${body.key} · 内容读取尚未就绪');
     }
     final bytes = body.inline;
     if (bytes == null) return Text('${body.key} · 未提供内容或引用');
@@ -560,214 +588,6 @@ class _ChatItemViewState extends State<ChatItemView> {
       onContentLayout: onLayout,
       isDisplayActive: widget.isDisplayActive,
       child: child,
-    );
-  }
-}
-
-class _ContentRangeView extends StatefulWidget {
-  const _ContentRangeView({
-    super.key,
-    required this.label,
-    required this.reference,
-    required this.read,
-    required this.itemId,
-    required this.contentKey,
-    required this.witness,
-    required this.isDisplayActive,
-    this.registerDisplay,
-  });
-  final String label;
-  final ContentRef reference;
-  final ChatContentRead? read;
-  final String itemId;
-  final String contentKey;
-  final Widget Function(String text, Widget child) witness;
-  final bool Function()? isDisplayActive;
-  final VoidCallback Function(TimelineCurrentWindowDisplay display)?
-  registerDisplay;
-  @override
-  State<_ContentRangeView> createState() => _ContentRangeViewState();
-}
-
-class _ContentRangeViewState extends State<_ContentRangeView>
-    implements TimelineCurrentWindowDisplay {
-  ContentWindow? _window;
-  Object? _error;
-  bool _loading = false;
-  bool _expanded = false;
-  int _request = 0;
-  VoidCallback? _unregisterDisplay;
-
-  bool get _displayActive =>
-      mounted && _expanded && (widget.isDisplayActive?.call() ?? true);
-  @override
-  String get id => widget.itemId;
-  @override
-  ContentRef get reference => widget.reference;
-  @override
-  int get offset => _window?.offset ?? 0;
-  @override
-  ContentWindow? get window => _displayActive ? _window : null;
-  @override
-  Object? get error => _displayActive ? _error : null;
-
-  void _unregister() {
-    final unregister = _unregisterDisplay;
-    _unregisterDisplay = null;
-    unregister?.call();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ContentRangeView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (contentReferenceIdentity(oldWidget.reference) !=
-        contentReferenceIdentity(widget.reference)) {
-      _unregister();
-      _request++;
-      _window = null;
-      _error = null;
-      _loading = false;
-      _expanded = false;
-    } else if (oldWidget.registerDisplay != widget.registerDisplay) {
-      _unregister();
-      if (_displayActive) {
-        _unregisterDisplay = widget.registerDisplay?.call(this);
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _unregister();
-    super.dispose();
-  }
-
-  Future<void> _load(int offset) async {
-    final read = widget.read;
-    if (read == null || _loading || !(widget.isDisplayActive?.call() ?? true)) {
-      return;
-    }
-    final request = ++_request;
-    final reference = widget.reference;
-    final isActive = widget.isDisplayActive;
-    bool eligible() =>
-        mounted &&
-        request == _request &&
-        (isActive?.call() ?? true) &&
-        (widget.isDisplayActive?.call() ?? true) &&
-        contentReferenceIdentity(widget.reference) ==
-            contentReferenceIdentity(reference);
-    setState(() {
-      _expanded = true;
-      _loading = true;
-      _error = null;
-    });
-    _unregisterDisplay ??= widget.registerDisplay?.call(this);
-    try {
-      final value = await read(
-        reference,
-        ContentRange(offset: offset, maxBytes: 64 * 1024),
-      );
-      if (!eligible()) return;
-      setState(() => _window = value);
-    } catch (error) {
-      if (!eligible()) return;
-      // Missing content, stale identity and real DB failures stay diagnostics.
-      setState(() => _error = error);
-    } finally {
-      if (eligible()) {
-        setState(() => _loading = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final window = _window;
-    final end = window == null ? 0 : window.offset + window.bytes.length;
-    final text = window == null
-        ? ''
-        : utf8.decode(window.bytes, allowMalformed: true);
-    final active = widget.isDisplayActive?.call() ?? true;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 48),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SelectionContainer.disabled(
-            child: TextButton(
-              key: StudioDriverKeys.timelineContentOpen(
-                widget.itemId,
-                widget.contentKey,
-              ),
-              onPressed: _loading || !active
-                  ? null
-                  : () {
-                      if (_expanded) {
-                        _unregister();
-                        setState(() => _expanded = false);
-                      } else {
-                        unawaited(_load(_window?.offset ?? 0));
-                      }
-                    },
-              child: Text(widget.label),
-            ),
-          ),
-          if (_loading) const LinearProgressIndicator(),
-          if (widget.read == null) const Text('内容读取尚未就绪'),
-          if (_expanded && _error != null) Text(_error.toString()),
-          if (_expanded && window != null) ...[
-            Text('字节 ${window.offset}–$end / ${window.availableThrough}'),
-            // A bounded window may end inside a UTF-8 code point. This is a raw
-            // byte-range viewer, not a business payload decoder.
-            widget.witness(
-              text,
-              Text(
-                text,
-                key: StudioDriverKeys.timelineContentWindow(
-                  widget.itemId,
-                  widget.contentKey,
-                ),
-              ),
-            ),
-            TextButton(
-              key: StudioDriverKeys.timelineContentCopyWindow(
-                widget.itemId,
-                widget.contentKey,
-              ),
-              onPressed: !active || _loading
-                  ? null
-                  : () {
-                      if (!(widget.isDisplayActive?.call() ?? true) ||
-                          !_expanded ||
-                          !identical(_window, window)) {
-                        return;
-                      }
-                      unawaited(Clipboard.setData(ClipboardData(text: text)));
-                    },
-              child: const Text('复制当前段'),
-            ),
-            if (window.bytes.isNotEmpty && end < window.availableThrough)
-              TextButton(
-                key: StudioDriverKeys.timelineContentNextWindow(
-                  widget.itemId,
-                  widget.contentKey,
-                ),
-                onPressed: _loading || !active
-                    ? null
-                    : () {
-                        if (!identical(_window, window) ||
-                            !_expanded ||
-                            !(widget.isDisplayActive?.call() ?? true)) {
-                          return;
-                        }
-                        unawaited(_load(end));
-                      },
-                child: const Text('下一段'),
-              ),
-          ],
-        ],
-      ),
     );
   }
 }

@@ -5,13 +5,12 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
-import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 
-import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
 import '../view_models/timeline_message_controller.dart';
-import '../widgets/chat_item_view.dart';
+import '../widgets/timeline_children_view.dart';
+import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 
 /// Expanded contents own a separate Children scope, never insert into Main.
@@ -353,84 +352,35 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
         child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
       );
     }
-    return SizedBox(
-      height: 320,
-      child: Chat(
-        currentUserId: 'user',
-        resolveUser: (id) async => User(id: id),
-        chatController: controller,
-        builders: Builders(
-          composerBuilder: (_) => const SizedBox.shrink(),
-          customMessageBuilder:
-              (
-                context,
-                message,
-                index, {
-                required bool isSentByMe,
-                MessageGroupStatus? groupStatus,
-              }) => ChatItemView(
-                key: ValueKey((generation, message.id)),
-                item: chatItemPresentationOf(message)!,
-                isDisplayActive: () =>
-                    _eligibleDisplay(content, controller, attempt, generation),
-                readContent: (reference, range) => _scope(
-                  content,
-                  controller,
-                  attempt,
-                  generation,
-                ).readContent(reference: reference, range: range),
-                attachmentBuilder: widget.readAttachment == null
-                    ? null
-                    : (item) => TimelineAttachmentsConnector(
-                        item: item,
-                        resources: _images,
-                        readAttachment: widget.readAttachment!,
-                        isActive: () => _eligibleDisplay(
-                          content,
-                          controller,
-                          attempt,
-                          generation,
-                        ),
-                      ),
-              ),
-          chatAnimatedListBuilder: (context, itemBuilder) =>
-              ChatAnimatedListReversed(
-                // Keep the outer ID key for Flyer's index lookup; a new
-                // immutable Message must also retire its cached internal row.
-                itemBuilder:
-                    (
-                      context,
-                      message,
-                      index,
-                      animation, {
-                      messagesGroupingMode,
-                      messageGroupingTimeoutInSeconds,
-                      isRemoved,
-                    }) => KeyedSubtree(
-                      key: ValueKey(message.id),
-                      child: KeyedSubtree(
-                        key: ObjectKey(message),
-                        child: itemBuilder(
-                          context,
-                          message,
-                          index,
-                          animation,
-                          messagesGroupingMode: messagesGroupingMode,
-                          messageGroupingTimeoutInSeconds:
-                              messageGroupingTimeoutInSeconds,
-                          isRemoved: isRemoved,
-                        ),
-                      ),
-                    ),
-                handleSafeArea: false,
-                onEndReached: _before == null
-                    ? null
-                    : () =>
-                          _loadOlder(content, controller, attempt, generation),
-                insertAnimationDuration: Duration.zero,
-                removeAnimationDuration: Duration.zero,
-              ),
-        ),
+    bool active() => _eligibleDisplay(content, controller, attempt, generation);
+    return TimelineChildrenView(
+      controller: controller,
+      generation: generation,
+      isDisplayActive: active,
+      onLoadOlder: _before == null
+          ? null
+          : () => _loadOlder(content, controller, attempt, generation),
+      contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
+          TimelineContentRangeConnector(
+            key: ValueKey((generation, itemId, contentKey)),
+            itemId: itemId,
+            contentKey: contentKey,
+            label: label,
+            reference: reference,
+            witness: witness,
+            isDisplayActive: active,
+            readContent: (reference, range) => _scope(
+              content,
+              controller,
+              attempt,
+              generation,
+            ).readContent(reference: reference, range: range),
+          ),
+      attachmentBuilder: (item) => TimelineAttachmentsConnector(
+        item: item,
+        resources: _images,
+        readAttachment: widget.readAttachment,
+        isActive: active,
       ),
     );
   }

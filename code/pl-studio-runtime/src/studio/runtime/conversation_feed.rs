@@ -98,7 +98,7 @@ impl StudioRuntime {
         let mut initial_serial = 0;
         let mut state_effect_floor = 0;
         let mut initial_turn = None;
-        let mut interactions = Vec::new();
+        let mut initial_interactions = Vec::new();
         let (session, database_id, head, current, items, boundary) = if let Some((
             registration,
             state_rx,
@@ -147,7 +147,7 @@ impl StudioRuntime {
             initial_serial = source.serial;
             state_effect_floor = source.current.projection.source_effect_seq;
             initial_turn = source.current.active_turn.clone();
-            interactions = source.current.pending_interactions()?;
+            initial_interactions = source.current.interactions.to_vec();
             let database_id = history
                 .conversation_database_id()
                 .await?
@@ -218,7 +218,7 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
-                    interactions = cold.interactions;
+                    initial_interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
                     state_effect_floor = current.source_effect_seq;
@@ -297,14 +297,12 @@ impl StudioRuntime {
         let active_turn = initial_turn.as_ref().map(|turn| turn.id.clone());
         let snapshot = pl_protocol::ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
-            revision: current
-                .as_ref()
-                .map_or(0, |current| current.source_effect_seq),
+            revision: state_effect_floor,
             thread,
             runtime,
             model_route,
             active_turn: initial_turn,
-            interactions,
+            interactions: initial_interactions,
             activity: None,
             storage: storage
                 .as_ref()
@@ -337,6 +335,7 @@ impl StudioRuntime {
             state_turn: true,
             cancel: CancellationToken::new(),
         };
+        feed.check_state_budget()?;
         if let Some(turn) = cold_terminal {
             feed.reflect_terminal(turn)?;
         }
@@ -393,6 +392,10 @@ impl ConversationFeed {
                 )),
             });
         self.state_revision = next;
+        self.check_state_budget()
+    }
+
+    fn check_state_budget(&self) -> Result<()> {
         ensure!(
             self.pending.len() <= 64
                 && self

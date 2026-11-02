@@ -6,32 +6,28 @@ import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/studio_code_block.dart';
 import 'reasoning_summary.dart';
 import 'timeline_markdown.dart';
 
-/// 会话输入框上方的实时状态栏：只渲染 SDK 活动当前态。
+/// 会话输入框上方的实时状态栏。
 ///
-/// 展开、滚动与工具耗时显示是本地呈现状态；阶段、正文、工具列表不在此归约。
+/// [view] 提供标题、阶段与耗时；[content] 是唯一生产正文子树和详情能力入口。
+/// 展开、滚动、计时与旋转均由组件自身管理，不从外层接收 UI 控制状态。
 class ConversationActivityBar extends StatefulWidget {
   const ConversationActivityBar({
     required this.view,
-    this.onExpand,
-    this.onCollapse,
+    this.content,
     this.onExpandedChanged,
-    this.expandedContentBuilder,
-    this.responseContentBuilder,
     this.maxExpandedHeight = 220,
     this.maxResponseHeight = 180,
     super.key,
   });
 
   final ConversationActivityView view;
-  final VoidCallback? onExpand;
-  final VoidCallback? onCollapse;
+  final Widget? content;
+
+  /// 只通知 Connector 当前真实读取 demand；不用于反向控制组件展开状态。
   final ValueChanged<bool>? onExpandedChanged;
-  final WidgetBuilder? expandedContentBuilder;
-  final WidgetBuilder? responseContentBuilder;
   final double maxExpandedHeight;
   final double maxResponseHeight;
 
@@ -43,10 +39,8 @@ class ConversationActivityBar extends StatefulWidget {
 class _ConversationActivityBarState extends State<ConversationActivityBar> {
   final ScrollController _expandedScrollController = ScrollController();
   final ScrollController _responseScrollController = ScrollController();
-  final Set<String> _expandedToolIds = <String>{};
   Timer? _ticker;
   bool _expanded = false;
-  bool? _lastReportedExpanded;
 
   ConversationActivityView get _view => widget.view;
 
@@ -54,26 +48,8 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
 
   bool get _isCompacting => _view.kind == ConversationActivityKind.compacting;
 
-  bool get _hasReasoningBody =>
-      _view.reasoningParts.any((part) => part.text.isNotEmpty);
-
-  bool get _hasTools =>
-      _view.activeTools.isNotEmpty || _view.toolDetails.isNotEmpty;
-
-  bool get _isExpandable {
-    if (_isResponding || _isCompacting) return false;
-    if (widget.expandedContentBuilder != null && _view.expandable) return true;
-    if (_view.kind == ConversationActivityKind.thinking &&
-        !_hasReasoningBody &&
-        !_hasTools &&
-        _view.details.isEmpty) {
-      return false;
-    }
-    return _view.expandable ||
-        _hasReasoningBody ||
-        _hasTools ||
-        _view.details.isNotEmpty;
-  }
+  bool get _isExpandable =>
+      !_isResponding && !_isCompacting && widget.content != null;
 
   @override
   void initState() {
@@ -84,13 +60,9 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   @override
   void didUpdateWidget(covariant ConversationActivityBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.view.identity != _view.identity) {
-      _expandedToolIds.clear();
-      if (_expanded) {
-        _setExpanded(false, notifyCallbacks: true);
-      }
-    } else if (_expanded && !_isExpandable) {
-      _setExpanded(false, notifyCallbacks: true);
+    if (oldWidget.view.identity != _view.identity ||
+        (_expanded && !_isExpandable)) {
+      _setExpanded(false);
     }
     _syncTicker();
   }
@@ -98,10 +70,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   @override
   void dispose() {
     _ticker?.cancel();
-    if (_lastReportedExpanded == true) {
-      widget.onCollapse?.call();
-    }
-    widget.onExpandedChanged?.call(false);
+    if (_expanded) widget.onExpandedChanged?.call(false);
     _expandedScrollController.dispose();
     _responseScrollController.dispose();
     super.dispose();
@@ -127,31 +96,14 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     }
   }
 
-  void _reportExpandedIfChanged() {
-    if (_lastReportedExpanded == _expanded) return;
-    _lastReportedExpanded = _expanded;
-    widget.onExpandedChanged?.call(_expanded);
-  }
-
-  void _setExpanded(bool next, {required bool notifyCallbacks}) {
-    if (_expanded == next) {
-      _reportExpandedIfChanged();
-      return;
-    }
+  void _setExpanded(bool next) {
+    if (_expanded == next) return;
     setState(() => _expanded = next);
-    if (notifyCallbacks) {
-      if (next) {
-        widget.onExpand?.call();
-      } else {
-        widget.onCollapse?.call();
-      }
-    }
-    _reportExpandedIfChanged();
+    widget.onExpandedChanged?.call(next);
   }
 
-  void _toggleTopExpanded() {
-    if (!_isExpandable) return;
-    _setExpanded(!_expanded, notifyCallbacks: true);
+  void _toggleExpanded() {
+    if (_isExpandable) _setExpanded(!_expanded);
   }
 
   @override
@@ -171,19 +123,20 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
           constraints: const BoxConstraints(
             maxWidth: StudioLayout.conversationWidth,
           ),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: surfaceColor,
-              borderRadius: BorderRadius.circular(10),
+          child: Material(
+            color: surfaceColor,
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(
+                color: scheme.outlineVariant.withValues(alpha: 0.72),
+              ),
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: _isResponding
-                  ? _buildRespondingSurface(context)
-                  : _isCompacting
-                  ? _buildCompactSurface(context)
-                  : _buildActivitySurface(context),
-            ),
+            child: _isResponding
+                ? _buildRespondingSurface(context)
+                : _isCompacting
+                ? _buildCompactSurface(context)
+                : _buildActivitySurface(context),
           ),
         ),
       ),
@@ -191,9 +144,8 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   }
 
   Widget _buildRespondingSurface(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final phaseLabel = context.conversationActivityLabel(_view);
-    final parts = _view.responseParts;
+    final content = widget.content;
     return Semantics(
       container: true,
       liveRegion: true,
@@ -201,46 +153,34 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
       child: Padding(
         key: const ValueKey('conversation-activity'),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeaderRow(
-              context,
-              phaseLabel: phaseLabel,
-              expandable: false,
-              isExpanded: false,
-            ),
-            if (parts.isNotEmpty || widget.responseContentBuilder != null) ...[
-              const SizedBox(height: 5),
-              Flexible(
-                fit: FlexFit.loose,
-                child: ConstrainedBox(
-                  key: const ValueKey('conversation-activity-response-stream'),
-                  constraints: BoxConstraints(
-                    maxHeight: widget.maxResponseHeight,
-                  ),
-                  child: Scrollbar(
-                    controller: _responseScrollController,
-                    thumbVisibility: true,
-                    child: SingleChildScrollView(
+        child: _buildBoundedSurface(
+          header: _buildHeaderRow(
+            context,
+            phaseLabel: phaseLabel,
+            expandable: false,
+            isExpanded: false,
+          ),
+          body: content == null
+              ? null
+              : Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: ConstrainedBox(
+                    key: const ValueKey(
+                      'conversation-activity-response-stream',
+                    ),
+                    constraints: BoxConstraints(
+                      maxHeight: widget.maxResponseHeight,
+                    ),
+                    child: Scrollbar(
                       controller: _responseScrollController,
-                      primary: false,
-                      child: SelectionArea(
-                        child:
-                            widget.responseContentBuilder?.call(context) ??
-                            _ActivityMarkdownParts(
-                              prefix: 'live-response-part',
-                              parts: parts,
-                              textColor: scheme.onSurface,
-                            ),
+                      child: SingleChildScrollView(
+                        controller: _responseScrollController,
+                        primary: false,
+                        child: SelectionArea(child: content),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ],
         ),
       ),
     );
@@ -265,40 +205,50 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     );
   }
 
-  Widget _buildActivitySurface(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildTopHeaderRow(context),
-        if (_expanded && _isExpandable)
-          Flexible(fit: FlexFit.loose, child: _buildExpandedArea(context)),
-      ],
-    );
-  }
+  Widget _buildActivitySurface(BuildContext context) => _buildBoundedSurface(
+    header: _buildTopHeaderRow(context),
+    body: _expanded && _isExpandable ? _buildExpandedArea(context) : null,
+  );
+
+  Widget _buildBoundedSurface({required Widget header, Widget? body}) =>
+      LayoutBuilder(
+        builder: (context, constraints) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // The composer can consume nearly all footer height during layout.
+            // Bound the header too; a non-flex child would otherwise receive
+            // infinite height from Column and overflow its real allocation.
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: constraints.maxHeight),
+              child: header,
+            ),
+            if (body != null) Flexible(fit: FlexFit.loose, child: body),
+          ],
+        ),
+      );
 
   Widget _buildTopHeaderRow(BuildContext context) {
     final phaseLabel = context.conversationActivityLabel(_view);
-    final expandable = _isExpandable;
     final row = _buildHeaderRow(
       context,
       phaseLabel: phaseLabel,
-      expandable: expandable,
+      expandable: _isExpandable,
       isExpanded: _expanded,
     );
     return Semantics(
       container: true,
       liveRegion: true,
-      button: expandable,
-      toggled: expandable ? _expanded : null,
+      button: _isExpandable,
+      expanded: _isExpandable ? _expanded : null,
       label: phaseLabel,
       child: Material(
         key: const ValueKey('conversation-activity'),
         type: MaterialType.transparency,
-        child: expandable
+        child: _isExpandable
             ? InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: _toggleTopExpanded,
+                borderRadius: BorderRadius.circular(12),
+                onTap: _toggleExpanded,
                 child: row,
               )
             : row,
@@ -384,7 +334,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
       );
     }
 
-    final detailText = _fallbackHeaderDetail();
+    final detailText = _headerDetail();
     return Row(
       children: [
         Flexible(
@@ -432,31 +382,21 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     );
   }
 
-  String? _fallbackHeaderDetail() {
-    final err = _view.errorMessage?.trim();
-    if (err != null && err.isNotEmpty) return err;
+  String? _headerDetail() {
+    final error = _view.errorMessage?.trim();
+    if (error != null && error.isNotEmpty) return error;
     if (_view.kind == ConversationActivityKind.runningTool &&
         _view.activeTools.isNotEmpty &&
         _view.wait == null) {
       return _view.activeTools.last.singleLineLabel;
     }
     final summary = _view.summary?.trim();
-    if (summary != null && summary.isNotEmpty) return summary;
-    return null;
+    return summary == null || summary.isEmpty ? null : summary;
   }
 
   String? _trailingMetaText() {
     final toolCount = math.max(_view.activeToolCount, _view.activeTools.length);
-    if (_hasReasoningBody && toolCount > 0) {
-      return '×$toolCount';
-    }
-    if (toolCount > 1) {
-      final foreground = toolCount - _view.backgroundToolCount;
-      if (_view.backgroundToolCount > 0 && foreground <= 0) {
-        return '×$toolCount';
-      }
-      return '×$toolCount';
-    }
+    if (toolCount > 1) return '×$toolCount';
     if (_view.kind == ConversationActivityKind.runningTool &&
         _view.activeTools.isNotEmpty) {
       final elapsed = _elapsedSeconds(_view.activeTools.last.startedAt);
@@ -473,168 +413,32 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
 
   Widget _buildExpandedArea(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final railColor = scheme.outlineVariant.withValues(alpha: 0.58);
-    final reasoningParts = _view.reasoningParts;
-    final tools = _visibleTools();
-    final extraDetails = _extraDetails();
     final maxHeight = _effectiveMaxExpandedHeight(context);
-
     return ConstrainedBox(
       key: const ValueKey('conversation-activity-details'),
-      constraints: BoxConstraints(
-        minHeight: math.min(56.0, maxHeight),
-        maxHeight: maxHeight,
-      ),
+      constraints: BoxConstraints(maxHeight: maxHeight),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(15, 0, 10, 8),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            border: Border(left: BorderSide(color: railColor, width: 1)),
+            border: Border(
+              left: BorderSide(
+                color: scheme.outlineVariant.withValues(alpha: 0.58),
+              ),
+            ),
           ),
           child: Padding(
             padding: const EdgeInsets.only(left: 11),
             child: Scrollbar(
               controller: _expandedScrollController,
-              thumbVisibility: true,
               child: SingleChildScrollView(
                 controller: _expandedScrollController,
                 primary: false,
-                child: SelectionArea(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.expandedContentBuilder case final builder?)
-                        builder(context)
-                      else ...[
-                        if (reasoningParts.isNotEmpty)
-                          Padding(
-                            key: const ValueKey(
-                              'conversation-activity-thinking-full',
-                            ),
-                            padding: const EdgeInsets.only(top: 2, bottom: 4),
-                            child: _ActivityMarkdownParts(
-                              prefix: 'conversation-activity-thinking-part',
-                              parts: reasoningParts,
-                              textColor: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                        for (final tool in tools)
-                          KeyedSubtree(
-                            key: ValueKey('live-tool-slot-${tool.callId}'),
-                            child: _LiveToolTile(
-                              tool: tool.entry,
-                              detail: tool.detail,
-                              expanded: _expandedToolIds.contains(tool.callId),
-                              elapsedSeconds: _elapsedSeconds(
-                                tool.entry?.startedAt ?? tool.detail?.startedAt,
-                              ),
-                              onExpansionChanged: (expanded) {
-                                setState(() {
-                                  if (expanded) {
-                                    _expandedToolIds.add(tool.callId);
-                                  } else {
-                                    _expandedToolIds.remove(tool.callId);
-                                  }
-                                });
-                              },
-                            ),
-                          ),
-                        for (final detail in extraDetails)
-                          _buildExtraDetailRow(context, detail),
-                      ],
-                    ],
-                  ),
-                ),
+                child: SelectionArea(child: widget.content!),
               ),
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  List<_LiveToolPresentation> _visibleTools() {
-    final detailsById = <String, ThreadActivityToolDetail>{
-      for (final detail in _view.toolDetails) detail.callId: detail,
-    };
-    final seen = <String>{};
-    final out = <_LiveToolPresentation>[];
-    for (final entry in _view.activeTools) {
-      seen.add(entry.callId);
-      out.add(
-        _LiveToolPresentation(
-          callId: entry.callId,
-          entry: entry,
-          detail: detailsById[entry.callId],
-        ),
-      );
-    }
-    for (final detail in _view.toolDetails) {
-      if (seen.add(detail.callId)) {
-        out.add(
-          _LiveToolPresentation(
-            callId: detail.callId,
-            entry: null,
-            detail: detail,
-          ),
-        );
-      }
-    }
-    return out;
-  }
-
-  List<ConversationActivityDetail> _extraDetails() {
-    final toolIds = <String>{
-      for (final tool in _view.activeTools) tool.callId,
-      for (final tool in _view.toolDetails) tool.callId,
-    };
-    return [
-      for (final detail in _view.details)
-        if (!detail.id.startsWith('reasoning:') &&
-            !detail.id.startsWith('response:') &&
-            !detail.id.startsWith('tool:') &&
-            !toolIds.contains(detail.id))
-          detail,
-    ];
-  }
-
-  Widget _buildExtraDetailRow(
-    BuildContext context,
-    ConversationActivityDetail detail,
-  ) {
-    final scheme = Theme.of(context).colorScheme;
-    final body = detail.body;
-    return Padding(
-      key: ValueKey('conversation-activity-detail-${detail.id}'),
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (detail.hasTitle)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                detail.title!,
-                style: context.text.labelSmall?.copyWith(
-                  fontFamily: studioCodeFontFamily,
-                  color: scheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          if (body.isNotEmpty)
-            Text(
-              body,
-              style: context.text.bodySmall?.copyWith(
-                fontFamily: studioCodeFontFamily,
-                fontSize: 11.5,
-                color: scheme.onSurface,
-                height: 1.38,
-              ),
-            ),
-        ],
       ),
     );
   }
@@ -643,142 +447,6 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     if (startedAt == null) return null;
     final elapsed = DateTime.now().millisecondsSinceEpoch ~/ 1000 - startedAt;
     return elapsed < 0 ? 0 : elapsed;
-  }
-}
-
-class _LiveToolPresentation {
-  const _LiveToolPresentation({
-    required this.callId,
-    required this.entry,
-    required this.detail,
-  });
-
-  final String callId;
-  final ThreadActivityToolEntry? entry;
-  final ThreadActivityToolDetail? detail;
-}
-
-class _LiveToolTile extends StatelessWidget {
-  const _LiveToolTile({
-    required this.tool,
-    required this.detail,
-    required this.expanded,
-    required this.elapsedSeconds,
-    required this.onExpansionChanged,
-  });
-
-  final ThreadActivityToolEntry? tool;
-  final ThreadActivityToolDetail? detail;
-  final bool expanded;
-  final int? elapsedSeconds;
-  final ValueChanged<bool> onExpansionChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final callId = tool?.callId ?? detail!.callId;
-    final title = (tool?.singleLineLabel ?? detail?.name ?? callId).trim();
-    final arguments = detail?.arguments;
-    final outputParts = detail?.outputParts;
-    final hasArguments = arguments != null && arguments.isNotEmpty;
-    final parts = outputParts ?? const <ThreadActivityToolOutputPart>[];
-    final canExpand = hasArguments || parts.any((part) => part.text.isNotEmpty);
-    final summaryStyle = context.text.bodySmall?.copyWith(
-      fontFamily: studioCodeFontFamily,
-      fontSize: 12,
-      letterSpacing: 0.1,
-      color: scheme.onSurface,
-      height: 1.3,
-    );
-    final metaStyle = context.text.labelSmall?.copyWith(
-      fontFamily: studioCodeFontFamily,
-      fontSize: 11,
-      letterSpacing: 0.2,
-      fontFeatures: const [FontFeature.tabularFigures()],
-      color: scheme.onSurfaceVariant.withValues(alpha: 0.78),
-      height: 1.2,
-    );
-
-    final titleRow = Row(
-      children: [
-        Expanded(
-          child: Text(
-            title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: summaryStyle,
-          ),
-        ),
-        if (elapsedSeconds != null) ...[
-          const SizedBox(width: 8),
-          Text(
-            '${elapsedSeconds}s',
-            key: ValueKey('live-tool-elapsed-$callId'),
-            style: metaStyle,
-          ),
-        ],
-      ],
-    );
-
-    if (!canExpand) {
-      return Padding(
-        key: ValueKey('live-tool-slot-$callId'),
-        padding: const EdgeInsets.symmetric(vertical: 3.5, horizontal: 2),
-        child: titleRow,
-      );
-    }
-
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        key: ValueKey('live-tool-row-$callId'),
-        initiallyExpanded: expanded,
-        onExpansionChanged: onExpansionChanged,
-        dense: true,
-        minTileHeight: 28,
-        tilePadding: const EdgeInsets.symmetric(horizontal: 2),
-        childrenPadding: const EdgeInsets.only(left: 8, right: 2, bottom: 8),
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        shape: const Border(),
-        collapsedShape: const Border(),
-        title: titleRow,
-        children: [
-          KeyedSubtree(
-            key: ValueKey('live-tool-details-$callId'),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (hasArguments)
-                  StudioCodeBlock(
-                    text: arguments,
-                    language: context.l10n.timelineToolArguments,
-                    horizontalScroll: false,
-                    maxHeight: 160,
-                    margin: const EdgeInsets.only(top: 4),
-                    padding: const EdgeInsets.all(10),
-                  ),
-                for (var index = 0; index < parts.length; index++)
-                  StudioCodeBlock(
-                    key: ValueKey(
-                      'live-tool-output-$callId-${parts[index].partId}',
-                    ),
-                    text: parts[index].text,
-                    language: index == 0
-                        ? context.l10n.timelineToolOutput
-                        : null,
-                    horizontalScroll: false,
-                    maxHeight: 180,
-                    margin: EdgeInsets.only(
-                      top: hasArguments || index > 0 ? 6 : 4,
-                    ),
-                    padding: const EdgeInsets.all(10),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }
 
@@ -881,77 +549,17 @@ class _InlineSummaryMarkdown extends StatelessWidget {
   Widget build(BuildContext context) {
     final inlineText =
         inlineReasoningSummaryMarkdown(markdown) ?? markdown.trim();
-    final textStyle = context.text.bodySmall?.copyWith(
-      color: color,
-      fontWeight: fontWeight,
-      letterSpacing: 0.1,
-      height: 1.25,
-    );
     return TimelineMarkdown(
       id: 'live-inline-md-$id',
       text: inlineText,
-      style: textStyle,
+      style: context.text.bodySmall?.copyWith(
+        color: color,
+        fontWeight: fontWeight,
+        letterSpacing: 0.1,
+        height: 1.25,
+      ),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      onLink: (_) {},
-      isSafeLink: (_) => false,
-      imageBuilder: (_, url) => Text(url),
-    );
-  }
-}
-
-class _ActivityMarkdownParts extends StatelessWidget {
-  const _ActivityMarkdownParts({
-    required this.prefix,
-    required this.parts,
-    required this.textColor,
-  });
-
-  final String prefix;
-  final List<ThreadActivityContentPart> parts;
-  final Color textColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final part in parts)
-          KeyedSubtree(
-            key: ValueKey('$prefix-${part.itemId}'),
-            child: _MarkdownBodyBlock(
-              id: '$prefix-${part.itemId}',
-              markdown: part.text,
-              textColor: textColor,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _MarkdownBodyBlock extends StatelessWidget {
-  const _MarkdownBodyBlock({
-    required this.id,
-    required this.markdown,
-    required this.textColor,
-  });
-
-  final String id;
-  final String markdown;
-  final Color textColor;
-
-  @override
-  Widget build(BuildContext context) {
-    final textStyle = context.text.bodySmall?.copyWith(
-      color: textColor,
-      height: 1.45,
-    );
-    return TimelineMarkdown(
-      id: 'live-body-md-$id',
-      text: markdown,
-      style: textStyle,
       onLink: (_) {},
       isSafeLink: (_) => false,
       imageBuilder: (_, url) => Text(url),

@@ -100,7 +100,7 @@ ProviderScope、Client 或 FRB 建立业务运行时，预览动作仅改变本�
 
 官方工具会编译项目内所有已发现的预览，搜索筛选不是依赖隔离。不要在原生应用壳的
 `part` 中注册预览，或通过预览入口导入 AppGraph/FRB；旧工作区聚合预览已移除，
-完整工作区和时间线仍使用原生 demo/Driver 观察。Native 模型声明使用同一套结构化手动模型
+纯组件与组合时间线直接使用生产 View，完整业务链路使用隔离原生集成测试。Native 模型声明使用同一套结构化手动模型
 字段，不另设自由文本解析器或第二份文本草稿。
 
 从仓库根目录操作，生成输入变化后先同步生成物：
@@ -148,8 +148,51 @@ dependency_overrides:
 再统一移除本地包、应用及预览 override，更新应用 lockfile 并完成相关图片与预览回归。
 
 预览证明的是组件解耦、Web 渲染和布局，不证明原生插件、FRB、凭据、持久化或进程关闭行为；
-这些仍需通过 `cargo xtask manual-gui` 和真实 Driver 验收，PR 产品截图也应来自原生程序。
+这些仍需通过 `cargo xtask manual-gui` 的官方原生集成测试或适用的真实 Driver 人工验收。
+PR 产品集成截图应来自同次真实应用运行，并区分官方集成测试的离屏渲染表面与操作系统顶层窗口；
+合成组件预览只能作为明确标注的组件视觉证据，不能冒充产品集成。
 截图和诊断日志写入当前会话产物目录，不放入源码或预览缓存的 Git 提交。
 
 官方参考：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、
 [依赖覆盖与 pubspec_overrides.yaml](https://dart.dev/tools/pub/dependencies#pubspec_overridesyaml)。
+
+## 时间线组件预览与原生集成
+
+时间线的官方预览位于 `lib/src/features/conversation/timeline/previews/`：
+
+- `timeline_component_previews.dart` 直接实例化历史条目、过程、工具、等待、问答/Plan
+  回执、正文窗口、媒体及组合时间线等生产组件，以合成数据检查展开、窄窗与长内容。
+- `conversation_live_status_previews.dart` 展示实时栏的思考、运行活动、流式正文和压缩，
+  直接组合同一生产内容组件；展开由组件自身状态处理，current 详情不创建业务读取资源。
+- `conversation_current_previews.dart` 展示真实生产 current 纯组件的正文、集合、条目与读取诊断。
+- `plan_detail_previews.dart` 以固定不可变场景展示计划详情、全宽模式和窄窗文字缩放，
+  不在 Preview 外壳模拟生产工作区的关闭或布局切换。
+
+先按前文准备官方预览缓存的依赖覆盖，再从根目录启动
+`cargo flutter widget-preview start`；搜索 `Timeline` 可找到这些入口。预览不创建
+`ProviderScope`、`AppGraph`、Client 或 FRB，不复制另一份时间线或 current 状态。
+截图须标明合成预览与原生运行的区别，不能用概念稿截图冒充生产组件。
+
+普通功能集成使用 Flutter 官方 `integration_test`，通过
+`cargo xtask run-gui --integration-test integration_test/<场景>_test.dart`
+运行真实生产组件。需要隔离配置、严格模拟供应商、持久化与进程回收时使用
+`cargo xtask manual-gui` 对应场景，不直接把测试连接到用户的 Studio home。
+测试使用 `WidgetTester` 和真实 `AppGraph`，不依赖 `driver_main` 或 `requestData` 协议。
+业务就绪与帧推进分别等待，持续旋转或流式输出期间不以 `pumpAndSettle` 等待业务结束。
+
+三个普通呈现场景默认不截图，不依赖平台截图命令。需要 Linux 集成截图时显式设置
+`ANYWORK_CAPTURE_PRESENTATION=1`；未知值在业务环境启动前报错，未启用时清除继承的内部
+`ANYWORK_PRESENTATION_SCREENSHOTS` 目录变量。截图保存在该次 `target/manual-gui/` 输出中，
+使用官方 `RepaintBoundary.toImage` 捕获同一真实 AppGraph/FRB/SQLite 应用已经绘制的离屏
+render surface，不注入业务值，也不增加备用 UI。它不是 X11 顶层窗口或输入法证据；
+采集失败使场景失败，PNG 产出后仍须人工核对画面。
+
+`timeline-history` 的官方场景保留流中分页、40 页历史与同一 home 重启恢复；
+`question-history` 检查真实分步问答和历史回执；
+`realtime-presentation` 使用既有严格 realtime fixture 检查实时正文、思考、工具、停止和失败。
+原 `realtime` 的 FRB credit、host cwd 等专项观察，以及 `plan-recovery` 的多生命周期恢复，
+仍保留独立入口，不能用普通展示测试或 Preview 的结果替代。
+
+独立的 20k 历史、原生位移和帧耗时采样仍保留各自入口，共享 Driver 仍供人工观察使用；
+它们不与普通展示旅程捆绑重跑。覆盖边界见
+[测试与人工验收](../../design/24-testing.md) §24.1.3。

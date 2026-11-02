@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/chat_fixtures.dart';
 
 Widget rowApp(Widget child) => MaterialApp(
+  theme: pureStudioTheme(),
   locale: const Locale('zh'),
   localizationsDelegates: AppLocalizations.localizationsDelegates,
   supportedLocales: AppLocalizations.supportedLocales,
@@ -39,8 +43,78 @@ ContentWindow window(String value, {int offset = 0, int? available}) =>
       availableThrough: available ?? offset + utf8.encode(value).length,
       sealed: true,
     );
+ChatContentRangeBuilder contentBuilder(ChatContentRead read) =>
+    (itemId, contentKey, label, reference, witness) =>
+        TimelineContentRangeConnector(
+          itemId: itemId,
+          contentKey: contentKey,
+          label: label,
+          reference: reference,
+          witness: witness,
+          readContent: read,
+        );
 
 void main() {
+  testWidgets(
+    'content window owns expansion across accepted-value rebuilds and uses official enabled',
+    (tester) async {
+      final changes = <bool>[];
+      Widget build({
+        bool loading = false,
+        bool active = true,
+        bool canRead = true,
+        String text = 'accepted original',
+      }) => rowApp(
+        TimelineContentRangeView(
+          itemId: 'pure-content',
+          contentKey: 'payload',
+          label: '合成内容窗口',
+          loading: loading,
+          active: active,
+          canRead: canRead,
+          window: window(text),
+          onExpansionChanged: changes.add,
+          onNext: null,
+          onCopy: null,
+          witness: (_, child) => child,
+        ),
+      );
+      await tester.pumpWidget(build());
+      final tile = find.byType(ExpansionTile);
+      expect(tester.getSize(tile).height, greaterThanOrEqualTo(28));
+      expect(find.text('accepted original'), findsNothing);
+      expect(tester.widget<ExpansionTile>(tile).onExpansionChanged, isNotNull);
+      await tester.tap(find.text('合成内容窗口'));
+      await tester.pumpAndSettle();
+      expect(changes, [true]);
+      expect(find.text('accepted original'), findsOneWidget);
+      for (final disabled in [
+        build(loading: true),
+        build(active: false),
+        build(canRead: false),
+      ]) {
+        await tester.pumpWidget(disabled);
+        expect(tester.widget<ExpansionTile>(tile).enabled, isFalse);
+        await tester.tap(find.text('合成内容窗口'));
+        await tester.pump();
+        expect(changes, [
+          true,
+        ], reason: 'Disabled headers cannot change demand');
+      }
+      await tester.pumpWidget(build(text: 'accepted replacement'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<ExpansionTile>(tile).enabled, isTrue);
+      expect(find.text('accepted replacement'), findsOneWidget);
+      expect(changes, [
+        true,
+      ], reason: 'Value rebuilds do not reset or re-expand UI');
+      await tester.tap(find.text('合成内容窗口'));
+      await tester.pumpAndSettle();
+      expect(changes, [true, false]);
+      expect(find.text('accepted replacement'), findsNothing);
+    },
+  );
+
   testWidgets(
     'unrelated Append keeps the mounted row expansion and immutable card identity',
     (tester) async {
@@ -109,14 +183,14 @@ void main() {
         rowApp(
           ChatItemView(
             item: item,
-            readContent: (reference, range) async {
+            contentRangeBuilder: contentBuilder((reference, range) async {
               requests.add((reference, range));
               return window(
                 range.offset == 0 ? 'first' : 'last',
                 offset: range.offset,
                 available: 9,
               );
-            },
+            }),
           ),
         ),
       );
@@ -152,7 +226,9 @@ void main() {
           ChatItemView(
             key: const ValueKey('row'),
             item: deferred(database),
-            readContent: (_, _) => (++reads == 1 ? old : latest).future,
+            contentRangeBuilder: contentBuilder(
+              (_, _) => (++reads == 1 ? old : latest).future,
+            ),
           ),
         );
         await tester.pumpWidget(build('a'));
@@ -160,6 +236,11 @@ void main() {
         await tester.pump();
         await tester.pumpWidget(build('b'));
         await tester.pumpWidget(build('a'));
+        expect(
+          reads,
+          1,
+          reason: 'A new reference identity retires UI state without reading',
+        );
         await tester.tap(find.text('按需查看原文 · 100000 字节'));
         await tester.pump();
         expect(reads, 2);
@@ -173,8 +254,8 @@ void main() {
         expect(find.textContaining('old-error'), findsNothing);
         expect(find.byType(LinearProgressIndicator), findsOneWidget);
         expect(
-          tester.widget<TextButton>(find.byType(TextButton)).onPressed,
-          isNull,
+          tester.widget<ExpansionTile>(find.byType(ExpansionTile)).enabled,
+          isFalse,
         );
         latest.complete(window('new-body'));
         await tester.pumpAndSettle();
@@ -193,7 +274,7 @@ void main() {
         rowApp(
           ChatItemView(
             item: deferred('database'),
-            readContent: (_, _) => reply.future,
+            contentRangeBuilder: contentBuilder((_, _) => reply.future),
           ),
         ),
       );

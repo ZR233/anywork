@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
@@ -1047,7 +1048,18 @@ Widget _host(
       onLink: (_) {},
       isSafeLink: (_) => false,
       remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
-      readContent: read,
+      contentRangeBuilder: read == null
+          ? null
+          : (itemId, contentKey, label, reference, witness) =>
+                TimelineContentRangeConnector(
+                  itemId: itemId,
+                  contentKey: contentKey,
+                  label: label,
+                  reference: reference,
+                  witness: witness,
+                  readContent: read,
+                  isDisplayActive: isActive,
+                ),
       monotonicMicros: clock,
       onContentLayout: onLayout,
       isDisplayActive: isActive,

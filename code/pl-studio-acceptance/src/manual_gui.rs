@@ -4,6 +4,8 @@ mod context_replay_recovery;
 mod delegation;
 mod mode_editor;
 mod model_catalog;
+mod question_history;
+mod realtime_presentation;
 mod shutdown;
 mod skill_activity;
 mod timeline_history_20k;
@@ -30,10 +32,11 @@ use sea_orm::sqlx::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -52,7 +55,7 @@ pub(crate) struct ManualGuiOptions {
     /// acceptance journey (`shutdown`), or the wait/sleep/child observation
     /// journey (`wait-events`). ACP native acceptance uses the official Flutter
     /// integration_test suites directly; see design/28-acp.md.
-    #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
+    #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
@@ -120,6 +123,14 @@ pub(crate) struct ManualGuiOptions {
     /// fixture origin. It must not shut down the application; the harness does.
     #[arg(long, value_name = "PATH")]
     pub(crate) delegation_driver: Option<PathBuf>,
+}
+
+fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
+    if value == "realtime-presentation" || pl_provider_fixture::GUI_SCENARIOS.contains(&value) {
+        Ok(value.to_owned())
+    } else {
+        Err(format!("unknown manual GUI scenario: {value}"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -457,6 +468,7 @@ struct TimelineHistoryScenario<'a> {
     status_file: &'a Path,
     interrupt: &'a mpsc::Receiver<()>,
     run_displacement: bool,
+    capture_presentation: bool,
 }
 
 /// live 阶段从真实 snapshot 记录、其余生命周期必须复现的持久化目标身份。
@@ -837,7 +849,31 @@ fn cleanup_bots_gui_start(
     )
 }
 
+fn presentation_capture_requested() -> Result<bool> {
+    let Some(value) = env::var_os("ANYWORK_CAPTURE_PRESENTATION") else {
+        return Ok(false);
+    };
+    ensure!(
+        value == "1",
+        "ANYWORK_CAPTURE_PRESENTATION must be unset or `1`, got `{}`",
+        value.to_string_lossy()
+    );
+    ensure!(
+        cfg!(target_os = "linux"),
+        "ANYWORK_CAPTURE_PRESENTATION=1 is supported only on Linux"
+    );
+    Ok(true)
+}
+
+fn configure_presentation_capture(command: &mut Command, output: &Path, requested: bool) {
+    command.env_remove("ANYWORK_PRESENTATION_SCREENSHOTS");
+    if requested {
+        command.env("ANYWORK_PRESENTATION_SCREENSHOTS", output);
+    }
+}
+
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
+    let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
         options.seed_home_copy.is_none() || options.scenario == "gui",
@@ -852,12 +888,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "tool-scroll"
                     | "timeline-history"
                     | "timeline-history-20k"
+                    | "question-history"
+                    | "realtime-presentation"
                     | "stress-body-large"
                     | "wait-events"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, timeline-history-20k, stress-body-large, wait-events and the delegation scenes"
+         timeline-history, timeline-history-20k, question-history, realtime-presentation, \
+         stress-body-large, wait-events and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
@@ -933,6 +972,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         options.scenario.as_str(),
         "statistics"
             | "realtime"
+            | "realtime-presentation"
             | "stress-body"
             | "stress-body-large"
             | "history-lock"
@@ -948,6 +988,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "shutdown"
             | "timeline-history"
             | "timeline-history-20k"
+            | "question-history"
             | "skill-activity"
             | "wait-events"
     ) && !options.model_catalog_restart
@@ -1071,10 +1112,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     } else {
         catalog_hits_path.clone()
     };
+    let fixture_scenario = if options.scenario == "realtime-presentation" {
+        "realtime"
+    } else {
+        options.scenario.as_str()
+    };
     let mut fixture_command = Command::new(fixture_executable);
     fixture_command
         .current_dir(&workspace)
-        .args(["--scenario", &options.scenario, "--ready-file"])
+        .args(["--scenario", fixture_scenario, "--ready-file"])
         .arg(&ready_file)
         .arg("--requests-file")
         .arg(&requests_file)
@@ -1106,6 +1152,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "shutdown"
             | "timeline-history"
             | "timeline-history-20k"
+            | "question-history"
             | "skill-activity"
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
@@ -1153,7 +1200,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         }
     };
     ensure!(
-        ready.scenario == options.scenario,
+        ready.scenario == fixture_scenario,
         "fixture scenario does not match request"
     );
     if let Err(error) = (if options.seed_home_copy.is_some() {
@@ -1347,6 +1394,36 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
+    if options.scenario == "realtime-presentation" {
+        let project = working.path().join("realtime-presentation-project");
+        let result = realtime_presentation::run(
+            &realtime_presentation::RealtimePresentationScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+                capture_presentation,
+            },
+            fixture,
+        );
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed realtime-presentation environment also failed: \
+                     {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
     if options.scenario == "wait-events" {
         let project = working.path().join("wait-events-project");
         let result = wait_events::run(
@@ -1369,6 +1446,37 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 (Err(error), Ok(())) => Err(error),
                 (Err(error), Err(retain_error)) => Err(error.context(format!(
                     "retaining the failed wait-events environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
+    if options.scenario == "question-history" {
+        let project = working.path().join("question-history-project");
+        let result = question_history::run(
+            &question_history::QuestionHistoryScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+                capture_presentation,
+            },
+            fixture,
+        );
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed question-history environment also failed: \
+                     {retain_error:#}"
                 ))),
             };
         }
@@ -1515,6 +1623,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 status_file: &status_file,
                 interrupt: &interrupt_rx,
                 run_displacement: options.timeline_displacement,
+                capture_presentation,
             },
             fixture,
         );
@@ -2427,11 +2536,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     )
 }
 
-/// timeline-history：一次真实提交、同 home 冷重启、可选原生位移矩阵。
+/// timeline-history：官方 Flutter 集成测试的真实提交、同 home 重启与可选位移矩阵。
 ///
-/// 每个阶段都用独立 GUI 进程与独立 Driver 会话；正常关闭必须由 Driver 的
-/// `shutdown` 协调器完成，并以真实 OS waitpid 退出码 0 判定（自然关窗退出码故意为 1，
-/// 不能替代协调退出）。
+/// live/restart 各自由 `flutter test` 进程和 IntegrationTest binding 持有，应用资源仍经
+/// production `runStudioShutdown`/`AppGraph.close` 收束；测试 runner 进程不伪造 Driver
+/// native-exit 回执。高次数原生指针位移仍是显式 opt-in 的独立 Driver 性能路径。
 fn run_timeline_history_scenario(
     context: &TimelineHistoryScenario<'_>,
     mut fixture: OwnedProcess,
@@ -2447,6 +2556,7 @@ fn run_timeline_history_scenario(
         status_file,
         interrupt,
         run_displacement,
+        capture_presentation,
     } = context;
     let project = working.join("timeline-history-project");
     let mut phases: Vec<(
@@ -2470,51 +2580,53 @@ fn run_timeline_history_scenario(
         for phase in ["live", "restart"] {
             let phase_index = phases.len();
             phases.push((phase, None, None));
-            let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
-            let stage = working.join(format!("timeline-history-{phase}-stage"));
-            let driver_log = working.join(format!("timeline-history-{phase}-driver.log"));
-            let mut gui = start_timeline_history_gui(
-                workspace,
-                home,
-                &gui_log,
-                &output.join(format!("timeline-history-{phase}-native-exit.json")),
-            )?;
-            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_timeline_history_driver(
-                app_dir,
-                home,
-                &vm_url,
-                &project,
-                output,
-                working,
-                phase,
-                &driver_log,
-            )?;
-            let driver_exit = wait_for_timeline_history_driver(
-                &stage,
-                &mut driver,
-                &mut fixture,
-                interrupt,
-                phase,
-            )?;
-            phases[phase_index].1 = Some(driver_exit);
+            let integration_log = working.join(format!("timeline-history-{phase}-integration.log"));
+            let integration_output = File::create(&integration_log)?;
+            let mut command = Command::new("cargo");
+            command
+                .current_dir(workspace)
+                .args([
+                    "xtask",
+                    "run-gui",
+                    "--integration-test",
+                    "integration_test/timeline_presentation_test.dart",
+                ])
+                .env("ANYWORK_HOME", home)
+                .env("ANYWORK_TIMELINE_PHASE", phase)
+                .env("ANYWORK_TIMELINE_PROJECT", &project)
+                .env("ANYWORK_TIMELINE_OUTPUT", output)
+                .stdout(Stdio::from(integration_output.try_clone()?))
+                .stderr(Stdio::from(integration_output));
+            configure_presentation_capture(&mut command, output, *capture_presentation);
+            let mut runner = OwnedProcess::start(&mut command, false)?;
+            let deadline = Instant::now() + Duration::from_secs(3_600);
+            let runner_exit = loop {
+                if let Some(status) = runner.child.try_wait()? {
+                    runner.stopped = true;
+                    break status;
+                }
+                ensure!(
+                    !fixture.exited()?,
+                    "account fixture exited during timeline-history {phase}"
+                );
+                ensure!(
+                    interrupt.try_recv().is_err(),
+                    "timeline-history {phase} cancelled"
+                );
+                ensure!(
+                    Instant::now() < deadline,
+                    "timeline-history {phase} integration test timed out"
+                );
+                thread::sleep(Duration::from_millis(200));
+            };
+            phases[phase_index].1 = Some(runner_exit);
             ensure!(
-                driver_exit.success(),
-                "timeline-history {phase} Driver failed: {driver_exit}"
-            );
-            let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), phase)?;
-            phases[phase_index].2 = Some(gui_exit);
-            ensure!(
-                gui_exit.success(),
-                "timeline-history {phase} GUI did not exit cleanly: {gui_exit}"
+                runner_exit.success(),
+                "timeline-history {phase} integration test failed: {runner_exit}"
             );
             let report: serde_json::Value = serde_json::from_slice(
                 &fs::read(output.join(format!("timeline-history-{phase}.json")))
                     .with_context(|| format!("timeline-history {phase} wrote no report"))?,
-            )?;
-            require_native_exit(
-                &output.join(format!("timeline-history-{phase}-native-exit.json")),
-                report["pid"].as_u64(),
             )?;
             ensure!(
                 report.get("pass") == Some(&serde_json::Value::Bool(true)),
@@ -2523,7 +2635,7 @@ fn run_timeline_history_scenario(
             );
             ensure!(
                 report.get("shutdown") == Some(&serde_json::Value::String("completed".into())),
-                "timeline-history {phase} shutdown was not the coordinated completion"
+                "timeline-history {phase} AppGraph shutdown was not clean"
             );
             // 报告键与 Dart 实际产出逐个核对：20k 条必须保持真实 40 页深度、仍有更早
             // 内容、没有重复/错序/停滞游标，冷启动与最新小页符合 tail 基线契约。
@@ -2907,7 +3019,8 @@ fn run_timeline_history_scenario(
     })();
 
     // Record observed exits before assertions and retain failed-phase evidence.
-    // Startup-only GUI filtering would erase the Driver's actual failure.
+    // live/restart store the official integration runner log; displacement keeps
+    // its independent Driver and native host exit evidence.
     let redactions = [
         (home.to_string_lossy().into_owned(), "<home>"),
         (working.to_string_lossy().into_owned(), "<coord>"),
@@ -2923,26 +3036,38 @@ fn run_timeline_history_scenario(
                 &output.join(format!("timeline-history-{phase}-gui.log")),
             )?;
         }
+        let runner_log = if *phase == "displacement" {
+            working.join("timeline-history-displacement-driver.log")
+        } else {
+            working.join(format!("timeline-history-{phase}-integration.log"))
+        };
         write_realtime_driver_evidence(
-            &working.join(format!("timeline-history-{phase}-driver.log")),
+            &runner_log,
             output,
             &format!("timeline-history-{phase}"),
             *driver_exit,
             journey.as_ref().err(),
             &redactions,
         )?;
+        if *phase != "displacement" {
+            let stem = format!("timeline-history-{phase}");
+            let driver_log = output.join(format!("{stem}-driver.log"));
+            if driver_log.is_file() {
+                fs::rename(driver_log, output.join(format!("{stem}-integration.log")))?;
+            }
+            fs::rename(
+                output.join(format!("{stem}-driver-errors.txt")),
+                output.join(format!("{stem}-integration-errors.txt")),
+            )?;
+        }
         fs::write(
             output.join(format!("timeline-history-{phase}-exit.json")),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "phase": phase,
-                "driverExit": driver_exit.map(|status| status.code()),
+                "runnerExit": driver_exit.map(|status| status.code()),
                 "guiExit": gui_exit.map(|status| status.code()),
             }))?,
         )?;
-    }
-    let stage = working.join("timeline-history-live-stage");
-    if stage.is_file() {
-        fs::copy(&stage, output.join("timeline-history-stage.txt"))?;
     }
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
@@ -2976,7 +3101,7 @@ fn run_timeline_history_scenario(
             "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
         }))?,
     )?;
-    journey?;
+    require_timeline_history_completion(journey, fixture_result)?;
     ensure!(
         rejected == 0,
         "timeline-history fixture rejected {rejected} account request(s)"
@@ -3002,6 +3127,19 @@ fn run_timeline_history_scenario(
             }))?,
         )?;
     }
+    Ok(())
+}
+
+fn require_timeline_history_completion(
+    journey: Result<()>,
+    fixture_result: Result<ExitStatus>,
+) -> Result<()> {
+    journey?;
+    let fixture_status = fixture_result.context("timeline-history provider fixture stop failed")?;
+    ensure!(
+        fixture_status.success(),
+        "timeline-history provider fixture exited with {fixture_status}"
+    );
     Ok(())
 }
 
@@ -3053,61 +3191,6 @@ fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
         "native host did not exit cleanly: {report}"
     );
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn start_timeline_history_driver(
-    app_dir: &Path,
-    home: &Path,
-    vm_url: &str,
-    project: &Path,
-    output: &Path,
-    working: &Path,
-    phase: &str,
-    log_path: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(log_path)?;
-    let mut command = driver_command(app_dir, "test_driver/timeline_history_journey.dart");
-    command
-        .arg(phase)
-        .arg(vm_url)
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-fn wait_for_timeline_history_driver(
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    phase: &str,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(3_600);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            return Ok(status);
-        }
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during timeline-history {phase}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "timeline-history {phase} cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "timeline-history {phase} timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// 等待被 Driver 协调关闭的 GUI 自然退出，并返回真实退出状态。
@@ -7443,6 +7526,87 @@ fn failure_reason(line: &str) -> Option<String> {
     }
     let sanitized = redact_loopback_ports(&redact_loopback_urls(reason));
     Some(sanitized.chars().take(480).collect())
+}
+
+#[cfg(test)]
+mod scenario_cli_tests {
+    use super::ManualGuiOptions;
+    use clap::Parser;
+
+    #[test]
+    fn keeps_presentation_scenarios_without_restoring_removed_acp_journey() {
+        for scenario in [
+            "gui",
+            "timeline-history",
+            "question-history",
+            "realtime-presentation",
+        ] {
+            let options = ManualGuiOptions::try_parse_from(["acceptance", "--scenario", scenario])
+                .expect("supported native presentation scenario");
+            assert_eq!(options.scenario, scenario);
+        }
+        for scenario in ["acp-auto-install", "unknown-scenario"] {
+            assert!(
+                ManualGuiOptions::try_parse_from(["acceptance", "--scenario", scenario]).is_err()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod timeline_history_completion_tests {
+    use super::require_timeline_history_completion;
+    use anyhow::anyhow;
+    use std::process::{Command, ExitStatus};
+
+    #[test]
+    fn preserves_journey_failure_before_fixture_cleanup_failure() {
+        let error = require_timeline_history_completion(
+            Err(anyhow!("journey sentinel")),
+            Err(anyhow!("fixture sentinel")),
+        )
+        .expect_err("journey failure must be preserved");
+        let message = format!("{error:#}");
+        assert!(message.contains("journey sentinel"));
+        assert!(!message.contains("fixture sentinel"));
+    }
+
+    #[test]
+    fn rejects_fixture_stop_error_and_nonzero_exit() {
+        let stop_error =
+            require_timeline_history_completion(Ok(()), Err(anyhow!("fixture sentinel")))
+                .expect_err("fixture stop error must fail the scenario");
+        let stop_message = format!("{stop_error:#}");
+        assert!(stop_message.contains("timeline-history provider fixture stop failed"));
+        assert!(stop_message.contains("fixture sentinel"));
+
+        let status = platform_exit_status(7);
+        let exit_error = require_timeline_history_completion(Ok(()), Ok(status))
+            .expect_err("nonzero fixture exit must fail the scenario");
+        assert!(
+            exit_error
+                .to_string()
+                .contains("timeline-history provider fixture exited with")
+        );
+    }
+
+    #[test]
+    fn accepts_successful_fixture_exit_after_successful_journey() {
+        require_timeline_history_completion(Ok(()), Ok(platform_exit_status(0)))
+            .expect("successful journey and fixture exit must pass");
+    }
+
+    fn platform_exit_status(code: i32) -> ExitStatus {
+        #[cfg(unix)]
+        let status = Command::new("sh")
+            .args(["-c", &format!("exit {code}")])
+            .status();
+        #[cfg(windows)]
+        let status = Command::new("cmd")
+            .args(["/C", &format!("exit /B {code}")])
+            .status();
+        status.expect("platform shell must produce an exit status")
+    }
 }
 
 #[cfg(test)]

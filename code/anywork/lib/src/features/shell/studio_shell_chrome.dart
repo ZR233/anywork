@@ -516,7 +516,7 @@ class _Footer extends StatelessWidget {
           // 高度，同时不隐藏任何操作按钮。
           Flexible(
             fit: FlexFit.loose,
-            child: _ConversationActivityHost(threadId: threadId),
+            child: ConversationActivityConnector(threadId: threadId),
           ),
           ComposerDockConnector(threadId: threadId, compact: compact),
           ThreadStatusConnector(
@@ -533,72 +533,5 @@ class _Footer extends StatelessWidget {
     return contentKey == null
         ? footer
         : KeyedSubtree(key: contentKey, child: footer);
-  }
-}
-
-/// 仅观察 SDK 当前活动。展开、滚动和计时状态由活动栏自身持有。
-class _ConversationActivityHost extends ConsumerWidget {
-  const _ConversationActivityHost({required this.threadId});
-
-  final String threadId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final input = ref.watch(conversationActivityInputProvider(threadId));
-    final view = input == null
-        ? null
-        : projectConversationActivity(
-            current: input.current,
-            storage: input.storage,
-            interaction: input.interaction,
-          );
-    StudioDriverState.publishConversationActivity(view);
-    if (view == null) return const SizedBox.shrink();
-    final current = input?.current;
-    final content = ref
-        .read(anyworkClientProvider)
-        .conversations
-        .existingSession(threadId)
-        ?.content;
-    if (current != null && content != null) {
-      // A local display dependency only: it does not open another conversation reader.
-      ref.watch(timelineViewModelProvider(threadId));
-      final timeline = ref.read(timelineSessionOwnerProvider);
-      final lease = timeline.lease(threadId);
-      return ConversationCurrentConnector(
-        key: ValueKey((threadId, content)),
-        current: current,
-        content: content,
-        view: view,
-        onExpandedChanged: StudioDriverState.publishActivityExpanded,
-        registerDisplay: lease?.registerCurrentDisplay,
-        completedItemsBuilder: lease == null
-            ? null
-            : (parentId, retirement) => TimelineChildrenConnector(
-                key: ValueKey((lease.generation, parentId, retirement)),
-                repository: ref.read(anyworkClientProvider).conversations,
-                threadId: threadId,
-                parentId: parentId,
-                parentRetirement: retirement,
-                registerDisplay: lease.registerChildrenDisplay,
-                isParentActive: () =>
-                    !lease.retirement.value &&
-                    identical(timeline.lease(threadId), lease) &&
-                    identical(lease.content, content),
-                readAttachment: (id) => ref
-                    .read(anyworkClientProvider)
-                    .readAttachmentBytes(threadId, id),
-              ),
-        isDisplayActive: () =>
-            lease != null &&
-            !lease.retirement.value &&
-            identical(timeline.lease(threadId), lease) &&
-            identical(lease.content, content),
-      );
-    }
-    return ConversationActivityBar(
-      view: view,
-      onExpandedChanged: StudioDriverState.publishActivityExpanded,
-    );
   }
 }

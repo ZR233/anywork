@@ -6,6 +6,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/conversati
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/conversation_current_owner.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
@@ -969,8 +970,8 @@ void main() {
         expect(find.text('retired payload success'), findsNothing);
         expect(find.textContaining('retired payload failed'), findsNothing);
         expect(
-          tester.widget<TextButton>(open).onPressed,
-          isNull,
+          tester.widget<ExpansionTile>(open).enabled,
+          isFalse,
           reason: 'An old finally must not finish the new pending payload read',
         );
         expect(
@@ -1009,7 +1010,7 @@ void main() {
             .data,
         text,
       );
-      expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+      expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
       expect(
         find.descendant(
           of: entryView,
@@ -1131,7 +1132,7 @@ void main() {
         expect(entryView, findsOneWidget);
         await tester.ensureVisible(open);
         expect(open.hitTestable(), findsOneWidget);
-        expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+        expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
         // The retained page is genuinely interactive during this pending reload.
         await tester.tap(open);
         await tester.pump();
@@ -1145,7 +1146,7 @@ void main() {
         expect(collection.loading, isTrue);
         final old = payloadWindows().single;
         expect(progress, findsOneWidget);
-        expect(tester.widget<TextButton>(open).onPressed, isNull);
+        expect(tester.widget<ExpansionTile>(open).enabled, isFalse);
         final replacementPage = CurrentCollectionPage(
           revision: firstPage.revision,
           entries: [entry],
@@ -1161,8 +1162,8 @@ void main() {
         expect(display.windows.contains(old), isFalse);
         expect(payloadWindows(), isEmpty);
         expect(
-          tester.widget<TextButton>(open).onPressed,
-          isNotNull,
+          tester.widget<ExpansionTile>(open).enabled,
+          isTrue,
           reason:
               'Accepting a different page must retire the retained pending range '
               'even with the same generation, entry id and ContentRef',
@@ -1197,8 +1198,8 @@ void main() {
         expect(find.textContaining('old retained read failed'), findsNothing);
         expect(find.text('old retained read succeeded'), findsNothing);
         expect(
-          tester.widget<TextButton>(open).onPressed,
-          isNull,
+          tester.widget<ExpansionTile>(open).enabled,
+          isFalse,
           reason:
               'Old success/error/finally cannot finish the new pending read',
         );
@@ -1216,7 +1217,7 @@ void main() {
         await tester.pump();
         expect(tester.widget<Text>(rendered).data, text);
         expect(progress, findsNothing);
-        expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+        expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
         for (var i = 0; i < 5; i++) {
           expect(payloadWindows().single, same(current));
           expect(current.reference, same(reference));
@@ -1401,7 +1402,17 @@ void main() {
     tester,
   ) async {
     final content = _Content();
-    await tester.pumpWidget(_host(content, _projection(plan: true)));
+    final projection = _projection(plan: true);
+    final view = projectConversationActivity(current: projection)!;
+    expect(view.expandable, isFalse);
+    await tester.pumpWidget(_host(content, projection, view: view));
+    expect(
+      tester
+          .widget<ConversationActivityBar>(find.byType(ConversationActivityBar))
+          .view,
+      same(view),
+      reason: 'The Connector must not clone display values to force expansion',
+    );
     expect(content.scopes, isEmpty);
     await tester.tap(_header);
     await tester.pump();
@@ -1415,6 +1426,27 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
     expect(scope.closed, isTrue);
+
+    final revised = _projection(plan: true, revision: 2);
+    await tester.pumpWidget(
+      _host(
+        content,
+        revised,
+        view: projectConversationActivity(current: revised),
+      ),
+    );
+    expect(content.scopes, hasLength(1));
+    await tester.tap(_header);
+    await tester.pump();
+    final reopened = content.scopes.last;
+    expect(reopened, isNot(same(scope)));
+    reopened.watches.single.add(_window('修订计划文档范围'));
+    await tester.pump();
+    expect(find.text('修订计划文档范围'), findsOneWidget);
+    await tester.tap(_header);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    expect(reopened.closed, isTrue);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -1827,8 +1859,8 @@ void main() {
         );
         expect(find.text('retired Children read succeeded'), findsNothing);
         expect(
-          tester.widget<TextButton>(open).onPressed,
-          isNull,
+          tester.widget<ExpansionTile>(open).enabled,
+          isFalse,
           reason: 'The retired read cannot clear the replacement range loading',
         );
         expect(progress, findsOneWidget);
@@ -1854,7 +1886,7 @@ void main() {
       await tester.pump();
       expect(tester.widget<Text>(rendered).data, text);
       expect(progress, findsNothing);
-      expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+      expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
       expect(children.scopes.single.reads.length, 1);
       expect(harness.repository.requests.map((request) => request.parentId), [
         parentId,
