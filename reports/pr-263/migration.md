@@ -168,7 +168,7 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 | `run-gui --native-launch` + Driver | `NativeLaunchSpec` + `test-project --suite native` |
 | `manual-gui --scenario` | `manual-gui --preset` |
 | 新增 | `run-gui --capture`；`tool/capture_ui.dart` |
-| PR `paths-ignore: design/**` | 已删除顶层过滤；workflow 总启动。cheap `changes` + 始终 `ci-gate` 在后续项接通 |
+| PR `paths-ignore: design/**` | 已删除顶层过滤；workflow 总启动。cheap `changes` 按路径计划作业；始终运行的 `ci-gate` 汇总 |
 | native `pull_request.head.sha` | 已改为 `github.sha`（PR merge 测试提交） |
 | 指定 crate `cargo test -p …` | Linux `cargo test --locked --workspace --features pl-core/sqlite` |
 | Flutter job 含 verify-client adapter | UI job：`cd code/anywork && flutter test --no-pub test/ui`，无 `-d`、无 Rust |

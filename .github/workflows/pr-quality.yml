@@ -17,6 +17,57 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_policy: ${{ steps.plan.outputs.docs_policy }}
+      release_configuration: ${{ steps.plan.outputs.release_configuration }}
+      rust_quality: ${{ steps.plan.outputs.rust_quality }}
+      linux_environment: ${{ steps.plan.outputs.linux_environment }}
+      flutter_quality: ${{ steps.plan.outputs.flutter_quality }}
+      macos_desktop: ${{ steps.plan.outputs.macos_desktop }}
+      required_jobs: ${{ steps.plan.outputs.required_jobs }}
+      plan: ${{ steps.plan.outputs.plan }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove path classification and gate rules
+        run: python3 -m unittest discover -s .github/scripts -p 'test_pr_quality_*.py' -v
+
+      - name: Classify applicable jobs from Git paths
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/pr_quality_changes.py
+
+  docs-policy:
+    name: docs-policy
+    needs: changes
+    if: needs.changes.outputs.docs_policy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check design index and local documentation links
+        run: python3 .github/scripts/pr_quality_docs_policy.py
+
   pr-title:
     name: Conventional PR title
     if: github.event_name == 'pull_request'
@@ -45,6 +96,8 @@ jobs:
 
   release-configuration:
     name: Release configuration
+    needs: changes
+    if: needs.changes.outputs.release_configuration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -111,6 +164,8 @@ jobs:
 
   rust-quality:
     name: Rust (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust_quality == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -186,6 +241,8 @@ jobs:
 
   linux-environment:
     name: Prepare exact Linux build environment
+    needs: changes
+    if: needs.changes.outputs.linux_environment == 'true'
     uses: ./.github/workflows/linux-build-environment.yml
     permissions:
       contents: read
@@ -195,7 +252,10 @@ jobs:
 
   studio-server-linux:
     name: Studio server (Linux)
-    needs: linux-environment
+    needs:
+      - changes
+      - linux-environment
+    if: needs.changes.outputs.linux_environment == 'true' && needs.linux-environment.result == 'success'
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
@@ -237,6 +297,8 @@ jobs:
 
   flutter-quality:
     name: Flutter
+    needs: changes
+    if: needs.changes.outputs.flutter_quality == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -315,6 +377,8 @@ jobs:
 
   macos-desktop:
     name: macOS desktop
+    needs: changes
+    if: needs.changes.outputs.macos_desktop == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -358,3 +422,42 @@ jobs:
 
       - name: Test macOS terminal command quoting
         run: cargo flutter test --no-pub test/platform/macos_terminal_test.dart
+
+  # Suggested repository required check name: ci-gate. This job always emits a
+  # result; editing the workflow does not itself configure branch protection.
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - changes
+      - docs-policy
+      - pr-title
+      - release-configuration
+      - rust-quality
+      - linux-environment
+      - studio-server-linux
+      - flutter-quality
+      - macos-desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify required jobs against the changes plan
+        env:
+          REQUIRED_JOBS: ${{ needs.changes.outputs.required_jobs }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_POLICY_RESULT: ${{ needs.docs-policy.result }}
+          PR_TITLE_RESULT: ${{ needs.pr-title.result }}
+          RELEASE_CONFIGURATION_RESULT: ${{ needs.release-configuration.result }}
+          RUST_QUALITY_RESULT: ${{ needs.rust-quality.result }}
+          LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
+          STUDIO_SERVER_LINUX_RESULT: ${{ needs.studio-server-linux.result }}
+          FLUTTER_QUALITY_RESULT: ${{ needs.flutter-quality.result }}
+          MACOS_DESKTOP_RESULT: ${{ needs.macos-desktop.result }}
+        run: python3 .github/scripts/pr_quality_gate.py
