@@ -1003,7 +1003,7 @@
           <div class="cv-project-empty" role="status">
             ${icon('search-x')}
             <span>未找到匹配「${escape(q)}」的已有项目</span>
-            <small>可尝试输入名称、路径或 SSH 别名缩写，或点击下方「新建项目…」</small>
+            <small>可尝试输入名称、路径或 SSH 别名缩写，或点击上方「新建项目…」</small>
           </div>
         `
       };
@@ -1118,6 +1118,43 @@
                   </button>
 
                   <div class="cv-menu cv-menu-project align-left" data-menu-panel="project" role="menu" aria-label="选择新会话开启位置" hidden>
+                    <div class="cv-menu-head">
+                      <span>新会话开启位置</span>
+                      <small>会话创建时固定</small>
+                    </div>
+                    <button
+                      type="button"
+                      class="cv-menu-item ${standalone ? 'is-selected' : ''}"
+                      role="menuitemradio"
+                      aria-checked="${standalone}"
+                      data-pick-target="standalone">
+                      <span class="cv-check-slot">${standalone ? icon('check') : ''}</span>
+                      <span class="cv-ws-item-icon">${icon('file-box')}</span>
+                      <span class="cv-item-main">
+                        <div class="cv-item-title">无项目</div>
+                        <div class="cv-item-sub">不绑定代码仓库 · 默认保存在 Documents/anywork</div>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="cv-menu-item cv-new-project-item"
+                      role="menuitem"
+                      data-pick-target="new-project">
+                      <span class="cv-check-slot">${icon('plus')}</span>
+                      <span class="cv-ws-item-icon is-accent">${icon('folder-plus')}</span>
+                      <span class="cv-item-main">
+                        <div class="cv-item-title">新建项目…</div>
+                        <div class="cv-item-sub">添加本地代码目录或连接 ~/.ssh/config 远程主机目录</div>
+                      </span>
+                    </button>
+
+                    <div class="cv-menu-divider"></div>
+
+                    <div class="cv-menu-head">
+                      <span>已有项目</span>
+                      <small data-project-count>${escape(initialProjMenu.countText)}</small>
+                    </div>
                     <div class="cv-project-search-wrap">
                       <span class="cv-project-search-icon">${icon('search')}</span>
                       <input
@@ -1137,49 +1174,9 @@
                         ${icon('x')}
                       </button>
                     </div>
-
-                    <div class="cv-menu-head">
-                      <span>新会话开启位置</span>
-                      <small>会话创建时固定</small>
-                    </div>
-                    <button
-                      type="button"
-                      class="cv-menu-item ${standalone ? 'is-selected' : ''}"
-                      role="menuitemradio"
-                      aria-checked="${standalone}"
-                      data-pick-target="standalone">
-                      <span class="cv-check-slot">${standalone ? icon('check') : ''}</span>
-                      <span class="cv-ws-item-icon">${icon('file-box')}</span>
-                      <span class="cv-item-main">
-                        <div class="cv-item-title">无项目</div>
-                        <div class="cv-item-sub">不绑定代码仓库 · 默认保存在 Documents/anywork</div>
-                      </span>
-                    </button>
-
-                    <div class="cv-menu-divider"></div>
-
-                    <div class="cv-menu-head">
-                      <span>已有项目</span>
-                      <small data-project-count>${escape(initialProjMenu.countText)}</small>
-                    </div>
                     <div class="cv-project-list" role="group" aria-label="已有项目列表">
                       ${initialProjMenu.listHTML}
                     </div>
-
-                    <div class="cv-menu-divider"></div>
-
-                    <button
-                      type="button"
-                      class="cv-menu-item cv-new-project-item"
-                      role="menuitem"
-                      data-pick-target="new-project">
-                      <span class="cv-check-slot">${icon('plus')}</span>
-                      <span class="cv-ws-item-icon is-accent">${icon('folder-plus')}</span>
-                      <span class="cv-item-main">
-                        <div class="cv-item-title">新建项目…</div>
-                        <div class="cv-item-sub">添加本地代码目录或连接 ~/.ssh/config 远程主机目录</div>
-                      </span>
-                    </button>
                   </div>
                 `}
               </div>
