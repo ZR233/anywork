@@ -236,70 +236,11 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
-    let driver_attachment_define = options
-        .driver_attachment
-        .as_ref()
-        .map(|path| {
-            let path = path
-                .canonicalize()
-                .with_context(|| format!("Driver attachment does not exist: {}", path.display()))?;
-            ensure!(
-                path.is_file(),
-                "Driver attachment is not a file: {}",
-                path.display()
-            );
-            Ok::<_, anyhow::Error>(format!(
-                "--dart-define=ANYWORK_DRIVER_ATTACHMENT_PATH={}",
-                path.to_string_lossy()
-            ))
-        })
-        .transpose()?;
-    let integration_target = options
-        .integration_test
-        .as_ref()
-        .map(|path| {
-            let root = app_dir.join("integration_test").canonicalize()?;
-            let path = app_dir.join(path).canonicalize()?;
-            ensure!(
-                path.starts_with(&root),
-                "integration test target must be inside {}",
-                root.display()
-            );
-            Ok::<_, anyhow::Error>(path.to_string_lossy().into_owned())
-        })
-        .transpose()?;
-    let run_args = if let Some(path) = integration_target.as_deref() {
-        vec![
-            "test",
-            path,
-            "-d",
-            target.flutter_name(),
-            "--no-pub",
-            "--reporter=expanded",
-            &version_define,
-        ]
-    } else {
-        run_gui_args(
-            target,
-            &version_define,
-            options.driver,
-            options.profile,
-            driver_attachment_define.as_deref(),
-        )
-    };
-    let process_mode = if options.driver || integration_target.is_some() {
-        FlutterProcessMode::ResidentDriver
-    } else {
-        FlutterProcessMode::Batch
-    };
+    let run_args = run_gui_args(target, &version_define, options.capture);
     let bridge_artifacts = prepare_bridge_artifacts(
         &workspace_root,
         demo_mode,
-        if options.profile {
-            BridgeConfiguration::Profile
-        } else {
-            BridgeConfiguration::Debug
-        },
+        BridgeConfiguration::Debug,
     )?;
     run_flutter_with_process_mode(
         &workspace_root,
@@ -307,7 +248,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         &run_args,
         FlutterInvocation {
             demo_mode,
-            process_mode,
+            process_mode: FlutterProcessMode::Batch,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
@@ -315,7 +256,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
     )
 }
 
-/// Builds the Driver bundle and launches the native artifact directly.
+/// Builds the debug/profile bundle and launches the native artifact directly.
 ///
 /// The platform launch tool reports exit code 0 for whatever the app does
 /// (`resident_runner.dart` `appFinished`/`_serviceDisconnected` complete `0`),
@@ -323,18 +264,13 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
 /// process the artifact's real parent: its `waitpid` status is authoritative,
 /// and a SIGTERM-ignoring grandchild the product failed to supervise shows up as
 /// a reclaimed descendant instead of being silently masked. The VM service is
-/// re-enabled through the same engine switches the launch tool uses, so the
-/// Flutter Driver still connects to the real bridge and native host.
+/// re-enabled through the same engine switches the launch tool uses.
 fn run_gui_native_launch(
     workspace_root: &Path,
     app_dir: &Path,
     target: DesktopTarget,
     options: RunGuiOptions,
 ) -> Result<()> {
-    ensure!(
-        options.driver,
-        "--native-launch requires a Driver build so the artifact still exposes the Driver requests"
-    );
     let app_version = studio_version::read(app_dir)?;
     let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
     print_context(workspace_root, app_dir);
@@ -346,28 +282,9 @@ fn run_gui_native_launch(
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
-    let driver_attachment_define = options
-        .driver_attachment
-        .as_ref()
-        .map(|path| {
-            let path = path
-                .canonicalize()
-                .with_context(|| format!("Driver attachment does not exist: {}", path.display()))?;
-            ensure!(
-                path.is_file(),
-                "Driver attachment is not a file: {}",
-                path.display()
-            );
-            Ok::<_, anyhow::Error>(format!(
-                "--dart-define=ANYWORK_DRIVER_ATTACHMENT_PATH={}",
-                path.to_string_lossy()
-            ))
-        })
-        .transpose()?;
-    // The Driver entrypoint the build targets: the frozen default, or the
-    // acceptance-selected Driver-only fault entrypoint. It must be a real file
-    // so a typo fails the launch instead of silently building lib/main.dart.
-    let driver_target = match options.native_launch_driver_target.as_deref() {
+    // Temporary native tests may still pass a dedicated target. It must be a
+    // real file so a typo fails the launch instead of silently building lib/main.dart.
+    let launch_target = match options.native_launch_driver_target.as_deref() {
         Some(path) => {
             let path = if path.is_absolute() {
                 path.to_path_buf()
@@ -376,19 +293,19 @@ fn run_gui_native_launch(
             };
             ensure!(
                 path.is_file(),
-                "native-launch Driver target does not exist: {}",
+                "native-launch target does not exist: {}",
                 path.display()
             );
             path.to_string_lossy().into_owned()
         }
-        None => "test_driver/driver_main.dart".to_owned(),
+        None => "lib/main.dart".to_owned(),
     };
     let build_args = run_native_launch_args(
         target,
         &version_define,
         options.profile,
-        &driver_target,
-        driver_attachment_define.as_deref(),
+        &launch_target,
+        options.capture,
     );
     let bridge_artifacts = prepare_bridge_artifacts(
         workspace_root,
@@ -522,8 +439,8 @@ fn run_native_launch_args<'a>(
     target: DesktopTarget,
     version_define: &'a str,
     profile: bool,
-    driver_target: &'a str,
-    driver_attachment_define: Option<&'a str>,
+    launch_target: &'a str,
+    capture: bool,
 ) -> Vec<&'a str> {
     let mut args = vec![
         "build",
@@ -532,11 +449,10 @@ fn run_native_launch_args<'a>(
         version_define,
         "--no-pub",
         "-t",
-        driver_target,
-        "--dart-define=ANYWORK_DRIVER=true",
+        launch_target,
     ];
-    if let Some(define) = driver_attachment_define {
-        args.push(define);
+    if capture {
+        args.push("--dart-define=ANYWORK_CAPTURE=true");
     }
     args
 }
@@ -544,34 +460,17 @@ fn run_native_launch_args<'a>(
 fn run_gui_args<'a>(
     target: DesktopTarget,
     version_define: &'a str,
-    driver: bool,
-    profile: bool,
-    driver_attachment_define: Option<&'a str>,
+    capture: bool,
 ) -> Vec<&'a str> {
-    let mut args = Vec::new();
-    if driver {
-        args.push("--print-dtd");
-    }
-    args.extend([
+    let mut args = vec![
         "run",
         "-d",
         target.flutter_name(),
         version_define,
         "--no-pub",
-    ]);
-    if profile {
-        args.push("--profile");
-    }
-    if driver {
-        args.extend([
-            "-t",
-            "test_driver/driver_main.dart",
-            "--dart-define=ANYWORK_DRIVER=true",
-        ]);
-        if let Some(define) = driver_attachment_define {
-            args.push(define);
-        }
-        args.extend(["--disable-service-auth-codes", "--verbose"]);
+    ];
+    if capture {
+        args.push("--dart-define=ANYWORK_CAPTURE=true");
     }
     args
 }
