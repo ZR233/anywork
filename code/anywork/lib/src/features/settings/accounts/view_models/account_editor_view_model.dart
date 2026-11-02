@@ -1198,6 +1198,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                 phase: AcpPresentationPhase.idle,
                 status: _strings['acp.idle'],
               ),
+              prepared: prepared,
               dirty: _dirty,
               saving: _saving,
               canSave: canSave,

@@ -603,8 +603,16 @@ class VmAcp implements AcpService {
   Future<AcpSaveAndConnectResult> Function(AcpAccountUpdateView command)?
   connect;
   Future<OperationState> Function()? write;
+  Future<AcpAccountCatalogView> Function()? templateLoader;
+  int templateLoads = 0;
   @override
-  Future<void> loadTemplates() async {}
+  Future<void> loadTemplates() async {
+    templateLoads++;
+    if (templateLoader case final load?) {
+      templates.publish(await load());
+    }
+  }
+
   @override
   Future<OperationState> remove(AcpAccountIdentity identity) {
     removals.add(identity);

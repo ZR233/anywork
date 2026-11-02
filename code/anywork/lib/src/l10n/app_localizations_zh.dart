@@ -5676,4 +5676,68 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpUsageUnknown => '剩余量未知';
+
+  @override
+  String get acpEditorStepBasicTitle => '1. 账号信息';
+
+  @override
+  String get acpEditorStepBasicSubtitle => '设置此反重力账号在糊来帮中的显示名称。无需填写 API 密钥。';
+
+  @override
+  String get acpEditorStepPrepareTitle => '2. 准备官方受管服务';
+
+  @override
+  String get acpEditorStepPrepareSubtitle =>
+      '糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（v1.4.5）。';
+
+  @override
+  String get acpEditorStepConnectTitle => '3. 保存并登录 Google 账号';
+
+  @override
+  String get acpEditorStepConnectSubtitle =>
+      '受管服务就绪后点击「保存并连接」，将进入账号详情页并引导在浏览器中完成 Google 登录授权。';
+
+  @override
+  String get acpInstallIdleHint => '点击下方「下载并准备」检测本机已有安装或从官方源下载受管服务。';
+
+  @override
+  String get acpInstallClaimHint => '本机已有准备好的受管服务，点击下方「使用已准备的服务器」即可绑定到当前草稿。';
+
+  @override
+  String get acpInstallReadyConfirmedHint =>
+      '官方受管服务已就绪并绑定到当前账号草稿，现在可以点击右下角「保存并连接」。';
+
+  @override
+  String get acpAuthCheckingSubtitle =>
+      '正在启动本地受管服务并检查登录状态（首次冷启动解包可能需要 20–40 秒，若弹出浏览器窗口请在其中完成授权）…';
+
+  @override
+  String get acpAuthVerifyingSubtitle =>
+      '正在核对登录凭据与探测会话（若弹出浏览器窗口，请在浏览器中完成 Google 账号授权）…';
+
+  @override
+  String get acpAuthConnectedSubtitle =>
+      '本地受管服务运行正常，已通过 Google Antigravity 登录验证。';
+
+  @override
+  String get acpAuthRecommendedBadge => '推荐';
+
+  @override
+  String get acpMethodOauthPersonalDesc =>
+      '使用个人 Google 账号在浏览器中完成登录授权（推荐个人用户使用）';
+
+  @override
+  String get acpMethodOauthBusinessDesc =>
+      '使用具备 Gemini Enterprise 许可的 Google Cloud 企业身份登录';
+
+  @override
+  String get acpMethodGeminiApiKeyDesc =>
+      '使用 Google AI Studio 的 Gemini API 密钥（需在宿主环境配置 GEMINI_API_KEY）';
+
+  @override
+  String get acpMethodAgentPlatformDesc =>
+      '连接到 Gemini Enterprise Agent Platform 企业部署';
+
+  @override
+  String get acpServiceInfoSectionTitle => '受管服务与连接信息';
 }

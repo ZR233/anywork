@@ -6010,4 +6010,71 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpUsageUnknown => 'Remaining amount unknown';
+
+  @override
+  String get acpEditorStepBasicTitle => '1. Account information';
+
+  @override
+  String get acpEditorStepBasicSubtitle =>
+      'Set a display name for this Antigravity account in anywork. No API key is needed.';
+
+  @override
+  String get acpEditorStepPrepareTitle => '2. Prepare official managed server';
+
+  @override
+  String get acpEditorStepPrepareSubtitle =>
+      'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).';
+
+  @override
+  String get acpEditorStepConnectTitle => '3. Save and sign in with Google';
+
+  @override
+  String get acpEditorStepConnectSubtitle =>
+      'Once the server is ready, click Save and connect to open account details and sign in with Google in your browser.';
+
+  @override
+  String get acpInstallIdleHint =>
+      'Click Download and prepare below to reuse an existing installation or download from the official source.';
+
+  @override
+  String get acpInstallClaimHint =>
+      'A prepared managed server is available. Click Use prepared server below to bind it to this draft.';
+
+  @override
+  String get acpInstallReadyConfirmedHint =>
+      'The official managed server is ready and bound to this draft. You can now click Save and connect.';
+
+  @override
+  String get acpAuthCheckingSubtitle =>
+      'Starting the local managed server and checking sign-in status (cold start may take 20–40s; if a browser opens, complete authorization there)…';
+
+  @override
+  String get acpAuthVerifyingSubtitle =>
+      'Verifying credentials and probe session (if a browser opens, complete Google authorization there)…';
+
+  @override
+  String get acpAuthConnectedSubtitle =>
+      'The local managed server is running and verified with Google Antigravity.';
+
+  @override
+  String get acpAuthRecommendedBadge => 'Recommended';
+
+  @override
+  String get acpMethodOauthPersonalDesc =>
+      'Sign in with your personal Google account in the browser (recommended)';
+
+  @override
+  String get acpMethodOauthBusinessDesc =>
+      'Sign in with a Google Cloud identity that has a Gemini Enterprise license';
+
+  @override
+  String get acpMethodGeminiApiKeyDesc =>
+      'Use a Gemini API key from Google AI Studio (requires GEMINI_API_KEY in host environment)';
+
+  @override
+  String get acpMethodAgentPlatformDesc =>
+      'Connect to a Gemini Enterprise Agent Platform deployment';
+
+  @override
+  String get acpServiceInfoSectionTitle => 'Managed server and connection';
 }
