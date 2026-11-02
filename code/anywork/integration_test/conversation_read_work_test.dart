@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
@@ -38,7 +39,7 @@ void main() {
   final samples = <Map<String, Object?>>[];
 
   setUpAll(() async {
-    graph = AppGraph.production();
+    graph = createProductionAppGraph();
     container = ProviderContainer(
       overrides: [
         appGraphProvider.overrideWithValue(graph),

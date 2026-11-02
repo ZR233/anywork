@@ -26,6 +26,7 @@ import 'package:go_router/go_router.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
@@ -83,8 +84,8 @@ void main() {
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
   final graph = const bool.fromEnvironment('ANYWORK_DEMO')
-      ? AppGraph.demo(driver: true)
-      : AppGraph.production();
+      ? createDemoAppGraph(driver: true)
+      : createProductionAppGraph();
   _container = ProviderContainer(
     overrides: [
       appGraphProvider.overrideWithValue(graph),

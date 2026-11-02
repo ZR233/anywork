@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart'
     show OperationId, LspTopic, StudioFailure;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/accounts/types.dart'
@@ -171,7 +172,7 @@ void main() {
     );
   });
   test('demo ports drive the real SDK domains without retaining account cards in general settings', () async {
-    final graph = AppGraph.demo();
+    final graph = createDemoAppGraph();
     addTearDown(() => _close(graph));
     await graph.initialize();
     final demand = graph.accounts.observeSummaries();
@@ -333,8 +334,8 @@ void main() {
   );
 
   test('two AppGraphs use independent account canonical values and model directories', () async {
-    final first = AppGraph.demo();
-    final second = AppGraph.demo();
+    final first = createDemoAppGraph();
+    final second = createDemoAppGraph();
     addTearDown(() => _close(first));
     addTearDown(() => _close(second));
     await first.initialize();
