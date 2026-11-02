@@ -23,6 +23,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "linux-environment": "skipped",
         "studio-server-linux": "skipped",
         "flutter-quality": "skipped",
+        "flutter-ui": "skipped",
         "macos-desktop": "skipped",
     }
     results.update(overrides)

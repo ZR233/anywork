@@ -17,6 +17,7 @@ KNOWN_JOBS = (
     "linux-environment",
     "studio-server-linux",
     "flutter-quality",
+    "flutter-ui",
     "macos-desktop",
 )
 

@@ -30,6 +30,7 @@ jobs:
       rust_deterministic: ${{ steps.plan.outputs.rust_deterministic }}
       linux_environment: ${{ steps.plan.outputs.linux_environment }}
       flutter_quality: ${{ steps.plan.outputs.flutter_quality }}
+      flutter_ui: ${{ steps.plan.outputs.flutter_ui }}
       macos_desktop: ${{ steps.plan.outputs.macos_desktop }}
       required_jobs: ${{ steps.plan.outputs.required_jobs }}
       plan: ${{ steps.plan.outputs.plan }}
@@ -403,6 +404,35 @@ jobs:
       - name: Verify Flutter application
         run: cargo xtask verify-gui
 
+  flutter-ui:
+    name: flutter-ui
+    needs: changes
+    if: needs.changes.outputs.flutter_ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Install application packages from the lockfile
+        working-directory: code/anywork
+        run: flutter pub get --enforce-lockfile
+
+      - name: Run UI widget tests without a device or Rust bridge
+        working-directory: code/anywork
+        run: flutter test --no-pub test/ui
+
   macos-desktop:
     name: macOS desktop
     needs: changes
@@ -466,6 +496,7 @@ jobs:
       - linux-environment
       - studio-server-linux
       - flutter-quality
+      - flutter-ui
       - macos-desktop
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -489,5 +520,6 @@ jobs:
           LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
           STUDIO_SERVER_LINUX_RESULT: ${{ needs.studio-server-linux.result }}
           FLUTTER_QUALITY_RESULT: ${{ needs.flutter-quality.result }}
+          FLUTTER_UI_RESULT: ${{ needs.flutter-ui.result }}
           MACOS_DESKTOP_RESULT: ${{ needs.macos-desktop.result }}
         run: python3 .github/scripts/pr_quality_gate.py

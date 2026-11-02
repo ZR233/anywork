@@ -45,6 +45,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["rust_deterministic"])
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["flutter_quality"])
+        self.assertFalse(plan["flutter_ui"])
         self.assertFalse(plan["macos_desktop"])
         self.assertEqual(
             plan["required_jobs"],
@@ -62,6 +63,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["linux_environment"])
         self.assertFalse(plan["release_configuration"])
         self.assertFalse(plan["flutter_quality"])
+        self.assertFalse(plan["flutter_ui"])
         self.assertFalse(plan["macos_desktop"])
         self.assertFalse(plan["docs_policy"])
         self.assertIn("rust-quality", plan["required_jobs"])
@@ -74,10 +76,12 @@ class PlanFromPathsTest(unittest.TestCase):
             event_name="pull_request",
         )
         self.assertTrue(plan["flutter_quality"])
+        self.assertTrue(plan["flutter_ui"])
         self.assertFalse(plan["rust_quality"])
         self.assertFalse(plan["rust_deterministic"])
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["macos_desktop"])
+        self.assertIn("flutter-ui", plan["required_jobs"])
 
     def test_platform_runner_selects_desktop_and_flutter(self):
         plan = plan_from_paths(
@@ -85,6 +89,7 @@ class PlanFromPathsTest(unittest.TestCase):
             event_name="pull_request",
         )
         self.assertTrue(plan["flutter_quality"])
+        self.assertTrue(plan["flutter_ui"])
         self.assertTrue(plan["macos_desktop"])
         self.assertTrue(plan["linux_environment"])
         self.assertFalse(plan["docs_policy"])
@@ -100,6 +105,7 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["rust_quality"], path)
             self.assertTrue(plan["rust_deterministic"], path)
             self.assertTrue(plan["flutter_quality"], path)
+            self.assertTrue(plan["flutter_ui"], path)
             self.assertTrue(plan["macos_desktop"], path)
 
     def test_empty_or_unknown_runs_full_suite(self):
@@ -110,6 +116,7 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["rust_quality"])
             self.assertTrue(plan["rust_deterministic"])
             self.assertTrue(plan["flutter_quality"])
+            self.assertTrue(plan["flutter_ui"])
             self.assertTrue(plan["macos_desktop"])
             self.assertTrue(plan["docs_policy"])
             self.assertIn("pr-title", plan["required_jobs"])
@@ -123,6 +130,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["rust_quality"])
         self.assertTrue(plan["rust_deterministic"])
         self.assertFalse(plan["flutter_quality"])
+        self.assertFalse(plan["flutter_ui"])
 
     def test_github_output_uses_true_false(self):
         plan = plan_from_paths(["design/01-overview.md"], event_name="push")

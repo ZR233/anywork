@@ -17,6 +17,7 @@ OUTPUT_FLAGS = (
     "rust_deterministic",
     "linux_environment",
     "flutter_quality",
+    "flutter_ui",
     "macos_desktop",
 )
 
@@ -189,6 +190,7 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["linux_environment"] = True
     if "flutter" in tags:
         flags["flutter_quality"] = True
+        flags["flutter_ui"] = True
     if "desktop" in tags:
         flags["macos_desktop"] = True
         flags["linux_environment"] = True
@@ -221,6 +223,8 @@ def _finish(
         required.extend(["linux-environment", "studio-server-linux"])
     if flags["flutter_quality"]:
         required.append("flutter-quality")
+    if flags["flutter_ui"]:
+        required.append("flutter-ui")
     if flags["macos_desktop"]:
         required.append("macos-desktop")
     return {

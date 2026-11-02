@@ -2,7 +2,7 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。cheap `changes` job 用 Git 路径和有限目录规则决定哪些重作业适用：纯 `design/` 等说明文档可只跑 `docs-policy`；`AGENTS.md`、技能、测试、fixture、xtask、工作流、锁文件、生成配置和平台 runner 走完整适用套件。始终运行的 `ci-gate`（`if: always()`）只接受该计划明确允许的 skipped；required job 因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动变成已配置的 required check。Linux `rust-deterministic` 对同一 `github.sha` 执行 `cargo test --locked --workspace --features pl-core/sqlite`，覆盖可发现的 workspace 测试；Windows `rust-quality` 保留 fmt/clippy、无 SQLite 的 `pl-core` check，以及 runtime `--lib` 的原子替换边界。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。cheap `changes` job 用 Git 路径和有限目录规则决定哪些重作业适用：纯 `design/` 等说明文档可只跑 `docs-policy`；`AGENTS.md`、技能、测试、fixture、xtask、工作流、锁文件、生成配置和平台 runner 走完整适用套件。始终运行的 `ci-gate`（`if: always()`）只接受该计划明确允许的 skipped；required job 因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动变成已配置的 required check。Linux `rust-deterministic` 对同一 `github.sha` 执行 `cargo test --locked --workspace --features pl-core/sqlite`，覆盖可发现的 workspace 测试；Windows `rust-quality` 保留 fmt/clippy、无 SQLite 的 `pl-core` check，以及 runtime `--lib` 的原子替换边界。`flutter-ui` 在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，也不准备 Rust/bridge。
 
 ## 24.1 现有测试基础设施
 
