@@ -172,6 +172,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Test ACP authentication events and cancellation
+        run: cargo test --locked -p pl-acp
+
       - name: Test pl-model public API
         run: cargo test -p pl-model
 

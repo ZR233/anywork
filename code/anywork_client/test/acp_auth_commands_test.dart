@@ -175,6 +175,41 @@ final class _AcpTransport extends AccountsTestTransport {
     return reply;
   }
 
+  int continueCalls = 0;
+  String? lastMethod;
+  OperationId? lastContinueTarget;
+  @override
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  }) async {
+    continueCalls += 1;
+    lastMethod = methodId;
+    lastContinueTarget = targetOperationId;
+    authAccounts[accountId] = AcpAuthAccountView(
+      accountId: accountId,
+      connectionRevision: expectedConnectionRevision,
+      state: AcpAuthenticatingState(
+        operationId: targetOperationId.value,
+        methodId: methodId,
+      ),
+    );
+    return AcpAuthCommandReply(
+      receipt: StudioCommandReceipt(
+        operationId: operationId,
+        disposition: CommitDisposition.applied,
+        targets: [testStamp('acp-auth', startRevision, epoch: 'test')],
+        effect: EffectPoint.immediate,
+        effective: true,
+        durable: false,
+      ),
+      snapshot: _authSnapshot(startRevision),
+    );
+  }
+
   @override
   Future<AcpAuthCommandReply> cancelAcpAuth({
     required OperationId operationId,
@@ -817,7 +852,22 @@ void main() {
             AcpAuthAccountView(
               accountId: 'acp-1',
               connectionRevision: 7,
-              state: AcpVerifiedState(checkedAt: 2, server: null),
+              state: AcpRequiredState(
+                operationId: 'op-auth',
+                server: null,
+                methods: [
+                  AcpAuthMethodView(
+                    id: 'browser',
+                    name: 'Browser',
+                    kind: AcpAuthMethodKindView.agent,
+                  ),
+                  AcpAuthMethodView(
+                    id: 'oauth',
+                    name: 'OAuth',
+                    kind: AcpAuthMethodKindView.agent,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -828,7 +878,9 @@ void main() {
         const AcpAccountIdentity('acp-1'),
         methodId: 'oauth',
       );
-      expect(transport.lastAction, isA<AcpAuthenticateActionView>());
+      expect(transport.continueCalls, 1);
+      expect(transport.startCalls, 1);
+      expect(transport.lastContinueTarget?.value, 'op-auth');
 
       final cancelled = await client.domains.acp.cancelAuth(
         const AcpAccountIdentity('acp-1'),

@@ -7,8 +7,8 @@
 use anyhow::Result;
 use pl_protocol::studio::{
     AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, CancelAcpAuthRequest,
-    CommandEffectPoint, RemoveAcpAccountRequest, SettingsCommandReply, StartAcpAuthRequest,
-    UpdateAcpAccountRequest,
+    CommandEffectPoint, ContinueAcpAuthRequest, RemoveAcpAccountRequest, SettingsCommandReply,
+    StartAcpAuthRequest, UpdateAcpAccountRequest,
 };
 
 use crate::config::AcpProvider as ConfigAcpProvider;
@@ -106,6 +106,29 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         let operation_id = request.operation_id.clone();
         let acceptance = self.acp_auth.start(request)?;
+        Ok(AcpAuthCommandReply {
+            receipt: self.command_receipt(
+                operation_id,
+                acceptance.changed,
+                vec![self.resource_stamp("acp-auth", acceptance.snapshot.revision)],
+                CommandEffectPoint::Immediate,
+                false,
+            ),
+            snapshot: acceptance.snapshot,
+        })
+    }
+
+    /// 在原连接上继续 ACP 登录。
+    ///
+    /// 命令只校验配置连接身份与操作准入，随后立即返回受理回执；进展与终态经 `acpAuth` topic
+    /// 发布，调用方不会因人工登录而挂起。
+    pub fn continue_acp_auth(
+        &self,
+        request: ContinueAcpAuthRequest,
+    ) -> Result<AcpAuthCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
+        let operation_id = request.operation_id.clone();
+        let acceptance = self.acp_auth.continue_auth(request)?;
         Ok(AcpAuthCommandReply {
             receipt: self.command_receipt(
                 operation_id,

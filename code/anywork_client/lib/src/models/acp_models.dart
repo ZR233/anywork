@@ -52,7 +52,7 @@ class AcpAccountTemplateView {
   final String description;
   final String iconKey;
 
-  /// 产品固定的受管服务器版本（当前 1.4.1），由后端模板给出。
+  /// 产品固定的受管服务器版本，由后端模板给出。
   ///
   /// 客户端不硬编码版本，也不允许用户选择：界面只展示这个权威值。
   final String supportedVersion;
@@ -336,6 +336,7 @@ sealed class AcpAuthStateView {
   /// 是否有进行中的操作（取消入口必须保持可达）。
   bool get isBusy => switch (this) {
     AcpCheckingState() ||
+    AcpRequiredState() ||
     AcpAuthenticatingState() ||
     AcpVerifyingState() ||
     AcpClosingState() ||
@@ -349,6 +350,7 @@ sealed class AcpAuthStateView {
   /// 当前状态对应的 operation 身份；无操作时为 null。
   String? get operationId => switch (this) {
     AcpCheckingState(operationId: final id) => id,
+    AcpRequiredState(operationId: final id) => id,
     AcpAuthenticatingState(operationId: final id) => id,
     AcpVerifyingState(operationId: final id) => id,
     AcpClosingState(operationId: final id) => id,
@@ -385,7 +387,13 @@ final class AcpCheckingState extends AcpAuthStateView {
 /// [server] 为 null 表示服务端没有提供可观察身份（缺少 `agentInfo`）。此时不能用
 /// 账号名或空字符串伪造服务端事实，UI 只显示“未提供信息”或省略该元数据。
 final class AcpRequiredState extends AcpAuthStateView {
-  const AcpRequiredState({required this.server, this.methods = const []});
+  const AcpRequiredState({
+    required this.operationId,
+    required this.server,
+    this.methods = const [],
+  });
+
+  final String operationId;
 
   final AcpServerInfoView? server;
   final List<AcpAuthMethodView> methods;
@@ -415,11 +423,13 @@ final class AcpRequiredState extends AcpAuthStateView {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AcpRequiredState &&
+          operationId == other.operationId &&
           server == other.server &&
           listEquals(methods, other.methods);
 
   @override
-  int get hashCode => Object.hash(0x0203, server, Object.hashAll(methods));
+  int get hashCode =>
+      Object.hash(0x0203, operationId, server, Object.hashAll(methods));
 }
 
 final class AcpAuthenticatingState extends AcpAuthStateView {
@@ -782,20 +792,6 @@ final class AcpQueryUsageActionView extends AcpAuthActionView {
   bool operator ==(Object other) => other is AcpQueryUsageActionView;
   @override
   int get hashCode => 0x0213;
-}
-
-/// 登录：只允许服务端实际宣告的 agent 方法。
-final class AcpAuthenticateActionView extends AcpAuthActionView {
-  const AcpAuthenticateActionView(this.methodId);
-
-  final String methodId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is AcpAuthenticateActionView && other.methodId == methodId;
-
-  @override
-  int get hashCode => Object.hash(0x0212, methodId);
 }
 
 /// 本次保存的结算与保存确认后的检查结果；检查受理不代表已认证。

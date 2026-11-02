@@ -458,7 +458,7 @@ class _AccountEditorConnectorState
             },
             onOpenChatGptAuthorization: () {
               if (!isCurrentEditor()) return;
-              final authorizationUrl = owner.chatGptAuthorizationUrl;
+              final authorizationUrl = owner.readChatGptAuthorizationUrl();
               if (authorizationUrl == null) {
                 owner.authorizationOpenFailed();
               } else {

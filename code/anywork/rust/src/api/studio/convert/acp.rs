@@ -82,9 +82,6 @@ pub(crate) fn protocol_auth_action(
     match action {
         BridgeAcpAuthAction::Check => pl_protocol::studio::AcpAuthAction::Check,
         BridgeAcpAuthAction::QueryUsage => pl_protocol::studio::AcpAuthAction::QueryUsage,
-        BridgeAcpAuthAction::Authenticate { method_id } => {
-            pl_protocol::studio::AcpAuthAction::Authenticate { method_id }
-        }
     }
 }
 
@@ -163,12 +160,15 @@ fn bridge_acp_auth_state(state: pl_protocol::studio::AcpAuthState) -> BridgeAcpA
         pl_protocol::studio::AcpAuthState::Checking { operation_id } => {
             BridgeAcpAuthState::Checking { operation_id }
         }
-        pl_protocol::studio::AcpAuthState::Required { methods, server } => {
-            BridgeAcpAuthState::Required {
-                methods: methods.into_iter().map(bridge_acp_auth_method).collect(),
-                server: bridge_acp_server(server),
-            }
-        }
+        pl_protocol::studio::AcpAuthState::Required {
+            operation_id,
+            methods,
+            server,
+        } => BridgeAcpAuthState::Required {
+            operation_id,
+            methods: methods.into_iter().map(bridge_acp_auth_method).collect(),
+            server: bridge_acp_server(server),
+        },
         pl_protocol::studio::AcpAuthState::Authenticating {
             operation_id,
             method_id,

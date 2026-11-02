@@ -85,7 +85,6 @@ enum AcpAccountAction {
   usePrepared,
   check,
   login,
-  verify,
   cancelAuthentication,
   retry,
   queryUsage,
@@ -504,7 +503,6 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
         AcpAccountAction.usePrepared ||
         AcpAccountAction.check ||
         AcpAccountAction.login ||
-        AcpAccountAction.verify ||
         AcpAccountAction.retry => true,
         _ => false,
       };

@@ -975,15 +975,54 @@ async fn prepared_history_family(target: &Path, thread: &str, fence: u64) -> Res
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn bot_root_relocation_accepts_only_safe_windows_path_spellings() -> Result<()> {
+    let mapping = bot_roots::BotRootMove {
+        bot_id: "bot-test-one".into(),
+        workspace_id: OWNER.into(),
+        old_root: r"C:\anywork\v2\bots\bot-test-one\workspace".into(),
+        new_root: r"C:\anywork\data\bots\bot-test-one\workspace".into(),
+        threads: BTreeMap::new(),
+        blocked: BTreeMap::new(),
+    };
+    // These persisted addresses need no live source directory after publication.
+    for root in [&mapping.old_root, &mapping.new_root] {
+        for mut value in [root.clone(), format!(r"\\?\{root}")] {
+            mapping.exact_path(&mut value)?;
+            assert_eq!(value, mapping.new_root);
+            mapping.exact_path(&mut value)?;
+            assert_eq!(value, mapping.new_root);
+        }
+    }
+    for original in [
+        format!(r"{}\child", mapping.old_root),
+        format!("{}-other", mapping.old_root),
+        format!(r"\\?\{}.", mapping.old_root),
+        format!(r"\\?\{} ", mapping.old_root),
+        format!(r"\\?\{}\..\workspace", mapping.old_root),
+        r"C:\anywork\v2\bots\bot-other\workspace".into(),
+    ] {
+        let mut value = original.clone();
+        assert!(mapping.exact_path(&mut value).is_err(), "{original}");
+        assert_eq!(value, original, "rejected execution addresses stay intact");
+    }
+    Ok(())
+}
+
 async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPaths, String)> {
-    // Keep the migration home and frozen workspace on the same native spelling too.
+    // Keep the migration home in the application's spelling, while old execution
+    // bindings may retain std::fs::canonicalize's Windows verbatim prefix.
     let home = dunce::canonicalize(home)?;
     let home = home.as_path();
     let (paths, session) = fixture(home, true, false).await?;
-    // Freeze the same host-native path representation as BotRuntime's workspace preparation.
     let old_root = dunce::canonicalize(home.join("v2/bots/bot-test-one/workspace"))?
         .to_str()
         .context("old root")?
+        .to_owned();
+    let frozen_root = std::fs::canonicalize(&old_root)?
+        .to_str()
+        .context("frozen root")?
         .to_owned();
     let catalog_path = home.join("v2/catalog.toml");
     let mut catalog: toml::Table =
@@ -992,7 +1031,7 @@ async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPat
         .get_mut("entries")
         .and_then(toml::Value::as_array_mut)
         .context("entries")?;
-    entries[0]["workspacePath"] = old_root.clone().into();
+    entries[0]["workspacePath"] = frozen_root.clone().into();
     let mut child = entries[0].clone();
     child["id"] = "bot-child".into();
     child["agentPath"] = "bot-child".into();
@@ -1006,11 +1045,11 @@ async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPat
     let manifest_path = session.join("session.toml");
     let mut manifest: toml::Table =
         toml::from_str(&tokio::fs::read_to_string(&manifest_path).await?)?;
-    manifest["workspacePath"] = old_root.clone().into();
+    manifest["workspacePath"] = frozen_root.clone().into();
     tokio::fs::write(manifest_path, toml::to_string(&manifest)?).await?;
     checkpoint_family(
         &session.join("history.sqlite"),
-        &bot_checkpoint(THREAD, frozen_bot, &old_root, false)?,
+        &bot_checkpoint(THREAD, frozen_bot, &frozen_root, false)?,
     )
     .await?;
     let child_session = session
@@ -1027,7 +1066,7 @@ async fn bot_binding_fixture(home: &Path, frozen_bot: &str) -> Result<(StudioPat
         toml::to_string(&child_manifest)?,
     )
     .await?;
-    let checkpoint = bot_checkpoint("bot-child", frozen_bot, &old_root, true)?;
+    let checkpoint = bot_checkpoint("bot-child", frozen_bot, &frozen_root, true)?;
     tokio::fs::write(
         child_session.join("state.toml"),
         toml::to_string(&checkpoint)?,
@@ -1116,15 +1155,24 @@ async fn bot_workspace_completion(paths: &StudioPaths, thread: &str) -> Result<b
 async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
-    associate_managed_bot_project(&paths, &old_root).await?;
-    frozen_workspace_identity(temp.path(), &old_root).await?;
+    let frozen_root = std::fs::canonicalize(&old_root)?
+        .to_str()
+        .context("frozen root")?
+        .to_owned();
+    associate_managed_bot_project(&paths, &frozen_root).await?;
+    frozen_workspace_identity(temp.path(), &frozen_root).await?;
     for thread in [THREAD, "bot-child"] {
         let marker = bot_completion_path(Path::new(&old_root), thread);
         tokio::fs::create_dir_all(marker.parent().context("completion parent")?).await?;
-        let source = marker.parent().context("completion source")?;
+        let source = bot_completion_path(Path::new(&frozen_root), thread);
+        let source = source.parent().context("completion source")?;
         tokio::fs::write(&marker, source.to_string_lossy().as_bytes()).await?;
     }
     prepare(&paths).await?;
+    assert!(
+        !Path::new(&old_root).exists(),
+        "on-demand checkpoint relocation cannot resolve the moved source directory"
+    );
     let mapping = bot_roots::for_history(
         &paths.session_paths(OWNER, THREAD)?.history_database(),
         THREAD,
@@ -1165,7 +1213,7 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
     for thread in [THREAD, "bot-child"] {
         assert_eq!(
             tokio::fs::read_to_string(bot_completion_path(&preserved_root, thread)).await?,
-            bot_completion_path(Path::new(&old_root), thread)
+            bot_completion_path(Path::new(&frozen_root), thread)
                 .parent()
                 .context("original completion source")?
                 .to_string_lossy(),
@@ -1232,7 +1280,7 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
             checkpoint.state.extensions["unrelated.opaque"]
                 .payload
                 .content(),
-            format!("original path string: {old_root}")
+            format!("original path string: {frozen_root}")
         );
         if child {
             let assignment = crate::studio::workspace_receipt::from_snapshot(&checkpoint.state)?

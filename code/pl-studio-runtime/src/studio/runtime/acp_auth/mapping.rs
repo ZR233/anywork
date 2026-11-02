@@ -52,39 +52,6 @@ pub(super) fn acp_error(code: StudioErrorCode, message: &str, retryable: bool) -
     anyhow::Error::new(StudioError::new(code, message, retryable))
 }
 
-/// 认证失败类别到 Studio 错误码的穷尽映射。
-///
-/// 命令阶段（例如认证方法 ID 为空）需要立即失败时使用这里；运行期失败本身作为 typed 认证状态
-/// 发布，不会被吞成 `Unchecked` 或成功。
-pub(crate) fn acp_failure_studio_error_code(code: AcpAuthFailureCode) -> StudioErrorCode {
-    match code {
-        // 前置安装问题与宿主不支持都是需要先解决的本地前置条件，不是运行时故障。
-        AcpAuthFailureCode::PreparationRequired
-        | AcpAuthFailureCode::InstallationInvalid
-        | AcpAuthFailureCode::UnsupportedPlatform => StudioErrorCode::Conflict,
-        // server 回报的版本不是产品支持的发行版本，属于明确的协议前置不匹配。
-        AcpAuthFailureCode::ServerVersionMismatch => StudioErrorCode::Protocol,
-        // 命令阶段被拒绝的两类输入是调用方参数问题；运行期同一类别仍以 typed 状态发布。
-        AcpAuthFailureCode::MissingExecutable | AcpAuthFailureCode::UnsupportedMethod => {
-            StudioErrorCode::InvalidArgument
-        }
-        AcpAuthFailureCode::Startup
-        | AcpAuthFailureCode::Io
-        | AcpAuthFailureCode::UnsupportedVersion
-        | AcpAuthFailureCode::Probe
-        | AcpAuthFailureCode::Protocol
-        | AcpAuthFailureCode::Transport
-        | AcpAuthFailureCode::Timeout => StudioErrorCode::Unavailable,
-        AcpAuthFailureCode::Authentication => StudioErrorCode::PermissionDenied,
-        AcpAuthFailureCode::ResourceLimit => StudioErrorCode::Overloaded,
-        AcpAuthFailureCode::Cancelled => StudioErrorCode::Cancelled,
-        AcpAuthFailureCode::StaleOperation
-        | AcpAuthFailureCode::ConfigChanged
-        | AcpAuthFailureCode::Cleanup => StudioErrorCode::Conflict,
-        AcpAuthFailureCode::Internal => StudioErrorCode::Internal,
-    }
-}
-
 /// 前置安装验证失败到类型化认证失败的映射（阶段固定为 `Prepare`）。
 ///
 /// 这些类别只在后台 Prepare 阶段发布，不会把任意错误吞成 `Unchecked` 或成功。
@@ -118,18 +85,11 @@ pub(super) fn prepare_failure(failure: PrepareFailure) -> AcpFailure {
     }
 }
 
-pub(super) fn acp_failure_error(code: AcpAuthFailureCode, message: &str) -> anyhow::Error {
-    acp_error(acp_failure_studio_error_code(code), message, false)
-}
-
 /// 协议动作映射；wire 类型不进入 pl-acp，pl-acp 类型也不进入产品 wire。
 pub(super) fn protocol_action(action: &AcpAuthAction) -> pl_acp::auth::AuthAction {
     match action {
         AcpAuthAction::Check => pl_acp::auth::AuthAction::Check,
         AcpAuthAction::QueryUsage => pl_acp::auth::AuthAction::QueryUsage,
-        AcpAuthAction::Authenticate { method_id } => pl_acp::auth::AuthAction::Authenticate {
-            method_id: method_id.clone(),
-        },
     }
 }
 
@@ -137,10 +97,6 @@ pub(super) fn initial_state(action: &AcpAuthAction, operation_id: &str) -> AcpAu
     match action {
         AcpAuthAction::Check | AcpAuthAction::QueryUsage => AcpAuthState::Checking {
             operation_id: operation_id.to_string(),
-        },
-        AcpAuthAction::Authenticate { method_id } => AcpAuthState::Authenticating {
-            operation_id: operation_id.to_string(),
-            method_id: method_id.clone(),
         },
     }
 }
@@ -156,21 +112,20 @@ pub(super) fn map_progress(
 ) -> Option<AcpAuthState> {
     match progress {
         pl_acp::auth::AuthProgress::Initializing => Some(initial_state(action, operation_id)),
-        pl_acp::auth::AuthProgress::Authenticating => match action {
-            AcpAuthAction::Check | AcpAuthAction::QueryUsage => None,
-            AcpAuthAction::Authenticate { method_id } => Some(AcpAuthState::Authenticating {
+        pl_acp::auth::AuthProgress::Required { server, methods } => Some(AcpAuthState::Required {
+            operation_id: operation_id.to_string(),
+            methods: map_auth_methods(methods.clone()),
+            server: map_auth_server(server.clone()),
+        }),
+        pl_acp::auth::AuthProgress::Authenticating { method_id } => {
+            Some(AcpAuthState::Authenticating {
                 operation_id: operation_id.to_string(),
                 method_id: method_id.clone(),
-            }),
-        },
-        pl_acp::auth::AuthProgress::Verifying => match action {
-            AcpAuthAction::Check => None,
-            AcpAuthAction::QueryUsage | AcpAuthAction::Authenticate { .. } => {
-                Some(AcpAuthState::Verifying {
-                    operation_id: operation_id.to_string(),
-                })
-            }
-        },
+            })
+        }
+        pl_acp::auth::AuthProgress::Verifying => Some(AcpAuthState::Verifying {
+            operation_id: operation_id.to_string(),
+        }),
         pl_acp::auth::AuthProgress::Closing => Some(AcpAuthState::Closing {
             operation_id: operation_id.to_string(),
             failure: None,

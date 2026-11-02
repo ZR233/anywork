@@ -3217,6 +3217,7 @@ pub(crate) mod storage_fault_tests {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(PreparedModelCall::new(async move {
                 Ok(ModelStepOutput {
+                    turn_action: Default::default(),
                     attempt_id: request.attempt_id,
                     base_context_revision: request.context.revision,
                     content: vec![ContextContent::Text {
@@ -6321,6 +6322,7 @@ pub(crate) mod storage_fault_tests {
             })?,
         )?;
         let output = ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: attempt_id.to_owned(),
             base_context_revision: 0,
             content: vec![ContextContent::Opaque { payload: frame }],
@@ -9646,6 +9648,7 @@ pub(crate) mod storage_fault_tests {
         ) -> Result<PreparedModelCall, ModelError> {
             Ok(PreparedModelCall::new(async move {
                 Ok(ModelStepOutput {
+                    turn_action: Default::default(),
                     attempt_id: request.attempt_id,
                     base_context_revision: request.context.revision,
                     content: vec![ContextContent::Text {

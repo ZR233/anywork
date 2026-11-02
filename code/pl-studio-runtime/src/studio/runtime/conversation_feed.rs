@@ -218,6 +218,7 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    initial_interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
                     state_effect_floor = current.source_effect_seq;

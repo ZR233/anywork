@@ -42,6 +42,7 @@ final class AcpServiceImpl implements AcpService {
       LatestValue(const AccountResource());
   final CommandLane _starts = CommandLane();
   final CommandLane _cancels = CommandLane();
+  final CommandLane _continuations = CommandLane();
   final Map<Object, OperationId> _active = {};
   final Map<OperationId, _AuthBusiness> _authBusiness = {};
   final Map<OperationId, _InstallBusiness> _installBusiness = {};
@@ -474,15 +475,74 @@ final class AcpServiceImpl implements AcpService {
     AcpAccountIdentity identity, {
     required String methodId,
   }) {
-    if (methodId.trim().isEmpty)
+    if (_closed) return Future.error(StateError('ACP service is closed'));
+    final owner = mutations.coordinator.captureOwner();
+    final generation = observations.generation;
+    final ownerEpoch = observations.ownerEpoch;
+    final detail = accounts.details(identity).value.value;
+    if (!accounts.details(identity).value.loaded ||
+        detail is! AcpAccountDetails) {
+      return Future.error(StateError('ACP connection identity is unavailable'));
+    }
+    final revision = detail.account.connectionRevision;
+    final state = _auth.value.value
+        ?.account(identity.accountId, connectionRevision: revision)
+        ?.state;
+    if (_auth.value.stale ||
+        state is! AcpRequiredState ||
+        !state.agentMethods.any((method) => method.id == methodId)) {
       return Future.error(
-        ArgumentError.value(
-          methodId,
-          'methodId',
-          'Authentication method is required',
+        const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message:
+              'The current ACP connection is not waiting for this login method',
+          retryable: false,
+          correlationId: 'acp-auth-continue',
         ),
       );
-    return _startAuth(identity, AcpAuthenticateActionView(methodId));
+    }
+    final target = state.operationId;
+    final key = ('continue', identity, target);
+    if (_active.containsKey(key)) return Future.error(_busy);
+    final operation = _begin(
+      key,
+      'acp-auth:${identity.accountId}',
+      owner: owner,
+      generation: generation,
+    );
+    return _continuations.run(() async {
+      var issued = false;
+      try {
+        _requireOwner(owner, generation);
+        issued = true;
+        final reply = await port.continueAcpAuth(
+          operationId: operation.id,
+          accountId: identity.accountId,
+          expectedConnectionRevision: revision,
+          targetOperationId: OperationId(target),
+          methodId: methodId,
+        );
+        _validate(operation, reply.receipt);
+        if (reply.snapshot.account(
+              identity.accountId,
+              connectionRevision: revision,
+            ) ==
+            null) {
+          throw StateError('ACP continue reply identity mismatch');
+        }
+        final stamp = _stamp(reply.receipt, 'acp-auth', ownerEpoch);
+        _recordReceipt(operation, reply.receipt);
+        _requireOwner(owner, generation);
+        observations.apply(AcpAuthFrame(stamp, reply.snapshot));
+        _markObserved(operation, stamp, owner, generation);
+        return _immutableAuth(reply.snapshot);
+      } catch (error) {
+        _reject(operation, error, issued: issued);
+        rethrow;
+      } finally {
+        _finish(key, operation);
+      }
+    });
   }
 
   Future<AcpAccountDetails> _details(AcpAccountIdentity identity) async {
@@ -859,6 +919,7 @@ final class AcpServiceImpl implements AcpService {
     _closed = true;
     _starts.seal();
     _cancels.seal();
+    _continuations.seal();
     for (final entry in _savedWaiters.entries.toList()) {
       for (final observation in entry.value) {
         observation.cancel();
@@ -866,7 +927,11 @@ final class AcpServiceImpl implements AcpService {
       entry.key.completeError(StateError('ACP save observation closed'));
     }
     _savedWaiters.clear();
-    return Future.wait([_starts.join(), _cancels.join()]);
+    return Future.wait([
+      _starts.join(),
+      _cancels.join(),
+      _continuations.join(),
+    ]);
   }
 }
 
@@ -935,6 +1000,8 @@ AcpAuthSnapshotView _immutableAuth(AcpAuthSnapshotView snapshot) =>
             usage: _immutableUsage(account.usage),
             state: account.state is AcpRequiredState
                 ? AcpRequiredState(
+                    operationId:
+                        (account.state as AcpRequiredState).operationId,
                     server: (account.state as AcpRequiredState).server,
                     methods: List.unmodifiable(
                       (account.state as AcpRequiredState).methods,

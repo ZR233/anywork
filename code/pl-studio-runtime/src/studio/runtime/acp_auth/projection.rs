@@ -18,7 +18,7 @@ use crate::config::{AcpProvider, StudioConfig};
 
 /// 本阶段的接入模板；只读默认值，不启动程序。
 ///
-/// `supported_version` 与内部启动资格消费同一份产品固定清单（当前 1.4.1），因此客户端不需要、
+/// `supported_version` 与内部启动资格消费同一份产品固定清单，因此客户端不需要、
 /// 也不允许硬编码第二份版本选择表；模板里既没有默认 argv，也没有本地程序路径。这里不做普通 CLI
 /// 检测、不自动安装，也不提供平台或版本回退（design/28 §28.5）。
 pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {

@@ -42,7 +42,7 @@ const _acpTemplate = AcpAccountTemplateView(
   displayName: 'Antigravity',
   description: 'Google Antigravity official ACP server',
   iconKey: 'antigravity',
-  supportedVersion: '1.4.1',
+  supportedVersion: '1.4.5',
   installUrl: 'https://example.invalid/antigravity',
 );
 
@@ -143,7 +143,7 @@ void main() {
     )!;
     expect(template.displayName, 'Antigravity');
     expect(template.provider, AcpProviderView.antigravity);
-    expect(template.supportedVersion, '1.4.1');
+    expect(template.supportedVersion, '1.4.5');
     expect(template, _acpTemplate);
     expect(_stateOf(runtime, 'acp-1', 3), isA<AcpVerifiedState>());
     expect(runtime.domains.acp.auth.value.stamp!.revision, 1);
@@ -284,7 +284,11 @@ void main() {
         kind: AcpAuthMethodKindView.unsupported,
       ),
     ];
-    const required = AcpRequiredState(server: null, methods: methods);
+    const required = AcpRequiredState(
+      operationId: 'op-auth',
+      server: null,
+      methods: methods,
+    );
     expect(required.agentMethods.map((method) => method.id), ['agent']);
     expect(required.hasNoMethods, isFalse);
     expect(required.terminalOnly, isFalse);
@@ -294,6 +298,7 @@ void main() {
     expect(methods.last.isUnsupported, isTrue);
 
     const unsupportedOnly = AcpRequiredState(
+      operationId: 'op-auth',
       server: null,
       methods: [
         AcpAuthMethodView(
@@ -306,7 +311,7 @@ void main() {
     expect(unsupportedOnly.terminalOnly, isFalse);
     expect(unsupportedOnly.unsupportedOnly, isTrue);
 
-    const empty = AcpRequiredState(server: null);
+    const empty = AcpRequiredState(operationId: 'op-auth', server: null);
     expect(empty.hasNoMethods, isTrue);
     expect(empty.terminalOnly, isFalse);
     expect(empty.unsupportedOnly, isFalse);
@@ -322,6 +327,7 @@ void main() {
 
   test('required state exposes only agent methods as login choices', () {
     const required = AcpRequiredState(
+      operationId: 'op-auth',
       server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
       methods: [
         AcpAuthMethodView(
@@ -339,9 +345,11 @@ void main() {
 
     expect(required.agentMethods.map((method) => method.id), ['oauth']);
     expect(required.terminalOnly, isFalse);
-    expect(required.isBusy, isFalse);
+    expect(required.isBusy, isTrue);
+    expect(required.operationId, 'op-auth');
 
     const terminalOnly = AcpRequiredState(
+      operationId: 'op-auth',
       server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
       methods: [
         AcpAuthMethodView(

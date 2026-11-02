@@ -45,12 +45,15 @@ impl Slot {
         if operation.generation != generation {
             return None;
         }
-        let cancelling = matches!(
-            &self.state,
-            AcpAuthState::Cancelling { operation_id }
-                if operation_id == &operation.operation_id
-        );
-        let decided = if cancelling && !matches!(&terminal, AcpAuthState::Failed { .. }) {
+        let cancelling = operation.cancel.is_cancelled()
+            || matches!(
+                &self.state,
+                AcpAuthState::Cancelling { operation_id }
+                    if operation_id == &operation.operation_id
+            );
+        let cleanup_failed = matches!(&terminal, AcpAuthState::Failed { failure }
+            if matches!(failure.stage, pl_protocol::studio::AcpAuthStage::Close | pl_protocol::studio::AcpAuthStage::Cleanup));
+        let decided = if cancelling && !cleanup_failed {
             AcpAuthState::Cancelled
         } else {
             terminal
@@ -101,8 +104,11 @@ pub(super) struct Operation {
     pub(super) connection_revision: u64,
     pub(super) generation: u64,
     pub(super) cancel: CancellationToken,
-    /// supervisor 任务的真实 join 出口；`None` 只出现在任务已收束后的短暂窗口。
-    pub(super) join: Mutex<Option<JoinHandle<()>>>,
+    pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
+    /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
+    pub(super) cleanup_retry: tokio::sync::Notify,
+    /// supervisor 的真实 join 出口。借用等待，关闭 future 被取消也不会取走句柄。
+    pub(super) join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for Operation {
@@ -121,7 +127,16 @@ impl std::fmt::Debug for Operation {
 pub(super) struct AcceptedIntent {
     pub(super) account_id: String,
     pub(super) connection_revision: u64,
-    pub(super) action: pl_protocol::studio::AcpAuthAction,
+    pub(super) action: AcceptedAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AcceptedAction {
+    Start(pl_protocol::studio::AcpAuthAction),
+    Continue {
+        target_operation_id: String,
+        method_id: String,
+    },
 }
 
 /// owner 的可变事实：独立 revision、Settings 水位、关闭闸门、连接身份、操作槽位与已受理身份。
@@ -384,6 +399,7 @@ impl AcpAuthInner {
             connection_revision,
             |current| match current {
                 AcpAuthState::Checking { .. }
+                | AcpAuthState::Required { .. }
                 | AcpAuthState::Authenticating { .. }
                 | AcpAuthState::Verifying { .. } => Some(state),
                 _ => None,
@@ -405,6 +421,7 @@ impl AcpAuthInner {
             connection_revision,
             |current| match current {
                 AcpAuthState::Checking { operation_id }
+                | AcpAuthState::Required { operation_id, .. }
                 | AcpAuthState::Authenticating { operation_id, .. }
                 | AcpAuthState::Verifying { operation_id }
                 | AcpAuthState::Closing { operation_id, .. } => Some(AcpAuthState::Closing {
@@ -418,8 +435,8 @@ impl AcpAuthInner {
 
     /// 提交一次操作的终态并**在同一把锁里**释放匹配的 operation 占用，随后只发一次事件。
     ///
-    /// 已受理的取消在同一把锁内最终裁决：非失败终态一律收敛为 `Cancelled`（取消胜过迟到的
-    /// `Required`/`Verified`），而真实清理失败保留 `Failed` 不被掩盖；退役接入直接移除记录且不
+    /// 已受理的取消在同一把锁内最终裁决：业务终态一律收敛为 `Cancelled`（取消胜过迟到成功
+    /// 和协议失败），而真实清理失败保留 `Failed` 不被掩盖；退役接入直接移除记录且不
     /// 回显；连接身份在收束期间已变化时，旧结果不回写新代次，而是把新代次重置为 `Unchecked`。
     pub(super) fn complete_operation(
         &self,
@@ -462,7 +479,9 @@ mod tests {
             connection_revision: revision,
             generation,
             cancel: CancellationToken::new(),
-            join: Mutex::new(None),
+            authentication: tokio::sync::mpsc::channel(1).0,
+            cleanup_retry: tokio::sync::Notify::new(),
+            join: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -580,5 +599,41 @@ mod tests {
         assert_eq!(stale.state, AcpAuthState::Unchecked);
         assert_eq!(stale.usage, None);
         assert!(stale.operation.is_none());
+    }
+
+    #[test]
+    fn accepted_cancel_wins_business_results_but_preserves_cleanup_failure() {
+        use pl_protocol::studio::{AcpAuthFailureCode, AcpAuthStage};
+        for stage in [
+            AcpAuthStage::Authenticate,
+            AcpAuthStage::Probe,
+            AcpAuthStage::Close,
+            AcpAuthStage::Cleanup,
+        ] {
+            let mut cancelling = slot(
+                AcpAuthState::Cancelling {
+                    operation_id: "op".into(),
+                },
+                None,
+            );
+            let failure = AcpAuthState::Failed {
+                failure: AcpAuthFailure {
+                    code: AcpAuthFailureCode::Transport,
+                    stage,
+                    message: "safe".into(),
+                    retryable: true,
+                },
+            };
+            cancelling.finish_operation(3, 7, failure.clone(), None);
+            assert_eq!(
+                cancelling.state,
+                if matches!(stage, AcpAuthStage::Close | AcpAuthStage::Cleanup) {
+                    failure
+                } else {
+                    AcpAuthState::Cancelled
+                }
+            );
+            assert!(cancelling.operation.is_none());
+        }
     }
 }

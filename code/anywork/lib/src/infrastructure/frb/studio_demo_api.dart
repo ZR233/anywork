@@ -1832,14 +1832,32 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     final snapshot = switch (action) {
-      AcpCheckActionView() => _demoAcpAuth.check(account),
-      AcpQueryUsageActionView() => _demoAcpAuth.queryUsage(account),
-      AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
+      AcpCheckActionView() => _demoAcpAuth.check(account, operationId.value),
+      AcpQueryUsageActionView() => _demoAcpAuth.queryUsage(
         account,
-        methodId,
+        operationId.value,
       ),
     };
     return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  }) async {
+    _ensureDemoRunning();
+    final account = _demoAcpAccount(accountId);
+    if (account.connectionRevision != expectedConnectionRevision) {
+      throw StateError('ACP connection identity changed');
+    }
+    return _demoAcpReply(
+      operationId,
+      _demoAcpAuth.authenticate(account, methodId, targetOperationId.value),
+    );
   }
 
   @override
@@ -1889,7 +1907,7 @@ class DemoStudioTransport extends StudioTransport
   );
 
   AcpInstallReleaseView _demoInstallRelease() => const AcpInstallReleaseView(
-    version: '1.4.1',
+    version: '1.4.5',
     target: 'linux-x86_64',
     archiveUrl: 'https://dl.google.com/agy-extensions/releases/antigravity-acp-linux-x86_64.zip',
   );
@@ -1993,7 +2011,7 @@ class DemoStudioTransport extends StudioTransport
                 server: AcpInstalledServerView(
                   installationId: 'demo-installation-$op',
                   release: release,
-                  program: '/home/studio/acp-servers/antigravity/1.4.1/program',
+                  program: '/home/studio/acp-servers/antigravity/1.4.5/program',
                   readyAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
                 ),
               ),

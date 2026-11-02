@@ -5,6 +5,8 @@ mod dynamic;
 mod restart;
 pub mod state;
 mod submit;
+#[cfg(test)]
+mod tests;
 pub use context::plan_model_context_section;
 pub(crate) use dynamic::PlanConfirmationPrompt;
 pub use dynamic::{PLAN_EXTENSION, decode_plan_state, encode_plan_state, plan_registrations};

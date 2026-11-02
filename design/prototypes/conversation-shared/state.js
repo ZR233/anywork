@@ -187,7 +187,9 @@
         } else if (spec.id === 'standalone') {
           this.state.targetType = 'standalone';
           this.state.workspaceMode = 'local';
-          this.note('非项目新会话 · 工作区固定为 Documents/anywork，不展示工作树切换器');
+          this.note('无项目新会话 · 与项目新建会话共用同一新会话页面，当前开启在「无项目」（Documents/anywork）');
+        } else if (spec.id === 'project-picker') {
+          this.note('项目选择器 · 支持在「无项目」、模糊搜索「已有项目」与「新建项目」之间一键切换');
         } else if (spec.id === 'preparing') {
           this.state.workspaceMode = 'worktree';
           this.state.preparation = {
@@ -362,6 +364,7 @@
       const model = this.currentModel();
       const effortSupported = model.efforts.length > 0;
 
+      const projectEditable = isStart && !prepRunning;
       const workspaceEditable = isStart && s.targetType === 'project' && !prepRunning;
       const delegationEditable = isStart && !prepRunning;
 
@@ -412,6 +415,7 @@
         isSubagent,
         prepRunning,
         turnBusy,
+        projectEditable,
         workspaceEditable,
         delegationEditable,
         modeEditable,
@@ -489,26 +493,44 @@
        ====================================================================== */
     selectStandaloneStart() {
       this.haltTimers();
+      const fromSession = this.state.stage === 'session';
       this.state.stage = 'start';
       this.state.targetType = 'standalone';
       this.state.activeSidebarThreadId = null;
       this.state.workspaceMode = 'local';
       this.state.preparation = null;
       this.state.lockNotice = null;
-      this.note('进入非项目新会话草稿 · 工作区固定为 Documents/anywork');
+      if (fromSession) {
+        this.state.live = null;
+        this.state.pending = null;
+        this.state.resumable = false;
+        this.state.continuationReason = null;
+        this.state.transitionPhase = 'none';
+        this.state.running = false;
+      }
+      this.note('新会话目标切换为「无项目」· 工作区固定为 Documents/anywork，也可在列表切换项目');
       this.emit('reset');
     }
 
     selectProjectStart(projectId) {
       this.haltTimers();
+      const fromSession = this.state.stage === 'session';
       this.state.stage = 'start';
       this.state.targetType = 'project';
       this.state.projectId = projectId;
       this.state.activeSidebarThreadId = null;
       this.state.preparation = null;
       this.state.lockNotice = null;
+      if (fromSession) {
+        this.state.live = null;
+        this.state.pending = null;
+        this.state.resumable = false;
+        this.state.continuationReason = null;
+        this.state.transitionPhase = 'none';
+        this.state.running = false;
+      }
       const proj = this.currentProject();
-      this.note(`进入项目「${proj.name}」新会话草稿 · 可在外层选择本地目录或新建工作树`);
+      this.note(`新会话目标切换为项目「${proj.name}」· 可在外层选择本地目录或新建工作树`);
       this.emit('reset');
     }
 

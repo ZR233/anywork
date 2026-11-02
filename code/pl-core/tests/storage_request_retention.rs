@@ -38,6 +38,7 @@ impl ModelSession for RepeatingModel {
         };
         Ok(PreparedModelCall::new(async move {
             Ok(ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: vec![ContextContent::Text {
@@ -138,6 +139,7 @@ impl ModelSession for ReusedCallModel {
             .any(|record| !record.tool_calls.is_empty());
         Ok(PreparedModelCall::new(async move {
             Ok(ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: vec![],
@@ -244,6 +246,7 @@ impl ModelSession for FailsOnce {
                 });
             }
             Ok(ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: vec![],

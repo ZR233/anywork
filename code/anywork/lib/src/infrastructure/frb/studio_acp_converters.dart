@@ -99,10 +99,12 @@ AcpAuthStateView _acpAuthStateFromFrb(frb.BridgeAcpAuthState value) =>
       frb.BridgeAcpAuthState_Checking(operationId: final operationId) =>
         AcpCheckingState(operationId: operationId),
       frb.BridgeAcpAuthState_Required(
+        operationId: final operationId,
         server: final server,
         methods: final methods,
       ) =>
         AcpRequiredState(
+          operationId: operationId,
           // 缺少 agentInfo 时保持 null：不伪造服务端身份。
           server: server == null ? null : _acpServerFromFrb(server),
           methods: [for (final method in methods) _acpMethodFromFrb(method)],
@@ -249,10 +251,8 @@ AcpAuthCommandReply _acpAuthReplyFromFrb(frb.BridgeAcpAuthCommandReply value) =>
 
 frb.BridgeAcpAuthAction _acpAuthActionToFrb(AcpAuthActionView action) =>
     switch (action) {
-      AcpCheckActionView() => const frb.BridgeAcpAuthAction.check(),
-      AcpQueryUsageActionView() => const frb.BridgeAcpAuthAction.queryUsage(),
-      AcpAuthenticateActionView(:final methodId) =>
-        frb.BridgeAcpAuthAction.authenticate(methodId: methodId),
+      AcpCheckActionView() => frb.BridgeAcpAuthAction.check,
+      AcpQueryUsageActionView() => frb.BridgeAcpAuthAction.queryUsage,
     };
 
 // ---------------------------------------------------------------------------
