@@ -6516,6 +6516,12 @@ abstract class AppLocalizations {
   /// **'Non-project sessions'**
   String get sidebarStandaloneSessions;
 
+  /// No description provided for @sidebarNewStandaloneSession.
+  ///
+  /// In en, this message translates to:
+  /// **'New non-project session'**
+  String get sidebarNewStandaloneSession;
+
   /// No description provided for @sidebarStandaloneEmpty.
   ///
   /// In en, this message translates to:

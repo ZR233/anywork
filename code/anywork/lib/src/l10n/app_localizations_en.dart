@@ -3620,6 +3620,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarStandaloneSessions => 'Non-project sessions';
 
   @override
+  String get sidebarNewStandaloneSession => 'New non-project session';
+
+  @override
   String get sidebarStandaloneEmpty => 'No non-project sessions yet.';
 
   @override

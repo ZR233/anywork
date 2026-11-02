@@ -3450,6 +3450,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarStandaloneSessions => '非项目会话';
 
   @override
+  String get sidebarNewStandaloneSession => '新建非项目会话';
+
+  @override
   String get sidebarStandaloneEmpty => '还没有非项目会话。';
 
   @override

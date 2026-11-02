@@ -1768,6 +1768,7 @@
   "sidebarNoResults": "No matching projects or sessions",
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
   "sidebarStandaloneSessions": "Non-project sessions",
+  "sidebarNewStandaloneSession": "New non-project session",
   "sidebarStandaloneEmpty": "No non-project sessions yet.",
   "sidebarStandalonePrepareFailed": "Couldn't prepare a workspace: {error}. Select New session to retry.",
   "@sidebarStandalonePrepareFailed": {

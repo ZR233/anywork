@@ -75,11 +75,7 @@ class SidebarProjectRow extends StatelessWidget {
                   child: Text('SSH', style: context.text.labelSmall),
                 ),
               if (issue != null) _recoveryIndicator(context, issue),
-            ],
-          ),
-          actions: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+              // 常驻新建入口：折叠热区与项目的行内操作互不干扰。
               _tileIconButton(
                 key: StudioDriverKeys.projectNewSession(project.id),
                 tooltip: '${context.l10n.sidebarNewSession} · ${project.name}',
@@ -87,19 +83,19 @@ class SidebarProjectRow extends StatelessWidget {
                 minTarget: target,
                 onPressed: issue?.blocksAccess == true ? null : onNewSession,
               ),
-              SidebarProjectMenu(
-                menuKey: StudioDriverKeys.projectMenu(project.id),
-                pinned: pinned,
-                minTarget: target,
-                recoveryIssueId: issue?.scope == RecoveryIssueScope.project
-                    ? issue?.id
-                    : null,
-                canRetryRecovery:
-                    issue?.scope == RecoveryIssueScope.project &&
-                    issue?.canRetry == true,
-                onAction: onAction,
-              ),
             ],
+          ),
+          actions: SidebarProjectMenu(
+            menuKey: StudioDriverKeys.projectMenu(project.id),
+            pinned: pinned,
+            minTarget: target,
+            recoveryIssueId: issue?.scope == RecoveryIssueScope.project
+                ? issue?.id
+                : null,
+            canRetryRecovery:
+                issue?.scope == RecoveryIssueScope.project &&
+                issue?.canRetry == true,
+            onAction: onAction,
           ),
         ),
       ),

@@ -1313,6 +1313,7 @@
   "sidebarNoResults": "没有匹配的项目或会话",
   "sidebarEmptyProject": "还没有会话，点击项目右侧 ＋ 开始",
   "sidebarStandaloneSessions": "非项目会话",
+  "sidebarNewStandaloneSession": "新建非项目会话",
   "sidebarStandaloneEmpty": "还没有非项目会话。",
   "sidebarStandalonePrepareFailed": "准备工作区失败：{error}。点击“新建会话”重试。",
   "@sidebarStandalonePrepareFailed": {

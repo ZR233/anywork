@@ -227,12 +227,24 @@ class _StudioSidebarState extends State<StudioSidebar> {
                         title: _archived
                             ? context.l10n.sidebarArchived
                             : context.l10n.sidebarProjects,
-                        action: _tileIconButton(
+                        action: TextButton.icon(
                           key: StudioDriverKeys.openProject,
-                          tooltip: context.l10n.sidebarAddProject,
-                          icon: Icons.add,
-                          minTarget: _touchInput ? 44 : 32,
                           onPressed: widget.onAddProject,
+                          icon: const Icon(Icons.add, size: 16),
+                          label: Text(context.l10n.sidebarAddProject),
+                          style: TextButton.styleFrom(
+                            foregroundColor: context.colors.onSurfaceVariant,
+                            minimumSize: Size(0, _touchInput ? 44 : 30),
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            visualDensity: VisualDensity.standard,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            textStyle: context.text.labelMedium,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(
+                                StudioRadii.sm,
+                              ),
+                            ),
+                          ),
                         ),
                         trailing: widget.onClose == null
                             ? null
@@ -291,6 +303,14 @@ class _StudioSidebarState extends State<StudioSidebar> {
                           children: [
                             SidebarSectionHeading(
                               title: context.l10n.sidebarStandaloneSessions,
+                              action: _tileIconButton(
+                                key: const ValueKey('sidebar-new-standalone'),
+                                tooltip:
+                                    context.l10n.sidebarNewStandaloneSession,
+                                icon: Icons.add,
+                                minTarget: _touchInput ? 44 : 32,
+                                onPressed: widget.onNewSession,
+                              ),
                             ),
                             if (standalone != null)
                               _threads(standalone)

@@ -1,5 +1,14 @@
 part of 'studio_sidebar.dart';
 
+/// 快捷键提示与设计契约一致：macOS 使用 Cmd，其余桌面使用 Ctrl。
+String sidebarShortcutLabel(BuildContext context, String key) {
+  final mac = switch (Theme.of(context).platform) {
+    TargetPlatform.macOS || TargetPlatform.iOS => true,
+    _ => false,
+  };
+  return mac ? '⌘$key' : 'Ctrl+$key';
+}
+
 class SidebarHeader extends StatelessWidget {
   const SidebarHeader({
     super.key,
@@ -30,20 +39,9 @@ class SidebarHeader extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          OutlinedButton.icon(
+          OutlinedButton(
             key: StudioDriverKeys.newSession,
             onPressed: preparing ? null : onNewSession,
-            icon: preparing
-                ? const SizedBox.square(
-                    dimension: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.add, size: 17),
-            label: Text(
-              context.l10n.sidebarNewSession,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
             style: OutlinedButton.styleFrom(
               alignment: Alignment.centerLeft,
               backgroundColor: context.colors.surface,
@@ -59,6 +57,31 @@ class SidebarHeader extends StatelessWidget {
               textStyle: context.text.labelLarge?.copyWith(
                 fontWeight: FontWeight.w600,
               ),
+            ),
+            child: Row(
+              children: [
+                if (preparing)
+                  const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  const Icon(Icons.edit_outlined, size: 17),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    context.l10n.sidebarNewSession,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Text(
+                  sidebarShortcutLabel(context, 'N'),
+                  style: context.text.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 8),
@@ -86,7 +109,15 @@ class SidebarHeader extends StatelessWidget {
                 minHeight: height,
               ),
               suffixIcon: searchController.text.isEmpty
-                  ? null
+                  ? Padding(
+                      padding: const EdgeInsets.only(right: 10),
+                      child: Text(
+                        sidebarShortcutLabel(context, 'K'),
+                        style: context.text.labelSmall?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                      ),
+                    )
                   : _tileIconButton(
                       key: const ValueKey('sidebar-search-clear'),
                       tooltip: context.l10n.settingsCancel,
@@ -274,10 +305,11 @@ class SidebarPageStatus extends StatelessWidget {
             child: Text(context.l10n.sidebarBack),
           ),
         if (window.hasMore && onMore != null)
-          TextButton(
+          TextButton.icon(
             key: ValueKey('$keyPrefix-more-$workspaceId'),
             onPressed: window.loading ? null : onMore,
-            child: Text(context.l10n.sidebarEarlier),
+            icon: const Icon(Icons.history, size: 16),
+            label: Text(context.l10n.sidebarEarlier),
           ),
       ],
     ),
