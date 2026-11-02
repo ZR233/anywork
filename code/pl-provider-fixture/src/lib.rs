@@ -3434,7 +3434,7 @@ pub fn gui_mode_editor_script() -> Vec<Step> {
 /// Shutdown-acceptance strict script.
 ///
 /// Eleven real model turns, one per submitting GUI phase (normal exit,
-/// second-instance continue, duplicated exit request, Driver hang, storage
+/// second-instance continue, duplicated exit request, isolate hang, storage
 /// prime, storage-lock blocked, unresponsive service, MCP reclamation, LSP
 /// reclamation, background-tool reclamation and concurrent stop). The LSP turn
 /// is two steps (`discover_tools` then the real `lsp_query`) and adds a matching

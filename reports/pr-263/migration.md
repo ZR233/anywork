@@ -147,8 +147,14 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 | 入口 | 去向 |
 | --- | --- |
 | `pl-studio-acceptance` `manual-gui --scenario` | 人工 `--preset`；自动 desktop/native 从 `test-project` 调用 |
-| shutdown / 第二实例 / Job Object / process group | native lifecycle，进程外裁判 |
-| `.github/scripts/studio-macos-termination-tests.py` | macOS native job |
+| 正常退出 / 重开 / 第二实例交接 / 重复退出共享期限 | `test-project --suite native` 的 `shutdown`：薄装配 `tool/native_fault_main.dart` + 生产 Client 提交，进程外裁判真实 native pid / 退出码 |
+| Dart hang / 初始化中关闭 / bridge 失败 / 订阅故障 | 同套 `shutdown`：`ANYWORK_NATIVE_SHUTDOWN_FAULT` 只开该场景所需故障；hang 在 `beginExit` 后冻结 isolate，由 30s native 期限给出退出码 1 |
+| SQLite 写锁 / 无响应供应商 | 同套 `shutdown`：真实 `BEGIN IMMEDIATE` 与 fixture SIGSTOP；prime 不得丢失，reopen `quick_check` |
+| MCP / LSP / tool 子树与 SIGTERM-ignoring grandchild | 同套 `shutdown`：场景自有 stdio peer；产品 supervisor 必须在 harness 介入前回收；Linux 进程树证明 |
+| concurrent-stop（MCP+tool+写锁） | 同套 `shutdown`：28s cleanup 预算、15s ACK 界、独立 monitor 时钟；`cleanExit` 不算通过 |
+| `--seed-home-copy` 关闭库迁入 | **独特迁移证明**，仍在人工 `manual-gui --preset gui`；人类 verdict 保持 pending，不进自动 shutdown |
+| Windows Job Object | Linux 跑列为 `coverage.json` `windowsNativeAcceptance=notrun`（批准的平台缺口）；需 Windows 宿主执行同一 `--preset shutdown` |
+| `.github/scripts/studio-macos-termination-tests.py` | macOS native job / process group |
 | `.github/scripts/studio-release-assets.tests.ps1` | 发布校验，非业务回归 |
 | `code/anywork/linux/install-desktop-entry.py` | 安装脚本，非测试套件 |
 

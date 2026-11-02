@@ -294,7 +294,7 @@ struct OwnedProcess {
 /// transaction is held. It gates every accepted scenario the same way and is
 /// released from [`Drop`], so a failed or cancelled run can never leave the lock
 /// behind.
-struct SqliteWriteLock {
+pub(super) struct SqliteWriteLock {
     release: mpsc::Sender<()>,
     worker: Option<thread::JoinHandle<Result<()>>>,
 }
@@ -428,7 +428,7 @@ impl SqliteWriteLock {
     /// [hold_timeout] bounds how long the holder waits for the coordinator to
     /// release it; the worker commits and closes on release, and [`Drop`] is the
     /// backstop, so a failed or cancelled run can never leave the lock behind.
-    fn acquire(database: &Path, label: &str, hold_timeout: Duration) -> Result<Self> {
+    pub(super) fn acquire(database: &Path, label: &str, hold_timeout: Duration) -> Result<Self> {
         let (acquired_tx, acquired_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::channel();
         let path = database.to_owned();
@@ -468,7 +468,7 @@ impl SqliteWriteLock {
         Ok(lock)
     }
 
-    fn finish(&mut self) -> Result<()> {
+    pub(super) fn finish(&mut self) -> Result<()> {
         self.release.send(()).ok();
         if let Some(worker) = self.worker.take() {
             worker
@@ -849,10 +849,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // Automatic desktop/native presets and catalog bind checks own their
     // verdict. Remaining presets are operator runbooks and need a terminal.
     bots_fixture::validate(&options)?;
-    if !matches!(
-        options.preset.as_str(),
-        "shutdown" | "wait-events"
-    ) && !options.model_catalog_restart_check
+    if !matches!(options.preset.as_str(), "shutdown" | "wait-events")
+        && !options.model_catalog_restart_check
     {
         ensure!(
             io::stdin().is_terminal(),
@@ -1004,7 +1002,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     } else {
         catalog_hits_path.clone()
     };
-    let mut fixture_command = Command::new(fixture_executable);
+    let mut fixture_command = Command::new(&fixture_executable);
     fixture_command
         .current_dir(&workspace)
         .args(["--scenario", &options.preset, "--ready-file"])
@@ -1043,8 +1041,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
-    if options.preset == "web-search"
-        && options.web_search_fault.as_deref() == Some("unstructured")
+    if options.preset == "web-search" && options.web_search_fault.as_deref() == Some("unstructured")
     {
         fixture_command.arg("--fault").arg("unstructured");
     }
@@ -1325,10 +1322,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if matches!(
-        options.preset.as_str(),
-        "stress-body" | "stress-body-large"
-    ) {
+    if matches!(options.preset.as_str(), "stress-body" | "stress-body-large") {
         let project = working.path().join("stress-body-project");
         let result = run_stress_body_scenario(
             &StressBodyScenario {
@@ -1428,6 +1422,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
                 status_file: &status_file,
+                fixture_executable: &fixture_executable,
                 interrupt: &interrupt_rx,
             },
             fixture,
@@ -1691,14 +1686,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     continue;
                 }
                 Ok(InputEvent::Done) => {
-                    capture(
-                        &app_dir,
-                        &home,
-                        &vm_url,
-                        &output,
-                        &interrupt_rx,
-                        true,
-                    )?;
+                    capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, true)?;
                     return Ok(());
                 }
                 Ok(InputEvent::Eof) => bail!("manual GUI input closed before done"),
@@ -2415,7 +2403,7 @@ fn write_config_with_profile(
 /// Private to `manual_gui`: only the descendant `shutdown` module calls it, and
 /// keeping the visibility here means the private [`FixtureReady`] parameter does
 /// not leak past its own visibility.
-fn write_config_with_mcp_server(
+pub(super) fn write_config_with_mcp_server(
     home: &Path,
     ready: &FixtureReady,
     server_id: &str,
@@ -2450,20 +2438,20 @@ fn write_config_with_mcp_server(
 ///
 /// A named spec instead of a long positional argument list: the writer stays a
 /// small call site and the fields carry their own meaning at construction.
-struct LspServerSpec<'a> {
+pub(super) struct LspServerSpec<'a> {
     /// The `[lsp.servers.<id>]` key; must be unique across the catalog.
-    id: &'a str,
+    pub(super) id: &'a str,
     /// Server program (the fixture binary in `--lsp-stdio` mode).
-    command: &'a Path,
+    pub(super) command: &'a Path,
     /// Program arguments (the mode flag and coordination file path).
-    args: &'a [String],
+    pub(super) args: &'a [String],
     /// The unique language id the server answers. Must not be a builtin id
     /// (the builtin rust-analyzer already owns `rust`) or the merge fails loud.
-    language_id: &'a str,
+    pub(super) language_id: &'a str,
     /// Workspace detection rules; empty means "all workspaces".
-    detection: &'a [String],
+    pub(super) detection: &'a [String],
     /// File extensions the server claims; empty means none.
-    extensions: &'a [String],
+    pub(super) extensions: &'a [String],
 }
 
 /// Writes the isolated home's config with one scenario-owned `[lsp.servers.<id>]`
@@ -2481,7 +2469,7 @@ struct LspServerSpec<'a> {
 ///
 /// Private to `manual_gui` (only the descendant `shutdown` module uses it) so
 /// the private [`FixtureReady`] parameter stays within its own visibility.
-fn write_config_with_lsp_server(
+pub(super) fn write_config_with_lsp_server(
     home: &Path,
     ready: &FixtureReady,
     spec: &LspServerSpec<'_>,
@@ -3013,10 +3001,7 @@ pub(super) fn request_app_exit(
             );
             return Ok(());
         }
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "requestExit cancelled"
-        );
+        ensure!(interrupt.try_recv().is_err(), "requestExit cancelled");
         ensure!(Instant::now() < deadline, "requestExit timed out");
         thread::sleep(Duration::from_millis(100));
     }
@@ -4149,11 +4134,8 @@ fn run_history_lock_scenario(
             // readers are not blocked, and a failure is recorded rather than
             // asserted so a busy read can never be mistaken for a pass.
             let while_locked = history_lock_watermark(&database).ok();
-            let while_items = history_payload_count(
-                &database,
-                pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER,
-            )
-            .ok();
+            let while_items =
+                history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER).ok();
             let held_millis = locked_at.elapsed().as_millis();
             let release = lock.finish();
             fs::write(&released_marker, "released")?;
@@ -4175,10 +4157,7 @@ fn run_history_lock_scenario(
         let database = history_lock_database(home)?;
         after = Some((
             history_lock_watermark(&database)?,
-            history_payload_count(
-                &database,
-                pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER,
-            )?,
+            history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER)?,
         ));
         Ok(())
     })();
@@ -4397,11 +4376,9 @@ fn run_history_fault_scenario(
                 Duration::from_secs(3_600),
             )?;
             let while_locked = history_lock_watermark(&database).ok();
-            let while_items = history_payload_count(
-                &database,
-                pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
-            )
-            .ok();
+            let while_items =
+                history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER)
+                    .ok();
             let held_millis = locked_at.elapsed().as_millis();
             lock_report = Some(serde_json::json!({
                 "database": database.file_name().and_then(|name| name.to_str()),
@@ -4968,11 +4945,11 @@ fn history_fault_interface_needs() -> serde_json::Value {
 
 /// Per-session history watermarks read directly from the real `history.sqlite`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct HistoryLockWatermark {
+pub(super) struct HistoryLockWatermark {
     /// Committed `history_turns` rows.
-    turns: i64,
+    pub(super) turns: i64,
     /// `history_meta.applied_write_seq`, the durable write watermark.
-    write_seq: i64,
+    pub(super) write_seq: i64,
 }
 
 /// Locates the single per-session history library of the isolated home.
@@ -4980,7 +4957,7 @@ struct HistoryLockWatermark {
 /// The acceptance deliberately locks the *real* library, never a copy. The home
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
-fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
+pub(super) fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
     let projects = home.join("data/workspaces");
     let mut candidates = Vec::new();
     if projects.is_dir() {
@@ -5027,7 +5004,7 @@ pub(super) fn history_owner_thread(home: &Path) -> Result<String> {
 }
 
 /// Reads the durable history watermarks through a read-only connection.
-fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
+pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -5059,7 +5036,7 @@ fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
 /// Proves the exact file committed before a forced exit still opens and passes
 /// SQLite's own integrity check after a reopen, rather than only that some file
 /// exists.
-fn history_lock_quick_check(database: &Path) -> Result<String> {
+pub(super) fn history_lock_quick_check(database: &Path) -> Result<String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -5091,18 +5068,17 @@ fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
             .filename(&database)
             .read_only(true);
         let mut connection = SqliteConnection::connect_with(&options).await?;
-        let (count,): (i64,) = sea_orm::sqlx::query_as(
-            "SELECT COUNT(*) FROM history_items WHERE payload LIKE ?1",
-        )
-        .bind(format!("%{needle}%"))
-        .fetch_one(&mut connection)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to count committed items matching {needle} from {}",
-                display.display()
-            )
-        })?;
+        let (count,): (i64,) =
+            sea_orm::sqlx::query_as("SELECT COUNT(*) FROM history_items WHERE payload LIKE ?1")
+                .bind(format!("%{needle}%"))
+                .fetch_one(&mut connection)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to count committed items matching {needle} from {}",
+                        display.display()
+                    )
+                })?;
         Ok(count)
     })
 }
@@ -5113,7 +5089,13 @@ fn start_stress_body_gui(workspace: &Path, home: &Path, log_path: &Path) -> Resu
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
-        .args(["xtask", "run-gui", "--capture", "--profile", "--native-launch"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
@@ -5131,7 +5113,13 @@ fn start_realtime_gui(
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
-        .args(["xtask", "run-gui", "--capture", "--profile", "--native-launch"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home);
     // §24.3: only the realtime journey raises the real conversation-credit
     // producer to debug for the Pending diagnostic; the warn floor for
@@ -5153,7 +5141,13 @@ fn start_history_lock_gui(workspace: &Path, home: &Path, log_path: &Path) -> Res
     command
         .current_dir(workspace)
         // Profile/AOT keeps the observed timings representative, like realtime.
-        .args(["xtask", "run-gui", "--capture", "--profile", "--native-launch"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
@@ -5166,7 +5160,13 @@ fn start_history_fault_gui(workspace: &Path, home: &Path, log_path: &Path) -> Re
     command
         .current_dir(workspace)
         // Profile/AOT keeps the observed timings representative, like history-lock.
-        .args(["xtask", "run-gui", "--capture", "--profile", "--native-launch"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
