@@ -2,7 +2,7 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR 与 `main` 分支推送时使用 GitHub 原生路径过滤：仅修改 `design/**` 时跳过整个工作流，包括自动化测试与静态检查；包含目录外文件的变更仍执行原有门禁。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。后续 cheap `changes` job 决定哪些重作业适用。
 
 ## 24.1 现有测试基础设施
 
