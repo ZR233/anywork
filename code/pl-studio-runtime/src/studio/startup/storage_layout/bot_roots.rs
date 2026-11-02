@@ -4,10 +4,10 @@ use crate::studio::catalog::CatalogEntry;
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 
 /// Compare recorded addresses without resolving a source already moved to backup.
-/// Only safely removable Windows verbatim prefixes are ignored; other spelling
-/// differences must not grant authority to relocate an execution binding.
+/// Use native path components after safe Windows verbatim-prefix simplification,
+/// never filesystem aliases or descendant/prefix matching.
 pub(in crate::studio) fn same_path(left: &Path, right: &Path) -> bool {
-    dunce::simplified(left).as_os_str() == dunce::simplified(right).as_os_str()
+    dunce::simplified(left) == dunce::simplified(right)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
