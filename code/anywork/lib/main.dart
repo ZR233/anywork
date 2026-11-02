@@ -15,15 +15,12 @@ void main() {
   bootstrapStudio();
 }
 
-/// Driver 构建可注入外部 ProviderContainer，让 driver 请求访问应用级状态。
-void bootstrapStudio({ProviderContainer? container, AppGraph? graph}) {
+void bootstrapStudio({AppGraph? graph}) {
   final AppGraph application =
       graph ??
-      (container != null
-          ? container.read(appGraphProvider)
-          : (const bool.fromEnvironment('ANYWORK_DEMO')
-                ? createDemoAppGraph()
-                : createProductionAppGraph()));
+      (const bool.fromEnvironment('ANYWORK_DEMO')
+          ? createDemoAppGraph()
+          : createProductionAppGraph());
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     recordDartError(details.exception, details.stack);
@@ -37,19 +34,6 @@ void bootstrapStudio({ProviderContainer? container, AppGraph? graph}) {
     maybeRegisterCaptureExtension();
   }
   runZonedGuarded(() {
-    if (container case final external?) {
-      runApp(
-        UncontrolledProviderScope(
-          container: external,
-          child: AnyworkApp(
-          enableDesktopHost: true,
-          enableDesktopTray: true,
-          enableContentCapture: const bool.fromEnvironment('ANYWORK_CAPTURE'),
-        ),
-        ),
-      );
-      return;
-    }
     runApp(
       ProviderScope(
         overrides: [

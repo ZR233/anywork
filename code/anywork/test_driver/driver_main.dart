@@ -105,7 +105,7 @@ void main() {
     observedAccountDetails: _observedAccountDetails,
   );
   _applyShutdownFaultOverride();
-  studio.bootstrapStudio(container: _container);
+  studio.bootstrapStudio(graph: graph);
   // 生产 widget（`_StudioLifecycleCoordinator.initState`）会在**首帧构建时**安装它
   // 自己的协调器（同一 `graph.close`），覆盖任何更早的安装。Driver 取证必须观察
   // 实际 active 的那一次收束，因此把同一 graph / 同一预算 / 同一进度接口的 Driver
