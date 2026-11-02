@@ -241,6 +241,40 @@ pub(crate) async fn apply(
     Ok(())
 }
 
+/// Read only the canonical current interaction collection in the caller's snapshot transaction.
+pub(crate) async fn pending_interactions(
+    db: &impl ConnectionTrait,
+    current: &CurrentProjection,
+) -> Result<Vec<pl_protocol::InteractionRequest>> {
+    let Some(reference) = current.interactions.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let rows = db.query_all_raw(statement(
+        "SELECT payload FROM conversation_view_entries WHERE collection=? ORDER BY position,entry_id",
+        vec![reference.collection.clone().into()],
+    )).await?;
+    let mut pending = Vec::new();
+    for row in rows {
+        let metadata: EntryPayload =
+            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
+        let bytes = super::content::read_body_bytes(
+            db,
+            &ChatContentKey {
+                owner: ChatKey::from_encoded(metadata.owner)?,
+                key: metadata.key,
+            },
+            0,
+            usize::try_from(metadata.byte_length)?,
+        )
+        .await?;
+        let interaction: pl_protocol::InteractionRequest = serde_json::from_slice(&bytes)?;
+        if interaction.status() == pl_protocol::InteractionStatus::Pending {
+            pending.push(interaction);
+        }
+    }
+    Ok(pending)
+}
+
 pub(crate) async fn read(db: &impl ConnectionTrait) -> Result<CurrentProjection> {
     let row = db
         .query_one_raw(statement(

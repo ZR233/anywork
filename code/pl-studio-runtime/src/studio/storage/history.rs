@@ -229,6 +229,7 @@ pub(in crate::studio) struct ColdConversation {
     pub head: u64,
     pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
     pub current: pl_protocol::CurrentProjection,
+    pub interactions: Vec<pl_protocol::InteractionRequest>,
     pub terminal_turn: Option<pl_protocol::Turn>,
     pub page: ChatHistoryPage,
 }
@@ -1421,6 +1422,7 @@ impl HistoryStore {
         let tx = connection.db.begin().await?;
         let head = conversation::latest_append_seq(&tx).await?;
         let current = conversation::current::read(&tx).await?;
+        let interactions = conversation::current::pending_interactions(&tx, &current).await?;
         let model_route = checkpoint::read_model_route_head(&tx).await?;
         let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
@@ -1467,6 +1469,7 @@ impl HistoryStore {
             database_id: connection.database_id.clone(),
             head,
             current,
+            interactions,
             model_route,
             terminal_turn,
             page,

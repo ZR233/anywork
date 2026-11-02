@@ -98,6 +98,7 @@ impl StudioRuntime {
         let mut initial_serial = 0;
         let mut state_effect_floor = 0;
         let mut initial_turn = None;
+        let mut interactions = Vec::new();
         let (session, database_id, head, current, items, boundary) = if let Some((
             registration,
             state_rx,
@@ -146,6 +147,7 @@ impl StudioRuntime {
             initial_serial = source.serial;
             state_effect_floor = source.current.projection.source_effect_seq;
             initial_turn = source.current.active_turn.clone();
+            interactions = source.current.pending_interactions()?;
             let database_id = history
                 .conversation_database_id()
                 .await?
@@ -216,6 +218,7 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
                     state_effect_floor = current.source_effect_seq;
@@ -301,7 +304,7 @@ impl StudioRuntime {
             runtime,
             model_route,
             active_turn: initial_turn,
-            interactions: Vec::new(),
+            interactions,
             activity: None,
             storage: storage
                 .as_ref()
