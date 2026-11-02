@@ -151,11 +151,11 @@ void main() {
           tester
               .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
               .expandable,
-          isFalse,
+          isTrue,
         );
-        expect(find.byIcon(Icons.chevron_right_rounded), findsNothing);
+        expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
         expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsNothing);
-        expect(find.byIcon(Icons.expand_more), findsOneWidget);
+        expect(find.byIcon(Icons.expand_more), findsNothing);
         await tester.tap(
           find.byWidget(
             tester.widget<ExpansionTile>(find.byType(ExpansionTile)).title,

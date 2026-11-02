@@ -7,9 +7,10 @@ import 'chat_item_view.dart';
 
 /// Pure nested timeline view over the existing Children controller.
 ///
-/// The connector owns opening, paging and retirement. This view does not retain
-/// another item collection.
-class TimelineChildrenView extends StatelessWidget {
+/// The connector owns opening, paging and retirement. The public Chat builder
+/// slot composes a standard shrink-wrapped ListView over that same controller;
+/// this view neither copies messages nor applies chat operations itself.
+class TimelineChildrenView extends StatefulWidget {
   const TimelineChildrenView({
     super.key,
     required this.controller,
@@ -28,12 +29,30 @@ class TimelineChildrenView extends StatelessWidget {
   final bool Function() isDisplayActive;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 320,
+  State<TimelineChildrenView> createState() => _TimelineChildrenViewState();
+}
+
+class _TimelineChildrenViewState extends State<TimelineChildrenView> {
+  Future<void>? _loadingOlder;
+
+  void _loadOlder() {
+    final action = widget.onLoadOlder;
+    if (action == null || _loadingOlder != null) return;
+    setState(() {
+      _loadingOlder = Future<void>.sync(action).whenComplete(() {
+        if (mounted) setState(() => _loadingOlder = null);
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(maxHeight: 320),
     child: Chat(
+      backgroundColor: Colors.transparent,
       currentUserId: 'user',
       resolveUser: (id) async => User(id: id),
-      chatController: controller,
+      chatController: widget.controller,
       builders: Builders(
         composerBuilder: (_) => const SizedBox.shrink(),
         customMessageBuilder:
@@ -44,43 +63,74 @@ class TimelineChildrenView extends StatelessWidget {
               required bool isSentByMe,
               MessageGroupStatus? groupStatus,
             }) => ChatItemView(
-              key: ValueKey((generation, message.id)),
+              key: ValueKey((widget.generation, message.id)),
               item: chatItemPresentationOf(message)!,
-              isDisplayActive: isDisplayActive,
-              contentRangeBuilder: contentRangeBuilder,
-              attachmentBuilder: attachmentBuilder,
+              isDisplayActive: widget.isDisplayActive,
+              contentRangeBuilder: widget.contentRangeBuilder,
+              attachmentBuilder: widget.attachmentBuilder,
             ),
         chatAnimatedListBuilder: (context, itemBuilder) =>
-            ChatAnimatedListReversed(
-              itemBuilder:
-                  (
-                    context,
-                    message,
-                    index,
-                    animation, {
-                    messagesGroupingMode,
-                    messageGroupingTimeoutInSeconds,
-                    isRemoved,
-                  }) => KeyedSubtree(
-                    key: ValueKey(message.id),
-                    child: KeyedSubtree(
-                      key: ObjectKey(message),
-                      child: itemBuilder(
-                        context,
-                        message,
-                        index,
-                        animation,
-                        messagesGroupingMode: messagesGroupingMode,
-                        messageGroupingTimeoutInSeconds:
-                            messageGroupingTimeoutInSeconds,
-                        isRemoved: isRemoved,
+            StreamBuilder<ChatOperation>(
+              stream: widget.controller.operationsStream,
+              builder: (context, _) {
+                final messages = widget.controller.messages;
+                final hasOlder = widget.onLoadOlder != null;
+                return ListView.builder(
+                  key: ValueKey(('timeline-children-list', widget.generation)),
+                  shrinkWrap: true,
+                  primary: false,
+                  padding: EdgeInsets.zero,
+                  findChildIndexCallback: (key) {
+                    if (key is! ValueKey<String>) return null;
+                    final index = messages.indexWhere(
+                      (message) => message.id == key.value,
+                    );
+                    return index < 0 ? null : index + (hasOlder ? 1 : 0);
+                  },
+                  itemCount: messages.length + (hasOlder ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (hasOlder && index == 0) {
+                      return FutureBuilder<void>(
+                        future: _loadingOlder,
+                        builder: (context, snapshot) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            key: const ValueKey('timeline-children-load-older'),
+                            onPressed: _loadingOlder == null
+                                ? _loadOlder
+                                : null,
+                            icon:
+                                snapshot.connectionState ==
+                                    ConnectionState.waiting
+                                ? const SizedBox.square(
+                                    dimension: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.history, size: 15),
+                            label: const Text('加载更早记录'),
+                          ),
+                        ),
+                      );
+                    }
+                    final messageIndex = index - (hasOlder ? 1 : 0);
+                    final message = messages[messageIndex];
+                    return KeyedSubtree(
+                      key: ValueKey(message.id),
+                      child: KeyedSubtree(
+                        key: ObjectKey(message),
+                        child: itemBuilder(
+                          context,
+                          message,
+                          messageIndex,
+                          const AlwaysStoppedAnimation<double>(1),
+                        ),
                       ),
-                    ),
-                  ),
-              handleSafeArea: false,
-              onEndReached: onLoadOlder,
-              insertAnimationDuration: Duration.zero,
-              removeAnimationDuration: Duration.zero,
+                    );
+                  },
+                );
+              },
             ),
       ),
     ),

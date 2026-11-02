@@ -59,26 +59,16 @@ class TimelineContentRangeView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          ExpansionTile(
+          TimelineActivityDisclosure(
             key: StudioDriverKeys.timelineContentOpen(itemId, contentKey),
             initiallyExpanded: initiallyExpanded,
             enabled: !loading && active && canRead,
             onExpansionChanged: onExpansionChanged,
-            minTileHeight: 28,
-            dense: true,
-            tilePadding: EdgeInsets.zero,
-            shape: const Border(),
-            collapsedShape: const Border(),
-            expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-            childrenPadding: const EdgeInsetsDirectional.only(
-              start: TimelineActivityRow.contentIndent,
-              bottom: 8,
-            ),
-            title: TimelineActivityRow(
+            titleBuilder: (context, expanded) => TimelineActivityRow(
               icon: Icons.article_outlined,
               label: label,
               active: loading,
-              expandable: false,
+              expanded: expanded,
             ),
             children: [
               if (loading) const LinearProgressIndicator(minHeight: 1),

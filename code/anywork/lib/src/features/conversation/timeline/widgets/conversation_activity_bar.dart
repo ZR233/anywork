@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import 'reasoning_summary.dart';
+import 'timeline_activity_row.dart';
 import 'timeline_markdown.dart';
 
 /// 会话输入框上方的实时状态栏。
@@ -152,7 +153,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
       label: phaseLabel,
       child: Padding(
         key: const ValueKey('conversation-activity'),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: EdgeInsets.zero,
         child: _buildBoundedSurface(
           header: _buildHeaderRow(
             context,
@@ -163,20 +164,22 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
           body: content == null
               ? null
               : Padding(
-                  padding: const EdgeInsets.only(top: 5),
-                  child: ConstrainedBox(
-                    key: const ValueKey(
-                      'conversation-activity-response-stream',
-                    ),
-                    constraints: BoxConstraints(
-                      maxHeight: widget.maxResponseHeight,
-                    ),
-                    child: Scrollbar(
-                      controller: _responseScrollController,
-                      child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(11, 0, 11, 8),
+                  child: TimelineActivityRail(
+                    child: ConstrainedBox(
+                      key: const ValueKey(
+                        'conversation-activity-response-stream',
+                      ),
+                      constraints: BoxConstraints(
+                        maxHeight: widget.maxResponseHeight,
+                      ),
+                      child: Scrollbar(
                         controller: _responseScrollController,
-                        primary: false,
-                        child: SelectionArea(child: content),
+                        child: SingleChildScrollView(
+                          controller: _responseScrollController,
+                          primary: false,
+                          child: SelectionArea(child: content),
+                        ),
                       ),
                     ),
                   ),
@@ -263,122 +266,35 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     required bool isExpanded,
   }) {
     final scheme = Theme.of(context).colorScheme;
-    final isIssue = _view.kind.isIssue;
-    final tone = isIssue ? scheme.error : scheme.onSurface;
-    final muted = isIssue ? scheme.error : scheme.onSurfaceVariant;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
-      child: Row(
-        children: [
-          _ActivityLeading(
-            spinning: _view.waits || _isResponding,
-            icon: _view.kind.icon,
-            color: isIssue ? scheme.error : muted,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _buildHeaderContent(
-              context,
-              phaseLabel: phaseLabel,
-              tone: tone,
-              muted: muted,
-            ),
-          ),
-          if (_trailingMetaText() case final trailingMeta?) ...[
-            const SizedBox(width: 8),
-            Text(
-              trailingMeta,
-              key: const ValueKey('conversation-activity-trailing-meta'),
-              style: context.text.labelSmall?.copyWith(
-                fontFamily: studioCodeFontFamily,
-                fontSize: 11,
-                letterSpacing: 0.2,
-                fontFeatures: const [FontFeature.tabularFigures()],
-                color: muted.withValues(alpha: 0.78),
-                height: 1.2,
-              ),
-            ),
-          ],
-          if (expandable) ...[
-            const SizedBox(width: 4),
-            Icon(
-              isExpanded
-                  ? Icons.keyboard_arrow_up_rounded
-                  : Icons.keyboard_arrow_down_rounded,
-              size: 16,
-              color: muted,
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHeaderContent(
-    BuildContext context, {
-    required String phaseLabel,
-    required Color tone,
-    required Color muted,
-  }) {
     final summaryMd = _view.thinkingSummary?.trim();
-    if (summaryMd != null &&
-        summaryMd.isNotEmpty &&
-        _view.wait == null &&
-        !_isResponding &&
-        !_isCompacting) {
-      return _InlineSummaryMarkdown(
-        id: 'sticky-summary-${_view.identity}',
-        markdown: summaryMd,
-        color: tone,
-        fontWeight: FontWeight.w600,
-      );
-    }
-
-    final detailText = _headerDetail();
-    return Row(
-      children: [
-        Flexible(
-          flex: detailText == null ? 1 : 0,
-          child: Text(
-            phaseLabel,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.text.bodySmall?.copyWith(
-              color: tone,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.15,
-              height: 1.25,
-            ),
-          ),
-        ),
-        if (detailText != null && detailText.isNotEmpty) ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              '·',
-              style: context.text.bodySmall?.copyWith(
-                color: muted,
-                height: 1.25,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              detailText,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.bodySmall?.copyWith(
-                fontFamily: _view.kind == ConversationActivityKind.runningTool
-                    ? studioCodeFontFamily
-                    : null,
-                color: muted,
-                letterSpacing: 0.1,
-                height: 1.25,
-              ),
-            ),
-          ),
-        ],
-      ],
+    final showSummary = !isExpanded && !_isResponding;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 2),
+      child: TimelineActivityRow(
+        label: phaseLabel,
+        emphasized: true,
+        icon: _view.kind.icon,
+        isIssue: _view.kind.isIssue,
+        active: _view.waits || _isResponding,
+        expanded: isExpanded,
+        expandable: expandable,
+        meta: _trailingMetaText(),
+        metaKey: const ValueKey('conversation-activity-trailing-meta'),
+        summary: showSummary ? _headerDetail() : null,
+        summaryWidget:
+            showSummary &&
+                summaryMd != null &&
+                summaryMd.isNotEmpty &&
+                _view.wait == null &&
+                !_isCompacting
+            ? _InlineSummaryMarkdown(
+                id: 'sticky-summary-${_view.identity}',
+                markdown: summaryMd,
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w400,
+              )
+            : null,
+      ),
     );
   }
 
@@ -412,30 +328,19 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   }
 
   Widget _buildExpandedArea(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final maxHeight = _effectiveMaxExpandedHeight(context);
     return ConstrainedBox(
       key: const ValueKey('conversation-activity-details'),
       constraints: BoxConstraints(maxHeight: maxHeight),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(15, 0, 10, 8),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(
-                color: scheme.outlineVariant.withValues(alpha: 0.58),
-              ),
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.only(left: 11),
-            child: Scrollbar(
+        padding: const EdgeInsets.fromLTRB(11, 0, 11, 8),
+        child: TimelineActivityRail(
+          child: Scrollbar(
+            controller: _expandedScrollController,
+            child: SingleChildScrollView(
               controller: _expandedScrollController,
-              child: SingleChildScrollView(
-                controller: _expandedScrollController,
-                primary: false,
-                child: SelectionArea(child: widget.content!),
-              ),
+              primary: false,
+              child: SelectionArea(child: widget.content!),
             ),
           ),
         ),
@@ -447,88 +352,6 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     if (startedAt == null) return null;
     final elapsed = DateTime.now().millisecondsSinceEpoch ~/ 1000 - startedAt;
     return elapsed < 0 ? 0 : elapsed;
-  }
-}
-
-class _ActivityLeading extends StatefulWidget {
-  const _ActivityLeading({
-    required this.spinning,
-    required this.icon,
-    required this.color,
-  });
-
-  final bool spinning;
-  final IconData icon;
-  final Color color;
-
-  @override
-  State<_ActivityLeading> createState() => _ActivityLeadingState();
-}
-
-class _ActivityLeadingState extends State<_ActivityLeading>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    );
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ActivityLeading oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _sync();
-  }
-
-  bool get _reducedMotion =>
-      MediaQuery.disableAnimationsOf(context) ||
-      !TickerMode.valuesOf(context).enabled;
-
-  void _sync() {
-    if (widget.spinning && !_reducedMotion) {
-      if (!_controller.isAnimating) _controller.repeat();
-    } else {
-      _controller.stop();
-      _controller.value = 0;
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final icon = Icon(
-      widget.spinning ? Icons.refresh : widget.icon,
-      key: const ValueKey('conversation-activity-leading'),
-      size: 15,
-      color: widget.color,
-    );
-    if (!widget.spinning || _reducedMotion) {
-      return SizedBox(width: 14, height: 14, child: Center(child: icon));
-    }
-    return SizedBox(
-      width: 14,
-      height: 14,
-      child: RotationTransition(
-        key: const ValueKey('conversation-activity-leading-spin'),
-        turns: _controller,
-        child: icon,
-      ),
-    );
   }
 }
 

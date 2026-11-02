@@ -16,6 +16,7 @@ class TimelineActivityRow extends StatelessWidget {
     required this.label,
     this.icon,
     this.labelWidget,
+    this.labelKey,
     this.leading,
     this.iconColor,
     this.isIssue = false,
@@ -23,6 +24,11 @@ class TimelineActivityRow extends StatelessWidget {
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
+    this.summary,
+    this.summaryWidget,
+    this.meta,
+    this.metaKey,
+    this.emphasized = false,
     super.key,
   });
 
@@ -45,6 +51,7 @@ class TimelineActivityRow extends StatelessWidget {
 
   /// 单行文案；过长在行内省略，完整内容由 [tooltip] 提供。
   final String label;
+  final Key? labelKey;
 
   /// 自定义行内富文本组件（例如思考行的行内 Markdown 概要）；为空时使用 [label]。
   final Widget? labelWidget;
@@ -68,6 +75,11 @@ class TimelineActivityRow extends StatelessWidget {
   final bool expandable;
 
   final String? tooltip;
+  final String? summary;
+  final Widget? summaryWidget;
+  final String? meta;
+  final Key? metaKey;
+  final bool emphasized;
 
   @override
   Widget build(BuildContext context) {
@@ -79,55 +91,91 @@ class TimelineActivityRow extends StatelessWidget {
             : active
             ? context.statusColors.activeIndicator
             : color.withValues(alpha: .78));
-    final showLeading = leading != null || icon != null || isIssue;
-    Widget row = SelectionContainer.disabled(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 28),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (showLeading) ...[
-                SizedBox(
-                  width: iconColumnWidth,
-                  child: Center(
+    final showLeading = leading != null || icon != null || isIssue || active;
+    Widget row = Align(
+      alignment: AlignmentDirectional.centerStart,
+      heightFactor: 1,
+      child: SelectionContainer.disabled(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 28),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (showLeading) ...[
+                  SizedBox(
+                    width: iconColumnWidth,
+                    child: Center(
+                      heightFactor: 1,
+                      child:
+                          leading ??
+                          TimelineActivityIndicator(
+                            icon: isIssue ? Icons.error_outline : icon,
+                            active: active && !isIssue,
+                            color: resolvedIconColor,
+                          ),
+                    ),
+                  ),
+                  const SizedBox(width: gap),
+                ],
+                Flexible(
+                  child:
+                      labelWidget ??
+                      Text(
+                        label,
+                        key: labelKey,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
+                        style: context.text.bodySmall?.copyWith(
+                          color: color,
+                          fontWeight: emphasized
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                          height: 1.25,
+                        ),
+                      ),
+                ),
+                if (summaryWidget != null || summary != null) ...[
+                  const SizedBox(width: 8),
+                  Flexible(
                     child:
-                        leading ??
-                        Icon(
-                          isIssue ? Icons.error_outline : icon,
-                          size: iconSize,
-                          color: resolvedIconColor,
+                        summaryWidget ??
+                        Text(
+                          summary!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.text.bodySmall?.copyWith(
+                            color: color,
+                            height: 1.25,
+                          ),
                         ),
                   ),
-                ),
-                const SizedBox(width: gap),
-              ],
-              Flexible(
-                child:
-                    labelWidget ??
-                    Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      softWrap: false,
-                      style: context.text.bodySmall?.copyWith(
-                        color: color,
-                        fontWeight: FontWeight.w400,
-                        height: 1.25,
-                      ),
+                ],
+                if (expandable) const SizedBox(width: 4),
+                if (expandable)
+                  Icon(
+                    expanded
+                        ? Icons.keyboard_arrow_down_rounded
+                        : Icons.chevron_right_rounded,
+                    size: 15,
+                    color: color.withValues(alpha: 0.72),
+                  ),
+                if (meta != null) ...[
+                  const Spacer(),
+                  const SizedBox(width: 8),
+                  Text(
+                    meta!,
+                    key: metaKey,
+                    style: context.text.labelSmall?.copyWith(
+                      color: color.withValues(alpha: .78),
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
-              ),
-              if (expandable) const SizedBox(width: 4),
-              if (expandable)
-                Icon(
-                  expanded
-                      ? Icons.keyboard_arrow_down_rounded
-                      : Icons.chevron_right_rounded,
-                  size: 15,
-                  color: color.withValues(alpha: 0.72),
-                ),
-            ],
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -138,6 +186,158 @@ class TimelineActivityRow extends StatelessWidget {
     }
     return row;
   }
+}
+
+/// Shared running semantics, using Flutter's standard animation lifecycle.
+class TimelineActivityIndicator extends StatefulWidget {
+  const TimelineActivityIndicator({
+    required this.icon,
+    required this.color,
+    this.active = false,
+    super.key,
+  });
+
+  final IconData? icon;
+  final Color color;
+  final bool active;
+
+  @override
+  State<TimelineActivityIndicator> createState() =>
+      _TimelineActivityIndicatorState();
+}
+
+class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _rotation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  );
+
+  bool get _animate =>
+      widget.active &&
+      !MediaQuery.disableAnimationsOf(context) &&
+      TickerMode.valuesOf(context).enabled;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant TimelineActivityIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _sync();
+  }
+
+  void _sync() {
+    if (_animate) {
+      if (!_rotation.isAnimating) _rotation.repeat();
+    } else {
+      _rotation.stop();
+      _rotation.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _rotation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = Icon(
+      widget.active ? Icons.refresh : widget.icon,
+      size: TimelineActivityRow.iconSize,
+      color: widget.color,
+    );
+    return _animate ? RotationTransition(turns: _rotation, child: icon) : icon;
+  }
+}
+
+/// Domain styling only: ExpansionTile owns expansion, animation and semantics.
+class TimelineActivityDisclosure extends StatefulWidget {
+  const TimelineActivityDisclosure({
+    required this.titleBuilder,
+    required this.children,
+    this.initiallyExpanded = false,
+    this.enabled = true,
+    this.onExpansionChanged,
+    this.childrenPadding = const EdgeInsetsDirectional.only(bottom: 8),
+    super.key,
+  });
+
+  final Widget Function(BuildContext context, bool expanded) titleBuilder;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+  final bool enabled;
+  final ValueChanged<bool>? onExpansionChanged;
+  final EdgeInsetsGeometry childrenPadding;
+
+  @override
+  State<TimelineActivityDisclosure> createState() =>
+      _TimelineActivityDisclosureState();
+}
+
+class _TimelineActivityDisclosureState
+    extends State<TimelineActivityDisclosure> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) => TimelineActivityTileTheme(
+    child: ExpansionTile(
+      initiallyExpanded: widget.initiallyExpanded,
+      enabled: widget.enabled,
+      maintainState: false,
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged?.call(expanded);
+      },
+      showTrailingIcon: false,
+      minTileHeight: 28,
+      dense: true,
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: widget.childrenPadding,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      title: widget.titleBuilder(context, _expanded),
+      children: [
+        TimelineActivityRail(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: widget.children,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// A shared reading axis, without content or resource ownership.
+class TimelineActivityRail extends StatelessWidget {
+  const TimelineActivityRail({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsetsDirectional.only(start: 10),
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        border: BorderDirectional(
+          start: BorderSide(
+            color: context.colors.outlineVariant.withValues(alpha: .58),
+          ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsetsDirectional.only(start: 17),
+        child: child,
+      ),
+    ),
+  );
 }
 
 /// 活动行作用域的紧凑 ListTile 主题：只把最小垂直内边距收敛到 0。

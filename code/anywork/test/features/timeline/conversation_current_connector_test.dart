@@ -120,6 +120,20 @@ Finder get _header => find
       matching: find.byType(InkWell),
     )
     .first;
+Future<void> _tapCurrentCollection(WidgetTester tester) async {
+  final collection = find.byKey(StudioDriverKeys.currentCollection('tools'));
+  await tester.ensureVisible(collection);
+  expect(collection.hitTestable(), findsOneWidget);
+  await tester.tap(collection);
+}
+
+ExpansionTile _tile(WidgetTester tester, Finder disclosure) =>
+    tester.widget<ExpansionTile>(
+      find
+          .descendant(of: disclosure, matching: find.byType(ExpansionTile))
+          .first,
+    );
+
 ContentWindow _window(String text, {int offset = 0, int available = 100000}) =>
     ContentWindow(
       offset: offset,
@@ -278,9 +292,7 @@ void main() {
         final originalScope = content.scopes.single;
         originalScope.watches.single.add(_window('range 1'));
         await tester.pump();
-        await tester.tap(
-          find.byKey(StudioDriverKeys.currentCollection('tools')),
-        );
+        await _tapCurrentCollection(tester);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
         final display = borrow.display!;
@@ -616,7 +628,7 @@ void main() {
       final scope = content.scopes.single;
       expect(scope.pages, 0);
       expect(display.collections, isEmpty);
-      await tester.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
+      await _tapCurrentCollection(tester);
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pump(const Duration(milliseconds: 250));
       expect(scope.pages, 1);
@@ -685,12 +697,12 @@ void main() {
       ]);
       expect(continuations, [null, 'page-2']);
       final generation = collection.generation;
-      await tester.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
+      await _tapCurrentCollection(tester);
       expect(display.collections, isEmpty);
       expect(collection.page, isNull);
       expect(collection.generation, greaterThan(generation));
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
+      await _tapCurrentCollection(tester);
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pump(const Duration(milliseconds: 300));
       expect(collection.page, same(page));
@@ -739,7 +751,7 @@ void main() {
       await tester.tap(_header);
       await tester.pump(const Duration(milliseconds: 300));
       final scope = content.scopes.single;
-      await tester.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
+      await _tapCurrentCollection(tester);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       final collection = display.collections.single;
@@ -885,7 +897,7 @@ void main() {
       final display = borrow.display!;
       await tester.tap(_header);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
+      await _tapCurrentCollection(tester);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       final collection = display.collections.single;
@@ -970,7 +982,7 @@ void main() {
         expect(find.text('retired payload success'), findsNothing);
         expect(find.textContaining('retired payload failed'), findsNothing);
         expect(
-          tester.widget<ExpansionTile>(open).enabled,
+          _tile(tester, open).enabled,
           isFalse,
           reason: 'An old finally must not finish the new pending payload read',
         );
@@ -1010,7 +1022,7 @@ void main() {
             .data,
         text,
       );
-      expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
+      expect(_tile(tester, open).enabled, isTrue);
       expect(
         find.descendant(
           of: entryView,
@@ -1073,9 +1085,7 @@ void main() {
         await tester.tap(_header);
         await tester.pump(const Duration(milliseconds: 300));
         final scope = content.scopes.single;
-        await tester.tap(
-          find.byKey(StudioDriverKeys.currentCollection('tools')),
-        );
+        await _tapCurrentCollection(tester);
         await tester.pump();
         expect(pageRequests.length, 1);
         pageRequests.single.complete(firstPage);
@@ -1132,7 +1142,7 @@ void main() {
         expect(entryView, findsOneWidget);
         await tester.ensureVisible(open);
         expect(open.hitTestable(), findsOneWidget);
-        expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
+        expect(_tile(tester, open).enabled, isTrue);
         // The retained page is genuinely interactive during this pending reload.
         await tester.tap(open);
         await tester.pump();
@@ -1146,7 +1156,7 @@ void main() {
         expect(collection.loading, isTrue);
         final old = payloadWindows().single;
         expect(progress, findsOneWidget);
-        expect(tester.widget<ExpansionTile>(open).enabled, isFalse);
+        expect(_tile(tester, open).enabled, isFalse);
         final replacementPage = CurrentCollectionPage(
           revision: firstPage.revision,
           entries: [entry],
@@ -1162,7 +1172,7 @@ void main() {
         expect(display.windows.contains(old), isFalse);
         expect(payloadWindows(), isEmpty);
         expect(
-          tester.widget<ExpansionTile>(open).enabled,
+          _tile(tester, open).enabled,
           isTrue,
           reason:
               'Accepting a different page must retire the retained pending range '
@@ -1198,7 +1208,7 @@ void main() {
         expect(find.textContaining('old retained read failed'), findsNothing);
         expect(find.text('old retained read succeeded'), findsNothing);
         expect(
-          tester.widget<ExpansionTile>(open).enabled,
+          _tile(tester, open).enabled,
           isFalse,
           reason:
               'Old success/error/finally cannot finish the new pending read',
@@ -1217,7 +1227,7 @@ void main() {
         await tester.pump();
         expect(tester.widget<Text>(rendered).data, text);
         expect(progress, findsNothing);
-        expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
+        expect(_tile(tester, open).enabled, isTrue);
         for (var i = 0; i < 5; i++) {
           expect(payloadWindows().single, same(current));
           expect(current.reference, same(reference));
@@ -1269,9 +1279,7 @@ void main() {
         final display = borrow.display!;
         await tester.tap(_header);
         await tester.pump();
-        await tester.tap(
-          find.byKey(StudioDriverKeys.currentCollection('tools')),
-        );
+        await _tapCurrentCollection(tester);
         await tester.pump(const Duration(milliseconds: 300));
         final collection = display.collections.single;
         final initialGeneration = collection.generation;
@@ -1859,7 +1867,7 @@ void main() {
         );
         expect(find.text('retired Children read succeeded'), findsNothing);
         expect(
-          tester.widget<ExpansionTile>(open).enabled,
+          _tile(tester, open).enabled,
           isFalse,
           reason: 'The retired read cannot clear the replacement range loading',
         );
@@ -1886,7 +1894,7 @@ void main() {
       await tester.pump();
       expect(tester.widget<Text>(rendered).data, text);
       expect(progress, findsNothing);
-      expect(tester.widget<ExpansionTile>(open).enabled, isTrue);
+      expect(_tile(tester, open).enabled, isTrue);
       expect(children.scopes.single.reads.length, 1);
       expect(harness.repository.requests.map((request) => request.parentId), [
         parentId,

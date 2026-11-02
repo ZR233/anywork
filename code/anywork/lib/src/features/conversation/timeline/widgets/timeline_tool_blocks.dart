@@ -108,28 +108,18 @@ class TimelineWebSearchToolCard extends StatelessWidget {
           ),
         ),
     ];
-    return ExpansionTile(
+    return TimelineActivityDisclosure(
       key: ValueKey('timeline-tool-details:${item.id}'),
       initiallyExpanded: initiallyExpanded,
       onExpansionChanged: onExpansionChanged,
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(
-        left: TimelineActivityRow.contentIndent,
-        bottom: 8,
-      ),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      dense: true,
-      minTileHeight: 28,
       enabled: children.isNotEmpty,
-      showTrailingIcon: children.isNotEmpty,
-      title: TimelineActivityRow(
+      titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: Icons.travel_explore,
         label: _webSearchLabel(context, item, data),
         active: _toolActiveStatuses.contains(item.statusString),
         isIssue: timelineIssueStatuses.contains(item.statusString),
-        expandable: false,
+        expanded: expanded,
+        expandable: children.isNotEmpty,
         tooltip: data.details.firstOrNull,
       ),
       children: children,
@@ -361,23 +351,13 @@ class TimelineToolDetails extends StatelessWidget {
       );
     }
     final expandable = children.isNotEmpty;
-    final tile = ExpansionTile(
+    final tile = TimelineActivityDisclosure(
       key: ValueKey('timeline-tool-details:${item.id}'),
       initiallyExpanded: initiallyExpanded,
       onExpansionChanged: onExpansionChanged,
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(
-        left: TimelineActivityRow.contentIndent,
-        bottom: 8,
-      ),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      dense: true,
-      minTileHeight: 28,
       enabled: expandable,
-      showTrailingIcon: expandable,
-      title: _toolRow(context),
+      titleBuilder: (context, expanded) =>
+          _toolRow(context, expanded: expanded, expandable: expandable),
       children: children,
     );
     if (tool.presentationContract != 'builtin.view_image@1') return tile;
@@ -387,7 +367,11 @@ class TimelineToolDetails extends StatelessWidget {
     );
   }
 
-  Widget _toolRow(BuildContext context) {
+  Widget _toolRow(
+    BuildContext context, {
+    required bool expanded,
+    required bool expandable,
+  }) {
     final item = this.item;
     final category = _toolCategory(item);
     final targets = _toolRowTargets(context, item, category);
@@ -396,17 +380,15 @@ class TimelineToolDetails extends StatelessWidget {
         ? _toolElapsed(item)
         : null;
     return TimelineActivityRow(
-      icon: _toolCategoryIcon(category),
-      label: _toolRowLabel(
-        context,
-        item,
-        category,
-        targets.label,
-        meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
-      ),
+      icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
+          ? Icons.stop_circle_outlined
+          : _toolCategoryIcon(category),
+      label: _toolRowLabel(context, item, category, targets.label),
       active: _toolActiveStatuses.contains(item.statusString),
       isIssue: timelineIssueStatuses.contains(item.statusString),
-      expandable: false,
+      expanded: expanded,
+      expandable: expandable,
+      meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
       tooltip: targets.tooltip,
     );
   }

@@ -92,6 +92,38 @@ Finder get _rowTap => find
 
 void main() {
   testWidgets(
+    'Turn completion, failure and stop preserve distinct semantics without invented meta',
+    (tester) async {
+      for (final (outcome, icon) in [
+        ('completed', Icons.account_tree_outlined),
+        ('failed', Icons.error_outline),
+        ('cancelled', Icons.stop_circle_outlined),
+        ('interrupted', Icons.stop_circle_outlined),
+      ]) {
+        await _show(
+          tester,
+          _item('terminal-$outcome', 'turn', {
+            'outcome': {'kind': outcome},
+          }),
+        );
+        expect(find.byIcon(icon), findsOneWidget, reason: outcome);
+        final row = tester.widget<TimelineActivityRow>(
+          find.byType(TimelineActivityRow),
+        );
+        expect(row.meta, isNull);
+        expect(find.text('0s'), findsNothing);
+        expect(find.byType(Card), findsNothing);
+        expect(
+          tester
+              .widget<ExpansionTile>(find.byType(ExpansionTile))
+              .showTrailingIcon,
+          isFalse,
+        );
+      }
+    },
+  );
+
+  testWidgets(
     'collapsed history processes keep the compact row height and grow with text scale',
     (tester) async {
       final cases = [
@@ -309,14 +341,19 @@ void main() {
       );
       expect(
         tester
-            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow).first)
             .label,
-        contains('bounded summary'),
+        isNotEmpty,
       );
-      expect(find.text('reasoning proof'), findsNothing);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
+      expect(find.textContaining('bounded summary'), findsOneWidget);
       expect(find.text('reasoning proof'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow).first)
+            .expandable,
+        isFalse,
+        reason: 'Opening the parent group already exposes the thinking content',
+      );
       final cases = <(String, Map<String, Object?>, IconData)>[
         (
           'skill',
