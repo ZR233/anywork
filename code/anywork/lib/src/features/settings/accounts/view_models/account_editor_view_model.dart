@@ -315,7 +315,8 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _publish();
   }
 
-  String? get chatGptAuthorizationUrl => _currentChatGptLogin?.authorizationUrl;
+  String? readChatGptAuthorizationUrl() =>
+      _currentChatGptLogin?.authorizationUrl;
 
   String? claimAuthorizationUrlForAutomaticOpen() {
     final login = _currentChatGptLogin;

@@ -187,7 +187,10 @@ AcpUsagePresentation projectAcpUsage({
       ? null
       : snapshot?.account(accountId, connectionRevision: connectionRevision);
   final observation = account?.usage;
-  final busy = account?.state.isBusy ?? false;
+  final auth = account?.state;
+  // Required retains the connection owner but waits for a user choice; there is
+  // no quota request progressing while the login picker is displayed.
+  final busy = auth != null && auth is! AcpRequiredState && auth.isBusy;
   final usage = observation?.state;
   final status = switch (usage) {
     null => strings['acpUsage.notQueried'],

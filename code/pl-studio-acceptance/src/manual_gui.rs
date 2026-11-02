@@ -1,6 +1,4 @@
 mod account_usage;
-mod acp_auto_install;
-mod acp_support;
 mod bots_fixture;
 mod context_replay_recovery;
 mod delegation;
@@ -52,10 +50,8 @@ pub(crate) struct ManualGuiOptions {
     /// history-writer, history-fault retry/resume, plan shutdown/restart
     /// recovery (`plan-recovery`), or the 30-second application shutdown
     /// acceptance journey (`shutdown`), or the wait/sleep/child observation
-    /// journey (`wait-events`), or the fixed Antigravity 1.4.1 install / save /
-    /// authenticate journey (`acp-auto-install`), which drives the controlled
-    /// distribution peer and a fake ACP Agent through the real product bridge and
-    /// needs no HTTP provider fixture.
+    /// journey (`wait-events`). ACP native acceptance uses the official Flutter
+    /// integration_test suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -119,17 +115,6 @@ pub(crate) struct ManualGuiOptions {
     /// Requires `--scenario gui` and a Linux debug native environment.
     #[arg(long)]
     pub(crate) bots_fixture: bool,
-    /// Start point for the ACP auto-install acceptance.
-    ///
-    /// Omitting the flag keeps the default `first` (all eight frozen phases). The
-    /// explicit flag must name its start point: `cancel` runs only
-    /// `cancel/retry/reuse/faults-unsafe-zip` in a fresh isolated environment, and
-    /// `first` states the full run explicitly. A bare flag is rejected instead of
-    /// defaulting, so an accidental full or partial run cannot happen by typo. No
-    /// other phase can be a start point and no phase is skipped inside a selected
-    /// group. Only valid with `--scenario acp-auto-install`.
-    #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
-    pub(crate) acp_install_from: Option<String>,
     /// Optional Dart Driver for delegation scenes, including review-feedback.
     /// Arguments: VM URL, project, phase evidence directory, environment, phase,
     /// fixture origin. It must not shut down the application; the harness does.
@@ -869,11 +854,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history-20k"
                     | "stress-body-large"
                     | "wait-events"
-                    | "acp-auto-install"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, timeline-history-20k, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
+         timeline-history, timeline-history-20k, stress-body-large, wait-events and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
@@ -882,10 +866,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ensure!(
         options.scenario != "timeline-history-20k" || cfg!(target_os = "linux"),
         "--scenario timeline-history-20k is supported only on Linux"
-    );
-    ensure!(
-        options.acp_install_from.is_none() || options.scenario == "acp-auto-install",
-        "--acp-install-from is supported only by --scenario acp-auto-install"
     );
     ensure!(
         options.startup_fault.is_none() || options.scenario == "gui",
@@ -970,7 +950,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "timeline-history-20k"
             | "skill-activity"
             | "wait-events"
-            | "acp-auto-install"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
         && options.delegation_driver.is_none()
@@ -1010,7 +989,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         && options.web_search_probe.is_none()
         && !options.timeline_displacement
         && !options.bots_fixture
-        && options.acp_install_from.is_none()
         && options.delegation_driver.is_none();
     let output = options.output.unwrap_or_else(|| {
         workspace
@@ -1053,49 +1031,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         copy_closed_home(source, &home)?;
     } else {
         fs::create_dir(&home)?;
-    }
-
-    // The 1.4.1 journey needs no HTTP model step: it drives the fixed distribution
-    // peer, the real managed install chain and the real ACP handshake instead, so
-    // the model fixture is never started and cannot be reported as accepted.
-    if options.scenario == "acp-auto-install" {
-        let start = match options.acp_install_from.as_deref() {
-            None | Some("first") => acp_auto_install::StartPhase::First,
-            Some("cancel") => acp_auto_install::StartPhase::Cancel,
-            Some(other) => bail!("unsupported --acp-install-from value `{other}`"),
-        };
-        let result = acp_auto_install::run(&acp_auto_install::AcpAutoInstallScenario {
-            workspace: &workspace,
-            app_dir: &app_dir,
-            home: &home,
-            working: working.path(),
-            output: &output,
-            fixture_program: &fixture_executable,
-            retain_environment: options.retain_environment,
-            start,
-            interrupt: &interrupt_rx,
-        });
-        if result.is_ok() {
-            if options.retain_environment {
-                keep_isolated_environment(working, &home, &output, None)?;
-            }
-            return Ok(());
-        }
-        let error = result.expect_err("the ACP install journey reported an error");
-        // A failure must keep its own evidence: this directory holds the peer's real
-        // stdout/stderr, the control document it consumed, its ready/report/requests
-        // files and whatever the lifecycle started. Dropping the TempDir would delete
-        // the only record of why it failed, so the site is retained (0700) inside the
-        // evidence directory together with a redacted summary.
-        return match acp_auto_install::preserve_failure(working, &output, &error) {
-            Ok(summary) => Err(error.context(format!(
-                "the isolated ACP environment was retained as local evidence: {}",
-                summary.display()
-            ))),
-            Err(preserve) => Err(error.context(format!(
-                "the isolated ACP environment could not be retained: {preserve:#}"
-            ))),
-        };
     }
 
     let ready_file = working.path().join("fixture-ready.json");

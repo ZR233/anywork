@@ -47,6 +47,7 @@ pub enum StudioOperation {
     CheckAccountUsage,
     ReadAcpAuth,
     StartAcpAuth,
+    ContinueAcpAuth,
     CancelAcpAuth,
     ReadAcpInstall,
     StartAcpInstall,
@@ -83,7 +84,7 @@ pub enum StudioOperation {
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 73] = [
+    pub const ALL: [Self; 74] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -124,6 +125,7 @@ impl StudioOperation {
         Self::CheckAccountUsage,
         Self::ReadAcpAuth,
         Self::StartAcpAuth,
+        Self::ContinueAcpAuth,
         Self::CancelAcpAuth,
         Self::ReadAcpInstall,
         Self::StartAcpInstall,
@@ -201,6 +203,7 @@ impl StudioOperation {
             Self::CheckAccountUsage => "accountUsage.check",
             Self::ReadAcpAuth => "acpAuth.read",
             Self::StartAcpAuth => "acpAuth.start",
+            Self::ContinueAcpAuth => "acpAuth.continue",
             Self::CancelAcpAuth => "acpAuth.cancel",
             Self::ReadAcpInstall => "acpInstall.read",
             Self::StartAcpInstall => "acpInstall.start",
