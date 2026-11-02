@@ -22,7 +22,7 @@ pub(super) struct ScenarioContext<'a> {
 }
 
 pub(super) fn validate(options: &ManualGuiOptions) -> Result<()> {
-    let scenario = Scenario::parse(&options.scenario);
+    let scenario = Scenario::parse(&options.preset);
     ensure!(
         options.delegation_driver.is_none() || scenario.is_some(),
         "--delegation-driver requires a delegation scenario"

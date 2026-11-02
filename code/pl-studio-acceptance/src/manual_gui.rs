@@ -44,20 +44,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(
     name = "cargo xtask manual-gui",
     bin_name = "cargo xtask manual-gui",
-    about = "Start an isolated native GUI with a local account fixture for manual review"
+    about = "Prepare an isolated Studio environment. Manual presets stay interactive; desktop and native presets are judged automatically."
 )]
 pub(crate) struct ManualGuiOptions {
-    /// Run the regular, stress, single-item long-body stress (`stress-body`,
-    /// `stress-body-large`), isolated call-statistics, realtime, paused
-    /// history-writer, history-fault retry/resume, plan shutdown/restart
-    /// recovery (`plan-recovery`), or the 30-second application shutdown
-    /// acceptance journey (`shutdown`), or the wait/sleep/child observation
-    /// journey (`wait-events`), or the fixed Antigravity 1.4.1 install / save /
-    /// authenticate journey (`acp-auto-install`), which drives the controlled
-    /// distribution peer and a fake ACP Agent through the real product bridge and
-    /// needs no HTTP provider fixture.
+    /// Isolated environment preset. Manual presets keep a human verdict;
+    /// `wait-events` is the automatic desktop runner; `shutdown` and
+    /// `single-instance` are native lifecycle.
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
-    pub(crate) scenario: String,
+    pub(crate) preset: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -87,7 +81,7 @@ pub(crate) struct ManualGuiOptions {
     /// Existing control-file path copied into the isolated environment. Mutually exclusive with `--model-catalog-inventory`.
     #[arg(long, value_name = "PATH", conflicts_with = "model_catalog_inventory")]
     pub(crate) model_catalog_control: Option<PathBuf>,
-    /// Same-home, same-port catalog restart journey for items 1 and 5. Requires `--scenario gui` and a control file.
+    /// Same-home, same-port catalog restart journey for items 1 and 5. Requires `--preset gui` and a control file.
     #[arg(long)]
     pub(crate) model_catalog_restart: bool,
     /// Exercise the restart coordinator without launching GUI (bind, rewrite inventory, rebind same port).
@@ -116,7 +110,7 @@ pub(crate) struct ManualGuiOptions {
     #[arg(long)]
     pub(crate) timeline_displacement: bool,
     /// Opt-in isolated Feishu platform peer for native bot GUI observation.
-    /// Requires `--scenario gui` and a Linux debug native environment.
+    /// Requires `--preset gui` and a Linux debug native environment.
     #[arg(long)]
     pub(crate) bots_fixture: bool,
     /// Start point for the ACP auto-install acceptance.
@@ -127,7 +121,7 @@ pub(crate) struct ManualGuiOptions {
     /// `first` states the full run explicitly. A bare flag is rejected instead of
     /// defaulting, so an accidental full or partial run cannot happen by typo. No
     /// other phase can be a start point and no phase is skipped inside a selected
-    /// group. Only valid with `--scenario acp-auto-install`.
+    /// group. Only valid with `--preset acp-auto-install`.
     #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
     pub(crate) acp_install_from: Option<String>,
     /// Optional Dart Driver for delegation scenes, including review-feedback.
@@ -855,13 +849,13 @@ fn cleanup_bots_gui_start(
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     delegation::validate(&options)?;
     ensure!(
-        options.seed_home_copy.is_none() || options.scenario == "gui",
-        "--seed-home-copy requires --scenario gui"
+        options.seed_home_copy.is_none() || options.preset == "gui",
+        "--seed-home-copy requires --preset gui"
     );
     ensure!(
         !options.retain_environment
             || matches!(
-                options.scenario.as_str(),
+                options.preset.as_str(),
                 "gui"
                     | "single-instance"
                     | "tool-scroll"
@@ -871,45 +865,45 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "wait-events"
                     | "acp-auto-install"
             )
-            || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
-        "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
+            || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
+        "--retain-environment is supported by --preset gui, single-instance, tool-scroll, \
          timeline-history, timeline-history-20k, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );
     ensure!(
-        !options.timeline_displacement || options.scenario == "timeline-history",
-        "--timeline-displacement requires --scenario timeline-history"
+        !options.timeline_displacement || options.preset == "timeline-history",
+        "--timeline-displacement requires --preset timeline-history"
     );
     ensure!(
-        options.scenario != "timeline-history-20k" || cfg!(target_os = "linux"),
-        "--scenario timeline-history-20k is supported only on Linux"
+        options.preset != "timeline-history-20k" || cfg!(target_os = "linux"),
+        "--preset timeline-history-20k is supported only on Linux"
     );
     ensure!(
-        options.acp_install_from.is_none() || options.scenario == "acp-auto-install",
-        "--acp-install-from is supported only by --scenario acp-auto-install"
+        options.acp_install_from.is_none() || options.preset == "acp-auto-install",
+        "--acp-install-from is supported only by --preset acp-auto-install"
     );
     ensure!(
-        options.startup_fault.is_none() || options.scenario == "gui",
-        "--startup-fault requires --scenario gui"
+        options.startup_fault.is_none() || options.preset == "gui",
+        "--startup-fault requires --preset gui"
     );
     ensure!(
-        options.ssh_target.is_none() || options.scenario == "tool-scroll",
-        "--ssh-target is supported only by --scenario tool-scroll"
+        options.ssh_target.is_none() || options.preset == "tool-scroll",
+        "--ssh-target is supported only by --preset tool-scroll"
     );
     ensure!(
-        options.web_search_fault.is_none() || options.scenario == "web-search",
-        "--web-search-fault requires --scenario web-search"
+        options.web_search_fault.is_none() || options.preset == "web-search",
+        "--web-search-fault requires --preset web-search"
     );
     ensure!(
         (options.web_search_accounts.is_none()
             && options.web_search_models.is_none()
             && options.web_search_probe.is_none())
-            || options.scenario == "web-search",
-        "--web-search-accounts/--web-search-models/--web-search-probe require --scenario web-search"
+            || options.preset == "web-search",
+        "--web-search-accounts/--web-search-models/--web-search-probe require --preset web-search"
     );
     ensure!(
         (options.model_catalog_inventory.is_none() && options.model_catalog_control.is_none())
-            || options.scenario == "gui",
-        "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+            || options.preset == "gui",
+        "--model-catalog-inventory/--model-catalog-control require --preset gui"
     );
     ensure!(
         options.model_catalog_url.is_none()
@@ -919,17 +913,17 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     );
     ensure!(
         !options.model_catalog_restart
-            || (options.scenario == "gui"
+            || (options.preset == "gui"
                 && (options.model_catalog_inventory.is_some()
                     || options.model_catalog_control.is_some())),
-        "--model-catalog-restart requires --scenario gui and a catalog control file"
+        "--model-catalog-restart requires --preset gui and a catalog control file"
     );
     ensure!(
         !options.model_catalog_restart_check
-            || (options.scenario == "gui"
+            || (options.preset == "gui"
                 && (options.model_catalog_inventory.is_some()
                     || options.model_catalog_control.is_some())),
-        "--model-catalog-restart-check requires --scenario gui and a catalog control file"
+        "--model-catalog-restart-check requires --preset gui and a catalog control file"
     );
     // The restart journey withdraws `fixture-model-old` between phases, so it
     // needs a synthesized list; a payload instance replays a capture verbatim.
@@ -950,7 +944,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // not require an interactive stdin.
     bots_fixture::validate(&options)?;
     if !matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "statistics"
             | "realtime"
             | "stress-body"
@@ -993,7 +987,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let workspace = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace);
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let ordinary_gui = options.scenario == "gui"
+    let ordinary_gui = options.preset == "gui"
         && !options.retain_environment
         && options.ssh_target.is_none()
         && options.ssh_workspace_parent.is_none()
@@ -1058,7 +1052,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // The 1.4.1 journey needs no HTTP model step: it drives the fixed distribution
     // peer, the real managed install chain and the real ACP handshake instead, so
     // the model fixture is never started and cannot be reported as accepted.
-    if options.scenario == "acp-auto-install" {
+    if options.preset == "acp-auto-install" {
         let start = match options.acp_install_from.as_deref() {
             None | Some("first") => acp_auto_install::StartPhase::First,
             Some("cancel") => acp_auto_install::StartPhase::Cancel,
@@ -1139,7 +1133,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let mut fixture_command = Command::new(fixture_executable);
     fixture_command
         .current_dir(&workspace)
-        .args(["--scenario", &options.scenario, "--ready-file"])
+        .args(["--scenario", &options.preset, "--ready-file"])
         .arg(&ready_file)
         .arg("--requests-file")
         .arg(&requests_file)
@@ -1162,7 +1156,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             .arg(&fixture_hits_path);
     }
     if matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "plan-recovery"
             | "mode-editor"
             | "context-replay-recovery"
@@ -1175,7 +1169,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
-    if options.scenario == "web-search"
+    if options.preset == "web-search"
         && options.web_search_fault.as_deref() == Some("unstructured")
     {
         fixture_command.arg("--fault").arg("unstructured");
@@ -1186,7 +1180,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // depends on its working directory). Only the shutdown script reads them.
     // The concurrent-stop turn writes its own file so a stale record from the
     // earlier tool-reclamation turn can never be mistaken for the new subtree.
-    if options.scenario == "shutdown" {
+    if options.preset == "shutdown" {
         fixture_command.env(
             "ANYWORK_SHUTDOWN_TOOL_COORD",
             working.path().join("shutdown-tool-coord.json"),
@@ -1218,7 +1212,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         }
     };
     ensure!(
-        ready.scenario == options.scenario,
+        ready.scenario == options.preset,
         "fixture scenario does not match request"
     );
     if let Err(error) = (if options.seed_home_copy.is_some() {
@@ -1234,8 +1228,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     .and_then(|()| {
         if let Some(control) = catalog_control.as_ref() {
             ensure!(
-                options.scenario == "gui",
-                "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+                options.preset == "gui",
+                "--model-catalog-inventory/--model-catalog-control require --preset gui"
             );
             model_catalog::configure(&home, &ready.base_url, Some(control))?;
             model_catalog::write_runbook(
@@ -1247,8 +1241,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             )?;
         } else if let Some(url) = &options.model_catalog_url {
             ensure!(
-                options.scenario == "gui",
-                "--model-catalog-url requires --scenario gui"
+                options.preset == "gui",
+                "--model-catalog-url requires --preset gui"
             );
             model_catalog::configure(&home, url, None)?;
         }
@@ -1272,7 +1266,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         seed_startup_fault(&home, fault)?;
     }
 
-    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(&options.scenario) {
+    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(&options.preset) {
         let project = working.path().join("delegation-project");
         let result = delegation::run(
             &delegation::ScenarioContext {
@@ -1307,7 +1301,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return Ok(());
     }
 
-    if options.scenario == "provider-usage" {
+    if options.preset == "provider-usage" {
         return account_usage::run(
             &account_usage::Scenario {
                 workspace: &workspace,
@@ -1324,7 +1318,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "web-search" {
+    if options.preset == "web-search" {
         let fault = match options.web_search_fault.as_deref() {
             None => web_search::WebSearchFault::None,
             Some(value) => web_search::WebSearchFault::parse(value)
@@ -1351,11 +1345,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
 
     if matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "context-replay-recovery" | "websocket-recovery" | "call-lifecycle-recovery"
     ) {
         let run = if matches!(
-            options.scenario.as_str(),
+            options.preset.as_str(),
             "websocket-recovery" | "call-lifecycle-recovery"
         ) {
             websocket_recovery::run
@@ -1379,7 +1373,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "statistics" {
+    if options.preset == "statistics" {
         return run_statistics_scenario(
             &StatisticsScenario {
                 workspace: &workspace,
@@ -1396,7 +1390,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "realtime" {
+    if options.preset == "realtime" {
         return run_realtime_scenario(
             &RealtimeScenario {
                 workspace: &workspace,
@@ -1412,7 +1406,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "wait-events" {
+    if options.preset == "wait-events" {
         let project = working.path().join("wait-events-project");
         let result = wait_events::run(
             &wait_events::WaitEventsScenario {
@@ -1440,7 +1434,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "skill-activity" {
+    if options.preset == "skill-activity" {
         return skill_activity::run(
             &skill_activity::SkillActivityScenario {
                 workspace: &workspace,
@@ -1458,13 +1452,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
 
     if matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "stress-body" | "stress-body-large"
     ) {
         let project = working.path().join("stress-body-project");
         let result = run_stress_body_scenario(
             &StressBodyScenario {
-                scenario: options.scenario.as_str(),
+                scenario: options.preset.as_str(),
                 workspace: &workspace,
                 app_dir: &app_dir,
                 home: &home,
@@ -1483,7 +1477,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "history-lock" {
+    if options.preset == "history-lock" {
         return run_history_lock_scenario(
             &HistoryLockScenario {
                 workspace: &workspace,
@@ -1499,7 +1493,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "plan-recovery" {
+    if options.preset == "plan-recovery" {
         return run_plan_recovery_scenario(
             &RecoveryScenario {
                 workspace: &workspace,
@@ -1516,7 +1510,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "mode-editor" {
+    if options.preset == "mode-editor" {
         return mode_editor::run(
             &RecoveryScenario {
                 workspace: &workspace,
@@ -1533,7 +1527,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "history-fault" {
+    if options.preset == "history-fault" {
         return run_history_fault_scenario(
             &HistoryFaultScenario {
                 workspace: &workspace,
@@ -1549,7 +1543,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "shutdown" {
+    if options.preset == "shutdown" {
         return shutdown::run(
             &shutdown::ShutdownScenario {
                 workspace: &workspace,
@@ -1566,7 +1560,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "timeline-history" {
+    if options.preset == "timeline-history" {
         let project = working.path().join("timeline-history-project");
         let result = run_timeline_history_scenario(
             &TimelineHistoryScenario {
@@ -1590,7 +1584,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "timeline-history-20k" {
+    if options.preset == "timeline-history-20k" {
         let project = working.path().join("timeline-history-20k-project");
         let result = timeline_history_20k::run(
             &timeline_history_20k::Scenario {
@@ -1683,7 +1677,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .stdout(Stdio::from(gui_stdout))
         .stderr(Stdio::from(gui_log));
     if bots.is_none() {
-        if options.scenario == "gui" {
+        if options.preset == "gui" {
             gui_command.args(["--log-level", "info"]);
         }
         if options.seed_home_copy.is_some() {
@@ -1693,10 +1687,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 .args(["--native-launch", "--native-exit-report"])
                 .arg(output.join("native-exit.json"));
         }
-        if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
+        if matches!(options.preset.as_str(), "stress" | "tool-scroll") {
             gui_command.arg("--profile");
         }
-        if options.scenario == "tool-scroll" {
+        if options.preset == "tool-scroll" {
             gui_command
                 .arg("--driver-attachment")
                 .arg(app_dir.join("test_driver/fixtures/tool-image.png"));
@@ -1749,7 +1743,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 &mut fixture,
             );
         }
-        if options.scenario == "tool-scroll" {
+        if options.preset == "tool-scroll" {
             fs::write(
                 output.join("tool-arguments-fixture.json"),
                 serde_json::to_vec_pretty(
@@ -1807,7 +1801,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             );
             return Ok(());
         }
-        if options.scenario == "stress" {
+        if options.preset == "stress" {
             let project = working.path().join("stress-project");
             fs::create_dir(&project)?;
             let git = Command::new("git")
@@ -2070,7 +2064,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             &output.join("model-catalog-requests.json"),
             catalog_control.is_some(),
         )?;
-        if options.scenario == "gui" {
+        if options.preset == "gui" {
             copy_sanitized_config(&home, &output.join("config.toml"))?;
         }
         let stress_report: Option<pl_provider_fixture::StressReport> =
@@ -2139,7 +2133,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             fixture_state == "completed",
             "fixture {fixture_state}; verdict remains pending"
         );
-        if options.scenario == "tool-scroll" {
+        if options.preset == "tool-scroll" {
             let counts: Vec<_> = requests
                 .as_ref()
                 .into_iter()
@@ -2155,7 +2149,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 "account did not receive the sent image and both tool-read images"
             );
         }
-        if options.scenario == "stress" {
+        if options.preset == "stress" {
             // The probe must have really prepended an older page in canonical order
             // while retaining every already-displayed identity. There is no window
             // capacity to saturate any more: the loaded set grows with the pages this
@@ -2470,7 +2464,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             );
         }
         if options.retain_environment {
-            let project = if options.scenario == "tool-scroll" {
+            let project = if options.preset == "tool-scroll" {
                 let capture = fs::read_to_string(output.join("capture-stage.txt"))
                     .context("retained environment requires completed shutdown capture")?;
                 ensure!(

@@ -2688,7 +2688,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let gaps = vec![GapRecord {
         requirement: "windows-native-acceptance",
         reason: "the user specified Linux as the acceptance platform; the Windows Job Object reclamation path was not executed (approved as not-run, not a Linux gap)",
-        interface_needs: "a Windows host to run the same --scenario shutdown phases",
+        interface_needs: "a Windows host to run the same --preset shutdown phases",
     }];
 
     // Machine checks are `passed` only for the requirements this Linux run

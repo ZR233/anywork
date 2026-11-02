@@ -1,8 +1,8 @@
 fn main() -> anyhow::Result<()> {
-    use clap::Parser;
-
-    let options = manual_gui::ManualGuiOptions::parse();
-    manual_gui::run(options)
+    environment::run()
 }
 
+mod desktop;
+mod environment;
 mod manual_gui;
+mod native;
