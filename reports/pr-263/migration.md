@@ -181,3 +181,40 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 - 不同存储迁移阶段
 - Windows Job Object / Linux 进程树 / macOS process group
 - `chat_performance` 确定性 work/IO（墙钟统计除外）
+
+## 9. 退役标识清零与官方残留
+
+本节记录 issue #262 要求的 `rg` 清零结果。对象是失败测试、分叉测试框架、别名、业务镜像和冲突约束，不是删除历史 PR 报告或改写生产类型名。
+
+活代码、活文档、工作流、xtask CLI 中下列标识为零：
+
+| 标识 | 活代码 / 活文档 |
+| --- | --- |
+| `enableFlutterDriverExtension` | 零命中 |
+| `package:flutter_driver`、`FlutterDriver.` | 零命中 |
+| 项目 `FlutterDriver` 旅程 | 零命中；`code/anywork/test_driver/` 目录已不存在 |
+| `timeline_native_gate` | 零命中（仅本表删除记录） |
+| 公开 `manual-gui --scenario` | 零命中；活 CLI 是 `--preset` |
+| 公开 `run-gui --driver` / `--integration-test` | 零命中；xtask CLI 无这些别名 |
+| `TestAnyworkApp`、`disable-service-auth-codes` | 零命中 |
+| 通用 X11/Win32 截屏（`XGetImage`、`BitBlt`、`PrintWindow`、`xwd`、`screencapture`、`gtk_widget_get_snapshot`、`CaptureWindow`、`_NET_WM_PID`、`XOpenDisplay`、`EnumWindows`） | 零命中；PNG 合同是 `ext.anywork.capture` / `tool/capture_ui.dart` |
+| CI 测试名白名单 | 零命中；`design/README.md` 明确设计文档不设测试白名单。其余“白名单”属于 ACP 环境、技能支持目录、模型资格等产品协议 |
+
+下列命中是历史记录，不是现行规则，不改写：
+
+- `reports/pr-112/`、`reports/pr-138/` 里的旧 `run-gui --driver`、`test_driver/`、`manual-gui --scenario`
+- 本文件 §3–§7 的旧入口 → 新入口对照
+- `CHANGELOG.md` 历史条目“补齐 test_driver 目录的 dart format”
+
+下列残留保留并说明，不删除、不改名掩盖：
+
+| 残留 | 位置 | 原因 |
+| --- | --- | --- |
+| `IntegrationTestWidgetsFlutterBinding.ensureInitialized()` | `code/anywork/integration_test/wait_events_test.dart`、`conversation_read_work_test.dart` | 官方 `integration_test`，真实 AppGraph/FRB/Rust。注释写明无 `driver_main`、无 requestData 协议。实际路径仍是这两个文件，未落地 §3 规划的 `integration_test/functional/` 子目录或 `desktop_smoke_test.dart` |
+| `StudioDriverKeys` / `StudioDriverState` / `bindStudioDriver` / `queryStudioDriverFacts` | `lib/src/shared/studio_driver_*.dart`，以及 `integration_test` 与 `test/ui`、`test/unit` | 生产类型与 Widget 键名；只读诊断与测试共用。不是 FlutterDriver 旅程 |
+| fixture `--scenario` spawn | `pl-studio-acceptance` 启动 `pl-provider-fixture` 时 `.args(["--scenario", …])`；fixture `main.rs` 要求该旗标 | fixture 协议。活 CLI 是 `manual-gui --preset` |
+| `write_realtime_driver_evidence` | `code/pl-studio-acceptance/src/manual_gui.rs` | 证据写入函数名，不是 Driver 旅程入口 |
+| `--delegation-driver` | acceptance CLI / `DELEGATION.md` | 只把操作者脚本路径记入证据，harness 不启动该脚本 |
+| `flutter_driver` | `code/anywork/pubspec.lock` `dependency: transitive`，`source: sdk` | SDK `integration_test` 传递依赖。`pubspec.yaml` 无直接依赖，不试图从 lockfile 抹掉 |
+| `never a FlutterDriver journey` | `code/anywork/tool/native_fault_main.dart` 注释 | 否定退役路径，不是启用旅程 |
+| `design/21-lsp.md`「驱动（Driver）」 | LSP 目录驱动 | 与 FlutterDriver 无关 |
