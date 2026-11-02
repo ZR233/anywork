@@ -92,7 +92,7 @@ void main() {
               graph.statisticsRepository,
             ),
           ],
-          child: const AnyworkApp(),
+          child: const AnyworkApp(enableDesktopHost: true),
         ),
       );
       // Await the production bootstrap owner, not a timer guessed from frame count.

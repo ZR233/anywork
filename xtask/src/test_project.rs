@@ -178,19 +178,58 @@ fn run_case(
 ) -> Result<()> {
     match case.target {
         CaseTarget::Desktop { ref relative_path } => {
+            if let Some(preset) = desktop_harness_preset(&case.id)
+                && !desktop_env_ready(&case.id)
+            {
+                let workspace = paths::workspace_root()?;
+                let executable = studio_acceptance::build_acceptance_tool(&workspace)?;
+                return wait_acceptance_preset(&executable, preset, output);
+            }
             flutter::run_desktop_integration_test(Path::new(relative_path))
         }
         CaseTarget::Native { preset } => {
             let executable =
                 native_executable.context("native acceptance executable is missing")?;
-            let mut args = vec![OsString::from("--preset"), OsString::from(preset)];
-            if let Some(output) = output {
-                args.push(OsString::from("--output"));
-                args.push(output.as_os_str().to_os_string());
-            }
-            studio_acceptance::wait_acceptance_tool(executable, &args)
+            wait_acceptance_preset(executable, preset, output)
         }
     }
+}
+
+/// Names the unique acceptance preset that prepares one desktop case.
+///
+/// The id is the discovered Flutter file stem; the preset is the existing
+/// `manual-gui` environment owner. Assertions stay in Flutter.
+fn desktop_harness_preset(id: &str) -> Option<&'static str> {
+    match id {
+        "wait_events" => Some("wait-events"),
+        "conversation_read_work" => Some("conversation-read-work"),
+        _ => None,
+    }
+}
+
+fn desktop_env_ready(id: &str) -> bool {
+    match id {
+        "wait_events" => env_present("ANYWORK_WAIT_PROJECTS"),
+        "conversation_read_work" => {
+            env_present("ANYWORK_READ_CASES")
+                && env_present("ANYWORK_READ_REPORT")
+                && env_present("ANYWORK_HOME")
+        }
+        _ => true,
+    }
+}
+
+fn env_present(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn wait_acceptance_preset(executable: &Path, preset: &str, output: Option<&Path>) -> Result<()> {
+    let mut args = vec![OsString::from("--preset"), OsString::from(preset)];
+    if let Some(output) = output {
+        args.push(OsString::from("--output"));
+        args.push(output.as_os_str().to_os_string());
+    }
+    studio_acceptance::wait_acceptance_tool(executable, &args)
 }
 
 fn discover_desktop_cases(app_dir: &Path) -> Result<Vec<DiscoveredCase>> {
@@ -389,7 +428,7 @@ fn rustc_version() -> Result<String> {
 mod tests {
     use super::{
         CaseTarget, DESKTOP_SMOKE_IDS, DiscoveredCase, ProjectSet, ProjectSuite,
-        discover_desktop_cases, native_cases, select_cases,
+        desktop_harness_preset, discover_desktop_cases, native_cases, select_cases,
     };
     use std::fs;
     use std::path::Path;
@@ -466,6 +505,16 @@ mod tests {
                 .to_string()
                 .contains("desktop full discovery is empty")
         );
+    }
+
+    #[test]
+    fn desktop_harness_names_the_unique_preset() {
+        assert_eq!(desktop_harness_preset("wait_events"), Some("wait-events"));
+        assert_eq!(
+            desktop_harness_preset("conversation_read_work"),
+            Some("conversation-read-work")
+        );
+        assert_eq!(desktop_harness_preset("session_open"), None);
     }
 
     #[test]

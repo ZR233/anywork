@@ -37,7 +37,7 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 | 展开/收起、公开 JSON、滚动与窄窗口几何 | `WidgetTester` 操作真实控件并读取已布局子树；业务 ready 与帧推进分别等待，无限动画期间不调用 `pumpAndSettle` 等待业务结束 |
 | FRB、SDK、持久化到实际生产界面的关键路径 | Flutter 官方 `integration_test` 的独立场景；保留真实 `AppGraph`，不注入业务状态、不建立第二订阅或消息镜像 |
 
-桌面项目集成通过 `cargo xtask test-project --suite desktop` 复用现有 bridge/helper 准备和进程树所有权，再调用官方桌面 `flutter test -d <当前平台>`。它与 demo、capture、profile/native-launch 和已有 release 运行模式互斥；不是性能采样入口。隔离配置、模拟 provider、私有凭据环境与失败日志仍由 `manual-gui --preset wait-events` 的既有 harness 持有。各场景独立发现、单独报告失败和收束，不因前一条断言失败而将后续场景全部当作已覆盖。
+桌面项目集成通过 `cargo xtask test-project --suite desktop` 复用现有 bridge/helper 准备和进程树所有权，再调用官方桌面 `flutter test -d <当前平台>`。它与 demo、capture、profile/native-launch 和已有 release 运行模式互斥；不是性能采样入口。`wait_events` 与 `conversation_read_work` 的隔离 home、fixture 与预置历史由 `pl-studio-acceptance` 的对应 `--preset` 持有：`test-project` 在环境变量未齐时子进程调用该 harness，harness 注入环境后再以内层 Flutter-only 路径跑同一 case。各场景独立发现、单独报告失败和收束，不因前一条断言失败而将后续场景全部当作已覆盖。
 
 测试 binding 唯一负责测试断言与异步错误，不能通过生产入口替换其错误处理器来吞掉失败；应用与原生资源仍经生产关闭所有者收束。场景输入使用官方 `TestTextInput` 的配对注册/注销，避免 `enterText` 注入与真实 IME 同时修改编辑状态；这不替换产品草稿或提交链路，也不构成原生输入法兼容性证据。必要的观察窗口由测试 provider 的下一响应屏障或受控工具提供，记录到达后才释放；不放慢生产路径、不延长超时制造成功。工具返回时的快照、UI 后来读取的不可变结果、保存完成是不同证据，后续 Turn 已结束不使已取得的早返回证据失效，也不能事后补造早返回事实。
 

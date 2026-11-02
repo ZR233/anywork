@@ -265,7 +265,9 @@ void main() {
       final cases = <(String, Map<String, Object?>, IconData)>[
         (
           'skill',
-          {'name': 'test skill', 'source': 'project'},
+          {
+            'activation': {'name': 'test skill', 'source': 'project'},
+          },
           Icons.auto_awesome_outlined,
         ),
         ('file', {'path': 'test.dart'}, Icons.description_outlined),

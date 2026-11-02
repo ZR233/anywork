@@ -879,34 +879,10 @@ mod tests {
         }
     }
 
-    fn passive_queue(revision: u64) -> Value {
-        json!({
-            "loaded": true,
-            "revision": revision,
-            "syncPhase": "ready",
-            "pendingOperations": 0,
-            "pendingBytes": 0,
-            "inFlightBytes": 0,
-            "lastError": null,
-            "pressurePaused": false,
-            "threads": []
-        })
-    }
-
-    fn cold_report() -> Value {
-        json!({
-            "coldLoad": {
-                "viewport": {"threadId": "thread-1", "generation": 1, "ready": true}
-            },
-            "realScroll": {
-                "finalWindow": {"threadId": "thread-1", "generation": 1, "ready": true}
-            },
-            "persistence": passive_queue(1),
-            "coldPersistence": {
-                "beforeScroll": passive_queue(1),
-                "afterScroll": passive_queue(1)
-            },
-        })
+    fn cold_observation(thread_id: &str) -> ColdPhaseObservation {
+        ColdPhaseObservation {
+            thread_id: thread_id.into(),
+        }
     }
 
     #[test]
@@ -994,9 +970,9 @@ mod tests {
     fn exact_inventory_and_unchanged_watermark_pass_passive_cold_contract() {
         let seed = audit(10);
         let cold = audit(10);
-        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
-
-        let check = verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).unwrap();
+        let check =
+            verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &cold_observation("thread-1"))
+                .unwrap();
         assert_eq!(
             check,
             ColdLifecycleCheck {
@@ -1004,62 +980,30 @@ mod tests {
                 previous_closed: 10,
                 after_close: 10,
                 writer_absent_at_samples: true,
-                queue_revisions: [1, 1, 1],
                 exact_inventory_unchanged: true,
             }
         );
     }
 
     #[test]
-    fn missing_or_invalid_passive_queue_evidence_is_rejected() {
-        let mut missing = cold_report();
-        missing["persistence"]
-            .as_object_mut()
-            .unwrap()
-            .remove("pendingBytes");
-        assert!(cold_phase_observation(&missing, "cold-1").is_err());
-
-        for (field, invalid) in [
-            ("loaded", json!(false)),
-            ("revision", json!(1.0)),
-            ("syncPhase", json!("reconnecting")),
-            ("pendingOperations", json!(1)),
-            ("pendingBytes", json!(1)),
-            ("inFlightBytes", json!(1)),
-            ("lastError", json!("save failed")),
-            ("pressurePaused", json!(true)),
-            ("threads", json!([{"threadId": "thread-1"}])),
-            ("threads", Value::Null),
-        ] {
-            let mut report = cold_report();
-            report["coldPersistence"]["beforeScroll"][field] = invalid;
-            assert!(
-                cold_phase_observation(&report, "cold-1").is_err(),
-                "invalid {field} must not prove a passive read"
-            );
-        }
-        let mut regressed = cold_report();
-        regressed["coldPersistence"]["beforeScroll"]["revision"] = json!(2);
-        assert!(cold_phase_observation(&regressed, "cold-1").is_err());
-        let mut changed_scope = cold_report();
-        changed_scope["realScroll"]["finalWindow"]["generation"] = json!(2);
-        assert!(cold_phase_observation(&changed_scope, "cold-1").is_err());
-    }
-
-    #[test]
     fn saved_effects_or_another_thread_cannot_pass_passive_cold_contract() {
         let seed = audit(10);
-        let observation = cold_phase_observation(&cold_report(), "cold-1").unwrap();
-        // Even an already-drained queue must not hide a newly saved lifecycle effect.
+        let same_thread = cold_observation("thread-1");
+        // A changed write watermark is a saved effect even without Driver queue evidence.
         for changed_sequence in [9, 11, 13] {
             let cold = audit(changed_sequence);
-            assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &observation).is_err());
+            assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &cold, &same_thread).is_err());
         }
-        let mut another_thread = cold_report();
-        another_thread["coldLoad"]["viewport"]["threadId"] = json!("another-thread");
-        another_thread["realScroll"]["finalWindow"]["threadId"] = json!("another-thread");
-        let observation = cold_phase_observation(&another_thread, "cold-1").unwrap();
-        assert!(verify_cold_lifecycle("cold-1", &seed, &seed, &seed, &observation).is_err());
+        assert!(
+            verify_cold_lifecycle(
+                "cold-1",
+                &seed,
+                &seed,
+                &seed,
+                &cold_observation("another-thread"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

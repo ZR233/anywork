@@ -321,6 +321,7 @@ async fn main() -> Result<()> {
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
         "wait-events" => gui_wait_events_script(),
+        "conversation-read-work" => Vec::new(),
         // The 1.4.1 journey drives the fixed distribution peer
         // (`--acp-install-fixture`) and never expects model HTTP traffic here.
         "acp-auto-install" => bail!(

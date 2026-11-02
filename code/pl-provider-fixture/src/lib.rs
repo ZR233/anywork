@@ -170,7 +170,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the operator runbook. `--delegation-driver`
 /// only records an optional script path in evidence; the harness does not launch it.
-pub const GUI_SCENARIOS: [&str; 33] = [
+pub const GUI_SCENARIOS: [&str; 34] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -196,6 +196,7 @@ pub const GUI_SCENARIOS: [&str; 33] = [
     "timeline-history",
     "timeline-history-20k",
     "wait-events",
+    "conversation-read-work",
     "delegation-routing",
     "delegation-lifecycle",
     "delegation-window",

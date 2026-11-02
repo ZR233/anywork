@@ -3,6 +3,7 @@ mod acp_auto_install;
 mod acp_support;
 mod bots_fixture;
 mod context_replay_recovery;
+mod conversation_read_work;
 mod delegation;
 mod mode_editor;
 mod model_catalog;
@@ -48,8 +49,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 )]
 pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
-    /// `wait-events` is the automatic desktop runner; `shutdown` and
-    /// `single-instance` are native lifecycle.
+    /// `wait-events` and `conversation-read-work` are automatic desktop
+    /// runners; `shutdown` and `single-instance` are native lifecycle.
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) preset: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -770,11 +771,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history-20k"
                     | "stress-body-large"
                     | "wait-events"
+                    | "conversation-read-work"
                     | "acp-auto-install"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, single-instance, tool-scroll, \
-         timeline-history, timeline-history-20k, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
+         timeline-history, timeline-history-20k, stress-body-large, wait-events, conversation-read-work, acp-auto-install and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.preset == "timeline-history",
@@ -849,8 +851,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // Automatic desktop/native presets and catalog bind checks own their
     // verdict. Remaining presets are operator runbooks and need a terminal.
     bots_fixture::validate(&options)?;
-    if !matches!(options.preset.as_str(), "shutdown" | "wait-events")
-        && !options.model_catalog_restart_check
+    if !matches!(
+        options.preset.as_str(),
+        "shutdown" | "wait-events" | "conversation-read-work"
+    ) && !options.model_catalog_restart_check
     {
         ensure!(
             io::stdin().is_terminal(),
@@ -911,6 +915,34 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "{\"human_verdict\":\"pending\"}\n",
     )?;
     fs::write(output.join("operations.json"), "[]\n")?;
+
+    if options.preset == "conversation-read-work" {
+        let working = tempfile::Builder::new()
+            .prefix("environment-")
+            .tempdir_in(&output)
+            .context("failed to create isolated conversation-read home")?;
+        let home = working.path().join("home");
+        fs::create_dir(&home)?;
+        let result =
+            conversation_read_work::run(&conversation_read_work::ConversationReadWorkScenario {
+                workspace: &workspace,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                interrupt: &interrupt_rx,
+            });
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, None);
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed conversation-read environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
 
     // Cargo may wait on package/build locks. Finish preparation before the
     // fixture's service-readiness deadline starts, then own the native process.
