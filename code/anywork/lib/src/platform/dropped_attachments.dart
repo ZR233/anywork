@@ -1,10 +1,10 @@
 import 'dart:io';
 
-import 'package:desktop_drop/desktop_drop.dart';
+import 'dropped_file.dart';
 
 /// Keep platform transfers alive until Rust has copied each file into a draft.
 Future<void> admitDroppedAttachments(
-  Iterable<DropFileItem> files,
+  Iterable<DroppedFileTransfer> files,
   Future<void> Function(List<String> paths) admit,
 ) async {
   Directory? staging;
@@ -31,7 +31,11 @@ Future<void> admitDroppedAttachments(
       );
       final output = await destination.open(mode: FileMode.write);
       try {
-        await for (final chunk in item.file.openRead()) {
+        final openRead = item.openRead;
+        if (openRead == null) {
+          throw const FormatException('Dropped file has no readable content.');
+        }
+        await for (final chunk in openRead()) {
           await output.writeFrom(chunk);
         }
       } finally {
