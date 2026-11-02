@@ -1,4 +1,3 @@
-// Driver-only 故障注入复用既有 @visibleForTesting 初始化 override，不新增生产 fault API。
 // ignore_for_file: invalid_use_of_visible_for_testing_member
 
 import 'dart:async';
@@ -104,7 +103,6 @@ void main() {
     acpService: graph.acp,
     observedAccountDetails: _observedAccountDetails,
   );
-  _applyShutdownFaultOverride();
   studio.bootstrapStudio(graph: graph);
   // 生产 widget（`_StudioLifecycleCoordinator.initState`）会在**首帧构建时**安装它
   // 自己的协调器（同一 `graph.close`），覆盖任何更早的安装。Driver 取证必须观察
@@ -144,24 +142,6 @@ void _installDriverExitCoordinator(AppGraph graph) {
       },
     ),
   );
-}
-
-/// Driver-only 初始化故障注入：`ANYWORK_DRIVER_SHUTDOWN_FAULT` 取值
-/// `pending-init`（初始化永久挂住）或 `bridge-load-error`（初始化显式抛错）。
-///
-/// 复用既有 [FrbStudioTransport.debugOverrideInitialization]，不新增生产 fault 接口；订阅
-/// 故障由验收侧独立 Driver 入口/装饰器提供（见 ui-handoff-r3.txt）。
-void _applyShutdownFaultOverride() {
-  final fault = Platform.environment['ANYWORK_DRIVER_SHUTDOWN_FAULT'];
-  if (fault == 'pending-init') {
-    FrbStudioTransport.debugOverrideInitialization(
-      () => Completer<void>().future,
-    );
-  } else if (fault == 'bridge-load-error') {
-    FrbStudioTransport.debugOverrideInitialization(() async {
-      throw StateError('driver-injected bridge load failure');
-    });
-  }
 }
 
 late final ProviderContainer _container;
