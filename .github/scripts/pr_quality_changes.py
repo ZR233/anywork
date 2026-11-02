@@ -18,7 +18,11 @@ OUTPUT_FLAGS = (
     "linux_environment",
     "flutter_quality",
     "flutter_ui",
+    "linux_desktop",
+    "windows_desktop",
     "macos_desktop",
+    "linux_native",
+    "windows_native",
 )
 
 _ZERO_SHA = "0" * 40
@@ -109,6 +113,23 @@ _DESKTOP_PREFIXES = (
     "xtask/",
 )
 
+_NATIVE_EXACT = frozenset(
+    {
+        "code/anywork/lib/src/app/studio_host_lifecycle.dart",
+        "code/anywork/lib/src/app/app_composition.dart",
+        "code/anywork/tool/native_fault_main.dart",
+    }
+)
+_NATIVE_PREFIXES = (
+    "code/anywork/linux/",
+    "code/anywork/macos/",
+    "code/anywork/windows/",
+    "code/anywork/runner_common/",
+    "code/anywork/rust/",
+    "code/pl-dev-support/",
+    "code/pl-studio-acceptance/",
+)
+
 
 def _posix(path: str) -> str:
     normalized = path.replace("\\", "/")
@@ -137,6 +158,8 @@ def classify_path(path: str) -> frozenset[str]:
         tags.add("flutter")
     if _has_prefix(path, _DESKTOP_PREFIXES):
         tags.add("desktop")
+    if path in _NATIVE_EXACT or _has_prefix(path, _NATIVE_PREFIXES):
+        tags.add("native")
     if not tags:
         tags.add("unknown")
     return frozenset(tags)
@@ -192,10 +215,17 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["flutter_quality"] = True
         flags["flutter_ui"] = True
     if "desktop" in tags:
+        flags["linux_desktop"] = True
+        flags["windows_desktop"] = True
         flags["macos_desktop"] = True
         flags["linux_environment"] = True
+    if "native" in tags:
+        flags["linux_native"] = True
+        flags["windows_native"] = True
+        flags["linux_environment"] = True
+        flags["macos_desktop"] = True
     plan_name = "+".join(
-        name for name in ("docs", "rust", "flutter", "desktop") if name in tags
+        name for name in ("docs", "rust", "flutter", "desktop", "native") if name in tags
     )
     return _finish(
         flags,
@@ -225,8 +255,16 @@ def _finish(
         required.append("flutter-quality")
     if flags["flutter_ui"]:
         required.append("flutter-ui")
+    if flags["linux_desktop"]:
+        required.append("linux-desktop")
+    if flags["windows_desktop"]:
+        required.append("windows-desktop")
     if flags["macos_desktop"]:
         required.append("macos-desktop")
+    if flags["linux_native"]:
+        required.append("linux-native")
+    if flags["windows_native"]:
+        required.append("windows-native")
     return {
         **flags,
         "required_jobs": tuple(required),

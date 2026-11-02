@@ -2,7 +2,7 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。cheap `changes` job 用 Git 路径和有限目录规则决定哪些重作业适用：纯 `design/` 等说明文档可只跑 `docs-policy`；`AGENTS.md`、技能、测试、fixture、xtask、工作流、锁文件、生成配置和平台 runner 走完整适用套件。始终运行的 `ci-gate`（`if: always()`）只接受该计划明确允许的 skipped；required job 因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动变成已配置的 required check。Linux `rust-deterministic` 对同一 `github.sha` 执行 `cargo test --locked --workspace --features pl-core/sqlite`，覆盖可发现的 workspace 测试；Windows `rust-quality` 保留 fmt/clippy、无 SQLite 的 `pl-core` check，以及 runtime `--lib` 的原子替换边界。`flutter-ui` 在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，也不准备 Rust/bridge。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。cheap `changes` job 用 Git 路径和有限目录规则决定哪些重作业适用：纯 `design/` 等说明文档可只跑 `docs-policy`；`AGENTS.md`、技能、测试、fixture、xtask、工作流、锁文件、生成配置和平台 runner 走完整适用套件。始终运行的 `ci-gate`（`if: always()`）只接受该计划明确允许的 skipped；required job 因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动变成已配置的 required check。Linux `rust-deterministic` 对同一 `github.sha` 执行 `cargo test --locked --workspace --features pl-core/sqlite`，覆盖可发现的 workspace 测试；Windows `rust-quality` 保留 fmt/clippy、无 SQLite 的 `pl-core` check，以及 runtime `--lib` 的原子替换边界。`flutter-ui` 在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，也不准备 Rust/bridge。Linux desktop 在 Xvfb 上跑 `test-project --suite desktop --set full`；Windows/macOS 跑同一 desktop smoke。修改 host 生命周期、平台 runner、进程监督、bridge bootstrap 或其 fixture 时，受影响平台跑 `test-project --suite native --set full`。
 
 ## 24.1 现有测试基础设施
 
@@ -77,7 +77,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 Driver/debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-Windows 原生验收可通过独立的 `Native Acceptance` 工作流显式启用：PR 使用 `native-acceptance` 标签，合入后的独立调用使用 `workflow_dispatch`。它沿用根目录 `cargo xtask manual-gui`、同次源码构建并校验的双架构 remote-helper 资源及受管 Driver 生命周期，不属于默认 PR Quality Gate，也不以静态 Windows CI 代替真实原生执行。运行记录实际源码身份、Windows/显卡环境、场景报告、帧样本、截图和退出证据；托管 runner 的显示或渲染失败保留为环境事实，不降低正文规模或交互门槛。
+默认 functional 与 native 生命周期由 `PR Quality Gate` 的 `linux-desktop` / `windows-desktop` / `macos-desktop` 与 `linux-native` / `windows-native` 作业通过 `cargo xtask test-project` 执行。标签专属 `native-acceptance.yml` Driver 路径已退役；人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 实时场景先在 Windows 执行 Driver 的真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 

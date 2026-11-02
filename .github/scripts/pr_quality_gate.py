@@ -18,7 +18,11 @@ KNOWN_JOBS = (
     "studio-server-linux",
     "flutter-quality",
     "flutter-ui",
+    "linux-desktop",
+    "windows-desktop",
     "macos-desktop",
+    "linux-native",
+    "windows-native",
 )
 
 

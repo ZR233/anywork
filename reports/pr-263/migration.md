@@ -172,7 +172,7 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 | native `pull_request.head.sha` | 已改为 `github.sha`（PR merge 测试提交） |
 | 指定 crate `cargo test -p …` | Linux `rust-deterministic`：`cargo test --locked --workspace --features pl-core/sqlite`；Windows 只保留 runtime `--lib` 的原子替换边界 |
 | Flutter job 含 verify-client adapter | `flutter-quality` 仍跑 `verify-client`/`verify-gui`；独立 `flutter-ui`：`cd code/anywork && flutter test --no-pub test/ui`，无 `-d`、无 Rust |
-| `native-acceptance.yml` Driver 标签路径 | 退役；functional/native 进主门禁 |
+| `native-acceptance.yml` Driver 标签路径 | 已删除工作流；Linux desktop full、Windows/macOS desktop smoke、受影响 PR 的 native full 进主门禁 |
 
 ## 8. 必须保留的不同风险（不去重）
 

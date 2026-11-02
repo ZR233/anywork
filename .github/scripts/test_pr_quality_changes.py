@@ -46,7 +46,11 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["flutter_quality"])
         self.assertFalse(plan["flutter_ui"])
+        self.assertFalse(plan["linux_desktop"])
+        self.assertFalse(plan["windows_desktop"])
         self.assertFalse(plan["macos_desktop"])
+        self.assertFalse(plan["linux_native"])
+        self.assertFalse(plan["windows_native"])
         self.assertEqual(
             plan["required_jobs"],
             ("changes", "docs-policy", "pr-title"),
@@ -64,7 +68,9 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["release_configuration"])
         self.assertFalse(plan["flutter_quality"])
         self.assertFalse(plan["flutter_ui"])
+        self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["macos_desktop"])
+        self.assertFalse(plan["linux_native"])
         self.assertFalse(plan["docs_policy"])
         self.assertIn("rust-quality", plan["required_jobs"])
         self.assertIn("rust-deterministic", plan["required_jobs"])
@@ -80,7 +86,9 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["rust_quality"])
         self.assertFalse(plan["rust_deterministic"])
         self.assertFalse(plan["linux_environment"])
+        self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["macos_desktop"])
+        self.assertFalse(plan["linux_native"])
         self.assertIn("flutter-ui", plan["required_jobs"])
 
     def test_platform_runner_selects_desktop_and_flutter(self):
@@ -90,7 +98,11 @@ class PlanFromPathsTest(unittest.TestCase):
         )
         self.assertTrue(plan["flutter_quality"])
         self.assertTrue(plan["flutter_ui"])
+        self.assertTrue(plan["linux_desktop"])
+        self.assertTrue(plan["windows_desktop"])
         self.assertTrue(plan["macos_desktop"])
+        self.assertTrue(plan["linux_native"])
+        self.assertTrue(plan["windows_native"])
         self.assertTrue(plan["linux_environment"])
         self.assertFalse(plan["docs_policy"])
 
@@ -106,7 +118,9 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["rust_deterministic"], path)
             self.assertTrue(plan["flutter_quality"], path)
             self.assertTrue(plan["flutter_ui"], path)
+            self.assertTrue(plan["linux_desktop"], path)
             self.assertTrue(plan["macos_desktop"], path)
+            self.assertTrue(plan["linux_native"], path)
 
     def test_empty_or_unknown_runs_full_suite(self):
         empty = plan_from_paths([], event_name="pull_request")
@@ -117,7 +131,9 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["rust_deterministic"])
             self.assertTrue(plan["flutter_quality"])
             self.assertTrue(plan["flutter_ui"])
+            self.assertTrue(plan["linux_desktop"])
             self.assertTrue(plan["macos_desktop"])
+            self.assertTrue(plan["linux_native"])
             self.assertTrue(plan["docs_policy"])
             self.assertIn("pr-title", plan["required_jobs"])
 
@@ -131,6 +147,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["rust_deterministic"])
         self.assertFalse(plan["flutter_quality"])
         self.assertFalse(plan["flutter_ui"])
+        self.assertFalse(plan["linux_desktop"])
 
     def test_github_output_uses_true_false(self):
         plan = plan_from_paths(["design/01-overview.md"], event_name="push")
@@ -142,6 +159,16 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertIn("docs_policy=true\n", text)
         self.assertIn("rust_quality=false\n", text)
         self.assertIn("required_jobs=changes,docs-policy\n", text)
+
+    def test_host_lifecycle_selects_native_full(self):
+        plan = plan_from_paths(
+            ["code/anywork/lib/src/app/studio_host_lifecycle.dart"],
+            event_name="pull_request",
+        )
+        self.assertTrue(plan["linux_native"])
+        self.assertTrue(plan["windows_native"])
+        self.assertTrue(plan["flutter_quality"])
+        self.assertFalse(plan["linux_desktop"])
 
     def test_rename_or_copy_forces_full_suite(self):
         self.assertIsNone(parse_name_status(["R100", "design/a.md", "design/b.md"]))
