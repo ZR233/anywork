@@ -32,7 +32,7 @@
 | `client/child_interactions_frb_adapter_test.dart` | 子交互 FRB 映射 | `test/unit/frb_adapter/` |
 | `client/client_boundary_check_test.dart` | 边界检查规则 | 扩展 UI 闭包检查后仍在静态入口；测试随 `xtask/dart/` |
 | `client/client_close_and_bootstrap_test.dart` | Client 关闭/启动 | SDK 已有生命周期则下移；应用装配留 `test/unit/` |
-| `client/client_retirement_report_test.dart` | Demo 退役报告 | SDK/Rust owner；Demo 自测删除 |
+| `client/client_retirement_report_test.dart` | Demo 退役报告 | SDK `chat_lifecycle_test`（A1/A2 未解决责任、healthy-active 排除）；Demo 自测删除 |
 | `client/composer_button_matrix_test.dart` | Composer 真实 tap/Enter/身份 | `test/ui/`，不复述 truth table |
 | `client/composer_failure_label_test.dart` | 失败标签呈现 | `test/ui/` |
 | `client/composer_primary_action_test.dart` | Composer 主按钮 truth table | `test/unit/`，唯一规则表 |
@@ -53,7 +53,7 @@
 | `client/session_fact_convergence_test.dart` | 会话事实收敛 | `test/unit/` |
 | `client/session_selector_pointer_keyboard_test.dart` | 会话选择器指针/键盘 | `test/ui/` |
 | `client/session_selector_sync_test.dart` | 选择器同步；含 Demo | UI 连通性 `test/ui/`；Demo 业务删除 |
-| `client/session_stop_continue_test.dart` | 停止/继续；含 Demo 执行 | SDK/Rust 执行规则；UI 只留点击连通 |
+| `client/session_stop_continue_test.dart` | 停止/继续；含 Demo 执行 | SDK `studio_command_receipts_test`（含无内容 continue 不写草稿）；Demo 执行自测删除 |
 | `client/settings_account_model_origin_adapter_test.dart` | 模型来源适配 UI | `test/ui/` / `test/unit` 按是否挂页面 |
 | `client/settings_account_usage_demand_test.dart` | 用量按需加载 | `test/unit/` |
 | `client/settings_account_usage_queries_adapter_test.dart` | 用量查询适配 | `test/unit/` |

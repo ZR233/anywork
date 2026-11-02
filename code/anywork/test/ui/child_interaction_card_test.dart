@@ -5,7 +5,6 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -1226,44 +1225,5 @@ void main() {
     expect(fixture.transport.decisions, isEmpty);
     expect(fixture.transport.readCalls, 0);
     await _close(tester, fixture);
-  });
-
-  test('demo 归档宿主经真实主题事件撤下待决集合', () async {
-    // 只注入初始场景数据，不替换主题、归档或查询实现；此行为不需要 Widget 时钟。
-    final transport = DriverDemoStudioTransport()
-      ..prepareChildInteractionScenario();
-    final frames = StreamIterator(
-      transport.subscribeProductTopic(
-        const ChildInteractionsTopic(hostThreadId: _rootId),
-      ),
-    );
-    try {
-      expect(await frames.moveNext(), isTrue);
-      final baseline = frames.current as ProductTopicBaselineFrame;
-      final before = (baseline.state as ChildInteractionsBaseline).state;
-      expect(
-        before.state.value!.items.single.interactionId,
-        'driver-child-approval',
-      );
-      expect(
-        (await transport.readChildInteractions(_rootId)).single.interactionId,
-        before.state.value!.items.single.interactionId,
-      );
-
-      await transport.archiveThread(
-        _rootId,
-        operationId: const OperationId('op-archive'),
-      );
-      expect(await frames.moveNext(), isTrue);
-      final payload =
-          (frames.current as ProductTopicDataFrame).event.payload
-              as ChildInteractionsChangedPayload;
-      expect(payload.state.state.value!.items, isEmpty);
-      expect(payload.state.state.revision, greaterThan(before.state.revision));
-      expect(await transport.readChildInteractions(_rootId), isEmpty);
-    } finally {
-      await frames.cancel();
-      await transport.shutdownRuntime(remainingMs: 5000);
-    }
   });
 }
