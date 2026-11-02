@@ -36,6 +36,7 @@ fn turn(id: &str) -> TurnInput {
 
 fn response(request: &ModelRequest, tool_calls: Vec<ModelToolCall>) -> ModelStepOutput {
     ModelStepOutput {
+        turn_action: Default::default(),
         attempt_id: request.attempt_id.clone(),
         base_context_revision: request.context.revision,
         content: vec![text(if tool_calls.is_empty() {

@@ -1204,6 +1204,11 @@ pub enum RequestMatch {
         expected: context_replay_recovery::ReplayExpectation,
     },
     Exact(Value),
+    /// A new Responses WebSocket step with no added input after an intermediate response.
+    EmptyContinuation {
+        previous_response_id: String,
+        step: usize,
+    },
     Prompt {
         text: String,
         step: usize,
@@ -4544,6 +4549,16 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                 && match step.request.base() {
                     RequestMatch::Replay { .. } => false,
                     RequestMatch::Exact(value) => body == value,
+                    RequestMatch::EmptyContinuation {
+                        previous_response_id,
+                        step,
+                    } => {
+                        *step == index
+                            && method == "WS"
+                            && body["previous_response_id"].as_str()
+                                == Some(previous_response_id.as_str())
+                            && body["input"].as_array().is_some_and(Vec::is_empty)
+                    }
                     RequestMatch::Prompt { text, step } => {
                         *step == index
                             && prompt(body).is_some_and(|prompt| {
@@ -4644,6 +4659,10 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::EmptyContinuation {
+            previous_response_id,
+            ..
+        }) => ("empty_continuation", Some(previous_response_id.clone())),
         Some(RequestMatch::InteractionAnswers { text, .. }) => {
             ("interaction_answers", Some(text.clone()))
         }
@@ -4686,7 +4705,12 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolScrollCompletion { call_ids, .. }) => {
             tool_scroll_pending(body, call_ids).is_some()
         }
-        Some(RequestMatch::Exact(_) | RequestMatch::Replay { .. }) | None => false,
+        Some(
+            RequestMatch::Exact(_)
+            | RequestMatch::Replay { .. }
+            | RequestMatch::EmptyContinuation { .. },
+        )
+        | None => false,
     };
     let delivery_seen = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Delivery { marker, .. }) => user_messages_contain(body, marker),

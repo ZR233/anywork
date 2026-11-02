@@ -592,6 +592,14 @@ fn response_inner(
         .semantic_input(&response)
         .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
     let observed_usage = usage(&response.accounting.usage);
+    let turn_action = if replay
+        .is_commentary_only()
+        .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?
+    {
+        pl_core::model::ModelTurnAction::Continue
+    } else {
+        pl_core::model::ModelTurnAction::Finish
+    };
     let bindings = response
         .tool_calls
         .iter()
@@ -661,6 +669,7 @@ fn response_inner(
         .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
     content.push(ContextContent::Opaque { payload });
     Ok(ModelStepOutput {
+        turn_action,
         attempt_id: request.attempt_id.clone(),
         base_context_revision: request.context.revision,
         content,

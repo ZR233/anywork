@@ -1802,6 +1802,7 @@ impl pl_core::model::ModelSession for ScriptedToolCalls {
         let calls = self.calls.pop_front().into_iter().collect();
         Ok(pl_core::model::PreparedModelCall::new(async move {
             Ok(pl_core::model::ModelStepOutput {
+                turn_action: Default::default(),
                 attempt_id: request.attempt_id,
                 base_context_revision: request.context.revision,
                 content: vec![],

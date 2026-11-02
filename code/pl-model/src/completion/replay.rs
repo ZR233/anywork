@@ -18,6 +18,32 @@ pub enum AssistantReplay {
 }
 
 impl AssistantReplay {
+    /// Derive execution intent from frozen protocol history, never from a display projection.
+    pub(crate) fn is_commentary_only(&self) -> Result<bool> {
+        match self {
+            Self::Responses { output } => {
+                let mut commentary = false;
+                for item in output {
+                    if item.get("type").and_then(Value::as_str) == Some("message") {
+                        if item.get("phase").and_then(Value::as_str) != Some("commentary") {
+                            return Ok(false);
+                        }
+                        commentary = true;
+                    }
+                }
+                Ok(commentary)
+            }
+            Self::Chat { content } => {
+                use super::CompletionPresentationItemKind::Text;
+                use pl_protocol::trace::TraceTextChannel::{Commentary, Final};
+                let segments =
+                    super::stream::chat_presentation::completed_chat_presentation(content, None)?;
+                Ok(segments.iter().any(|item| item.kind == Text(Commentary))
+                    && !segments.iter().any(|item| item.kind == Text(Final)))
+            }
+        }
+    }
+
     pub(crate) fn semantic_input(
         &self,
         response: &CompletionResponse,

@@ -510,6 +510,145 @@ async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
 }
 
 #[tokio::test]
+async fn commentary_only_responses_continue_until_final_or_step_limit() {
+    for (protocol, profile) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+        ),
+        (
+            Protocol::Chat,
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    ] {
+        for limit in [1, 2] {
+            let commentary = json!({"id":"planning-progress","type":"message","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"调查完成，接下来提交计划。","annotations":[]}]});
+            let first = if protocol == Protocol::Chat {
+                chat_events(
+                    "<commentary>调查完成，接下来提交计划。</commentary>",
+                    "planning-fixture",
+                )
+            } else {
+                vec![
+                    json!({"type":"response.completed","response":{"id":"planning-progress-response","output":[commentary.clone()],"usage":{"input_tokens":10,"output_tokens":3}}}),
+                ]
+            };
+            let wrap = |events| {
+                if protocol == Protocol::ResponsesWebSocket {
+                    Reply::WebSocket(events)
+                } else {
+                    Reply::Sse(events)
+                }
+            };
+            let mut script = vec![Step::prompt(protocol, "plan the task", 0, wrap(first))];
+            if limit == 2 {
+                let mut next = Step::prompt(
+                    protocol,
+                    "plan the task",
+                    1,
+                    wrap(if protocol == Protocol::Chat {
+                        chat_events("final answer", "planning-fixture")
+                    } else {
+                        responses_text(
+                            "final answer",
+                            "planning-final-response",
+                            "planning-fixture",
+                        )
+                    }),
+                );
+                if protocol == Protocol::ResponsesWebSocket {
+                    next.request = RequestMatch::EmptyContinuation {
+                        previous_response_id: "planning-progress-response".into(),
+                        step: 1,
+                    };
+                }
+                script.push(next);
+            }
+            let fixture = FixtureServer::start(script).await.unwrap();
+            let runtime = ModelRuntime::new_with_account_id(
+                "fixture",
+                ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+                model("planning-fixture", profile.clone()),
+            )
+            .unwrap();
+            let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+                .open_session()
+                .await
+                .unwrap();
+            let thread = ThreadHandle::start("planning-thread".into(), session).unwrap();
+            let completion = thread
+                .run_turn(TurnInput {
+                    turn_id: "planning-turn".into(),
+                    attempt_prefix: "planning-attempt".into(),
+                    content: vec![ContextContent::Text {
+                        text: Arc::from("plan the task"),
+                    }],
+                    max_model_steps: ModelStepLimit::Limited(limit.try_into().unwrap()),
+                    cancellation: Default::default(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(completion.model_steps, limit);
+            assert_eq!(
+                completion.outcome,
+                if limit == 1 {
+                    TurnOutcome::StepLimit
+                } else {
+                    TurnOutcome::Completed
+                }
+            );
+            if limit == 1 {
+                assert!(thread.snapshot().continuation.is_some());
+            }
+            let effects = thread.effects().await.unwrap();
+            assert!(effects.iter().any(|effect| matches!(
+                effect.attempt.as_ref().map(|attempt| &attempt.outcome),
+                Some(AttemptOutcome::Committed(output))
+                    if output.turn_action == pl_core::model::ModelTurnAction::Continue
+            )));
+            thread.close().await.unwrap();
+            let requests = fixture.finish().await.unwrap();
+            assert_eq!(requests.len(), limit as usize);
+            if limit == 2 {
+                if protocol == Protocol::Chat {
+                    let messages = requests[1].body["messages"].as_array().unwrap();
+                    assert_eq!(
+                        messages
+                            .iter()
+                            .filter(|message| message["role"] == "user")
+                            .count(),
+                        1
+                    );
+                    assert_eq!(
+                        messages
+                            .iter()
+                            .find(|message| message["role"] == "assistant")
+                            .unwrap()["content"],
+                        "<commentary>调查完成，接下来提交计划。</commentary>"
+                    );
+                } else if protocol == Protocol::ResponsesHttp {
+                    assert!(
+                        requests[1].body["input"]
+                            .as_array()
+                            .unwrap()
+                            .contains(&commentary)
+                    );
+                } else {
+                    assert_eq!(
+                        requests[1].body["previous_response_id"],
+                        "planning-progress-response"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_identity() {
     for (protocol, profile) in [
         (

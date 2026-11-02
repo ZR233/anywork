@@ -22,6 +22,7 @@ impl ModelSession for DemonstrationModel {
             .iter()
             .any(|record| matches!(record.source, ContextSource::ToolResult { .. }));
         let output = ModelStepOutput {
+            turn_action: Default::default(),
             attempt_id: request.attempt_id,
             base_context_revision: request.context.revision,
             content: if answered {

@@ -8,7 +8,7 @@ use crate::completion::{
 use pl_protocol::trace::TraceTextChannel;
 use pl_protocol::{PureError, Result};
 
-pub(super) fn completed_chat_presentation(
+pub(crate) fn completed_chat_presentation(
     content: &str,
     reasoning: Option<&str>,
 ) -> Result<Vec<CompletionPresentationItem>> {
