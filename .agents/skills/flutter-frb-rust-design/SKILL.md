@@ -41,8 +41,7 @@ description: 新增、修改或审查本项目 Flutter／FRB／Rust 功能时，
 7. 可以删除哪些重复职责？复用现有领域观察、只读投影、组件与资源 owner；不要用刷新和重试修补不完整契约。
 
 只读镜像、有界在途数据和局部 UI 状态不是第二事实源。必要的身份检查、取消与背压不能因
-“简化”直接删除；应在原 owner 内实现一次，避免逐页复制。具体能力、组件选型和自研门槛遵循
-`{workspace}/AGENTS.md`，技能不另设审批或强制全量验证。
+“简化”直接删除；应在原 owner 内实现一次，避免逐页复制。
 
 按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety、rust-unsafe-safety 与 test-quality；
 不因本技能固定追加全量测试。交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。

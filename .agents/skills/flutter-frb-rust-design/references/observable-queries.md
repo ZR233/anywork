@@ -143,7 +143,6 @@ FRB StreamSink 成功不等于业务消费；Stream、watch 和 Provider 也不�
 - 局部恢复不重建无关历史、草稿和观察；慢消费者与关闭仍有界。
 - 外部协议不支持的能力保持不支持，没有被 Native 的默认路径补造。
 
-验证证据的含义见 `{workspace}/design/24-testing.md`，命令入口遵循 `{workspace}/AGENTS.md`
-和相关工程技能；本参考不复制完整矩阵。
+验证证据的含义见 `{workspace}/design/24-testing.md`。
 先核查现有证明，新增测试只针对剩余风险；不为每层复制同一断言，不建立无关全量门禁。
 快照算法、同步调度和 Flutter 呈现分别验证其所属责任。
