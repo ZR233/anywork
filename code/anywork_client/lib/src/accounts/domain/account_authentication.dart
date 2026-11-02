@@ -12,6 +12,7 @@ final class ChatGptAccountInfo {
     required this.clientId,
     required this.planUsageEnabled,
     this.email,
+    this.codex,
   });
 
   final String issuer;
@@ -19,6 +20,13 @@ final class ChatGptAccountInfo {
   final String clientId;
   final String? email;
   final bool planUsageEnabled;
+  final CodexAccountInfo? codex;
+}
+
+final class CodexAccountInfo {
+  const CodexAccountInfo({required this.accountId, this.planType});
+  final String accountId;
+  final String? planType;
 }
 
 sealed class AccountAuthenticationIntent {

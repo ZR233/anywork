@@ -31,7 +31,12 @@ struct Operation {
     claimed: bool,
     cancellation: CancellationToken,
     done: watch::Receiver<bool>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: Arc<tokio::sync::Mutex<LoginTask>>,
+}
+
+struct LoginTask {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    outcome: Option<Result<(), ()>>,
 }
 
 pub(super) struct LoginClaim {
@@ -149,10 +154,7 @@ impl ChatGptAuthRuntime {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        for id in ids {
-            self.join(&id).await?;
-        }
-        Ok(())
+        self.join_operations(ids).await
     }
 
     pub(super) async fn discard_account(&self, account_id: &str) -> Result<()> {
@@ -175,10 +177,17 @@ impl ChatGptAuthRuntime {
                 })
                 .collect::<Vec<_>>()
         };
+        self.join_operations(ids).await
+    }
+
+    async fn join_operations(&self, ids: Vec<String>) -> Result<()> {
+        let mut failure = None;
         for id in ids {
-            self.join(&id).await?;
+            if let Err(error) = self.join(&id).await {
+                failure.get_or_insert(error);
+            }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     async fn join(&self, id: &str) -> Result<()> {
@@ -192,20 +201,27 @@ impl ChatGptAuthRuntime {
             .done
             .clone();
         while !*done.borrow_and_update() {
-            done.changed().await.map_err(|_| {
-                StudioError::invalid_argument("ChatGPT login worker stopped unexpectedly")
-            })?;
+            if done.changed().await.is_err() {
+                break; // A panicking worker still owns a JoinHandle that must be joined.
+            }
         }
         let task = self
             .inner
             .lock()
             .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?
             .operations
-            .get_mut(id)
-            .and_then(|operation| operation.task.take());
+            .get(id)
+            .map(|operation| Arc::clone(&operation.task));
         if let Some(task) = task {
-            task.await
-                .map_err(|_| StudioError::invalid_argument("ChatGPT login worker failed"))?;
+            let mut task = task.lock().await;
+            if let Some(handle) = task.handle.as_mut() {
+                // The registry retains the handle if this join waiter is cancelled.
+                task.outcome = Some(handle.await.map_err(|_| ()));
+                task.handle = None;
+            }
+            if task.outcome == Some(Err(())) {
+                return Err(StudioError::invalid_argument("ChatGPT login worker failed").into());
+            }
         }
         Ok(())
     }
@@ -261,6 +277,7 @@ impl ChatGptAuthRuntime {
                 Some(Ok(record)) => {
                     operation.snapshot.phase = ChatGptLoginPhase::Succeeded;
                     operation.snapshot.account = Some(record.account.clone());
+                    operation.snapshot.expires_at = Some(record.expires_at);
                     operation.record = Some(record);
                 }
                 Some(Err(error)) => {
@@ -398,7 +415,7 @@ impl StudioRuntime {
             revision: 1,
             phase: ChatGptLoginPhase::Preparing,
             authorization_url: None,
-            expires_at: Some(crate::studio::unix_seconds() + 15 * 60),
+            expires_at: None,
             account: None,
             failure: None,
         };
@@ -445,7 +462,10 @@ impl StudioRuntime {
                 claimed: false,
                 cancellation,
                 done: receiver,
-                task: Some(task),
+                task: Arc::new(tokio::sync::Mutex::new(LoginTask {
+                    handle: Some(task),
+                    outcome: None,
+                })),
             },
         );
         self.chatgpt_auth.updates.send_replace(());
@@ -519,13 +539,83 @@ mod tests {
     use super::*;
     use pl_model::config::AccountId;
 
+    fn owned_task(
+        owner: &ChatGptAuthRuntime,
+        id: &str,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> Arc<tokio::sync::Mutex<LoginTask>> {
+        let task = Arc::new(tokio::sync::Mutex::new(LoginTask {
+            handle: Some(handle),
+            outcome: None,
+        }));
+        owner.inner.lock().unwrap().operations.insert(
+            id.into(),
+            Operation {
+                account_revision: None,
+                snapshot: ChatGptLoginSnapshot {
+                    login_id: id.into(),
+                    editor_id: "editor".into(),
+                    account_id: "account".into(),
+                    revision: 1,
+                    phase: ChatGptLoginPhase::Cancelled,
+                    authorization_url: None,
+                    expires_at: None,
+                    account: None,
+                    failure: None,
+                },
+                record: None,
+                claimed: false,
+                cancellation: CancellationToken::new(),
+                done: watch::channel(true).1,
+                task: task.clone(),
+            },
+        );
+        task
+    }
+
+    #[tokio::test]
+    async fn cancelled_join_waiter_retains_worker_and_close_joins_every_owned_task() {
+        let owner = ChatGptAuthRuntime::new();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let task = owned_task(
+            &owner,
+            "b-retained",
+            tokio::spawn(async move {
+                released.await.unwrap();
+            }),
+        );
+        {
+            let first = owner.join("b-retained");
+            tokio::pin!(first);
+            assert!(futures::poll!(first.as_mut()).is_pending());
+        }
+        assert!(task.try_lock().unwrap().handle.is_some());
+        let failed = owned_task(
+            &owner,
+            "a-failed",
+            tokio::spawn(async {
+                panic!("injected worker failure");
+            }),
+        );
+        release.send(()).unwrap();
+        assert!(owner.close().await.is_err());
+        assert!(failed.lock().await.handle.is_none());
+        let task = task.lock().await;
+        assert!(task.handle.is_none());
+        assert_eq!(task.outcome, Some(Ok(())));
+    }
+
     fn completed(runtime: &StudioRuntime, login_id: &str, account_id: &str) {
         let account = ChatGptAccountInfo {
             issuer: "https://auth.openai.com".into(),
             subject: "fixture-subject".into(),
-            client_id: "fixture-client".into(),
+            client_id: pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into(),
             email: Some("fixture@example.test".into()),
             plan_usage_enabled: true,
+            codex: Some(pl_protocol::studio::CodexAccountInfo {
+                account_id: "fixture-workspace".into(),
+                plan_type: Some("plus".into()),
+            }),
         };
         let snapshot = ChatGptLoginSnapshot {
             login_id: login_id.into(),
@@ -546,7 +636,12 @@ mod tests {
             access_token: "fixture-private-access".into(),
             refresh_token: "fixture-private-refresh".into(),
             id_token: "fixture-private-verified-id".into(),
-            scopes: vec!["chatgpt.tokens.use.direct".into()],
+            scopes: vec![
+                "openid".into(),
+                "profile".into(),
+                "email".into(),
+                "offline_access".into(),
+            ],
             expires_at: crate::studio::unix_seconds() + 3600,
             earliest_refresh_at: None,
             refresh_in_flight: false,
@@ -572,7 +667,10 @@ mod tests {
                     claimed: false,
                     cancellation: CancellationToken::new(),
                     done: watch::channel(true).1,
-                    task: None,
+                    task: Arc::new(tokio::sync::Mutex::new(LoginTask {
+                        handle: None,
+                        outcome: Some(Ok(())),
+                    })),
                 },
             );
     }
@@ -700,6 +798,7 @@ mod tests {
                     .unwrap()
                     .account;
                 account.authentication = AccountAuthenticationMethod::ChatGpt;
+                account.base_url = pl_model::protocol::chatgpt::CODEX_RESOURCE.into();
                 account.bearer_token_env = None;
                 account.chatgpt_account = Some(record.account.clone());
                 account.chatgpt_session = Some(
@@ -732,7 +831,14 @@ mod tests {
                 )?;
                 Ok(())
             });
-        assert!(failed.is_err());
+        assert!(
+            failed
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("injected post-replacement failure"),
+            "{failed:?}"
+        );
         assert_eq!(calls.get(), 2);
         assert!(!runtime.chatgpt_auth.inner.lock().unwrap().operations["save-login"].claimed);
         assert!(
@@ -833,11 +939,13 @@ mod tests {
         .await??;
         let url = url::Url::parse(&authorization_url)?;
         let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
-        assert_eq!(params["client_id"], "fixture-client");
         assert_eq!(
-            params["ext_agent_host_id"],
-            "urn:uuid:00000000-0000-4000-8000-000000000001"
+            params["client_id"],
+            pl_model::protocol::chatgpt::CODEX_CLIENT_ID
         );
+        assert_eq!(params["codex_cli_simplified_flow"], "true");
+        assert_eq!(params["originator"], "anywork");
+        assert!(!params.contains_key("ext_agent_host_id"));
         assert!(!params.contains_key("agent_name_hint"));
         assert!(!params.contains_key("id_token_hint"));
         runtime

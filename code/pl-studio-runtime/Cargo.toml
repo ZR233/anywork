@@ -61,6 +61,7 @@ zstd = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+zeroize = { workspace = true }
 
 # 非 Linux 平台启动 ACP 官方程序走统一后台进程工厂（process-wrap）；Linux 复用 bundled
 # 受监督 worker，因此不需要该依赖。

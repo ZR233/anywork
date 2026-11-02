@@ -4,7 +4,7 @@ use super::{AccountUsageStateData, AccountUsageStateSnapshot, UsageState, unix_s
 use crate::AccountUsageRecord;
 use crate::account_usage::{
     AccountUsageData, AccountUsageState, DeepSeekBalanceInfo, DeepSeekBalanceUsage,
-    ZhipuCodingPlanUsage, ZhipuQuotaLimit, ZhipuQuotaWindow, ZhipuToolUsageDetail,
+    SubscriptionQuotaLimit, SubscriptionQuotaWindow, SubscriptionUsage, SubscriptionUsageDetail,
 };
 use pl_protocol::studio::*;
 
@@ -58,17 +58,19 @@ fn value(data: &AccountUsageData) -> AccountUsageValue {
                 })
                 .collect(),
         },
-        AccountUsageData::ZhipuCodingPlan(data) => AccountUsageValue::Subscription {
+        AccountUsageData::Subscription(data) => AccountUsageValue::Subscription {
             level: data.level.clone(),
             quotas: data
                 .limits
                 .iter()
                 .map(|item| AccountQuota {
                     window: match &item.window {
-                        ZhipuQuotaWindow::FiveHour => AccountQuotaWindow::FiveHour,
-                        ZhipuQuotaWindow::Weekly => AccountQuotaWindow::Weekly,
-                        ZhipuQuotaWindow::McpMonthly => AccountQuotaWindow::McpMonthly,
-                        ZhipuQuotaWindow::Other(value) => AccountQuotaWindow::Other(value.clone()),
+                        SubscriptionQuotaWindow::FiveHour => AccountQuotaWindow::FiveHour,
+                        SubscriptionQuotaWindow::Weekly => AccountQuotaWindow::Weekly,
+                        SubscriptionQuotaWindow::McpMonthly => AccountQuotaWindow::McpMonthly,
+                        SubscriptionQuotaWindow::Other(value) => {
+                            AccountQuotaWindow::Other(value.clone())
+                        }
                     },
                     percentage: item.percentage,
                     used: item.current_value,
@@ -109,17 +111,17 @@ fn legacy_value(value: &AccountUsageValue) -> AccountUsageData {
                 .collect(),
         }),
         AccountUsageValue::Subscription { level, quotas } => {
-            AccountUsageData::ZhipuCodingPlan(ZhipuCodingPlanUsage {
+            AccountUsageData::Subscription(SubscriptionUsage {
                 level: level.clone(),
                 limits: quotas
                     .iter()
-                    .map(|item| ZhipuQuotaLimit {
+                    .map(|item| SubscriptionQuotaLimit {
                         window: match &item.window {
-                            AccountQuotaWindow::FiveHour => ZhipuQuotaWindow::FiveHour,
-                            AccountQuotaWindow::Weekly => ZhipuQuotaWindow::Weekly,
-                            AccountQuotaWindow::McpMonthly => ZhipuQuotaWindow::McpMonthly,
+                            AccountQuotaWindow::FiveHour => SubscriptionQuotaWindow::FiveHour,
+                            AccountQuotaWindow::Weekly => SubscriptionQuotaWindow::Weekly,
+                            AccountQuotaWindow::McpMonthly => SubscriptionQuotaWindow::McpMonthly,
                             AccountQuotaWindow::Other(value) => {
-                                ZhipuQuotaWindow::Other(value.clone())
+                                SubscriptionQuotaWindow::Other(value.clone())
                             }
                         },
                         percentage: item.percentage,
@@ -130,7 +132,7 @@ fn legacy_value(value: &AccountUsageValue) -> AccountUsageData {
                         usage_details: item
                             .details
                             .iter()
-                            .map(|detail| ZhipuToolUsageDetail {
+                            .map(|detail| SubscriptionUsageDetail {
                                 name: detail.name.clone(),
                                 current_value: detail.used,
                                 total: detail.total,

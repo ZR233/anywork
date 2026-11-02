@@ -48,6 +48,12 @@ pub(super) fn query_identity(id: &AccountId, account: &AccountConfig) -> String 
             }
         }
     }
+    if let Some(session) = &account.chatgpt_session {
+        let registration = session.registration_id();
+        hash.update(b"chatgpt-registration");
+        hash.update((registration.len() as u64).to_le_bytes());
+        hash.update(registration.as_bytes());
+    }
     hex::encode(hash.finalize())
 }
 
@@ -130,6 +136,75 @@ fn parse(raw: &str) -> Result<AccountUsageSettingPayload> {
 mod tests {
     use super::*;
     use pl_protocol::studio::AccountUsageObservation;
+
+    #[test]
+    fn chatgpt_cache_follows_the_saved_registration_without_reading_or_hashing_tokens() {
+        use pl_model::protocol::chatgpt::{
+            CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError, ChatGptCredentialRecord,
+            ChatGptCredentialStorage, ChatGptSession,
+        };
+        use pl_protocol::studio::{
+            AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo,
+        };
+        struct NoCredentialIo;
+        impl ChatGptCredentialStorage for NoCredentialIo {
+            fn load(&self) -> Result<ChatGptCredentialRecord, ChatGptAuthError> {
+                panic!("cache identity must not read credentials");
+            }
+            fn persist(
+                &self,
+                _: &str,
+                _: &ChatGptCredentialRecord,
+            ) -> Result<(), ChatGptAuthError> {
+                panic!("cache identity must not write credentials");
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (id, mut account, _) = environment();
+        account.authentication = AccountAuthenticationMethod::ChatGpt;
+        account.base_url = CODEX_RESOURCE.into();
+        account.bearer_token_env = None;
+        let mut record = ChatGptCredentialRecord {
+            schema_version: 1,
+            registration_id: "login-one".into(),
+            account: ChatGptAccountInfo {
+                issuer: "https://auth.openai.com".into(),
+                subject: "selected-subject".into(),
+                client_id: CODEX_CLIENT_ID.into(),
+                email: None,
+                plan_usage_enabled: true,
+                codex: Some(CodexAccountInfo {
+                    account_id: "selected-workspace".into(),
+                    plan_type: Some("plus".into()),
+                }),
+            },
+            ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
+            access_token: "initial-access".into(),
+            refresh_token: "initial-refresh".into(),
+            id_token: "verified-id".into(),
+            scopes: vec![],
+            expires_at: i64::MAX,
+            earliest_refresh_at: None,
+            refresh_in_flight: false,
+        };
+        let session = |record: &ChatGptCredentialRecord| {
+            ChatGptSession::new(
+                record,
+                std::sync::Arc::new(NoCredentialIo),
+                root.path().join("unused-lock"),
+            )
+            .unwrap()
+        };
+        account.chatgpt_session = Some(session(&record));
+        let original = query_identity(&id, &account);
+        record.access_token = "rotated-access".into();
+        record.refresh_token = "rotated-refresh".into();
+        account.chatgpt_session = Some(session(&record));
+        assert_eq!(query_identity(&id, &account), original);
+        record.registration_id = "new-explicit-login".into();
+        account.chatgpt_session = Some(session(&record));
+        assert_ne!(query_identity(&id, &account), original);
+    }
 
     fn environment() -> (AccountId, AccountConfig, u64) {
         (

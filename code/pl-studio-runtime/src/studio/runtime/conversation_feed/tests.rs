@@ -131,10 +131,8 @@ async fn finish_question(
                                 status => bail!("question reached unexpected status {status:?}"),
                             }
                         }
-                        ThreadNotification::TurnCompleted { .. } => {
-                            if *resolved == 1 {
-                                return Ok(());
-                            }
+                        ThreadNotification::TurnCompleted { .. } if *resolved == 1 => {
+                            return Ok(());
                         }
                         _ => {}
                     }

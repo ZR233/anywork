@@ -7535,6 +7535,9 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountSummary {
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_brandKey = <Option<String>>::sse_decode(deserializer);
         let mut var_displayEndpoint = <Option<String>>::sse_decode(deserializer);
+        let mut var_chatgptAccount = <Option<
+            crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo,
+        >>::sse_decode(deserializer);
         let mut var_isDefault = <bool>::sse_decode(deserializer);
         let mut var_billingKind =
             <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_decode(
@@ -7555,6 +7558,7 @@ impl SseDecode for crate::api::studio::accounts::types::BridgeAccountSummary {
             name: var_name,
             brand_key: var_brandKey,
             display_endpoint: var_displayEndpoint,
+            chatgpt_account: var_chatgptAccount,
             is_default: var_isDefault,
             billing_kind: var_billingKind,
             billing_kind_override: var_billingKindOverride,
@@ -7644,10 +7648,12 @@ impl SseDecode for crate::api::studio::types::response::BridgeAccountUsageData {
             }
             1 => {
                 let mut var_field0 =
-                    <crate::api::studio::types::response::ZhipuCodingPlanUsageDto>::sse_decode(
+                    <crate::api::studio::types::response::SubscriptionUsageDto>::sse_decode(
                         deserializer,
                     );
-                return crate::api::studio::types::response::BridgeAccountUsageData::ZhipuCodingPlan(var_field0);
+                return crate::api::studio::types::response::BridgeAccountUsageData::Subscription(
+                    var_field0,
+                );
             }
             _ => {
                 unimplemented!("");
@@ -10181,12 +10187,17 @@ impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccount
         let mut var_clientId = <String>::sse_decode(deserializer);
         let mut var_email = <Option<String>>::sse_decode(deserializer);
         let mut var_planUsageEnabled = <bool>::sse_decode(deserializer);
+        let mut var_codex =
+            <Option<crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo>>::sse_decode(
+                deserializer,
+            );
         return crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo {
             issuer: var_issuer,
             subject: var_subject,
             client_id: var_clientId,
             email: var_email,
             plan_usage_enabled: var_planUsageEnabled,
+            codex: var_codex,
         };
     }
 }
@@ -10503,6 +10514,18 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeClosingAgent {
         return crate::api::studio::types::runtime::BridgeClosingAgent {
             turn_id: var_turnId,
             error: var_error,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_planType = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo {
+            account_id: var_accountId,
+            plan_type: var_planType,
         };
     }
 }
@@ -19478,28 +19501,30 @@ impl SseDecode for Vec<crate::api::studio::types::ssh::SshServerDto> {
     }
 }
 
-impl SseDecode for Vec<crate::api::studio::types::response::ZhipuQuotaLimitDto> {
+impl SseDecode for Vec<crate::api::studio::types::response::SubscriptionQuotaLimitDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(
-                <crate::api::studio::types::response::ZhipuQuotaLimitDto>::sse_decode(deserializer),
+                <crate::api::studio::types::response::SubscriptionQuotaLimitDto>::sse_decode(
+                    deserializer,
+                ),
             );
         }
         return ans_;
     }
 }
 
-impl SseDecode for Vec<crate::api::studio::types::response::ZhipuToolUsageDetailDto> {
+impl SseDecode for Vec<crate::api::studio::types::response::SubscriptionUsageDetailDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(
-                <crate::api::studio::types::response::ZhipuToolUsageDetailDto>::sse_decode(
+                <crate::api::studio::types::response::SubscriptionUsageDetailDto>::sse_decode(
                     deserializer,
                 ),
             );
@@ -19818,6 +19843,21 @@ impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGpt
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo>::sse_decode(
                     deserializer,
                 ),
             );
@@ -21145,6 +21185,63 @@ impl SseDecode for crate::api::studio::types::response::SubmitPromptResponse {
     }
 }
 
+impl SseDecode for crate::api::studio::types::response::SubscriptionQuotaLimitDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_window = <String>::sse_decode(deserializer);
+        let mut var_label = <String>::sse_decode(deserializer);
+        let mut var_percentage = <f64>::sse_decode(deserializer);
+        let mut var_currentValue = <Option<f64>>::sse_decode(deserializer);
+        let mut var_total = <Option<f64>>::sse_decode(deserializer);
+        let mut var_remaining = <Option<f64>>::sse_decode(deserializer);
+        let mut var_nextResetAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_usageDetails = <Vec<
+            crate::api::studio::types::response::SubscriptionUsageDetailDto,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::response::SubscriptionQuotaLimitDto {
+            window: var_window,
+            label: var_label,
+            percentage: var_percentage,
+            current_value: var_currentValue,
+            total: var_total,
+            remaining: var_remaining,
+            next_reset_at: var_nextResetAt,
+            usage_details: var_usageDetails,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::response::SubscriptionUsageDetailDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_currentValue = <Option<f64>>::sse_decode(deserializer);
+        let mut var_total = <Option<f64>>::sse_decode(deserializer);
+        let mut var_percentage = <Option<f64>>::sse_decode(deserializer);
+        return crate::api::studio::types::response::SubscriptionUsageDetailDto {
+            name: var_name,
+            current_value: var_currentValue,
+            total: var_total,
+            percentage: var_percentage,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::response::SubscriptionUsageDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_level = <Option<String>>::sse_decode(deserializer);
+        let mut var_limits =
+            <Vec<crate::api::studio::types::response::SubscriptionQuotaLimitDto>>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::response::SubscriptionUsageDto {
+            level: var_level,
+            limits: var_limits,
+        };
+    }
+}
+
 impl SseDecode for u16 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -21182,63 +21279,6 @@ impl SseDecode for usize {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u64::<NativeEndian>().unwrap() as _
-    }
-}
-
-impl SseDecode for crate::api::studio::types::response::ZhipuCodingPlanUsageDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_level = <Option<String>>::sse_decode(deserializer);
-        let mut var_limits =
-            <Vec<crate::api::studio::types::response::ZhipuQuotaLimitDto>>::sse_decode(
-                deserializer,
-            );
-        return crate::api::studio::types::response::ZhipuCodingPlanUsageDto {
-            level: var_level,
-            limits: var_limits,
-        };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::response::ZhipuQuotaLimitDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_window = <String>::sse_decode(deserializer);
-        let mut var_label = <String>::sse_decode(deserializer);
-        let mut var_percentage = <f64>::sse_decode(deserializer);
-        let mut var_currentValue = <Option<f64>>::sse_decode(deserializer);
-        let mut var_total = <Option<f64>>::sse_decode(deserializer);
-        let mut var_remaining = <Option<f64>>::sse_decode(deserializer);
-        let mut var_nextResetAt = <Option<i64>>::sse_decode(deserializer);
-        let mut var_usageDetails = <Vec<
-            crate::api::studio::types::response::ZhipuToolUsageDetailDto,
-        >>::sse_decode(deserializer);
-        return crate::api::studio::types::response::ZhipuQuotaLimitDto {
-            window: var_window,
-            label: var_label,
-            percentage: var_percentage,
-            current_value: var_currentValue,
-            total: var_total,
-            remaining: var_remaining,
-            next_reset_at: var_nextResetAt,
-            usage_details: var_usageDetails,
-        };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::response::ZhipuToolUsageDetailDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_name = <String>::sse_decode(deserializer);
-        let mut var_currentValue = <Option<f64>>::sse_decode(deserializer);
-        let mut var_total = <Option<f64>>::sse_decode(deserializer);
-        let mut var_percentage = <Option<f64>>::sse_decode(deserializer);
-        return crate::api::studio::types::response::ZhipuToolUsageDetailDto {
-            name: var_name,
-            current_value: var_currentValue,
-            total: var_total,
-            percentage: var_percentage,
-        };
     }
 }
 
@@ -22307,6 +22347,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::accounts::types::Brid
             self.name.into_into_dart().into_dart(),
             self.brand_key.into_into_dart().into_dart(),
             self.display_endpoint.into_into_dart().into_dart(),
+            self.chatgpt_account.into_into_dart().into_dart(),
             self.is_default.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
             self.billing_kind_override.into_into_dart().into_dart(),
@@ -22405,9 +22446,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::response::Brid
             crate::api::studio::types::response::BridgeAccountUsageData::DeepSeekBalance(
                 field0,
             ) => [0.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
-            crate::api::studio::types::response::BridgeAccountUsageData::ZhipuCodingPlan(
-                field0,
-            ) => [1.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
+            crate::api::studio::types::response::BridgeAccountUsageData::Subscription(field0) => {
+                [1.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+            }
             _ => {
                 unimplemented!("");
             }
@@ -25426,6 +25467,7 @@ impl flutter_rust_bridge::IntoDart
             self.client_id.into_into_dart().into_dart(),
             self.email.into_into_dart().into_dart(),
             self.plan_usage_enabled.into_into_dart().into_dart(),
+            self.codex.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -25867,6 +25909,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::Bridg
     for crate::api::studio::types::runtime::BridgeClosingAgent
 {
     fn into_into_dart(self) -> crate::api::studio::types::runtime::BridgeClosingAgent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.account_id.into_into_dart().into_dart(),
+            self.plan_type.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo,
+    > for crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo {
         self
     }
 }
@@ -35465,29 +35532,8 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::Subm
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::response::ZhipuCodingPlanUsageDto
+    for crate::api::studio::types::response::SubscriptionQuotaLimitDto
 {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.level.into_into_dart().into_dart(),
-            self.limits.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::response::ZhipuCodingPlanUsageDto
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::ZhipuCodingPlanUsageDto>
-    for crate::api::studio::types::response::ZhipuCodingPlanUsageDto
-{
-    fn into_into_dart(self) -> crate::api::studio::types::response::ZhipuCodingPlanUsageDto {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::studio::types::response::ZhipuQuotaLimitDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.window.into_into_dart().into_dart(),
@@ -35503,19 +35549,21 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::response::Zhip
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::response::ZhipuQuotaLimitDto
+    for crate::api::studio::types::response::SubscriptionQuotaLimitDto
 {
 }
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::ZhipuQuotaLimitDto>
-    for crate::api::studio::types::response::ZhipuQuotaLimitDto
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::response::SubscriptionQuotaLimitDto,
+    > for crate::api::studio::types::response::SubscriptionQuotaLimitDto
 {
-    fn into_into_dart(self) -> crate::api::studio::types::response::ZhipuQuotaLimitDto {
+    fn into_into_dart(self) -> crate::api::studio::types::response::SubscriptionQuotaLimitDto {
         self
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::response::ZhipuToolUsageDetailDto
+    for crate::api::studio::types::response::SubscriptionUsageDetailDto
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -35528,13 +35576,36 @@ impl flutter_rust_bridge::IntoDart
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::response::ZhipuToolUsageDetailDto
+    for crate::api::studio::types::response::SubscriptionUsageDetailDto
 {
 }
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::ZhipuToolUsageDetailDto>
-    for crate::api::studio::types::response::ZhipuToolUsageDetailDto
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::response::SubscriptionUsageDetailDto,
+    > for crate::api::studio::types::response::SubscriptionUsageDetailDto
 {
-    fn into_into_dart(self) -> crate::api::studio::types::response::ZhipuToolUsageDetailDto {
+    fn into_into_dart(self) -> crate::api::studio::types::response::SubscriptionUsageDetailDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::response::SubscriptionUsageDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.level.into_into_dart().into_dart(),
+            self.limits.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::response::SubscriptionUsageDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::SubscriptionUsageDto>
+    for crate::api::studio::types::response::SubscriptionUsageDto
+{
+    fn into_into_dart(self) -> crate::api::studio::types::response::SubscriptionUsageDto {
         self
     }
 }
@@ -36510,6 +36581,10 @@ impl SseEncode for crate::api::studio::accounts::types::BridgeAccountSummary {
         <String>::sse_encode(self.name, serializer);
         <Option<String>>::sse_encode(self.brand_key, serializer);
         <Option<String>>::sse_encode(self.display_endpoint, serializer);
+        <Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo>>::sse_encode(
+            self.chatgpt_account,
+            serializer,
+        );
         <bool>::sse_encode(self.is_default, serializer);
         <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_encode(
             self.billing_kind,
@@ -36588,11 +36663,9 @@ impl SseEncode for crate::api::studio::types::response::BridgeAccountUsageData {
                     field0, serializer,
                 );
             }
-            crate::api::studio::types::response::BridgeAccountUsageData::ZhipuCodingPlan(
-                field0,
-            ) => {
+            crate::api::studio::types::response::BridgeAccountUsageData::Subscription(field0) => {
                 <i32>::sse_encode(1, serializer);
-                <crate::api::studio::types::response::ZhipuCodingPlanUsageDto>::sse_encode(
+                <crate::api::studio::types::response::SubscriptionUsageDto>::sse_encode(
                     field0, serializer,
                 );
             }
@@ -38714,6 +38787,9 @@ impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptAccount
         <String>::sse_encode(self.client_id, serializer);
         <Option<String>>::sse_encode(self.email, serializer);
         <bool>::sse_encode(self.plan_usage_enabled, serializer);
+        <Option<crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo>>::sse_encode(
+            self.codex, serializer,
+        );
     }
 }
 
@@ -38924,6 +39000,14 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeClosingAgent {
         <Option<crate::api::studio::types::runtime::BridgeStateError>>::sse_encode(
             self.error, serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.account_id, serializer);
+        <Option<String>>::sse_encode(self.plan_type, serializer);
     }
 }
 
@@ -45788,22 +45872,24 @@ impl SseEncode for Vec<crate::api::studio::types::ssh::SshServerDto> {
     }
 }
 
-impl SseEncode for Vec<crate::api::studio::types::response::ZhipuQuotaLimitDto> {
+impl SseEncode for Vec<crate::api::studio::types::response::SubscriptionQuotaLimitDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::studio::types::response::ZhipuQuotaLimitDto>::sse_encode(item, serializer);
+            <crate::api::studio::types::response::SubscriptionQuotaLimitDto>::sse_encode(
+                item, serializer,
+            );
         }
     }
 }
 
-impl SseEncode for Vec<crate::api::studio::types::response::ZhipuToolUsageDetailDto> {
+impl SseEncode for Vec<crate::api::studio::types::response::SubscriptionUsageDetailDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::studio::types::response::ZhipuToolUsageDetailDto>::sse_encode(
+            <crate::api::studio::types::response::SubscriptionUsageDetailDto>::sse_encode(
                 item, serializer,
             );
         }
@@ -46064,6 +46150,18 @@ impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGpt
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chatgpt_auth::BridgeCodexAccountInfo>::sse_encode(
                 value, serializer,
             );
         }
@@ -47067,6 +47165,44 @@ impl SseEncode for crate::api::studio::types::response::SubmitPromptResponse {
     }
 }
 
+impl SseEncode for crate::api::studio::types::response::SubscriptionQuotaLimitDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.window, serializer);
+        <String>::sse_encode(self.label, serializer);
+        <f64>::sse_encode(self.percentage, serializer);
+        <Option<f64>>::sse_encode(self.current_value, serializer);
+        <Option<f64>>::sse_encode(self.total, serializer);
+        <Option<f64>>::sse_encode(self.remaining, serializer);
+        <Option<i64>>::sse_encode(self.next_reset_at, serializer);
+        <Vec<crate::api::studio::types::response::SubscriptionUsageDetailDto>>::sse_encode(
+            self.usage_details,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::response::SubscriptionUsageDetailDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.name, serializer);
+        <Option<f64>>::sse_encode(self.current_value, serializer);
+        <Option<f64>>::sse_encode(self.total, serializer);
+        <Option<f64>>::sse_encode(self.percentage, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::response::SubscriptionUsageDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.level, serializer);
+        <Vec<crate::api::studio::types::response::SubscriptionQuotaLimitDto>>::sse_encode(
+            self.limits,
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for u16 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -47107,44 +47243,6 @@ impl SseEncode for usize {
             .cursor
             .write_u64::<NativeEndian>(self as _)
             .unwrap();
-    }
-}
-
-impl SseEncode for crate::api::studio::types::response::ZhipuCodingPlanUsageDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Option<String>>::sse_encode(self.level, serializer);
-        <Vec<crate::api::studio::types::response::ZhipuQuotaLimitDto>>::sse_encode(
-            self.limits,
-            serializer,
-        );
-    }
-}
-
-impl SseEncode for crate::api::studio::types::response::ZhipuQuotaLimitDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.window, serializer);
-        <String>::sse_encode(self.label, serializer);
-        <f64>::sse_encode(self.percentage, serializer);
-        <Option<f64>>::sse_encode(self.current_value, serializer);
-        <Option<f64>>::sse_encode(self.total, serializer);
-        <Option<f64>>::sse_encode(self.remaining, serializer);
-        <Option<i64>>::sse_encode(self.next_reset_at, serializer);
-        <Vec<crate::api::studio::types::response::ZhipuToolUsageDetailDto>>::sse_encode(
-            self.usage_details,
-            serializer,
-        );
-    }
-}
-
-impl SseEncode for crate::api::studio::types::response::ZhipuToolUsageDetailDto {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.name, serializer);
-        <Option<f64>>::sse_encode(self.current_value, serializer);
-        <Option<f64>>::sse_encode(self.total, serializer);
-        <Option<f64>>::sse_encode(self.percentage, serializer);
     }
 }
 

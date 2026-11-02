@@ -23,6 +23,7 @@ on:
           - timeline-history
           - stress-body-large
           - plan-recovery
+          - chatgpt-auth
 
 permissions:
   contents: read
@@ -92,7 +93,7 @@ jobs:
           retention-days: 14
 
   windows:
-    name: Windows native Driver and profile
+    name: Windows native integration and profile
     needs: helper
     runs-on: windows-latest
     timeout-minutes: 90
@@ -156,7 +157,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo flutter test --no-pub test/driver/host_cwd_directory_proof_test.dart
       - name: Build Rust bridge for native profile
-        if: github.event_name != 'workflow_dispatch' || inputs.scenario != 'plan-recovery'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scenario != 'plan-recovery' && inputs.scenario != 'chatgpt-auth')
         run: cargo build --locked -p pl-studio-bridge --release
       - name: Observe realtime native profile
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'realtime'
@@ -173,6 +174,9 @@ jobs:
       - name: Observe plan recovery native debug
         if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'plan-recovery'
         run: cargo xtask manual-gui --scenario plan-recovery --output target/native-acceptance/plan-recovery
+      - name: Test ChatGPT account authentication and quota with Flutter integration_test
+        if: github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'chatgpt-auth'
+        run: cargo xtask run-gui --integration-test integration_test/chatgpt_auth_test.dart
       - name: Check that native observation did not modify tracked inputs
         run: git diff --exit-code
       - name: Preserve formal native evidence

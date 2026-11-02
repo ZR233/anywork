@@ -39,6 +39,7 @@ pub struct BridgeAccountSummary {
     pub name: String,
     pub brand_key: Option<String>,
     pub display_endpoint: Option<String>,
+    pub chatgpt_account: Option<crate::api::studio::types::BridgeChatGptAccountInfo>,
     pub is_default: bool,
     pub billing_kind: Option<BridgeBillingKind>,
     pub billing_kind_override: Option<BridgeBillingKind>,

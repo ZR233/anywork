@@ -47,6 +47,10 @@ impl From<p::ChatGptAccountInfo> for BridgeChatGptAccountInfo {
             client_id: value.client_id,
             email: value.email,
             plan_usage_enabled: value.plan_usage_enabled,
+            codex: value.codex.map(|codex| BridgeCodexAccountInfo {
+                account_id: codex.account_id,
+                plan_type: codex.plan_type,
+            }),
         }
     }
 }
