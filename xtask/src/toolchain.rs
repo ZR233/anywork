@@ -20,6 +20,7 @@ pub(crate) fn required_for(command: &XtaskCommand) -> bool {
         XtaskCommand::GenerateGui
         | XtaskCommand::CheckGuiGenerated
         | XtaskCommand::VerifyGui
+        | XtaskCommand::TestProject(_)
         | XtaskCommand::ManualGui(_)
         | XtaskCommand::RunGui(_)
         | XtaskCommand::BuildGui(_)

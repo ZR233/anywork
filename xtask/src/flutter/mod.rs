@@ -164,6 +164,83 @@ pub(crate) fn verify_gui() -> Result<()> {
     Ok(())
 }
 
+/// Runs one official desktop `integration_test` with the same bridge, helper,
+/// and resident process ownership as a debug GUI run.
+pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
+    let workspace_root = paths::workspace_root()?;
+    let app_dir = paths::studio_app_dir(&workspace_root);
+    let target = DesktopTarget::current()?;
+    let resolved = resolve_integration_test_path(&app_dir, test_path)?;
+    let app_version = studio_version::read(&app_dir)?;
+    let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
+    let test_arg = resolved.to_string_lossy().into_owned();
+    print_context(&workspace_root, &app_dir);
+    ensure_desktop_build_environment(target)?;
+    ensure_flutter_dependencies(&workspace_root, &app_dir)?;
+    let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, DemoMode::Native)?;
+    let run_args = [
+        "test",
+        test_arg.as_str(),
+        "-d",
+        target.flutter_name(),
+        "--no-pub",
+        "--reporter=expanded",
+        version_define.as_str(),
+    ];
+    let bridge_artifacts = prepare_bridge_artifacts(
+        &workspace_root,
+        DemoMode::Native,
+        BridgeConfiguration::Debug,
+    )?;
+    run_flutter_with_process_mode(
+        &workspace_root,
+        &app_dir,
+        &run_args,
+        FlutterInvocation {
+            demo_mode: DemoMode::Native,
+            process_mode: FlutterProcessMode::Resident,
+            bridge_artifacts: bridge_artifacts.as_ref(),
+            remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            log_level: None,
+        },
+    )
+}
+
+fn resolve_integration_test_path(app_dir: &Path, test_path: &Path) -> Result<PathBuf> {
+    let root = app_dir
+        .join("integration_test")
+        .canonicalize()
+        .with_context(|| {
+            format!(
+                "integration_test directory is missing: {}",
+                app_dir.join("integration_test").display()
+            )
+        })?;
+    let candidate = if test_path.is_absolute() {
+        test_path.to_path_buf()
+    } else {
+        app_dir.join(test_path)
+    };
+    let path = candidate.canonicalize().with_context(|| {
+        format!(
+            "desktop integration test does not exist: {}",
+            candidate.display()
+        )
+    })?;
+    ensure!(
+        path.starts_with(&root),
+        "desktop integration test must be inside {}: {}",
+        root.display(),
+        path.display()
+    );
+    ensure!(
+        path.is_file(),
+        "desktop integration test is not a file: {}",
+        path.display()
+    );
+    Ok(path)
+}
+
 fn ensure_desktop_build_environment(target: DesktopTarget) -> Result<()> {
     match target {
         DesktopTarget::Linux => {

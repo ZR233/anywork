@@ -18,7 +18,7 @@ import 'package:integration_test/integration_test.dart';
 
 // An explicit, closed synthetic home is prepared outside the app and supplied
 // through ANYWORK_HOME. This suite never edits SQLite or copies a message stream.
-// Run with cargo xtask run-gui --integration-test integration_test/conversation_read_work_test.dart.
+// Run with cargo xtask test-project --suite desktop --case conversation_read_work.
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;

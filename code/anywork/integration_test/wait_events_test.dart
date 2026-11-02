@@ -37,7 +37,7 @@ void main() {
     expect(
       projectRoot,
       isNotNull,
-      reason: 'Use manual-gui --scenario wait-events',
+      reason: 'Use cargo xtask test-project --suite desktop --case wait_events',
     );
     graph = createProductionAppGraph();
     container = ProviderContainer(

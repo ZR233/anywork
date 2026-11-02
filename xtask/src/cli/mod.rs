@@ -31,6 +31,8 @@ pub(crate) enum Command {
     VerifyGui,
     /// Check the Dart Client boundary and run SDK-only Client tests.
     VerifyClient,
+    /// Run desktop integration_test or native lifecycle project suites.
+    TestProject(TestProjectOptions),
     /// Build and run the isolated GUI acceptance tool (arguments forwarded).
     ManualGui(ToolOptions),
     /// Run the anywork desktop app.
@@ -98,6 +100,55 @@ pub(crate) struct RunGuiOptions {
     /// passed to the Flutter build as its `-t` target.
     #[arg(long, value_name = "PATH", requires = "native_launch")]
     pub(crate) native_launch_target: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct TestProjectOptions {
+    /// Project-integration suite.
+    #[arg(long, value_enum)]
+    pub(crate) suite: ProjectSuite,
+    /// smoke is the unique subset of full for the chosen suite.
+    #[arg(long, value_enum, default_value_t = ProjectSet::Full)]
+    pub(crate) set: ProjectSet,
+    /// Directory for the machine-readable run report and forwarded evidence.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) output: Option<std::path::PathBuf>,
+    /// Print discovered case ids and exit. An empty discovery fails.
+    #[arg(long)]
+    pub(crate) list: bool,
+    /// Run or list one case. The id names the target and its environment, not assertions.
+    #[arg(long, value_name = "ID")]
+    pub(crate) case: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProjectSuite {
+    Desktop,
+    Native,
+}
+
+impl std::fmt::Display for ProjectSuite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Desktop => write!(f, "desktop"),
+            Self::Native => write!(f, "native"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProjectSet {
+    Smoke,
+    Full,
+}
+
+impl std::fmt::Display for ProjectSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smoke => write!(f, "smoke"),
+            Self::Full => write!(f, "full"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
