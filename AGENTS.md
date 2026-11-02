@@ -131,7 +131,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
 - GUI 人工验收使用 `cargo xtask manual-gui`；`cargo xtask run-gui --demo` 仍可供独立的界面预览，不能证明真实 bridge、持久化或 provider 行为。
 - Driver 命令在正常完成、失败或取消后都必须等待并回收所属 Flutter、DTD、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
-- 调试和验收 Flutter GUI 时，Flutter Driver 能覆盖的交互必须使用 Flutter Driver，不使用 Computer Use。只有 Driver 无法覆盖且确有必要时，才可使用 Computer Use，以减少对用户鼠标、键盘、窗口焦点和桌面状态的影响。
+- Flutter GUI 的可重复功能验收优先使用官方 `integration_test`；手工布局诊断优先使用 DevTools Inspector，AI 运行时检查可使用官方 Dart/Flutter MCP，按当前 SDK 与平台核实能力。已有 Driver 仍用于需要它的人工交互或专项证据，不将 MCP 的 Driver 工具误认为另一套替代实现。专用 Flutter 工具能覆盖的交互不使用 Computer Use；只有确实无法覆盖且有必要时才使用，减少对用户鼠标、键盘、窗口焦点和桌面状态的影响。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
 
 ### GUI 生成文件
 

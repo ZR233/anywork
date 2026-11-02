@@ -324,7 +324,7 @@ class _ConversationCurrentConnectorState
     );
   }
 
-  ConversationCurrentWindowView _windowView(
+  Widget _windowView(
     ConversationCurrentOwner owner,
     CurrentWindowObservation observation,
   ) {
@@ -333,7 +333,7 @@ class _ConversationCurrentConnectorState
         ? observation.source.text
         : utf8.decode(window.bytes, allowMalformed: true);
     final end = window == null ? null : window.offset + window.bytes.length;
-    return ConversationCurrentWindowView(
+    final content = ConversationCurrentWindowView(
       key: ValueKey(contentReferenceIdentity(observation.source.reference)),
       id: observation.source.id,
       label: observation.source.id.startsWith('plan:') ? '当前计划文档' : null,
@@ -347,6 +347,25 @@ class _ConversationCurrentConnectorState
           : () => owner.nextWindow(observation),
       onFirst: window == null ? null : () => owner.firstWindow(observation),
     );
+    final role = widget.current.previews
+        .where(
+          (preview) =>
+              '${preview.id}:${preview.role.name}' == observation.source.id,
+        )
+        .firstOrNull
+        ?.role;
+    final title = switch (role) {
+      CurrentContentRole.toolArguments => '当前工具参数',
+      CurrentContentRole.toolOutput => '当前工具输出',
+      _ => null,
+    };
+    return title == null
+        ? content
+        : ConversationCurrentEntryView(
+            key: ValueKey(('current-tool-preview', observation.source.id)),
+            title: title,
+            child: content,
+          );
   }
 }
 

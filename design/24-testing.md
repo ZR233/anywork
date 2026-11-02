@@ -53,6 +53,8 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 
 视觉证据必须来自本次相关运行，并标明原生平台或合成预览、视口及覆盖状态。截图采集使用官方框架能力或成熟平台截图工具，不为截图创建第二份产品状态；采集成功后仍须人工检查实际画面。概念稿仅作视觉参照，模拟 provider 和合成预览均不证明真实模型兼容，图片附件交付也不代替自动化断言和资源退出证据。
 
+手工布局诊断优先使用官方 [DevTools Inspector](https://docs.flutter.dev/tools/devtools/inspector)，AI 辅助运行时检查可使用官方 [Dart/Flutter MCP](https://docs.flutter.dev/ai/tools)。可重复功能交互采用 [integration_test](https://docs.flutter.dev/testing/integration-tests)，不把人工调试能力与自动化测试运行器混为一谈；MCP 暴露的 Driver 操作仍属于 Driver，不因接入 MCP 就声称完成 [Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)。截图须核对当前 SDK 和目标平台的实际支持：通过官方渲染 API（如 `RepaintBoundary.toImage`）取得的应用渲染表面不包含原生窗口装饰、系统菜单或平台视图，需要这些内容时另用平台截图能力。替换旧入口时只迁移已证明覆盖等价的范围，不为截图新增私有调试协议或修改用户工具配置。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。
