@@ -56,6 +56,8 @@ pub(in crate::studio) struct CurrentState {
     pub entries: Arc<BTreeMap<(String, String), Arc<CurrentEntryWrite>>>,
     pub by_position: Arc<BTreeMap<(String, i64, String), Arc<CurrentEntryWrite>>>,
     pub active_turn: Option<Turn>,
+    /// State baseline from this exact owner cut, independent of current collection reads.
+    pub interactions: Arc<[InteractionRequest]>,
 }
 
 #[derive(Default)]
@@ -364,6 +366,7 @@ impl CurrentOwner {
                 entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
             }
         }
+        let mut interactions = Vec::new();
         for id in state.permissions.keys().chain(state.interactions.keys()) {
             if let Some(interaction) =
                 crate::thread_assembler::project_thread_interaction(&thread.id, id, state)?
@@ -375,6 +378,7 @@ impl CurrentOwner {
                     payload: Arc::from(serde_json::to_vec(&interaction)?),
                 };
                 entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
+                interactions.push(interaction);
             }
         }
         let plan_record = state.extensions.get(crate::plan_tool::PLAN_EXTENSION);
@@ -513,6 +517,7 @@ impl CurrentOwner {
             entries: Arc::new(entries),
             by_position: Arc::new(by_position),
             active_turn,
+            interactions: interactions.into(),
         });
         self.state = Some(snapshot.clone());
         self.plan_extension_revision = plan_record.map(|record| record.revision);
@@ -577,13 +582,21 @@ impl CurrentState {
             .clone()
     }
     pub(super) fn metadata_bytes(&self) -> u64 {
-        self.entries.values().fold(
+        let entries = self.entries.values().fold(
             (self.contents.len() as u64).saturating_mul(256),
             |bytes, entry| {
                 bytes
                     .saturating_add(entry.payload.len() as u64)
                     .saturating_add(entry.entry_id.len() as u64)
                     .saturating_add(128)
+            },
+        );
+        self.interactions.iter().fold(
+            entries.saturating_add(2 * std::mem::size_of::<usize>() as u64),
+            |bytes, interaction| {
+                bytes
+                    .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
+                    .saturating_add(super::live::interaction_request_bytes(interaction))
             },
         )
     }

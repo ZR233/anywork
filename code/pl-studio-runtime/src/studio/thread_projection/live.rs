@@ -797,7 +797,7 @@ fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
 /// The interaction is boxed inside [`LiveEvent`], so its heap shell is charged separately by
 /// [`LiveEvent::retained_bytes`]; this walks only the owned strings, the question and answer bodies
 /// and the opaque approval arguments.
-fn interaction_request_bytes(interaction: &InteractionRequest) -> u64 {
+pub(super) fn interaction_request_bytes(interaction: &InteractionRequest) -> u64 {
     let scope = &interaction.scope;
     let mut bytes = (interaction.interaction_id.len() as u64)
         .saturating_add(scope.thread_id.len() as u64)

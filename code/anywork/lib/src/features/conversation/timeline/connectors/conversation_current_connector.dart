@@ -13,7 +13,8 @@ import '../state/timeline_display_diagnostics.dart';
 import '../view_models/conversation_current_owner.dart';
 import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
-import '../widgets/timeline_markdown.dart';
+import '../widgets/conversation_current_views.dart';
+import 'timeline_content_connector.dart';
 
 /// The current display borrows the same content owner's read qualification.
 /// Its expanded windows never become messages in the history controller.
@@ -226,48 +227,88 @@ class _ConversationCurrentConnectorState
     final owner = _owner;
     return ListenableBuilder(
       listenable: owner,
-      builder: (context, _) => ConversationActivityBar(
-        key: ValueKey((
+      builder: (context, _) {
+        final includeDisclosures =
+            widget.view.kind != ConversationActivityKind.responding;
+        final hasCurrentDetails = _hasCurrentDetails(
           owner,
-          widget.current.activeTurn?.id,
-          widget.current.active?.id,
-        )),
-        view: widget.view,
-        onExpandedChanged: (expanded) {
-          if (identical(_owner, owner)) _expandedChanged(expanded);
-        },
-        responseContentBuilder: (_) => _windows(),
-        expandedContentBuilder: (_) => Material(
-          type: MaterialType.transparency,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _windows(),
-              if (widget.current.activeTurn?.childrenParentId
-                  case final parentId?)
-                if (widget.completedItemsBuilder case final builder?)
-                  ExpansionTile(
-                    key: StudioDriverKeys.currentCompletedItems(parentId),
-                    title: const Text('已完成成员'),
-                    onExpansionChanged: (expanded) {
-                      if (!isCurrent) return;
-                      setState(() {
-                        _retireCompletedItems();
-                        if (expanded) {
-                          _completedRetirement = ValueNotifier(false);
-                        }
-                      });
-                    },
-                    children: [
-                      if (_completedRetirement case final retirement?)
-                        builder(parentId, retirement),
-                    ],
-                  ),
+          includeDisclosures: includeDisclosures,
+        );
+        return ConversationActivityBar(
+          key: ValueKey((
+            owner,
+            widget.current.activeTurn?.id,
+            widget.current.active?.id,
+          )),
+          view: widget.view,
+          content: hasCurrentDetails
+              ? _currentDetails(owner, includeDisclosures: includeDisclosures)
+              : null,
+          onExpandedChanged: (expanded) {
+            if (identical(_owner, owner)) _expandedChanged(expanded);
+          },
+        );
+      },
+    );
+  }
+
+  bool _hasCurrentDetails(
+    ConversationCurrentOwner owner, {
+    required bool includeDisclosures,
+  }) {
+    if (owner.invalidationNotice != null ||
+        owner.cleanupError != null ||
+        owner.windows.isNotEmpty) {
+      return true;
+    }
+    if (!includeDisclosures) return false;
+    final parentId = widget.current.activeTurn?.childrenParentId;
+    return widget.current.previews.isNotEmpty ||
+        widget.current.plan?.document != null ||
+        widget.current.collections.isNotEmpty ||
+        (parentId != null && widget.completedItemsBuilder != null);
+  }
+
+  ConversationCurrentDetailsView _currentDetails(
+    ConversationCurrentOwner owner, {
+    bool includeDisclosures = false,
+  }) {
+    final parentId = widget.current.activeTurn?.childrenParentId;
+    final completedBuilder = widget.completedItemsBuilder;
+    return ConversationCurrentDetailsView(
+      invalidationNotice: owner.invalidationNotice,
+      cleanupError: owner.cleanupError,
+      onRetryCleanup: () => unawaited(owner.retryCleanup()),
+      windows: [
+        for (final observation in owner.windows)
+          _windowView(owner, observation),
+      ],
+      completedItems:
+          includeDisclosures && parentId != null && completedBuilder != null
+          ? ConversationCurrentEntryView(
+              key: StudioDriverKeys.currentCompletedItems(parentId),
+              title: '已完成成员',
+              onExpansionChanged: (expanded) {
+                if (!isCurrent) return;
+                setState(() {
+                  _retireCompletedItems();
+                  if (expanded) {
+                    _completedRetirement = ValueNotifier(false);
+                  }
+                });
+              },
+              child: _completedRetirement == null
+                  ? const SizedBox.shrink()
+                  : completedBuilder(parentId, _completedRetirement!),
+            )
+          : null,
+      collections: includeDisclosures
+          ? [
               for (final collection in widget.current.collections)
                 _CurrentCollection(
                   key: ValueKey((collection.databaseId, collection.collection)),
                   reference: collection,
-                  owner: _owner,
+                  owner: owner,
                   displays: _collections,
                   isDisplayActive: () =>
                       identical(_owner, owner) &&
@@ -278,81 +319,33 @@ class _ConversationCurrentConnectorState
                             currentCollectionIdentity(collection),
                       ),
                 ),
-            ],
-          ),
-        ),
-      ),
+            ]
+          : const [],
     );
   }
 
-  Widget _windows() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      if (_owner.invalidationNotice case final notice?) Text(notice),
-      if (_owner.cleanupError case final error?) ...[
-        Text(error.toString(), key: const ValueKey('current-cleanup-error')),
-        TextButton(
-          onPressed: () => unawaited(_owner.retryCleanup()),
-          child: const Text('重试释放内容观察'),
-        ),
-      ],
-      for (final observation in _owner.windows)
-        _CurrentWindow(
-          key: ValueKey(contentReferenceIdentity(observation.source.reference)),
-          observation: observation,
-          onNext: () => _owner.nextWindow(observation),
-          onFirst: () => _owner.firstWindow(observation),
-        ),
-    ],
-  );
-}
-
-class _CurrentWindow extends StatelessWidget {
-  const _CurrentWindow({
-    super.key,
-    required this.observation,
-    required this.onNext,
-    required this.onFirst,
-  });
-  final CurrentWindowObservation observation;
-  final VoidCallback onNext;
-  final VoidCallback onFirst;
-  @override
-  Widget build(BuildContext context) {
+  ConversationCurrentWindowView _windowView(
+    ConversationCurrentOwner owner,
+    CurrentWindowObservation observation,
+  ) {
     final window = observation.window;
     final text = window == null
         ? observation.source.text
         : utf8.decode(window.bytes, allowMalformed: true);
-    final end = window == null ? 0 : window.offset + window.bytes.length;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (observation.source.id.startsWith('plan:')) const Text('当前计划文档'),
-        if (observation.error case final error?)
-          Text(
-            error.toString(),
-            key: ValueKey('current-window-error:${observation.source.id}'),
-          ),
-        TimelineMarkdown(
-          id: 'current:${observation.source.id}',
-          text: text,
-          onLink: (_) {},
-          isSafeLink: (_) => false,
-          imageBuilder: (_, url) => Text(url),
-        ),
-        if (window != null &&
-            (window.offset > 0 || end < window.availableThrough))
-          Row(
-            children: [
-              Text('字节 ${window.offset}–$end / ${window.availableThrough}'),
-              if (window.offset > 0)
-                TextButton(onPressed: onFirst, child: const Text('第一段')),
-              if (window.bytes.isNotEmpty && end < window.availableThrough)
-                TextButton(onPressed: onNext, child: const Text('下一段')),
-            ],
-          ),
-      ],
+    final end = window == null ? null : window.offset + window.bytes.length;
+    return ConversationCurrentWindowView(
+      key: ValueKey(contentReferenceIdentity(observation.source.reference)),
+      id: observation.source.id,
+      label: observation.source.id.startsWith('plan:') ? '当前计划文档' : null,
+      text: text,
+      error: observation.error,
+      offset: window?.offset,
+      end: end,
+      availableThrough: window?.availableThrough,
+      onNext: window == null || window.bytes.isEmpty
+          ? null
+          : () => owner.nextWindow(observation),
+      onFirst: window == null ? null : () => owner.firstWindow(observation),
     );
   }
 }
@@ -511,13 +504,17 @@ class _CurrentCollectionState extends State<_CurrentCollection>
   }
 
   @override
-  Widget build(BuildContext context) => ExpansionTile(
-    title: Text(switch (widget.reference.collection) {
+  Widget build(BuildContext context) => ConversationCurrentCollectionView(
+    title: switch (widget.reference.collection) {
       'tools' => '当前工具',
       'members' => '当前内容',
       'interactions' => '当前交互',
       _ => widget.reference.collection,
-    }, key: StudioDriverKeys.currentCollection(widget.reference.collection)),
+    },
+    titleKey: StudioDriverKeys.currentCollection(widget.reference.collection),
+    loading: _loading,
+    stale: _stale,
+    error: _error,
     onExpansionChanged: (expanded) {
       _expanded = expanded;
       if (expanded && _page == null && !_stale) unawaited(_load());
@@ -525,31 +522,20 @@ class _CurrentCollectionState extends State<_CurrentCollection>
         retire();
       }
     },
-    children: [
-      if (_loading) const LinearProgressIndicator(),
-      if (_stale) const Text('当前集合已更新，原版本已失效'),
-      if (_error case final error?) Text(error.toString()),
-      if (_stale || _error != null)
-        TextButton(
-          key: StudioDriverKeys.currentCollectionReload(
-            widget.reference.collection,
-          ),
-          onPressed: () => unawaited(_load()),
-          child: const Text('重新读取当前页'),
-        ),
+    onReload: _stale || _error != null ? () => unawaited(_load()) : null,
+    reloadKey: StudioDriverKeys.currentCollectionReload(
+      widget.reference.collection,
+    ),
+    entries: [
       for (final entry in _page?.entries ?? const <CurrentCollectionEntry>[])
         _entry(entry),
-      if (_page?.continuation case final continuation?)
-        TextButton(
-          key: StudioDriverKeys.currentCollectionNext(
-            widget.reference.collection,
-          ),
-          onPressed: _loading
-              ? null
-              : () => unawaited(_load(continuation: continuation)),
-          child: const Text('下一页'),
-        ),
     ],
+    onNextPage: _page?.continuation == null
+        ? null
+        : () => unawaited(_load(continuation: _page!.continuation!)),
+    nextPageKey: StudioDriverKeys.currentCollectionNext(
+      widget.reference.collection,
+    ),
   );
 
   Widget _entry(CurrentCollectionEntry entry) {
@@ -642,10 +628,20 @@ class _CurrentCollectionEntryState extends State<_CurrentCollectionEntry> {
         item: ChatItemPresentation.decode(
           ChatMessage(id: entry.id, payload: payload),
         ),
-        readContent: (reference, range) =>
-            owner.queryScope.readContent(reference: reference, range: range),
-        isDisplayActive: widget.isDisplayActive,
-        registerWindowDisplay: widget.registerWindowDisplay,
+        contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
+            TimelineContentRangeConnector(
+              itemId: itemId,
+              contentKey: contentKey,
+              label: label,
+              reference: reference,
+              witness: witness,
+              readContent: (reference, range) => owner.queryScope.readContent(
+                reference: reference,
+                range: range,
+              ),
+              isDisplayActive: widget.isDisplayActive,
+              registerDisplay: widget.registerWindowDisplay,
+            ),
       );
     }
     final bytes = (payload as InlinePayload).bytes;
@@ -667,12 +663,12 @@ class _CurrentCollectionEntryState extends State<_CurrentCollectionEntry> {
               text: '',
             ),
         ];
-        return ExpansionTile(
-          title: Text(
+        return ConversationCurrentEntryView(
+          title: entry.id,
+          titleKey: StudioDriverKeys.currentCollectionEntry(
+            collection,
             entry.id,
-            key: StudioDriverKeys.currentCollectionEntry(collection, entry.id),
           ),
-          maintainState: false,
           onExpansionChanged: (expanded) {
             if (expanded && !widget.isDisplayActive()) return;
             setState(() {
@@ -686,10 +682,9 @@ class _CurrentCollectionEntryState extends State<_CurrentCollectionEntry> {
               }
             });
           },
-          children: [
-            if (_bodiesOwner case final bodyOwner?)
-              _ExpandedCurrentBodies(owner: bodyOwner),
-          ],
+          child: _bodiesOwner == null
+              ? const SizedBox.shrink()
+              : _ExpandedCurrentBodies(owner: _bodiesOwner!),
         );
       }
       text = const JsonEncoder.withIndent('  ').convert(decoded);
@@ -698,12 +693,10 @@ class _CurrentCollectionEntryState extends State<_CurrentCollectionEntry> {
     } on TypeError catch (error) {
       text = '当前集合内容格式错误：$error\n${utf8.decode(bytes, allowMalformed: true)}';
     }
-    return ExpansionTile(
-      title: Text(
-        entry.id,
-        key: StudioDriverKeys.currentCollectionEntry(collection, entry.id),
-      ),
-      children: [SelectableText(text)],
+    return ConversationCurrentEntryView(
+      title: entry.id,
+      titleKey: StudioDriverKeys.currentCollectionEntry(collection, entry.id),
+      child: SelectableText(text),
     );
   }
 }
@@ -716,24 +709,32 @@ class _ExpandedCurrentBodies extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: owner,
-    builder: (context, _) => Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (owner.cleanupError case final error?) ...[
-          Text('内容观察释放失败：$error'),
-          TextButton(
-            onPressed: owner.retryCleanup,
-            child: const Text('重试释放内容观察'),
-          ),
-        ],
+    builder: (context, _) => ConversationCurrentDetailsView(
+      cleanupError: owner.cleanupError,
+      onRetryCleanup: () => unawaited(owner.retryCleanup()),
+      windows: [
         for (final observation in owner.windows)
-          _CurrentWindow(
+          ConversationCurrentWindowView(
             key: ValueKey(
               contentReferenceIdentity(observation.source.reference),
             ),
-            observation: observation,
-            onNext: () => owner.nextWindow(observation),
-            onFirst: () => owner.firstWindow(observation),
+            id: observation.source.id,
+            text: observation.window == null
+                ? observation.source.text
+                : utf8.decode(observation.window!.bytes, allowMalformed: true),
+            error: observation.error,
+            offset: observation.window?.offset,
+            end: observation.window == null
+                ? null
+                : observation.window!.offset + observation.window!.bytes.length,
+            availableThrough: observation.window?.availableThrough,
+            onNext:
+                observation.window == null || observation.window!.bytes.isEmpty
+                ? null
+                : () => owner.nextWindow(observation),
+            onFirst: observation.window == null
+                ? null
+                : () => owner.firstWindow(observation),
           ),
       ],
     ),

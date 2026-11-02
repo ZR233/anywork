@@ -12,6 +12,7 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
+import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'timeline_children_connector.dart';
 
@@ -209,13 +210,23 @@ class _TimelineConnectorBody extends ConsumerWidget {
       onRetryConnection: () {
         if (active()) retry();
       },
-      readContent: (reference, range) {
-        final scope = lease.queries;
-        if (!active() || scope == null) {
-          return Future.error(const StaleConversationScope());
-        }
-        return scope.readContent(reference: reference, range: range);
-      },
+      contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
+          TimelineContentRangeConnector(
+            key: ValueKey((lease.generation, itemId, contentKey)),
+            itemId: itemId,
+            contentKey: contentKey,
+            label: label,
+            reference: reference,
+            witness: witness,
+            isDisplayActive: active,
+            readContent: (reference, range) {
+              final scope = lease.queries;
+              if (!active() || scope == null) {
+                return Future.error(const StaleConversationScope());
+              }
+              return scope.readContent(reference: reference, range: range);
+            },
+          ),
       childrenBuilder: (parentId) => TimelineChildrenConnector(
         key: ValueKey((lease.generation, parentId)),
         repository: ref.read(anyworkClientProvider).conversations,
