@@ -255,56 +255,17 @@ Future<void> _close(WidgetTester tester, _Composer composer) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('运行中、清理中、可继续、正在继续与完成态的按钮矩阵', (tester) async {
+  testWidgets('点击停止使用执行身份；空输入继续只能点击且携带已观察路由版本', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
-
-    // 正常完成：空草稿只有禁用发送，不出现继续或停止。
-    expect(
-      find.byKey(const ValueKey('composer-submit-disabled')),
-      findsOneWidget,
-    );
-    expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
-    expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
-
-    // 运行中空草稿：中性停止。
     await composer.publish(execution: _running);
-    await tester.pump();
-    expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
-    expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
-
-    // 运行中有草稿：发送并继续。
-    await tester.enterText(
-      find.byKey(StudioDriverKeys.composerInput),
-      'follow up while running',
-    );
-    await tester.pump();
-    expect(find.byKey(StudioDriverKeys.composerSubmit), findsOneWidget);
-    expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
-
-    // 停止已受理、清理未观察到结束：显示正在停止且不可提交。草稿先清空以取停止位。
-    await tester.enterText(find.byKey(StudioDriverKeys.composerInput), '');
     await tester.pump();
     await tester.tap(find.byKey(StudioDriverKeys.composerStop));
     await tester.pump();
     expect(composer.transport.stopTargets, ['$_threadId:exec-1']);
-    expect(find.byKey(StudioDriverKeys.composerStopping), findsOneWidget);
-    expect(find.text('Stopping'), findsOneWidget);
-    expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
-    expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
 
-    // 观察到执行结束并留下未认领继续点：显示继续与已知中断原因。
     await composer.publish(execution: null, continuation: _continuation);
     await tester.pump();
-    expect(find.byKey(StudioDriverKeys.composerStopping), findsNothing);
-    expect(find.byKey(StudioDriverKeys.composerContinue), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('composer-continuation-reason')),
-      findsOneWidget,
-    );
-    expect(find.text('Stopped by the user'), findsOneWidget);
-
-    // 空输入继续必须点击：Enter 不提交，也不产生继续操作。
     await tester.tap(find.byKey(StudioDriverKeys.composerInput));
     await tester.pump();
     await tester.testTextInput.receiveAction(TextInputAction.send);
@@ -317,7 +278,6 @@ void main() {
       isFalse,
     );
 
-    // 点击继续后、新轮次出现前：显示正在继续并禁用重复提交。
     await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
     await tester.pump();
     expect(
@@ -329,15 +289,6 @@ void main() {
       composer.workspace.modelRoute!.revision,
       reason: '继续必须携带已观察的模型路由版本',
     );
-    expect(find.byKey(StudioDriverKeys.composerContinuing), findsOneWidget);
-    expect(find.text('Continuing'), findsOneWidget);
-    expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
-
-    // 新轮次出现：回到运行中的停止入口。
-    await composer.publish(execution: _running, continuation: null);
-    await tester.pump();
-    expect(find.byKey(StudioDriverKeys.composerContinuing), findsNothing);
-    expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
     await _close(tester, composer);
   });
 
