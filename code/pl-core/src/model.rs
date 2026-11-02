@@ -2294,10 +2294,23 @@ pub struct ModelToolCall {
     pub rejection: Option<ModelToolCallRejection>,
 }
 
+/// What a response without tool calls asks the owning Turn to do next.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelTurnAction {
+    Continue,
+    /// Also the implicit action recorded by outputs predating this field.
+    #[default]
+    Finish,
+}
+
 /// A proposed step. The Thread commits its content and private context together.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelStepOutput {
+    /// Tool calls retain their own dispatch and control semantics.
+    #[serde(default)]
+    pub turn_action: ModelTurnAction,
     pub attempt_id: String,
     pub base_context_revision: u64,
     pub content: Vec<ContextContent>,

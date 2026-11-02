@@ -7,7 +7,7 @@
 //! （`trace_projection`）是独立子状态机。
 
 mod accumulator;
-mod chat_presentation;
+pub(super) mod chat_presentation;
 pub(crate) mod decode;
 pub(crate) mod event;
 mod lifecycle;

@@ -3857,6 +3857,7 @@ mod storage_fault_tests {
         ) -> Result<PreparedModelCall, ModelError> {
             Ok(PreparedModelCall::new(async move {
                 Ok(ModelStepOutput {
+                    turn_action: Default::default(),
                     attempt_id: request.attempt_id,
                     base_context_revision: request.context.revision,
                     content: vec![ContextContent::Text {

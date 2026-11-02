@@ -352,7 +352,9 @@ impl Owner {
                 }
                 other => other?,
             };
-            if output.tool_calls.is_empty() {
+            if output.tool_calls.is_empty()
+                && output.turn_action == crate::model::ModelTurnAction::Finish
+            {
                 return Ok(TurnCompletion {
                     model_steps: completed,
                     outcome: TurnOutcome::Completed,
