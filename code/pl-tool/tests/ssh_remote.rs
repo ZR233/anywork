@@ -1,4 +1,5 @@
-//! Set PURE_SSH_TEST_SCOPE=exec for the exec/stdin matrix without unrelated workspace/Git/LSP journeys.
+//! Real SSH is an explicit external suite. Unconfigured runs stay ignored;
+//! `--ignored` without host/workspace/helper artifacts fails instead of using a local helper.
 #[path = "support/remote_manager.rs"]
 mod remote_manager;
 #[path = "support/remote_stream.rs"]
@@ -28,8 +29,9 @@ use pl_lsp::query::{LspQuery, LspQueryOperation};
 use pl_lsp::runtime::{LspMissingComponent, LspRuntimeRegistry};
 use tokio_util::sync::CancellationToken;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[tokio::test]
+#[ignore = "external SSH; requires PURE_SSH_TEST_SERVER, PURE_SSH_TEST_WORKSPACE, and PURE_REMOTE_HELPER_*"]
+async fn ssh_remote_validation() -> anyhow::Result<()> {
     let exec_only = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
         Ok("exec") => true,
         Ok("full") | Err(std::env::VarError::NotPresent) => false,

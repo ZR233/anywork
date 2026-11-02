@@ -1,6 +1,9 @@
-//! 用独立 stdio helper 验证物理磁盘预算、双流与无归档长流，不需要产品实例。
-#[cfg(target_os = "linux")]
+//! 真实 helper 物理磁盘预算、双流与无归档长流。
+#![cfg(target_os = "linux")]
+
 use anyhow::Context as _;
+#[path = "support/helper.rs"]
+mod helper;
 use pl_protocol::remote::{
     REMOTE_PROTOCOL_VERSION, RemoteCapture, RemoteErrorCode, RemoteRequest, RemoteResponse,
     RemoteSpawnRequest,
@@ -11,10 +14,10 @@ use pl_tool::{
 };
 use std::{collections::BTreeMap, process::Stdio};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[tokio::test]
+async fn helper_capture_budget_refuses_invalid_and_charges_disk() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
-    let mut child = tokio::process::Command::new("pl-remote-helper")
+    let mut child = tokio::process::Command::new(helper::remote_helper_executable())
         .arg("--serve")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -178,7 +181,6 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(child.wait().await?.success(), "helper did not close");
     #[cfg(target_os = "linux")]
     capture_flush_failure_preserves_exit().await?;
-    println!("raw_capture_preflight=passed");
     Ok(())
 }
 
@@ -292,16 +294,16 @@ async fn write_file(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 async fn capture_flush_failure_preserves_exit() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     // RLIMIT_FSIZE affects regular capture files, while the business process writes to a pipe.
     // Ignoring SIGXFSZ makes the physical writer observe EFBIG instead of killing the helper.
+    let serve = format!(
+        "trap '' XFSZ; exec prlimit --fsize=0 -- {} --serve",
+        helper::remote_helper_executable().display()
+    );
     let mut child = tokio::process::Command::new("sh")
-        .args([
-            "-c",
-            "trap '' XFSZ; exec prlimit --fsize=0 -- pl-remote-helper --serve",
-        ])
+        .args(["-c", &serve])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

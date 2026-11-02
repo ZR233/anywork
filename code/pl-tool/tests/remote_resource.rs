@@ -1,59 +1,46 @@
-//! Real HTTP/2 helper acceptance. Explicit opt-in, outside the automated library test gate.
+//! Deterministic helper reconnect, receipt and resource-release proofs.
+#![cfg(target_os = "linux")]
+
+#[path = "support/helper.rs"]
+mod helper;
 #[path = "support/remote_receipts.rs"]
 mod receipts;
 #[path = "support/remote.rs"]
 mod support;
 use anyhow::{Context, ensure};
 use pl_protocol::remote::*;
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let executable = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .context("usage: remote_resource_validation HELPER [OPERATIONS]")?;
-    let operations = std::env::args()
-        .nth(2)
-        .map(|v| v.parse())
-        .transpose()?
-        .unwrap_or(10_000);
-    ensure!(operations > 0, "operation count must be positive");
-    verify_budget_progress().await?;
-    receipts::verify(&executable).await?;
-    let mut helper = support::Helper::start(&executable).await?;
-    let outcome = exercise(&mut helper, operations).await;
+#[tokio::test]
+async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
+    let executable = helper::remote_helper_executable();
+    receipts::verify(executable).await?;
+    let mut helper = support::Helper::start(executable).await?;
+    let outcome = exercise(&mut helper).await;
     let close = helper.close().await;
     outcome?;
     close?;
-    support::Helper::start(&executable)
+    support::Helper::start(executable)
         .await?
         .close_during_attachment()
         .await?;
-    #[cfg(target_os = "linux")]
-    {
-        let expiring = support::Helper::start(&executable).await?;
-        let mut command = expiring
-            .command("lease-owned", "printf 'ready\\n'; sleep 120")
-            .await?;
-        let mut output = BufReader::new(command.take_stdout().context("lease stdout")?);
-        let mut ready = String::new();
-        output.read_line(&mut ready).await?;
-        ensure!(ready == "ready\n");
-        expiring.expire().await?;
-        ensure!(
-            !matches!(command.wait().await, Ok(exit) if exit.exit_code == Some(0)),
-            "expired physical command was reported successful"
-        );
-    }
-    println!("REMOTE_RESOURCE_ACCEPTANCE=PASS");
+    let expiring = support::Helper::start(executable).await?;
+    let mut command = expiring
+        .command("lease-owned", "printf 'ready\\n'; sleep 120")
+        .await?;
+    let mut output = BufReader::new(command.take_stdout().context("lease stdout")?);
+    let mut ready = String::new();
+    output.read_line(&mut ready).await?;
+    ensure!(ready == "ready\n");
+    expiring.expire().await?;
+    ensure!(
+        !matches!(command.wait().await, Ok(exit) if exit.exit_code == Some(0)),
+        "expired physical command was reported successful"
+    );
     Ok(())
 }
-async fn exercise(helper: &mut support::Helper, operations: usize) -> anyhow::Result<()> {
+async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
     let initial = support::heartbeat(&helper.client).await?;
     let baseline = support::resources(helper.owner_pid);
     let host_baseline = support::resources(std::process::id());
@@ -292,62 +279,6 @@ async fn exercise(helper: &mut support::Helper, operations: usize) -> anyhow::Re
         serde_json::json!({"scenario":"resource-restore", "helper":support::heartbeat(&helper.client).await?})
     );
 
-    for parallelism in [1_usize, 32, 128, 512] {
-        use futures::{StreamExt, stream};
-        let mut samples = stream::iter(0..operations)
-            .map(|_| {
-                let target = helper.target("transfer.bin");
-                let client = helper.client.clone();
-                async move {
-                    let start = Instant::now();
-                    let reply = client.request(RemoteRequest::Stat(target), &[]).await?;
-                    Ok::<_, pl_tool::remote::RemoteClientError>((
-                        start.elapsed().as_secs_f64() * 1000.0,
-                        reply.timing,
-                    ))
-                }
-            })
-            .buffer_unordered(parallelism);
-        let start = Instant::now();
-        let mut durations = Vec::new();
-        let mut phases = [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ];
-        while let Some(result) = samples.next().await {
-            let (elapsed, timing) = result?;
-            durations.push(elapsed);
-            for (phase, value) in phases.iter_mut().zip([
-                timing.admission_wait_micros,
-                timing.remote.admission_wait_micros,
-                timing.remote.execution_micros,
-                timing.remote.filesystem_micros,
-                timing.remote.transfer_backpressure_micros,
-                timing.cleanup_micros,
-            ]) {
-                phase.push(value);
-            }
-        }
-        for phase in &mut phases {
-            phase.sort_unstable();
-        }
-        let phases = ["hostAdmission", "helperAdmission", "execution", "filesystem", "flowControlWait", "receiptRelease"].into_iter()
-            .zip(phases).map(|(name, values)| (name.to_owned(), serde_json::json!({"p50Us":values[(values.len()-1)/2], "p95Us":values[(values.len()-1)*95/100], "p99Us":values[(values.len()-1)*99/100]})))
-            .collect::<serde_json::Map<_, _>>();
-        durations.sort_by(f64::total_cmp);
-        let percentile =
-            |percent: usize| durations[(durations.len().saturating_sub(1) * percent) / 100];
-        println!(
-            "{}",
-            serde_json::json!({"scenario":"concurrent-stat", "parallelism":parallelism, "operations":operations,
-            "seconds":start.elapsed().as_secs_f64(), "p50Ms":percentile(50), "p95Ms":percentile(95), "p99Ms":percentile(99), "phaseDurations":phases,
-            "resources":support::resources(helper.owner_pid), "host":support::resources(std::process::id()), "helper":support::heartbeat(&helper.client).await?})
-        );
-    }
     for index in 0..1000 {
         let path = helper.root.path().join(format!("workspace-{index}"));
         std::fs::create_dir(&path)?;
@@ -399,62 +330,5 @@ async fn exercise(helper: &mut support::Helper, operations: usize) -> anyhow::Re
         serde_json::json!({"scenario":"resource-release", "baseline":baseline, "final":support::resources(helper.owner_pid),
         "hostBaseline":host_baseline, "hostFinal":support::resources(std::process::id()), "helper":final_state})
     );
-    Ok(())
-}
-
-async fn verify_budget_progress() -> anyhow::Result<()> {
-    use pl_remote_helper::budget::{FRAME_BYTES, ResourceBudget, ResourcePolicy};
-    use tokio_util::sync::CancellationToken;
-    let allocation = ResourcePolicy {
-        available_memory_divisor: 16,
-        resident_ceiling: Some(FRAME_BYTES * 64),
-    }
-    .allocation()?;
-    let budget = ResourceBudget::new(allocation)?;
-    let stop = CancellationToken::new();
-    let occupied = budget
-        .try_reserve(allocation.resident_bytes / 2)
-        .context("initial reservation")?;
-    let large = budget.reserve(allocation.resident_bytes * 3 / 4, &stop);
-    tokio::pin!(large);
-    ensure!(futures::poll!(&mut large).is_pending());
-    let small =
-        tokio::time::timeout(Duration::from_secs(5), budget.reserve(FRAME_BYTES, &stop)).await??;
-    drop(occupied);
-    let admitted = tokio::time::timeout(Duration::from_secs(5), large).await??;
-    drop(admitted);
-    drop(small);
-    ensure!(budget.usage().0 == 0);
-    // A full exchange pool must still admit a lightweight wait intent in the runtime budget.
-    let controls = ResourceBudget::new(allocation)?;
-    let occupied_controls = controls
-        .try_reserve(allocation.resident_bytes)
-        .context("full control pool")?;
-    let waiting_control = controls.reserve_with_intent(FRAME_BYTES, &stop, &budget);
-    tokio::pin!(waiting_control);
-    ensure!(futures::poll!(&mut waiting_control).is_pending());
-    ensure!(budget.usage().0 > 0 && controls.usage().0 == allocation.resident_bytes);
-    drop(occupied_controls);
-    drop(tokio::time::timeout(Duration::from_secs(5), waiting_control).await??);
-    ensure!(budget.usage().0 == 0 && controls.usage().0 == 0);
-    let occupied = budget
-        .try_reserve(allocation.resident_bytes / 2)
-        .context("shrink reservation")?;
-    let waiting = budget.reserve(allocation.resident_bytes * 3 / 4, &stop);
-    tokio::pin!(waiting);
-    ensure!(futures::poll!(&mut waiting).is_pending());
-    let mut reduced = allocation;
-    reduced.resident_bytes /= 2;
-    budget.resize(reduced)?;
-    ensure!(
-        waiting.await.is_err(),
-        "oversized intent survived an incompatible resource shrink"
-    );
-    drop(occupied);
-    budget.resize(allocation)?;
-    stop.cancel();
-    ensure!(budget.reserve(FRAME_BYTES, &stop).await.is_err());
-    ensure!(budget.usage().0 == 0, "cancelled intents retained bytes");
-    println!("RESOURCE_ADMISSION_PROGRESS=PASS");
     Ok(())
 }

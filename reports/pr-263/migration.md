@@ -133,11 +133,11 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 | `pl-core/tests/chat_performance.rs::increasing_hidden_pending_does_not_increase_scoped_budget_work_or_history_io` | 同上 | **删除**（语义重复） |
 | `pl-core/tests/chat_performance.rs` 其余确定性 work/IO | 快速正确性 | **保留在 PR 门禁**；墙钟/RSS 才进 performance |
 | 其余 `pl-core/tests`、`pl-model/tests`、`pl-patch/tests`、`pl-studio-runtime/tests` | 各 crate 公开规则 / SQLite / 协议 | 保留；CI 用 workspace 一次发现，不再按 crate 白名单漏跑 |
-| `pl-tool/examples/command_capture_limit_validation.rs` | UTF-8/字节预算、exec 拒绝、真文件双流 | excerpt → `pl-output` 测试；拒绝/no-spawn → `pl-tool` 测试；真文件/helper → backend/native。**删除 example main 与旧白名单注释** |
-| `pl-tool/examples/helper_capture_budget.rs` | 真实 helper 预算 | 可发现 backend 测试 |
-| `pl-tool/examples/remote_directory_validation.rs` | 远端目录边界 | 可发现 backend 测试 |
-| `pl-tool/examples/remote_resource_validation.rs` | 重连/释放 vs 压力 | 功能进测试；压力进 performance |
-| `pl-tool/examples/ssh_remote_validation.rs` | 真实 SSH | 明确 external；未配置标未执行，请求运行却缺条件必须失败 |
+| `pl-tool/examples/command_capture_limit_validation.rs` | UTF-8/字节预算、exec 拒绝、真文件双流 | excerpt → `pl-output/tests/excerpt_budget.rs`；拒绝/no-spawn/预算 → `pl-tool/tests/command_capture_limit.rs`；真 helper → `helper_capture.rs`。**已删除 example** |
+| `pl-tool/examples/helper_capture_budget.rs` | 真实 helper 预算 | `pl-tool/tests/helper_capture.rs` |
+| `pl-tool/examples/remote_directory_validation.rs` | 远端目录边界 | `pl-tool/tests/remote_directory.rs` |
+| `pl-tool/examples/remote_resource_validation.rs` | 重连/释放 vs 压力 | 功能/重连/释放 → `pl-tool/tests/remote_resource.rs`；预算准入 → `pl-remote-helper/tests/resource_budget.rs`；大规模并发压力不进默认发现 |
+| `pl-tool/examples/ssh_remote_validation.rs` | 真实 SSH | `pl-tool/tests/ssh_remote.rs` `#[ignore]`；默认未执行，`--ignored` 缺条件失败 |
 | `pl-core/examples/task_lookup_scaling.rs` 及 Criterion | 性能 | 保留 performance；确定性预算留 PR |
 | `pl-studio-runtime/examples/{model,collaboration,context_cache,session_layout,updater}_observe.rs` | 人工/live 观察 | 保持显式 opt-in，不进默认 CI |
 | `pl-core/examples/minimal_thread.rs` | 示例 | 只编译不执行 |

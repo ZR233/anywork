@@ -1,24 +1,4 @@
-//! 命令捕获上限与模型可见字节上限的手工验证入口。
-//!
-//! 为什么不是 `cargo test`：本仓库约定（`AGENTS.md`「测试、检查与交付」、`design/24-testing.md`
-//! §24.1）只有 `pl-model/tests` 与 `pl-core/tests` 保留常规自动化行为用例、`pl-studio-runtime`
-//! 保留历史保存专项用例，**其它 crate 不新增测试**；而这两处都不能反向依赖 pl-tool。因此这里沿用
-//! 本 crate 已有的人工入口形式（见 `ssh_remote_validation.rs`）：用公开 API 驱动真实实现，断言失败
-//! 即返回非零退出码，由主代理/发布者在目标机上执行。
-//!
-//! 覆盖严格输入与 no-start 诊断、共享原始双流预算、真实存储故障和修复、64 KiB 正文
-//! 额度及独立协议包装、准备阶段 deadline/cancellation、stdin 背压取消及 UTF-8 边界。可选真实进程入口
-//! 还验证有限输入与 EOF、无末尾换行和无效编码的原始字节。
-//!
-//! 运行（确定性部分不需要任何外部依赖）：
-//! ```text
-//! cargo run -p pl-tool --example command_capture_limit_validation
-//! ```
-//! 需要真实进程与真实容器的部分（Linux 需要 PATH 上有 pl-remote-helper，先执行
-//! `cargo install --path code/pl-remote-helper --locked`）：
-//! ```text
-//! PURE_PL_COMMAND_REAL_BACKEND=1 cargo run -p pl-tool --example command_capture_limit_validation
-//! ```
+//! Exec 拒绝、捕获预算与进程终态。UTF-8 excerpt 预算见 `pl-output`。
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -57,44 +37,67 @@ const FAKE_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
 /// 多字节正文：一个汉字 3 字节，因此按字符计和按字节计的结果明显不同。
 const MULTIBYTE_PATTERN: &str = "汉字捕获上限";
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    println!("== 命令捕获上限验证（手工入口）==");
+#[cfg(target_os = "linux")]
+#[path = "support/helper.rs"]
+mod helper;
 
-    for (head, tail, gap) in [
-        (
-            "汉字边界".as_bytes()[..4].to_vec(),
-            "汉字边界".as_bytes()[4..].to_vec(),
-            0,
-        ),
-        (b"head".repeat(1000), b"tail".repeat(1000), 1_000_000),
-        (vec![0xff, 0xfe, b'a'], vec![0xff, b'z'], 100),
-    ] {
-        let raw_length = head.len() + tail.len() + gap;
-        let excerpt = pl_output::OutputExcerpt::from_parts(head, tail, gap);
-        for cap in 0..=128 {
-            let visible = excerpt.clone().project(cap);
-            anyhow::ensure!(visible.content.len() <= cap && visible.original_length == raw_length);
-            anyhow::ensure!(visible.content.matches("[output omitted]").count() <= 1);
-        }
-    }
-    println!("OK  0..128 字节预算、原始长度、跨片段 UTF-8 与唯一省略行");
-    exec_input_contract().await?;
-    session_layout_and_directory_policy().await?;
-    concurrent_pool_ignore_create_is_idempotent().await?;
-    raw_capture_budget_terminates().await?;
-    write_failure_keeps_its_retry_obligation().await?;
-    combined_requested_output_budget().await?;
-    model_output_cap_counts_bytes_not_chars().await?;
-    model_body_budget_preserves_metadata().await?;
-    preparation_deadline_and_cancellation().await?;
-    backpressured_stdin_cancellation().await?;
+#[tokio::test]
+async fn exec_input_is_rejected_without_spawn() -> anyhow::Result<()> {
+    exec_input_contract().await
+}
+
+#[tokio::test]
+async fn session_files_layout_and_directory_policy() -> anyhow::Result<()> {
+    session_layout_and_directory_policy().await
+}
+
+#[tokio::test]
+async fn concurrent_pool_ignore_create_is_idempotent_test() -> anyhow::Result<()> {
+    concurrent_pool_ignore_create_is_idempotent().await
+}
+
+#[tokio::test]
+async fn raw_capture_budget_terminates_with_typed_limit() -> anyhow::Result<()> {
+    raw_capture_budget_terminates().await
+}
+
+#[tokio::test]
+async fn write_failure_keeps_retry_obligation() -> anyhow::Result<()> {
+    write_failure_keeps_its_retry_obligation().await
+}
+
+#[tokio::test]
+async fn combined_requested_output_budget_is_shared() -> anyhow::Result<()> {
+    combined_requested_output_budget().await
+}
+
+#[tokio::test]
+async fn model_output_cap_counts_bytes_not_chars_test() -> anyhow::Result<()> {
+    model_output_cap_counts_bytes_not_chars().await
+}
+
+#[tokio::test]
+async fn model_body_budget_preserves_metadata_test() -> anyhow::Result<()> {
+    model_body_budget_preserves_metadata().await
+}
+
+#[tokio::test]
+async fn preparation_deadline_and_cancellation_prevent_spawn() -> anyhow::Result<()> {
+    preparation_deadline_and_cancellation().await
+}
+
+#[tokio::test]
+async fn backpressured_stdin_cancellation_keeps_exec_alive() -> anyhow::Result<()> {
+    backpressured_stdin_cancellation().await
+}
+
+#[tokio::test]
+async fn missing_producer_receipt_is_not_archived() -> anyhow::Result<()> {
     let (mut producer, _root) = scripted_backend(
         Arc::new(CaptureFacts::default()),
         ScriptedBehavior::finite_multibyte(),
         None,
     )?;
-    // 故意违反 Producer 的终态回执契约：不能拿本地 header 冒充完整远端捕获。
     producer.capture_ownership = pl_tool::command::CommandCaptureOwnership::Producer;
     let archive = Arc::new(FixedArchive::default());
     let error = run_exec_tool(producer, archive.clone())
@@ -102,21 +105,23 @@ async fn main() -> anyhow::Result<()> {
         .expect_err("missing producer receipt must fail");
     anyhow::ensure!(error.source.downcast_ref::<ExecFailure>().is_some());
     anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
-    println!("OK  Producer 缺少回执时不归档未确认捕获");
-
-    if std::env::var("PURE_PL_COMMAND_REAL_BACKEND").as_deref() == Ok("1") {
-        real_backend_limit_terminates_process().await?;
-        real_stdin_eof_and_raw_utf8().await?;
-        #[cfg(target_os = "linux")]
-        worker_bootstrap_cancellation().await?;
-    } else {
-        println!(
-            "-- 跳过真实进程验证（PURE_PL_COMMAND_REAL_BACKEND=1 且 PATH 上有 pl-remote-helper 时执行）"
-        );
-    }
-
-    println!("== 全部断言通过 ==");
     Ok(())
+}
+
+#[tokio::test]
+async fn real_local_backend_terminates_at_capture_limit() -> anyhow::Result<()> {
+    real_backend_limit_terminates_process().await
+}
+
+#[tokio::test]
+async fn real_stdin_eof_and_raw_utf8_are_preserved() -> anyhow::Result<()> {
+    real_stdin_eof_and_raw_utf8().await
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn worker_bootstrap_cancellation_does_not_start_business() -> anyhow::Result<()> {
+    worker_bootstrap_cancellation().await
 }
 
 async fn exec_input_contract() -> anyhow::Result<()> {
@@ -337,7 +342,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     anyhow::ensure!(root.path().join(files.artifacts()).is_dir());
     anyhow::ensure!(root.path().join(files.commands()).is_dir());
 
-    let local = pl_tool::command::LocalCommandBackend::new(root.path().to_path_buf());
+    let local = local_command_backend(root.path());
     let target = local
         .output_target(thread, &call, &call, "printf one")
         .await?;
@@ -1073,7 +1078,7 @@ async fn model_output_cap_counts_bytes_not_chars() -> anyhow::Result<()> {
 /// 可选：真实进程后端（`LocalCommandBackend`）在低自定义预算下也必须被取消并等它结束。
 async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
     let root = tempfile::tempdir().context("tempdir")?;
-    let inner = pl_tool::command::LocalCommandBackend::new(root.path().to_path_buf());
+    let inner = local_command_backend(root.path());
     let backend = LowBudgetBackend::new(
         inner,
         FAKE_CAPTURE_LIMIT_BYTES,
@@ -1165,9 +1170,7 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
 /// 一次运行的观察事实：由 backend 在真实落盘/取消时记录，供断言使用。
 async fn real_stdin_eof_and_raw_utf8() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
-    let manager = CommandProcessManager::new(Arc::new(pl_tool::command::LocalCommandBackend::new(
-        root.path(),
-    )));
+    let manager = CommandProcessManager::new(Arc::new(local_command_backend(root.path())));
     let mut request = start_request();
     request.command = "cat > stdin.txt; printf done".into();
     let started = manager.start(request).await?;
@@ -1731,6 +1734,17 @@ async fn run_exec_tool_with_budget<B: CommandBackend + 'static>(
     })?
 }
 
+fn local_command_backend(root: &Path) -> pl_tool::command::LocalCommandBackend {
+    let backend = pl_tool::command::LocalCommandBackend::new(root.to_path_buf());
+    #[cfg(target_os = "linux")]
+    {
+        backend.with_worker_executable(helper::remote_helper_executable().to_path_buf())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        backend
+    }
+}
 fn start_request() -> CommandStartRequest {
     CommandStartRequest {
         command: "scripted-endless-output".to_string(),

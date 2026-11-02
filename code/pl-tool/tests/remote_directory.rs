@@ -1,5 +1,7 @@
-//! Explicit public-client regression for directory response failure isolation.
-use anyhow::{Context, ensure};
+//! Large directory listing must not kill the shared helper transport.
+#![cfg(target_os = "linux")]
+
+use anyhow::ensure;
 use pl_protocol::remote::{
     REMOTE_PROTOCOL_VERSION, RemotePathRequest, RemoteRequest, RemoteResponse,
 };
@@ -7,20 +9,13 @@ use pl_tool::remote::RemoteClient;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
-    let executable = std::env::args()
-        .nth(1)
-        .context("usage: remote_directory_validation HELPER [ENTRIES]")?;
-    let count = std::env::args()
-        .nth(2)
-        .map(|value| value.parse::<usize>())
-        .transpose()?
-        .unwrap_or(1000);
+#[path = "support/helper.rs"]
+mod helper;
+
+#[tokio::test]
+async fn large_directory_listing_keeps_shared_transport() -> anyhow::Result<()> {
+    let executable = helper::remote_helper_executable();
+    let count = 1000;
     let root = tempfile::tempdir()?;
     for index in 0..count {
         std::fs::write(
