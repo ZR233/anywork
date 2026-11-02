@@ -497,7 +497,7 @@ impl BotsFixture {
             .arg("cargo")
             .arg("xtask")
             .arg("run-gui")
-            .arg("--driver")
+            .arg("--capture")
             .arg("--log-level")
             .arg("info");
         apply_isolation_env(&mut command, home, keyring.path(), &self.manifest)?;

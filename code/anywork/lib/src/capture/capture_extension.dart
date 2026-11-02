@@ -5,17 +5,26 @@ import 'dart:developer' as developer;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
+import '../app/studio_host_lifecycle.dart';
 import 'flutter_content_capture.dart';
 
 const String kCaptureExtensionName = 'ext.anywork.capture';
+const String kRequestExitExtensionName = 'ext.anywork.requestExit';
 
 bool _registered = false;
 Future<FlutterContentCaptureResult>? _inFlight;
 
-/// Debug-only, read-only VM service extension. Never registered in release.
+/// Debug-only VM service extensions. Never registered in release.
+///
+/// `requestExit` is available in every debug/profile host so native-fault
+/// assemblies can close without enabling capture. PNG capture stays gated on
+/// `ANYWORK_CAPTURE`.
 void maybeRegisterCaptureExtension() {
   if (_registered) return;
-  developer.registerExtension(kCaptureExtensionName, _handleCapture);
+  developer.registerExtension(kRequestExitExtensionName, _handleRequestExit);
+  if (const bool.fromEnvironment('ANYWORK_CAPTURE')) {
+    developer.registerExtension(kCaptureExtensionName, _handleCapture);
+  }
   _registered = true;
 }
 
@@ -30,7 +39,8 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
         'A capture is already in progress for this view',
       );
     }
-    final ratio = double.tryParse(parameters['pixelRatio'] ?? '') ??
+    final ratio =
+        double.tryParse(parameters['pixelRatio'] ?? '') ??
         kCaptureDefaultPixelRatio;
     final task = _captureAfterFrame(ratio);
     _inFlight = task;
@@ -63,7 +73,19 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
   }
 }
 
-Future<FlutterContentCaptureResult> _captureAfterFrame(double pixelRatio) async {
+Future<developer.ServiceExtensionResponse> _handleRequestExit(
+  String _,
+  Map<String, String> __,
+) async {
+  unawaited(StudioExitCoordinator.requestExit());
+  return developer.ServiceExtensionResponse.result(
+    jsonEncode({'acknowledged': true}),
+  );
+}
+
+Future<FlutterContentCaptureResult> _captureAfterFrame(
+  double pixelRatio,
+) async {
   await SchedulerBinding.instance.endOfFrame;
   return captureFlutterContent(pixelRatio: pixelRatio);
 }

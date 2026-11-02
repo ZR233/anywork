@@ -9,6 +9,7 @@ import 'dart:io';
 
 import 'package:anywork/main.dart' as studio;
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/capture/capture_extension.dart';
 import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork_client/studio_ports.dart';
@@ -20,6 +21,7 @@ void main() {
   if (const bool.fromEnvironment('ANYWORK_CAPTURE')) {
     throw StateError('Native fault assembly must not enable capture');
   }
+  maybeRegisterCaptureExtension();
   final fault = Platform.environment['ANYWORK_NATIVE_SHUTDOWN_FAULT'];
   switch (fault) {
     case 'pending-init':

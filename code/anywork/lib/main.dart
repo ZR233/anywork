@@ -29,8 +29,7 @@ void bootstrapStudio({AppGraph? graph}) {
     recordDartError(error, stack);
     return true;
   };
-  if (const bool.fromEnvironment('ANYWORK_CAPTURE') &&
-      !const bool.fromEnvironment('dart.vm.product')) {
+  if (!const bool.fromEnvironment('dart.vm.product')) {
     maybeRegisterCaptureExtension();
   }
   runZonedGuarded(() {

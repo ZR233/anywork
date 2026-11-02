@@ -35,43 +35,23 @@ pub(super) fn run(
             let mut prior_context = None;
             for phase in ["first", "restart", "recheck"] {
                 let gui_log = coord.join(format!("{phase}-gui.log"));
-                let driver_log = coord.join(format!("{phase}-driver.log"));
                 logs.push((gui_log.clone(), output.join(format!("{phase}-gui.log"))));
-                logs.push((
-                    driver_log.clone(),
-                    output.join(format!("{phase}-driver.log")),
-                ));
                 let mut gui = start_recovery_gui(context.workspace, &home, &gui_log)?;
                 let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
-                let log = File::create(&driver_log)?;
-                let mut command = driver_command(
-                    context.app_dir,
-                    "test_driver/context_replay_recovery_journey.dart",
-                );
-                command
-                    .args([phase, label, &vm_url])
-                    .arg(&project)
-                    .arg(&output)
-                    .arg(&coord)
-                    .stdout(Stdio::from(log.try_clone()?))
-                    .stderr(Stdio::from(log));
-                let mut driver = OwnedProcess::start(&mut command, false)?;
                 let gui_launcher_pid = gui.child.id();
-                let driver_launcher_pid = driver.child.id();
                 if phase != "first" {
-                    wait_stage(
-                        &coord.join(format!("{phase}-opened")),
-                        &mut driver,
+                    wait_operator_done(
+                        &format!(
+                            "context-replay {label}/{phase}: reopen {}, confirm the frozen context is restored and quiet, then type done.",
+                            project.display()
+                        ),
                         &mut gui,
-                        &mut fixture,
+                        Some(&mut fixture),
                         context.interrupt,
+                        Duration::from_secs(3_600),
                     )?;
-                    let observed: serde_json::Value =
-                        serde_json::from_slice(&fs::read(coord.join("observed.json"))?)?;
-                    let thread_id = observed["threadId"]
-                        .as_str()
-                        .context("replay Thread id missing")?;
-                    let restored = read_context(&home, thread_id)?;
+                    let thread_id = history_owner_thread(&home)?;
+                    let restored = read_context(&home, &thread_id)?;
                     ensure!(
                         Some(&restored) == prior_context.as_ref(),
                         "{label}/{phase} changed frozen context during reopen"
@@ -91,36 +71,31 @@ pub(super) fn run(
                             &serde_json::json!({"before":before,"after":after,"contextRestored":true}),
                         )?,
                     )?;
-                    fs::write(coord.join(format!("{phase}-quiet")), "verified")?;
                 }
-                wait_driver(&mut driver, &mut gui, &mut fixture, context.interrupt)?;
-                let summary: serde_json::Value = serde_json::from_slice(&fs::read(
-                    output.join(format!("{phase}-summary.json")),
-                )?)?;
-                ensure!(
-                    summary["status"] == "complete" && summary["shutdown"] == "completed",
-                    "{label}/{phase} did not finish a normal shutdown"
-                );
-                // Reap the owning process tree before the next process can take this home's lock.
-                drop(driver);
+                observe_capture_exit(
+                    context.app_dir,
+                    &vm_url,
+                    &output,
+                    context.interrupt,
+                    &mut gui,
+                    Some(&mut fixture),
+                    &format!(
+                        "context-replay {label}/{phase}: open {}, complete the replay observation, then type done.",
+                        project.display()
+                    ),
+                )?;
+                let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), phase)?;
                 drop(gui);
                 lifecycles.push(serde_json::json!({
                     "protocol":label, "phase":phase, "guiLauncherPid":gui_launcher_pid,
-                    "driverLauncherPid":driver_launcher_pid, "shutdown":"completed",
+                    "shutdown":"completed",
                     "ownersReapedAt":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
                 }));
                 fs::write(
                     context.output.join("lifecycle.json"),
                     serde_json::to_vec_pretty(&lifecycles)?,
                 )?;
-                let observed: serde_json::Value =
-                    serde_json::from_slice(&fs::read(coord.join("observed.json"))?)?;
-                let frozen = read_context(
-                    &home,
-                    observed["threadId"]
-                        .as_str()
-                        .context("replay Thread id missing")?,
-                )?;
+                let frozen = read_context(&home, &history_owner_thread(&home)?)?;
                 ensure!(
                     frozen.as_array().is_some_and(|rows| !rows.is_empty()),
                     "replay history is empty"
@@ -202,54 +177,6 @@ pub(super) fn run(
         context.output.display()
     );
     Ok(())
-}
-
-pub(super) fn wait_stage(
-    marker: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(600);
-    while !marker.is_file() {
-        ensure!(
-            driver.child.try_wait()?.is_none() && !gui.exited()? && !fixture.exited()?,
-            "replay process exited before {}",
-            marker.display()
-        );
-        ensure!(interrupt.try_recv().is_err(), "replay recovery cancelled");
-        ensure!(
-            Instant::now() < deadline,
-            "replay stage timed out: {}",
-            marker.display()
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
-
-pub(super) fn wait_driver(
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(600);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            ensure!(status.success(), "replay Driver failed with {status}");
-            return Ok(());
-        }
-        ensure!(
-            !gui.exited()? && !fixture.exited()?,
-            "replay process exited before Driver completion"
-        );
-        ensure!(interrupt.try_recv().is_err(), "replay recovery cancelled");
-        ensure!(Instant::now() < deadline, "replay Driver timed out");
-        thread::sleep(Duration::from_millis(100));
-    }
 }
 
 fn read_context(home: &Path, thread_id: &str) -> Result<serde_json::Value> {

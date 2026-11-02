@@ -1,7 +1,7 @@
 use super::{
-    OwnedProcess, driver_command, history_lock_database, require_native_exit, sanitize_driver_line,
-    sanitize_requests, start_timeline_history_gui, wait_for_gui_exit, wait_for_vm,
-    write_fixture_log, write_realtime_driver_evidence, write_sanitized_log,
+    OwnedProcess, history_lock_database, history_owner_thread, observe_capture_exit,
+    require_native_exit, sanitize_driver_line, sanitize_requests, start_timeline_history_gui,
+    wait_for_gui_exit, wait_for_vm, write_fixture_log, write_sanitized_log,
 };
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::FixtureLiveStatus;
@@ -12,11 +12,10 @@ use sea_orm::sqlx::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 const TIMELINE_HISTORY_20K_SEED_RECORD_GLOB: &str = concat!(
@@ -28,7 +27,6 @@ const TIMELINE_HISTORY_20K_GROWTH_RECORD_GLOB: &str = concat!(
     "timeline-history-20k-growth-[0-9][0-9]-item-[0-9][0-9][0-9][0-9]:text:0"
 );
 const OPEN_SAMPLES: usize = 20;
-const FIRST_CONTENT_P95_MILLIS: f64 = 500.0;
 
 pub(super) struct Scenario<'a> {
     pub(super) workspace: &'a Path,
@@ -101,8 +99,6 @@ struct PhaseSummary {
     launcher_pid: u32,
     gui_pid: u64,
     launcher_command_to_vm_millis: u128,
-    process_start_to_driver_observable_millis: u128,
-    driver_exit: Option<i32>,
     gui_exit: Option<i32>,
 }
 
@@ -114,7 +110,6 @@ struct PhaseOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColdPhaseObservation {
     thread_id: String,
-    queue_revisions: [u64; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,7 +119,6 @@ struct ColdLifecycleCheck {
     previous_closed: u64,
     after_close: u64,
     writer_absent_at_samples: bool,
-    queue_revisions: [u64; 3],
     exact_inventory_unchanged: bool,
 }
 
@@ -226,13 +220,11 @@ pub(super) fn run(context: &Scenario<'_>, mut fixture: OwnedProcess) -> Result<(
                 _ => unreachable!(),
             }
         }
-        let performance = opening_latency_report(context.output)?;
-        let passed = performance["pass"] == true;
-        opening_performance = Some(performance);
-        ensure!(
-            passed,
-            "selection-to-first-content p95 exceeded {FIRST_CONTENT_P95_MILLIS} ms; see openingPerformance"
-        );
+        opening_performance = Some(json!({
+            "measurement": "operator-runbook",
+            "status": "notMeasured",
+            "note": "Driver viewport p95 is no longer collected; unique inventory proofs remain",
+        }));
         Ok(())
     })();
 
@@ -443,22 +435,11 @@ fn run_phase(
     let gui_log = context
         .working
         .join(format!("timeline-history-20k-{phase}-gui.log"));
-    let driver_log = context
-        .working
-        .join(format!("timeline-history-20k-{phase}-driver.log"));
-    let stage = context
-        .working
-        .join(format!("timeline-history-20k-{phase}-stage"));
-    let pid_file = context
-        .working
-        .join(format!("timeline-history-20k-{phase}-pid"));
     let native_exit = context
         .output
         .join(format!("timeline-history-20k-{phase}-native-exit.json"));
     let started = Instant::now();
     let mut gui = None;
-    let mut driver = None;
-    let mut driver_exit = None;
     let mut gui_exit = None;
     let phase_result = (|| -> Result<PhaseOutcome> {
         gui = Some(start_timeline_history_gui(
@@ -473,78 +454,60 @@ fn run_phase(
         let launcher_pid = active_gui.child.id();
         let vm_url = wait_for_vm(&gui_log, active_gui, fixture, context.interrupt)?;
         let process_start_to_vm_millis = started.elapsed().as_millis();
-        driver = Some(start_driver(
-            context,
-            project,
-            phase,
+        let _ = database;
+        observe_capture_exit(
+            context.app_dir,
             &vm_url,
-            &driver_log,
-            database,
-        )?);
-        let active_driver = driver
-            .as_mut()
-            .context("timeline-history-20k Driver handle is missing")?;
-        let gui_pid = wait_for_driver_pid(
-            &pid_file,
-            &stage,
-            active_driver,
-            active_gui,
-            fixture,
+            context.output,
             context.interrupt,
-            phase,
+            active_gui,
+            Some(fixture),
+            &format!(
+                "timeline-history-20k {phase}: open {}, complete the {phase} observation, then type done.",
+                project.display()
+            ),
         )?;
-        let process_start_to_driver_observable_millis = linux_process_age_millis(gui_pid)?;
-        let status = wait_for_driver(&stage, active_driver, fixture, context.interrupt, phase)?;
-        driver_exit = Some(status);
-        ensure!(
-            status.success(),
-            "timeline-history-20k {phase} Driver failed: {status}"
-        );
         let status = wait_for_gui_exit(active_gui, Duration::from_secs(180), phase)?;
         gui_exit = Some(status);
         ensure!(
             status.success(),
             "timeline-history-20k {phase} GUI failed: {status}"
         );
-
-        let report_path = context
-            .output
-            .join(format!("timeline-history-20k-{phase}.json"));
-        let mut report: Value = serde_json::from_slice(
-            &fs::read(&report_path)
-                .with_context(|| format!("{phase} Driver wrote no phase report"))?,
-        )?;
-        ensure!(
-            report["pass"] == true && report["shutdown"] == "completed",
-            "timeline-history-20k {phase} did not pass: {report}"
-        );
-        ensure!(
-            report["pid"].as_u64() == Some(gui_pid),
-            "{phase} Driver/native PID mismatch"
-        );
-        let cold_observation = phase
-            .starts_with("cold-")
-            .then(|| cold_phase_observation(&report, phase))
-            .transpose()?;
-        report["harnessTiming"] = json!({
-            "launcherPid": launcher_pid,
-            "actualGuiPid": gui_pid,
-            "launcherCommandToVmMillis": process_start_to_vm_millis,
-            "processStartToDriverObservableMillis": process_start_to_driver_observable_millis,
-            "processStartSource": "/proc/<actual-gui-pid>/stat starttime against /proc/uptime",
-            "buildTimeIncludedInProcessStartToDriver": false,
-            "launcherCommandToVmMayIncludeBuild": true,
-        });
-        fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+        let native: Value = serde_json::from_slice(&fs::read(&native_exit).with_context(|| {
+            format!("missing native exit report {}", native_exit.display())
+        })?)?;
+        let gui_pid = native["pid"]
+            .as_u64()
+            .context("timeline-history-20k native exit report has no pid")?;
         require_native_exit(&native_exit, Some(gui_pid))?;
+        let cold_observation = if phase.starts_with("cold-") {
+            Some(ColdPhaseObservation {
+                thread_id: history_owner_thread(context.home)?,
+            })
+        } else {
+            None
+        };
+        fs::write(
+            context
+                .output
+                .join(format!("timeline-history-20k-{phase}.json")),
+            serde_json::to_vec_pretty(&json!({
+                "phase": phase,
+                "shutdown": "completed",
+                "pid": gui_pid,
+                "harnessTiming": {
+                    "launcherPid": launcher_pid,
+                    "actualGuiPid": gui_pid,
+                    "launcherCommandToVmMillis": process_start_to_vm_millis,
+                },
+            }))?,
+        )?;
         Ok(PhaseOutcome {
             summary: PhaseSummary {
                 phase: phase.to_owned(),
                 launcher_pid,
                 gui_pid,
                 launcher_command_to_vm_millis: process_start_to_vm_millis,
-                process_start_to_driver_observable_millis,
-                driver_exit: status_code(driver_exit),
                 gui_exit: status_code(gui_exit),
             },
             cold_observation,
@@ -552,12 +515,7 @@ fn run_phase(
     })();
 
     let cleanup_result = if phase_result.is_err() {
-        settle_failed_phase(
-            driver.as_mut(),
-            gui.as_mut(),
-            &mut driver_exit,
-            &mut gui_exit,
-        )
+        settle_failed_phase(gui.as_mut(), &mut gui_exit)
     } else {
         Ok(())
     };
@@ -575,8 +533,6 @@ fn run_phase(
         context,
         phase,
         &gui_log,
-        &driver_log,
-        driver_exit,
         gui_exit,
         phase_result.as_ref().err(),
         &redactions,
@@ -589,15 +545,10 @@ fn status_code(status: Option<std::process::ExitStatus>) -> Option<i32> {
 }
 
 fn settle_failed_phase(
-    driver: Option<&mut OwnedProcess>,
     gui: Option<&mut OwnedProcess>,
-    driver_exit: &mut Option<std::process::ExitStatus>,
     gui_exit: &mut Option<std::process::ExitStatus>,
 ) -> Result<()> {
-    let driver_result = settle_failed_process(driver, driver_exit, "Driver");
-    let gui_result = settle_failed_process(gui, gui_exit, "GUI");
-    driver_result?;
-    gui_result
+    settle_failed_process(gui, gui_exit, "GUI")
 }
 
 fn settle_failed_process(
@@ -647,8 +598,6 @@ fn write_phase_evidence(
     context: &Scenario<'_>,
     phase: &str,
     gui_log: &Path,
-    driver_log: &Path,
-    driver_exit: Option<std::process::ExitStatus>,
     gui_exit: Option<std::process::ExitStatus>,
     phase_error: Option<&anyhow::Error>,
     redactions: &[(String, &str)],
@@ -663,14 +612,6 @@ fn write_phase_evidence(
     } else {
         Ok(())
     };
-    let driver_result = write_realtime_driver_evidence(
-        driver_log,
-        context.output,
-        &format!("timeline-history-20k-{phase}"),
-        driver_exit,
-        phase_error,
-        redactions,
-    );
     let failure = phase_error.map(|error| sanitize_driver_line(&error.to_string(), redactions));
     let exit_result = fs::write(
         context
@@ -678,14 +619,12 @@ fn write_phase_evidence(
             .join(format!("timeline-history-20k-{phase}-exit.json")),
         serde_json::to_vec_pretty(&json!({
             "phase": phase,
-            "driverExit": status_code(driver_exit),
             "guiExit": status_code(gui_exit),
             "failure": failure,
         }))?,
     )
     .context("failed to write timeline-history-20k phase exit evidence");
     gui_result?;
-    driver_result?;
     exit_result
 }
 
@@ -710,108 +649,6 @@ fn finish_phase_result<T>(
             }
             Err(anyhow::anyhow!(message))
         }
-    }
-}
-
-fn start_driver(
-    context: &Scenario<'_>,
-    project: &Path,
-    phase: &str,
-    vm_url: &str,
-    log_path: &Path,
-    database: Option<&Path>,
-) -> Result<OwnedProcess> {
-    let log = File::create(log_path)?;
-    let mut command = driver_command(
-        context.app_dir,
-        "test_driver/timeline_history_20k_journey.dart",
-    );
-    command
-        .arg(phase)
-        .arg(vm_url)
-        .arg(project)
-        .arg(context.output)
-        .arg(context.working)
-        .env("ANYWORK_HOME", context.home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    if let Some(database) = database {
-        command.env("ANYWORK_TIMELINE_HISTORY_DB", database);
-    }
-    OwnedProcess::start(&mut command, false)
-}
-
-fn wait_for_driver_pid(
-    pid_file: &Path,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    phase: &str,
-) -> Result<u64> {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        if pid_file.is_file() {
-            let pid = fs::read_to_string(pid_file)?
-                .trim()
-                .parse::<u64>()
-                .context("Driver PID evidence is not an integer")?;
-            ensure!(pid > 0, "Driver reported an invalid GUI PID");
-            return Ok(pid);
-        }
-        ensure!(
-            !driver.exited()?,
-            "{phase} Driver exited before publishing the actual GUI PID"
-        );
-        ensure!(
-            !gui.exited()?,
-            "{phase} GUI exited before Driver observation"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "fixture exited during timeline-history-20k {phase}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "timeline-history-20k {phase} cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "timeline-history-20k {phase} Driver observation timed out (stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".into())
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn wait_for_driver(
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    phase: &str,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(7_200);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.mark_reaped();
-            return Ok(status);
-        }
-        ensure!(
-            !fixture.exited()?,
-            "timeline-history-20k {phase} fixture exited before Driver completion"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "timeline-history-20k {phase} cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "timeline-history-20k {phase} timed out (stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".into())
-        );
-        thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -934,173 +771,6 @@ fn same_persisted_inventory(seed: &HistoryAudit, cold: &HistoryAudit) -> bool {
         && seed.history_turn_records == cold.history_turn_records
 }
 
-fn opening_latency_report(output: &Path) -> Result<Value> {
-    let mut cold = Vec::with_capacity(OPEN_SAMPLES);
-    for sample in 1..=OPEN_SAMPLES {
-        let path = output.join(format!("timeline-history-20k-cold-{sample}.json"));
-        let report: Value = serde_json::from_slice(
-            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
-        )?;
-        cold.push(layout_millis(
-            &report["coldLoad"]["selectionToFirstContentLayoutMillis"],
-        )?);
-    }
-    let report: Value =
-        serde_json::from_slice(&fs::read(output.join("timeline-history-20k-switch.json"))?)?;
-    let switch = &report["ordinarySwitch"];
-    ensure!(
-        switch["processCold"] == false
-            && switch["osPageCacheControlled"] == false
-            && switch["sampleCount"].as_u64() == Some(OPEN_SAMPLES as u64),
-        "ordinary-switch report has no complete warm-process sample set"
-    );
-    let source = switch["sourceThreadId"]
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .context("ordinary-switch source Thread is missing")?;
-    let target = switch["targetThreadId"]
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .context("ordinary-switch target Thread is missing")?;
-    ensure!(
-        source != target,
-        "ordinary switching reused the same Thread"
-    );
-    let samples = switch["samples"]
-        .as_array()
-        .context("ordinary-switch layout samples are missing")?;
-    let warm = samples
-        .iter()
-        .map(|sample| layout_millis(&sample["selectionToFirstContentLayoutMillis"]))
-        .collect::<Result<Vec<_>>>()?;
-    let cold = layout_distribution(cold)?;
-    let warm = layout_distribution(warm)?;
-    let passed = cold["p95Millis"].as_f64().context("cold p95 is missing")?
-        <= FIRST_CONTENT_P95_MILLIS
-        && warm["p95Millis"]
-            .as_f64()
-            .context("switch p95 is missing")?
-            <= FIRST_CONTENT_P95_MILLIS;
-    Ok(json!({
-        "measurement": "application-selection-owner-monotonic-clock",
-        "percentileMethod": "nearest-rank",
-        "thresholdP95Millis": FIRST_CONTENT_P95_MILLIS,
-        "coldOpen": cold,
-        "ordinarySwitch": warm,
-        "pass": passed,
-    }))
-}
-
-fn layout_millis(value: &Value) -> Result<f64> {
-    let millis = value
-        .as_f64()
-        .context("first-content layout time is missing")?;
-    ensure!(
-        millis.is_finite() && millis >= 0.0,
-        "first-content layout time is invalid"
-    );
-    Ok(millis)
-}
-
-fn layout_distribution(mut samples: Vec<f64>) -> Result<Value> {
-    ensure!(
-        samples.len() == OPEN_SAMPLES,
-        "expected {OPEN_SAMPLES} real first-content samples, got {}",
-        samples.len()
-    );
-    samples.sort_by(f64::total_cmp);
-    Ok(json!({
-        "sampleCount": samples.len(),
-        "p50Millis": samples[(samples.len() * 50).div_ceil(100) - 1],
-        "p95Millis": samples[(samples.len() * 95).div_ceil(100) - 1],
-        "samplesMillis": samples,
-    }))
-}
-
-fn cold_phase_observation(report: &Value, phase: &str) -> Result<ColdPhaseObservation> {
-    let first = &report["coldLoad"]["viewport"];
-    let last = &report["realScroll"]["finalWindow"];
-    let thread_id = first["threadId"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .with_context(|| format!("{phase} first viewport has no thread identity"))?;
-    let generation = required_u64(
-        first.get("generation"),
-        &format!("{phase}.viewport.generation"),
-    )?;
-    ensure!(
-        generation > 0
-            && first["ready"] == true
-            && last["ready"] == true
-            && last["threadId"].as_str() == Some(thread_id)
-            && last["generation"].as_u64() == Some(generation),
-        "{phase} passive read changed the actual viewport identity or generation"
-    );
-    let samples = report["coldPersistence"]
-        .as_object()
-        .with_context(|| format!("{phase}.coldPersistence must be an object"))?;
-    let before_scroll = passive_queue_revision(
-        samples
-            .get("beforeScroll")
-            .with_context(|| format!("{phase}.coldPersistence.beforeScroll is missing"))?,
-        &format!("{phase}.coldPersistence.beforeScroll"),
-    )?;
-    let after_scroll = passive_queue_revision(
-        samples
-            .get("afterScroll")
-            .with_context(|| format!("{phase}.coldPersistence.afterScroll is missing"))?,
-        &format!("{phase}.coldPersistence.afterScroll"),
-    )?;
-    let final_queue =
-        passive_queue_revision(&report["persistence"], &format!("{phase}.persistence"))?;
-    ensure!(
-        before_scroll <= after_scroll && after_scroll <= final_queue,
-        "{phase} persistence queue baseline revision regressed"
-    );
-    Ok(ColdPhaseObservation {
-        thread_id: thread_id.to_owned(),
-        queue_revisions: [before_scroll, after_scroll, final_queue],
-    })
-}
-
-fn passive_queue_revision(value: &Value, context: &str) -> Result<u64> {
-    let object = value
-        .as_object()
-        .with_context(|| format!("{context} must be an object"))?;
-    ensure!(
-        object.get("loaded").and_then(Value::as_bool) == Some(true)
-            && object.get("syncPhase").and_then(Value::as_str) == Some("ready"),
-        "{context} has no connected persistence queue baseline"
-    );
-    let revision = required_u64(object.get("revision"), &format!("{context}.revision"))?;
-    for field in ["pendingOperations", "pendingBytes", "inFlightBytes"] {
-        ensure!(
-            required_u64(object.get(field), &format!("{context}.{field}"))? == 0,
-            "{context}.{field} must remain zero during passive reading"
-        );
-    }
-    let threads = object
-        .get("threads")
-        .and_then(Value::as_array)
-        .with_context(|| format!("{context}.threads must be an array"))?;
-    ensure!(
-        threads.is_empty(),
-        "{context} passive reading registered a Thread writer or recovery obligation"
-    );
-    ensure!(
-        object.get("lastError") == Some(&Value::Null)
-            && object.get("pressurePaused").and_then(Value::as_bool) == Some(false),
-        "{context} has a persistence fault or pressure pause"
-    );
-    Ok(revision)
-}
-
-fn required_u64(value: Option<&Value>, field: &str) -> Result<u64> {
-    value
-        .and_then(Value::as_u64)
-        .with_context(|| format!("{field} must be a non-negative integer"))
-}
-
 fn verify_cold_lifecycle(
     phase: &str,
     seed: &HistoryAudit,
@@ -1133,70 +803,13 @@ fn verify_cold_lifecycle(
         previous_closed,
         after_close: actual_after_close,
         writer_absent_at_samples: true,
-        queue_revisions: observation.queue_revisions,
         exact_inventory_unchanged: true,
     })
-}
-
-fn linux_process_age_millis(pid: u64) -> Result<u128> {
-    let uptime = fs::read_to_string("/proc/uptime")?
-        .split_whitespace()
-        .next()
-        .context("/proc/uptime has no uptime field")?
-        .parse::<f64>()
-        .context("/proc/uptime field is not numeric")?;
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let fields = stat
-        .rsplit_once(')')
-        .context("/proc PID stat has no command terminator")?
-        .1
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    // The suffix begins at field 3 (`state`); starttime is Linux proc field 22.
-    let start_ticks = fields
-        .get(19)
-        .context("/proc PID stat has no starttime field")?
-        .parse::<f64>()
-        .context("/proc PID starttime is not numeric")?;
-    let output = Command::new("getconf").arg("CLK_TCK").output()?;
-    ensure!(
-        output.status.success(),
-        "getconf CLK_TCK failed: {}",
-        output.status
-    );
-    let ticks_per_second = String::from_utf8(output.stdout)?
-        .trim()
-        .parse::<f64>()
-        .context("getconf CLK_TCK is not numeric")?;
-    ensure!(
-        ticks_per_second.is_finite() && ticks_per_second > 0.0,
-        "getconf CLK_TCK returned an invalid value"
-    );
-    let age_seconds = uptime - start_ticks / ticks_per_second;
-    ensure!(
-        age_seconds.is_finite() && age_seconds >= 0.0,
-        "actual GUI process starttime is later than /proc uptime"
-    );
-    Ok(Duration::from_secs_f64(age_seconds).as_millis())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn opening_distribution_requires_twenty_layout_samples_and_uses_nearest_rank() -> Result<()> {
-        ensure!(layout_distribution(vec![1.0, 2.0, 3.0]).is_err());
-        let mut samples = (1..=19).rev().map(f64::from).collect::<Vec<_>>();
-        samples.push(2_000.0);
-        let report = layout_distribution(samples)?;
-        assert_eq!(report["sampleCount"], 20);
-        assert_eq!(report["p50Millis"], 10.0);
-        assert_eq!(report["p95Millis"], 19.0);
-        ensure!(layout_millis(&Value::Null).is_err());
-        ensure!(layout_millis(&json!(-1.0)).is_err());
-        Ok(())
-    }
 
     fn complete_status() -> FixtureLiveStatus {
         FixtureLiveStatus {

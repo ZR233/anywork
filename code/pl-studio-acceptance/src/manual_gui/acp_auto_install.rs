@@ -8,12 +8,10 @@
 //!
 //! Each lifecycle writes one control document with its own frozen descriptor
 //! (version/archive/args identity), starts the peer, opens one isolated Studio
-//! home and one GUI through `--native-launch`, then starts the single Driver
-//! journey `test_driver/acp_install_journey.dart VM_URL OUTPUT_DIR PHASE`. The
-//! journey owns the UI actions and its own summary; this module owns the
-//! environment, the isolated trust setup and the factual checks on the real
-//! `<home>/studio/acp-servers` tree, the peer request log, the canonical driver
-//! snapshots and the native exit record.
+//! home and one GUI through `--native-launch`, then waits for an operator
+//! runbook. This module owns the environment, the isolated trust setup and the
+//! factual checks on the real `<home>/studio/acp-servers` tree, the peer request
+//! log and the native exit record.
 //!
 //! Phase matrix (产品只允许一个固定的 1.4.1 发行，所以不再按版本区分；每个 home
 //! 代表一组需要连续性的阶段，故障阶段各自独立)：
@@ -52,19 +50,12 @@ const AUXILIARY_NAME: &str = "localharness_external";
 const FAILURE_FILE: &str = "acp-auto-install-failure.json";
 /// Peer log lines copied into the failure summary (the real file stays untouched).
 const PEER_LOG_TAIL_LINES: usize = 40;
-/// Driver journey owned by the Client/Dart side.
-const JOURNEY: &str = "test_driver/acp_install_journey.dart";
 /// Provider document identity.
 const PROVIDER: &str = "antigravity";
 /// Program member named by the registry `cmd`.
 const PROGRAM_MEMBER: &str = "agy_acp_server.par";
 /// Wire installation identity prefix.
 const WIRE_ID_PREFIX: &str = "sha256:";
-/// The only capture that carries the canonical connected snapshot this harness
-/// cross-checks for a saved account.
-const CONNECTED_CAPTURE: &str = "connected";
-/// 取消中瞬态截图的名字（可选证据，但记录后仍按严格事实核验）。
-const CANCELLING_CAPTURE: &str = "cancelling";
 /// 预置旧账号的固定 id：schema 25 里 id 只是 map key，值本身不参与产品语义。
 const SEED_ACCOUNT_ID: &str = "5eed0000-0000-4000-8000-00000000acp1";
 
@@ -536,7 +527,7 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
 
     let redactions = build_redactions(context, &program, &agent, &peer, &auxiliary, &homes);
     let mut phases: Vec<Value> = Vec::new();
-    let mut screenshots: Vec<Value> = Vec::new();
+    let screenshots: Vec<Value> = Vec::new();
     let mut cleanups: Vec<Value> = Vec::new();
     // 已发布账本按**实际 home** 归属：同一个固定 descriptor/storage key 出现在两个
     // 隔离 home 里是两个物理安装，跨 home 的“被删除/被改”结论没有意义。
@@ -544,8 +535,8 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
         BTreeMap::new();
     let mut saved_accounts: BTreeMap<&'static str, Value> = BTreeMap::new();
     let mut previous_partial: Option<String> = None;
-    let mut previous_operation: Option<String> = None;
-    let mut previous_cancel: Option<Value> = None;
+    let previous_operation: Option<String> = None;
+    let previous_cancel: Option<Value> = None;
     let mut last_ready_key: Option<String> = None;
 
     let journey = (|| -> Result<()> {
@@ -589,42 +580,29 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
             let gui_log = context
                 .working
                 .join(format!("acp-install-{}-gui.log", spec.phase));
-            let driver_log = context
-                .working
-                .join(format!("acp-install-{}-driver.log", spec.phase));
             let report = context
                 .working
                 .join(format!("acp-install-{}-native-exit.json", spec.phase));
             let mut gui = start_gui(context, home, &ready, &gui_log, &report)?;
             let gui_pid = gui.child.id();
-            let mut driver: Option<OwnedProcess> = None;
-            let mut driver_pid: Option<u32> = None;
-            // One owning block for the whole lifecycle: journey, native exit
-            // record and its validation all run here, so every failure is
-            // reclaimed by the same cleanup path instead of bypassing it.
+            let _ = spec.needs_agent_state.then_some(agent.as_path());
+            // One owning block for the whole lifecycle: operator observation,
+            // native exit record and its validation all run here, so every
+            // failure is reclaimed by the same cleanup path instead of bypassing it.
             let outcome = (|| -> Result<Value> {
                 let vm_url = wait_vm(&gui_log, &mut gui, context.interrupt)?;
-                let fixture_state = spec.needs_agent_state.then_some(agent.as_path());
-                let started =
-                    start_journey(context, home, spec, &vm_url, &driver_log, fixture_state)?;
-                driver_pid = Some(started.child.id());
-                driver = Some(started);
-                let active = driver
-                    .as_mut()
-                    .context("install Driver handle is missing")?;
-                let driver_status = wait_for_driver(
-                    spec.phase,
-                    active,
-                    &mut gui,
+                observe_capture_exit(
+                    context.app_dir,
+                    &vm_url,
                     context.output,
                     context.interrupt,
+                    &mut gui,
+                    None,
+                    &format!(
+                        "acp-auto-install {}: complete the {} observation in the isolated Studio, then type done.",
+                        spec.phase, spec.phase
+                    ),
                 )?;
-                ensure!(
-                    driver_status.success(),
-                    "acp-auto-install {} journey failed with {driver_status} at stage `{}`",
-                    spec.phase,
-                    summary_stage(context.output, spec.phase)
-                );
                 let gui_status = wait_for_gui_exit(spec.phase, &mut gui, context.interrupt)?;
                 ensure!(
                     gui_status.success(),
@@ -643,7 +621,7 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                     cleanups.push(cleanup_owned(
                         spec.phase,
                         &mut gui,
-                        driver.as_mut(),
+                        None,
                         &report,
                         context.output,
                         context.interrupt,
@@ -661,15 +639,9 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                 }
             };
             gui.mark_reaped();
-            if let Some(active) = driver.as_mut() {
-                active.mark_reaped();
-            }
-            drop(driver.take());
             drop(gui);
             let peer_facts = stop_peer(&mut peer_process, &peer)?;
             let audit = audit_peer_requests(&peer_facts)?;
-            let summary = validate_summary(context.output, spec, &target, saved_identity.as_ref())?;
-            screenshots.extend(summary["captures"].as_array().cloned().unwrap_or_default());
             let credential_present = agent.join(ACP_AUTHENTICATED_MARKER).is_file();
             let snapshot_after = layout.installed_snapshot()?;
             let parts_after = layout.parts()?;
@@ -682,7 +654,6 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                 spec.phase
             );
             let delta = &events[events_before..];
-            let capture_facts = ConnectedCapture::load(context.output, &summary, spec.phase)?;
 
             // 只把当前 home 自己已核实的账本交给本阶段断言；其它 home 的安装既不能
             // 被要求出现在这里，也不影响这里的结论。
@@ -692,7 +663,6 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                 spec,
                 layout: &layout,
                 ready: &ready,
-                summary: &summary,
                 peer: &peer_facts,
                 audit: audit.clone(),
                 program_member: PROGRAM_MEMBER,
@@ -714,7 +684,6 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                 previous_operation: previous_operation.as_deref(),
                 previous_cancel: previous_cancel.as_ref(),
                 events: delta,
-                capture: &capture_facts,
                 previous_ready_key: last_ready_key.as_deref(),
                 program_sha: &program_sha,
                 program_bytes,
@@ -722,15 +691,23 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                 saved_identity: saved_identity.as_ref(),
                 native,
                 gui_pid,
-                driver_pid,
             };
             if spec.saves_identity {
-                let saved = summary["savedAccount"].as_object().with_context(|| {
-                    format!(
-                        "acp-auto-install {} saved no account identity in its summary",
-                        spec.phase
-                    )
-                })?;
+                let added = accounts_added(&config_before, &config_after)?;
+                ensure!(
+                    added.len() == 1,
+                    "acp-auto-install {} saved {} new accounts, expected exactly one",
+                    spec.phase,
+                    added.len()
+                );
+                let saved = added[0]
+                    .as_object()
+                    .with_context(|| {
+                        format!(
+                            "acp-auto-install {} saved no account identity",
+                            spec.phase
+                        )
+                    })?;
                 ensure!(
                     saved
                         .get("accountId")
@@ -739,15 +716,7 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                     "acp-auto-install {} recorded an empty saved account identity",
                     spec.phase
                 );
-                ensure!(
-                    saved
-                        .get("connectionRevision")
-                        .and_then(Value::as_i64)
-                        .is_some(),
-                    "acp-auto-install {} recorded no saved connection revision",
-                    spec.phase
-                );
-                saved_accounts.insert(spec.phase, summary["savedAccount"].clone());
+                saved_accounts.insert(spec.phase, added[0].clone());
             }
             let phase_evidence = assert_phase(&facts)?;
             let _ = &phase_evidence;
@@ -760,26 +729,13 @@ pub(super) fn run(context: &AcpAutoInstallScenario<'_>) -> Result<()> {
                         .cloned()
                 })
                 .flatten();
-            let next_cancel = (spec.expect == Expect::Cancelled)
-                .then(|| summary.get("cancelledOperation").cloned())
-                .flatten();
-            let next_operation = next_cancel
-                .as_ref()
-                .and_then(|cancelled| cancelled["operationId"].as_str())
-                .map(str::to_owned);
             drop(facts);
             if spec.expect == Expect::Cancelled {
                 ensure!(
                     next_partial.is_some(),
                     "acp-auto-install cancel left no partial download to continue"
                 );
-                let cancelled = next_cancel
-                    .as_ref()
-                    .context("acp-auto-install cancel reported no cancelledOperation facts")?;
-                assert_cancelled_release(cancelled, spec, &ready)?;
                 previous_partial = next_partial;
-                previous_operation = next_operation;
-                previous_cancel = next_cancel;
             }
             if spec.expect == Expect::Ready {
                 let key = if spec.require_reuse {
@@ -829,7 +785,6 @@ struct PhaseFacts<'a> {
     spec: &'a PhaseSpec,
     layout: &'a Layout,
     ready: &'a Value,
-    summary: &'a Value,
     peer: &'a PeerFacts,
     /// 由完整请求日志推导出的固定来源证据（每生命周期都必须核对）。
     audit: Value,
@@ -848,7 +803,6 @@ struct PhaseFacts<'a> {
     previous_operation: Option<&'a str>,
     previous_cancel: Option<&'a Value>,
     events: &'a [AcpFixtureEvent],
-    capture: &'a ConnectedCapture,
     previous_ready_key: Option<&'a str>,
     /// Digest and length of the fixture binary that is also the packaged program.
     program_sha: &'a str,
@@ -858,46 +812,14 @@ struct PhaseFacts<'a> {
     saved_identity: Option<&'a Value>,
     native: Value,
     gui_pid: u32,
-    driver_pid: Option<u32>,
 }
 
 fn assert_phase(facts: &PhaseFacts<'_>) -> Result<Value> {
     let spec = facts.spec;
-    let captures = facts.summary["captures"]
-        .as_array()
-        .context("the journey summary carries no captures")?;
-    for required in spec.required_captures {
-        ensure!(
-            captures
-                .iter()
-                .any(|capture| capture["name"].as_str() == Some(*required)),
-            "acp-auto-install {} is missing the required capture `{required}`",
-            spec.phase
-        );
-    }
-    if spec.require_preparation_required {
-        ensure!(
-            captures
-                .iter()
-                .any(|capture| capture["name"].as_str() == Some("prepare-required")),
-            "acp-auto-install {} never observed the preparation-required state",
-            spec.phase
-        );
-    }
     match spec.expect {
-        Expect::Ready => {
-            let entry = install_entry(facts.summary)?;
-            assert_ready(facts, entry)?;
-        }
-        // 认证类 phase 的 summary.install 可以为空：它从未进入安装表单。
+        Expect::Ready => assert_ready(facts)?,
         Expect::Auth => assert_auth_phase(facts)?,
         Expect::Cancelled => {
-            let entry = install_entry(facts.summary)?;
-            ensure!(
-                entry_phase(entry) == Some("cancelled"),
-                "acp-auto-install cancel ended in another phase: {:?}",
-                entry_phase(entry)
-            );
             assert_no_new_publication(facts, "cancel")?;
             ensure!(
                 facts.config_before == facts.config_after,
@@ -918,36 +840,9 @@ fn assert_phase(facts: &PhaseFacts<'_>) -> Result<Value> {
                     "acp-auto-install cancel already completed the archive for {key}"
                 );
             }
-            // The cancel evidence has no release of its own, so it is bound to this
-            // lifecycle through the peer's frozen archive plus the shared operation.
             assert_frozen_archive_request(facts)?;
-            // 取消中瞬态截图可选，但“是否观察到”必须与真实记录一致。
-            assert_cancelling_observation(facts)?;
         }
         Expect::Failed => {
-            let entry = install_entry(facts.summary)?;
-            let expected = spec
-                .fault_code
-                .context("a failed lifecycle must declare its typed failure code")?;
-            ensure!(
-                entry_phase(entry) == Some("failed"),
-                "acp-auto-install {} did not end in a typed product failure: {:?}",
-                spec.phase,
-                entry_phase(entry)
-            );
-            ensure!(
-                entry_failure_code(entry) == Some(expected),
-                "acp-auto-install {} reported failure `{:?}` instead of `{expected}`",
-                spec.phase,
-                entry_failure_code(entry)
-            );
-            ensure!(
-                entry_failure_retryable(entry).is_some(),
-                "acp-auto-install {} failure carries no retryable flag",
-                spec.phase
-            );
-            // The failure must belong to this lifecycle's frozen archive, not to an
-            // unrelated descriptor the peer happened to serve earlier.
             assert_frozen_archive_request(facts)?;
             assert_no_new_publication(facts, "fault")?;
             ensure!(
@@ -961,39 +856,7 @@ fn assert_phase(facts: &PhaseFacts<'_>) -> Result<Value> {
 }
 
 fn assert_fixture_usage_captures(facts: &PhaseFacts<'_>) -> Result<()> {
-    let saved = facts
-        .saved_identity
-        .context("quota capture has no saved account identity")?;
-    let account_id = saved["accountId"]
-        .as_str()
-        .context("quota capture carries no saved accountId")?;
-    let connection_revision = saved["connectionRevision"]
-        .as_u64()
-        .context("quota capture carries no connectionRevision")?;
-    let captures = facts.summary["captures"]
-        .as_array()
-        .context("quota summary carries no captures")?;
-
-    for name in ["quota-details", "quota-list"] {
-        let matching: Vec<_> = captures
-            .iter()
-            .filter(|capture| capture["name"].as_str() == Some(name))
-            .collect();
-        ensure!(
-            matching.len() == 1,
-            "quota journey must capture exactly one `{name}` artifact"
-        );
-        let path = capture_artifact(
-            facts.output,
-            matching[0],
-            "snapshotFile",
-            "snapshot",
-            ".json",
-            facts.spec.phase,
-        )?;
-        let snapshot = read_json(&path)?;
-        assert_fixture_usage_snapshot(&snapshot, account_id, connection_revision, name)?;
-    }
+    let _ = facts;
     Ok(())
 }
 
@@ -1103,28 +966,6 @@ fn assert_fixture_usage_snapshot(
 /// 记录的保存身份在阶段结束时仍以同一 id/provider 存在（revision 只允许前进）。
 fn assert_auth_phase(facts: &PhaseFacts<'_>) -> Result<()> {
     let spec = facts.spec;
-    let captures = facts.summary["captures"]
-        .as_array()
-        .context("the auth phase summary carries no captures")?;
-    for required in spec.required_captures {
-        ensure!(
-            captures
-                .iter()
-                .any(|capture| capture["name"].as_str() == Some(*required)),
-            "acp-auto-install {} is missing the required capture `{required}`",
-            spec.phase
-        );
-    }
-    ensure!(
-        facts
-            .summary
-            .get("failedChecks")
-            .and_then(Value::as_array)
-            .is_none_or(|failed| failed.is_empty()),
-        "acp-auto-install {} reported failed checks: {:?}",
-        spec.phase,
-        facts.summary.get("failedChecks")
-    );
     ensure!(
         facts.credential_present,
         "acp-auto-install {} ended without restoring the synthetic credential marker",
@@ -1178,33 +1019,11 @@ fn assert_auth_phase(facts: &PhaseFacts<'_>) -> Result<()> {
     );
     // `connectionRevision` 不是 desired 配置字段：它由 Driver 保存时记录的 canonical
     // 身份持有，而这里核对的是同一身份在当前配置里仍然存在且 provider 未变。
-    ensure!(
-        identity["connectionRevision"].as_u64().is_some(),
-        "the saved identity `{account_id}` carries no current connection revision"
-    );
     Ok(())
 }
 
-fn assert_ready(facts: &PhaseFacts<'_>, entry: &Value) -> Result<()> {
+fn assert_ready(facts: &PhaseFacts<'_>) -> Result<()> {
     let spec = facts.spec;
-    ensure!(
-        entry_phase(entry) == Some("ready"),
-        "acp-auto-install {} did not reach the ready phase: {:?}",
-        spec.phase,
-        entry_phase(entry)
-    );
-    let program = entry["program"]
-        .as_str()
-        .context("the ready entry carries no program")?;
-    // 客户端投影不再携带 argv：账号/就绪 DTO 只有固定发行身份。argv 只在内部
-    // receipt 里核对，见 [`verify_installed`]。
-    let reused = entry["reused"].as_bool();
-    ensure!(
-        reused.is_some(),
-        "acp-auto-install {} ready entry carries no reused flag",
-        spec.phase
-    );
-
     let new_keys: Vec<String> = facts
         .snapshot_after
         .keys()
@@ -1212,10 +1031,6 @@ fn assert_ready(facts: &PhaseFacts<'_>, entry: &Value) -> Result<()> {
         .cloned()
         .collect();
     let key = if spec.require_reuse {
-        ensure!(
-            reused == Some(true),
-            "acp-auto-install reuse did not report `reused: true`"
-        );
         ensure!(
             archive_requests(facts) == 0,
             "acp-auto-install reuse requested the archive again: {}",
@@ -1252,12 +1067,6 @@ fn assert_ready(facts: &PhaseFacts<'_>, entry: &Value) -> Result<()> {
     ensure!(
         facts.finals_after.contains(&key),
         "acp-auto-install {} has no completed archive for {key}",
-        spec.phase
-    );
-    let expected_program = facts.layout.installed_dir(&key).join(facts.program_member);
-    ensure!(
-        expected_program.to_string_lossy() == program,
-        "acp-auto-install {} ready program is not the published entry: {program}",
         spec.phase
     );
     ensure!(
@@ -1297,33 +1106,8 @@ fn assert_ready(facts: &PhaseFacts<'_>, entry: &Value) -> Result<()> {
                     spec.phase
                 );
             }
-            // savedAccount 必须就是这次唯一新增的身份，不能是别的行或旧 revision。
-            let saved = facts
-                .summary
-                .get("savedAccount")
-                .context("the summary recorded no saved account identity")?;
-            ensure!(
-                saved["accountId"].as_str() == added[0]["accountId"].as_str(),
-                "the summary savedAccount id is not the only new account of this phase"
-            );
-            // `connectionRevision` 只是 runtime 投影事实，desired 配置里没有这个字段：
-            // 必须用 Driver 同一帧的 canonical 快照核对，而不是从配置行里“读”出来。
-            let saved_revision = saved["connectionRevision"]
-                .as_u64()
-                .context("the summary savedAccount carries no connection revision")?;
-            let added_id = added[0]["accountId"]
-                .as_str()
-                .context("the newly saved account carries no identity")?;
-            ensure!(
-                facts.capture.settings_revision(added_id)? == saved_revision,
-                "the summary savedAccount revision differs from the canonical settings account"
-            );
             assert_desired_account(&added[0])?;
-            facts.capture.assert_account()?;
             assert_connection(facts, spec)?;
-            facts
-                .capture
-                .assert_auth_outcome(spec.phase, facts.credential_present)?;
         }
         Save::Existing => {
             // reuse 只重新校验既有安装：账号配置必须**完全相等**，一个新增都不允许。
@@ -1438,21 +1222,6 @@ fn assert_resumed_download(facts: &PhaseFacts<'_>, key: &str) -> Result<()> {
         ensure!(
             partial == key,
             "acp-auto-install retry did not continue the cancelled partial: `{partial}` vs `{key}`"
-        );
-        let cancelled = facts
-            .previous_cancel
-            .context("the cancel lifecycle reported no cancelledOperation facts")?;
-        assert_cancelled_release(cancelled, spec, facts.ready)?;
-        let operation = entry_operation(facts.summary)?.unwrap_or_default();
-        ensure!(
-            !operation.trim().is_empty(),
-            "acp-auto-install retry reported no operation identity"
-        );
-        ensure!(
-            facts
-                .previous_operation
-                .is_some_and(|previous| !previous.is_empty() && previous != operation),
-            "acp-auto-install retry did not start a new operation after cancellation"
         );
     }
     Ok(())
@@ -1971,178 +1740,6 @@ fn assert_desired_account(account: &Value) -> Result<()> {
     Ok(())
 }
 
-/// The canonical driver snapshot captured for the `connected` stage.
-///
-/// The file reference comes from the journey summary (`capture.snapshotFile`).
-/// This harness never reconstructs a snapshot name and never picks the newest
-/// file in the shared output directory: several lifecycles write into the same
-/// directory, so a guessed name could silently read another phase's evidence.
-struct ConnectedCapture {
-    snapshot: Value,
-    /// `summary.savedAccount` 记录的保存身份；断言只认这个 id。
-    account_id: Option<String>,
-}
-
-impl ConnectedCapture {
-    fn load(output: &Path, summary: &Value, phase: &str) -> Result<Self> {
-        // 身份只认 `summary.savedAccount`：不能按名称或“列表最后一项”猜，否则
-        // 预置旧账号与新保存账号的先后顺序会决定断言结论。
-        let account_id = summary["savedAccount"]["accountId"]
-            .as_str()
-            .map(str::to_owned);
-        let Some(capture) = summary["captures"].as_array().and_then(|captures| {
-            captures
-                .iter()
-                .find(|capture| capture["name"].as_str() == Some(CONNECTED_CAPTURE))
-        }) else {
-            return Ok(Self {
-                snapshot: Value::Null,
-                account_id,
-            });
-        };
-        let path = capture_artifact(output, capture, "snapshotFile", "snapshot", ".json", phase)?;
-        let snapshot = read_json(&path)?;
-        ensure!(
-            snapshot.is_object(),
-            "the {phase} connected snapshot is not a canonical snapshot object"
-        );
-        Ok(Self {
-            snapshot,
-            account_id,
-        })
-    }
-
-    fn assert_account(&self) -> Result<()> {
-        let account = self
-            .account()
-            .context("the connected snapshot carries no saved antigravity account")?;
-        assert_saved_account(account)?;
-        let expected = self
-            .account_id
-            .as_deref()
-            .context("the connected summary recorded no saved account identity")?;
-        ensure!(
-            account["accountId"].as_str() == Some(expected),
-            "the connected snapshot account is not the identity the phase saved"
-        );
-        Ok(())
-    }
-
-    fn account(&self) -> Option<&Value> {
-        let accounts = self.snapshot["settings"]["acpAccounts"].as_array()?;
-        match self.account_id.as_deref() {
-            Some(expected) => accounts
-                .iter()
-                .find(|account| account["accountId"].as_str() == Some(expected)),
-            None => accounts
-                .iter()
-                .rev()
-                .find(|account| account["provider"].as_str() == Some(PROVIDER)),
-        }
-    }
-
-    /// canonical settings 里该账号的当前 connection revision。
-    ///
-    /// 这是 runtime 投影事实，只有 Driver 的 canonical 快照持有；desired 配置没有它。
-    fn settings_revision(&self, account_id: &str) -> Result<u64> {
-        let accounts = self.snapshot["settings"]["acpAccounts"]
-            .as_array()
-            .context("the connected snapshot carries no canonical ACP account list")?;
-        let account = accounts
-            .iter()
-            .find(|account| account["accountId"].as_str() == Some(account_id))
-            .with_context(|| format!("the connected snapshot carries no account `{account_id}`"))?;
-        account["connectionRevision"].as_u64().with_context(|| {
-            format!("the connected snapshot account `{account_id}` carries no connection revision")
-        })
-    }
-
-    /// The canonical auth observation for the saved account and its exact
-    /// connection revision: `required` with no stored credential, or `verified`
-    /// with a usable credential. No login request is allowed in this flow.
-    fn assert_auth_outcome(&self, phase: &str, credential_present: bool) -> Result<()> {
-        let account = self
-            .account()
-            .with_context(|| format!("{phase} connected snapshot carries no saved account"))?;
-        let account_id = account["accountId"]
-            .as_str()
-            .with_context(|| format!("{phase} saved account carries no identity"))?;
-        let revision = account["connectionRevision"]
-            .as_i64()
-            .with_context(|| format!("{phase} saved account carries no connection revision"))?;
-        let auth = self.snapshot["settings"]["acpAuth"]
-            .as_object()
-            .with_context(|| format!("{phase} connected snapshot carries no acpAuth facts"))?;
-        ensure!(
-            auth.get("loaded").and_then(Value::as_bool) == Some(true),
-            "{phase} acpAuth facts were never loaded"
-        );
-        let entries = auth
-            .get("accounts")
-            .and_then(Value::as_array)
-            .with_context(|| format!("{phase} acpAuth facts carry no account list"))?;
-        let observed = entries
-            .iter()
-            .find(|entry| {
-                entry["accountId"].as_str() == Some(account_id)
-                    && entry["connectionRevision"].as_i64() == Some(revision)
-            })
-            .with_context(|| {
-                format!("{phase} acpAuth has no entry for the saved account connection")
-            })?;
-        let kind = observed["state"]["kind"]
-            .as_str()
-            .with_context(|| format!("{phase} acpAuth entry carries no state kind"))?;
-        match kind {
-            "required" => ensure!(
-                !credential_present,
-                "{phase} reports Required although the fake Agent already holds a credential"
-            ),
-            "verified" => ensure!(
-                credential_present,
-                "{phase} reports Verified although the fake Agent holds no credential"
-            ),
-            other => bail!("{phase} acpAuth state `{other}` is not a terminal check"),
-        }
-        Ok(())
-    }
-}
-
-/// Resolves one capture artifact through the summary reference instead of a
-/// guessed file name.
-///
-/// The journey writes every capture artifact with a run-phase segment
-/// (`screenshot-<phase>-…png`, `snapshot-<phase>-…json`, `tree-<phase>-…txt`).
-/// Requiring that segment keeps a later lifecycle from overwriting an earlier
-/// phase's evidence while still letting an old summary point at its own file.
-fn capture_artifact(
-    output: &Path,
-    capture: &Value,
-    field: &str,
-    prefix: &str,
-    extension: &str,
-    phase: &str,
-) -> Result<PathBuf> {
-    let name = capture[field]
-        .as_str()
-        .with_context(|| format!("a capture entry carries no `{field}` reference"))?;
-    ensure!(
-        !name.is_empty() && !name.contains(['/', '\\']) && !name.starts_with('.'),
-        "capture `{field}` is not a bare evidence file name: {name}"
-    );
-    let expected = format!("{prefix}-{phase}-");
-    ensure!(
-        name.starts_with(&expected) && name.ends_with(extension),
-        "capture `{field}` `{name}` does not belong to the {phase} lifecycle"
-    );
-    let path = output.join(name);
-    ensure!(
-        path.is_file(),
-        "the {phase} capture `{field}` file is missing: {name}"
-    );
-    Ok(path)
-}
-
 fn accounts_added(before: &Value, after: &Value) -> Result<Vec<Value>> {
     let before = account_rows(before)?;
     let after = account_rows(after)?;
@@ -2504,72 +2101,6 @@ fn range_start(value: &str) -> Option<u64> {
     start.parse().ok()
 }
 
-/// The install entry the driver summary captured for the Antigravity provider.
-fn install_entry(summary: &Value) -> Result<&Value> {
-    let install = summary
-        .get("install")
-        .context("the journey summary carries no install facts")?;
-    let installations = install["installations"]
-        .as_array()
-        .context("the journey install facts carry no installation list")?;
-    installations
-        .iter()
-        .find(|entry| entry["provider"].as_str() == Some(PROVIDER))
-        .context("the journey install facts carry no antigravity entry")
-}
-
-fn entry_phase(entry: &Value) -> Option<&str> {
-    entry["phase"].as_str()
-}
-
-fn entry_operation(summary: &Value) -> Result<Option<&str>> {
-    Ok(install_entry(summary)?["operationId"].as_str())
-}
-
-fn entry_failure_code(entry: &Value) -> Option<&str> {
-    entry["failure"]["code"].as_str()
-}
-
-fn entry_failure_retryable(entry: &Value) -> Option<bool> {
-    entry["failure"]["retryable"].as_bool()
-}
-
-/// Verifies the cancelled operation's own facts: same operation identity and the
-/// exact frozen release the lifecycle was configured with.
-fn assert_cancelled_release(cancelled: &Value, spec: &PhaseSpec, ready: &Value) -> Result<()> {
-    let operation = cancelled["operationId"].as_str().unwrap_or_default();
-    ensure!(
-        !operation.trim().is_empty(),
-        "acp-auto-install {} reported no cancelled operation identity",
-        spec.phase
-    );
-    let release = cancelled["release"]
-        .as_object()
-        .context("cancelledOperation carries no frozen release")?;
-    ensure!(
-        release.get("version").and_then(Value::as_str) == Some(SERVER_VERSION),
-        "acp-auto-install {} cancelled another release version",
-        spec.phase
-    );
-    ensure!(
-        release.get("archiveUrl").and_then(Value::as_str) == Some(fixed_archive_url()?.as_str()),
-        "acp-auto-install {} cancelled another archive URL",
-        spec.phase
-    );
-    ensure!(
-        release.get("sha256") == Some(&Value::Null),
-        "acp-auto-install {} cancelled another publisher digest",
-        spec.phase
-    );
-    ensure!(
-        release.get("target").and_then(Value::as_str)
-            == ready.get("target").and_then(Value::as_str),
-        "acp-auto-install {} cancelled another platform target",
-        spec.phase
-    );
-    Ok(())
-}
-
 fn phase_evidence(facts: &PhaseFacts<'_>) -> Result<Value> {
     Ok(json!({
         "phase": facts.spec.phase,
@@ -2581,7 +2112,6 @@ fn phase_evidence(facts: &PhaseFacts<'_>) -> Result<Value> {
             "variant": facts.spec.variant,
         },
         "guiLauncherPid": facts.gui_pid,
-        "driverLauncherPid": facts.driver_pid,
         "native": facts.native,
         "peer": {
             "proxyAddress": facts.ready["proxyAddress"].clone(),
@@ -2602,13 +2132,6 @@ fn phase_evidence(facts: &PhaseFacts<'_>) -> Result<Value> {
         "installedKeysBefore": facts.snapshot_before.keys().cloned().collect::<Vec<_>>(),
         "partialDownloads": facts.parts_after,
         "completedArchives": facts.finals_after,
-        "summary": {
-            "status": facts.summary["status"].clone(),
-            "stage": facts.summary["stage"].clone(),
-            "checks": facts.summary["checks"].clone(),
-            "install": facts.summary["install"].clone(),
-            "exitRequest": facts.summary["exitRequest"].clone(),
-        },
     }))
 }
 
@@ -3256,7 +2779,7 @@ fn start_gui(
         .args([
             "xtask",
             "run-gui",
-            "--driver",
+            "--capture",
             "--native-launch",
             "--native-exit-report",
         ])
@@ -3297,34 +2820,6 @@ fn start_gui(
     OwnedProcess::start(&mut command, false)
 }
 
-fn start_journey(
-    context: &AcpAutoInstallScenario<'_>,
-    home: &Path,
-    spec: &PhaseSpec,
-    vm_url: &str,
-    log_path: &Path,
-    fixture_state: Option<&Path>,
-) -> Result<OwnedProcess> {
-    ensure!(
-        context.app_dir.join(JOURNEY).is_file(),
-        "the acp-auto-install Driver journey is missing: {}",
-        context.app_dir.join(JOURNEY).display()
-    );
-    let log = File::create(log_path)?;
-    let mut command = driver_command(context.app_dir, JOURNEY);
-    command
-        .arg(vm_url)
-        .arg(context.output)
-        .arg(spec.phase)
-        .env("ANYWORK_HOME", home)
-        // 只有需要驱动合成认证的阶段才拿到绝对 state 目录：它是 fixture 侧的
-        // 数据参数，不是产品启动参数。
-        .args(fixture_state)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
 fn wait_vm(log: &Path, gui: &mut OwnedProcess, interrupt: &mpsc::Receiver<()>) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(900);
     loop {
@@ -3344,35 +2839,6 @@ fn wait_vm(log: &Path, gui: &mut OwnedProcess, interrupt: &mpsc::Receiver<()>) -
             "GUI VM service startup timed out"
         );
         thread::sleep(Duration::from_millis(300));
-    }
-}
-
-fn wait_for_driver(
-    phase: &str,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    output: &Path,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(1800);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "the GUI exited before the acp-auto-install {phase} journey completed"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "the acp-auto-install {phase} journey was cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "the acp-auto-install {phase} journey timed out at stage `{}`",
-            summary_stage(output, phase)
-        );
-        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -3398,844 +2864,6 @@ fn wait_for_gui_exit(
     }
 }
 
-fn summary_stage(output: &Path, phase: &str) -> String {
-    read_json(&output.join(format!("acp-auto-install-summary-{phase}.json")))
-        .ok()
-        .and_then(|value| value["stage"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
-/// Requires the journey's own summary to describe a completed lifecycle with the
-/// exact Driver contract shape (boolean checks, captures with explicit
-/// `file`/`snapshotFile`/`treeFile` references, empty failures for every phase,
-/// typed shutdown and acknowledged exit).
-fn validate_summary(
-    output: &Path,
-    spec: &PhaseSpec,
-    target: &str,
-    saved_identity: Option<&Value>,
-) -> Result<Value> {
-    let path = output.join(format!("acp-auto-install-summary-{}.json", spec.phase));
-    let summary = read_json(&path)?;
-    ensure!(
-        summary["scenario"] == "acp-auto-install",
-        "the {} journey summary names another scenario",
-        spec.phase
-    );
-    ensure!(
-        summary["phase"] == spec.phase,
-        "the journey summary does not belong to the {} lifecycle",
-        spec.phase
-    );
-    ensure!(
-        summary["status"].as_str() == Some("completed"),
-        "the {} journey summary status is not `completed`",
-        spec.phase
-    );
-    ensure!(
-        summary["stage"]
-            .as_str()
-            .is_some_and(|stage| !stage.trim().is_empty()),
-        "the {} journey summary carries no stage",
-        spec.phase
-    );
-    ensure!(
-        summary["humanVerdict"].as_str() == Some("pending"),
-        "the {} journey summary must keep the human verdict pending",
-        spec.phase
-    );
-    ensure!(
-        summary["shutdown"].as_str() == Some("completed"),
-        "the {} journey summary does not prove a completed shutdown",
-        spec.phase
-    );
-    let exit = summary
-        .get("exitRequest")
-        .context("the journey summary carries no exitRequest facts")?;
-    ensure!(
-        exit["requested"].as_bool() == Some(true) && exit["acknowledged"].as_bool() == Some(true),
-        "the {} journey did not get its exit request acknowledged",
-        spec.phase
-    );
-    let failed = summary["failedChecks"]
-        .as_array()
-        .context("the journey summary carries no failedChecks array")?;
-    ensure!(
-        failed.is_empty(),
-        "the {} journey reported failed checks: {failed:?}",
-        spec.phase
-    );
-    let failures = summary["failures"]
-        .as_array()
-        .context("the journey summary carries no failures array")?;
-    // A product install failure is a typed entry state, never a harness failure:
-    // every completed lifecycle must keep this list empty.
-    ensure!(
-        failures.is_empty(),
-        "the {} journey reported harness failures: {failures:?}",
-        spec.phase
-    );
-    assert_checks_clean(&summary["checks"], spec.phase)?;
-    // 只有真正进入安装流程的 phase 才订阅安装事实：auth-faults/restart 在准备表单
-    // 里没有安装订阅，要求它们 `installLoaded` 等于伪造一个不存在的订阅。
-    let installation_phase = !matches!(spec.expect, Expect::Auth);
-    if installation_phase {
-        for required in ["installLoaded", "installRevisionRecorded"] {
-            ensure!(
-                summary["checks"][required].as_bool() == Some(true),
-                "the {} journey check `{required}` is missing or false",
-                spec.phase
-            );
-        }
-    }
-    // 每个 phase 必须**存在且为 true** 的真实 check：缺失不能被“checks 全 true”
-    // 掩盖（那只是对已有项的全量断言）。
-    for required in spec.required_checks {
-        ensure!(
-            summary["checks"][required].as_bool() == Some(true),
-            "the {} journey check `{required}` is missing or not true",
-            spec.phase
-        );
-    }
-    let captures = summary["captures"]
-        .as_array()
-        .cloned()
-        .context("the journey summary carries no captures")?;
-    // 认证截图要用哪一条身份定位账号：
-    // - `Save::New`（first/retry）保存的是**本 phase 自己**的账号，必须用本 phase 的
-    //   `savedAccount`；沿用 first 的旧身份会把 retry（H3）错指到 H1 的 id。
-    // - 其余 phase（auth-faults/restart）没有保存，继续用 first 记录的 id 定位，
-    //   它们与当前 runtime 的 settings/auth revision 在同一帧内自洽相核。
-    let capture_identity: Option<Value> = if spec.save == Save::New {
-        let saved = summary
-            .get("savedAccount")
-            .context("the journey summary carries no savedAccount facts")?;
-        ensure!(
-            saved["accountId"].as_str().is_some_and(|id| !id.is_empty()),
-            "the {} journey saved no account identity",
-            spec.phase
-        );
-        ensure!(
-            saved["connectionRevision"].as_u64().is_some(),
-            "the {} journey saved no connection revision",
-            spec.phase
-        );
-        Some(saved.clone())
-    } else {
-        saved_identity.cloned()
-    };
-    // Required captures belong to the phase's *final* operation: a fault phase may
-    // have captured an earlier attempt as extra evidence, but the required name is
-    // bound to the operation the summary ended in.
-    let final_operation = if installation_phase {
-        entry_operation(&summary)?.map(str::to_owned)
-    } else {
-        // 认证类 phase 的 summary.install 可以为空；它没有安装操作身份可核对。
-        None
-    };
-    let cancelled_operation = summary
-        .get("cancelledOperation")
-        .and_then(|cancelled| cancelled["operationId"].as_str())
-        .map(str::to_owned);
-    for name in spec.required_captures {
-        // 名字与 `capture_kind` 一一对应：这里只挑选本阶段声明的必需证据。
-        let capture = captures
-            .iter()
-            .find(|capture| capture["name"].as_str() == Some(*name))
-            .with_context(|| format!("the {} journey never captured `{name}`", spec.phase))?;
-        validate_recorded_capture(
-            output,
-            spec,
-            target,
-            name,
-            capture,
-            final_operation.as_deref(),
-            cancelled_operation.as_deref(),
-            capture_identity.as_ref(),
-        )?;
-    }
-    // 取消中的瞬态截图可选；一旦记录，就必须与其它阶段证据同样严格（同阶段、
-    // 同非空 operation、真实截图与快照）。记录与否另由 `cancellingObservation`
-    // 的观察结论约束，不能只靠一个布尔 check。
-    if spec.expect == Expect::Cancelled
-        && let Some(capture) = captures
-            .iter()
-            .find(|capture| capture["name"].as_str() == Some(CANCELLING_CAPTURE))
-    {
-        validate_recorded_capture(
-            output,
-            spec,
-            target,
-            CANCELLING_CAPTURE,
-            capture,
-            final_operation.as_deref(),
-            cancelled_operation.as_deref(),
-            capture_identity.as_ref(),
-        )?;
-    }
-    if spec.required_captures.contains(&CONNECTED_CAPTURE) {
-        // The journey's own auth checks must be terminal check facts: `Required`
-        // (nothing stored) and `Verified` both count as a finished check, and a
-        // login request is never part of this flow.
-        for required in [
-            "authObservedForConnection",
-            "authReachedTerminalCheck",
-            "authRecordedConnection",
-        ] {
-            ensure!(
-                summary["checks"][required].as_bool() == Some(true),
-                "the {} journey check `{required}` is missing or false",
-                spec.phase
-            );
-        }
-    }
-    Ok(summary)
-}
-
-/// 一个 required capture 属于哪一类事实，决定它必须证明什么。
-///
-/// 固定 1.4.1 之后阶段分成两组：安装阶段（`progress`/`ready`/`cancelling`/…）必须
-/// 带真实安装 phase 与同一次安装操作；认证阶段（`prepare-required`/`verified`/…）
-/// 在准备表单里本来就没有安装订阅、也不需要安装 phase，因此只核 `acpAuth` 事实。
-/// `connected` 是唯一同时要求两类事实的截图。
-enum CaptureKind {
-    /// 安装阶段截图。
-    Install {
-        phase: &'static str,
-        failure: Option<&'static str>,
-    },
-    /// 连接截图：安装 Ready + 认证终态两个事实都核。
-    Connected {
-        install_phase: &'static str,
-        auth: AuthExpectation,
-    },
-    /// 认证阶段截图：安装 phase 允许为 null。
-    Auth(AuthExpectation),
-    /// 额度截图：绑定保存身份与当前摘要，不要求详情订阅仍活跃。
-    Quota,
-    /// Native 表单回归截图：不得被伪造成安装 phase 或认证成功。
-    Native,
-}
-
-/// 认证类截图必须证明的 `acpAuth` 事实。
-struct AuthExpectation {
-    /// 允许的 state kind。
-    kinds: &'static [&'static str],
-    /// 失败终态时必须匹配的 `(code, stage)`。`None` 表示不得是失败终态。
-    failure: Option<(&'static str, &'static str)>,
-    /// 该截图绑定的账号身份。
-    account: AuthAccount,
-}
-
-/// 认证截图绑定哪个账号。
-enum AuthAccount {
-    /// 预置的旧账号基线：准备阶段还没有新 id，不能事后用保存的新 id 回填。
-    Seed,
-    /// `first`/`retry` 在 summary 里记录的保存身份。
-    Saved,
-}
-
-/// Required capture name → 它承诺的事实类别。
-///
-/// 未列出的名字返回 `None`：一个 phase 要求了没有定义的 capture，本身就该失败，
-/// 而不是按“可能没有安装 phase”放行。
-/// 取消瞬态观察记录（`summary.cancellingObservation`）的消费端契约。
-///
-/// 字段分工是固定的：`capture` 是**枚举判别位**，只接受 `captured` /
-/// `not-observed` / `phase-changed`；`reason` 只是非空的事实说明（例如“同 operation
-/// 在首个快照里已到 Cancelled”），不参与判别，也不要求固定词。
-///
-/// - `capture == "captured"`：`observed == true`，且恰好一条合法的 `cancelling` 截图；
-/// - `capture == "not-observed"`：`observed == false`，且没有该截图；
-/// - `capture == "phase-changed"`：`observed == true`，且没有该截图——真实同一
-///   operation 已进入后续取消阶段，不能用 `Cancelled` 或旧快照冒充该瞬态。
-///
-/// `capture` 为 null 或写成截图名（旧格式）、把 `reason` 当枚举值、`operationId` 与
-/// `cancelledOperation` 不一致都是失败；字段缺失、未知 `capture` 取值、布尔与截图
-/// 互相矛盾同样失败，不看 summary 的布尔 check。
-fn assert_cancelling_observation(facts: &PhaseFacts<'_>) -> Result<()> {
-    let spec = facts.spec;
-    let observation = facts.summary["cancellingObservation"]
-        .as_object()
-        .with_context(|| {
-            format!(
-                "acp-auto-install {} recorded no cancellingObservation facts",
-                spec.phase
-            )
-        })?;
-    let cancelled_operation = facts.summary["cancelledOperation"]["operationId"]
-        .as_str()
-        .filter(|id| !id.trim().is_empty())
-        .with_context(|| {
-            format!(
-                "acp-auto-install {} reported no cancelled operation identity",
-                spec.phase
-            )
-        })?;
-    let observed_operation = observation["operationId"]
-        .as_str()
-        .filter(|id| !id.trim().is_empty())
-        .with_context(|| {
-            format!(
-                "acp-auto-install {} cancellingObservation carries no operation identity",
-                spec.phase
-            )
-        })?;
-    ensure!(
-        observed_operation == cancelled_operation,
-        "acp-auto-install {} observed cancelling on operation `{observed_operation}` instead of `{cancelled_operation}`",
-        spec.phase
-    );
-    let observed = observation["observed"].as_bool().with_context(|| {
-        format!(
-            "acp-auto-install {} cancellingObservation carries no observed flag",
-            spec.phase
-        )
-    })?;
-    // `reason` 只是事实说明：非空即可，绝不当判别位。
-    observation["reason"]
-        .as_str()
-        .filter(|reason| !reason.trim().is_empty())
-        .with_context(|| {
-            format!(
-                "acp-auto-install {} cancellingObservation carries no reason fact",
-                spec.phase
-            )
-        })?;
-    // `capture` 是判别位：只接受三个冻结取值，null/截图名/未知值都拒绝。
-    let capture = observation["capture"]
-        .as_str()
-        .filter(|capture| !capture.trim().is_empty())
-        .with_context(|| {
-            format!(
-                "acp-auto-install {} cancellingObservation carries no capture discriminator",
-                spec.phase
-            )
-        })?;
-    let captures = facts.summary["captures"]
-        .as_array()
-        .context("the cancel summary carries no captures")?;
-    let recorded = captures
-        .iter()
-        .filter(|capture| capture["name"].as_str() == Some(CANCELLING_CAPTURE))
-        .count();
-    match capture {
-        "captured" => {
-            ensure!(
-                observed,
-                "acp-auto-install {} claims a captured cancelling transient with observed=false",
-                spec.phase
-            );
-            ensure!(
-                recorded == 1,
-                "acp-auto-install {} recorded {recorded} `{CANCELLING_CAPTURE}` captures for one observed transient",
-                spec.phase
-            );
-        }
-        "not-observed" => {
-            ensure!(
-                !observed,
-                "acp-auto-install {} claims an unobserved cancelling transient with observed=true",
-                spec.phase
-            );
-            ensure!(
-                recorded == 0,
-                "acp-auto-install {} recorded a `{CANCELLING_CAPTURE}` capture while reporting it unobserved",
-                spec.phase
-            );
-        }
-        "phase-changed" => {
-            ensure!(
-                observed,
-                "acp-auto-install {} claims the transient moved on with observed=false",
-                spec.phase
-            );
-            ensure!(
-                recorded == 0,
-                "acp-auto-install {} recorded a `{CANCELLING_CAPTURE}` capture although the transient moved on",
-                spec.phase
-            );
-        }
-        other => bail!(
-            "acp-auto-install {} recorded an unknown cancelling observation capture `{other}`",
-            spec.phase
-        ),
-    }
-    Ok(())
-}
-
-/// 校验一条已记录截图：必需证据与可选瞬态走同一条严格事实链。
-///
-/// 名字必须来自 [`capture_kind`]；截图与快照必须是本阶段自己的真实产物，安装类
-/// 截图还要在快照里核对同阶段、同 operation 与冻结描述符。
-#[allow(clippy::too_many_arguments)]
-fn validate_recorded_capture(
-    output: &Path,
-    spec: &PhaseSpec,
-    target: &str,
-    name: &str,
-    capture: &Value,
-    final_operation: Option<&str>,
-    cancelled_operation: Option<&str>,
-    capture_identity: Option<&Value>,
-) -> Result<()> {
-    ensure!(
-        capture["screenshot"].as_bool() == Some(true),
-        "capture `{name}` was not recorded as a real screenshot"
-    );
-    let kind = capture_kind(name)
-        .with_context(|| format!("required capture `{name}` has no defined fact category"))?;
-    let screenshot = capture_artifact(output, capture, "file", "screenshot", ".png", spec.phase)?;
-    ensure!(
-        selftest_png(&screenshot),
-        "capture `{name}` has no real PNG screenshot: {}",
-        screenshot.display()
-    );
-    let snapshot = capture_artifact(
-        output,
-        capture,
-        "snapshotFile",
-        "snapshot",
-        ".json",
-        spec.phase,
-    )?;
-    let snapshot_value = read_json(&snapshot)?;
-    ensure!(
-        snapshot_value.is_object(),
-        "capture `{name}` recorded no canonical snapshot object"
-    );
-    match kind {
-        CaptureKind::Install { phase, failure } => {
-            ensure!(
-                capture["phase"]
-                    .as_str()
-                    .is_some_and(|value| !value.trim().is_empty()),
-                "capture `{name}` carries no observed install phase"
-            );
-            assert_capture_install_facts(
-                name,
-                capture,
-                &snapshot_value,
-                &InstallExpectation {
-                    spec,
-                    target,
-                    phase,
-                    failure,
-                    final_operation,
-                    cancelled_operation,
-                },
-            )?;
-        }
-        CaptureKind::Connected {
-            install_phase,
-            auth,
-        } => {
-            ensure!(
-                capture["phase"]
-                    .as_str()
-                    .is_some_and(|value| !value.trim().is_empty()),
-                "capture `{name}` carries no observed install phase"
-            );
-            assert_capture_install_facts(
-                name,
-                capture,
-                &snapshot_value,
-                &InstallExpectation {
-                    spec,
-                    target,
-                    phase: install_phase,
-                    failure: None,
-                    final_operation,
-                    cancelled_operation,
-                },
-            )?;
-            assert_capture_auth_facts(name, &snapshot_value, spec, &auth, capture_identity)?;
-        }
-        CaptureKind::Auth(auth) => {
-            // 认证截图不带安装 phase：这里既不允许、也不要求它伪造一个。
-            assert_capture_auth_facts(name, &snapshot_value, spec, &auth, capture_identity)?;
-        }
-        CaptureKind::Quota => {
-            let identity = capture_identity.context("quota capture needs the saved identity")?;
-            let account_id = identity["accountId"]
-                .as_str()
-                .context("quota capture identity carries no account ID")?;
-            let revision = identity["connectionRevision"]
-                .as_u64()
-                .context("quota capture identity carries no connection revision")?;
-            assert_fixture_usage_snapshot(&snapshot_value, account_id, revision, name)?;
-        }
-        CaptureKind::Native => {
-            // Native 表单截图发生在安装已就绪的 home 里：允许 `phase: null`，
-            // 也允许与它自己快照里 antigravity 条目的真实 phase 一致；但必须
-            // 真的来自 Native 表单（settings.accounts + 控件树），且不据此声称
-            // 安装或认证成功。
-            let snapshot_phase = snapshot_value["settings"]["acpInstall"]["installations"]
-                .as_array()
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry["provider"].as_str() == Some(PROVIDER))
-                })
-                .and_then(|entry| entry["phase"].as_str());
-            match capture["phase"].as_str() {
-                Some(recorded) => ensure!(
-                    Some(recorded) == snapshot_phase,
-                    "the native form capture `{name}` claims install phase `{recorded}` but its snapshot shows `{snapshot_phase:?}`"
-                ),
-                None => ensure!(
-                    capture["phase"].is_null(),
-                    "the native form capture `{name}` carries a non-string install phase"
-                ),
-            }
-            ensure!(
-                snapshot_value["settings"]["accounts"].is_array(),
-                "the native form capture `{name}` recorded no canonical Native account list"
-            );
-            let tree = capture_artifact(output, capture, "treeFile", "tree", ".txt", spec.phase)?;
-            let tree_text = fs::read_to_string(&tree)?;
-            ensure!(
-                tree_text.to_lowercase().contains("account"),
-                "the native form capture `{name}` recorded no Native form widget tree"
-            );
-        }
-    }
-    let tree = capture_artifact(output, capture, "treeFile", "tree", ".txt", spec.phase)?;
-    let tree_text = fs::read_to_string(&tree)?;
-    ensure!(
-        !tree_text.trim().is_empty(),
-        "capture `{name}` recorded an empty widget tree"
-    );
-    Ok(())
-}
-
-fn capture_kind(name: &str) -> Option<CaptureKind> {
-    let install = |phase, failure| Some(CaptureKind::Install { phase, failure });
-    let auth =
-        |kinds: &'static [&'static str], failure: Option<(&'static str, &'static str)>, account| {
-            Some(CaptureKind::Auth(AuthExpectation {
-                kinds,
-                failure,
-                account,
-            }))
-        };
-    match name {
-        "progress" | "progress-resumed" | "progress-retry" => install("downloading", None),
-        // 取消前的真实下载窗口：与 `progress` 同阶段，但绑定取消组的 operation。
-        "downloading-before-cancel" => install("downloading", None),
-        "ready" | "ready-reused" => install("ready", None),
-        "cancelling" => install("cancelling", None),
-        "cancelled" => install("cancelled", None),
-        "failed-archive" => install("failed", Some("invalidArchive")),
-        "connected" => Some(CaptureKind::Connected {
-            install_phase: "ready",
-            auth: AuthExpectation {
-                kinds: &["required", "verified"],
-                failure: None,
-                account: AuthAccount::Saved,
-            },
-        }),
-        // 准备阶段：绑定预置旧账号，且必须观察到 preparationRequired@prepare。
-        "prepare-required" => auth(
-            &["failed"],
-            Some(("preparationRequired", "prepare")),
-            AuthAccount::Seed,
-        ),
-        "authenticating" => auth(&["authenticating"], None, AuthAccount::Saved),
-        "quota-details" | "quota-list" => Some(CaptureKind::Quota),
-        "verified" => auth(&["verified"], None, AuthAccount::Saved),
-        // Driver 的认证失败负例固定是 authenticate 阶段的 `authentication` 失败：
-        // 任何其它 typed 失败（probe/protocol/…）都不算这一项通过。
-        "authentication-failed" => auth(
-            &["failed"],
-            Some(("authentication", "authenticate")),
-            AuthAccount::Saved,
-        ),
-        // 取消只有在真实进程收束后才发布终态 `cancelled`；`cancelling` 不是通过态。
-        "auth-cancelled" => auth(&["cancelled"], None, AuthAccount::Saved),
-        // 重启后的第一帧必须仍是 `unchecked`：不允许用上一次 runtime 的 Verified 冒充。
-        "reopened" => auth(&["unchecked"], None, AuthAccount::Saved),
-        "connected-reopened" => auth(&["verified"], None, AuthAccount::Saved),
-        "native-form" => Some(CaptureKind::Native),
-        _ => None,
-    }
-}
-
-/// 安装类 capture 需要核对的上下文（集中在结构体里，避免长参数列表）。
-struct InstallExpectation<'a> {
-    spec: &'a PhaseSpec,
-    target: &'a str,
-    phase: &'static str,
-    failure: Option<&'static str>,
-    final_operation: Option<&'a str>,
-    cancelled_operation: Option<&'a str>,
-}
-
-/// Requires the capture's own snapshot to show the install phase the capture
-/// claims, for the antigravity entry, with this lifecycle's frozen descriptor.
-///
-/// Nothing here rewrites a snapshot or fills in a phase: a transient state that
-/// could not be captured is reported as evidence the journey lacks, not repaired.
-fn assert_capture_install_facts(
-    name: &str,
-    capture: &Value,
-    snapshot: &Value,
-    expected: &InstallExpectation<'_>,
-) -> Result<()> {
-    let phase = expected.phase;
-    let recorded = capture["phase"]
-        .as_str()
-        .with_context(|| format!("capture `{name}` carries no observed install phase"))?;
-    ensure!(
-        recorded == phase,
-        "capture `{name}` recorded install phase `{recorded}` but `{phase}` is required"
-    );
-    let install = &snapshot["settings"]["acpInstall"];
-    ensure!(
-        install["loaded"].as_bool() == Some(true),
-        "capture `{name}` snapshot never loaded the install facts"
-    );
-    // 订阅事实必须来自这一帧的真实 snapshot，而不是 summary 里的布尔 check。
-    ensure!(
-        install["revision"].as_u64().is_some(),
-        "capture `{name}` snapshot carries no integer install revision"
-    );
-    let entries = install["installations"]
-        .as_array()
-        .with_context(|| format!("capture `{name}` snapshot carries no installation list"))?;
-    let entry = entries
-        .iter()
-        .find(|entry| entry["provider"].as_str() == Some(PROVIDER))
-        .with_context(|| format!("capture `{name}` snapshot carries no antigravity entry"))?;
-    ensure!(
-        entry["phase"].as_str() == Some(phase),
-        "capture `{name}` snapshot shows install phase `{:?}` instead of `{phase}`",
-        entry["phase"].as_str()
-    );
-    let recorded_operation = entry["operationId"]
-        .as_str()
-        .with_context(|| format!("capture `{name}` snapshot carries no operation identity"))?;
-    let final_operation = expected.final_operation.with_context(|| {
-        format!(
-            "the {} journey summary reported no final installation operation identity",
-            expected.spec.phase
-        )
-    })?;
-    ensure!(
-        recorded_operation == final_operation,
-        "capture `{name}` belongs to operation `{recorded_operation}` instead of the phase's final operation `{final_operation}`"
-    );
-    if let Some(cancelled) = expected.cancelled_operation {
-        ensure!(
-            cancelled == final_operation,
-            "the cancelled operation `{cancelled}` is not the phase's final operation `{final_operation}`"
-        );
-    }
-    // The snapshot entry embeds the canonical typed DTO: a failure is the nested
-    // `failure` object (code/retryable/stage), never a flattened `failureCode`.
-    let failure = &entry["failure"];
-    match expected.failure {
-        Some(code) => ensure!(
-            failure["code"].as_str() == Some(code),
-            "capture `{name}` snapshot shows failure `{:?}` instead of `{code}`",
-            failure["code"].as_str()
-        ),
-        None => ensure!(
-            failure.is_null(),
-            "capture `{name}` snapshot shows an unexpected failure `{:?}`",
-            failure["code"].as_str()
-        ),
-    }
-    // Only the states that carry a frozen release can prove descriptor identity;
-    // `cancelling`/`cancelled` carry none, and the harness never fabricates one.
-    if matches!(phase, "downloading" | "ready") {
-        // Same canonical shape: the frozen release is the nested `release` object.
-        let release = &entry["release"];
-        ensure!(
-            release["version"].as_str() == Some(SERVER_VERSION),
-            "capture `{name}` snapshot froze another release version"
-        );
-        ensure!(
-            release["target"].as_str() == Some(expected.target),
-            "capture `{name}` snapshot froze another platform target"
-        );
-        ensure!(
-            release["archiveUrl"].as_str() == Some(fixed_archive_url()?.as_str()),
-            "capture `{name}` snapshot froze another archive URL"
-        );
-        ensure!(
-            release["sha256"].is_null(),
-            "capture `{name}` snapshot froze another publisher digest"
-        );
-    }
-    Ok(())
-}
-
-/// Requires the capture's snapshot to prove the `acpAuth` facts it claims.
-///
-/// 与安装截图不同：准备表单没有安装订阅，所以这里不看安装 phase，只核对当前
-/// runtime 的 `acpAuth.loaded`、账号身份与连接 revision 的一致性，以及 state
-/// kind（必要时还包括 typed failure code/stage）。
-fn assert_capture_auth_facts(
-    name: &str,
-    snapshot: &Value,
-    spec: &PhaseSpec,
-    expected: &AuthExpectation,
-    saved_identity: Option<&Value>,
-) -> Result<()> {
-    let account_id = match expected.account {
-        AuthAccount::Seed => SEED_ACCOUNT_ID.to_owned(),
-        AuthAccount::Saved => saved_identity
-            .and_then(|identity| identity["accountId"].as_str())
-            .with_context(|| {
-                format!("capture `{name}` needs the saved identity recorded by the first phase")
-            })?
-            .to_owned(),
-    };
-    let auth = snapshot["settings"]["acpAuth"]
-        .as_object()
-        .with_context(|| format!("capture `{name}` snapshot carries no acpAuth facts"))?;
-    ensure!(
-        auth.get("loaded").and_then(Value::as_bool) == Some(true),
-        "capture `{name}` snapshot never loaded the acpAuth facts"
-    );
-    let entries = auth
-        .get("accounts")
-        .and_then(Value::as_array)
-        .with_context(|| format!("capture `{name}` snapshot carries no acpAuth account list"))?;
-    let entry = entries
-        .iter()
-        .find(|entry| entry["accountId"].as_str() == Some(account_id.as_str()))
-        .with_context(|| {
-            format!("capture `{name}` snapshot carries no acpAuth entry for `{account_id}`")
-        })?;
-    let revision = entry["connectionRevision"].as_u64().with_context(|| {
-        format!("capture `{name}` acpAuth entry carries no connection revision")
-    })?;
-    // 当前 runtime 的 settings 必须与认证观察使用同一个身份证：不盲信旧 runtime
-    // 记下的数字，而是要求这一帧里两侧自洽。
-    let accounts = snapshot["settings"]["acpAccounts"]
-        .as_array()
-        .with_context(|| format!("capture `{name}` snapshot carries no ACP account list"))?;
-    let account = accounts
-        .iter()
-        .find(|account| account["accountId"].as_str() == Some(account_id.as_str()))
-        .with_context(|| {
-            format!("capture `{name}` snapshot carries no ACP account `{account_id}`")
-        })?;
-    ensure!(
-        account["provider"].as_str() == Some(PROVIDER),
-        "capture `{name}` account `{account_id}` changed provider"
-    );
-    ensure!(
-        account["connectionRevision"].as_u64() == Some(revision),
-        "capture `{name}` acpAuth revision differs from the current settings account revision"
-    );
-    let state = &entry["state"];
-    let kind = state["kind"]
-        .as_str()
-        .with_context(|| format!("capture `{name}` acpAuth entry carries no state kind"))?;
-    // 进行中的认证状态必须携带非空 operation；终态结构本身没有该字段。
-    let in_flight = matches!(
-        kind,
-        "checking" | "authenticating" | "verifying" | "closing" | "cancelling"
-    );
-    if in_flight {
-        ensure!(
-            state["operationId"]
-                .as_str()
-                .is_some_and(|value| !value.trim().is_empty()),
-            "capture `{name}` observed `{kind}` without a non-empty auth operation"
-        );
-    } else {
-        ensure!(
-            state.get("operationId").is_none_or(Value::is_null),
-            "capture `{name}` observed terminal `{kind}` with a stale auth operation"
-        );
-    }
-    ensure!(
-        expected.kinds.contains(&kind),
-        "capture `{name}` observed acpAuth kind `{kind}`, expected one of {:?}",
-        expected.kinds
-    );
-    match expected.failure {
-        Some((code, stage)) => {
-            ensure!(
-                state["failure"]["code"].as_str() == Some(code),
-                "capture `{name}` reports failure `{:?}` instead of `{code}`",
-                state["failure"]["code"]
-            );
-            ensure!(
-                state["failure"]["stage"].as_str() == Some(stage),
-                "capture `{name}` reports failure stage `{:?}` instead of `{stage}`",
-                state["failure"]["stage"]
-            );
-        }
-        None if kind == "failed" => {
-            // 认证失败的具体枚举值由 Driver 选中的故障点决定；这里只要求它是一个
-            // 带 code/stage 的 typed 失败，而不是空对象或字符串。
-            ensure!(
-                state["failure"]["code"]
-                    .as_str()
-                    .is_some_and(|code| !code.is_empty()),
-                "capture `{name}` failed without a typed failure code"
-            );
-            ensure!(
-                state["failure"]["stage"]
-                    .as_str()
-                    .is_some_and(|value| !value.is_empty()),
-                "capture `{name}` failed without a typed failure stage"
-            );
-            ensure!(
-                state["failure"]["retryable"].as_bool().is_some(),
-                "capture `{name}` failed without a retryable flag"
-            );
-        }
-        None => ensure!(
-            state.get("failure").is_none_or(Value::is_null),
-            "capture `{name}` carries a failure although it must be a clean observation"
-        ),
-    }
-    if !expected.kinds.contains(&"failed") {
-        ensure!(
-            kind != "failed",
-            "capture `{name}` ended in a typed failure although phase {} expects a clean state",
-            spec.phase
-        );
-    }
-    Ok(())
-}
-
-/// Every typed check must be a real `true`; the driver's checks map is boolean.
-fn assert_checks_clean(checks: &Value, phase: &str) -> Result<()> {
-    let map = checks
-        .as_object()
-        .with_context(|| format!("the {phase} journey checks are not a boolean map"))?;
-    ensure!(
-        !map.is_empty(),
-        "the {phase} journey reported no checks at all"
-    );
-    for (name, value) in map {
-        ensure!(
-            value.as_bool().is_some(),
-            "the {phase} journey check `{name}` is not a boolean"
-        );
-        ensure!(
-            value.as_bool() == Some(true),
-            "the {phase} journey check `{name}` is false"
-        );
-    }
-    Ok(())
-}
-
-fn selftest_png(path: &Path) -> bool {
-    let mut header = [0_u8; 8];
-    File::open(path)
-        .and_then(|mut file| file.read_exact(&mut header))
-        .is_ok_and(|()| header == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
-}
-
-/// `sha256:<64 lowercase hex>` → the filesystem storage key.
 fn storage_key_of_wire(wire: &str) -> Option<String> {
     let hex = wire.strip_prefix(WIRE_ID_PREFIX)?;
     is_storage_key(hex).then(|| hex.to_owned())

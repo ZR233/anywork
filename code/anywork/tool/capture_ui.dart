@@ -4,6 +4,8 @@
 // Run with the app package_config so native build hooks are not re-entered:
 // cargo dart --packages=.dart_tool/package_config.json tool/capture_ui.dart \
 //   --run-info <file> --view <id> --output <png>
+// cargo dart --packages=.dart_tool/package_config.json tool/capture_ui.dart \
+//   --vm-url <uri> --output <png> [--exit]
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,7 +13,8 @@ import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
 const _usage =
-    'usage: tool/capture_ui.dart --run-info <file> --view <id> --output <png>';
+    'usage: tool/capture_ui.dart (--run-info <file> --view <id> --output <png> | '
+    '--vm-url <uri> [--output <png>]) [--exit]';
 
 Future<void> main(List<String> args) async {
   final options = _parseArgs(args);
@@ -20,55 +23,77 @@ Future<void> main(List<String> args) async {
     exitCode = 64;
     return;
   }
-  final runInfo = _readRunInfo(File(options.runInfo));
-  final viewId = options.view;
-  final output = File(options.output);
+  final runInfo = options.runInfo == null
+      ? _RunInfo(
+          vmServiceUri: options.vmUrl!,
+          sourceSha: 'acceptance',
+          buildMode: 'debug',
+          runId: 'capture',
+        )
+      : _readRunInfo(File(options.runInfo!));
+  final output = options.output == null ? null : File(options.output!);
   VmService? service;
   try {
     service = await vmServiceConnectUri(_webSocketUri(runInfo.vmServiceUri));
-    final isolateId = await _isolateForView(service, runInfo, viewId);
-    final response = await service
-        .callServiceExtension(
-          'ext.anywork.capture',
-          isolateId: isolateId,
-        )
-        .timeout(const Duration(seconds: 12));
-    final payload = response.json;
-    if (payload == null) {
-      throw StateError('Capture extension returned no payload for view $viewId');
-    }
-    if (payload['type'] == 'Error' || payload.containsKey('code')) {
-      throw StateError(
-        'Capture extension failed for view $viewId: ${payload['message'] ?? payload}',
+    final isolateId = await _isolateForView(service, runInfo, options.view);
+    if (output != null) {
+      final response = await service
+          .callServiceExtension('ext.anywork.capture', isolateId: isolateId)
+          .timeout(const Duration(seconds: 12));
+      final payload = response.json;
+      if (payload == null) {
+        throw StateError(
+          'Capture extension returned no payload for $isolateId',
+        );
+      }
+      if (payload['type'] == 'Error' || payload.containsKey('code')) {
+        throw StateError(
+          'Capture extension failed for $isolateId: ${payload['message'] ?? payload}',
+        );
+      }
+      final encoded = payload['pngBase64'];
+      if (encoded is! String || encoded.isEmpty) {
+        throw StateError('Capture extension returned no PNG for $isolateId');
+      }
+      final png = base64Decode(encoded);
+      if (png.isEmpty) {
+        throw StateError(
+          'Capture extension returned an empty PNG for $isolateId',
+        );
+      }
+      final capturedAt = DateTime.now().toUtc().toIso8601String();
+      final appMeta = payload['meta'];
+      final meta = <String, Object?>{
+        'sourceSha': runInfo.sourceSha,
+        'buildMode': runInfo.buildMode,
+        'runId': runInfo.runId,
+        'caseId': runInfo.caseId,
+        'capturedAt': capturedAt,
+        'isolateId': isolateId,
+        'viewId': options.view,
+        'route': runInfo.route,
+        if (appMeta is Map) ...Map<String, Object?>.from(appMeta),
+        'scope': 'flutter-content',
+      };
+      output.parent.createSync(recursive: true);
+      output.writeAsBytesSync(png);
+      File('${output.path}.meta.json').writeAsStringSync(
+        '${const JsonEncoder.withIndent('  ').convert(meta)}\n',
       );
     }
-    final encoded = payload['pngBase64'];
-    if (encoded is! String || encoded.isEmpty) {
-      throw StateError('Capture extension returned no PNG for view $viewId');
+    if (options.exitApp) {
+      final exitResponse = await service
+          .callServiceExtension('ext.anywork.requestExit', isolateId: isolateId)
+          .timeout(const Duration(seconds: 12));
+      final exitPayload = exitResponse.json;
+      if (exitPayload == null ||
+          exitPayload['type'] == 'Error' ||
+          exitPayload.containsKey('code')) {
+        throw StateError(
+          'requestExit failed: ${exitPayload?['message'] ?? exitPayload}',
+        );
+      }
     }
-    final png = base64Decode(encoded);
-    if (png.isEmpty) {
-      throw StateError('Capture extension returned an empty PNG for view $viewId');
-    }
-    final capturedAt = DateTime.now().toUtc().toIso8601String();
-    final appMeta = payload['meta'];
-    final meta = <String, Object?>{
-      'sourceSha': runInfo.sourceSha,
-      'buildMode': runInfo.buildMode,
-      'runId': runInfo.runId,
-      'caseId': runInfo.caseId,
-      'capturedAt': capturedAt,
-      'isolateId': isolateId,
-      'viewId': viewId,
-      'route': runInfo.route,
-      if (appMeta is Map) ...Map<String, Object?>.from(appMeta),
-      'scope': 'flutter-content',
-    };
-    output.parent.createSync(recursive: true);
-    output.writeAsBytesSync(png);
-    File('${output.path}.meta.json').writeAsStringSync(
-      '${const JsonEncoder.withIndent('  ').convert(meta)}\n',
-    );
   } finally {
     await service?.dispose();
   }
@@ -77,13 +102,17 @@ Future<void> main(List<String> args) async {
 final class _Options {
   const _Options({
     required this.runInfo,
+    required this.vmUrl,
     required this.view,
     required this.output,
+    required this.exitApp,
   });
 
-  final String runInfo;
-  final String view;
-  final String output;
+  final String? runInfo;
+  final String? vmUrl;
+  final String? view;
+  final String? output;
+  final bool exitApp;
 }
 
 final class _RunInfo {
@@ -108,26 +137,55 @@ final class _RunInfo {
 
 _Options? _parseArgs(List<String> args) {
   String? runInfo;
+  String? vmUrl;
   String? view;
   String? output;
+  var exitApp = false;
   for (var i = 0; i < args.length; i++) {
     final flag = args[i];
-    if (i + 1 >= args.length) return null;
-    final value = args[++i];
     switch (flag) {
+      case '--exit':
+        exitApp = true;
       case '--run-info':
-        runInfo = value;
+      case '--vm-url':
       case '--view':
-        view = value;
       case '--output':
-        output = value;
+        if (i + 1 >= args.length) return null;
+        final value = args[++i];
+        switch (flag) {
+          case '--run-info':
+            runInfo = value;
+          case '--vm-url':
+            vmUrl = value;
+          case '--view':
+            view = value;
+          case '--output':
+            output = value;
+        }
       default:
         return null;
     }
   }
-  if (runInfo == null || view == null || output == null) return null;
-  if (runInfo.isEmpty || view.isEmpty || output.isEmpty) return null;
-  return _Options(runInfo: runInfo, view: view, output: output);
+  final hasRunInfo =
+      runInfo != null &&
+      runInfo.isNotEmpty &&
+      view != null &&
+      view.isNotEmpty &&
+      output != null &&
+      output.isNotEmpty;
+  final hasVmUrl =
+      vmUrl != null && vmUrl.isNotEmpty && runInfo == null && view == null;
+  if (hasRunInfo == hasVmUrl) return null;
+  if (!hasRunInfo && (output == null || output.isEmpty) && !exitApp) {
+    return null;
+  }
+  return _Options(
+    runInfo: runInfo,
+    vmUrl: vmUrl,
+    view: view,
+    output: output,
+    exitApp: exitApp,
+  );
 }
 
 _RunInfo _readRunInfo(File file) {
@@ -182,25 +240,27 @@ String _webSocketUri(String raw) {
 Future<String> _isolateForView(
   VmService service,
   _RunInfo runInfo,
-  String viewId,
+  String? viewId,
 ) async {
-  final listed = await _flutterViews(service);
-  if (listed != null) {
-    final match = listed.where((view) => view.id == viewId).toList();
-    if (match.length != 1) {
-      throw StateError(
-        'Unknown Flutter view $viewId; known: ${listed.map((view) => view.id).join(', ')}',
-      );
+  if (viewId != null) {
+    final listed = await _flutterViews(service);
+    if (listed != null) {
+      final match = listed.where((view) => view.id == viewId).toList();
+      if (match.length != 1) {
+        throw StateError(
+          'Unknown Flutter view $viewId; known: ${listed.map((view) => view.id).join(', ')}',
+        );
+      }
+      final isolateId = match.single.isolateId;
+      if (isolateId == null || isolateId.isEmpty) {
+        throw StateError('Flutter view $viewId has no isolate');
+      }
+      return isolateId;
     }
-    final isolateId = match.single.isolateId;
-    if (isolateId == null || isolateId.isEmpty) {
-      throw StateError('Flutter view $viewId has no isolate');
+    if (runInfo.isolateId case final recorded?
+        when recorded.isNotEmpty && recorded == viewId) {
+      return recorded;
     }
-    return isolateId;
-  }
-  if (runInfo.isolateId case final recorded?
-      when recorded.isNotEmpty && recorded == viewId) {
-    return recorded;
   }
   if (runInfo.isolateId case final recorded? when recorded.isNotEmpty) {
     return recorded;
@@ -212,13 +272,15 @@ Future<String> _isolateForView(
     final id = isolate.id;
     if (id == null) continue;
     final detail = await service.getIsolate(id);
-    if (detail.extensionRPCs?.contains('ext.anywork.capture') == true) {
+    final rpcs = detail.extensionRPCs ?? const <String>[];
+    if (rpcs.contains('ext.anywork.capture') ||
+        rpcs.contains('ext.anywork.requestExit')) {
       withCapture.add(id);
     }
   }
   if (withCapture.length == 1) return withCapture.single;
   throw StateError(
-    'Could not resolve Flutter view $viewId to an isolate with ext.anywork.capture',
+    'Could not resolve an isolate with ext.anywork.capture or ext.anywork.requestExit',
   );
 }
 

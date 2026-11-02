@@ -1,6 +1,5 @@
 //! Isolated account/usage/MCP observation through the real native GUI.
 
-use super::context_replay_recovery::wait_driver;
 use super::*;
 use pl_model::config::builtin_account_catalog;
 use pl_studio_runtime::config::{StudioBuiltinMcpServerState, effective_mcp_servers};
@@ -190,7 +189,7 @@ fn credential_contract() -> Result<Value> {
 pub(super) fn run(
     context: &Scenario<'_>,
     mut fixture: OwnedProcess,
-    ready: &FixtureReady,
+    _ready: &FixtureReady,
 ) -> Result<()> {
     fs::write(
         context.output.join("mcp-credential-contract.json"),
@@ -232,9 +231,6 @@ pub(super) fn run(
             let gui_log = context
                 .working
                 .join(format!("account-usage-gui-{phase}.log"));
-            let driver_log = context
-                .working
-                .join(format!("account-usage-driver-{phase}.log"));
             let result = (|| -> Result<()> {
                 let log = File::create(&gui_log)?;
                 // The UI deliberately creates ordinary preset IDs. ANYWORK_HOME
@@ -249,7 +245,7 @@ keyring=$!
 trap 'kill "$keyring" 2>/dev/null || true; wait "$keyring" 2>/dev/null || true' EXIT
 gdbus wait --session --timeout 10 org.freedesktop.secrets
 printf 'acceptance_keyring_pid=%s\n' "$keyring"
-cargo xtask run-gui --driver
+cargo xtask run-gui --capture
 "#]);
                     command
                 } else {
@@ -279,48 +275,25 @@ cargo xtask run-gui --driver
                     .env(PLAN_ENV, "fixture-usage-denied");
                 let mut gui = OwnedProcess::start(&mut command, false)?;
                 let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
-                let log = File::create(&driver_log)?;
-                let mut command =
-                    driver_command(context.app_dir, "test_driver/account_usage_journey.dart");
-                let label = |id: &str| -> Result<String> {
-                    Ok(catalog
-                        .templates
-                        .iter()
-                        .find(|preset| preset.id.as_str() == id)
-                        .context("missing account preset")?
-                        .display_name
-                        .clone())
-                };
-                command
-                    .arg(vm_url)
-                    .arg(&project)
-                    .arg(context.output)
-                    .arg(&ready.base_url)
-                    .arg(prefix())
-                    .arg(label("zhipu-coding-plan")?)
-                    .arg(label("zhipu")?)
-                    .arg(phase)
-                    .stdout(Stdio::from(log.try_clone()?))
-                    .stderr(Stdio::from(log));
-                let mut driver = OwnedProcess::start(&mut command, false)?;
                 let gui_pid = gui.child.id();
-                let driver_pid = driver.child.id();
-                wait_driver(&mut driver, &mut gui, &mut fixture, context.interrupt)?;
-                let summary: Value = serde_json::from_slice(&fs::read(
-                    context
-                        .output
-                        .join(format!("account-usage-summary-{phase}.json")),
-                )?)?;
-                ensure!(
-                    summary["status"] == "complete" && summary["shutdown"] == "completed",
-                    "account usage journey did not confirm clean shutdown"
-                );
-                drop(driver);
+                observe_capture_exit(
+                    context.app_dir,
+                    &vm_url,
+                    context.output,
+                    context.interrupt,
+                    &mut gui,
+                    Some(&mut fixture),
+                    &format!(
+                        "account-usage {phase}: open {}, observe usage/MCP for the isolated accounts, then type done.",
+                        project.display()
+                    ),
+                )?;
+                let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), phase)?;
                 drop(gui);
                 fs::write(
                     context.output.join(format!("lifecycle-{phase}.json")),
                     serde_json::to_vec_pretty(&json!({
-                        "guiLauncherPid":gui_pid,"driverLauncherPid":driver_pid,
+                        "guiLauncherPid":gui_pid,
                         "shutdown":"completed","ownersReapedAt":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
                     }))?,
                 )?;
@@ -328,7 +301,6 @@ cargo xtask run-gui --driver
             })();
             for (source, name) in [
                 (&gui_log, format!("gui-{phase}.log")),
-                (&driver_log, format!("driver-{phase}.log")),
             ] {
                 if source.is_file() {
                     write_scenario_log(source, &context.output.join(name), context)?;

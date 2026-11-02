@@ -109,20 +109,21 @@ Demo 执行语义中属于 Client owner 的独有断言（若现有 SDK 未覆�
 | （缺口）desktop smoke | 生产装配启动→隔离会话→fixture 文本→关闭 | 新增 `integration_test/functional/desktop_smoke_test.dart` |
 | （缺口）性能 | watchPerformance / reportData | `integration_test/performance/`，与 functional 发现隔开 |
 
-## 4. 旧 `test_driver/`（82 个 Dart）
+## 4. 旧 `test_driver/`（整树删除）
 
-正式业务回归退出项目 `FlutterDriver`。无转发兼容层。
+正式业务回归退出项目 `FlutterDriver`。无转发兼容层。`code/anywork/test_driver/` 已整树删除。
 
 | 组 | 处置 |
 | --- | --- |
-| `timeline_native_gate_{app,main,test}.dart` | **全部删除**（冻结窗口 PoC） |
-| `driver_main.dart` 及全部 CommandExtension | **删除** |
-| `flutter_driver_session.dart`、`manual_capture.dart`、`request_shutdown.dart` | **删除**；截图改 `tool/capture_ui.dart` |
-| `*_journey.dart`、`stress_*`、`*_probe.dart` | 独有跨语言行为写入 `integration_test/functional/` 或 native lifecycle 后 **删除** |
-| `*_observation*_test.dart`、`*_contract_test.dart`、Driver 解析自测 | 对应实现退出后 **删除** |
-| `shutdown_fault_driver.dart` | 薄故障装配入口（正常 binding），不进 Driver |
-| `window_control*.dart` | 仅 native 窗口专项需要时保留 OS 调用；日常截图不依赖 |
-| `fixtures/tool-image.png` | 迁到 integration fixture 后删除旧树 |
+| `timeline_native_gate_{app,main,test}.dart` | **已删除**（冻结窗口 PoC） |
+| `driver_main.dart` 及全部 CommandExtension | **已删除** |
+| `flutter_driver_session.dart`、`manual_capture.dart`、`request_shutdown.dart` | **已删除**；截图改 `tool/capture_ui.dart` |
+| `*_journey.dart`、`stress_*`、`*_probe.dart` | **已删除**；人工场景改为 operator runbook + `ext.anywork.requestExit`；native 退出走 launcher report |
+| ACP 摘要/用量契约 | 独有合同迁入 `test/support/acp_*.dart` 与 `test/unit/acp_*_contract_test.dart` 后删除旅程 |
+| `*_observation*_test.dart`、`*_contract_test.dart`、Driver 解析自测 | **已删除** |
+| `shutdown_fault_driver.dart` | 改为 `tool/native_fault_main.dart` + `ANYWORK_NATIVE_SHUTDOWN_FAULT` |
+| `window_control*.dart` | **已删除** |
+| `fixtures/tool-image.png` | **已删除** |
 
 ## 5. Rust tests / examples
 

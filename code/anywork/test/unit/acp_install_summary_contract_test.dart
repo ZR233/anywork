@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../test_driver/acp_fixture.dart';
-import '../../test_driver/acp_install_journey.dart';
+import '../support/acp_fixture.dart';
+import '../support/acp_install_contract.dart';
 
-/// 独立于被测 Driver 与生产 mapping，按 design/28 的四条发布合同准备本机样例。
+/// 独立于生产 mapping，按 design/28 的四条发布合同准备本机样例。
 Map<String, Object?> _hostRelease() {
   final (target, archive) = switch ((Platform.operatingSystem, Abi.current())) {
     ('linux', Abi.linuxX64) => (
@@ -38,7 +38,7 @@ Map<String, Object?> _hostRelease() {
   };
 }
 
-/// Driver 最终 summary 的真实构造入口（`writeFinalSummary` 用的同一函数）。
+/// 最终 summary 的真实构造入口（`acpInstallSummaryPayload`）。
 ///
 /// 这里验证“完成/失败两条最终 summary 都带 exitRequest 的 request+ack 事实”，
 /// close 失败会在落盘前把 completed 覆盖为 failed，以及同一 OUTPUT_DIR 顺序跑
