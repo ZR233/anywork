@@ -13,304 +13,6 @@ part of 'acp.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
-mixin _$BridgeAcpAuthAction {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthAction);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeAcpAuthAction()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeAcpAuthActionCopyWith<$Res>  {
-$BridgeAcpAuthActionCopyWith(BridgeAcpAuthAction _, $Res Function(BridgeAcpAuthAction) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeAcpAuthAction].
-extension BridgeAcpAuthActionPatterns on BridgeAcpAuthAction {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpAuthAction_Check value)?  check,TResult Function( BridgeAcpAuthAction_QueryUsage value)?  queryUsage,TResult Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check() when check != null:
-return check(_that);case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
-return queryUsage(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
-return authenticate(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpAuthAction_Check value)  check,required TResult Function( BridgeAcpAuthAction_QueryUsage value)  queryUsage,required TResult Function( BridgeAcpAuthAction_Authenticate value)  authenticate,}){
-final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check():
-return check(_that);case BridgeAcpAuthAction_QueryUsage():
-return queryUsage(_that);case BridgeAcpAuthAction_Authenticate():
-return authenticate(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpAuthAction_Check value)?  check,TResult? Function( BridgeAcpAuthAction_QueryUsage value)?  queryUsage,TResult? Function( BridgeAcpAuthAction_Authenticate value)?  authenticate,}){
-final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check() when check != null:
-return check(_that);case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
-return queryUsage(_that);case BridgeAcpAuthAction_Authenticate() when authenticate != null:
-return authenticate(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  check,TResult Function()?  queryUsage,TResult Function( String methodId)?  authenticate,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check() when check != null:
-return check();case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
-return queryUsage();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
-return authenticate(_that.methodId);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  check,required TResult Function()  queryUsage,required TResult Function( String methodId)  authenticate,}) {final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check():
-return check();case BridgeAcpAuthAction_QueryUsage():
-return queryUsage();case BridgeAcpAuthAction_Authenticate():
-return authenticate(_that.methodId);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  check,TResult? Function()?  queryUsage,TResult? Function( String methodId)?  authenticate,}) {final _that = this;
-switch (_that) {
-case BridgeAcpAuthAction_Check() when check != null:
-return check();case BridgeAcpAuthAction_QueryUsage() when queryUsage != null:
-return queryUsage();case BridgeAcpAuthAction_Authenticate() when authenticate != null:
-return authenticate(_that.methodId);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeAcpAuthAction_Check extends BridgeAcpAuthAction {
-  const BridgeAcpAuthAction_Check(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthAction_Check);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeAcpAuthAction.check()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeAcpAuthAction_QueryUsage extends BridgeAcpAuthAction {
-  const BridgeAcpAuthAction_QueryUsage(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthAction_QueryUsage);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeAcpAuthAction.queryUsage()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeAcpAuthAction_Authenticate extends BridgeAcpAuthAction {
-  const BridgeAcpAuthAction_Authenticate({required this.methodId}): super._();
-
-
- final  String methodId;
-
-/// Create a copy of BridgeAcpAuthAction
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeAcpAuthAction_AuthenticateCopyWith<BridgeAcpAuthAction_Authenticate> get copyWith => _$BridgeAcpAuthAction_AuthenticateCopyWithImpl<BridgeAcpAuthAction_Authenticate>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthAction_Authenticate&&(identical(other.methodId, methodId) || other.methodId == methodId));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,methodId);
-}
-
-@override
-String toString() {
-    return 'BridgeAcpAuthAction.authenticate(methodId: $methodId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeAcpAuthAction_AuthenticateCopyWith<$Res> implements $BridgeAcpAuthActionCopyWith<$Res> {
-  factory $BridgeAcpAuthAction_AuthenticateCopyWith(BridgeAcpAuthAction_Authenticate value, $Res Function(BridgeAcpAuthAction_Authenticate) _then) = _$BridgeAcpAuthAction_AuthenticateCopyWithImpl;
-@useResult
-$Res call({
- String methodId
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeAcpAuthAction_AuthenticateCopyWithImpl<$Res>
-    implements $BridgeAcpAuthAction_AuthenticateCopyWith<$Res> {
-  _$BridgeAcpAuthAction_AuthenticateCopyWithImpl(this._self, this._then);
-
-  final BridgeAcpAuthAction_Authenticate _self;
-  final $Res Function(BridgeAcpAuthAction_Authenticate) _then;
-
-/// Create a copy of BridgeAcpAuthAction
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? methodId = null,}) {
-  return _then(BridgeAcpAuthAction_Authenticate(
-methodId: null == methodId ? _self.methodId : methodId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
 mixin _$BridgeAcpAuthState {
 
 
@@ -442,12 +144,12 @@ return failed(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchecked,TResult Function( String operationId)?  checking,TResult Function( List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)?  required_,TResult Function( String operationId,  String methodId)?  authenticating,TResult Function( String operationId)?  verifying,TResult Function( String operationId,  BridgeAcpAuthFailure? failure)?  closing,TResult Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)?  verified,TResult Function( String operationId)?  cancelling,TResult Function()?  cancelled,TResult Function( BridgeAcpAuthFailure failure)?  failed,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchecked,TResult Function( String operationId)?  checking,TResult Function( String operationId,  List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)?  required_,TResult Function( String operationId,  String methodId)?  authenticating,TResult Function( String operationId)?  verifying,TResult Function( String operationId,  BridgeAcpAuthFailure? failure)?  closing,TResult Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)?  verified,TResult Function( String operationId)?  cancelling,TResult Function()?  cancelled,TResult Function( BridgeAcpAuthFailure failure)?  failed,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthState_Unchecked() when unchecked != null:
 return unchecked();case BridgeAcpAuthState_Checking() when checking != null:
 return checking(_that.operationId);case BridgeAcpAuthState_Required() when required_ != null:
-return required_(_that.methods,_that.server);case BridgeAcpAuthState_Authenticating() when authenticating != null:
+return required_(_that.operationId,_that.methods,_that.server);case BridgeAcpAuthState_Authenticating() when authenticating != null:
 return authenticating(_that.operationId,_that.methodId);case BridgeAcpAuthState_Verifying() when verifying != null:
 return verifying(_that.operationId);case BridgeAcpAuthState_Closing() when closing != null:
 return closing(_that.operationId,_that.failure);case BridgeAcpAuthState_Verified() when verified != null:
@@ -472,12 +174,12 @@ return failed(_that.failure);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchecked,required TResult Function( String operationId)  checking,required TResult Function( List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)  required_,required TResult Function( String operationId,  String methodId)  authenticating,required TResult Function( String operationId)  verifying,required TResult Function( String operationId,  BridgeAcpAuthFailure? failure)  closing,required TResult Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)  verified,required TResult Function( String operationId)  cancelling,required TResult Function()  cancelled,required TResult Function( BridgeAcpAuthFailure failure)  failed,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchecked,required TResult Function( String operationId)  checking,required TResult Function( String operationId,  List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)  required_,required TResult Function( String operationId,  String methodId)  authenticating,required TResult Function( String operationId)  verifying,required TResult Function( String operationId,  BridgeAcpAuthFailure? failure)  closing,required TResult Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)  verified,required TResult Function( String operationId)  cancelling,required TResult Function()  cancelled,required TResult Function( BridgeAcpAuthFailure failure)  failed,}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthState_Unchecked():
 return unchecked();case BridgeAcpAuthState_Checking():
 return checking(_that.operationId);case BridgeAcpAuthState_Required():
-return required_(_that.methods,_that.server);case BridgeAcpAuthState_Authenticating():
+return required_(_that.operationId,_that.methods,_that.server);case BridgeAcpAuthState_Authenticating():
 return authenticating(_that.operationId,_that.methodId);case BridgeAcpAuthState_Verifying():
 return verifying(_that.operationId);case BridgeAcpAuthState_Closing():
 return closing(_that.operationId,_that.failure);case BridgeAcpAuthState_Verified():
@@ -498,12 +200,12 @@ return failed(_that.failure);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchecked,TResult? Function( String operationId)?  checking,TResult? Function( List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)?  required_,TResult? Function( String operationId,  String methodId)?  authenticating,TResult? Function( String operationId)?  verifying,TResult? Function( String operationId,  BridgeAcpAuthFailure? failure)?  closing,TResult? Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)?  verified,TResult? Function( String operationId)?  cancelling,TResult? Function()?  cancelled,TResult? Function( BridgeAcpAuthFailure failure)?  failed,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchecked,TResult? Function( String operationId)?  checking,TResult? Function( String operationId,  List<BridgeAcpAuthMethod> methods,  BridgeAcpServerInfo? server)?  required_,TResult? Function( String operationId,  String methodId)?  authenticating,TResult? Function( String operationId)?  verifying,TResult? Function( String operationId,  BridgeAcpAuthFailure? failure)?  closing,TResult? Function( PlatformInt64 checkedAt,  BridgeAcpServerInfo? server)?  verified,TResult? Function( String operationId)?  cancelling,TResult? Function()?  cancelled,TResult? Function( BridgeAcpAuthFailure failure)?  failed,}) {final _that = this;
 switch (_that) {
 case BridgeAcpAuthState_Unchecked() when unchecked != null:
 return unchecked();case BridgeAcpAuthState_Checking() when checking != null:
 return checking(_that.operationId);case BridgeAcpAuthState_Required() when required_ != null:
-return required_(_that.methods,_that.server);case BridgeAcpAuthState_Authenticating() when authenticating != null:
+return required_(_that.operationId,_that.methods,_that.server);case BridgeAcpAuthState_Authenticating() when authenticating != null:
 return authenticating(_that.operationId,_that.methodId);case BridgeAcpAuthState_Verifying() when verifying != null:
 return verifying(_that.operationId);case BridgeAcpAuthState_Closing() when closing != null:
 return closing(_that.operationId,_that.failure);case BridgeAcpAuthState_Verified() when verified != null:
@@ -622,9 +324,10 @@ as String,
 
 
 class BridgeAcpAuthState_Required extends BridgeAcpAuthState {
-  const BridgeAcpAuthState_Required({required  List<BridgeAcpAuthMethod> methods, this.server}): _methods = methods,super._();
+  const BridgeAcpAuthState_Required({required this.operationId, required  List<BridgeAcpAuthMethod> methods, this.server}): _methods = methods,super._();
 
 
+ final  String operationId;
  final  List<BridgeAcpAuthMethod> _methods;
  List<BridgeAcpAuthMethod> get methods {
   if (_methods is EqualUnmodifiableListView) return _methods;
@@ -645,18 +348,18 @@ $BridgeAcpAuthState_RequiredCopyWith<BridgeAcpAuthState_Required> get copyWith =
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthState_Required&&const DeepCollectionEquality().equals(other.methods, _methods)&&(identical(other.server, server) || other.server == server));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpAuthState_Required&&(identical(other.operationId, operationId) || other.operationId == operationId)&&const DeepCollectionEquality().equals(other.methods, _methods)&&(identical(other.server, server) || other.server == server));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_methods),server);
+    return Object.hash(runtimeType,operationId,const DeepCollectionEquality().hash(_methods),server);
 }
 
 @override
 String toString() {
-    return 'BridgeAcpAuthState.required_(methods: $methods, server: $server)';
+    return 'BridgeAcpAuthState.required_(operationId: $operationId, methods: $methods, server: $server)';
 }
 
 
@@ -667,7 +370,7 @@ abstract mixin class $BridgeAcpAuthState_RequiredCopyWith<$Res> implements $Brid
   factory $BridgeAcpAuthState_RequiredCopyWith(BridgeAcpAuthState_Required value, $Res Function(BridgeAcpAuthState_Required) _then) = _$BridgeAcpAuthState_RequiredCopyWithImpl;
 @useResult
 $Res call({
- List<BridgeAcpAuthMethod> methods, BridgeAcpServerInfo? server
+ String operationId, List<BridgeAcpAuthMethod> methods, BridgeAcpServerInfo? server
 });
 
 
@@ -684,9 +387,10 @@ class _$BridgeAcpAuthState_RequiredCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAcpAuthState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? methods = null,Object? server = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? operationId = null,Object? methods = null,Object? server = freezed,}) {
   return _then(BridgeAcpAuthState_Required(
-methods: null == methods ? _self._methods : methods // ignore: cast_nullable_to_non_nullable
+operationId: null == operationId ? _self.operationId : operationId // ignore: cast_nullable_to_non_nullable
+as String,methods: null == methods ? _self._methods : methods // ignore: cast_nullable_to_non_nullable
 as List<BridgeAcpAuthMethod>,server: freezed == server ? _self.server : server // ignore: cast_nullable_to_non_nullable
 as BridgeAcpServerInfo?,
   ));

@@ -13,7 +13,6 @@ String acpActionLabel(AppLocalizations l10n, AcpAccountAction action) =>
       AcpAccountAction.usePrepared => l10n.acpInstallUsePrepared,
       AcpAccountAction.check => l10n.acpAuthCheck,
       AcpAccountAction.login => l10n.acpAuthLogin,
-      AcpAccountAction.verify => l10n.accountsVerifySignIn,
       AcpAccountAction.cancelAuthentication => l10n.acpAuthCancel,
       AcpAccountAction.retry => l10n.acpAuthRetry,
       AcpAccountAction.queryUsage => l10n.acpUsageQuery,

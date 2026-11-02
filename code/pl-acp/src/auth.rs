@@ -8,6 +8,8 @@
 //! 因此不存在被对端反向请求驱动的执行路径。
 
 use std::fmt;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use agent_client_protocol::{
     ByteStreams, Client, Error as RpcError, ErrorCode, is_incoming_transport_closed,
@@ -21,6 +23,8 @@ mod limits;
 pub use tokio::io::AsyncRead;
 /// 宿主提供的字节流写端。
 pub use tokio::io::AsyncWrite;
+/// 宿主向持续连接发送的类型化命令通道。
+pub use tokio::sync::mpsc;
 /// 认证命令可观察的进度值。
 pub use tokio::sync::watch;
 /// 宿主导入的取消信号。
@@ -33,11 +37,12 @@ pub enum AuthAction {
     Check,
     /// 已由宿主核实版本的 server 原生处理 `/usage`，不进入模型执行。
     QueryUsage,
-    /// 使用服务端已声明的方法执行登录。
-    Authenticate {
-        /// 服务端在 `initialize` 中声明的方法 ID。
-        method_id: String,
-    },
+}
+
+/// 在原连接上继续认证；不重新协商或启动第二条连接。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthCommand {
+    Authenticate { method_id: String },
 }
 
 /// 服务端声明的认证方法类型。
@@ -82,12 +87,17 @@ pub struct ServerInfo {
 }
 
 /// 认证进度；只表达当前步骤，不表示结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthProgress {
     /// 协商 ACP v1 能力。
     Initializing,
+    /// 原连接等待宿主选择服务端实际声明的方法，仍然可取消。
+    Required {
+        server: Option<ServerInfo>,
+        methods: Vec<AuthMethod>,
+    },
     /// 等待服务端完成登录。
-    Authenticating,
+    Authenticating { method_id: String },
     /// 用探测会话验证当前凭据。
     Verifying,
     /// 释放探测会话并收束连接。
@@ -100,13 +110,6 @@ pub enum AuthProgress {
 /// 哨兵，也不以接入配置中的账号名代替。缺失 `agentInfo` 或版本不符时不会返回认证终态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthOutcome {
-    /// 服务端要求登录，附带其实际声明的方法。
-    Required {
-        /// 协商出的服务端身份。
-        server: Option<ServerInfo>,
-        /// 服务端实际声明的方法，可能包含本阶段不支持的 `Terminal`。
-        methods: Vec<AuthMethod>,
-    },
     /// 探测会话建立成功，证明当时凭据可用。
     Verified {
         /// 协商出的服务端身份。
@@ -131,6 +134,31 @@ pub enum UsageFailure {
     ResourceLimit,
 }
 
+/// 一条连接的资源关闭预算；首次收束时启动，所有后续阶段共享同一期限。
+///
+/// 业务请求与人工授权不会读取此期限。期限耗尽只是清理失败，宿主仍保留未结束资源。
+#[derive(Debug, Clone)]
+pub struct CleanupBudget {
+    timeout: Duration,
+    deadline: Arc<OnceLock<tokio::time::Instant>>,
+}
+
+impl CleanupBudget {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            deadline: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// 首次调用开始关闭；克隆对象共享该时刻，不能为下个阶段重新计时。
+    pub fn deadline(&self) -> tokio::time::Instant {
+        *self
+            .deadline
+            .get_or_init(|| tokio::time::Instant::now() + self.timeout)
+    }
+}
+
 /// 一次认证命令的输入。
 #[derive(Debug)]
 pub struct AuthRequest {
@@ -142,6 +170,10 @@ pub struct AuthRequest {
     pub probe_cwd: String,
     /// 要执行的命令。
     pub action: AuthAction,
+    /// 仅在 `Required` 阶段接受的继续认证命令。
+    pub commands: mpsc::Receiver<AuthCommand>,
+    /// 宿主统一资源关闭预算；只约束会话关闭和 SDK 排空，不限制人工授权。
+    pub cleanup: CleanupBudget,
     /// 宿主取消信号；命中后按类型化取消结束。
     pub cancellation: CancellationToken,
     /// 进度发布端；宿主用它驱动 UI 阶段，不参与结果判定。
@@ -391,39 +423,15 @@ impl std::error::Error for RedactedRpcFailure {
     }
 }
 
-/// 在给定双向字节流上执行一次认证命令。
+/// 在给定字节流上驱动一条持续认证连接。
 ///
-/// `outgoing`/`incoming` 由宿主提供，通常是独占子进程的 stdin/stdout。建立探测会话后，若
-/// 服务端声明 `session/close` 能力则先关闭该会话（不观察取消，只受关闭预算限制）；未声明时
-/// 由宿主回收独占进程。
-///
-/// 收束语义按官方 SDK 当前实现：前台协议步骤返回后，SDK 停止入站投递、把已接受的输出经协议
-/// actor 排空并等待物理写出端完成（`ConnectionTo::drain_outgoing`），随后随连接 future 一起
-/// 丢弃仍持有的入站读取端。本函数自己从不派发任务；若收束没能在预算内完成，连接 future（连同
-/// 它持有的 SDK 任务与字节流）随返回一起被丢弃，而不是留在后台继续运行。物理进程、stderr 与
-/// 管道仍由宿主在本函数返回后关闭。
-///
-/// 取消与阶段超时都是类型化失败；结果未知时不自动重发 `session/new`。
-///
-/// 预算分两段（实现常量，可按真实耗时调整）：前台协议步骤各自限时——协商 3 分钟、探测 60 秒、
-/// 人工登录 15 分钟、`session/close` 10 秒；**前台协议步骤返回并发布结论之后**才为 SDK 收束
-/// 另起 10 秒预算，只覆盖排空与关闭写端，不从连接建立起算，因此不会截断人工登录。单次命令的
-/// 入站字节上限为 8 MiB。
-///
-/// 收束（排空/flush/shutdown）超时或失败时，本函数放弃继续驱动连接 future：这是释放本地
-/// future 与它持有的字节流，**不是**物理进程退出的证明，进程与管道回收仍由宿主负责。
-///
-/// 返回优先级由收束结果决定，前台结论不能盖过它：**只有 SDK 收束成功才返回前台协议结果**
-/// （`Required`/`Verified`，或正常收束下的取消等失败）。收束超时一律为 `Timeout`@`Close`；
-/// 其他收束失败按实际类别（`Transport`/`ResourceLimit`/`Protocol`）@`Close` 上报。协议取消
-/// 不等于资源已经收束，因此收束失败不会被伪装成普通取消。每次调用只发布一个结果。
+/// `AuthRequired` 通过进度发布，连接保留并等待宿主命令。初始化、人工授权与探测只等待
+/// 实际响应、断连或取消；结果未知的请求不重发。前台结束后才使用宿主提供的统一关闭预算，
+/// 等待 SDK 排空与写端关闭。清理失败优先于业务结果，物理进程仍由宿主负责回收。
 ///
 /// # Errors
-/// 返回 [`AuthError`]；类别与阶段分别由 [`AuthError::kind`] 与 [`AuthError::stage`] 表达。
-/// 服务端身份缺失或版本与 [`AuthRequest::expected_server_version`] 不精确相等时，前台协议
-/// 结果为 [`AuthFailureKind::ServerVersionMismatch`]@[`AuthStage::Initialize`]，不会发送
-/// `authenticate` 或 `session/new`；该失败仍须经过上述 SDK 收束。
-pub async fn run_authentication<W, R>(
+/// 返回带阶段与安全 RPC 错误码的 [`AuthError`]；版本不匹配时不会发送登录或探测请求。
+pub async fn run_connection<W, R>(
     outgoing: W,
     incoming: R,
     request: AuthRequest,
@@ -432,6 +440,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + Unpin + Send + 'static,
 {
+    let cleanup = request.cleanup.clone();
     let stream = limits::StreamGuard::new();
     let observed = request.progress.clone();
     let transport = ByteStreams::new(
@@ -460,7 +469,7 @@ where
     match phase {
         // 前台已结束：此后才为 SDK 收束另起预算。
         Phase::Published(Some(observed_outcome)) => {
-            match tokio::time::timeout(limits::DRAIN_BUDGET, connection.as_mut()).await {
+            match tokio::time::timeout_at(cleanup.deadline(), connection.as_mut()).await {
                 // 只有 SDK 收束成功，才发布前台协议结果。
                 Ok(Ok(())) => observed_outcome,
                 // 收束失败按实际类别上报（真实读/写失败是 `Transport`，预算是 `ResourceLimit`）；
@@ -479,7 +488,7 @@ where
         Phase::Published(None) => {
             let stage = last_stage(&observed);
             let failure =
-                match tokio::time::timeout(limits::DRAIN_BUDGET, connection.as_mut()).await {
+                match tokio::time::timeout_at(cleanup.deadline(), connection.as_mut()).await {
                     Ok(Ok(())) => AuthError::new(AuthFailureKind::Protocol, stage),
                     Ok(Err(error)) => {
                         AuthError::peer_failure(stage, AuthFailureKind::Protocol, error, &stream)
@@ -525,304 +534,15 @@ enum Phase {
 
 /// 把最后发布的进度还原为阶段，供连接级失败定位。
 fn last_stage(progress: &watch::Sender<AuthProgress>) -> AuthStage {
-    match *progress.borrow() {
+    match &*progress.borrow() {
         AuthProgress::Initializing => AuthStage::Initialize,
-        AuthProgress::Authenticating => AuthStage::Authenticate,
+        AuthProgress::Required { .. } | AuthProgress::Authenticating { .. } => {
+            AuthStage::Authenticate
+        }
         AuthProgress::Verifying => AuthStage::Probe,
         AuthProgress::Closing => AuthStage::Close,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex, PoisonError};
-    use std::time::Duration;
-
-    use agent_client_protocol::schema::ProtocolVersion;
-    use agent_client_protocol::schema::v1::{
-        AgentCapabilities, AuthMethod as SdkAuthMethod, AuthMethodAgent, AuthenticateRequest,
-        AuthenticateResponse, CloseSessionRequest, CloseSessionResponse, ContentBlock,
-        ContentChunk, Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
-        SessionCloseCapabilities, SessionNotification, SessionUpdate, StopReason, TextContent,
-    };
-    use agent_client_protocol::{Agent, Client, ConnectionTo, Responder};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-
-    use super::*;
-
-    const VERSION: &str = "1.4.1";
-    const METHOD_ID: &str = "fixture-login";
-    const REPORT: &str = "### Quota Limits\n- No quota limits reported.";
-
-    #[derive(Clone, Copy)]
-    enum Initialization {
-        ReplyAfter(Duration),
-        Cancel,
-    }
-
-    #[derive(Default)]
-    struct Observed {
-        prompts: Vec<Vec<ContentBlock>>,
-        authenticates: usize,
-        probes: usize,
-        closes: usize,
-        default_capabilities: bool,
-    }
-
-    async fn run(action: AuthAction, auth_required: bool) -> (AuthOutcome, Observed) {
-        let (outcome, observed) = run_with_initialization(
-            action,
-            auth_required,
-            Initialization::ReplyAfter(Duration::ZERO),
-        )
-        .await;
-        (outcome.expect("authentication should succeed"), observed)
-    }
-
-    async fn run_with_initialization(
-        action: AuthAction,
-        auth_required: bool,
-        initialization: Initialization,
-    ) -> (Result<AuthOutcome, AuthError>, Observed) {
-        let observed = Arc::new(Mutex::new(Observed::default()));
-        let cancellation = CancellationToken::new();
-        let initialize_cancellation = cancellation.clone();
-        let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
-        let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
-        let transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
-        let agent_observed = Arc::clone(&observed);
-        let agent = tokio::spawn(async move {
-            Agent
-                .builder()
-                .on_receive_request(
-                    {
-                        let observed = Arc::clone(&agent_observed);
-                        async move |request: InitializeRequest,
-                                    responder: Responder<InitializeResponse>,
-                                    _connection: ConnectionTo<Client>| {
-                            observed
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .default_capabilities =
-                                request.client_capabilities == Default::default();
-                            match initialization {
-                                Initialization::ReplyAfter(delay) => {
-                                    tokio::time::sleep(delay).await;
-                                }
-                                Initialization::Cancel => {
-                                    initialize_cancellation.cancel();
-                                }
-                            }
-                            responder.respond(
-                                InitializeResponse::new(ProtocolVersion::V1)
-                                    .auth_methods(vec![SdkAuthMethod::Agent(AuthMethodAgent::new(
-                                        METHOD_ID,
-                                        "Fixture login",
-                                    ))])
-                                    .agent_capabilities(
-                                        AgentCapabilities::new().session_capabilities(
-                                            SessionCapabilities::new()
-                                                .close(SessionCloseCapabilities::new()),
-                                        ),
-                                    )
-                                    .agent_info(Implementation::new("fixture", VERSION)),
-                            )
-                        }
-                    },
-                    agent_client_protocol::on_receive_request!(),
-                )
-                .on_receive_request(
-                    {
-                        let observed = Arc::clone(&agent_observed);
-                        async move |_request: NewSessionRequest,
-                                    responder: Responder<NewSessionResponse>,
-                                    _connection: ConnectionTo<Client>| {
-                            observed
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .probes += 1;
-                            if auth_required {
-                                responder.respond_with_error(RpcError::auth_required())
-                            } else {
-                                responder.respond(NewSessionResponse::new("probe"))
-                            }
-                        }
-                    },
-                    agent_client_protocol::on_receive_request!(),
-                )
-                .on_receive_request(
-                    {
-                        let observed = Arc::clone(&agent_observed);
-                        async move |_request: AuthenticateRequest,
-                                    responder: Responder<AuthenticateResponse>,
-                                    _connection: ConnectionTo<Client>| {
-                            observed
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .authenticates += 1;
-                            responder.respond(AuthenticateResponse::default())
-                        }
-                    },
-                    agent_client_protocol::on_receive_request!(),
-                )
-                .on_receive_request(
-                    {
-                        let observed = Arc::clone(&agent_observed);
-                        async move |request: PromptRequest,
-                                    responder: Responder<PromptResponse>,
-                                    connection: ConnectionTo<Client>| {
-                            observed
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .prompts
-                                .push(request.prompt.clone());
-                            connection.send_notification(SessionNotification::new(
-                                request.session_id.clone(),
-                                SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-                                    ContentBlock::Text(TextContent::new("not quota")),
-                                )),
-                            ))?;
-                            connection.send_notification(SessionNotification::new(
-                                request.session_id,
-                                SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                    ContentBlock::Text(TextContent::new(REPORT)),
-                                )),
-                            ))?;
-                            responder.respond(PromptResponse::new(StopReason::EndTurn))
-                        }
-                    },
-                    agent_client_protocol::on_receive_request!(),
-                )
-                .on_receive_request(
-                    {
-                        let observed = Arc::clone(&agent_observed);
-                        async move |_request: CloseSessionRequest,
-                                    responder: Responder<CloseSessionResponse>,
-                                    _connection: ConnectionTo<Client>| {
-                            observed
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .closes += 1;
-                            responder.respond(CloseSessionResponse::default())
-                        }
-                    },
-                    agent_client_protocol::on_receive_request!(),
-                )
-                .connect_to(transport)
-                .await
-        });
-        let (progress, _receiver) = watch::channel(AuthProgress::Initializing);
-        let budget = Duration::from_secs(15)
-            + match initialization {
-                Initialization::ReplyAfter(delay) => delay,
-                Initialization::Cancel => Duration::ZERO,
-            };
-        let outcome = tokio::time::timeout(
-            budget,
-            run_authentication(
-                client_writer,
-                client_reader,
-                AuthRequest {
-                    expected_server_version: VERSION.into(),
-                    probe_cwd: "/tmp".into(),
-                    action,
-                    cancellation,
-                    progress,
-                },
-            ),
-        )
-        .await
-        .expect("authentication should finish");
-        tokio::time::timeout(std::time::Duration::from_secs(5), agent)
-            .await
-            .expect("agent should stop after client drain")
-            .expect("agent task should join")
-            .expect("agent connection should close cleanly");
-        let observed = Arc::into_inner(observed)
-            .expect("agent should release observations")
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        (outcome, observed)
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cold_start_initialization_can_reach_login() {
-        let (outcome, observed) = run_with_initialization(
-            AuthAction::Authenticate {
-                method_id: METHOD_ID.into(),
-            },
-            false,
-            Initialization::ReplyAfter(Duration::from_secs(45)),
-        )
-        .await;
-        assert!(matches!(
-            outcome,
-            Ok(AuthOutcome::Verified { usage: None, .. })
-        ));
-        assert_eq!(observed.authenticates, 1);
-        assert_eq!(observed.probes, 1);
-        assert_eq!(observed.closes, 1);
-        assert!(observed.prompts.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancellation_during_initialization_stops_before_login() {
-        let (outcome, observed) = run_with_initialization(
-            AuthAction::Authenticate {
-                method_id: METHOD_ID.into(),
-            },
-            false,
-            Initialization::Cancel,
-        )
-        .await;
-        let error = outcome.expect_err("cancelled initialization must not reach login");
-        assert_eq!(error.kind(), AuthFailureKind::Cancelled);
-        assert_eq!(error.stage(), AuthStage::Initialize);
-        assert_eq!(observed.authenticates, 0);
-        assert_eq!(observed.probes, 0);
-        assert_eq!(observed.closes, 0);
-        assert!(observed.prompts.is_empty());
-    }
-
-    #[tokio::test]
-    async fn check_never_sends_a_prompt() {
-        let (outcome, observed) = run(AuthAction::Check, false).await;
-        assert!(matches!(outcome, AuthOutcome::Verified { usage: None, .. }));
-        assert!(observed.default_capabilities);
-        assert!(observed.prompts.is_empty());
-        assert_eq!(observed.authenticates, 0);
-        assert_eq!(observed.closes, 1);
-    }
-
-    #[tokio::test]
-    async fn usage_query_sends_only_fixed_prompt_and_collects_only_agent_text() {
-        let (outcome, observed) = run(AuthAction::QueryUsage, false).await;
-        assert_eq!(
-            outcome,
-            AuthOutcome::Verified {
-                server: Some(ServerInfo {
-                    name: "fixture".into(),
-                    title: None,
-                    version: VERSION.into(),
-                }),
-                usage: Some(UsageReport::Text(REPORT.into())),
-            }
-        );
-        assert_eq!(
-            observed.prompts,
-            vec![vec![ContentBlock::Text(TextContent::new("/usage"))]]
-        );
-        assert_eq!(observed.closes, 1);
-    }
-
-    #[tokio::test]
-    async fn usage_query_returns_required_without_prompt_or_login() {
-        let (outcome, observed) = run(AuthAction::QueryUsage, true).await;
-        assert!(matches!(outcome, AuthOutcome::Required { .. }));
-        assert!(observed.default_capabilities);
-        assert!(observed.prompts.is_empty());
-        assert_eq!(observed.authenticates, 0);
-        assert_eq!(observed.closes, 0);
-    }
-}
+mod tests;

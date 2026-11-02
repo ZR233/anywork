@@ -329,7 +329,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   Future<void> authenticate({bool login = false}) async {
     if (_service.auth.value.stale ||
         _authenticating != null ||
-        _auth.isBusy ||
+        (_auth.isBusy && !(login && _auth is AcpRequiredState)) ||
         !_currentConnection) {
       return;
     }
@@ -496,10 +496,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             !_service.auth.value.stale &&
             _currentConnection)
           AcpAccountAction.queryUsage,
+        if (auth is AcpRequiredState &&
+            methods.isNotEmpty &&
+            _authenticating == null &&
+            !_service.auth.value.stale)
+          AcpAccountAction.login,
         if (!auth.isBusy &&
             _authenticating == null &&
             !_service.auth.value.stale) ...[
-          if (methods.isNotEmpty) AcpAccountAction.login,
           AcpAccountAction.check,
           if (auth is AcpFailedState && auth.failure.retryable)
             AcpAccountAction.retry,
@@ -630,7 +634,9 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         ],
         selectedLoginMethod: selected,
         canSelectLoginMethod:
-            methods.length > 1 && !auth.isBusy && _authenticating == null,
+            methods.length > 1 &&
+            auth is AcpRequiredState &&
+            _authenticating == null,
       ),
     );
   }

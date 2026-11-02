@@ -58,6 +58,21 @@ Future<BridgeAcpAuthCommandReply> startAcpAuth({
   action: action,
 );
 
+/// 在原连接上继续 ACP 登录。
+Future<BridgeAcpAuthCommandReply> continueAcpAuth({
+  required String operationId,
+  required String accountId,
+  required BigInt expectedConnectionRevision,
+  required String targetOperationId,
+  required String methodId,
+}) => RustLib.instance.api.crateApiStudioHandlersAcpContinueAcpAuth(
+  operationId: operationId,
+  accountId: accountId,
+  expectedConnectionRevision: expectedConnectionRevision,
+  targetOperationId: targetOperationId,
+  methodId: methodId,
+);
+
 /// 取消当前 ACP 认证操作。
 Future<BridgeAcpAuthCommandReply> cancelAcpAuth({
   required String operationId,

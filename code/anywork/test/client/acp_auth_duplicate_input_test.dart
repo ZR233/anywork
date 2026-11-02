@@ -133,6 +133,7 @@ void main() {
     () {
       for (final auth in <AcpAuthStateView>[
         const AcpCheckingState(operationId: 'check'),
+        const AcpRequiredState(operationId: 'op-auth', server: null),
         const AcpAuthenticatingState(operationId: 'auth', methodId: 'browser'),
         const AcpVerifyingState(operationId: 'verify'),
         const AcpCancellingState(operationId: 'cancel'),
@@ -172,7 +173,6 @@ void main() {
       for (final auth in <AcpAuthStateView>[
         const AcpUncheckedState(),
         const AcpCancelledState(),
-        const AcpRequiredState(server: null),
         const AcpVerifiedState(checkedAt: 10, server: null),
       ]) {
         expect(

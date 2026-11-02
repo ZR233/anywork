@@ -82,15 +82,6 @@ pub use web_search::{
 mod mcp_stdio;
 pub use mcp_stdio::{McpStdioOptions, run_mcp_stdio};
 
-mod acp_stdio;
-pub use acp_stdio::{
-    ACP_AUTH_METHOD_ID, ACP_AUTH_RELEASE_MARKER, ACP_AUTH_STARTED_MARKER, ACP_AUTHENTICATED_MARKER,
-    ACP_BEHAVIOR_FILE, ACP_EVENTS_FILE, ACP_PACKAGED_CONTROL_MEMBER, ACP_SERVER_VERSION,
-    ACP_USAGE_PROMPT, ACP_USAGE_REPORT, AcpFixtureAuthentication, AcpFixtureBehavior,
-    AcpFixtureEvent, AcpFixtureProbe, AcpFixtureServerInfo, AcpPackagedControl, AcpStdioOptions,
-    is_official_program_name, official_program_name, packaged_agent, run_acp_stdio,
-};
-
 mod stdio_peer;
 
 mod lsp_stdio;
@@ -107,13 +98,6 @@ pub use tool_peer::{ToolPeerOptions, run_tool_peer};
 /// does not import production bot adapters or decide product authorization,
 /// Thread mapping, or send-operation outcomes.
 pub mod feishu;
-
-/// Controlled environment for the fixed Antigravity 1.4.1 install acceptance: a
-/// loopback HTTPS proxy with an isolated CA, the fixed Google distribution URL and
-/// real ZIP packages. It never implements product install logic and offers no
-/// version/URL/argv/skip-verification switch.
-pub mod acp_install;
-pub use acp_install::{AcpInstallFixtureOptions, run_acp_install_fixture};
 
 pub use model_catalog::kick_hang_probes as model_catalog_kick_hang_probes;
 pub use model_catalog::self_check as model_catalog_self_check;
@@ -160,17 +144,12 @@ pub fn gui_markdown_answer() -> String {
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
 ///
-/// `acp-auto-install` is the exception: it never uses the HTTP model fixture. It
-/// drives the fixed 1.4.1 distribution peer (`--acp-install-fixture`) and a fake
-/// ACP agent (`--acp-stdio`) instead, so this CLI still refuses to serve it here
-/// rather than silently running an empty script.
-///
 /// `delegation-*` scenes keep the generic step script empty, but the dedicated
 /// delegation fixture still serves its controlled synthetic responses and the
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the optional delegation Driver
 /// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 33] = [
+pub const GUI_SCENARIOS: [&str; 32] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -203,7 +182,6 @@ pub const GUI_SCENARIOS: [&str; 33] = [
     "delegation-recovery",
     "delegation-review-feedback",
     "delegation-worktree",
-    "acp-auto-install",
 ];
 
 /// Root prompts consumed by the native Mode editor acceptance, in order.

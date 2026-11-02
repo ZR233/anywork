@@ -1342,6 +1342,28 @@ class FrbStudioTransport
   }
 
   @override
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  }) async {
+    await _ensureReady();
+    return _acpAuthReplyFromFrb(
+      await _bridgeCall(
+        () => frb.continueAcpAuth(
+          operationId: operationId.value,
+          accountId: accountId,
+          expectedConnectionRevision: BigInt.from(expectedConnectionRevision),
+          targetOperationId: targetOperationId.value,
+          methodId: methodId,
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<AcpAuthCommandReply> cancelAcpAuth({
     required OperationId operationId,
     required String accountId,

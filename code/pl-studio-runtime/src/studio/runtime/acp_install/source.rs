@@ -1,12 +1,12 @@
 //! 产品固定发行清单与分发包来源政策。
 //!
-//! 本阶段只支持 Antigravity 官方 server 1.4.1：provider、版本、target、归档、摘要策略、包内入口
+//! 本阶段只支持 Antigravity 官方 server 1.4.5：provider、版本、target、归档、摘要策略、包内入口
 //! 与 argv 全部由这里的产品代码冻结，运行期**不访问**任何 registry，也不解析远端版本或自定义
 //! 环境。客户端显示平台不参与决策，版本更新只能通过后续产品代码变更与验证完成
 //! （见 design/28 §28.5）。
 //!
-//! 官方 1.4.1 清单未提供发行方 SHA256，因此这里如实返回 `sha256: None`：信任边界只到官方 HTTPS
-//! 来源，本地 ZIP CRC、摘要与安装回执仍然完整核验。
+//! 发行及 SHA-256 固定于 ACP registry revision
+//! `02b460362cfedf4d43b03df7aad6d79a353fe064`；使用现有摘要校验与受管安装流程。
 
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ use pl_protocol::studio::{
 use super::mapping::failure;
 
 /// 产品固定支持的官方 server 版本；与模板 `supportedVersion`、安装资格和认证版本核对共用。
-pub(in crate::studio::runtime) const SERVER_VERSION: &str = "1.4.1";
+pub(in crate::studio::runtime) const SERVER_VERSION: &str = "1.4.5";
 /// 固定分发包的共同 URL 前缀；归档路径只来自下面的静态表。
 const ARCHIVE_BASE_URL: &str = "https://dl.google.com/agy-extensions/releases/";
 /// 允许的分发包来源。
@@ -30,6 +30,7 @@ const MAX_REDIRECTS: usize = 5;
 struct FixedTarget {
     target: &'static str,
     archive_path: &'static str,
+    sha256: &'static str,
     /// 包内相对入口路径（POSIX 分隔）。官方清单写作 `./agy_acp_server.par`，这里的归一化只去掉
     /// 已由既有安全路径规则处理的 `./` 前缀，不改变路径语义。
     command: &'static str,
@@ -40,25 +41,29 @@ struct FixedTarget {
 const FIXED_TARGETS: &[FixedTarget] = &[
     FixedTarget {
         target: "linux-x86_64",
-        archive_path: "linux/agy-acp-server-1.4.1-linux-x86_64.zip",
+        sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
+        archive_path: "linux/agy-acp-server-1.4.5-linux-x86_64.zip",
         command: "agy_acp_server.par",
         args: &["--uid="],
     },
     FixedTarget {
         target: "linux-aarch64",
-        archive_path: "linux/agy-acp-server-1.4.1-linux-arm64.zip",
+        sha256: "7d64246633ae094f67e3bbcd2d679e89048f91346d5339313336e7483f40f056",
+        archive_path: "linux/agy-acp-server-1.4.5-linux-arm64.zip",
         command: "agy_acp_server.par",
         args: &["--uid="],
     },
     FixedTarget {
         target: "windows-x86_64",
-        archive_path: "windows/agy-acp-server-1.4.1-windows-x86_64.zip",
+        sha256: "d24f4c73c9f96d4f44384e281c855a56c72d8eaa9c5b0fad7ccb1635c6b63f50",
+        archive_path: "windows/agy-acp-server-1.4.5-windows-x86_64.zip",
         command: "agy_acp_server.exe",
         args: &[],
     },
     FixedTarget {
         target: "windows-aarch64",
-        archive_path: "windows/agy-acp-server-1.4.1-windows-arm64.zip",
+        sha256: "ab0a9aac8349e08ef289be6d16da8f89e3abe60eba5158032ef78c4a1220261c",
+        archive_path: "windows/agy-acp-server-1.4.5-windows-arm64.zip",
         command: "agy_acp_server.exe",
         args: &[],
     },
@@ -171,8 +176,7 @@ pub(super) fn resolve(provider: AcpProvider) -> Result<ResolvedRelease, AcpInsta
             version: SERVER_VERSION.to_string(),
             target: target.to_string(),
             archive_url: archive_url.to_string(),
-            // 官方 1.4.1 清单未提供发行方摘要：不伪造 checksum 分支。
-            sha256: None,
+            sha256: Some(fixed.sha256.to_string()),
         },
         command: fixed.command.to_string(),
         args: fixed.args.iter().map(|arg| (*arg).to_string()).collect(),

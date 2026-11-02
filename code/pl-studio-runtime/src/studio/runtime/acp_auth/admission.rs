@@ -4,17 +4,18 @@
 //! 进程、登录或 IO。受理复用 [`crate::config::ConfigRuntime`] 的 Settings command 序列化边界，
 //! 因此"canonical 提交 → 身份撤代 → 本次准入"是同一个不可分割的序列，不会有提交插在中间。
 
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use anyhow::Result;
 use pl_protocol::studio::{
-    AcpAuthFailureCode, AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest,
-    StudioErrorCode,
+    AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest, StudioErrorCode,
 };
 
-use super::mapping::{acp_error, acp_failure_error, ensure_operation_id};
+use super::mapping::{acp_error, ensure_operation_id};
 use super::operation::{self, OperationPlan};
-use super::registry::{AcceptedIntent, AcpAuthInner, ConnectionIdentity, Operation};
+use super::registry::{
+    AcceptedAction, AcceptedIntent, AcpAuthInner, ConnectionIdentity, Operation,
+};
 use super::worker::{PROCESS_CLEANUP_LIMIT, WorkerSource};
 use crate::config::{ConfigRuntime, SettingsCommitObserver, StudioConfig};
 use crate::studio::{ProductEventBus, StudioStore};
@@ -187,6 +188,7 @@ impl AcpAuthRuntime {
         };
         for operation in operations {
             operation.cancel.cancel();
+            operation.cleanup_retry.notify_one();
         }
     }
 
@@ -202,37 +204,31 @@ impl AcpAuthRuntime {
                 .collect()
         };
         let mut issues: Vec<String> = Vec::new();
+        let deadline = tokio::time::Instant::now() + PROCESS_CLEANUP_LIMIT;
         for operation in operations {
-            let handle = operation
-                .join
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            let Some(mut handle) = handle else {
-                issues.push(format!(
-                    "ACP auth operation {} has no join handle",
-                    operation.operation_id
-                ));
-                continue;
-            };
-            let deadline = tokio::time::sleep(PROCESS_CLEANUP_LIMIT);
-            tokio::pin!(deadline);
-            let completed = tokio::select! {
-                result = &mut handle => Some(result.is_ok()),
-                _ = &mut deadline => None,
-            };
+            // Tokio 的异步互斥锁只串行化这一任务的 join。句柄一直留在 owner 内；
+            // 外层关闭取消本 future 或预算到期都只释放借用，不 detach 任务。
+            let completed = tokio::time::timeout_at(deadline, async {
+                let mut handle = operation.join.lock().await;
+                let result = match handle.as_mut() {
+                    Some(task) => Some(task.await.is_ok()),
+                    None => None,
+                };
+                handle.take();
+                result
+            })
+            .await;
             match completed {
-                Some(true) => {}
-                Some(false) => issues.push(format!(
+                Ok(Some(true)) => {}
+                Ok(Some(false)) => issues.push(format!(
                     "ACP auth operation {} ended without a clean join",
                     operation.operation_id
                 )),
-                None => {
-                    // 预算内未收束：句柄放回 owner，下一次关闭/重试继续 join 同一任务。
-                    *operation
-                        .join
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(handle);
+                Ok(None) => issues.push(format!(
+                    "ACP auth operation {} has no join handle",
+                    operation.operation_id
+                )),
+                Err(_) => {
                     issues.push(format!(
                         "ACP auth operation {} did not finish within the shutdown budget",
                         operation.operation_id
@@ -280,23 +276,17 @@ impl AcpAuthInner {
                 false,
             ));
         };
-        if let pl_protocol::studio::AcpAuthAction::Authenticate { method_id } = &request.action
-            && method_id.trim().is_empty()
-        {
-            return Err(acp_failure_error(
-                AcpAuthFailureCode::UnsupportedMethod,
-                "ACP 认证方法不能为空",
-            ));
-        }
         let intent = AcceptedIntent {
             account_id: request.account_id.clone(),
             connection_revision: request.expected_connection_revision,
-            action: request.action.clone(),
+            action: AcceptedAction::Start(request.action.clone()),
         };
         let identity = ConnectionIdentity::of(&account);
+        let (authentication, commands) = tokio::sync::mpsc::channel(1);
         let plan = OperationPlan {
             provider: account.provider,
             action: request.action.clone(),
+            commands,
         };
 
         let mut registry = inner.lock();
@@ -399,7 +389,9 @@ impl AcpAuthInner {
             connection_revision,
             generation,
             cancel: tokio_util::sync::CancellationToken::new(),
-            join: std::sync::Mutex::new(None),
+            authentication,
+            cleanup_retry: tokio::sync::Notify::new(),
+            join: tokio::sync::Mutex::new(None),
         });
         let initial = super::mapping::initial_state(&request.action, &request.operation_id);
         {
@@ -426,8 +418,8 @@ impl AcpAuthInner {
         // 在持有 registry 锁时记录 join 出口：并发关闭不会看到“有操作但没有句柄”的中间态。
         *operation
             .join
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(task);
+            .try_lock()
+            .expect("new operation is private until registry unlock") = Some(task);
         drop(registry);
         inner.emit(snapshot.clone());
         Ok(AcpAuthAcceptance {

@@ -7,31 +7,29 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use pl_protocol::studio::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAuthState};
 use tokio::sync::watch;
 
 use super::mapping::{
-    AcpFailure, map_auth_error, map_auth_methods, map_auth_server, map_progress, prepare_failure,
-    prepare_probe_dir, protocol_action,
+    AcpFailure, map_auth_error, map_auth_server, map_progress, prepare_failure, prepare_probe_dir,
+    protocol_action,
 };
 use super::registry::{AcpAuthInner, Operation};
-use super::worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, Reclaim};
-
-/// 清理仍待收束后的重试间隔；owner 保持存活，直到真实确认进程与管道退出。
-const CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+use super::worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim};
 
 /// 一次操作的启动意图；全部字段来自受理时的 canonical 配置快照与请求本身。
 pub(super) struct OperationPlan {
     /// 已受理接入的 provider；固定发行身份由产品清单决定，配置与客户端都不能提交。
     pub provider: crate::config::AcpProvider,
     pub action: AcpAuthAction,
+    pub commands: pl_acp::auth::mpsc::Receiver<pl_acp::auth::AuthCommand>,
 }
 
 /// supervisor 主体；正常与失败路径都只在确认收尾后发布终态。
 pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, plan: OperationPlan) {
     let account_id = operation.account_id.clone();
+    let cleanup = pl_acp::auth::CleanupBudget::new(PROCESS_CLEANUP_LIMIT);
     let dispatch = |state: AcpAuthState| {
         inner.publish_progress(
             &account_id,
@@ -122,7 +120,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
             operation.connection_revision,
             None,
         );
-        let cleanup_issue = reclaim_worker(&inner, &operation, &mut worker).await;
+        let cleanup_issue = reclaim_worker(&inner, &operation, &mut worker, &cleanup).await;
         let state = if cleanup_issue.is_some() {
             cleanup_failure()
         } else {
@@ -146,13 +144,15 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         // 编码该前缀。复用 dunce 仅转换可安全简化的路径，文件系统操作仍持有原始路径。
         probe_cwd: dunce::simplified(&probe_dir).to_string_lossy().into_owned(),
         action: protocol_action(&plan.action),
+        commands: plan.commands,
+        cleanup: cleanup.clone(),
         cancellation: operation.cancel.clone(),
         progress: progress_sender,
         // 产品固定发行版本：由协议客户端在 initialize 之后、任何 Session/check/authenticate 之前
         // 与原字符串精确比较，版本不符时不会发出 `session/new` 或 `authenticate`。
         expected_server_version: super::super::acp_install::SERVER_VERSION.to_string(),
     };
-    let mut authentication = Box::pin(pl_acp::auth::run_authentication(writer, reader, request));
+    let mut authentication = Box::pin(pl_acp::auth::run_connection(writer, reader, request));
     let mut progress_open = true;
     let mut protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>> = None;
     while protocol.is_none() {
@@ -167,6 +167,18 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
                     &operation.operation_id,
                     &plan.action,
                 ) {
+                    tracing::debug!(
+                        operation_id = %operation.operation_id,
+                        phase = match &state {
+                            AcpAuthState::Checking { .. } => "initialize",
+                            AcpAuthState::Required { .. } => "authRequired",
+                            AcpAuthState::Authenticating { .. } => "authenticate",
+                            AcpAuthState::Verifying { .. } => "session/new",
+                            AcpAuthState::Closing { .. } => "close",
+                            _ => "other",
+                        },
+                        "ACP connection phase observed"
+                    );
                     // 协议侧收束进度只进入 busy 非终态，且不能覆盖已取消代次。
                     match state {
                         AcpAuthState::Closing { .. } => inner.publish_closing(
@@ -180,11 +192,26 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
                 }
             }
             result = &mut authentication => protocol = Some(result),
+            exited = worker.observe_exit() => {
+                tracing::debug!(operation_id = %operation.operation_id, wait_ok = exited.is_ok(), "ACP process exit observed during protocol flow");
+                // 进程退出后仍驱动 SDK 消费已到达的响应/EOF；这只是一段资源排空预算。
+                protocol = tokio::time::timeout_at(cleanup.deadline(), &mut authentication).await.ok();
+                break;
+            }
         }
     }
     // 显式释放协议 future：关闭我们的 stdin 写半边，随后由 owner 终止并等待真实退出。
     drop(authentication);
+    let last_progress = progress_receiver.borrow().clone();
     drop(progress_receiver);
+    tracing::debug!(
+        operation_id = %operation.operation_id,
+        protocol_ok = protocol.as_ref().is_some_and(Result::is_ok),
+        failure_kind = ?protocol.as_ref().and_then(|r| r.as_ref().err()).map(pl_acp::auth::AuthError::kind),
+        failure_stage = ?protocol.as_ref().and_then(|r| r.as_ref().err()).map(pl_acp::auth::AuthError::stage),
+        rpc_code = protocol.as_ref().and_then(|r| r.as_ref().err()).and_then(pl_acp::auth::AuthError::rpc_code),
+        "ACP connection protocol completed"
+    );
 
     // 4. 物理收尾：进入 Closing（busy 非终态），确认资源停止后才发布终态。
     inner.publish_closing(
@@ -193,12 +220,12 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         operation.connection_revision,
         None,
     );
-    let cleanup_issue = reclaim_worker(&inner, &operation, &mut worker).await;
+    let cleanup_issue = reclaim_worker(&inner, &operation, &mut worker, &cleanup).await;
     let (state, usage_update) = if cleanup_issue.is_some() {
         // 资源已确认停止（或等待结果已交付），如实报告收尾问题，绝不以认证成功掩盖。
         (cleanup_failure(), None)
     } else {
-        terminal_result(protocol, &operation, &plan.action)
+        terminal_result(protocol, &operation, &plan.action, &last_progress)
     };
     // 终态与"该账号已空闲"在同一把锁里提交，只发一次事件。
     inner.complete_operation(
@@ -227,37 +254,54 @@ async fn reclaim_worker(
     inner: &AcpAuthInner,
     operation: &Operation,
     worker: &mut AcpWorker,
+    cleanup: &pl_acp::auth::CleanupBudget,
 ) -> Option<String> {
+    let mut overdue = false;
     loop {
-        match worker.reclaim().await {
-            Reclaim::Stopped => return None,
-            Reclaim::Settled(issue) => {
-                tracing::warn!(
-                    category = "acpAuthCleanup",
-                    detail_bytes = issue.len(),
-                    "ACP auth resource exited with a delivered cleanup failure"
-                );
-                return Some(issue);
-            }
-            Reclaim::Pending(issue) => {
-                tracing::warn!(
-                    category = "acpAuthCleanup",
-                    detail_bytes = issue.len(),
-                    "ACP auth resource is still closing; retaining owner"
-                );
-                let failure = AcpFailure {
-                    code: AcpAuthFailureCode::Cleanup,
-                    stage: AcpAuthStage::Cleanup,
-                    retryable: true,
-                }
-                .failure();
+        let reclaim = worker.reclaim();
+        tokio::pin!(reclaim);
+        let result = match tokio::time::timeout_at(cleanup.deadline(), &mut reclaim).await {
+            Ok(result) => result,
+            Err(_) => {
+                overdue = true;
                 inner.publish_closing(
                     &operation.account_id,
                     operation.generation,
                     operation.connection_revision,
-                    Some(failure),
+                    Some(
+                        AcpFailure {
+                            code: AcpAuthFailureCode::Cleanup,
+                            stage: AcpAuthStage::Cleanup,
+                            retryable: true,
+                        }
+                        .failure(),
+                    ),
                 );
-                tokio::time::sleep(CLEANUP_RETRY_INTERVAL).await;
+                // 保留同一个 future、进程和读取任务，继续等实际完成事件。
+                reclaim.await
+            }
+        };
+        match result {
+            Reclaim::Stopped => {
+                return overdue.then(|| "ACP cleanup exceeded shutdown budget".to_string());
+            }
+            Reclaim::Settled(issue) => return Some(issue),
+            Reclaim::Pending(_) => {
+                overdue = true;
+                inner.publish_closing(
+                    &operation.account_id,
+                    operation.generation,
+                    operation.connection_revision,
+                    Some(
+                        AcpFailure {
+                            code: AcpAuthFailureCode::Cleanup,
+                            stage: AcpAuthStage::Cleanup,
+                            retryable: true,
+                        }
+                        .failure(),
+                    ),
+                );
+                operation.cleanup_retry.notified().await;
             }
         }
     }
@@ -272,6 +316,7 @@ fn terminal_result(
     protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>>,
     operation: &Operation,
     action: &AcpAuthAction,
+    last_progress: &pl_acp::auth::AuthProgress,
 ) -> (
     AcpAuthState,
     Option<pl_protocol::studio::AcpUsageObservation>,
@@ -296,13 +341,6 @@ fn terminal_result(
             });
             (state, usage_update)
         }
-        Some(Ok(pl_acp::auth::AuthOutcome::Required { server, methods })) => (
-            AcpAuthState::Required {
-                methods: map_auth_methods(methods),
-                server: map_auth_server(server),
-            },
-            None,
-        ),
         Some(Err(error)) => {
             let state = if operation.cancel.is_cancelled()
                 && matches!(error.kind(), pl_acp::auth::AuthFailureKind::Cancelled)
@@ -315,8 +353,16 @@ fn terminal_result(
         }
         None => (
             AcpFailure {
-                code: AcpAuthFailureCode::Internal,
-                stage: AcpAuthStage::Close,
+                code: AcpAuthFailureCode::Transport,
+                stage: match last_progress {
+                    pl_acp::auth::AuthProgress::Initializing => AcpAuthStage::Initialize,
+                    pl_acp::auth::AuthProgress::Required { .. }
+                    | pl_acp::auth::AuthProgress::Authenticating { .. } => {
+                        AcpAuthStage::Authenticate
+                    }
+                    pl_acp::auth::AuthProgress::Verifying => AcpAuthStage::Probe,
+                    pl_acp::auth::AuthProgress::Closing => AcpAuthStage::Close,
+                },
                 retryable: true,
             }
             .into_state(),
