@@ -9,7 +9,7 @@ category: guides
 相关事实入口为 [协作契约](../../../design/12-collaboration.md#127-分发模式模型查询与最终评价)、
 [配置契约](../../../design/20-config.md) 和 [前端状态](../../../design/25-frontend-state.md)。
 配置版本以 `code/pl-studio-runtime/src/config/mod.rs` 的 owner 常量为准；不要仅改版本号
-跳过迁移，也不要复制旧示例覆盖当前配置。配置和凭据的通用安全边界见 `studio-config`。
+跳过迁移，也不要复制旧示例覆盖当前配置。配置和凭据的通用安全边界见 [配置契约](../../../design/20-config.md) 与内置 `studio-config` 技能。
 
 ## 资格与配置
 
@@ -80,7 +80,7 @@ category: guides
   没有新 Turn，需要终态历史证据时按需消费现有公开会话读取接口，并保持有界与身份核对。
 - 供应商请求已到达的可控响应 gate 可验证“禁用不杀在途、下一 Turn 拒绝”。没有公开
   锁内停点时，不把 sleep、重复竞速或一次成功当作确定性线性化证明，不加生产测试捷径。
-- GUI 的真实 bridge 与 Driver、canonical 状态、截图和请求日志可提供不同观察证据。
+- GUI 的真实 bridge、内容捕获、canonical 状态、截图和请求日志可提供不同观察证据。
   智能体成员来自完整 AgentDirectory，不与 Thread 分页或热集合取交集；冷成员按显式选择读取。
   快速导航测试必须走公开命令入口，新意图在 enqueue 前使旧读取失效；只直接改 store 不能
   证明串行 lane 中的真实快速改选不会发布旧结果。

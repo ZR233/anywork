@@ -4533,14 +4533,14 @@ fn run_history_fault_scenario(
     Ok(())
 }
 
-/// Plan shutdown/restart recovery acceptance journey driven through Flutter Driver.
+/// Plan shutdown/restart recovery acceptance journey driven by the operator runbook.
 ///
 /// Three real GUI lifecycles share one isolated home and one strict fixture
 /// script. The first lifecycle submits a real `plan_submit` through the GUI and
 /// shuts the GUI down normally while the confirmation is pending; the restart
 /// proves the reopened session restores the exact Plan body, interaction and
 /// turn identity with no account request before the answer (the coordinator
-/// holds the Driver on a quiet marker until the fixture counters prove it),
+/// holds the operator on a quiet marker until the fixture counters prove it),
 /// approves, and stages the Revise branch before a second normal shutdown; the
 /// recheck restores that second pending Plan, answers Revise (which must produce
 /// a rewritten Plan confirmation with a fresh interaction identity), approves
@@ -5213,7 +5213,7 @@ fn write_sanitized_log(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Persists the Flutter Driver log and an error digest as reviewable evidence.
+/// Persists the GUI log and an error digest as reviewable evidence.
 ///
 /// The source log lives under the isolated coordination directory that is
 /// removed with the run, so both files are written here. The full log is

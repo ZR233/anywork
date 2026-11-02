@@ -12,7 +12,7 @@ description: 设计、编写、修改或审查自动化测试时使用。按完�
 - [测试设计与审计](references/design-and-audit.md) 提供必要性、层级和缺陷敏感度的判断方法，可按问题选择相关章节。
 - 只有解释方法论、比较定义、提供研究依据或讨论删测依据时，才阅读[方法论依据](references/evidence.md)。
 - Rust 实现与接口使用 `rust-code-quality`、`rust-api-design`；并发或取消使用 `rust-concurrency-safety`；unsafe、FFI 或 FRB 安全边界使用 `rust-unsafe-safety`。
-- 原生 GUI、生成文件与 Driver 可参考 `flutter-studio-build`；工程入口和授权边界见 [AGENTS.md](../../../AGENTS.md)，不据此增加固定测试流程。
+- 原生 GUI、生成文件与内容捕获可参考 `flutter-studio-build`；工程入口和授权边界见 [AGENTS.md](../../../AGENTS.md)，不据此增加固定测试流程。
 
 ## 判断维度
 

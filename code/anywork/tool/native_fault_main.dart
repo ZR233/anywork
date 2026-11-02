@@ -2,7 +2,7 @@
 // proofs. Product, capture, and release builds keep lib/main.dart.
 // Each scene enables only the fault it needs through
 // ANYWORK_NATIVE_SHUTDOWN_FAULT; required turns use production Client
-// APIs (openProject + composer submit), never FlutterDriver.
+// APIs (openProject + composer submit), never a FlutterDriver journey.
 //
 // ignore_for_file: invalid_use_of_visible_for_testing_member
 

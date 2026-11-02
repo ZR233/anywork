@@ -161,11 +161,11 @@ current 只推有界预览和引用；展开时订阅所需正文范围，Rust �
 
 普通当前格式打开的 full_context_rows、quick_check、execution_activation、tool_or_ssh_initialization、query_triggered_flush 均为零。相同需求下增加总历史、隐藏活动或上下文，不增加线性全量读取/检查/解码。记录 SQL/pending 候选与返回量、payload/content/编码字节、逐项解码数、controller/实际构建行数及排队时间；诊断只临时借用 controller/owner，不反建第二历史集合。
 
-Driver 的当前展示诊断直接按 controller 的 Message 顺序读取单项 metadata，报告实际消息数、原 item 身份、兼容性、已加载的有界正文/引用以及真实显示代次；不查询未展开内容，不重建隐藏 item 或分组集合。seq/H/D 与源 epoch 留在 Rust 所有者的诊断边界，不为旧脚本伪造完成游标、顺序号或组成员；顺序及新增/前插证明使用实际稳定身份与操作接纳证据。
+当前展示诊断直接按 controller 的 Message 顺序读取单项 metadata，报告实际消息数、原 item 身份、兼容性、已加载的有界正文/引用以及真实显示代次；不查询未展开内容，不重建隐藏 item 或分组集合。seq/H/D 与源 epoch 留在 Rust 所有者的诊断边界，不为旧脚本伪造完成游标、顺序号或组成员；顺序及新增/前插证明使用实际稳定身份与操作接纳证据。
 
-展开的 Children 通过原 Main 展示 lease 登记只读借用，记录真实 parent、局部显示代次、查询资格及实际 controller；查询 Driver 时才遍历该 controller 的已加载 Message。登记只持当前资源借用，不持另一份消息或订阅，不从 Main 的 Turn 卡片重建 Children。关闭、显示换代和 Main lease 退役同步撤销借用；旧回调不能重新登记到新 lease。Set/Prepend/Append 的接纳计数在原组件操作成功且资格复核后递增，不从当前消息长度或内容推测操作。
+展开的 Children 通过原 Main 展示 lease 登记只读借用，记录真实 parent、局部显示代次、查询资格及实际 controller；查询只读诊断时才遍历该 controller 的已加载 Message。登记只持当前资源借用，不持另一份消息或订阅，不从 Main 的 Turn 卡片重建 Children。关闭、显示换代和 Main lease 退役同步撤销借用；旧回调不能重新登记到新 lease。Set/Prepend/Append 的接纳计数在原组件操作成功且资格复核后递增，不从当前消息长度或内容推测操作。
 
-运行中详情同样只借用真实挂载的 current 资源：Driver 可读取用户已展开、原 scope 已接纳的有界集合页及正文窗口，并报告原集合引用、局部代次、展开/加载/错误状态和 continuation。读取诊断不能发起 page/watch、展开组件、复制完整 current 集合或保留跨代页面；折叠、引用 revision 变化、来源 attempt 变化和 Main lease 退役同步撤销资格。工具等待只按现役 `tools` 页中原 call 身份与 producer 提供的 typed wait 判断，不从工具名、完成记录或输出片段猜测；没有提供的 item 身份及终态结果保持未知。
+运行中详情同样只借用真实挂载的 current 资源：只读观察可读取用户已展开、原 scope 已接纳的有界集合页及正文窗口，并报告原集合引用、局部代次、展开/加载/错误状态和 continuation。读取诊断不能发起 page/watch、展开组件、复制完整 current 集合或保留跨代页面；折叠、引用 revision 变化、来源 attempt 变化和 Main lease 退役同步撤销资格。工具等待只按现役 `tools` 页中原 call 身份与 producer 提供的 typed wait 判断，不从工具名、完成记录或输出片段猜测；没有提供的 item 身份及终态结果保持未知。
 
 各层验收证明其实际拥有的事实。独立工具结果在 Turn 结束前已可靠发布的证明使用持有真实 parent/读取资格的 Runtime 或 HTTP 路径，不要求 Flutter 为旧脚本恢复全 Turn 分组、提前制造终态卡片或另存结果镜像；原生界面另证实际展开内容及其生命周期，不能将后来的 Children 完成页或实时输出片段冒充更早的完整结果。需核对完整历史时，验收器逐个真实 scope 分页到明确 EOF 并即时记录证据，不以当前挂载的 Children 合集代表全历史库存，也不要求所有惰性行或缩略图同时常驻、回收后保留展开态。
 

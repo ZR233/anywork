@@ -168,7 +168,7 @@ final class TimelinePlanFacts {
   final String? feedback;
 }
 
-/// 一条工具调用的预览诊断：不展开全文，也不为 Driver 额外读取详情。
+/// 一条工具调用的预览诊断：不展开全文，也不为只读诊断额外读取详情。
 final class TimelineToolFacts {
   TimelineToolFacts({
     required this.name,
@@ -253,7 +253,7 @@ final class TimelineUserInputFacts {
   final String? planDecision;
 }
 
-/// One immutable, synchronous read of the Client's current mirrors. Driver keeps
+/// One immutable, synchronous read of the Client's current mirrors. Diagnostics keep
 /// no copy after serialization and cannot write these values back to the Client.
 final class StudioDriverFacts {
   StudioDriverFacts({
@@ -341,7 +341,7 @@ final class StudioDriverFacts {
   final Map<AccountIdentity, AccountResource<AccountDetails>> accountDetails;
 
   /// ACP 接入配置与认证观察：与 Native 账号并列的独立事实源。
-  /// Only already observed target details; Driver never opens a detail demand.
+  /// Only already observed target details; diagnostics never open a detail demand.
   Iterable<AcpAccountSettingsView> get acpAccounts => [
     for (final resource in accountDetails.values)
       if (resource.value case AcpAccountDetails(:final account)) account,
@@ -372,7 +372,7 @@ final class StudioDriverFacts {
 
 /// `acpInstall` 的只读取证事实。
 ///
-/// 阶段、进度与失败类别全部来自 typed 状态；[phase] 只是稳定 token，供 Driver
+/// 阶段、进度与失败类别全部来自 typed 状态；[phase] 只是稳定 token，供只读诊断
 /// 与验收编排等待真实可见状态，不做业务判定。
 final class StudioDriverAcpInstallFacts {
   StudioDriverAcpInstallFacts({
@@ -502,7 +502,7 @@ final class StudioDriverPendingCredentialFacts {
   final bool? configCommitted;
 }
 
-/// Read-only Client queries and bounded UI/host diagnostics for Driver builds.
+/// Read-only Client queries and bounded UI/host diagnostics for capture and tests.
 abstract final class StudioDriverState {
   static StudioDriverFacts Function()? _query;
   static final List<StudioShutdownProgress> _shutdownProgress = [];
@@ -560,19 +560,19 @@ abstract final class StudioDriverState {
   }
 
   /// 记录一次应用退出请求（托盘退出 / 系统会话结束 / 无托盘窗口关闭 /
-  /// ServicesBinding / Driver / dispose）。
+  /// ServicesBinding / requestExit / dispose）。
   static void markExitRequested() {
     _exitRequests++;
   }
 
   /// 记录启动致命失败的 typed code 与 correlation，供
-  /// Driver-only 验收可靠判定，而不是从 UI 文本猜测。
+  /// 验收只读判定，而不是从 UI 文本猜测。
   static void publishStartupFailure(StudioFailure failure) {
     _startupFailureCode = failure.code.name;
     _startupFailureCorrelationId = failure.correlationId;
   }
 
-  /// Driver-only 只读退出诊断：native 剩余期限、清理预算、退出请求次数、typed 报告与
+  /// 只读退出诊断：native 剩余期限、清理预算、退出请求次数、typed 报告与
   /// 已观察阶段。验收据此对齐 remaining/stage，无需从长请求的断开推断。
   static Map<String, Object?> exitDiagnosticsJson() => <String, Object?>{
     'nativeExit': _nativeExitJson(),
@@ -834,8 +834,8 @@ abstract final class StudioDriverState {
                   },
               ],
               'modelCatalog': _catalogJson(facts, account.id),
-              // 配置意图与模型层最终解析结果，Driver 不派生阈值。
-              // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
+              // 配置意图与模型层最终解析结果，只读诊断不派生阈值。
+              // 缺失值保持 null，便于断言未知容量与覆盖归一化。
               'autoCompactLimits': [
                 for (final model in account.models)
                   {
@@ -1431,7 +1431,7 @@ abstract final class StudioDriverState {
 ///
 /// `atLiveEdge` 是反向列表 offset 0 的**几何**事实，不等于 Live 模式；History 滚到本地
 /// 底端仍然是 History。这里没有 anchor/restore/pin/settling/programmaticScroll/hasNewer
-/// 等恢复状态，也不猜测可见行：挂载行位置由 Driver 在请求时扫描真实 element/render tree。
+/// 等恢复状态，也不猜测可见行：挂载行位置由诊断在请求时扫描真实 element/render tree。
 final class TimelineScrollDiagnostic {
   const TimelineScrollDiagnostic({
     required this.threadId,
@@ -1627,7 +1627,7 @@ Map<String, Object?> _acpUsageJson(AcpUsageObservationView usage) => {
   },
 };
 
-/// ACP 认证状态的只读投影：`kind` 与界面阶段 token 一致，便于 Driver 断言。
+/// ACP 认证状态的只读投影：`kind` 与界面阶段 token 一致，便于只读断言。
 Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
     switch (state) {
       AcpUncheckedState() => {'kind': 'unchecked'},
@@ -1696,7 +1696,7 @@ Map<String, Object?> _acpServerJson(AcpServerInfoView server) => {
 
 /// ACP 服务器准备事实的只读投影。
 ///
-/// [StudioDriverAcpInstallFacts.loaded] 与 `revision` 是 Driver 判断“是否已加载”
+/// [StudioDriverAcpInstallFacts.loaded] 与 `revision` 是判断“是否已加载”
 /// 的唯一依据；revision 0 也是合法已加载水位，不能当成缺失。
 Map<String, Object?>? _acpInstallFactsJson(StudioDriverAcpInstallFacts? facts) {
   if (facts == null) return null;

@@ -168,8 +168,8 @@ pub fn gui_markdown_answer() -> String {
 /// `delegation-*` scenes keep the generic step script empty, but the dedicated
 /// delegation fixture still serves its controlled synthetic responses and the
 /// control/observation routes, and it verifies the real requests against them.
-/// The GUI side is driven by the optional delegation Driver
-/// (`--delegation-driver`), or by the manual flow when it is absent.
+/// The GUI side is driven by the operator runbook. `--delegation-driver`
+/// only records an optional script path in evidence; the harness does not launch it.
 pub const GUI_SCENARIOS: [&str; 33] = [
     "gui",
     "markdown-layout",

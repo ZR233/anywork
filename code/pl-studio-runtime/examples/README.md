@@ -226,10 +226,10 @@ timeline 页与详情引用保留 saved/lifecycle/revision，manifest 的 `threa
 `studio-home`、原始配置、事件、工具完整参数/结果及供应商敏感原文都是私有证据，**不能直接
 作为公开 PR 附件**；分享前须在后续独立副本中检查和脱敏，保留原始验证事实。
 
-GUI 真实任务通过 `cargo xtask run-gui --driver` 启动，由观察者使用 Flutter Driver
-提交任务、查看流、截图和产物，并人工记录结论。自动 Rust 测试仅保留在
-`pl-core` 和 `pl-model` 两库；此处不再承诺配置迁移、恢复或
-GUI 场景的自动断言；隔离模拟入口使用 `cargo xtask manual-gui`。
+GUI 真实任务通过 `cargo xtask run-gui` 启动，由观察者使用真实键盘/指针
+提交任务、查看流，并用 `run-gui --capture` 取得 Flutter 内容 PNG，再人工记录结论。
+自动 Rust 测试仅保留在 `pl-core` 和 `pl-model` 两库；此处不再承诺配置迁移、恢复或
+GUI 场景的自动断言；隔离模拟入口使用 `cargo xtask manual-gui --preset`。
 
 执行侧会话目录与 Git 池 ignore 可用 `session_layout_observe` 观察，不读取用户供应商配置：
 
