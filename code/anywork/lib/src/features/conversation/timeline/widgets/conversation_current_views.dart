@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import 'timeline_activity_row.dart';
 import 'timeline_markdown.dart';
 
 /// Pure presentation for the current activity's bounded windows and collections.
@@ -256,23 +257,15 @@ class ConversationCurrentCollectionView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Theme(
     data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      dense: true,
-      minTileHeight: 28,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 2),
-      childrenPadding: const EdgeInsets.fromLTRB(22, 0, 2, 6),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      title: Text(
-        title,
-        key: titleKey,
-        style: context.text.bodySmall?.copyWith(
-          color: context.colors.onSurfaceVariant,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
+    child: TimelineActivityDisclosure(
       onExpansionChanged: onExpansionChanged,
+      titleBuilder: (context, expanded) => TimelineActivityRow(
+        labelKey: titleKey,
+        icon: Icons.workspaces_outline,
+        label: title,
+        emphasized: true,
+        expanded: expanded,
+      ),
       children: [
         if (loading)
           const Padding(
@@ -372,23 +365,13 @@ class ConversationCurrentEntryView extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Theme(
     data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      dense: true,
-      minTileHeight: 28,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 2),
-      childrenPadding: const EdgeInsets.fromLTRB(22, 0, 2, 6),
-      maintainState: false,
-      shape: const Border(),
-      collapsedShape: const Border(),
+    child: TimelineActivityDisclosure(
       onExpansionChanged: onExpansionChanged,
-      title: Text(
-        title,
-        key: titleKey,
-        style: context.text.bodySmall?.copyWith(
-          color: context.colors.onSurface,
-          fontSize: 12,
-          height: 1.35,
-        ),
+      titleBuilder: (context, expanded) => TimelineActivityRow(
+        labelKey: titleKey,
+        icon: Icons.article_outlined,
+        label: title,
+        expanded: expanded,
       ),
       children: [child],
     ),

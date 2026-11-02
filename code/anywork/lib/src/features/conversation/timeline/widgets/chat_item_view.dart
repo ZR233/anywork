@@ -10,7 +10,6 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
-import 'reasoning_summary.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
@@ -184,27 +183,44 @@ class _ChatItemViewState extends State<ChatItemView> {
         ),
       for (final body in item.bodies) _body(body),
       _media(),
-      _outcomeNotice(item.data['outcome']),
+      // The independent Turn receipt owns terminal reasons. Accepted partial
+      // text stays readable without repeating its failure/stop diagnostics.
     ],
   );
   Widget _thinking(BuildContext context) {
-    final summaries = [
-      for (final body in item.bodies)
-        if (RegExp(r'^part\.summaryText\.\d+$').hasMatch(body.key) &&
-            body.inline != null)
-          utf8.decode(body.inline!),
-    ];
-    final summary = summaries.lastOrNull;
-    final label = summary == null
-        ? context.l10n.timelineReasoningEnded
-        : plainReasoningSummary(summary) ??
-              inlineReasoningSummaryMarkdown(summary) ??
-              context.l10n.timelineReasoningEnded;
-    return _disclosure(Icons.psychology_alt_outlined, label, [
-      for (final body in item.bodies) _body(body),
-      _outcomeNotice(item.data['outcome']),
-      _rawRecord(),
-    ]);
+    final outcome = item.data['outcome'];
+    final state = outcome is Map<String, Object?> ? outcome['kind'] : null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TimelineActivityRow(
+          icon: state == 'cancelled'
+              ? Icons.stop_circle_outlined
+              : Icons.psychology_alt_outlined,
+          isIssue: state == 'failed' || state == 'budgetLimited',
+          label: switch (state) {
+            'failed' => '思考失败',
+            'cancelled' => '思考已停止',
+            _ => context.l10n.timelineReasoningEnded,
+          },
+          expandable: false,
+        ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: TimelineActivityRow.contentIndent,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final body in item.bodies) _body(body),
+              _outcomeNotice(item.data['outcome']),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _tool(BuildContext context) {
@@ -269,19 +285,26 @@ class _ChatItemViewState extends State<ChatItemView> {
     final title = switch (state) {
       'completed' => '轮次已完成',
       'failed' => '轮次失败',
-      'cancelled' => context.l10n.timelineTurnStopped,
+      'cancelled' || 'interrupted' => context.l10n.timelineTurnStopped,
       'budgetLimited' => '轮次达到预算上限',
       _ => '轮次 · $state',
     };
-    return _disclosure(Icons.account_tree_outlined, title, [
-      _outcomeNotice(outcome),
-      if (item.childrenParentId case final parent?)
-        if (widget.childrenBuilder case final builder?)
-          builder(parent)
-        else
-          const Text('子内容读取尚未就绪'),
-      _rawRecord(),
-    ], issue: state == 'failed' || state == 'budgetLimited');
+    return _disclosure(
+      state == 'cancelled' || state == 'interrupted'
+          ? Icons.stop_circle_outlined
+          : Icons.account_tree_outlined,
+      title,
+      [
+        _outcomeNotice(outcome),
+        if (item.childrenParentId case final parent?)
+          if (widget.childrenBuilder case final builder?)
+            builder(parent)
+          else
+            const Text('子内容读取尚未就绪'),
+        _rawRecord(),
+      ],
+      issue: state == 'failed' || state == 'budgetLimited',
+    );
   }
 
   Widget _plan(BuildContext context) {
@@ -498,18 +521,11 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _rawRecord() => Material(
     type: MaterialType.transparency,
     child: TimelineActivityTileTheme(
-      child: ExpansionTile(
-        dense: true,
-        minTileHeight: 28,
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsetsDirectional.only(start: 28, bottom: 8),
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        shape: const Border(),
-        collapsedShape: const Border(),
-        title: const TimelineActivityRow(
+      child: TimelineActivityDisclosure(
+        titleBuilder: (context, expanded) => TimelineActivityRow(
           icon: Icons.data_object_outlined,
           label: '公开原始记录',
-          expandable: false,
+          expanded: expanded,
         ),
         children: [
           for (final body in _publicBodies) _body(body, code: true),
@@ -533,20 +549,13 @@ class _ChatItemViewState extends State<ChatItemView> {
     List<Widget> children, {
     bool issue = false,
   }) => TimelineActivityTileTheme(
-    child: ExpansionTile(
+    child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
-      maintainState: false,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsetsDirectional.only(start: 28),
-      minTileHeight: 28,
-      dense: true,
-      shape: const Border(),
-      collapsedShape: const Border(),
-      title: TimelineActivityRow(
+      titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: icon,
         label: title,
         isIssue: issue,
-        expandable: false,
+        expanded: expanded,
       ),
       children: children,
     ),

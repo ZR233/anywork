@@ -8,6 +8,7 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
@@ -152,8 +153,10 @@ void main() {
       graph.setConversationPageVisible(true);
       final scene = _RealtimeScene(tester, graph);
 
+      await capturePresentation(tester, 'realtime-start.png');
       await scene.submit('Realtime delayed first token');
       await scene.untilKey(const ValueKey('conversation-activity'));
+      await capturePresentation(tester, 'realtime-thinking.png');
       await scene.untilKey(
         const ValueKey('conversation-activity-response-stream'),
         timeout: const Duration(seconds: 20),
@@ -192,14 +195,33 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-parallel-running.png');
       await scene.completed(answer: 'realtime parallel tools complete');
-      await scene.verifyParallelReceipts(priorParallelTurns);
+      await scene.verifyExecReceipts(priorParallelTurns, const {
+        'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
+        'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
+      });
 
+      final priorHostCwdTurns = scene.items
+          .where((item) => item.type == 'turn')
+          .map((item) => item.id)
+          .toSet();
       await scene.submit('Realtime host cwd command');
-      await scene.untilLaidOutCurrentTools(minimum: 2);
+      await scene.untilLaidOutCurrentTools(
+        minimum: 1,
+        runningExecCallIds: const {'realtime-host-cwd-call'},
+        settleDisclosure: false,
+      );
+      await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
+      await scene.verifyExecReceipts(priorHostCwdTurns, const {
+        'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
+      });
 
       await scene.submit('Realtime provider error');
       await scene.terminal('failed');
+      await capturePresentation(
+        tester,
+        'realtime-provider-error-collapsed.png',
+      );
       final failedTurn = scene._latestTurn()!;
       final failed = await scene.openTurnChildren(
         failedTurn,
@@ -232,12 +254,26 @@ void main() {
       await capturePresentation(tester, 'realtime-before-cancel.png');
       await scene.tap(find.byKey(StudioDriverKeys.composerStop));
       await scene.terminal('cancelled');
+      await capturePresentation(tester, 'realtime-stopped.png');
 
       await scene.submit('Realtime continue after cancel');
       await scene.completed(answer: 'realtime continued after cancel');
       expect(find.byType(ChatItemView), findsWidgets);
 
+      // Supplemental native production-component capture, not a fixture-driven
+      // compaction lifecycle. Keep its evidence separate from the real journey.
+      graph.setConversationPageVisible(false);
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: presentationCaptureKey,
+          child: conversationLiveStatusCompactingPreview(),
+        ),
+      );
+      await tester.pump();
+      await capturePresentation(tester, 'component-compacting.png');
+
       report.addAll({
+        'syntheticComponentCaptures': ['component-compacting.png'],
         'delayedStreamVisible': true,
         'reasoningHistoryVisible': true,
         'execWaitCardsVisible': true,
@@ -380,11 +416,10 @@ final class _RealtimeScene {
     );
   }
 
-  Future<void> verifyParallelReceipts(Set<String> priorTurnIds) async {
-    const expected = {
-      'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
-      'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
-    };
+  Future<void> verifyExecReceipts(
+    Set<String> priorTurnIds,
+    Map<String, String> expected,
+  ) async {
     final witnessed = <String>{};
     final turns = items
         .where((item) => item.type == 'turn' && !priorTurnIds.contains(item.id))
@@ -414,6 +449,13 @@ final class _RealtimeScene {
           expect(tool.name, 'exec');
           expect(tool.exitCode, 0);
           expect(tool.output, contains(lastLine));
+          if (tool.toolCallId == 'realtime-host-cwd-call') {
+            final arguments =
+                jsonDecode(tool.arguments) as Map<String, dynamic>;
+            final cwd = arguments['cwd'] as String;
+            expect(cwd, isNotEmpty);
+            expect(tool.output, contains('realtime-host-cwd-actual:$cwd'));
+          }
           final card = find.descendant(
             of: opened.tree,
             matching: find.byKey(ValueKey('chat-item:${item.id}')),
@@ -421,7 +463,7 @@ final class _RealtimeScene {
           if (card.evaluate().isEmpty) {
             await tester.scrollUntilVisible(
               card,
-              -120,
+              120,
               scrollable: find
                   .descendant(of: view, matching: find.byType(Scrollable))
                   .first,
@@ -473,7 +515,7 @@ final class _RealtimeScene {
           );
           witnessed.add(tool.toolCallId);
           debugPrintSynchronously(
-            'Parallel receipt laid out: '
+            'Exec receipt laid out: '
             '${jsonEncode({'callId': tool.toolCallId, 'state': tool.statusString, 'lastLine': lastLine, 'appliedSets': opened.display.appliedSets})}',
           );
           await capturePresentation(
@@ -489,12 +531,9 @@ final class _RealtimeScene {
       final scroll = lease.scrollController;
       final latest = find.byKey(StudioDriverKeys.timelineReturnLive);
       debugPrintSynchronously(
-        'Parallel receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'returnWidgets': latest.evaluate().length, 'returnHitTargets': latest.hitTestable().evaluate().length})}',
+        'Exec receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'returnWidgets': latest.evaluate().length, 'returnHitTargets': latest.hitTestable().evaluate().length})}',
       );
-      await capturePresentation(
-        tester,
-        'realtime-parallel-receipts-failure.png',
-      );
+      await capturePresentation(tester, 'realtime-exec-receipts-failure.png');
       rethrow;
     }
   }
@@ -640,6 +679,7 @@ final class _RealtimeScene {
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> runningExecCallIds = const {},
+    bool settleDisclosure = true,
   }) async {
     final activity = find.byKey(const ValueKey('conversation-activity'));
     final collectionTitle = find.byKey(
@@ -675,7 +715,12 @@ final class _RealtimeScene {
             }
           }
         }
-        final laidOut = entries.where((entry) {
+        final requiredEntries = runningExecCallIds.isEmpty
+            ? entries
+            : entries
+                  .where((entry) => runningExecCallIds.contains(entry.id))
+                  .toList();
+        final laidOut = requiredEntries.where((entry) {
           final elements = find
               .byKey(StudioDriverKeys.currentCollectionEntry('tools', entry.id))
               .evaluate();
@@ -721,10 +766,10 @@ final class _RealtimeScene {
             page != null &&
             page.revision == reference?.revision &&
             entries.length >= minimum &&
-            laidOut == entries.length &&
+            laidOut == requiredEntries.length &&
             runningExecIds.containsAll(runningExecCallIds)) {
           // Recheck the same live UI contract after its finite disclosure animation.
-          if (!disclosureSettled) {
+          if (settleDisclosure && !disclosureSettled) {
             await tester.pump(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
             disclosureSettled = true;

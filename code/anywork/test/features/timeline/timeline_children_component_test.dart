@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
@@ -11,14 +13,85 @@ import 'package:anywork_client/src/conversation/data/conversation_repository_imp
 import 'package:anywork_client/src/lifecycle/resource_budget.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_chat_ui/flutter_chat_ui.dart'
-    show Chat, ChatAnimatedListReversed;
+import 'package:flutter_chat_core/flutter_chat_core.dart'
+    show InMemoryChatController, Message;
+import 'package:flutter_chat_ui/flutter_chat_ui.dart' show Chat;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../anywork_client/test/support/timeline_transport.dart';
 import '../../client/support/pump_client_future.dart';
 
 void main() {
+  testWidgets(
+    'Children use one controller, shrink naturally, stay transparent and scroll only at the cap',
+    (tester) async {
+      final controller = InMemoryChatController(
+        messages: [
+          _controllerMessage(chatMessage(id: 'short', body: '短的真实子内容')),
+        ],
+      );
+      var pages = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pureStudioTheme(),
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 360,
+                child: TimelineChildrenView(
+                  controller: controller,
+                  generation: 1,
+                  isDisplayActive: () => true,
+                  onLoadOlder: () async {
+                    pages++;
+                  },
+                  contentRangeBuilder: (_, _, label, _, _) => Text(label),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final children = find.byType(TimelineChildrenView);
+      final chat = tester.widget<Chat>(find.byType(Chat));
+      expect(chat.chatController, same(controller));
+      expect(chat.backgroundColor, Colors.transparent);
+      expect(tester.getSize(children).height, lessThan(100));
+      final scroll = find.descendant(
+        of: children,
+        matching: find.byType(Scrollable),
+      );
+      expect(tester.state<ScrollableState>(scroll).position.maxScrollExtent, 0);
+
+      await controller.setMessages([
+        for (var i = 0; i < 40; i++)
+          _controllerMessage(chatMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
+      ], animated: false);
+      await tester.pumpAndSettle();
+      expect(tester.getSize(children).height, 320);
+      expect(
+        tester.state<ScrollableState>(scroll).position.maxScrollExtent,
+        greaterThan(0),
+      );
+      expect(
+        tester.widget<Chat>(find.byType(Chat)).chatController,
+        same(controller),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('timeline-children-load-older')),
+      );
+      await tester.pumpAndSettle();
+      expect(pages, 1);
+      await tester.pumpWidget(const SizedBox());
+      controller.dispose();
+    },
+  );
+
   testWidgets(
     'Children display diagnostics borrow the real controller and actual admitted operations without IO',
     (tester) async {
@@ -100,11 +173,10 @@ void main() {
           recorded.contents.single.refresh();
         }
       });
-      final older = tester
-          .widget<ChatAnimatedListReversed>(
-            find.byType(ChatAnimatedListReversed),
-          )
-          .onEndReached!();
+      await tester.tap(
+        find.byKey(const ValueKey('timeline-children-load-older')),
+      );
+      await tester.pump();
       expect(display.loadingOlder, isTrue);
       final ioBefore = (transport.feeds.length, loads);
       for (var i = 0; i < 5; i++) {
@@ -130,7 +202,11 @@ void main() {
           messages: [chatMessage(id: 'older')],
         ),
       );
-      await pumpClientFuture(tester, older, 'diagnostic page applied');
+      await pumpClientUntil(
+        tester,
+        () => !display.loadingOlder,
+        'diagnostic page applied',
+      );
       await tester.pump();
       expect(display.messages.map((m) => m.id), ['older', 'item', 'append']);
       expect(display.messages.toList(), controller.messages);
@@ -369,16 +445,15 @@ void main() {
         );
         await tester.pump();
         expect(find.text('old body'), findsOneWidget);
-        final oldOlder = tester
-            .widget<ChatAnimatedListReversed>(
-              find.byType(ChatAnimatedListReversed),
-            )
-            .onEndReached!();
+        await tester.tap(
+          find.byKey(const ValueKey('timeline-children-load-older')),
+        );
+        await tester.pump();
         if (failBeforeReplacement) {
           oldPage.completeError(StateError('old page failure'));
-          await pumpClientFuture(
+          await pumpClientUntil(
             tester,
-            oldOlder,
+            () => find.textContaining('old page failure').evaluate().isNotEmpty,
             'old page error before refresh',
           );
           await tester.pump();
@@ -424,12 +499,11 @@ void main() {
           reason: 'A recovered Set clears obsolete errors',
         );
         expect(find.textContaining('old page failure'), findsNothing);
-        final loadNew = tester
-            .widget<ChatAnimatedListReversed>(
-              find.byType(ChatAnimatedListReversed),
-            )
-            .onEndReached!;
-        final newOlder = loadNew();
+        final newLoad = find.byKey(
+          const ValueKey('timeline-children-load-older'),
+        );
+        await tester.tap(newLoad);
+        await tester.pump();
         expect(newLoads, 1);
         await tester.tap(find.text('按需查看原文 · 100000 字节'));
         await pumpClientUntil(
@@ -441,17 +515,24 @@ void main() {
         expect(find.text('new body'), findsOneWidget);
         expect(oldReads, 1);
         if (!failBeforeReplacement) {
+          var oldSettled = false;
+          unawaited(
+            oldPage.future.then<void>(
+              (_) => oldSettled = true,
+              onError: (Object _) => oldSettled = true,
+            ),
+          );
           oldPage.completeError(StateError('late old page failure'));
-          await pumpClientFuture(
+          await pumpClientUntil(
             tester,
-            oldOlder,
+            () => oldSettled,
             'late original page failure',
           );
           await tester.pump();
           expect(find.textContaining('late old page failure'), findsNothing);
           expect(
-            identical(loadNew(), newOlder),
-            isTrue,
+            tester.widget<TextButton>(newLoad).onPressed,
+            isNull,
             reason: 'Old finally cannot clear the new single-flight',
           );
           expect(newLoads, 1);
@@ -464,8 +545,15 @@ void main() {
             ],
           ),
         );
-        await pumpClientFuture(tester, newOlder, 'replacement page acceptance');
-        await tester.pump();
+        await pumpClientUntil(
+          tester,
+          () => tester
+              .widget<Chat>(find.byType(Chat))
+              .chatController
+              .messages
+              .any((message) => message.id == 'replacement-older'),
+          'replacement page acceptance',
+        );
         expect(
           tester
               .widget<Chat>(find.byType(Chat))
@@ -487,6 +575,16 @@ void main() {
       },
     );
   }
+}
+
+Message _controllerMessage(ChatMessage item) {
+  final value = ChatItemPresentation.decode(item);
+  return Message.custom(
+    id: item.id,
+    authorId: value.authorId,
+    createdAt: value.createdAt,
+    metadata: {chatItemPresentationKey: value},
+  );
 }
 
 ChatMessage _deferred() => const ChatMessage(

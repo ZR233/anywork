@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -152,7 +153,7 @@ void main() {
           expect(tester.getSize(find.byKey(frame)).height, height);
           if (!responding) {
             expect(
-              find.byIcon(Icons.keyboard_arrow_up_rounded),
+              find.byIcon(Icons.keyboard_arrow_down_rounded),
               findsOneWidget,
             );
           }
@@ -251,8 +252,9 @@ void main() {
       await tester.pump();
 
       expect(find.textContaining('已收敛出最终架构设计方案'), findsOneWidget);
+      expect(find.text('思考中'), findsOneWidget);
       expect(find.textContaining('第一段早期推理内容'), findsNothing);
-      expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
       final header = find.byKey(const ValueKey('conversation-activity'));
       void expectDisclosure({required bool expanded}) {
         expect(
@@ -278,8 +280,10 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('第一段早期推理内容'), findsOneWidget);
+      expect(find.text('思考中'), findsOneWidget);
+      expect(find.textContaining('已收敛出最终架构设计方案'), findsNothing);
       expect(find.text('当前思考'), findsOneWidget);
-      expect(find.byIcon(Icons.keyboard_arrow_up_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
       expectDisclosure(expanded: true);
 
       await tester.tap(header);
@@ -317,7 +321,7 @@ void main() {
         findsNothing,
       );
       expect(find.text('第二轮正文'), findsNothing);
-      expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
     });
 
     testWidgets('工具正文复用生产 TimelineToolDetails 和官方 ExpansionTile', (
@@ -365,9 +369,26 @@ void main() {
       expect(find.byType(TimelineToolDetails), findsNWidgets(2));
       expect(find.byType(ExpansionTile), findsNWidgets(2));
 
-      await tester.tap(
-        find.byKey(const ValueKey('timeline-tool-details:tool-exec')),
+      final toolDisclosure = find.descendant(
+        of: find.byKey(const ValueKey('timeline-tool-details:tool-exec')),
+        matching: find.byType(ExpansionTile),
       );
+      expect(toolDisclosure, findsOneWidget);
+      final toolTitle = find
+          .descendant(of: toolDisclosure, matching: find.byType(InkWell))
+          .first;
+      final detailsScroll = find.descendant(
+        of: find.byKey(const ValueKey('conversation-activity-details')),
+        matching: find.byType(Scrollable),
+      );
+      expect(detailsScroll, findsOneWidget);
+      await tester.scrollUntilVisible(
+        toolTitle,
+        -40,
+        scrollable: detailsScroll,
+      );
+      expect(toolTitle.hitTestable(), findsOneWidget);
+      await tester.tap(toolTitle);
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.textContaining('rg --files'), findsWidgets);
       expect(find.textContaining('tool output'), findsOneWidget);
@@ -438,13 +459,13 @@ void main() {
       await tester.pump();
 
       expect(
-        find.byKey(const ValueKey('conversation-activity-leading-spin')),
+        find.descendant(
+          of: find.byType(TimelineActivityIndicator),
+          matching: find.byType(RotationTransition),
+        ),
         findsNothing,
       );
-      expect(
-        find.byKey(const ValueKey('conversation-activity-leading')),
-        findsOneWidget,
-      );
+      expect(find.byType(TimelineActivityIndicator), findsOneWidget);
     });
 
     testWidgets('等待 current 使用 typed TimelineWaitDetails 并由 bar 展开', (
@@ -520,6 +541,21 @@ void main() {
       );
       await tester.pump();
       expect(find.text('17s'), findsOneWidget);
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            view: _view(
+              identity: 'unknown-elapsed',
+              kind: ConversationActivityKind.thinking,
+            ),
+          ),
+        ),
+      );
+      expect(find.text('0s'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-trailing-meta')),
+        findsNothing,
+      );
     });
 
     testWidgets('窄窗与 160% 字体缩放不裁切标题或回复正文', (tester) async {
@@ -608,6 +644,13 @@ void main() {
         ),
       );
       await tester.pump();
+      final collectionTile = tester.widget<ExpansionTile>(
+        find.byType(ExpansionTile),
+      );
+      expect(collectionTile.showTrailingIcon, isFalse);
+      final title = tester.getRect(find.text('当前工具'));
+      final arrow = tester.getRect(find.byIcon(Icons.chevron_right_rounded));
+      expect(arrow.left - title.right, inInclusiveRange(0, 8));
       await tester.tap(find.text('当前工具'));
       await tester.pumpAndSettle();
 
@@ -618,6 +661,14 @@ void main() {
       await tester.tap(find.text('下一页'));
       expect(reloads, 1);
       expect(nextPages, 1);
+      await tester.tap(find.text('exec · cargo flutter analyze'));
+      await tester.pumpAndSettle();
+      expect(find.text('合成参数原文'), findsOneWidget);
+      for (final tile in tester.widgetList<ExpansionTile>(
+        find.byType(ExpansionTile),
+      )) {
+        expect(tile.showTrailingIcon, isFalse);
+      }
     });
   });
 }

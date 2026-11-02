@@ -5,12 +5,11 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import 'timeline_activity_row.dart';
-import 'timeline_wait_indicator.dart';
 
 /// 历史活动组内的等候成员：与其它成员同一轻量活动行，来源/规则/诊断在展开区。
 ///
-/// 实时活动条继续只复用 [TimelineWaitDetails]，自己拥有专用头部样式。
-class TimelineWaitPanel extends StatefulWidget {
+/// 实时与历史共享活动行和运行指示，实时正文复用 [TimelineWaitDetails]。
+class TimelineWaitPanel extends StatelessWidget {
   const TimelineWaitPanel({
     required this.presentation,
     required this.identity,
@@ -27,22 +26,7 @@ class TimelineWaitPanel extends StatefulWidget {
   final ValueChanged<bool>? onExpansionChanged;
 
   @override
-  State<TimelineWaitPanel> createState() => _TimelineWaitPanelState();
-}
-
-class _TimelineWaitPanelState extends State<TimelineWaitPanel> {
-  late bool _expanded;
-
-  @override
-  void initState() {
-    super.initState();
-    _expanded = widget.initiallyExpanded;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final presentation = widget.presentation;
-    final identity = widget.identity;
     final title = _waitTitle(context, presentation);
     final rowLabel = _waitRowLabel(context, presentation);
     final subtitle = timelineWaitSubtitle(context, presentation);
@@ -55,46 +39,25 @@ class _TimelineWaitPanelState extends State<TimelineWaitPanel> {
         child: TimelineActivityTileTheme(
           child: Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
+            child: TimelineActivityDisclosure(
               key: ValueKey('wait-expand:$identity'),
-              maintainState: true,
-              initiallyExpanded: _expanded,
-              onExpansionChanged: (expanded) {
-                setState(() => _expanded = expanded);
-                widget.onExpansionChanged?.call(expanded);
-              },
-              dense: true,
-              minTileHeight: 28,
-              showTrailingIcon: false,
-              tilePadding: EdgeInsets.zero,
-              childrenPadding: const EdgeInsets.only(
-                left: TimelineActivityRow.contentIndent,
-                bottom: 8,
-              ),
-              shape: const Border(),
-              collapsedShape: const Border(),
-              title: TimelineActivityRow(
+              initiallyExpanded: initiallyExpanded,
+              onExpansionChanged: onExpansionChanged,
+              titleBuilder: (context, expanded) => TimelineActivityRow(
                 icon: _waitStateIcon(presentation.state),
-                leading: waiting
-                    ? const TimelineWaitIndicator(
-                        key: ValueKey('timeline-wait-pulse'),
-                        dotSize: 4,
-                        gap: 2,
-                      )
-                    : null,
                 iconColor: waiting
                     ? null
                     : _waitStateColor(context, presentation.state),
                 label: rowLabel,
                 active: waiting,
-                expanded: _expanded,
+                expanded: expanded,
                 tooltip: subtitle,
               ),
               children: [
                 TimelineWaitDetails(
                   presentation: presentation,
                   identity: identity,
-                  diagnostics: widget.diagnostics,
+                  diagnostics: diagnostics,
                 ),
               ],
             ),
@@ -206,16 +169,12 @@ class _WaitDiagnostics extends StatelessWidget {
     final text = _waitDiagnosticsText(presentation);
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
+      child: TimelineActivityDisclosure(
         key: StudioDriverKeys.waitingDiagnostics(identity),
-        dense: true,
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsets.only(bottom: 4),
-        title: Text(
-          context.l10n.timelineWaitDiagnostics,
-          style: context.text.labelSmall?.copyWith(
-            color: context.colors.onSurfaceVariant,
-          ),
+        titleBuilder: (context, expanded) => TimelineActivityRow(
+          icon: Icons.info_outline,
+          label: context.l10n.timelineWaitDiagnostics,
+          expanded: expanded,
         ),
         children: [
           Align(
