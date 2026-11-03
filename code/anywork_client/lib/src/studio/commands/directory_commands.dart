@@ -302,12 +302,73 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         return _api.searchSkills(workspaceId, query, limit: limit);
       });
 
-  Future<void> refreshMcpState() => _applyMcp(_api.readMcpState);
+  Future<McpCatalogSnapshot> readMcpCatalog([
+    McpScope scope = const McpScope.host(),
+  ]) => _applyMcpCatalog(scope, () => _api.readMcpCatalog(scope));
 
-  Future<void> resetMcpServer(String serverId) =>
-      _applyMcp(() => _api.resetMcpServer(serverId));
+  Future<McpCatalogSnapshot> reloadMcpCatalog([
+    McpScope scope = const McpScope.host(),
+  ]) => _applyMcpCatalog(scope, () => _api.reloadMcpCatalog(scope));
 
-  Future<void> resetAllMcp() => _applyMcp(_api.resetAllMcp);
+  Future<McpDocumentContent> readMcpDocument(McpDocumentRef document) =>
+      _lane.run(() => _api.readMcpDocument(document));
+
+  Future<McpDocumentCommitReceipt> createMcpDocument({
+    required McpScope scope,
+    required String id,
+    required String rawToml,
+  }) => _lane.run(() async {
+    final receipt = await _api.createMcpDocument(
+      scope: scope,
+      id: id,
+      rawToml: rawToml,
+    );
+    if (!_client.isClosed) {
+      _client.mcpCatalog(receipt.snapshot.scope).apply(receipt.snapshot);
+    }
+    return receipt;
+  });
+
+  Future<McpDocumentCommitReceipt> updateMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+    required String rawToml,
+  }) => _lane.run(() async {
+    final receipt = await _api.updateMcpDocument(
+      document: document,
+      expectedRevision: expectedRevision,
+      rawToml: rawToml,
+    );
+    if (!_client.isClosed) {
+      _client.mcpCatalog(receipt.snapshot.scope).apply(receipt.snapshot);
+    }
+    return receipt;
+  });
+
+  Future<McpDocumentCommitReceipt> deleteMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+  }) => _lane.run(() async {
+    final receipt = await _api.deleteMcpDocument(
+      document: document,
+      expectedRevision: expectedRevision,
+    );
+    if (!_client.isClosed) {
+      _client.mcpCatalog(receipt.snapshot.scope).apply(receipt.snapshot);
+    }
+    return receipt;
+  });
+
+  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) =>
+      _applyThreadMcp(threadId, () => _api.readThreadMcp(threadId));
+
+  Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
+    required String threadId,
+    String? serverId,
+  }) => _applyThreadMcp(
+    threadId,
+    () => _api.reconnectThreadMcp(threadId: threadId, serverId: serverId),
+  );
 
   Future<void> refreshLspState() => _applyLsp(_api.readLspState);
 
@@ -376,12 +437,27 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     return _api.resumeThreadHistory(threadId, faultGeneration);
   });
 
-  Future<void> _applyMcp(Future<McpStateSnapshot> Function() command) =>
-      _lane.run(() async {
-        final snapshot = await command();
-        if (_client.isClosed) return;
-        _client.mcp.apply(snapshot);
-      });
+  Future<McpCatalogSnapshot> _applyMcpCatalog(
+    McpScope scope,
+    Future<McpCatalogSnapshot> Function() command,
+  ) => _lane.run(() async {
+    final snapshot = await command();
+    if (!_client.isClosed) {
+      _client.mcpCatalog(scope).apply(snapshot);
+    }
+    return snapshot;
+  });
+
+  Future<ThreadMcpStateSnapshot> _applyThreadMcp(
+    String threadId,
+    Future<ThreadMcpStateSnapshot> Function() command,
+  ) => _lane.run(() async {
+    final snapshot = await command();
+    if (!_client.isClosed) {
+      _client.threadMcp(threadId).apply(snapshot);
+    }
+    return snapshot;
+  });
 
   Future<void> _applyLsp(Future<LspStateSnapshot> Function() command) =>
       _lane.run(() async {

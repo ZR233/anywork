@@ -226,6 +226,8 @@ class AnyworkClient {
   final bots = BotsStore();
   final botsSends = BotsSendStore();
   final bootstrapState = LatestValue(const StudioBootstrapState());
+  final Map<McpScope, McpStore> _mcpCatalogs = {};
+  final Map<String, ThreadMcpStore> _threadMcp = {};
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
   final Map<String, ChildInteractionStore> _childInteractions = {};
@@ -264,11 +266,18 @@ class AnyworkClient {
       ),
   ]);
 
+  McpStore? existingMcpCatalog(McpScope scope) =>
+      scope is HostMcpScope ? mcp : _mcpCatalogs[scope];
+  ThreadMcpStore? existingThreadMcp(String threadId) => _threadMcp[threadId];
   SkillsStore? existingSkills(String workspaceId) => _skills[workspaceId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
   ChildInteractionStore? existingChildInteractions(String hostThreadId) =>
       _childInteractions[hostThreadId];
+  Iterable<McpStore> get ownedMcpCatalogs =>
+      List.unmodifiable(_mcpCatalogs.values);
+  Iterable<ThreadMcpStore> get ownedThreadMcp =>
+      List.unmodifiable(_threadMcp.values);
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
   Iterable<SessionCostsStore> get ownedSessionCosts =>
       List.unmodifiable(_sessionCosts.values);
@@ -276,6 +285,17 @@ class AnyworkClient {
       List.unmodifiable(_childInteractions.values);
   List<ProductTopic> get applicationTopics =>
       _applicationTopics?.topics ?? const [];
+
+  McpStore mcpCatalog(McpScope scope) => scope is HostMcpScope
+      ? mcp
+      : _mcpCatalogs.putIfAbsent(
+          scope,
+          () => _mirror('mcp:${scope.key}', () => McpStore(scope)),
+        );
+  ThreadMcpStore threadMcp(String threadId) => _threadMcp.putIfAbsent(
+    threadId,
+    () => _mirror('thread-mcp:$threadId', () => ThreadMcpStore(threadId)),
+  );
 
   SkillsStore skills(String workspaceId) => _skills.putIfAbsent(
     workspaceId,
@@ -501,7 +521,7 @@ class AnyworkClient {
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
-      const McpTopic(),
+      const McpCatalogTopic(),
       const LspTopic(),
       const PersistenceQueueTopic(),
       const BotsTopic(),
@@ -537,7 +557,7 @@ class AnyworkClient {
     final profiles = snapshot.agentProfilesState;
     if (profiles != null) settings.applyAgentProfiles(profiles);
     recovery.apply(snapshot.recoveryState);
-    mcp.apply(snapshot.mcpState);
+    mcp.apply(snapshot.mcpCatalog);
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
     updater.apply(snapshot.updaterState);

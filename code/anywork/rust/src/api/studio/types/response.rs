@@ -1,8 +1,9 @@
+use super::mcp::BridgeMcpCatalogSnapshot;
 use super::runtime::{
     BridgeAgentDirectoryEntryDto, BridgeDegradedResource, BridgeFailedResource,
-    BridgeLoadingResource, BridgeLspHealthDto, BridgeMcpHealthDto, BridgeReadyResource,
-    BridgeRefreshingResource, BridgeStaleResource, BridgeStoppedResource,
-    BridgeStudioRecoveryIssueDto, BridgeUninitializedResource, RuntimeSnapshot,
+    BridgeLoadingResource, BridgeLspHealthDto, BridgeReadyResource, BridgeRefreshingResource,
+    BridgeStaleResource, BridgeStoppedResource, BridgeStudioRecoveryIssueDto,
+    BridgeUninitializedResource, RuntimeSnapshot,
 };
 use super::settings::{BridgeModelCatalogAccountDto, BridgeStudioSettingsDto};
 use super::thread_stream::{BridgeRuntimeCostAmount, BridgeThread};
@@ -22,7 +23,7 @@ pub struct BridgeStudioStateSnapshot {
     pub settings_config: BridgeSettingsConfigStateSnapshot,
     pub model_catalog: BridgeModelCatalogStateSnapshot,
     pub recovery: BridgeRecoveryStateSnapshot,
-    pub mcp: BridgeMcpStateSnapshot,
+    pub host_mcp_catalog: BridgeMcpCatalogSnapshot,
     pub lsp: BridgeLspStateSnapshot,
     pub skills_by_project: Vec<BridgeSkillsStateSnapshot>,
     pub thread_mode_catalog: BridgeThreadModeCatalogSnapshot,
@@ -418,39 +419,6 @@ pub enum BridgeRecoveryStateSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeRecoveryStateData {
     pub issues: Vec<BridgeStudioRecoveryIssueDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeMcpStateSnapshot {
-    Uninitialized(BridgeUninitializedResource),
-    Loading(BridgeLoadingResource),
-    Ready {
-        resource: BridgeReadyResource,
-        value: BridgeMcpStateData,
-    },
-    Refreshing {
-        resource: BridgeRefreshingResource,
-        value: BridgeMcpStateData,
-    },
-    Stale {
-        resource: BridgeStaleResource,
-        value: BridgeMcpStateData,
-    },
-    Degraded {
-        resource: BridgeDegradedResource,
-        value: BridgeMcpStateData,
-    },
-    Failed(BridgeFailedResource),
-    Stopped(BridgeStoppedResource),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BridgeMcpStateData {
-    pub desired_config_fingerprint: String,
-    pub applied_config_fingerprint: String,
-    pub health: BridgeMcpHealthDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

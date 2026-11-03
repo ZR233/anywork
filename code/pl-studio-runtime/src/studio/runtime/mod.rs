@@ -5,7 +5,6 @@ use crate::config::ConfigRuntime;
 use crate::studio::records::ThreadRecord;
 use crate::studio::{ProductEventBus, StudioActiveTurn, StudioRuntimeState, StudioStore};
 use pl_protocol::studio::StudioPromptInput;
-use pl_tool::mcp::McpRuntimeHandle;
 
 pub use pl_protocol::studio::{ThreadPreparationProgress, ThreadPreparationStage};
 
@@ -35,7 +34,7 @@ mod directory_observation;
 mod history;
 mod lifecycle;
 mod lsp_state;
-mod mcp_health;
+mod mcp_api;
 mod mode_definitions;
 mod model_catalog;
 mod model_performance;
@@ -250,10 +249,6 @@ pub struct StudioRuntime {
 
 #[derive(Clone)]
 struct StudioExternalRuntimes {
-    mcp: McpRuntimeHandle,
-    mcp_state: mcp_health::McpStateRuntime,
-    mcp_config_watcher: background_task::BackgroundTaskSlot,
-    mcp_health_watcher: background_task::BackgroundTaskSlot,
     lsp: pl_lsp::runtime::LspRuntimeRegistry,
     lsp_state: lsp_state::LspStateRuntime,
     lsp_state_watcher: background_task::BackgroundTaskSlot,

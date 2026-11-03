@@ -26,7 +26,8 @@ use pl_model::model::{
 use pl_model::protocol::ProtocolEndpoint;
 use pl_protocol::ThreadModeId;
 use pl_studio_runtime::config::{
-    ConfigPaths, ConfigRuntime, ConfigStore, McpServerTransport, StudioConfig, StudioMcpServerEntry,
+    ConfigPaths, ConfigRuntime, ConfigStore, McpFileV1, McpServerTransport, StudioConfig,
+    StudioMcpServerEntry, canonical_mcp_filename,
 };
 use sea_orm::sqlx::{
     Connection as _, Row,
@@ -2653,7 +2654,10 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             models,
         );
     }
-    config.mcp.servers.clear();
+    let mcp_dir = home.join("mcp");
+    if mcp_dir.is_dir() {
+        fs::remove_dir_all(&mcp_dir)?;
+    }
     config.lsp.servers.clear();
     config.acp = Default::default();
     // Bots have their own canonical documents. Disable them before runtime startup, including
@@ -2737,9 +2741,13 @@ fn write_config_with_mcp_server(
     command: &Path,
     args: &[String],
 ) -> Result<()> {
-    let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
-    config.runtime.active_mcp_servers.push(server_id.to_owned());
-    config.mcp.servers.insert(
+    let config = fixture_config(ready, ModelTransportProfile::responses_http())?;
+    config.validate()?;
+    persist_config(home, &config)?;
+
+    let host_mcp_dir = home.join("mcp/host");
+    fs::create_dir_all(&host_mcp_dir)?;
+    let doc = McpFileV1::new_server(
         server_id.to_owned(),
         StudioMcpServerEntry {
             enabled: true,
@@ -2747,7 +2755,7 @@ fn write_config_with_mcp_server(
             command: Some(command.to_string_lossy().into_owned()),
             args: args.to_vec(),
             env: BTreeMap::new(),
-            cwd: None,
+            cwd: Some(home.to_string_lossy().into_owned()),
             url: None,
             bearer_token_env_var: None,
             headers: BTreeMap::new(),
@@ -2757,8 +2765,9 @@ fn write_config_with_mcp_server(
             disabled_tools: Vec::new(),
         },
     );
-    config.validate()?;
-    persist_config(home, &config)
+    let filename = canonical_mcp_filename(server_id)?;
+    fs::write(host_mcp_dir.join(filename), doc.encode()?)?;
+    Ok(())
 }
 
 /// One scenario-owned `[lsp.servers.<id>]` entry to declare in an isolated home.

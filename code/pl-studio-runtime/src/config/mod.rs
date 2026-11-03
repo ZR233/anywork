@@ -15,6 +15,8 @@ pub(crate) mod credential_commit;
 mod document_migration;
 mod execution;
 pub mod mcp;
+pub mod mcp_document;
+pub mod mcp_resource;
 pub use execution::RuntimeConfig;
 pub(crate) mod model_catalog;
 mod runtime;
@@ -24,10 +26,8 @@ mod store;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::config::mcp::BuiltinMcpServerState;
 use crate::{PureError, Result};
 use pl_protocol::{ThreadModeId, search::WebSearchConfig};
-use pl_tool::mcp::config::McpServerConfig;
 
 use pl_tool::skill::SkillsConfig;
 
@@ -43,8 +43,18 @@ pub(crate) use agent_profile::{
     validate_user_agent_profile_id,
 };
 pub use mcp::{
-    BuiltinMcpServerState as StudioBuiltinMcpServerState, builtin_mcp_server_ids,
-    is_builtin_mcp_server_id, zhipu_coding_plan_token,
+    BuiltinMcpServerState as StudioBuiltinMcpServerState, build_builtin_effective_config,
+    builtin_mcp_server_ids, is_builtin_mcp_server_id, zhipu_coding_plan_token,
+};
+pub use mcp_document::{
+    ALL_BUILTIN_IDS, MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1,
+    validate_server_config_strict,
+};
+pub use mcp_resource::{
+    McpCatalogResource, McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer,
+    ScopedMcpScan, canonical_document_ref, canonical_mcp_filename, document_revision,
+    ensure_default_host_builtins_if_fresh, resolve_document_path,
+    resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog, scope_dir,
 };
 pub use pl_tool::mcp::config::EffectiveMcpServerConfig;
 pub use pl_tool::mcp::config::McpServerConfig as StudioMcpServerEntry;
@@ -74,7 +84,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 30;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 31;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -88,15 +98,6 @@ pub(crate) fn root_agent_route_id() -> AgentRoleId {
 
 pub use pl_protocol::WebSearchContextSize;
 pub use pl_protocol::search::{WebSearchLocation, WebSearchMode};
-
-/// Studio 自有的 MCP 配置段。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StudioMcpConfig {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub servers: BTreeMap<String, McpServerConfig>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub builtin_servers: BTreeMap<String, BuiltinMcpServerState>,
-}
 
 /// Studio 自有的 LSP 自定义 server 配置段（`[lsp.servers.<id>]`）。
 ///
@@ -193,8 +194,6 @@ pub struct StudioConfig {
     pub instructions: InstructionsConfig,
     #[serde(default, skip_serializing_if = "SkillsConfig::is_default")]
     pub skills: SkillsConfig,
-    #[serde(default)]
-    pub mcp: StudioMcpConfig,
     #[serde(default, skip_serializing_if = "StudioLspConfig::is_default")]
     pub lsp: StudioLspConfig,
     #[serde(default, skip_serializing_if = "StudioUiConfig::is_default")]
@@ -232,7 +231,6 @@ impl StudioConfig {
             runtime: RuntimeConfig::default(),
             instructions: InstructionsConfig::default(),
             skills: SkillsConfig::default(),
-            mcp: StudioMcpConfig::default(),
             lsp: StudioLspConfig::default(),
             ui: StudioUiConfig::default(),
             acp: acp::AcpConfig::default(),
@@ -286,8 +284,6 @@ impl StudioConfig {
             self.models.route_availability(route)?;
         }
         pl_tool::skill::validate_skills_config(&self.skills)?;
-        crate::config::mcp::validate_mcp_servers(&self.mcp.servers)?;
-        crate::config::mcp::validate_builtin_mcp_server_states(&self.mcp.builtin_servers)?;
         validate_lsp_servers(&self.lsp.servers)?;
         acp::validate_acp_config(&self.acp)?;
         Ok(())
@@ -309,32 +305,6 @@ impl StudioConfig {
         self.models
             .resolve_route(root_agent_route_id(), self.mode_model_route(mode)?)
     }
-}
-
-/// 返回合并用户配置和 Studio 内置服务后的 MCP 运行时视图。
-pub fn effective_mcp_servers(config: &StudioConfig) -> BTreeMap<String, EffectiveMcpServerConfig> {
-    crate::config::mcp::effective_mcp_servers(
-        &config.mcp.servers,
-        &config.mcp.builtin_servers,
-        &config.models,
-    )
-}
-
-/// 返回当前可启动的 MCP server id。
-pub fn active_mcp_server_names(config: &StudioConfig) -> Vec<String> {
-    effective_mcp_servers(config)
-        .into_iter()
-        .filter(|(_, server)| server.status_kind == McpServerStatusKind::Enabled)
-        .map(|(server_id, _)| server_id)
-        .collect()
-}
-
-/// 移除内置 MCP 的冗余默认状态。
-pub fn normalize_builtin_mcp_server_states(config: &mut StudioConfig) {
-    crate::config::mcp::normalize_builtin_mcp_server_states(
-        &mut config.mcp.builtin_servers,
-        &config.models,
-    );
 }
 
 /// 校验自定义 LSP server 与内置 catalog 的合并结果；冲突 fail-loud。

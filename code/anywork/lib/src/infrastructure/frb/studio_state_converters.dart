@@ -97,7 +97,6 @@ SettingsStateSnapshot _settingsStateFromFrb(
     defaultAccountId: data.defaultAccountId,
     modeModelRoutes: data.modeModelRoutes,
     roles: data.roles,
-    mcpServers: data.mcpServers,
     instructions: data.instructions,
     skills: data.skills,
     general: data.general,
@@ -130,7 +129,6 @@ SettingsStateData _settingsDataFromFrb(
         .map(_modeModelRouteFromFrb)
         .toList(),
     roles: settings.roles.map(_roleSettingsFromFrb).toList(),
-    mcpServers: settings.mcpServers.map(_mcpSettingsFromFrb).toList(),
     instructions: _instructionsSettingsFromFrb(settings.instructions),
     skills: _skillsSettingsFromFrb(settings.skills),
     general: _generalSettingsFromFrb(settings.general),

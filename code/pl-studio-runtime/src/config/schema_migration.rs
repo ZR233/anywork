@@ -1012,7 +1012,6 @@ effort = "high"
             bases.baseline.mode_model_routes
         );
         assert_eq!(migrated_acp.skills, bases.baseline.skills);
-        assert_eq!(migrated_acp.mcp, bases.baseline.mcp);
         assert_eq!(migrated_acp.lsp, bases.baseline.lsp);
         assert_eq!(migrated_acp.ui, bases.baseline.ui);
 

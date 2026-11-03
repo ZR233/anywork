@@ -355,6 +355,9 @@ impl Client {
             .saturating_add(sending_wait);
         Ok(reply)
     }
+    pub fn stop_token(&self) -> CancellationToken {
+        self.stopped.clone()
+    }
     pub async fn output(
         &self,
         process_id: &str,
@@ -370,6 +373,27 @@ impl Client {
             .body(())
             .map_err(io::Error::other)?;
         self.exchange(request, Bytes::new()).await
+    }
+    pub async fn open_http_exchange(
+        &self,
+        exchange_id: &str,
+        epoch: u64,
+    ) -> io::Result<(SendStream<Bytes>, h2::client::ResponseFuture)> {
+        let mut sender = tokio::select! {
+            _ = self.stopped.cancelled() => return Err(disconnected()),
+            sender = self.sender.clone().ready() => sender.map_err(io::Error::other)?,
+        };
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://helper/http/{exchange_id}"))
+            .header("x-anywork-epoch", epoch.to_string())
+            .header("content-type", BINARY_CONTENT)
+            .body(())
+            .map_err(io::Error::other)?;
+        let (response, send_stream) = sender
+            .send_request(request, false)
+            .map_err(io::Error::other)?;
+        Ok((send_stream, response))
     }
 }
 

@@ -36,12 +36,6 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
   ),
   SkillsAutoLearnMinToolCallsCommand(:final value) =>
     frb.SettingsFieldInput.skillsAutoLearnMinToolCalls(value: value),
-  McpServerEnabledCommand(:final id, :final value) =>
-    frb.SettingsFieldInput.mcpServerEnabled(id: id, value: value),
-  McpServerTransportCommand(:final id, :final value) =>
-    frb.SettingsFieldInput.mcpServerTransport(id: id, transport: value),
-  McpServerEndpointCommand(:final id, :final value) =>
-    frb.SettingsFieldInput.mcpServerEndpoint(id: id, endpoint: value),
   GeneralFollowActiveTurnCommand(:final value) =>
     frb.SettingsFieldInput.generalFollowActiveTurn(value: value),
   GeneralCompactTimelineCommand(:final value) =>
@@ -266,30 +260,6 @@ SkillsSettingsView _skillsSettingsFromFrb(frb.BridgeSkillsSettingsDto value) {
     externalDirs: value.externalDirs,
     disabled: value.disabled,
     autoLearnMinToolCalls: value.autoLearnMinToolCalls,
-  );
-}
-
-McpServerSettingsView _mcpSettingsFromFrb(
-  frb.BridgeMcpServerSettingsDto value,
-) {
-  return McpServerSettingsView(
-    id: value.id,
-    transport: value.transport,
-    endpoint: value.endpoint,
-    state: switch (value.configuration) {
-      frb.BridgeMcpServerConfiguration.enabled => const McpCheckingState(
-        message: 'MCP health check is pending',
-      ),
-      frb.BridgeMcpServerConfiguration.disabled => const McpDisabledState(
-        message: 'MCP server is disabled in configuration',
-      ),
-      frb.BridgeMcpServerConfiguration.missingCredential =>
-        const McpMissingCredentialState(
-          message: 'MCP server credential is not configured',
-        ),
-    },
-    sourceKind: value.sourceKind,
-    mutationPolicy: value.mutationPolicy,
   );
 }
 

@@ -102,7 +102,6 @@ SettingsStateSnapshot projectSettingsSnapshot({
     defaultAccountId: configData.defaultAccountId,
     modeModelRoutes: configData.modeModelRoutes,
     roles: configData.roles,
-    mcpServers: configData.mcpServers,
     instructions: configData.instructions,
     skills: configData.skills,
     general: configData.general,

@@ -13,7 +13,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 class AccountInput {
   final String accountId;
@@ -599,48 +599,6 @@ class BridgeInstructionsSettingsDto {
           user == other.user &&
           projectDocMaxBytes == other.projectDocMaxBytes &&
           projectDocFallbackFilenames == other.projectDocFallbackFilenames;
-}
-
-enum BridgeMcpServerConfiguration { enabled, disabled, missingCredential }
-
-/// MCP 设置页的 canonical server 视图。
-class BridgeMcpServerSettingsDto {
-  final String id;
-  final String transport;
-  final String endpoint;
-  final BridgeMcpServerConfiguration configuration;
-  final String sourceKind;
-  final String mutationPolicy;
-
-  const BridgeMcpServerSettingsDto({
-    required this.id,
-    required this.transport,
-    required this.endpoint,
-    required this.configuration,
-    required this.sourceKind,
-    required this.mutationPolicy,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      transport.hashCode ^
-      endpoint.hashCode ^
-      configuration.hashCode ^
-      sourceKind.hashCode ^
-      mutationPolicy.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeMcpServerSettingsDto &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          transport == other.transport &&
-          endpoint == other.endpoint &&
-          configuration == other.configuration &&
-          sourceKind == other.sourceKind &&
-          mutationPolicy == other.mutationPolicy;
 }
 
 /// Thread Mode 到默认 account/model/effort 的 canonical 路由。
@@ -1345,7 +1303,6 @@ class BridgeStudioSettingsDto {
   final String permissionMode;
   final BridgeInstructionsSettingsDto instructions;
   final BridgeSkillsSettingsDto skills;
-  final List<BridgeMcpServerSettingsDto> mcpServers;
   final BridgeGeneralSettingsDto general;
   final BridgeDelegationSettings delegation;
   final BridgeWebSearchSettingsDto webSearch;
@@ -1360,7 +1317,6 @@ class BridgeStudioSettingsDto {
     required this.permissionMode,
     required this.instructions,
     required this.skills,
-    required this.mcpServers,
     required this.general,
     required this.delegation,
     required this.webSearch,
@@ -1377,7 +1333,6 @@ class BridgeStudioSettingsDto {
       permissionMode.hashCode ^
       instructions.hashCode ^
       skills.hashCode ^
-      mcpServers.hashCode ^
       general.hashCode ^
       delegation.hashCode ^
       webSearch.hashCode ^
@@ -1396,7 +1351,6 @@ class BridgeStudioSettingsDto {
           permissionMode == other.permissionMode &&
           instructions == other.instructions &&
           skills == other.skills &&
-          mcpServers == other.mcpServers &&
           general == other.general &&
           delegation == other.delegation &&
           webSearch == other.webSearch &&
@@ -1510,15 +1464,6 @@ sealed class LspScopeInput with _$LspScopeInput {
   const factory LspScopeInput.all() = LspScopeInput_All;
 }
 
-@freezed
-sealed class McpResetInput with _$McpResetInput {
-  const McpResetInput._();
-
-  const factory McpResetInput.server({required String serverId}) =
-      McpResetInput_Server;
-  const factory McpResetInput.all() = McpResetInput_All;
-}
-
 class RemoveAccountInput {
   final String? replacementAccountId;
 
@@ -1569,18 +1514,6 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   const factory SettingsFieldInput.skillsAutoLearnMinToolCalls({
     required int value,
   }) = SettingsFieldInput_SkillsAutoLearnMinToolCalls;
-  const factory SettingsFieldInput.mcpServerEnabled({
-    required String id,
-    required bool value,
-  }) = SettingsFieldInput_McpServerEnabled;
-  const factory SettingsFieldInput.mcpServerTransport({
-    required String id,
-    required String transport,
-  }) = SettingsFieldInput_McpServerTransport;
-  const factory SettingsFieldInput.mcpServerEndpoint({
-    required String id,
-    required String endpoint,
-  }) = SettingsFieldInput_McpServerEndpoint;
   const factory SettingsFieldInput.generalFollowActiveTurn({
     required bool value,
   }) = SettingsFieldInput_GeneralFollowActiveTurn;

@@ -42,7 +42,7 @@ List<ProductTopic> bridgeSettingsScopeTopics(
     case BridgeSettingsScopeKind.agents:
       return const [AgentProfilesTopic()];
     case BridgeSettingsScopeKind.mcp:
-      return const [McpTopic()];
+      return const [McpCatalogTopic()];
     case BridgeSettingsScopeKind.lsp:
       return const [LspTopic()];
     case BridgeSettingsScopeKind.skills:
@@ -557,7 +557,9 @@ String describeBridgeProductTopic(ProductTopic topic) {
     SettingsConfigTopic() => 'settingsConfig',
     ModelCatalogTopic() => 'modelCatalog',
     RecoveryTopic() => 'recovery',
-    McpTopic() => 'mcp',
+    McpCatalogTopic(:final scope) =>
+      scope is HostMcpScope ? 'mcpCatalog:host' : 'mcpCatalog:${scope.key}',
+    ThreadMcpTopic(:final threadId) => 'threadMcp:$threadId',
     LspTopic() => 'lsp',
     SkillsTopic(:final workspaceId) => 'skills:$workspaceId',
     ThreadModeCatalogTopic() => 'threadModeCatalog',

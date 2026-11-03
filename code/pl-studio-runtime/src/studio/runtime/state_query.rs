@@ -41,7 +41,7 @@ impl StudioRuntime {
         let recovery = crate::StudioRecoveryStateSnapshot {
             state: self.recovery.state(),
         };
-        let mcp = self.read_mcp_state().await?;
+        let host_mcp_catalog = self.read_mcp_catalog(&pl_protocol::McpScope::Host)?;
         let lsp = self.read_lsp_state().await;
         let mut skills_by_project = Vec::new();
         if let Some(directory) = project_directory.state.value() {
@@ -74,7 +74,7 @@ impl StudioRuntime {
                 ),
             },
             recovery,
-            mcp,
+            host_mcp_catalog,
             lsp,
             skills_by_project,
             thread_mode_catalog: self.read_thread_mode_catalog(),

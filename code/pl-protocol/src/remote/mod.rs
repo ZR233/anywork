@@ -1,10 +1,46 @@
 //! SSH remote helper 的 transport-neutral wire 类型。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 10;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 11;
+
+/// Monotonic lease TTL for long-lived remote child processes when the SSH
+/// control plane stops renewing.
+pub const REMOTE_PROCESS_LEASE_TTL: Duration = Duration::from_secs(30);
+
+/// Host-side renewal cadence for long-lived remote child processes.
+pub const REMOTE_PROCESS_LEASE_RENEWAL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Maximum encoded frame size for HTTP proxy request/response heads.
+pub const REMOTE_HTTP_HEAD_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteProcessLeaseId(pub String);
+
+impl RemoteProcessLeaseId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for RemoteProcessLeaseId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for RemoteProcessLeaseId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
 
 /// Allocation for one connection, derived by its host from current resources and demand.
 /// Values are bytes, not eagerly allocated buffers. Existing grants survive shrinkage.
@@ -125,6 +161,10 @@ pub enum RemoteRequest {
     },
     Terminate {
         process_id: String,
+    },
+    RenewProcessLease {
+        process_id: String,
+        lease_id: RemoteProcessLeaseId,
     },
     Shutdown,
 }
@@ -285,6 +325,46 @@ pub struct RemoteSpawnRequest {
     pub environment: BTreeMap<String, String>,
     pub capture: RemoteCapture,
     pub remaining_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub process_lease: Option<RemoteProcessLeaseId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHttpHeader {
+    pub name: String,
+    /// Raw header value bytes so non-ASCII and opaque header values survive
+    /// the helper bridge without lossy UTF-8 conversion.
+    pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHttpRequestHead {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<RemoteHttpHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_env_var: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHttpResponseHead {
+    pub status: u16,
+    pub headers: Vec<RemoteHttpHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    content = "payload",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RemoteHttpExchangeStart {
+    Head(RemoteHttpResponseHead),
+    Error(RemoteError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,6 +514,7 @@ impl RemoteRequest {
                 | Self::Configure { .. }
                 | Self::Hello { .. }
                 | Self::Attach { .. }
+                | Self::RenewProcessLease { .. }
                 | Self::Shutdown
         )
     }
@@ -452,6 +533,7 @@ impl RemoteRequest {
                 | Self::Heartbeat
                 | Self::Stat(_)
                 | Self::Terminate { .. }
+                | Self::RenewProcessLease { .. }
                 | Self::Shutdown
                 | Self::OutputConsumed { .. }
                 | Self::ReleaseProcess { .. }

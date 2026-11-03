@@ -6,7 +6,7 @@ use pl_studio_runtime::{
 
 use super::runtime::{
     bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_bots_state,
-    bridge_lsp_state, bridge_mcp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
+    bridge_lsp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
     bridge_persistence_state, bridge_project_directory, bridge_recovery_state,
     bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
     bridge_thread_mode_catalog, bridge_update_state,
@@ -53,8 +53,11 @@ pub(crate) fn bridge_product_event(
             StudioProductEventKind::RecoveryStateChanged(state) => {
                 BridgeProductEventPayload::RecoveryStateChanged(bridge_recovery_state(state.state))
             }
-            StudioProductEventKind::McpStateChanged(state) => {
-                BridgeProductEventPayload::McpStateChanged(bridge_mcp_state(state.state))
+            StudioProductEventKind::McpCatalogChanged(state) => {
+                BridgeProductEventPayload::McpCatalogChanged(state.into())
+            }
+            StudioProductEventKind::ThreadMcpStateChanged(state) => {
+                BridgeProductEventPayload::ThreadMcpStateChanged(state.into())
             }
             StudioProductEventKind::LspStateChanged(state) => {
                 BridgeProductEventPayload::LspStateChanged(bridge_lsp_state(state.state))
@@ -146,8 +149,11 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::Recovery(state) => {
             BridgeProductBaseline::Recovery(bridge_recovery_state(state.state))
         }
-        StudioProductBaselineState::Mcp(state) => {
-            BridgeProductBaseline::Mcp(bridge_mcp_state(state.state))
+        StudioProductBaselineState::McpCatalog(state) => {
+            BridgeProductBaseline::McpCatalog((*state).into())
+        }
+        StudioProductBaselineState::ThreadMcp(state) => {
+            BridgeProductBaseline::ThreadMcp((*state).into())
         }
         StudioProductBaselineState::Lsp(state) => {
             BridgeProductBaseline::Lsp(bridge_lsp_state(state.state))

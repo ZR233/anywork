@@ -132,24 +132,6 @@ class SkillsAutoLearnMinToolCallsCommand extends SettingsFieldCommand {
   final int value;
 }
 
-class McpServerEnabledCommand extends SettingsFieldCommand {
-  const McpServerEnabledCommand({required this.id, required this.value});
-  final String id;
-  final bool value;
-}
-
-class McpServerTransportCommand extends SettingsFieldCommand {
-  const McpServerTransportCommand({required this.id, required this.value});
-  final String id;
-  final String value;
-}
-
-class McpServerEndpointCommand extends SettingsFieldCommand {
-  const McpServerEndpointCommand({required this.id, required this.value});
-  final String id;
-  final String value;
-}
-
 class GeneralFollowActiveTurnCommand extends SettingsFieldCommand {
   const GeneralFollowActiveTurnCommand(this.value);
   final bool value;

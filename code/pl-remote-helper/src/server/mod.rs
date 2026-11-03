@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod directories;
+mod http;
 mod process;
 mod regular_file;
 mod session;
@@ -82,6 +83,7 @@ async fn handle_request(
         | RemoteRequest::Attach { .. }
         | RemoteRequest::Configure { .. }
         | RemoteRequest::Heartbeat
+        | RemoteRequest::RenewProcessLease { .. }
         | RemoteRequest::OutputConsumed { .. }
         | RemoteRequest::ReleaseProcess { .. }
         | RemoteRequest::WaitProcess { .. }

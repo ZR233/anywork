@@ -37,6 +37,17 @@ async fn product_resync_preserves_topic_and_encoded_scope() {
         StudioProductTopic::ChildInteractions {
             host_thread_id: identity.into(),
         },
+        StudioProductTopic::McpCatalog {
+            scope: pl_protocol::McpScope::Host,
+        },
+        StudioProductTopic::McpCatalog {
+            scope: pl_protocol::McpScope::Ssh {
+                ssh_alias: identity.into(),
+            },
+        },
+        StudioProductTopic::ThreadMcp {
+            thread_id: identity.into(),
+        },
     ] {
         let resync = topic_resync_path(&topic);
         let uri: axum::http::Uri = resync.parse().unwrap();

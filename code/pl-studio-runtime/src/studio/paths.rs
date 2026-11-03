@@ -169,6 +169,24 @@ impl StudioPaths {
         crate::config::ConfigPaths::from_config_dir(self.home.clone())
     }
 
+    /// Root directory for per-environment single-file MCP configurations (`<StudioHome>/mcp`).
+    pub fn mcp_dir(&self) -> PathBuf {
+        self.home.join("mcp")
+    }
+
+    /// Host-scoped MCP single-file directory (`<StudioHome>/mcp/host`).
+    pub fn mcp_host_dir(&self) -> PathBuf {
+        self.mcp_dir().join("host")
+    }
+
+    /// SSH-scoped MCP single-file directory (`<StudioHome>/mcp/ssh/<sha256(alias)>`).
+    pub fn mcp_ssh_dir(&self, alias: &str) -> Result<PathBuf> {
+        Ok(self
+            .mcp_dir()
+            .join("ssh")
+            .join(storage_key(alias, "SSH server")?))
+    }
+
     /// Independent robot management root under the current data home.
     pub fn bots_dir(&self) -> PathBuf {
         self.data_dir.join(BOTS_DIR_NAME)

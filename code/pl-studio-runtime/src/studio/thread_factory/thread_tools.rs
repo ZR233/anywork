@@ -121,9 +121,16 @@ impl StudioThreadFactory {
             },
         };
         let id = assembly.thread_id.to_owned();
-        let mut tools = self
-            .prepare_thread_tools_with(assembly, CatalogPreparation::Initial)
-            .await?;
+        let mut tools = match self
+            .prepare_thread_tools_with(assembly, &binding.lifetime, CatalogPreparation::Initial)
+            .await
+        {
+            Ok(tools) => tools,
+            Err(error) => {
+                let _ = self.shutdown_thread_mcp(&id).await;
+                return Err(error);
+            }
+        };
         let binding = super::tool_bindings::ToolBinding {
             remote: tools.remote.clone(),
             catalog: tools.catalog.clone(),
@@ -158,6 +165,7 @@ impl StudioThreadFactory {
     pub(super) async fn prepare_thread_tools_with(
         &self,
         assembly: ThreadToolAssembly<'_>,
+        lifetime: &Arc<super::tool_bindings::ThreadToolLifetime>,
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
@@ -372,11 +380,16 @@ impl StudioThreadFactory {
         }
         if config.runtime.tool_capabilities.mcp {
             tools = tools.with_mcp(
-                self.services
-                    .mcp_runtime
-                    .acquire_turn_lease()
-                    .await
-                    .map_err(|error| resource_error("acquire child MCP services", error))?,
+                self.prepare_thread_mcp(
+                    thread_id,
+                    lifetime,
+                    project,
+                    &workspace,
+                    remote.as_ref(),
+                    &preparation,
+                    cancellation,
+                )
+                .await?,
             )?;
         }
         let mut skill_catalog = None;

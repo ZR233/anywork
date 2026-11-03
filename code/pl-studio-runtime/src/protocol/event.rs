@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
-    StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
-    StudioUpdateStateSnapshot, WorkspaceRecord,
+    StudioAgentDirectoryEntry, StudioLspHealth, StudioRecoveryIssue, StudioUpdateStateSnapshot,
+    WorkspaceRecord,
 };
 
 /// Studio 产品级事件信封。
@@ -31,7 +31,8 @@ pub enum StudioProductEventKind {
     SettingsConfigStateChanged(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<StudioModelCatalogStateSnapshot>),
     RecoveryStateChanged(StudioRecoveryStateSnapshot),
-    McpStateChanged(StudioMcpStateSnapshot),
+    McpCatalogChanged(pl_protocol::McpCatalogSnapshot),
+    ThreadMcpStateChanged(pl_protocol::ThreadMcpStateSnapshot),
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),
@@ -215,20 +216,6 @@ pub struct StudioRecoveryStateSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioMcpStateSnapshot {
-    pub state: ObservedResource<StudioMcpStateData>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioMcpStateData {
-    pub desired_config_fingerprint: String,
-    pub applied_config_fingerprint: String,
-    pub health: StudioMcpHealth,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct StudioLspStateSnapshot {
     pub state: ObservedResource<StudioLspHealth>,
 }
@@ -274,7 +261,7 @@ pub struct StudioStateSnapshot {
     pub settings_config: StudioSettingsConfigStateSnapshot,
     pub model_catalog: StudioModelCatalogStateSnapshot,
     pub recovery: StudioRecoveryStateSnapshot,
-    pub mcp: StudioMcpStateSnapshot,
+    pub host_mcp_catalog: pl_protocol::McpCatalogSnapshot,
     pub lsp: StudioLspStateSnapshot,
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,
     pub thread_mode_catalog: ThreadModeCatalogSnapshot,

@@ -849,6 +849,30 @@ pub struct RuntimeConfig {
     pub openai_compaction_mode: OpenAiCompactionMode,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigCurrent {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub permission_mode: PermissionMode,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub tool_capabilities: ToolCapabilityConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub openai_compaction_mode: OpenAiCompactionMode,
+}
+
+impl From<RuntimeConfig> for RuntimeConfigCurrent {
+    fn from(value: RuntimeConfig) -> Self {
+        Self {
+            permission_mode: value.permission_mode,
+            tool_capabilities: value.tool_capabilities,
+            active_skills: value.active_skills,
+            openai_compaction_mode: value.openai_compaction_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InstructionsConfig {
@@ -1132,6 +1156,35 @@ pub enum McpServerTransport {
     #[default]
     Stdio,
     StreamableHttp,
+}
+
+impl From<McpServerTransport> for pl_tool::mcp::config::McpServerTransport {
+    fn from(value: McpServerTransport) -> Self {
+        match value {
+            McpServerTransport::Stdio => Self::Stdio,
+            McpServerTransport::StreamableHttp => Self::StreamableHttp,
+        }
+    }
+}
+
+impl From<McpServerConfig> for pl_tool::mcp::config::McpServerConfig {
+    fn from(value: McpServerConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            transport: value.transport.into(),
+            command: value.command,
+            args: value.args,
+            env: value.env,
+            cwd: value.cwd,
+            url: value.url,
+            bearer_token_env_var: value.bearer_token_env_var,
+            headers: value.headers,
+            startup_timeout_secs: value.startup_timeout_secs,
+            tool_timeout_secs: value.tool_timeout_secs,
+            enabled_tools: value.enabled_tools,
+            disabled_tools: value.disabled_tools,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

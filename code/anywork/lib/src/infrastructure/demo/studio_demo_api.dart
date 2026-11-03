@@ -1138,7 +1138,20 @@ class DemoStudioTransport extends StudioTransport
   int _acpInstallRevision = 0;
   final Map<AcpProviderView, AcpInstallStateView> _acpInstalls = {};
   final Map<AcpProviderView, Timer> _acpInstallTimers = {};
-  int _mcpRevision = 0;
+  final Map<McpScope, int> _mcpCatalogRevisions = {};
+  final Map<McpDocumentRef, ({String id, int revision, String rawToml})>
+  _mcpDocuments = {
+    const McpDocumentRef(
+      scope: HostMcpScope(),
+      relativePath: 'mcp/dart.toml',
+    ): (
+      id: 'dart',
+      revision: 1,
+      rawToml:
+          'id = "dart"\nkind = "builtin"\nbuiltin = "dart"\nenabled = true\n',
+    ),
+  };
+  final Map<String, int> _threadMcpGenerations = {};
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
   int _projectDirectoryRevision = 1;
@@ -1288,7 +1301,7 @@ class DemoStudioTransport extends StudioTransport
       agentDirectory: _demoAgentDirectory(),
       settingsState: _demoSettingsState(),
       recoveryState: _demoRecoveryState(),
-      mcpState: _demoMcpState(),
+      mcpCatalog: _demoMcpCatalog(const HostMcpScope()),
       lspState: _demoLspState(),
       skillsByProject: {
         for (final project in projects.values)
@@ -3050,10 +3063,6 @@ class DemoStudioTransport extends StudioTransport
       for (final role in s.roles)
         role.key: [role.accountId, role.modelId, role.effort],
     },
-    {
-      for (final server in s.mcpServers)
-        server.id: [server.transport, server.endpoint],
-    },
     [
       s.instructions.baseOverride,
       s.instructions.developer,
@@ -3470,13 +3479,6 @@ class DemoStudioTransport extends StudioTransport
         _skills = _skills.copyWith(disabled: value);
       case SkillsAutoLearnMinToolCallsCommand(:final value):
         _skills = _skills.copyWith(autoLearnMinToolCalls: value);
-      case McpServerEnabledCommand():
-      case McpServerTransportCommand():
-      case McpServerEndpointCommand():
-        // The demo fixture has no configurable MCP entries. Keep the command
-        // observable through the same revision/resource boundary as Bridge.
-        _mcpRevision += 1;
-        _publishProductPayload(McpStateChangedPayload(_demoMcpState()));
       case GeneralFollowActiveTurnCommand(:final value):
         _general = _general.copyWith(followActiveTurn: value);
       case GeneralCompactTimelineCommand(:final value):
@@ -4288,7 +4290,12 @@ class DemoStudioTransport extends StudioTransport
       SettingsConfigTopic() => SettingsConfigBaseline(_demoSettingsState()),
       ModelCatalogTopic() => ModelCatalogBaseline(_demoSettingsState()),
       RecoveryTopic() => RecoveryBaseline(_demoRecoveryState()),
-      McpTopic() => McpBaseline(_demoMcpState()),
+      McpCatalogTopic(:final scope) => McpCatalogBaseline(
+        _demoMcpCatalog(scope),
+      ),
+      ThreadMcpTopic(:final threadId) => ThreadMcpBaseline(
+        _demoThreadMcp(threadId),
+      ),
       LspTopic() => LspBaseline(_demoLspState()),
       SkillsTopic(:final workspaceId) => SkillsBaseline(
         _demoSkillsState(workspaceId, _skillsRevision),
@@ -4322,7 +4329,8 @@ class DemoStudioTransport extends StudioTransport
       SettingsConfigBaseline(:final state) => state.revision,
       ModelCatalogBaseline(:final state) => state.modelCatalogRevision,
       RecoveryBaseline(:final state) => state.revision,
-      McpBaseline(:final state) => state.revision,
+      McpCatalogBaseline(:final state) => state.revision,
+      ThreadMcpBaseline(:final state) => state.generation,
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
@@ -5842,18 +5850,147 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<McpStateSnapshot> readMcpState() async => _demoMcpState();
+  Future<McpCatalogSnapshot> readMcpCatalog(McpScope scope) async =>
+      _demoMcpCatalog(scope);
 
   @override
-  Future<McpStateSnapshot> resetMcpServer(String serverId) async {
-    _mcpRevision += 1;
-    return _mcpWriteResult();
+  Future<McpCatalogSnapshot> reloadMcpCatalog(McpScope scope) async {
+    _bumpDemoMcpCatalogRevision(scope);
+    final snapshot = _demoMcpCatalog(scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return snapshot;
   }
 
   @override
-  Future<McpStateSnapshot> resetAllMcp() async {
-    _mcpRevision += 1;
-    return _mcpWriteResult();
+  Future<McpDocumentContent> readMcpDocument(McpDocumentRef document) async {
+    final stored = _mcpDocuments[document];
+    if (stored == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    return McpDocumentContent(
+      document: document,
+      id: stored.id,
+      revision: stored.revision,
+      rawToml: stored.rawToml,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> createMcpDocument({
+    required McpScope scope,
+    required String id,
+    required String rawToml,
+  }) async {
+    final trimmed = id.trim();
+    final document = McpDocumentRef(
+      scope: scope,
+      relativePath: switch (scope) {
+        HostMcpScope() => 'mcp/$trimmed.toml',
+        SshMcpScope(:final sshAlias) => 'ssh/$sshAlias/mcp/$trimmed.toml',
+      },
+    );
+    _mcpDocuments[document] = (id: trimmed, revision: 1, rawToml: rawToml);
+    _bumpDemoMcpCatalogRevision(scope);
+    final snapshot = _demoMcpCatalog(scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: document,
+      revision: 1,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> updateMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+    required String rawToml,
+  }) async {
+    final existing = _mcpDocuments[document];
+    if (existing == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    if (existing.revision != expectedRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'MCP document revision conflict',
+        retryable: true,
+        correlationId: 'demo-mcp-document-stale-revision',
+      );
+    }
+    final nextRevision = existing.revision + 1;
+    _mcpDocuments[document] = (
+      id: existing.id,
+      revision: nextRevision,
+      rawToml: rawToml,
+    );
+    _bumpDemoMcpCatalogRevision(document.scope);
+    final snapshot = _demoMcpCatalog(document.scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: document,
+      revision: nextRevision,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> deleteMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+  }) async {
+    final existing = _mcpDocuments[document];
+    if (existing == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    if (existing.revision != expectedRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'MCP document revision conflict',
+        retryable: true,
+        correlationId: 'demo-mcp-document-stale-revision',
+      );
+    }
+    _mcpDocuments.remove(document);
+    _bumpDemoMcpCatalogRevision(document.scope);
+    final snapshot = _demoMcpCatalog(document.scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: null,
+      revision: snapshot.revision,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) async =>
+      _demoThreadMcp(threadId);
+
+  @override
+  Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
+    required String threadId,
+    String? serverId,
+  }) async {
+    _threadMcpGenerations[threadId] =
+        (_threadMcpGenerations[threadId] ?? 1) + 1;
+    final snapshot = _demoThreadMcp(threadId);
+    _publishProductPayload(ThreadMcpStateChangedPayload(snapshot));
+    return snapshot;
   }
 
   @override
@@ -6302,10 +6439,82 @@ class DemoStudioTransport extends StudioTransport
     );
   }
 
-  McpStateSnapshot _mcpWriteResult() {
-    final state = _demoMcpState();
-    _publishProductPayload(McpStateChangedPayload(state));
-    return state;
+  void _bumpDemoMcpCatalogRevision(McpScope scope) {
+    _mcpCatalogRevisions[scope] = (_mcpCatalogRevisions[scope] ?? 1) + 1;
+  }
+
+  McpCatalogSnapshot _demoMcpCatalog(McpScope scope) {
+    final revision = _mcpCatalogRevisions[scope] ?? 1;
+    final entries = <McpCatalogEntry>[];
+    for (final entry in _mcpDocuments.entries) {
+      if (entry.key.scope != scope) continue;
+      final id = entry.value.id;
+      final raw = entry.value.rawToml;
+      final disabled =
+          raw.contains('enabled = false') || raw.contains('kind = "disabled"');
+      final builtIn = raw.contains('kind = "builtin"');
+      entries.add(
+        McpCatalogEntry(
+          id: id,
+          document: entry.key,
+          configStatus: disabled
+              ? McpConfigStatusKind.disabled
+              : McpConfigStatusKind.enabled,
+          effectiveSource: switch (scope) {
+            HostMcpScope() =>
+              builtIn
+                  ? McpEffectiveSource.hostBuiltin
+                  : McpEffectiveSource.hostServer,
+            SshMcpScope() =>
+              raw.contains('kind = "disabled"')
+                  ? McpEffectiveSource.sshDisabledTombstone
+                  : builtIn
+                  ? McpEffectiveSource.sshOverrideBuiltin
+                  : McpEffectiveSource.sshOverrideServer,
+          },
+          executionLocation: switch (scope) {
+            HostMcpScope() => const HostLocalMcpExecutionLocation(),
+            SshMcpScope(:final sshAlias) => SshRemoteMcpExecutionLocation(
+              sshAlias: sshAlias,
+            ),
+          },
+          transport: 'stdio',
+          endpointSummary: builtIn ? 'dart mcp-server' : id,
+          builtIn: builtIn,
+          inheritedFromHost: false,
+          overriddenInScope: scope is SshMcpScope,
+          canOverrideInSsh: scope is SshMcpScope,
+          canDisableInSsh: scope is SshMcpScope && !disabled,
+          canRestoreInheritance: scope is SshMcpScope,
+        ),
+      );
+    }
+    return McpCatalogSnapshot(
+      scope: scope,
+      revision: revision,
+      entries: entries,
+    );
+  }
+
+  ThreadMcpStateSnapshot _demoThreadMcp(String threadId) {
+    final generation = _threadMcpGenerations[threadId] ?? 1;
+    return ThreadMcpStateSnapshot(
+      threadId: threadId,
+      scope: const HostMcpScope(),
+      generation: generation,
+      servers: const [
+        ThreadMcpServerState(
+          id: 'dart',
+          effectiveSource: McpEffectiveSource.hostBuiltin,
+          executionLocation: HostLocalMcpExecutionLocation(),
+          transport: 'stdio',
+          endpointSummary: 'dart mcp-server',
+          builtIn: true,
+          lifecycle: ThreadMcpLifecycleKind.available,
+          toolCount: 4,
+        ),
+      ],
+    );
   }
 
   LspStateSnapshot _lspWriteResult() {
@@ -6313,12 +6522,6 @@ class DemoStudioTransport extends StudioTransport
     final state = _demoLspState();
     _publishProductPayload(LspStateChangedPayload(state));
     return state;
-  }
-
-  McpStateSnapshot _demoMcpState() {
-    return McpStateSnapshot.fromState(
-      state: _demoReadyResource(_mcpRevision, const McpStateData()),
-    );
   }
 
   LspStateSnapshot _demoLspState() {

@@ -41,27 +41,9 @@ pub struct StudioAgentDirectoryEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioMcpHealth {
-    pub mcp_servers: Vec<StudioMcpServer>,
-    pub active_mcp_servers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct StudioLspHealth {
     pub lsp_servers: Vec<StudioLspServer>,
     pub active_lsp_servers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioMcpServer {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub source_kind: String,
-    pub mutation_policy: String,
-    pub state: crate::StudioMcpServerState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

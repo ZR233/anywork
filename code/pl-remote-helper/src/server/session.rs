@@ -28,6 +28,7 @@ struct Owner {
     directories: directories::Directories,
     transfers: transfers::Transfers,
     processes: ProcessRegistry,
+    http: http::HttpProxy,
     operations: Mutex<HashMap<String, Arc<Operation>>>,
     tasks: TaskTracker,
     budget: ResourceBudget,
@@ -63,6 +64,7 @@ pub async fn run_owner(socket: PathBuf) -> Result<(), ServerError> {
     let (budget, control, lease_control, metadata) = budgets(allocation)?;
     let directories = directories::Directories::new(identity.instance_id.clone());
     let transfers = transfers::Transfers::new(identity.instance_id.clone());
+    let http = http::HttpProxy::new()?;
     let owner = Arc::new(Owner {
         identity,
         epoch: AtomicU64::new(0),
@@ -74,6 +76,7 @@ pub async fn run_owner(socket: PathBuf) -> Result<(), ServerError> {
         directories,
         transfers,
         processes: ProcessRegistry::new(budget.clone()),
+        http,
         operations: Default::default(),
         tasks: TaskTracker::new(),
         budget,
@@ -302,7 +305,7 @@ impl Owner {
     }
     async fn exchange(
         self: &Arc<Self>,
-        request: http::Request<h2::RecvStream>,
+        request: ::http::Request<h2::RecvStream>,
         mut sender: h2::server::SendResponse<Bytes>,
         attachment: &Arc<Attachment>,
     ) -> io::Result<()> {
@@ -327,6 +330,32 @@ impl Owner {
             return self
                 .processes
                 .output(process, after, sender, attachment.stop.clone())
+                .await;
+        }
+        if let Some(exchange_id) = path.strip_prefix("/http/") {
+            if !self.authorized(attachment, epoch) {
+                return http::respond_early_error(&mut sender, stale(), &attachment.stop).await;
+            }
+            if self.stopped.is_cancelled() {
+                return http::respond_early_error(
+                    &mut sender,
+                    remote_error(
+                        RemoteErrorCode::RemoteDisconnected,
+                        "helper admission is closed",
+                    ),
+                    &attachment.stop,
+                )
+                .await;
+            }
+            return self
+                .http
+                .exchange(
+                    exchange_id,
+                    request,
+                    sender,
+                    &self.budget,
+                    attachment.stop.clone(),
+                )
                 .await;
         }
         let lease_message = path.starts_with("/lease/");
@@ -757,6 +786,13 @@ impl Owner {
                 }
                 RemoteRequest::Terminate { process_id } => {
                     self.processes.terminate(&process_id).await?;
+                    Ok(ack())
+                }
+                RemoteRequest::RenewProcessLease {
+                    process_id,
+                    lease_id,
+                } => {
+                    self.processes.renew_lease(&process_id, &lease_id).await?;
                     Ok(ack())
                 }
                 RemoteRequest::CloseWorkspace { workspace_id } => {

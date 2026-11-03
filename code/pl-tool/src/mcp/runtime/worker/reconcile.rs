@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use pl_protocol::{PureError, Result};
+use tokio_util::sync::CancellationToken;
 
 use super::super::{McpGeneration, McpResetScope};
 use super::redaction::McpErrorRedactor;
@@ -25,6 +27,7 @@ pub(super) struct PendingReconcile {
 
 pub(super) struct ActivePreparation {
     pub(super) future: BoxFuture<'static, RuntimeGeneration>,
+    pub(super) cancel: CancellationToken,
     pub(super) reply: tokio::sync::oneshot::Sender<Result<()>>,
     pub(super) reset_scope: Option<McpResetScope>,
 }
@@ -40,16 +43,17 @@ pub(super) async fn await_preparation(
         .await
 }
 
-pub(super) fn reject_reconciles(
+pub(super) async fn cancel_and_collect_reconciles(
     preparation: Option<ActivePreparation>,
     pending: &mut VecDeque<PendingReconcile>,
-) {
-    if let Some(preparation) = preparation {
-        let _ = preparation.reply.send(Err(runtime_stopping_error()));
-    }
+) -> Option<RuntimeGeneration> {
     for request in pending.drain(..) {
         let _ = request.reply.send(Err(runtime_stopping_error()));
     }
+    let active = preparation?;
+    let _ = active.reply.send(Err(runtime_stopping_error()));
+    active.cancel.cancel();
+    Some(active.future.await)
 }
 
 fn runtime_stopping_error() -> PureError {
@@ -64,6 +68,7 @@ pub(super) async fn prepare_generation(
     generation_id: McpGeneration,
     servers: BTreeMap<String, EffectiveMcpServerConfig>,
     mut reusable: BTreeMap<String, RuntimeServer>,
+    cancel: CancellationToken,
 ) -> RuntimeGeneration {
     let mut next = RuntimeGeneration::empty(generation_id);
     let mut connecting = FuturesUnordered::new();
@@ -92,8 +97,10 @@ pub(super) async fn prepare_generation(
             continue;
         }
         let connector = connector.clone();
+        let server_cancel = cancel.child_token();
         connecting.push(async move {
-            let server = connect_server(&connector, server_id, config, fingerprint).await;
+            let server =
+                connect_server(&connector, server_id, config, fingerprint, server_cancel).await;
             (server.descriptor.id.clone(), server)
         });
     }
@@ -109,23 +116,56 @@ async fn connect_server(
     server_id: String,
     config: EffectiveMcpServerConfig,
     fingerprint: u64,
+    cancel: CancellationToken,
 ) -> RuntimeServer {
     let descriptor = server_descriptor(&config);
     let server_config = config.config.clone();
     let redactor = McpErrorRedactor::new(&config);
+    if cancel.is_cancelled() {
+        return RuntimeServer::unavailable(
+            descriptor,
+            fingerprint,
+            "MCP generation preparation was cancelled".to_string(),
+            server_config,
+            redactor,
+        );
+    }
     let startup_timeout = configured_startup_timeout(config.config.startup_timeout_secs);
     let request_timeout = configured_tool_timeout(config.config.tool_timeout_secs);
-    let connected = tokio::time::timeout(
-        startup_timeout,
-        connector.connect(McpConnectRequest {
-            server_id,
-            server: config.clone(),
-        }),
-    )
-    .await;
+    let connect_cancel = cancel.child_token();
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let timeout_flag = timed_out.clone();
+    let timeout_token = connect_cancel.clone();
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(startup_timeout).await;
+        timeout_flag.store(true, Ordering::Release);
+        timeout_token.cancel();
+    });
+    let connected = connector
+        .connect_cancellable(
+            McpConnectRequest {
+                server_id,
+                server: config.clone(),
+            },
+            connect_cancel,
+        )
+        .await;
+    timer.abort();
     let session = match connected {
-        Ok(Ok(session)) => Arc::new(session),
-        Ok(Err(error)) => {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            if timed_out.load(Ordering::Acquire) && !cancel.is_cancelled() {
+                return RuntimeServer::unavailable(
+                    descriptor,
+                    fingerprint,
+                    format!(
+                        "MCP health check timed out after {} seconds",
+                        startup_timeout.as_secs()
+                    ),
+                    server_config,
+                    redactor,
+                );
+            }
             return RuntimeServer::unavailable(
                 descriptor,
                 fingerprint,
@@ -134,22 +174,26 @@ async fn connect_server(
                 redactor,
             );
         }
-        Err(_) => {
-            return RuntimeServer::unavailable(
+    };
+    let supports_resources = session.supports_resources();
+    let discovery = tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        result = tokio::time::timeout(startup_timeout, session.list_tools()) => Some(result),
+    };
+    match discovery {
+        None => {
+            let mut unavailable = RuntimeServer::unavailable(
                 descriptor,
                 fingerprint,
-                format!(
-                    "MCP health check timed out after {} seconds",
-                    startup_timeout.as_secs()
-                ),
+                "MCP generation preparation was cancelled".to_string(),
                 server_config,
                 redactor,
             );
+            unavailable.session = Some(session);
+            unavailable
         }
-    };
-    let supports_resources = session.supports_resources();
-    match tokio::time::timeout(startup_timeout, session.list_tools()).await {
-        Ok(Ok(tools)) => RuntimeServer::available(super::server::AvailableRuntimeServer {
+        Some(Ok(Ok(tools))) => RuntimeServer::available(super::server::AvailableRuntimeServer {
             descriptor,
             fingerprint,
             session,
@@ -160,24 +204,40 @@ async fn connect_server(
             tool_effect: config.tool_effect,
             redactor,
         }),
-        Ok(Err(error)) => {
-            if let Err(close_error) = session.close().await {
+        Some(Ok(Err(error))) => {
+            let close_failed = if let Err(close_error) = session.close().await {
                 tracing::warn!(
                     %close_error,
                     "MCP session did not confirm closure after discovery failure"
                 );
-            }
+                true
+            } else {
+                false
+            };
             let message = redactor.redact(error.to_string());
-            RuntimeServer::unavailable(descriptor, fingerprint, message, server_config, redactor)
+            let mut unavailable = RuntimeServer::unavailable(
+                descriptor,
+                fingerprint,
+                message,
+                server_config,
+                redactor,
+            );
+            if close_failed {
+                unavailable.session = Some(session);
+            }
+            unavailable
         }
-        Err(_) => {
-            if let Err(close_error) = session.close().await {
+        Some(Err(_)) => {
+            let close_failed = if let Err(close_error) = session.close().await {
                 tracing::warn!(
                     %close_error,
                     "MCP session did not confirm closure after discovery timeout"
                 );
-            }
-            RuntimeServer::unavailable(
+                true
+            } else {
+                false
+            };
+            let mut unavailable = RuntimeServer::unavailable(
                 descriptor,
                 fingerprint,
                 format!(
@@ -186,7 +246,11 @@ async fn connect_server(
                 ),
                 server_config,
                 redactor,
-            )
+            );
+            if close_failed {
+                unavailable.session = Some(session);
+            }
+            unavailable
         }
     }
 }

@@ -12,18 +12,19 @@ use pl_protocol::studio::{
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
     AdmitAttachmentDraftsResponse, CancelAcpAuthRequest, CancelAcpInstallRequest,
     ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
-    ContinueThreadResponse, CreateAccountRequest, CreateThreadRequest, ExpectedRevisionRequest,
-    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest, PatchAccountRequest,
-    RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
-    ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
-    SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
-    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
+    ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest, CreateThreadRequest,
+    DeleteMcpDocumentRequest, ExpectedRevisionRequest, HealthResponse, LspResetRequest,
+    McpCatalogSnapshot, McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope,
+    OpenProjectRequest, PatchAccountRequest, ReconnectThreadMcpRequest, RemoveAccountModelRequest,
+    RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest, ResolveInteractionRequest,
+    SearchSkillsRequest, SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
+    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
+    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    StartAcpAuthRequest, StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
     StudioError, SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest,
-    ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
-    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+    ThreadMcpStateSnapshot, ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
+    UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -156,6 +157,9 @@ pub(crate) struct ProductTopicQuery {
     pub(crate) workspace_id: Option<String>,
     pub(crate) root_thread_id: Option<String>,
     pub(crate) host_thread_id: Option<String>,
+    pub(crate) scope: Option<String>,
+    pub(crate) ssh_alias: Option<String>,
+    pub(crate) thread_id: Option<String>,
 }
 
 /// 把 HTTP 查询参数解析为 typed 产品 topic。
@@ -174,7 +178,23 @@ pub(crate) fn parse_product_topic(
         "settingsConfig" => StudioProductTopic::SettingsConfig,
         "modelCatalog" => StudioProductTopic::ModelCatalog,
         "recovery" => StudioProductTopic::Recovery,
-        "mcp" => StudioProductTopic::Mcp,
+        "mcpCatalog" => {
+            let scope = match (query.scope.as_deref(), query.ssh_alias.as_ref()) {
+                (Some("host"), None) => McpScope::Host,
+                (Some("ssh"), Some(ssh_alias)) => McpScope::Ssh {
+                    ssh_alias: ssh_alias.clone(),
+                },
+                _ => {
+                    return Err(invalid(
+                        "mcpCatalog topic requires scope=host or scope=ssh&sshAlias=<alias>",
+                    ));
+                }
+            };
+            StudioProductTopic::McpCatalog { scope }
+        }
+        "threadMcp" => StudioProductTopic::ThreadMcp {
+            thread_id: query.thread_id.clone().unwrap_or_default(),
+        },
         "lsp" => StudioProductTopic::Lsp,
         "skills" => StudioProductTopic::Skills {
             // scope 身份原样保留（不 trim），与 runtime / FRB 保持同一身份；`validate()` 只用
@@ -201,28 +221,37 @@ pub(crate) fn parse_product_topic(
             return Err(invalid(&format!("unknown product topic: {other}")));
         }
     };
+    let has_mcp_scope = query.scope.is_some() || query.ssh_alias.is_some();
     match (
         &topic,
         query.workspace_id.is_some(),
         query.root_thread_id.is_some(),
         query.host_thread_id.is_some(),
+        has_mcp_scope,
+        query.thread_id.is_some(),
     ) {
-        (StudioProductTopic::Skills { .. }, true, false, false) => {}
-        (StudioProductTopic::SessionCosts { .. }, false, true, false) => {}
-        (StudioProductTopic::ChildInteractions { .. }, false, false, true) => {}
+        (StudioProductTopic::Skills { .. }, true, false, false, false, false) => {}
+        (StudioProductTopic::SessionCosts { .. }, false, true, false, false, false) => {}
+        (StudioProductTopic::ChildInteractions { .. }, false, false, true, false, false) => {}
+        (StudioProductTopic::McpCatalog { .. }, false, false, false, true, false) => {}
+        (StudioProductTopic::ThreadMcp { .. }, false, false, false, false, true) => {}
         (
             StudioProductTopic::Skills { .. }
             | StudioProductTopic::SessionCosts { .. }
-            | StudioProductTopic::ChildInteractions { .. },
+            | StudioProductTopic::ChildInteractions { .. }
+            | StudioProductTopic::McpCatalog { .. }
+            | StudioProductTopic::ThreadMcp { .. },
+            _,
+            _,
             _,
             _,
             _,
         ) => {
             return Err(invalid(
-                "scoped product topic requires exactly one scope parameter",
+                "scoped product topic requires only its matching scope parameters",
             ));
         }
-        (_, false, false, false) => {}
+        (_, false, false, false, false, false) => {}
         _ => {
             return Err(invalid(
                 "global product topics do not accept scope parameters",
@@ -320,8 +349,14 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_skills))
         .routes(routes!(discover_skills))
         .routes(routes!(search_skills))
-        .routes(routes!(read_mcp))
-        .routes(routes!(reset_mcp))
+        .routes(routes!(read_mcp_catalog))
+        .routes(routes!(reload_mcp_catalog))
+        .routes(routes!(read_mcp_document))
+        .routes(routes!(create_mcp_document))
+        .routes(routes!(update_mcp_document))
+        .routes(routes!(delete_mcp_document))
+        .routes(routes!(read_thread_mcp))
+        .routes(routes!(reconnect_thread_mcp))
         .routes(routes!(read_lsp))
         .routes(routes!(probe_lsp))
         .routes(routes!(repair_lsp))
@@ -1421,31 +1456,168 @@ async fn search_skills(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/runtime/mcp", operation_id = "mcp.read", responses(StudioApiErrors, (status = 200)))]
-async fn read_mcp(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpScopeQuery {
+    scope: String,
+    ssh_alias: Option<String>,
+}
+
+fn parse_mcp_scope_query(query: &McpScopeQuery) -> Result<McpScope, ApiError> {
+    let invalid =
+        |message: &str| ApiError(pl_protocol::studio::StudioError::invalid_argument(message));
+    match (query.scope.as_str(), query.ssh_alias.as_ref()) {
+        ("host", None) => Ok(McpScope::Host),
+        ("ssh", Some(ssh_alias)) if !ssh_alias.trim().is_empty() => Ok(McpScope::Ssh {
+            ssh_alias: ssh_alias.clone(),
+        }),
+        _ => Err(invalid(
+            "MCP scope query requires scope=host or scope=ssh&sshAlias=<alias>",
+        )),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/mcp/catalog",
+    operation_id = "mcp.readCatalog",
+    params(
+        ("scope" = String, Query, description = "host 或 ssh"),
+        ("sshAlias" = Option<String>, Query, description = "scope=ssh 时的 SSH 服务器别名")
+    ),
+    responses(StudioApiErrors, (status = 200, body = McpCatalogSnapshot))
+)]
+async fn read_mcp_catalog(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<McpScopeQuery>,
+) -> Result<Json<McpCatalogSnapshot>, ApiError> {
+    let scope = parse_mcp_scope_query(&query)?;
     Ok(Json(
         state
             .runtime
-            .read_mcp_state()
+            .read_mcp_catalog(&scope)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/mcp/catalog/reload",
+    operation_id = "mcp.reloadCatalog",
+    request_body = McpScope,
+    responses(StudioApiErrors, (status = 200, body = McpCatalogSnapshot))
+)]
+async fn reload_mcp_catalog(
+    State(state): State<AppState>,
+    ApiJson(scope): ApiJson<McpScope>,
+) -> Result<Json<McpCatalogSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .reload_mcp_catalog(&scope)
             .await
             .map_err(ApiError::from)?,
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/mcp/reset", operation_id = "mcp.reset", request_body = McpResetRequest, responses(StudioApiErrors, (status = 200)))]
-async fn reset_mcp(
+#[utoipa::path(
+    post,
+    path = "/api/v1/mcp/documents/read",
+    operation_id = "mcp.readDocument",
+    request_body = McpDocumentRef,
+    responses(StudioApiErrors, (status = 200, body = McpDocumentContent))
+)]
+async fn read_mcp_document(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<McpResetRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    state
-        .runtime
-        .reset_mcp(request)
-        .await
-        .map_err(ApiError::from)?;
+    ApiJson(document): ApiJson<McpDocumentRef>,
+) -> Result<Json<McpDocumentContent>, ApiError> {
+    Ok(Json(state.runtime.read_mcp_document(&document)?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/mcp/documents",
+    operation_id = "mcp.createDocument",
+    request_body = CreateMcpDocumentRequest,
+    responses(StudioApiErrors, (status = 200, body = McpDocumentCommitReceipt))
+)]
+async fn create_mcp_document(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CreateMcpDocumentRequest>,
+) -> Result<Json<McpDocumentCommitReceipt>, ApiError> {
+    Ok(Json(state.runtime.create_mcp_document(&request).await?))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/mcp/documents",
+    operation_id = "mcp.updateDocument",
+    request_body = UpdateMcpDocumentRequest,
+    responses(StudioApiErrors, (status = 200, body = McpDocumentCommitReceipt))
+)]
+async fn update_mcp_document(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<UpdateMcpDocumentRequest>,
+) -> Result<Json<McpDocumentCommitReceipt>, ApiError> {
+    Ok(Json(state.runtime.update_mcp_document(&request).await?))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/mcp/documents",
+    operation_id = "mcp.deleteDocument",
+    request_body = DeleteMcpDocumentRequest,
+    responses(StudioApiErrors, (status = 200, body = McpDocumentCommitReceipt))
+)]
+async fn delete_mcp_document(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<DeleteMcpDocumentRequest>,
+) -> Result<Json<McpDocumentCommitReceipt>, ApiError> {
+    Ok(Json(state.runtime.delete_mcp_document(&request).await?))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/threads/{thread_id}/mcp",
+    operation_id = "thread.readMcp",
+    params(("thread_id" = String, Path)),
+    responses(StudioApiErrors, (status = 200, body = ThreadMcpStateSnapshot))
+)]
+async fn read_thread_mcp(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<ThreadMcpStateSnapshot>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .read_mcp_state()
+            .read_thread_mcp(&thread_id)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/threads/{thread_id}/mcp/reconnect",
+    operation_id = "thread.reconnectMcp",
+    params(("thread_id" = String, Path)),
+    request_body = ReconnectThreadMcpRequest,
+    responses(StudioApiErrors, (status = 200, body = ThreadMcpStateSnapshot))
+)]
+async fn reconnect_thread_mcp(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    ApiJson(request): ApiJson<ReconnectThreadMcpRequest>,
+) -> Result<Json<ThreadMcpStateSnapshot>, ApiError> {
+    if request.thread_id != thread_id {
+        return Err(ApiError(StudioError::invalid_argument(
+            "Thread MCP reconnect path ID must match request.threadId",
+        )));
+    }
+    Ok(Json(
+        state
+            .runtime
+            .reconnect_thread_mcp(request)
             .await
             .map_err(ApiError::from)?,
     ))

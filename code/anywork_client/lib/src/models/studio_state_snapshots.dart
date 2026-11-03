@@ -178,7 +178,6 @@ class SettingsStateData {
     this.defaultAccountId,
     this.modeModelRoutes = const [],
     this.roles = const [],
-    this.mcpServers = const [],
     this.instructions = const InstructionsSettingsView(),
     this.skills = const SkillsSettingsView(),
     this.general = const GeneralSettingsView(),
@@ -195,7 +194,6 @@ class SettingsStateData {
   final String? defaultAccountId;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
-  final List<McpServerSettingsView> mcpServers;
   final InstructionsSettingsView instructions;
   final SkillsSettingsView skills;
   final GeneralSettingsView general;
@@ -244,7 +242,6 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
     String? defaultAccountId,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
-    List<McpServerSettingsView> mcpServers = const [],
     InstructionsSettingsView instructions = const InstructionsSettingsView(),
     SkillsSettingsView skills = const SkillsSettingsView(),
     GeneralSettingsView general = const GeneralSettingsView(),
@@ -266,7 +263,6 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
            defaultAccountId: defaultAccountId,
            modeModelRoutes: modeModelRoutes,
            roles: roles,
-           mcpServers: mcpServers,
            instructions: instructions,
            skills: skills,
            general: general,
@@ -288,7 +284,6 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   String? get defaultAccountId => _data.defaultAccountId;
   List<ModeModelRouteView> get modeModelRoutes => _data.modeModelRoutes;
   List<RoleSettingsView> get roles => _data.roles;
-  List<McpServerSettingsView> get mcpServers => _data.mcpServers;
   InstructionsSettingsView get instructions => _data.instructions;
   SkillsSettingsView get skills => _data.skills;
   GeneralSettingsView get general => _data.general;
@@ -369,49 +364,6 @@ final class LspIndexingActivity extends LspActivity {
   final String? title;
   final String? message;
   final int? percentage;
-}
-
-class McpStateData {
-  const McpStateData({
-    this.desiredConfigFingerprint = '',
-    this.appliedConfigFingerprint = '',
-    this.activeServers = const [],
-    this.servers = const [],
-  });
-
-  final String desiredConfigFingerprint;
-  final String appliedConfigFingerprint;
-  final List<String> activeServers;
-  final List<McpServerSettingsView> servers;
-}
-
-class McpStateSnapshot extends ObservedStateSnapshot<McpStateData> {
-  McpStateSnapshot({
-    String desiredConfigFingerprint = '',
-    String appliedConfigFingerprint = '',
-    List<String> activeServers = const [],
-    List<McpServerSettingsView> servers = const [],
-    int revision = 0,
-  }) : state = ReadyObservedResource<McpStateData>(
-         revision: revision,
-         updatedAt: 0,
-         lastCheckedAt: null,
-         value: McpStateData(
-           desiredConfigFingerprint: desiredConfigFingerprint,
-           appliedConfigFingerprint: appliedConfigFingerprint,
-           activeServers: activeServers,
-           servers: servers,
-         ),
-       );
-
-  const McpStateSnapshot.fromState({required this.state});
-  @override
-  final ObservedResource<McpStateData> state;
-  McpStateData get _data => state.value ?? const McpStateData();
-  String get desiredConfigFingerprint => _data.desiredConfigFingerprint;
-  String get appliedConfigFingerprint => _data.appliedConfigFingerprint;
-  List<String> get activeServers => _data.activeServers;
-  List<McpServerSettingsView> get servers => _data.servers;
 }
 
 class LspStateData {

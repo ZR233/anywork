@@ -1159,7 +1159,7 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       agentDirectory: snapshot.agentDirectory,
       settingsState: snapshot.settingsState,
       recoveryState: snapshot.recoveryState,
-      mcpState: snapshot.mcpState,
+      mcpCatalog: snapshot.mcpCatalog,
       lspState: snapshot.lspState,
       skillsByProject: snapshot.skillsByProject,
       threadModeCatalog: snapshot.threadModeCatalog,

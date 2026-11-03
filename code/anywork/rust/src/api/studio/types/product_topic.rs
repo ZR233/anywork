@@ -8,13 +8,13 @@ use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
     BridgeChildInteractionSummary, BridgeDegradedResource, BridgeFailedResource,
-    BridgeLoadingResource, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
+    BridgeLoadingResource, BridgeLspStateSnapshot, BridgeMcpCatalogSnapshot, BridgeMcpScope,
     BridgeModelCatalogStateSnapshot, BridgePersistenceQueueStateSnapshot,
     BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeReadyResource,
     BridgeRecoveryStateSnapshot, BridgeRefreshingResource, BridgeSessionCostsState,
     BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeStaleResource,
-    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot,
-    BridgeUninitializedResource, BridgeUpdaterStateSnapshot,
+    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadMcpStateSnapshot,
+    BridgeThreadModeCatalogSnapshot, BridgeUninitializedResource, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -27,7 +27,8 @@ pub enum BridgeProductTopic {
     SettingsConfig,
     ModelCatalog,
     Recovery,
-    Mcp,
+    McpCatalog { scope: BridgeMcpScope },
+    ThreadMcp { thread_id: String },
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
@@ -48,6 +49,14 @@ impl BridgeProductTopic {
     pub fn validate_scope(&self) -> Result<(), BridgeError> {
         let invalid = |message: &str| BridgeError::invalid_argument(message);
         match self {
+            Self::McpCatalog {
+                scope: BridgeMcpScope::Ssh { ssh_alias },
+            } if ssh_alias.trim().is_empty() => Err(invalid(
+                "McpCatalog Ssh topic requires a non-empty sshAlias",
+            )),
+            Self::ThreadMcp { thread_id } if thread_id.trim().is_empty() => {
+                Err(invalid("ThreadMcp topic requires a non-empty threadId"))
+            }
             Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
                 Err(invalid("Skills topic requires a non-empty workspaceId"))
             }
@@ -70,7 +79,10 @@ impl BridgeProductTopic {
             Self::SettingsConfig => StudioProductTopic::SettingsConfig,
             Self::ModelCatalog => StudioProductTopic::ModelCatalog,
             Self::Recovery => StudioProductTopic::Recovery,
-            Self::Mcp => StudioProductTopic::Mcp,
+            Self::McpCatalog { scope } => StudioProductTopic::McpCatalog {
+                scope: scope.into(),
+            },
+            Self::ThreadMcp { thread_id } => StudioProductTopic::ThreadMcp { thread_id },
             Self::Lsp => StudioProductTopic::Lsp,
             Self::Skills { workspace_id } => StudioProductTopic::Skills { workspace_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
@@ -102,7 +114,8 @@ pub enum BridgeProductBaseline {
     SettingsConfig(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalog(Box<BridgeModelCatalogStateSnapshot>),
     Recovery(BridgeRecoveryStateSnapshot),
-    Mcp(BridgeMcpStateSnapshot),
+    McpCatalog(BridgeMcpCatalogSnapshot),
+    ThreadMcp(BridgeThreadMcpStateSnapshot),
     Lsp(BridgeLspStateSnapshot),
     Skills(BridgeSkillsStateSnapshot),
     ThreadModeCatalog(BridgeThreadModeCatalogSnapshot),
