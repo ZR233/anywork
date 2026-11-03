@@ -39,27 +39,39 @@ pub(crate) struct SessionManifest {
 }
 
 impl SessionManifest {
-    pub(crate) fn from_thread(thread: &pl_protocol::Thread) -> Self {
+    /// 从会话与成员目录事实构造物理会话清单。
+    ///
+    /// 物理目录身份仍是 Thread 语义：`thread_id` 取成员默认 Thread，`root_thread_id`
+    /// 携带会话 ID 字节，与迁移前的值一致；目录会话/成员事实的唯一可写源不受影响。
+    pub(crate) fn from_directory_facts(
+        session: &crate::studio::records::SessionDirectoryRecord,
+        agent: &crate::studio::records::AgentDirectoryRecord,
+    ) -> Self {
         Self {
             schema_version: SESSION_MANIFEST_SCHEMA_VERSION,
-            thread_id: thread.id.clone(),
-            workspace_id: thread.workspace_id.clone(),
-            parent_thread_id: thread.parent_thread_id.clone(),
-            root_thread_id: thread.root_thread_id.clone(),
-            workspace_mode: thread.workspace_mode,
-            workspace_path: thread.workspace_path.clone(),
-            created_at: thread.created_at,
+            thread_id: agent.thread_id.clone(),
+            workspace_id: session.workspace_id.clone(),
+            parent_thread_id: agent.parent_agent_id.clone(),
+            root_thread_id: session.session_id.clone(),
+            workspace_mode: session.workspace_mode,
+            workspace_path: session.workspace_path.clone(),
+            created_at: agent.created_at,
         }
     }
 }
 
 impl StudioStore {
     pub(crate) fn registered_session_paths(&self, thread_id: &str) -> Result<SessionPaths> {
-        let owner = self
+        let agent = self
             .catalog()
-            .get(thread_id)
+            .agent_by_thread(thread_id)
             .context("Thread is not registered in the Studio catalog")?;
-        self.paths.session_paths(&owner.workspace_id, thread_id)
+        let workspace_id = self
+            .catalog()
+            .get_session(&agent.session_id)
+            .map(|session| session.workspace_id)
+            .context("session is not registered in the Studio catalog")?;
+        self.paths.session_paths(&workspace_id, thread_id)
     }
 
     pub(crate) fn session_paths(
@@ -87,15 +99,19 @@ impl StudioStore {
         .await
     }
 
-    pub(crate) async fn prepare_session_manifest(
+    pub(in crate::studio) async fn prepare_session_manifest(
         &self,
-        thread: &pl_protocol::Thread,
+        session: &crate::studio::records::SessionDirectoryRecord,
+        agent: &crate::studio::records::AgentDirectoryRecord,
     ) -> Result<SessionPaths> {
-        let session =
-            persist_session_manifest(&self.paths, &SessionManifest::from_thread(thread)).await?;
-        safe_path(&self.paths, &session.temp_dir()).await?;
-        tokio::fs::create_dir_all(session.temp_dir()).await?;
-        Ok(session)
+        let manifest = persist_session_manifest(
+            &self.paths,
+            &SessionManifest::from_directory_facts(session, agent),
+        )
+        .await?;
+        safe_path(&self.paths, &manifest.temp_dir()).await?;
+        tokio::fs::create_dir_all(manifest.temp_dir()).await?;
+        Ok(manifest)
     }
 }
 

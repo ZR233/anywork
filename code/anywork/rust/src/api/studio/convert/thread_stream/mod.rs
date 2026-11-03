@@ -109,6 +109,49 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
     })
 }
 
+pub(crate) fn bridge_session_row(
+    value: pl_protocol::SessionDirectoryRow,
+) -> BridgeSessionDirectoryRow {
+    BridgeSessionDirectoryRow {
+        session_id: value.session_id,
+        agent_id: value.agent_id,
+        parent_agent_id: value.parent_agent_id,
+        thread_id: value.thread_id,
+        workspace_id: value.workspace_id,
+        title: value.title,
+        mode: value.mode.as_str().to_string(),
+        delegation_mode: value.delegation_mode.into(),
+        delegation_preference: value.delegation_preference.into(),
+        workspace_mode: value.workspace_mode.label().to_string(),
+        workspace_path: value.workspace_path,
+        role: value.role,
+        binding: match value.binding {
+            pl_protocol::AgentBinding::Native(config) => BridgeAgentBinding::Native {
+                route: config.route.map(Into::into),
+            },
+            pl_protocol::AgentBinding::Acp(config) => BridgeAgentBinding::Acp {
+                account_id: config.account_id,
+                connection_revision: config.connection_revision,
+            },
+        },
+        status: match value.status {
+            ThreadStatus::Idle => BridgeThreadStatus::Idle,
+            ThreadStatus::Queued => BridgeThreadStatus::Queued,
+            ThreadStatus::Running => BridgeThreadStatus::Running,
+            ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
+            ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
+            ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
+            ThreadStatus::Closing => BridgeThreadStatus::Closing,
+            ThreadStatus::Closed => BridgeThreadStatus::Closed,
+            ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
+        },
+        created_at: value.created_at,
+        updated_at: value.updated_at,
+        last_user_message_at: value.last_user_message_at,
+        archived: value.archived,
+    }
+}
+
 pub(crate) fn bridge_thread(value: Thread) -> BridgeThread {
     BridgeThread {
         id: value.id,

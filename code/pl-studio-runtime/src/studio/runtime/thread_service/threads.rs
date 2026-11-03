@@ -61,23 +61,27 @@ impl StudioRuntime {
             .verify_project_workspace(&project)
             .await?;
         let workspace_path = local_thread_workspace(&project, &thread_id).await?;
-        let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
+        let (mut delta, session, agent) = DirectoryDelta::register_session(
             thread_id,
             workspace_id,
             title,
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
             workspace_path,
+            crate::config::ROOT_AGENT_ROUTE_KEY,
         );
         let delegation = self.config_runtime.read()?.config.delegation;
-        thread.delegation_mode = delegation.mode;
-        thread.delegation_preference = delegation.preference;
-        delta.thread_upserts = vec![thread.clone()];
+        let mut session = session;
+        session.delegation_mode = delegation.mode;
+        session.delegation_preference = delegation.preference;
+        delta.session_upserts = vec![session.clone()];
         self.agent_facility
             .product_events
             .commit_directory(delta)
             .await?;
-        let thread = ThreadRecord::from_directory_thread(thread);
+        let thread = ThreadRecord::from_directory_thread(
+            crate::studio::records::thread_projection(&session, &agent),
+        );
         self.register_new_thread(thread.clone()).await?;
         Ok(thread)
     }
@@ -200,21 +204,23 @@ impl StudioRuntime {
             Some(&workspace_path),
             None,
         );
-        let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
+        let (mut delta, mut session, agent) = DirectoryDelta::register_session(
             thread_id,
             &request.workspace_id,
             &provisional,
             request.mode,
             request.workspace_mode,
             workspace_path,
+            crate::config::ROOT_AGENT_ROUTE_KEY,
         );
-        thread.delegation_mode = request
+        session.delegation_mode = request
             .delegation_mode
             .unwrap_or(config.config.delegation.mode);
-        thread.delegation_preference = request
+        session.delegation_preference = request
             .delegation_preference
             .unwrap_or(config.config.delegation.preference);
-        delta.thread_upserts = vec![thread.clone()];
+        let thread = crate::studio::records::thread_projection(&session, &agent);
+        delta.session_upserts = vec![session];
         // Stage before publication: a directory observer may concurrently
         // activate this identity, and must use this exact request route.
         self.thread_factory
@@ -330,38 +336,44 @@ impl StudioRuntime {
         let title = manual_title(&title)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.ensure_prompt_runtime_ready().await?;
-        let mut thread = self.read_protocol_thread(&thread_id).await?;
+        let (mut session, agent) = self
+            .agent_facility
+            .product_events
+            .directory_facts(&thread_id)
+            .context("session is not registered in the directory")?;
         anyhow::ensure!(
-            thread.parent_thread_id.is_none(),
+            agent.parent_agent_id.is_none(),
             "only root Threads can be renamed"
         );
-        if thread.archived {
+        if session.archived {
             bail!("archived Threads cannot be renamed");
         }
-        let baseline = thread.clone();
+        let baseline = session.clone();
         // A user edit is authoritative: stop the best-effort Explorer task
         // before publishing the canonical manual title.
         self.title_tasks
             .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
             .await;
-        let changed = thread.title != title;
-        thread.title = title;
-        thread.updated_at = crate::studio::unix_seconds();
+        let changed = session.title != title;
+        session.title = title;
+        session.updated_at = crate::studio::unix_seconds();
         let committed = self
             .agent_facility
             .product_events
-            .commit_thread_update(baseline, thread)
+            .commit_session_update(baseline, session)
             .await?;
         let crate::StudioProductEventKind::ThreadDirectoryChanged(delta) = &committed.kind else {
             bail!("thread rename did not publish its directory result");
         };
-        let thread = delta
+        let row = delta
             .upserted
             .iter()
-            .find(|thread| thread.id == thread_id)
+            .find(|row| row.thread_id == thread_id)
             .ok_or_else(|| anyhow::anyhow!("thread rename result is missing its identity"))?;
         Ok(RenameThreadCommandReply {
-            thread: ThreadRecord::from_directory_thread(thread.clone()),
+            thread: ThreadRecord::from_directory_thread(crate::studio::records::thread_from_row(
+                row,
+            )),
             receipt: self.command_receipt(
                 operation_id,
                 changed,
@@ -386,26 +398,26 @@ impl StudioRuntime {
         if cancellation.is_cancelled() {
             return Ok(());
         }
-        let Some(mut thread) = self
+        let Some((mut session, agent)) = self
             .agent_facility
             .product_events
-            .thread_snapshot(thread_id)
+            .directory_facts(thread_id)
         else {
             return Ok(());
         };
-        if thread.archived
-            || thread.parent_thread_id.is_some()
-            || thread.title != expected_title
-            || thread.title == title
+        if session.archived
+            || agent.parent_agent_id.is_some()
+            || session.title != expected_title
+            || session.title == title
         {
             return Ok(());
         }
-        let baseline = thread.clone();
-        thread.title = title.to_string();
-        thread.updated_at = crate::studio::unix_seconds();
+        let baseline = session.clone();
+        session.title = title.to_string();
+        session.updated_at = crate::studio::unix_seconds();
         self.agent_facility
             .product_events
-            .commit_thread_update(baseline, thread)
+            .commit_session_update(baseline, session)
             .await?;
         Ok(())
     }
@@ -512,7 +524,7 @@ impl StudioRuntime {
         let committed = self
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::archive_threads(removed_thread_ids.clone()))
+            .commit_directory(DirectoryDelta::archive_sessions(vec![thread.id.clone()]))
             .await?;
         self.archive_published(&mut archive).await?;
         self.model_performance.remove_session(&thread.id).await?;
@@ -569,26 +581,27 @@ impl StudioRuntime {
         {
             tree.insert(thread.id.clone(), thread);
         }
-        tree.insert(root.id.clone(), root);
+        tree.insert(root.id.clone(), root.clone());
         // 取消归档只改变目录可见性，不检查、重建或授权重建原工作区。
-        let now = crate::studio::unix_seconds();
-        for thread in tree.values_mut() {
-            thread.archived = false;
-            thread.updated_at = now;
-        }
-        let restored = tree
-            .get(&thread_id)
-            .context("root missing from restore tree")?
-            .clone();
+        // 归档是会话级事实：恢复只更新会话记录，成员可见性随会话派生。
+        let mut restored_session = self
+            .agent_facility
+            .product_events
+            .directory_facts(&thread_id)
+            .map(|(session, _)| session)
+            .or_else(|| self.store.catalog().get_session(&thread_id))
+            .context("root missing from restore tree")?;
+        restored_session.archived = false;
+        restored_session.updated_at = crate::studio::unix_seconds();
         self.agent_facility
             .product_events
             .commit_directory(DirectoryDelta {
-                thread_upserts: tree.into_values().collect(),
+                session_upserts: vec![restored_session],
                 ..Default::default()
             })
             .await?;
         self.model_performance.refresh_directory_visibility().await;
-        Ok(ThreadRecord::from_directory_thread(restored))
+        Ok(ThreadRecord::from_directory_thread(root))
     }
 
     async fn compensate_unstarted_thread(&self, thread_id: &str) -> Result<()> {
@@ -596,7 +609,9 @@ impl StudioRuntime {
         self.residency.remove(thread_id).await;
         self.agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::archive_threads(vec![thread_id.to_string()]))
+            .commit_directory(DirectoryDelta::archive_sessions(vec![
+                thread_id.to_string(),
+            ]))
             .await?;
         self.title_tasks
             .cancel(
@@ -728,13 +743,12 @@ impl StudioRuntime {
             .read_thread_directory()
             .await?;
         if let Some(directory) = hot.state.value() {
-            for thread in &directory.threads {
-                if thread.workspace_id == root.workspace_id
-                    && thread.parent_thread_id.is_none()
-                    && !thread.archived
-                {
-                    roots.retain(|entry| entry.id != thread.id);
-                    roots.push(ThreadRecord::from_directory_thread(thread.clone()));
+            for row in &directory.rows {
+                if row.workspace_id == root.workspace_id && row.is_root_row() && !row.archived {
+                    roots.retain(|entry| entry.id != row.thread_id);
+                    roots.push(ThreadRecord::from_directory_thread(
+                        crate::studio::records::thread_from_row(row),
+                    ));
                 }
             }
         }

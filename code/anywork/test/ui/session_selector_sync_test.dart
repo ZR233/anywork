@@ -689,16 +689,16 @@ void main() {
         final created = await pumpClientFuture(
           tester,
           metadataDemand.state
-              .waitFor((state) => state.frame?.thread != null)
+              .waitFor((state) => state.frame?.row != null)
               .timeout(const Duration(seconds: 5)),
           'Enter submission canonical metadata observation',
         );
-        final provisionalTitle = created.frame!.thread!.title;
+        final provisionalTitle = created.frame!.row!.title;
         final titlePublished = metadataDemand.state
             .waitFor(
               (state) =>
-                  state.frame?.thread?.title != null &&
-                  state.frame!.thread!.title != provisionalTitle,
+                  state.frame?.row?.title != null &&
+                  state.frame!.row!.title != provisionalTitle,
             )
             .timeout(const Duration(seconds: 5));
         // Drain Demo's title job through its actual ID metadata publication.
@@ -807,7 +807,7 @@ void main() {
           .read(composerDockViewModelProvider(threadId))
           .requireValue;
       expect(view.hasActiveWorkflow, isTrue, reason: '场景前提：workflow active');
-      expect(view.thread?.status, ThreadStatusView.running);
+      expect(view.row?.status, ThreadStatusView.running);
       final revisionBefore = routeRevision();
 
       await tester.tap(find.byKey(StudioDriverKeys.model));
@@ -835,7 +835,7 @@ void main() {
           .read(composerDockViewModelProvider(threadId))
           .requireValue;
       expect(initial.hasActiveWorkflow, isTrue);
-      expect(initial.thread?.status, ThreadStatusView.idle);
+      expect(initial.row?.status, ThreadStatusView.idle);
       final workflowRunBefore = initial.workflow?.currentRun?.runId;
       expect(workflowRunBefore, isNotNull);
 
@@ -1142,10 +1142,10 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
     _thread,
   );
 
-  StudioThread _thread(StudioThread thread) =>
-      thread.id == 'thread-main' && thread.status != threadStatus
-      ? thread.copyWith(status: threadStatus)
-      : thread;
+  SessionDirectoryRow _thread(SessionDirectoryRow row) =>
+      row.threadId == 'thread-main' && row.status != threadStatus
+      ? row.copyWith(status: threadStatus)
+      : row;
 
   /// Bootstrap remains a protocol fixture; typed metadata observations receive
   /// the same scenario status from the external feed fixture.
@@ -1206,7 +1206,7 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   }
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
-    threads: [for (final thread in page.threads) _thread(thread)],
+    rows: [for (final row in page.rows) _thread(row)],
     nextCursor: page.nextCursor,
     revision: page.revision,
   );
@@ -1216,17 +1216,17 @@ final class _WorkflowThreadObservation implements ThreadObservationHandle {
   _WorkflowThreadObservation(this._inner, this._map);
 
   final ThreadObservationHandle _inner;
-  final StudioThread Function(StudioThread) _map;
+  final SessionDirectoryRow Function(SessionDirectoryRow) _map;
 
   @override
   Future<ThreadMetadataFrame?> next() async {
     final frame = await _inner.next();
-    final thread = frame?.thread;
-    if (frame == null || thread == null) return frame;
+    final row = frame?.row;
+    if (frame == null || row == null) return frame;
     return ThreadMetadataFrame(
       threadId: frame.threadId,
       stamp: frame.stamp,
-      thread: _map(thread),
+      row: _map(row),
     );
   }
 

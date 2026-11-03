@@ -270,18 +270,7 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
     rootThreadId: value.rootThreadId,
     agentPath: value.agentPath,
     role: value.role,
-    status: switch (value.status) {
-      frb.BridgeThreadStatus.idle => ThreadStatusView.idle,
-      frb.BridgeThreadStatus.queued => ThreadStatusView.queued,
-      frb.BridgeThreadStatus.running => ThreadStatusView.running,
-      frb.BridgeThreadStatus.waitingTool => ThreadStatusView.waitingTool,
-      frb.BridgeThreadStatus.waitingInteraction =>
-        ThreadStatusView.waitingInteraction,
-      frb.BridgeThreadStatus.cancelling => ThreadStatusView.cancelling,
-      frb.BridgeThreadStatus.closing => ThreadStatusView.closing,
-      frb.BridgeThreadStatus.closed => ThreadStatusView.closed,
-      frb.BridgeThreadStatus.faulted => ThreadStatusView.faulted,
-    },
+    status: _threadStatusFromFrb(value.status),
     archived: value.archived,
   );
 }

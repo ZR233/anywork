@@ -1,6 +1,5 @@
 //! Exact bot root relocations, retained as migration evidence, never as an execution fallback.
 use super::*;
-use crate::studio::catalog::CatalogEntry;
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 
 /// Compare recorded addresses without resolving a source already moved to backup.
@@ -78,29 +77,25 @@ pub(super) async fn plan(
                     owner == config.workspace_id,
                     "bot binding/config Workspace conflict"
                 );
-                let parent = catalog
-                    .get(&thread)
+                let parent_session = catalog
+                    .get_session(&thread)
                     .context("bot binding references a missing catalog root")?;
                 ensure!(
-                    parent.workspace_id == config.workspace_id && parent.parent_thread_id.is_none(),
+                    parent_session.workspace_id == config.workspace_id,
                     "bot binding does not own a catalog root"
                 );
-                for entry in catalog
-                    .entries()
-                    .into_iter()
-                    .filter(|entry| entry.root_thread_id == thread)
-                {
+                for entry in catalog.agents_for_session(&thread) {
                     ensure!(
-                        assigned.insert(entry.id.clone()),
+                        assigned.insert(entry.thread_id.clone()),
                         "Thread is bound to multiple bots"
                     );
-                    let source = source_session(roots, &entry)?;
+                    let source = source_session(roots, &parent_session, &entry)?;
                     let proof = stage
                         .home()
                         .join("bot-proofs")
-                        .join(storage_key(&entry.id, "Thread")?);
+                        .join(storage_key(&entry.thread_id, "Thread")?);
                     let frozen = if let Some(source) = &source {
-                        read_frozen_owner(paths.home(), source, &proof, &entry.id).await?
+                        read_frozen_owner(paths.home(), source, &proof, &entry.thread_id).await?
                     } else {
                         None
                     };
@@ -112,15 +107,19 @@ pub(super) async fn plan(
                     }
                     let diagnostic = if frozen.is_none() {
                         Some("bot checkpoint has no stable owner evidence; execution binding was preserved".into())
-                    } else if entry.workspace_mode != pl_protocol::ThreadWorkspaceMode::Local
-                        || !same_path(Path::new(&entry.workspace_path), Path::new(&old_root))
+                    } else if parent_session.workspace_mode
+                        != pl_protocol::ThreadWorkspaceMode::Local
+                        || !same_path(
+                            Path::new(&parent_session.workspace_path),
+                            Path::new(&old_root),
+                        )
                     {
                         Some("bot execution binding is not the exact local managed root; original execution address was preserved".into())
                     } else {
                         None
                     };
                     threads.insert(
-                        entry.id,
+                        entry.thread_id.clone(),
                         ThreadMove {
                             proven_local_root: diagnostic.is_none(),
                             diagnostic,
@@ -148,9 +147,13 @@ pub(super) async fn plan(
     Ok(result)
 }
 
-fn source_session(roots: &[PathBuf], entry: &CatalogEntry) -> Result<Option<PathBuf>> {
-    let thread = storage_key(&entry.id, "Thread")?;
-    let owner = storage_key(&entry.workspace_id, "Workspace")?;
+fn source_session(
+    roots: &[PathBuf],
+    session: &crate::studio::records::SessionDirectoryRecord,
+    agent: &crate::studio::records::AgentDirectoryRecord,
+) -> Result<Option<PathBuf>> {
+    let thread = storage_key(&agent.thread_id, "Thread")?;
+    let owner = storage_key(&session.workspace_id, "Workspace")?;
     let mut found = Vec::new();
     for root in roots {
         for path in [

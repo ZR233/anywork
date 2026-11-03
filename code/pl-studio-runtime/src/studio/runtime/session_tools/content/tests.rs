@@ -239,7 +239,7 @@ async fn search_borrows_input_until_cross_session_result_commit_and_retries_orig
             }, None, 1,
         ).await?;
         let directory = directory.state.value().context("directory unavailable")?;
-        assert_eq!(directory.threads[0].id, *session);
+        assert_eq!(directory.rows[0].thread_id, *session);
         assert!(directory.next_cursor.is_some());
         let input = |cursor: Option<&str>| serde_json::from_value::<SearchInput>(
             serde_json::json!({"workspaceId":env.project.id,"query":"search-final-needle","cursor":cursor})

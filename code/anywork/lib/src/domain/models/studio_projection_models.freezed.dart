@@ -582,7 +582,7 @@ as Map<String, String>,
 /// @nodoc
 mixin _$HeaderView {
 
- StudioThread? get selectedRootThread; StudioProject? get selectedProject; String? get selectedProjectId; List<StudioThread> get workspaceThreads; List<StudioAgentView> get agents; String? get selectedThreadId; ThreadRuntimeView get runtime; SessionCostView? get sessionCost; List<PendingInteraction> get pendingInteractions;
+ SessionDirectoryRow? get selectedRootRow; StudioProject? get selectedProject; String? get selectedProjectId; List<SessionDirectoryRow> get workspaceRows; List<StudioAgentView> get agents; String? get selectedThreadId; ThreadRuntimeView get runtime; SessionCostView? get sessionCost; List<PendingInteraction> get pendingInteractions;
 /// Create a copy of HeaderView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -594,20 +594,20 @@ $HeaderViewCopyWith<HeaderView> get copyWith => _$HeaderViewCopyWithImpl<HeaderV
 @override
 bool operator ==(Object other) {
   final _this = this as HeaderView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is HeaderView&&(identical(other.selectedRootThread, _this.selectedRootThread) || other.selectedRootThread == _this.selectedRootThread)&&(identical(other.selectedProject, _this.selectedProject) || other.selectedProject == _this.selectedProject)&&(identical(other.selectedProjectId, _this.selectedProjectId) || other.selectedProjectId == _this.selectedProjectId)&&const DeepCollectionEquality().equals(other.workspaceThreads, _this.workspaceThreads)&&const DeepCollectionEquality().equals(other.agents, _this.agents)&&(identical(other.selectedThreadId, _this.selectedThreadId) || other.selectedThreadId == _this.selectedThreadId)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&(identical(other.sessionCost, _this.sessionCost) || other.sessionCost == _this.sessionCost)&&const DeepCollectionEquality().equals(other.pendingInteractions, _this.pendingInteractions));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is HeaderView&&(identical(other.selectedRootRow, _this.selectedRootRow) || other.selectedRootRow == _this.selectedRootRow)&&(identical(other.selectedProject, _this.selectedProject) || other.selectedProject == _this.selectedProject)&&(identical(other.selectedProjectId, _this.selectedProjectId) || other.selectedProjectId == _this.selectedProjectId)&&const DeepCollectionEquality().equals(other.workspaceRows, _this.workspaceRows)&&const DeepCollectionEquality().equals(other.agents, _this.agents)&&(identical(other.selectedThreadId, _this.selectedThreadId) || other.selectedThreadId == _this.selectedThreadId)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&(identical(other.sessionCost, _this.sessionCost) || other.sessionCost == _this.sessionCost)&&const DeepCollectionEquality().equals(other.pendingInteractions, _this.pendingInteractions));
 }
 
 
 @override
 int get hashCode {
   final _this = this as HeaderView;
-  return Object.hash(runtimeType,_this.selectedRootThread,_this.selectedProject,_this.selectedProjectId,const DeepCollectionEquality().hash(_this.workspaceThreads),const DeepCollectionEquality().hash(_this.agents),_this.selectedThreadId,_this.runtime,_this.sessionCost,const DeepCollectionEquality().hash(_this.pendingInteractions));
+  return Object.hash(runtimeType,_this.selectedRootRow,_this.selectedProject,_this.selectedProjectId,const DeepCollectionEquality().hash(_this.workspaceRows),const DeepCollectionEquality().hash(_this.agents),_this.selectedThreadId,_this.runtime,_this.sessionCost,const DeepCollectionEquality().hash(_this.pendingInteractions));
 }
 
 @override
 String toString() {
   final _this = this as HeaderView;
-  return 'HeaderView(selectedRootThread: ${_this.selectedRootThread}, selectedProject: ${_this.selectedProject}, selectedProjectId: ${_this.selectedProjectId}, workspaceThreads: ${_this.workspaceThreads}, agents: ${_this.agents}, selectedThreadId: ${_this.selectedThreadId}, runtime: ${_this.runtime}, sessionCost: ${_this.sessionCost}, pendingInteractions: ${_this.pendingInteractions})';
+  return 'HeaderView(selectedRootRow: ${_this.selectedRootRow}, selectedProject: ${_this.selectedProject}, selectedProjectId: ${_this.selectedProjectId}, workspaceRows: ${_this.workspaceRows}, agents: ${_this.agents}, selectedThreadId: ${_this.selectedThreadId}, runtime: ${_this.runtime}, sessionCost: ${_this.sessionCost}, pendingInteractions: ${_this.pendingInteractions})';
 }
 
 
@@ -618,7 +618,7 @@ abstract mixin class $HeaderViewCopyWith<$Res>  {
   factory $HeaderViewCopyWith(HeaderView value, $Res Function(HeaderView) _then) = _$HeaderViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread? selectedRootThread, StudioProject? selectedProject, String? selectedProjectId, List<StudioThread> workspaceThreads, List<StudioAgentView> agents, String? selectedThreadId, ThreadRuntimeView runtime, SessionCostView? sessionCost, List<PendingInteraction> pendingInteractions
+ SessionDirectoryRow? selectedRootRow, StudioProject? selectedProject, String? selectedProjectId, List<SessionDirectoryRow> workspaceRows, List<StudioAgentView> agents, String? selectedThreadId, ThreadRuntimeView runtime, SessionCostView? sessionCost, List<PendingInteraction> pendingInteractions
 });
 
 
@@ -635,13 +635,13 @@ class _$HeaderViewCopyWithImpl<$Res>
 
 /// Create a copy of HeaderView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? selectedRootThread = freezed,Object? selectedProject = freezed,Object? selectedProjectId = freezed,Object? workspaceThreads = null,Object? agents = null,Object? selectedThreadId = freezed,Object? runtime = null,Object? sessionCost = freezed,Object? pendingInteractions = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? selectedRootRow = freezed,Object? selectedProject = freezed,Object? selectedProjectId = freezed,Object? workspaceRows = null,Object? agents = null,Object? selectedThreadId = freezed,Object? runtime = null,Object? sessionCost = freezed,Object? pendingInteractions = null,}) {
   return _then(HeaderView(
-selectedRootThread: freezed == selectedRootThread ? _self.selectedRootThread : selectedRootThread // ignore: cast_nullable_to_non_nullable
-as StudioThread?,selectedProject: freezed == selectedProject ? _self.selectedProject : selectedProject // ignore: cast_nullable_to_non_nullable
+selectedRootRow: freezed == selectedRootRow ? _self.selectedRootRow : selectedRootRow // ignore: cast_nullable_to_non_nullable
+as SessionDirectoryRow?,selectedProject: freezed == selectedProject ? _self.selectedProject : selectedProject // ignore: cast_nullable_to_non_nullable
 as StudioProject?,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
-as String?,workspaceThreads: null == workspaceThreads ? _self.workspaceThreads : workspaceThreads // ignore: cast_nullable_to_non_nullable
-as List<StudioThread>,agents: null == agents ? _self.agents : agents // ignore: cast_nullable_to_non_nullable
+as String?,workspaceRows: null == workspaceRows ? _self.workspaceRows : workspaceRows // ignore: cast_nullable_to_non_nullable
+as List<SessionDirectoryRow>,agents: null == agents ? _self.agents : agents // ignore: cast_nullable_to_non_nullable
 as List<StudioAgentView>,selectedThreadId: freezed == selectedThreadId ? _self.selectedThreadId : selectedThreadId // ignore: cast_nullable_to_non_nullable
 as String?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
 as ThreadRuntimeView,sessionCost: freezed == sessionCost ? _self.sessionCost : sessionCost // ignore: cast_nullable_to_non_nullable
@@ -731,10 +731,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread? selectedRootThread,  StudioProject? selectedProject,  String? selectedProjectId,  List<StudioThread> workspaceThreads,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow? selectedRootRow,  StudioProject? selectedProject,  String? selectedProjectId,  List<SessionDirectoryRow> workspaceRows,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _HeaderView() when $default != null:
-return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedProjectId,_that.workspaceThreads,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
+return $default(_that.selectedRootRow,_that.selectedProject,_that.selectedProjectId,_that.workspaceRows,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
   return orElse();
 
 }
@@ -752,10 +752,10 @@ return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedPro
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread? selectedRootThread,  StudioProject? selectedProject,  String? selectedProjectId,  List<StudioThread> workspaceThreads,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow? selectedRootRow,  StudioProject? selectedProject,  String? selectedProjectId,  List<SessionDirectoryRow> workspaceRows,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)  $default,) {final _that = this;
 switch (_that) {
 case _HeaderView():
-return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedProjectId,_that.workspaceThreads,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
+return $default(_that.selectedRootRow,_that.selectedProject,_that.selectedProjectId,_that.workspaceRows,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -772,10 +772,10 @@ return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedPro
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread? selectedRootThread,  StudioProject? selectedProject,  String? selectedProjectId,  List<StudioThread> workspaceThreads,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow? selectedRootRow,  StudioProject? selectedProject,  String? selectedProjectId,  List<SessionDirectoryRow> workspaceRows,  List<StudioAgentView> agents,  String? selectedThreadId,  ThreadRuntimeView runtime,  SessionCostView? sessionCost,  List<PendingInteraction> pendingInteractions)?  $default,) {final _that = this;
 switch (_that) {
 case _HeaderView() when $default != null:
-return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedProjectId,_that.workspaceThreads,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
+return $default(_that.selectedRootRow,_that.selectedProject,_that.selectedProjectId,_that.workspaceRows,_that.agents,_that.selectedThreadId,_that.runtime,_that.sessionCost,_that.pendingInteractions);case _:
   return null;
 
 }
@@ -787,17 +787,17 @@ return $default(_that.selectedRootThread,_that.selectedProject,_that.selectedPro
 
 
 class _HeaderView implements HeaderView {
-  const _HeaderView({required this.selectedRootThread, required this.selectedProject, required this.selectedProjectId, required  List<StudioThread> workspaceThreads, required  List<StudioAgentView> agents, required this.selectedThreadId, required this.runtime, required this.sessionCost, required  List<PendingInteraction> pendingInteractions}): _workspaceThreads = workspaceThreads,_agents = agents,_pendingInteractions = pendingInteractions;
+  const _HeaderView({required this.selectedRootRow, required this.selectedProject, required this.selectedProjectId, required  List<SessionDirectoryRow> workspaceRows, required  List<StudioAgentView> agents, required this.selectedThreadId, required this.runtime, required this.sessionCost, required  List<PendingInteraction> pendingInteractions}): _workspaceRows = workspaceRows,_agents = agents,_pendingInteractions = pendingInteractions;
 
 
-@override final  StudioThread? selectedRootThread;
+@override final  SessionDirectoryRow? selectedRootRow;
 @override final  StudioProject? selectedProject;
 @override final  String? selectedProjectId;
- final  List<StudioThread> _workspaceThreads;
-@override List<StudioThread> get workspaceThreads {
-  if (_workspaceThreads is EqualUnmodifiableListView) return _workspaceThreads;
+ final  List<SessionDirectoryRow> _workspaceRows;
+@override List<SessionDirectoryRow> get workspaceRows {
+  if (_workspaceRows is EqualUnmodifiableListView) return _workspaceRows;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_workspaceThreads);
+  return EqualUnmodifiableListView(_workspaceRows);
 }
 
  final  List<StudioAgentView> _agents;
@@ -828,18 +828,18 @@ _$HeaderViewCopyWith<_HeaderView> get copyWith => __$HeaderViewCopyWithImpl<_Hea
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _HeaderView&&(identical(other.selectedRootThread, selectedRootThread) || other.selectedRootThread == selectedRootThread)&&(identical(other.selectedProject, selectedProject) || other.selectedProject == selectedProject)&&(identical(other.selectedProjectId, selectedProjectId) || other.selectedProjectId == selectedProjectId)&&const DeepCollectionEquality().equals(other.workspaceThreads, _workspaceThreads)&&const DeepCollectionEquality().equals(other.agents, _agents)&&(identical(other.selectedThreadId, selectedThreadId) || other.selectedThreadId == selectedThreadId)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&(identical(other.sessionCost, sessionCost) || other.sessionCost == sessionCost)&&const DeepCollectionEquality().equals(other.pendingInteractions, _pendingInteractions));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _HeaderView&&(identical(other.selectedRootRow, selectedRootRow) || other.selectedRootRow == selectedRootRow)&&(identical(other.selectedProject, selectedProject) || other.selectedProject == selectedProject)&&(identical(other.selectedProjectId, selectedProjectId) || other.selectedProjectId == selectedProjectId)&&const DeepCollectionEquality().equals(other.workspaceRows, _workspaceRows)&&const DeepCollectionEquality().equals(other.agents, _agents)&&(identical(other.selectedThreadId, selectedThreadId) || other.selectedThreadId == selectedThreadId)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&(identical(other.sessionCost, sessionCost) || other.sessionCost == sessionCost)&&const DeepCollectionEquality().equals(other.pendingInteractions, _pendingInteractions));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,selectedRootThread,selectedProject,selectedProjectId,const DeepCollectionEquality().hash(_workspaceThreads),const DeepCollectionEquality().hash(_agents),selectedThreadId,runtime,sessionCost,const DeepCollectionEquality().hash(_pendingInteractions));
+    return Object.hash(runtimeType,selectedRootRow,selectedProject,selectedProjectId,const DeepCollectionEquality().hash(_workspaceRows),const DeepCollectionEquality().hash(_agents),selectedThreadId,runtime,sessionCost,const DeepCollectionEquality().hash(_pendingInteractions));
 }
 
 @override
 String toString() {
-    return 'HeaderView(selectedRootThread: $selectedRootThread, selectedProject: $selectedProject, selectedProjectId: $selectedProjectId, workspaceThreads: $workspaceThreads, agents: $agents, selectedThreadId: $selectedThreadId, runtime: $runtime, sessionCost: $sessionCost, pendingInteractions: $pendingInteractions)';
+    return 'HeaderView(selectedRootRow: $selectedRootRow, selectedProject: $selectedProject, selectedProjectId: $selectedProjectId, workspaceRows: $workspaceRows, agents: $agents, selectedThreadId: $selectedThreadId, runtime: $runtime, sessionCost: $sessionCost, pendingInteractions: $pendingInteractions)';
 }
 
 
@@ -850,7 +850,7 @@ abstract mixin class _$HeaderViewCopyWith<$Res> implements $HeaderViewCopyWith<$
   factory _$HeaderViewCopyWith(_HeaderView value, $Res Function(_HeaderView) _then) = __$HeaderViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread? selectedRootThread, StudioProject? selectedProject, String? selectedProjectId, List<StudioThread> workspaceThreads, List<StudioAgentView> agents, String? selectedThreadId, ThreadRuntimeView runtime, SessionCostView? sessionCost, List<PendingInteraction> pendingInteractions
+ SessionDirectoryRow? selectedRootRow, StudioProject? selectedProject, String? selectedProjectId, List<SessionDirectoryRow> workspaceRows, List<StudioAgentView> agents, String? selectedThreadId, ThreadRuntimeView runtime, SessionCostView? sessionCost, List<PendingInteraction> pendingInteractions
 });
 
 
@@ -867,13 +867,13 @@ class __$HeaderViewCopyWithImpl<$Res>
 
 /// Create a copy of HeaderView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? selectedRootThread = freezed,Object? selectedProject = freezed,Object? selectedProjectId = freezed,Object? workspaceThreads = null,Object? agents = null,Object? selectedThreadId = freezed,Object? runtime = null,Object? sessionCost = freezed,Object? pendingInteractions = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? selectedRootRow = freezed,Object? selectedProject = freezed,Object? selectedProjectId = freezed,Object? workspaceRows = null,Object? agents = null,Object? selectedThreadId = freezed,Object? runtime = null,Object? sessionCost = freezed,Object? pendingInteractions = null,}) {
   return _then(_HeaderView(
-selectedRootThread: freezed == selectedRootThread ? _self.selectedRootThread : selectedRootThread // ignore: cast_nullable_to_non_nullable
-as StudioThread?,selectedProject: freezed == selectedProject ? _self.selectedProject : selectedProject // ignore: cast_nullable_to_non_nullable
+selectedRootRow: freezed == selectedRootRow ? _self.selectedRootRow : selectedRootRow // ignore: cast_nullable_to_non_nullable
+as SessionDirectoryRow?,selectedProject: freezed == selectedProject ? _self.selectedProject : selectedProject // ignore: cast_nullable_to_non_nullable
 as StudioProject?,selectedProjectId: freezed == selectedProjectId ? _self.selectedProjectId : selectedProjectId // ignore: cast_nullable_to_non_nullable
-as String?,workspaceThreads: null == workspaceThreads ? _self._workspaceThreads : workspaceThreads // ignore: cast_nullable_to_non_nullable
-as List<StudioThread>,agents: null == agents ? _self._agents : agents // ignore: cast_nullable_to_non_nullable
+as String?,workspaceRows: null == workspaceRows ? _self._workspaceRows : workspaceRows // ignore: cast_nullable_to_non_nullable
+as List<SessionDirectoryRow>,agents: null == agents ? _self._agents : agents // ignore: cast_nullable_to_non_nullable
 as List<StudioAgentView>,selectedThreadId: freezed == selectedThreadId ? _self.selectedThreadId : selectedThreadId // ignore: cast_nullable_to_non_nullable
 as String?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
 as ThreadRuntimeView,sessionCost: freezed == sessionCost ? _self.sessionCost : sessionCost // ignore: cast_nullable_to_non_nullable
@@ -888,7 +888,7 @@ as List<PendingInteraction>,
 /// @nodoc
 mixin _$StatusBarView {
 
- StudioThread get thread; List<ModelSelectionAccount> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun; List<String> get activeSkills; List<String> get activeMcpServers; List<String> get activeLspServers;
+ SessionDirectoryRow get row; List<ModelSelectionAccount> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun; List<String> get activeSkills; List<String> get activeMcpServers; List<String> get activeLspServers;
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -900,20 +900,20 @@ $StatusBarViewCopyWith<StatusBarView> get copyWith => _$StatusBarViewCopyWithImp
 @override
 bool operator ==(Object other) {
   final _this = this as StatusBarView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.workflowRun, _this.workflowRun) || other.workflowRun == _this.workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _this.activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _this.activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _this.activeLspServers));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.row, _this.row) || other.row == _this.row)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.workflowRun, _this.workflowRun) || other.workflowRun == _this.workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _this.activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _this.activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _this.activeLspServers));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StatusBarView;
-  return Object.hash(runtimeType,_this.thread,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.roles),_this.isBusy,_this.modelRoute,_this.workflowRun,const DeepCollectionEquality().hash(_this.activeSkills),const DeepCollectionEquality().hash(_this.activeMcpServers),const DeepCollectionEquality().hash(_this.activeLspServers));
+  return Object.hash(runtimeType,_this.row,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.roles),_this.isBusy,_this.modelRoute,_this.workflowRun,const DeepCollectionEquality().hash(_this.activeSkills),const DeepCollectionEquality().hash(_this.activeMcpServers),const DeepCollectionEquality().hash(_this.activeLspServers));
 }
 
 @override
 String toString() {
   final _this = this as StatusBarView;
-  return 'StatusBarView(thread: ${_this.thread}, accounts: ${_this.accounts}, roles: ${_this.roles}, isBusy: ${_this.isBusy}, modelRoute: ${_this.modelRoute}, workflowRun: ${_this.workflowRun}, activeSkills: ${_this.activeSkills}, activeMcpServers: ${_this.activeMcpServers}, activeLspServers: ${_this.activeLspServers})';
+  return 'StatusBarView(row: ${_this.row}, accounts: ${_this.accounts}, roles: ${_this.roles}, isBusy: ${_this.isBusy}, modelRoute: ${_this.modelRoute}, workflowRun: ${_this.workflowRun}, activeSkills: ${_this.activeSkills}, activeMcpServers: ${_this.activeMcpServers}, activeLspServers: ${_this.activeLspServers})';
 }
 
 
@@ -924,7 +924,7 @@ abstract mixin class $StatusBarViewCopyWith<$Res>  {
   factory $StatusBarViewCopyWith(StatusBarView value, $Res Function(StatusBarView) _then) = _$StatusBarViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread thread, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
+ SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -941,10 +941,10 @@ class _$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? thread = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
   return _then(StatusBarView(
-thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
-as StudioThread,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
+row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
+as SessionDirectoryRow,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
 as List<ModelSelectionAccount>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
@@ -1037,10 +1037,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   return orElse();
 
 }
@@ -1058,10 +1058,10 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView():
-return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1078,10 +1078,10 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   return null;
 
 }
@@ -1093,10 +1093,10 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 
 
 class _StatusBarView extends StatusBarView {
-  const _StatusBarView({required this.thread, required  List<ModelSelectionAccount> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun,  List<String> activeSkills = const <String>[],  List<String> activeMcpServers = const <String>[],  List<String> activeLspServers = const <String>[]}): _accounts = accounts,_roles = roles,_activeSkills = activeSkills,_activeMcpServers = activeMcpServers,_activeLspServers = activeLspServers,super._();
+  const _StatusBarView({required this.row, required  List<ModelSelectionAccount> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun,  List<String> activeSkills = const <String>[],  List<String> activeMcpServers = const <String>[],  List<String> activeLspServers = const <String>[]}): _accounts = accounts,_roles = roles,_activeSkills = activeSkills,_activeMcpServers = activeMcpServers,_activeLspServers = activeLspServers,super._();
 
 
-@override final  StudioThread thread;
+@override final  SessionDirectoryRow row;
  final  List<ModelSelectionAccount> _accounts;
 @override List<ModelSelectionAccount> get accounts {
   if (_accounts is EqualUnmodifiableListView) return _accounts;
@@ -1146,18 +1146,18 @@ _$StatusBarViewCopyWith<_StatusBarView> get copyWith => __$StatusBarViewCopyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.thread, thread) || other.thread == thread)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.workflowRun, workflowRun) || other.workflowRun == workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _activeLspServers));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.row, row) || other.row == row)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.workflowRun, workflowRun) || other.workflowRun == workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _activeLspServers));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,thread,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_roles),isBusy,modelRoute,workflowRun,const DeepCollectionEquality().hash(_activeSkills),const DeepCollectionEquality().hash(_activeMcpServers),const DeepCollectionEquality().hash(_activeLspServers));
+    return Object.hash(runtimeType,row,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_roles),isBusy,modelRoute,workflowRun,const DeepCollectionEquality().hash(_activeSkills),const DeepCollectionEquality().hash(_activeMcpServers),const DeepCollectionEquality().hash(_activeLspServers));
 }
 
 @override
 String toString() {
-    return 'StatusBarView(thread: $thread, accounts: $accounts, roles: $roles, isBusy: $isBusy, modelRoute: $modelRoute, workflowRun: $workflowRun, activeSkills: $activeSkills, activeMcpServers: $activeMcpServers, activeLspServers: $activeLspServers)';
+    return 'StatusBarView(row: $row, accounts: $accounts, roles: $roles, isBusy: $isBusy, modelRoute: $modelRoute, workflowRun: $workflowRun, activeSkills: $activeSkills, activeMcpServers: $activeMcpServers, activeLspServers: $activeLspServers)';
 }
 
 
@@ -1168,7 +1168,7 @@ abstract mixin class _$StatusBarViewCopyWith<$Res> implements $StatusBarViewCopy
   factory _$StatusBarViewCopyWith(_StatusBarView value, $Res Function(_StatusBarView) _then) = __$StatusBarViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread thread, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
+ SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -1185,10 +1185,10 @@ class __$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? thread = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
   return _then(_StatusBarView(
-thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
-as StudioThread,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
+row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
+as SessionDirectoryRow,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
 as List<ModelSelectionAccount>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable

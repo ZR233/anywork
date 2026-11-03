@@ -2606,7 +2606,12 @@ mod storage_fault_tests {
                 closed: false,
             },
         );
-        delta.thread_upserts = vec![thread.clone()];
+        // 会话级事实只随 root 注册；child 会话由同一测试先注册的 parent 建立。
+        let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+        if let Some(session) = session {
+            delta.session_upserts = vec![session];
+        }
+        delta.agent_upserts = vec![agent];
         store.persist_directory_summaries(&delta).await
     }
 

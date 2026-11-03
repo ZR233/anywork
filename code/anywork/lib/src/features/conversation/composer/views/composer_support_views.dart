@@ -162,7 +162,8 @@ class AgentReadOnlyDockView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final thread = view.thread;
+    final row = view.row;
+    if (row == null) return const SizedBox.shrink();
     final secondaryStyle = Theme.of(context).textTheme.labelSmall
         ?.copyWith(color: context.colors.onSurfaceVariant);
     final route = view.displayRoute;
@@ -225,7 +226,7 @@ class AgentReadOnlyDockView extends StatelessWidget {
             children: [
               InfoChip(
                 icon: Icons.timeline_outlined,
-                label: context.threadStatusLabel(thread!.status),
+                label: context.threadStatusLabel(row.status),
               ),
               if (execution != null)
                 InfoChip(
@@ -238,11 +239,8 @@ class AgentReadOnlyDockView extends StatelessWidget {
                 ),
               if (route != null)
                 InfoChip(icon: Icons.memory_outlined, label: route.modelId),
-              if (thread.workspacePath.trim().isNotEmpty)
-                InfoChip(
-                  icon: Icons.folder_outlined,
-                  label: thread.workspacePath,
-                ),
+              if (row.workspacePath.trim().isNotEmpty)
+                InfoChip(icon: Icons.folder_outlined, label: row.workspacePath),
             ],
           ),
         ],

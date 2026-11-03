@@ -11,6 +11,15 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 - **角色与工作模式正交**：智能体角色定义“我是谁”，工作模式（`Thread Mode`）定义“按何种流程执行”，两者的指令槽位相互独立。根会话可在空闲时切换工作模式而不丢失其根智能体角色；子智能体仅使用创建时冻结的智能体预设，不挂载根会话的工作模式或工作流状态机。
 - **派发可见性隔离**：仅子智能体预设向用户开放 TOML 配置并进入可派发目录（`list_agent_profiles` 与动态生成的 `spawn_agent` 参数模式）；根智能体专属定义不进入子智能体目录或设置页，且拒绝被直接派发。
 
+### 成员身份、定义快照与后端绑定
+
+会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（类型定义见 `pl-protocol` 的 `session`/`agent` 模块，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
+- **成员描述（`AgentDescriptor`）**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、backend 类别与工作区引用。root/child 表达成员关系，Native/ACP 表达执行方式，两者正交；不得用 `AcpRootThread`、`AcpChildSession` 等交叉类型复制业务逻辑。首版一名成员对应一个默认 Thread。
+- **定义快照（`AgentDefinitionSnapshot`）**：可复用定义的不可变快照——定义 ID、显示名、描述、用途、来源与修订/内容身份；不混入模型配置与运行状态，也不拥有线程、连接或任务。修改可复用定义只影响后续新实例。
+- **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`），指令正文仍归指令快照与 Profile 冻结域；`AcpAgentConfig` 只引用既有 ACP 账号 ID 与连接配置身份，不包含 Native model/effort/system-instruction 占位值。类型中存在 `Acp` 分支不代表它可以执行：在 ACP 执行后端接通之前出现即明确失败，不提供空实现或假成功。
+
+冻结 Profile（`AgentProfileSnapshot`）是上述定义与 Native 绑定在 child 创建期的联合冻结来源：当前 Profile 的配置消费者改读定义与 binding；Native 历史/checkpoint 中已有的 `AgentProfileSnapshot` 按原冻结语义读取，可用于构造只读新描述，不为重命名重写已完成对话。实例的 backend 类别与会话归属在运行期间固定；根 Native 的模型路由仍按既有产品命令修改并在下一 Turn 冻结，child 的模型与 Profile 仍按创建期 spawn 冻结规则，不因新增 binding 而禁止根模型切换，也不让已启动 child 跟随配置变化偷偷换模型。根会话当前模型路由的唯一可写入口仍是既有产品命令，descriptor/binding 只读取它的提交事实，不增设第二个会话设置字段双写。
+
 ### 会话级工作区模式与子智能体隔离模式
 
 工作区隔离由**根会话工作区模式（`ThreadWorkspaceMode`）**与**子智能体预设工作区模式（`Profile Workspace Mode`）**两条正交轴共同决定：

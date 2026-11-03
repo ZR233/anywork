@@ -19,6 +19,7 @@ mod observed_state;
 mod permission;
 pub mod process_worker;
 pub mod remote;
+pub mod session;
 pub mod session_runtime;
 pub mod studio;
 pub mod thread;
@@ -111,6 +112,7 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
+pub use session::{SessionDescriptor, SessionDirectoryRow, SessionId};
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。
 pub use studio::{

@@ -46,7 +46,7 @@ class ThreadStatusConnector extends ConsumerWidget {
     if (status == null) return const SizedBox(height: 38);
     return ThreadStatusBar(
       threadId: threadId,
-      thread: status.thread,
+      row: status.row,
       accounts: status.accounts,
       lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
       modelRoute: status.modelRoute,
@@ -67,7 +67,7 @@ class ThreadStatusBar extends StatelessWidget {
   const ThreadStatusBar({
     super.key,
     required this.threadId,
-    required this.thread,
+    required this.row,
     required this.accounts,
     required this.lspServers,
     this.modelRoute,
@@ -83,7 +83,7 @@ class ThreadStatusBar extends StatelessWidget {
   });
 
   final String threadId;
-  final StudioThread thread;
+  final SessionDirectoryRow row;
   final List<ModelSelectionAccount> accounts;
   final List<LspServerStateView> lspServers;
   final ThreadModelRouteView? modelRoute;
@@ -127,12 +127,12 @@ class ThreadStatusBar extends StatelessWidget {
                     ? null
                     : modelForRoute(accounts, route.accountId, route.modelId);
                 final hasOverflow =
-                    (thread.isRoot &&
+                    (row.isRootRow &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
                     (!showCapabilities && capabilityLabel.isNotEmpty) ||
                     (!showLspActivity && lspActiveServers.isNotEmpty) ||
                     showPlanEntry;
-                final rootEffort = thread.isRoot ? route?.effort?.trim() : null;
+                final rootEffort = row.isRootRow ? route?.effort?.trim() : null;
                 return Row(
                   children: [
                     if (showTodo)
@@ -157,15 +157,15 @@ class ThreadStatusBar extends StatelessWidget {
                       ),
                     _StatusReadout(
                       icon: Icons.account_tree_outlined,
-                      label: thread.isRetiredAgent
+                      label: row.isChildRow && isRetiredAgentRole(row.role)
                           ? context.l10n.settingsStateDisabled
-                          : context.roleLabel(thread.role),
-                      tooltip: thread.isRetiredAgent
+                          : context.roleLabel(row.role),
+                      tooltip: row.isChildRow && isRetiredAgentRole(row.role)
                           ? context.l10n.agentRoleRetired
-                          : '${thread.title} · ${context.threadStatusLabel(thread.status)}',
+                          : '${row.title} · ${context.threadStatusLabel(row.status)}',
                       maxWidth: 96,
                     ),
-                    if (showModel && thread.isAgent)
+                    if (showModel && row.isChildRow)
                       _StatusReadout(
                         icon: Icons.smart_toy_outlined,
                         label: route?.modelId.isNotEmpty == true

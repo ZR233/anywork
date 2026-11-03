@@ -9,8 +9,8 @@ enum HotMutation {
 }
 
 async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
-    let first = thread("first", "p1", 1);
-    let second = thread("second", "p1", 2);
+    let first = row("first", "p1", 1);
+    let second = row("second", "p1", 2);
     let (_temp, events) = fixture(
         vec![first.clone(), second],
         vec![project("p1", "Project", "/workspace/project")],
@@ -49,7 +49,7 @@ async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
                     }
                     HotMutation::Observed => {
                         runtime.block_on(worker_events.commit_observed_thread_mode(
-                            &first.id,
+                            &first.thread_id,
                             pl_protocol::ThreadModeId::task(),
                             10,
                         ))?;
@@ -84,18 +84,18 @@ async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
     let second_delta = event_delta(second_event);
     assert_eq!(first_delta.revision, baseline_revision + 1);
     assert_eq!(second_delta.revision, first_delta.revision + 1);
-    assert_eq!(first_delta.upserted[0].id, "first");
-    assert_eq!(second_delta.upserted[0].id, "second");
+    assert_eq!(first_delta.upserted[0].thread_id, "first");
+    assert_eq!(second_delta.upserted[0].thread_id, "second");
     assert_eq!(second_delta.upserted[0].last_user_message_at, Some(20));
     let frame = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
     assert_eq!(frame.stamp.revision, second_delta.revision);
-    for thread in frame.threads {
-        let expected = if thread.id == "first" {
+    for row in frame.rows {
+        let expected = if row.thread_id == "first" {
             &first_delta.upserted[0]
         } else {
             &second_delta.upserted[0]
         };
-        assert_eq!(&thread, expected);
+        assert_eq!(&row, expected);
     }
     events.writer.shutdown().await?;
     Ok(())

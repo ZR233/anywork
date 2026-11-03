@@ -282,19 +282,13 @@ impl StudioChildResources for StudioThreadFactory {
         }
         self.services
             .product_events
-            .register_child_thread(crate::studio::store::directory::RegisteredChildThread {
-                delegation: request.delegation,
-                frozen_model: Some(crate::studio::delegation::profile_model(&profile.profile)),
-                id: request.id.clone(),
-                parent_thread_id: request.caller.clone(),
-                root_thread_id: parent.root_thread_id,
-                agent_path: request.id.clone(),
-                workspace_id: parent.workspace_id,
-                mode: parent.mode,
-                workspace_mode: parent.workspace_mode,
-                workspace_path: parent.workspace_path,
+            .register_child_agent(crate::studio::store::directory::RegisteredChildAgent {
+                agent_id: request.id.clone(),
+                parent_agent_id: request.caller.clone(),
+                session_id: parent.root_thread_id,
                 role: profile.profile.profile_id.clone(),
                 title: request.task_summary.as_str().to_owned(),
+                frozen_model: Some(crate::studio::delegation::profile_model(&profile.profile)),
             })
             .await
             .map_err(|error| resource_error("register child product association", error))?;

@@ -106,33 +106,34 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       threadId: threadId,
     );
     final selectedId = selected.selectedThreadId;
-    final selectedThread = selectedId == null
+    final selectedRow = selectedId == null
         ? null
         : await _readThread(selectedId);
     if (!_ownsNavigation(intent) ||
         !identical(_client.selection.state, selected)) {
       return;
     }
-    final root = AgentDirectoryQueries.rootThreadId(
+    final sessionId = AgentDirectoryQueries.sessionId(
       threadId: selectedId,
       agents: _client.project.state.agents?.values ?? const [],
-      threads: [if (selectedThread != null) selectedThread],
+      rows: [if (selectedRow != null) selectedRow],
     );
-    if (root == null ||
-        !_rootMembers(root).any((agent) => agent.threadId == threadId)) {
+    if (sessionId == null ||
+        !_sessionMembers(sessionId)
+            .any((agent) => agent.threadId == threadId)) {
       return;
     }
     bool isCurrent() =>
         _ownsNavigation(intent) &&
         identical(_client.selection.state, selected) &&
-        _rootMembers(root).any((agent) => agent.threadId == threadId);
+        _sessionMembers(sessionId).any((agent) => agent.threadId == threadId);
     final target = await _requireThread(threadId);
     if (!isCurrent()) return;
     _throwIfAccessBlocked(
       workspaceId: selected.selectedProjectId,
       threadId: threadId,
     );
-    if (target.effectiveRootThreadId != root ||
+    if (target.sessionId != sessionId ||
         target.workspaceId != selected.selectedProjectId) {
       throw const StudioFailure(
         code: StudioFailureCode.protocol,
@@ -141,7 +142,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         correlationId: 'client-select-agent',
       );
     }
-    if (target.effectiveRootThreadId != root ||
+    if (target.sessionId != sessionId ||
         target.workspaceId != selected.selectedProjectId)
       return;
     _throwIfAccessBlocked(workspaceId: target.workspaceId, threadId: threadId);
@@ -428,19 +429,19 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       DirectoryQuery(workspaceId: workspaceId),
       DirectoryWindow(),
     );
-    final threadId = frame.threads
+    final threadId = frame.rows
         .where(
-          (thread) =>
-              thread.isRoot &&
-              thread.workspaceId == workspaceId &&
+          (row) =>
+              row.isRootRow &&
+              row.workspaceId == workspaceId &&
               _accessBlocker(
-                    workspaceId: thread.workspaceId,
-                    threadId: thread.id,
+                    workspaceId: row.workspaceId,
+                    threadId: row.threadId,
                   ) ==
                   null,
         )
         .firstOrNull
-        ?.id;
+        ?.threadId;
     if (threadId == null) {
       _client.selection.selectProject(workspaceId);
     } else {
@@ -451,13 +452,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     }
   }
 
-  List<StudioAgentView> _rootMembers(String rootId) =>
-      AgentDirectoryQueries.forRoot(
-        rootThreadId: rootId,
+  List<StudioAgentView> _sessionMembers(String sessionId) =>
+      AgentDirectoryQueries.forSession(
+        sessionId: sessionId,
         agents: _client.project.state.agents?.values ?? const [],
       );
 
-  Future<StudioThread?> _readThread(String threadId) async {
+  Future<SessionDirectoryRow?> _readThread(String threadId) async {
     final observation = _client.threadDirectory.observeThread(threadId);
     try {
       var state = observation.state.value;
@@ -465,15 +466,15 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         state = await observation.state.waitFor((value) => !value.isLoading);
       }
       if (state.error case final error?) throw error;
-      return state.frame?.thread;
+      return state.frame?.row;
     } finally {
       await observation.release();
     }
   }
 
-  Future<StudioThread> _requireThread(String threadId) async {
-    final thread = await _readThread(threadId);
-    if (thread != null) return thread;
+  Future<SessionDirectoryRow> _requireThread(String threadId) async {
+    final row = await _readThread(threadId);
+    if (row != null) return row;
     throw StudioFailure(
       code: StudioFailureCode.notFound,
       message: 'Thread metadata is unavailable: $threadId',
@@ -551,7 +552,10 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     if (issue != null) throw issue.blockedFailure();
   }
 
-  String? _workspaceIdForThread(String threadId, StudioThread? metadata) {
+  String? _workspaceIdForThread(
+    String threadId,
+    SessionDirectoryRow? metadata,
+  ) {
     final directoryProjectId = metadata?.workspaceId;
     if (directoryProjectId != null) return directoryProjectId;
     final workspaceProjectId = _client.conversations

@@ -44,14 +44,13 @@ Widget _wholeSidebar({required double width, double textScale = 1}) =>
               recordSidebarPreviewIntent('select project ${project.id}'),
           onNewProjectSession: (project) =>
               recordSidebarPreviewIntent('new session in ${project.id}'),
-          onSelectThread: (thread) =>
-              recordSidebarPreviewIntent('select thread ${thread.id}'),
+          onSelectThread: (row) =>
+              recordSidebarPreviewIntent('select thread ${row.threadId}'),
           onProjectAction: (project, action) =>
               recordSidebarPreviewIntent('project ${project.id}: $action'),
-          onThreadAction: (project, thread, action) =>
-              recordSidebarPreviewIntent(
-                'thread ${thread.id} in ${project.id}: $action',
-              ),
+          onThreadAction: (project, row, action) => recordSidebarPreviewIntent(
+            'thread ${row.threadId} in ${project.id}: $action',
+          ),
           onSettings: () => recordSidebarPreviewIntent('settings'),
         ),
       ),
@@ -172,7 +171,7 @@ Widget sidebarThreadRowPreview() => _sidebarPreviewHost(
   Padding(
     padding: const EdgeInsets.all(8),
     child: SidebarThreadRow(
-      thread: sidebarPreviewData.windows['project-local']!.threads.first,
+      row: sidebarPreviewData.windows['project-local']!.rows.first,
       project: sidebarPreviewProjects.first,
       selected: true,
       pinned: true,
@@ -192,7 +191,7 @@ Widget sidebarPageStatusPreview() => _sidebarPreviewHost(
   SidebarPageStatus(
     workspaceId: 'project-local',
     window: SidebarWindow(
-      threads: sidebarPreviewData.windows['project-local']!.threads,
+      rows: sidebarPreviewData.windows['project-local']!.rows,
       hasMore: true,
       loaded: true,
     ),
@@ -240,7 +239,7 @@ Widget sidebarProjectMenuPreview() => _sidebarPreviewHost(
 @Preview(name: '会话菜单', group: 'Shell · Sidebar parts', size: Size(48, 48))
 Widget sidebarThreadMenuPreview() => _sidebarPreviewHost(
   SidebarThreadMenu(
-    thread: sidebarPreviewData.windows['project-local']!.threads.first,
+    row: sidebarPreviewData.windows['project-local']!.rows.first,
     canRetryRecovery: false,
     blocked: false,
     targetDescription: '/work/pure-lang-pure',

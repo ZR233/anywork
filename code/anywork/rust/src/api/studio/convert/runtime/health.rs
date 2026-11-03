@@ -8,18 +8,16 @@ pub(crate) fn bridge_agent_directory_entry(
     agent: StudioAgentDirectoryEntry,
 ) -> BridgeAgentDirectoryEntryDto {
     BridgeAgentDirectoryEntryDto {
-        id: agent.id,
+        agent_id: agent.agent_id,
+        session_id: agent.session_id,
+        parent_agent_id: agent.parent_agent_id,
         thread_id: agent.thread_id,
-        root_thread_id: agent.root_thread_id,
-        path: agent.path,
-        parent_path: agent.parent_path,
         role: agent.role,
         delegation_mode: agent.delegation_mode.into(),
         delegation_preference: agent.delegation_preference.into(),
         frozen_model: agent.frozen_model.map(Into::into),
         task: agent.task,
         summary: agent.summary,
-        depth: agent.depth,
         state: bridge_agent_state(agent.state),
         execution: agent.execution.map(|execution| BridgeAgentExecution {
             turn_id: execution.turn_id().map(str::to_owned),

@@ -20,9 +20,18 @@ HTTP → pl-studio-server ───┘                                  ↓
 
 ## 1.3 核心概念与事实源
 
+### 会话与智能体身份层次
+
+产品目录身份固定分层为 **SessionRuntime → AgentInstance → Thread → Turn**（运行 owner 的拆分见 [12](./12-collaboration.md) 与 [18](./18-studio-state.md)；本节只描述身份与目录事实）：
+
+- **业务会话（`SessionId`/`SessionDescriptor`）**：目录会话身份与轻量会话事实（标题、排序时间、归档、工作区关联）的唯一归属。`SessionId` 由根 Thread 的既有 ID 字节迁移而来（原值不变）。
+- **会话成员（`AgentId`/`AgentDescriptor`）**：会话内成员身份；成员关系由 `parent_agent_id` 表达（主成员为 `None`），首版迁移复用原 Thread ID 字节，但类型与字段语义分开。成员的执行后端由封闭绑定 `AgentBinding::Native`/`AgentBinding::Acp` 表达，与 root/child 成员关系正交。
+- **本地执行上下文（`ThreadId`）**：Native 对话执行身份，既有 ID 与 `history.sqlite`/工作区目录原样保留；目录行以 typed 四元组（`session_id`/`agent_id`/`parent_agent_id`/`thread_id`）发布，root/child 判定只读 `parent_agent_id`，不从 ID 前缀或 Native 快照猜测。
+- `pl_core::chat::Session` 仍是原子完成集合与历史读取 owner，不改造成业务 SessionRuntime。
+
 ### 领域模型
 
-- **会话线程（`Thread`）**：通用执行所有者，每个线程独占模型会话、工具注册表和工具实例。
+- **会话线程（`Thread`）**：通用执行所有者，每个线程独占模型会话、工具注册表和工具实例；其目录身份字段（root/parent）是上述 typed 身份在 Native 执行域的投影。
 - **智能体角色与工作模式**：普通根智能体（`root`）、飞书根智能体与子智能体（`child`）均由 Studio 的智能体定义进入统一指令装配；智能体角色与工作模式（`Mode`）的执行方式正交，接入渠道自身不维护执行循环。智能体定义、路由冻结与派发边界见 [12](./12-collaboration.md)。
 - **执行轮次（`Turn`）**：一次由输入驱动的有界执行过程；模型请求尝试（attempt）与工具任务各自维护独立生命周期。
 - **上下文条目**：通用上下文条目包含角色、来源、文本、资源引用、不透明内容及工具调用关联。

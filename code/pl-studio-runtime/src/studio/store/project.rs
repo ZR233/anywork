@@ -323,50 +323,57 @@ pub(super) fn validate_directory_references(
     workspaces: &WorkspaceStore,
 ) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
-    let entries = catalog.entries();
-    let threads = entries
+    let sessions = catalog
+        .sessions()
+        .into_iter()
+        .map(|session| (session.session_id.clone(), session))
+        .collect::<BTreeMap<_, _>>();
+    let agents = catalog.agents();
+    let members = agents
         .iter()
-        .map(|entry| (entry.id.as_str(), entry))
+        .map(|agent| (agent.agent_id.as_str(), agent))
         .collect::<BTreeMap<_, _>>();
     let projects = workspaces
         .entries()
         .into_iter()
         .map(|entry| entry.id)
         .collect::<BTreeSet<_>>();
-    for entry in &entries {
+    for session in sessions.values() {
         ensure!(
-            projects.contains(&entry.workspace_id),
+            projects.contains(&session.workspace_id),
             "catalog references a missing project"
         );
-        if let Some(parent_id) = &entry.parent_thread_id {
-            let parent = threads
+    }
+    for agent in &agents {
+        let Some(session) = sessions.get(&agent.session_id) else {
+            anyhow::bail!("catalog agent references a missing session");
+        };
+        if let Some(parent_id) = &agent.parent_agent_id {
+            let parent = members
                 .get(parent_id.as_str())
                 .context("catalog references a missing parent")?;
-            let root = threads
-                .get(entry.root_thread_id.as_str())
+            let root = members
+                .get(session.root_agent_id.as_str())
                 .context("catalog references a missing root")?;
             ensure!(
-                parent.workspace_id == entry.workspace_id
-                    && root.workspace_id == entry.workspace_id
-                    && root.parent_thread_id.is_none()
-                    && parent.root_thread_id == entry.root_thread_id,
+                parent.session_id == agent.session_id && root.is_root_agent(),
                 "catalog parent/root references are inconsistent"
             );
         }
     }
     let mut checked = BTreeSet::new();
-    for entry in &entries {
+    for agent in &agents {
         let mut path = BTreeSet::new();
-        let mut current = entry;
-        while !checked.contains(current.id.as_str()) {
+        let mut current = agent;
+        while !checked.contains(current.agent_id.as_str()) {
             ensure!(
-                path.insert(current.id.as_str()),
+                path.insert(current.agent_id.as_str()),
                 "catalog parent references contain a cycle"
             );
-            let Some(parent) = &current.parent_thread_id else {
+            let Some(parent) = &current.parent_agent_id else {
                 break;
             };
-            current = threads
+            current = members
                 .get(parent.as_str())
                 .context("catalog parent is missing")?;
         }
@@ -705,7 +712,8 @@ mod major_version_storage_tests {
             tokio::fs::write(path, data).await?;
         }
         let store = StudioStore::open(paths.database()).await?;
-        assert!(store.catalog().entries().is_empty());
+        assert!(store.catalog().sessions().is_empty());
+        assert!(store.catalog().agents().is_empty());
         assert!(tokio::fs::try_exists(paths.catalog_file()).await?);
         for (path, expected) in [
             (&old_session, b"old checkpoint".as_slice()),

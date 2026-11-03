@@ -179,7 +179,7 @@ final class StatusBarViewProvider
   }
 }
 
-String _$statusBarViewHash() => r'5b6a2f08a48e26b68bf167764676e0998f72fbcd';
+String _$statusBarViewHash() => r'663ac12597160c232804915f793ca22fe7e7a514';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
 /// part of this value, so response-timing updates cannot rebuild the chrome.

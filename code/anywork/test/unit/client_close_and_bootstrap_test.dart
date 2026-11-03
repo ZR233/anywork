@@ -48,9 +48,9 @@ void main() {
     final workspaceId = client.selection.state.selectedProjectId!;
     final rootMetadata = client.threadDirectory.observeThread('thread-main');
     final rootFrame = await rootMetadata.state
-        .waitFor((state) => state.frame?.thread != null)
+        .waitFor((state) => state.frame?.row != null)
         .timeout(const Duration(seconds: 5));
-    expect(rootFrame.frame!.thread!.workspaceId, workspaceId);
+    expect(rootFrame.frame!.row!.workspaceId, workspaceId);
     addTearDown(rootMetadata.release);
     graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);

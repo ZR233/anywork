@@ -101,7 +101,7 @@ void main() {
       container
           .read(composerDockViewModelProvider(threadId))
           .requireValue
-          .thread
+          .row
           ?.mode,
       ThreadModeId.simple,
       reason: 'demo fixture 的根会话默认是简洁模式',
@@ -128,9 +128,9 @@ void main() {
           .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
       final updated = await directory.state.waitFor(
         (state) =>
-            state.frame?.threads.any(
-              (thread) =>
-                  thread.id == threadId && thread.mode == ThreadModeId.task,
+            state.frame?.rows.any(
+              (row) =>
+                  row.threadId == threadId && row.mode == ThreadModeId.task,
             ) ==
             true,
       );
@@ -210,7 +210,7 @@ void main() {
           .read(settingsStoreProvider)
           .canonical
           ?.modeModelRoutes
-          .where((candidate) => candidate.modeId == settled.thread?.mode)
+          .where((candidate) => candidate.modeId == settled.row?.mode)
           .firstOrNull
           ?.effort,
       target,

@@ -99,7 +99,7 @@ final class _ArchiveCall {
 final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   _Transport() {
     directoryOwnerEpoch = _epoch;
-    seedThread(_thread());
+    seedThread(_row());
     addTearDown(() => modes.close());
     addTearDown(() => routes.close());
     addTearDown(() => stops.close());
@@ -455,18 +455,36 @@ StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
   workspacePath: '/project',
 );
 
+/// The root directory row of the main session.
+SessionDirectoryRow _row({
+  ThreadModeId mode = ThreadModeId.simple,
+  ThreadStatusView status = ThreadStatusView.idle,
+}) => SessionDirectoryRow(
+  sessionId: 'thread',
+  agentId: 'thread',
+  threadId: 'thread',
+  workspaceId: 'project',
+  title: 'Thread',
+  mode: mode,
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
+  status: status,
+  updatedAt: DateTime.utc(2026),
+  workspacePath: '/project',
+);
+
 /// A direct child of the main session: the same directory identity the agent
 /// list publishes, with no separate page or content view.
-StudioThread _childThread() => StudioThread(
-  id: 'child',
+SessionDirectoryRow _childThread() => SessionDirectoryRow(
+  sessionId: 'thread',
+  agentId: 'child',
+  parentAgentId: 'thread',
+  threadId: 'child',
   workspaceId: 'project',
   title: 'Child',
   mode: ThreadModeId.simple,
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
-  parentThreadId: 'thread',
-  rootThreadId: 'thread',
-  agentPath: 'root/child',
   role: 'executor',
   updatedAt: DateTime.utc(2026),
   workspacePath: '/project',
@@ -563,17 +581,14 @@ const _resolution = UserInputResolutionCommand(
 
 StudioAgentView _agent({
   required String threadId,
-  required String path,
-  String? parentPath,
+  String? parentAgentId,
   AgentExecutionView? execution,
   bool canStop = true,
 }) => StudioAgentView(
-  id: threadId,
+  agentId: threadId,
+  sessionId: 'thread',
+  parentAgentId: parentAgentId,
   threadId: threadId,
-  path: path,
-  parentPath: parentPath,
-  rootThreadId: 'thread',
-  depth: parentPath == null ? 0 : 1,
   role: 'executor',
   task: threadId,
   state: const IdleStudioAgent(),
@@ -762,7 +777,7 @@ StudioBootstrap _bootstrap(String epoch, SettingsStateSnapshot settings) =>
     StudioBootstrap(
       ownerEpoch: epoch,
       projectDirectory: ProjectDirectoryState(values: [_project], revision: 1),
-      threadDirectory: ThreadDirectoryPage(threads: [_thread()], revision: 1),
+      threadDirectory: ThreadDirectoryPage(rows: [_row()], revision: 1),
       agentDirectory: AgentDirectoryState(revision: 1),
       settingsState: settings,
       recoveryState: RecoveryStateSnapshot(revision: 1),
@@ -1962,7 +1977,7 @@ void main() {
           values: [_project],
           revision: 1,
         ),
-        threadDirectory: ThreadDirectoryPage(threads: [_thread()], revision: 1),
+        threadDirectory: ThreadDirectoryPage(rows: [_row()], revision: 1),
         agentDirectory: AgentDirectoryState(revision: 1),
         settingsState: _settings(1),
         recoveryState: RecoveryStateSnapshot(
@@ -2744,7 +2759,7 @@ void main() {
               .session('thread')
               .deliverWorkspace(_workspace(revision: 2));
           transport.emitThread(
-            _thread(mode: ThreadModeId.task),
+            _row(mode: ThreadModeId.task),
             'thread',
             revision: 2,
           );
@@ -2775,7 +2790,7 @@ void main() {
             ),
           );
           transport.emitThread(
-            _thread(mode: ThreadModeId.task),
+            _row(mode: ThreadModeId.task),
             'thread',
             revision: 2,
           );
@@ -3076,8 +3091,7 @@ void main() {
           values: [
             _agent(
               threadId: 'child',
-              path: 'root/child',
-              parentPath: 'root',
+              parentAgentId: 'thread',
               execution: _execution(id: 'child-execution', turnId: 'c-turn'),
             ),
           ],
@@ -3134,8 +3148,7 @@ void main() {
           values: [
             _agent(
               threadId: 'child',
-              path: 'root/child',
-              parentPath: 'root',
+              parentAgentId: 'thread',
               execution: null,
               canStop: false,
             ),
@@ -3163,8 +3176,7 @@ void main() {
         values: [
           _agent(
             threadId: 'child',
-            path: 'root/child',
-            parentPath: 'root',
+            parentAgentId: 'thread',
             execution: _execution(id: 'child-execution'),
             canStop: false,
           ),
@@ -3634,8 +3646,7 @@ void main() {
         values: [
           _agent(
             threadId: 'child',
-            path: 'root/child',
-            parentPath: 'root',
+            parentAgentId: 'thread',
             execution: null,
             canStop: true,
           ),
@@ -4171,7 +4182,7 @@ void main() {
           );
         } else if (blocked == 'closed') {
           transport.emitThread(
-            _thread().copyWith(status: ThreadStatusView.closing),
+            _row().copyWith(status: ThreadStatusView.closing),
             'thread',
             revision: 2,
           );
@@ -4226,7 +4237,7 @@ void main() {
             RecoveryStateSnapshot(revision: 3, values: const []),
           );
         } else if (blocked == 'closed') {
-          transport.emitThread(_thread(), 'thread', revision: 3);
+          transport.emitThread(_row(), 'thread', revision: 3);
           await Future<void>.delayed(Duration.zero);
         } else {
           await client.conversations

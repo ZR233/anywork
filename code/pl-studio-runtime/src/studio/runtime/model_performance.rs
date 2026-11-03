@@ -711,7 +711,7 @@ impl ModelPerformanceOwner {
             }
         };
         let session_costs = read.costs.map(|costs| {
-            let archived = self.store.catalog().archived_roots();
+            let archived = self.store.catalog().archived_session_ids();
             costs
                 .iter()
                 .filter(|cost| !archived.contains(&cost.root_thread_id))

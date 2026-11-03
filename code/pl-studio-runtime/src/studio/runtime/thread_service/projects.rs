@@ -430,7 +430,7 @@ impl StudioRuntime {
             .commit_directory(DirectoryDelta {
                 project_removals: vec![ProjectRemoval {
                     workspace_id: project.id.clone(),
-                    thread_ids: thread_ids.clone(),
+                    session_ids: thread_ids.clone(),
                     closed_at: crate::studio::unix_seconds(),
                 }],
                 ..Default::default()

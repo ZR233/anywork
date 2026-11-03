@@ -203,8 +203,8 @@ async fn list_all_thread_ids(session: &Session) -> Result<Vec<String>> {
             .state
             .value()
             .context("thread directory page had no canonical value")?;
-        for thread in &data.threads {
-            ids.push(thread.id.clone());
+        for row in &data.rows {
+            ids.push(row.thread_id.clone());
         }
         match &data.next_cursor {
             Some(next) => cursor = Some(next.clone()),

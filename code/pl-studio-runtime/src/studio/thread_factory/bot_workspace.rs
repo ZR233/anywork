@@ -276,7 +276,11 @@ mod migration_tests {
                 closed: false,
             },
         );
-        delta.thread_upserts.push(root.clone());
+        let (root_session, root_agent) = crate::studio::records::directory_facts_from_thread(&root);
+        delta
+            .session_upserts
+            .push(root_session.expect("root session facts"));
+        delta.agent_upserts.push(root_agent);
         store.persist_directory_summaries(&delta).await?;
         let fixture = close_factory(&store)?;
         let factory = &fixture.factory;
@@ -417,7 +421,7 @@ mod migration_tests {
             .services
             .product_events
             .commit_directory(crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![target.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&target).1],
                 ..Default::default()
             })
             .await?;
@@ -449,7 +453,7 @@ mod migration_tests {
             .services
             .product_events
             .commit_directory(crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![other.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&other).1],
                 ..Default::default()
             })
             .await?;
@@ -493,7 +497,7 @@ mod migration_tests {
         old.role = profile.profile.profile_id.clone();
         store
             .persist_directory_summaries(&crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![old.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&old).1],
                 ..Default::default()
             })
             .await?;

@@ -260,7 +260,7 @@ final class StudioDriverFacts {
     this.timeline,
     this.timelineScroll,
     Map<String, ThreadWorkspace> workspacesByThread = const {},
-    List<StudioThread> rootThreads = const [],
+    List<SessionDirectoryRow> rootRows = const [],
     this.directoryHasMore = false,
     this.selectedProjectId,
     this.selectedThreadId,
@@ -296,7 +296,7 @@ final class StudioDriverFacts {
     this.workspace,
     this.bots,
   }) : workspacesByThread = Map.unmodifiable(workspacesByThread),
-       rootThreads = List.unmodifiable(rootThreads),
+       rootRows = List.unmodifiable(rootRows),
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
        roles = List.unmodifiable(roles),
        accounts = List.unmodifiable(accounts),
@@ -315,7 +315,7 @@ final class StudioDriverFacts {
   /// （design/26 §26.9）。
   final TimelineScrollDiagnostic? timelineScroll;
   final Map<String, ThreadWorkspace> workspacesByThread;
-  final List<StudioThread> rootThreads;
+  final List<SessionDirectoryRow> rootRows;
   final bool directoryHasMore;
   final String? selectedProjectId;
   final String? selectedThreadId;
@@ -653,19 +653,15 @@ abstract final class StudioDriverState {
       // 没有挂载时为 null，不回放上一代快照（见 TimelineScrollDiagnostic）。
       'timelineScroll': facts.timelineScroll?.toJson(),
       'sidebarDirectory': {
-        'count': facts.rootThreads.length,
+        'count': facts.rootRows.length,
         'hasMore': facts.directoryHasMore,
-        'ids': [for (final thread in facts.rootThreads) thread.id],
-        'titles': {
-          for (final thread in facts.rootThreads) thread.id: thread.title,
-        },
+        'ids': [for (final row in facts.rootRows) row.threadId],
+        'titles': {for (final row in facts.rootRows) row.threadId: row.title},
         'workspaceModes': {
-          for (final thread in facts.rootThreads)
-            thread.id: thread.workspaceMode.id,
+          for (final row in facts.rootRows) row.threadId: row.workspaceMode.id,
         },
         'workspacePaths': {
-          for (final thread in facts.rootThreads)
-            thread.id: thread.workspacePath,
+          for (final row in facts.rootRows) row.threadId: row.workspacePath,
         },
       },
       'navigation': {
@@ -950,14 +946,14 @@ abstract final class StudioDriverState {
       'workspace': workspace == null
           ? null
           : {
-              'threadId': workspace.thread.id,
+              'threadId': workspace.row.threadId,
               'syncState': workspace.syncState.name,
               'loadError': workspace.loadError,
-              'title': workspace.rootThread.title,
-              'workspaceId': workspace.thread.workspaceId,
-              'rootThreadId': workspace.rootThread.id,
-              'threadMode': workspace.thread.mode.name,
-              'threadStatus': workspace.thread.status.name,
+              'title': workspace.rootRow.title,
+              'workspaceId': workspace.row.workspaceId,
+              'sessionId': workspace.rootRow.sessionId,
+              'threadMode': workspace.row.mode.name,
+              'threadStatus': workspace.row.status.name,
               'isBusy': workspace.isBusy,
               'model': workspace.runtime.modelId,
               'modelRoute': workspace.modelRoute == null
@@ -997,11 +993,10 @@ abstract final class StudioDriverState {
               'agents': [
                 for (final agent in workspace.agents)
                   {
-                    'id': agent.id,
+                    'agentId': agent.agentId,
+                    'sessionId': agent.sessionId,
+                    'parentAgentId': agent.parentAgentId,
                     'threadId': agent.threadId,
-                    'rootThreadId': agent.rootThreadId,
-                    'path': agent.path,
-                    'parentPath': agent.parentPath,
                     'role': agent.role,
                     'task': agent.task,
                     'status': agent.status,

@@ -798,7 +798,7 @@ async fn standalone_start_directory_creation_failure_is_not_published() -> Resul
             .state
             .value()
             .context("ready directory")?
-            .threads
+            .rows
             .is_empty()
     );
     assert!(

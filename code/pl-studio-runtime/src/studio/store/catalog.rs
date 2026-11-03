@@ -7,7 +7,6 @@
 
 use anyhow::Result;
 
-use crate::studio::catalog::CatalogEntry;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 
@@ -23,8 +22,7 @@ impl StudioStore {
         &self,
         delta: &DirectoryDelta,
     ) -> Result<()> {
-        // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
-        // write-behind mirrors for migration and diagnostics only.
+        // Workspace/Project TOML is the canonical directory fact.
         for project in &delta.project_upserts {
             self.prepare_workspace_manifest(&crate::studio::records::WorkspaceRecord {
                 id: project.id.clone(),
@@ -38,12 +36,21 @@ impl StudioStore {
         }
         self.workspaces().apply_delta(delta).await?;
         let catalog = self.catalog();
-        for thread in &delta.thread_upserts {
-            self.prepare_session_manifest(thread).await?;
-            catalog.upsert(CatalogEntry::from_thread(thread)).await?;
+        for session in &delta.session_upserts {
+            if let Some(root) = catalog.get_agent(&session.root_agent_id) {
+                self.prepare_session_manifest(session, &root).await?;
+            }
+            catalog.upsert_session(session.clone()).await?;
+        }
+        for agent in &delta.agent_upserts {
+            let session = catalog.get_session(&agent.session_id).ok_or_else(|| {
+                anyhow::anyhow!("agent session is not registered: {}", agent.session_id)
+            })?;
+            self.prepare_session_manifest(&session, agent).await?;
+            catalog.upsert_agent(agent.clone()).await?;
         }
         let archived_at = delta
-            .thread_removals
+            .session_removals
             .iter()
             .map(|removal| removal.archived_at)
             .chain(
@@ -54,29 +61,26 @@ impl StudioStore {
             )
             .max();
         let archived_ids = delta
-            .thread_removals
+            .session_removals
             .iter()
-            .flat_map(|removal| removal.thread_ids.iter().cloned())
+            .flat_map(|removal| removal.session_ids.iter().cloned())
             .chain(
                 delta
                     .project_removals
                     .iter()
-                    .flat_map(|removal| removal.thread_ids.iter().cloned()),
+                    .flat_map(|removal| removal.session_ids.iter().cloned()),
             )
             .collect::<Vec<_>>();
         if let Some(archived_at) = archived_at {
-            catalog.archive(&archived_ids, archived_at).await?;
-        }
-        if !delta.session_activity.is_empty() {
-            catalog.touch(&delta.session_activity).await?;
+            catalog.archive_sessions(&archived_ids, archived_at).await?;
         }
         for fault in &delta.unregistered_faults {
-            let mut entry = catalog.get(&fault.thread_id).ok_or_else(|| {
-                anyhow::anyhow!("spawn compensation Thread not found: {}", fault.thread_id)
+            let mut agent = catalog.get_agent(&fault.agent_id).ok_or_else(|| {
+                anyhow::anyhow!("spawn compensation agent not found: {}", fault.agent_id)
             })?;
-            entry.status = fault.state.kind;
-            entry.updated_at = crate::studio::ids::unix_seconds();
-            catalog.upsert(entry).await?;
+            agent.status = fault.state.kind;
+            agent.updated_at = crate::studio::ids::unix_seconds();
+            catalog.upsert_agent(agent).await?;
         }
         Ok(())
     }

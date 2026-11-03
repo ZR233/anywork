@@ -4,6 +4,8 @@ use pl_studio_runtime::{
     StudioProductEventKind,
 };
 
+use crate::api::studio::convert::thread_stream::bridge_session_row;
+
 use super::runtime::{
     bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_bots_state,
     bridge_lsp_state, bridge_mcp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
@@ -11,7 +13,6 @@ use super::runtime::{
     bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
     bridge_thread_mode_catalog, bridge_update_state,
 };
-use super::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
 
 pub(crate) fn bridge_product_event(
@@ -31,7 +32,7 @@ pub(crate) fn bridge_product_event(
                 BridgeProductEventPayload::ThreadDirectoryChanged(BridgeThreadDirectoryDelta {
                     revision: state.revision,
                     updated_at: state.updated_at,
-                    upserted: state.upserted.into_iter().map(bridge_thread).collect(),
+                    upserted: state.upserted.into_iter().map(bridge_session_row).collect(),
                     removed: state.removed,
                 })
             }

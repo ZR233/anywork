@@ -427,7 +427,7 @@ mod storage_fault_tests {
         let directory = DirectoryDelta {
             project_removals: vec![crate::studio::store::directory::ProjectRemoval {
                 workspace_id: "unused-project".into(),
-                thread_ids: vec![],
+                session_ids: vec![],
                 closed_at: 1,
             }],
             ..Default::default()

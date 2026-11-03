@@ -34,8 +34,8 @@ final class SidebarFixture {
   final Map<String, DirectoryObservation<ThreadMetadataFrame>>
   _threadObservations;
 
-  StudioThread? threadSnapshot(String threadId) =>
-      _threadObservations[threadId]?.state.value.frame?.thread;
+  SessionDirectoryRow? threadSnapshot(String threadId) =>
+      _threadObservations[threadId]?.state.value.frame?.row;
 
   static Future<SidebarFixture> create({
     required AppGraph graph,
@@ -242,8 +242,8 @@ final class SidebarFixture {
         'Fixture root-thread observation failed for ${thread.id}: $error',
       );
     }
-    final canonical = state.frame?.thread;
-    if (state.closed || canonical == null || !canonical.isRoot) {
+    final canonical = state.frame?.row;
+    if (state.closed || canonical == null || !canonical.isRootRow) {
       throw StateError('Fixture root thread did not reach the directory');
     }
   }
@@ -375,7 +375,7 @@ final class SidebarFixture {
             );
           }
           return _CleanupTarget(
-            agentId: agent.id,
+            agentId: agent.agentId,
             threadId: threadId,
             executionId: execution?.id,
             executionPhase: execution?.phase.name,

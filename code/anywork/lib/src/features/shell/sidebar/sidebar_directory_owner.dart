@@ -198,7 +198,7 @@ final class SidebarDirectoryOwner {
     final state = entry.resource.state.value;
     final frame = state.frame;
     return SidebarWindow(
-      threads: frame?.threads ?? const [],
+      rows: frame?.rows ?? const [],
       loading: state.isLoading,
       error: state.error?.toString(),
       hasMore: paged && frame?.nextCursor != null,

@@ -22,7 +22,7 @@ import 'recovery_issue_indicator.dart';
 class AgentSwitcherMenu extends ConsumerStatefulWidget {
   const AgentSwitcherMenu({
     required this.agents,
-    required this.workspaceThreads,
+    required this.workspaceRows,
     this.recoveryIssues = const [],
     required this.selectedThreadId,
     this.pendingInteractionThreadIds = const {},
@@ -30,7 +30,7 @@ class AgentSwitcherMenu extends ConsumerStatefulWidget {
   });
 
   final List<StudioAgentView> agents;
-  final List<StudioThread> workspaceThreads;
+  final List<SessionDirectoryRow> workspaceRows;
   final List<StudioRecoveryIssue> recoveryIssues;
   final String? selectedThreadId;
 
@@ -348,6 +348,25 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     );
   }
 
+  /// 成员层级深度：沿 `parentAgentId` 链在本次菜单成员集合内计数。
+  ///
+  /// 深度只用于缩进展示；判据是目录行的 typed 父链接，不是路径或 ID 形状。
+  int _agentDepth(StudioAgentView agent) {
+    final byAgentId = {
+      for (final member in widget.agents) member.agentId: member,
+    };
+    var depth = 0;
+    var current = agent;
+    final visited = <String>{};
+    while (current.parentAgentId != null && visited.add(current.agentId)) {
+      final parent = byAgentId[current.parentAgentId!];
+      if (parent == null) break;
+      depth += 1;
+      current = parent;
+    }
+    return depth;
+  }
+
   /// 单个智能体行：层级缩进、状态图标、任务概要/角色、右侧状态、行内停止与选中勾。
   ///
   /// 图标、正文与尾部件分别落在 [MenuItemButton] 的官方槽位上，行内空间由 Flex
@@ -358,22 +377,22 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     required bool selected,
     required double menuWidth,
   }) {
-    final thread = widget.workspaceThreads
-        .where((thread) => thread.id == agent.threadId)
+    final row = widget.workspaceRows
+        .where((row) => row.threadId == agent.threadId)
         .firstOrNull;
-    final rootProjectId = widget.workspaceThreads
-        .where((candidate) => candidate.isRoot)
+    final rootProjectId = widget.workspaceRows
+        .where((candidate) => candidate.isRootRow)
         .firstOrNull
         ?.workspaceId;
     final recoveryIssue = recoveryIssuesForTarget(
       widget.recoveryIssues,
-      workspaceId: thread?.workspaceId ?? rootProjectId,
+      workspaceId: row?.workspaceId ?? rootProjectId,
       threadId: agent.threadId,
     ).firstOrNull;
     final error = agent.error;
     final hasError = error != null;
-    final summary = thread?.title.trim().isNotEmpty == true
-        ? thread!.title
+    final summary = row?.title.trim().isNotEmpty == true
+        ? row!.title
         : agent.task.trim().isNotEmpty
         ? agent.task
         : context.roleLabel(agent.role);
@@ -387,7 +406,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
         : (isRetiredAgentRow(agent)
               ? context.l10n.agentRoleRetired
               : context.roleLabel(role));
-    final frozen = agent.frozenModel ?? thread?.frozenModel;
+    final frozen = agent.frozenModel ?? row?.frozenModel;
     final account = ref
         .watch(modelSelectionAccountsProvider)
         .where((account) => account.id == frozen?.accountId)
@@ -403,7 +422,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final modelTooltip = frozen == null
         ? modelLabel
         : '$modelLabel\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
-    final indent = (agent.depth * _agentIndentStep).clamp(
+    final indent = (_agentDepth(agent) * _agentIndentStep).clamp(
       0.0,
       (menuWidth - 208).clamp(0.0, menuWidth),
     );

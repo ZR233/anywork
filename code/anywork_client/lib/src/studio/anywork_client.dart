@@ -330,9 +330,9 @@ class AnyworkClient {
     var settled = false;
     void evaluate(ThreadSessionState state) {
       if (settled || _closed) return;
-      if (!state.hasSnapshot) return;
-      final thread = state.workspace?.thread;
-      if (thread == null || !thread.isRoot) {
+      final row = state.directoryRow;
+      if (row == null) return;
+      if (row.isChildRow) {
         // 非宿主页面没有子交互主题需求；不再等待该会话的进一步变化。
         settled = true;
         _childInteractionPageWatch?.cancel();
@@ -420,11 +420,12 @@ class AnyworkClient {
   void retryResource(ProductTopic topic) {
     _ensureOpen();
     final selected = selection.state;
-    final selectedRoot = findThread(selected.selectedThreadId ?? '')
-        ?.effectiveRootThreadId;
+    final selectedSession = threadDirectory
+        .observedThread(selected.selectedThreadId ?? '')
+        ?.sessionId;
     if (topic is SkillsTopic &&
             topic.workspaceId == selected.selectedProjectId ||
-        topic is SessionCostsTopic && topic.rootThreadId == selectedRoot) {
+        topic is SessionCostsTopic && topic.rootThreadId == selectedSession) {
       // Admission may have failed before a topic owner existed. Retry logical
       // demand here rather than asking an observer to create that owner.
       _selectionChanged(selected);
@@ -568,15 +569,16 @@ class AnyworkClient {
   void _selectionChanged(SelectionStoreState next) {
     if (_closed) return;
     final workspaceId = next.selectedProjectId;
-    final rootId = AgentDirectoryQueries.rootThreadId(
+    final sessionId = AgentDirectoryQueries.sessionId(
       threadId: next.selectedThreadId,
       agents: project.state.agents?.values ?? const [],
-      threads: [
-        if (findThread(next.selectedThreadId ?? '') case final selected?)
-          selected,
+      rows: [
+        if (threadDirectory.observedThread(next.selectedThreadId ?? '')
+            case final row?)
+          row,
       ],
     );
-    final topicKey = '$workspaceId/$rootId';
+    final topicKey = '$workspaceId/$sessionId';
     if (_selectionTopicKey != topicKey) {
       final previous = _selectionTopics;
       _selectionTopics = null;
@@ -598,7 +600,7 @@ class AnyworkClient {
       try {
         _selectionTopics = channels.acquireTopics([
           if (workspaceId != null) SkillsTopic(workspaceId: workspaceId),
-          if (rootId != null) SessionCostsTopic(rootThreadId: rootId),
+          if (sessionId != null) SessionCostsTopic(rootThreadId: sessionId),
         ]);
         _selectionTopicKey = topicKey;
         resourceFailure.publish(null);

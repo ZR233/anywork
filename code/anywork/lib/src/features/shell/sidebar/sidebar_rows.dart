@@ -150,7 +150,7 @@ class SidebarProjectRow extends StatelessWidget {
 class SidebarThreadRow extends StatelessWidget {
   const SidebarThreadRow({
     super.key,
-    required this.thread,
+    required this.row,
     required this.project,
     required this.selected,
     required this.pinned,
@@ -162,7 +162,7 @@ class SidebarThreadRow extends StatelessWidget {
     this.touchMode = false,
   });
 
-  final StudioThread thread;
+  final SessionDirectoryRow row;
   final StudioProject project;
   final bool selected;
   final bool pinned;
@@ -179,7 +179,7 @@ class SidebarThreadRow extends StatelessWidget {
     final target = touchMode ? 44.0 : 28.0;
     final alias = project.sshAlias;
     return KeyedSubtree(
-      key: StudioDriverKeys.threadRow(thread.id),
+      key: StudioDriverKeys.threadRow(row.threadId),
       child: _SidebarHoverDetail(
         detailBuilder: (context) => Column(
           mainAxisSize: MainAxisSize.min,
@@ -191,19 +191,19 @@ class SidebarThreadRow extends StatelessWidget {
         ),
         child: _SidebarTile(
           selected: selected && !archived,
-          title: thread.title,
+          title: row.title,
           touchMode: touchMode,
           leadingPadding: 8,
           leading: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox.square(
-                key: ValueKey('thread-status-slot-${thread.id}'),
+                key: ValueKey('thread-status-slot-${row.threadId}'),
                 dimension: 16,
                 child: Center(
                   child: archived
                       ? const SizedBox.shrink()
-                      : _ThreadStatusBadge(status: thread.status),
+                      : _ThreadStatusBadge(status: row.status),
                 ),
               ),
               const SizedBox(width: 6),
@@ -214,7 +214,7 @@ class SidebarThreadRow extends StatelessWidget {
           leadingActions: archived
               ? null
               : _tileIconButton(
-                  key: StudioDriverKeys.pinThread(thread.id),
+                  key: StudioDriverKeys.pinThread(row.threadId),
                   tooltip: pinned
                       ? context.l10n.sidebarUnpin
                       : context.l10n.sidebarPin,
@@ -230,7 +230,7 @@ class SidebarThreadRow extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: _recoveryIndicator(context, issue),
                 ),
-              if (thread.workspaceMode.isWorktree)
+              if (row.workspaceMode.isWorktree)
                 SizedBox.square(
                   dimension: 28,
                   child: Center(
@@ -238,7 +238,7 @@ class SidebarThreadRow extends StatelessWidget {
                       message: context.l10n.sidebarSessionWorktree,
                       child: Icon(
                         Icons.account_tree_outlined,
-                        key: StudioDriverKeys.threadWorkspaceMode(thread.id),
+                        key: StudioDriverKeys.threadWorkspaceMode(row.threadId),
                         size: 15,
                       ),
                     ),
@@ -251,7 +251,9 @@ class SidebarThreadRow extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _tileIconButton(
-                      key: ValueKey('thread-archived-workspace-${thread.id}'),
+                      key: ValueKey(
+                        'thread-archived-workspace-${row.threadId}',
+                      ),
                       tooltip: context.l10n.sidebarOriginalWorkspace,
                       icon: Icons.folder_outlined,
                       minTarget: target,
@@ -259,7 +261,7 @@ class SidebarThreadRow extends StatelessWidget {
                           onAction(SidebarThreadAction.originalWorkspace),
                     ),
                     _tileIconButton(
-                      key: ValueKey('thread-restore-${thread.id}'),
+                      key: ValueKey('thread-restore-${row.threadId}'),
                       tooltip: context.l10n.sidebarRestore,
                       icon: Icons.unarchive_outlined,
                       minTarget: target,
@@ -268,7 +270,7 @@ class SidebarThreadRow extends StatelessWidget {
                   ],
                 )
               : SidebarThreadMenu(
-                  thread: thread,
+                  row: row,
                   blocked: issue?.blocksAccess == true,
                   recoveryIssue: issue,
                   recoveryIssueId: issue?.scope == RecoveryIssueScope.thread
@@ -278,8 +280,8 @@ class SidebarThreadRow extends StatelessWidget {
                       issue?.scope == RecoveryIssueScope.thread &&
                       issue?.canRetry == true,
                   targetDescription: alias == null
-                      ? thread.workspacePath
-                      : '$alias:${thread.workspacePath}',
+                      ? row.workspacePath
+                      : '$alias:${row.workspacePath}',
                   hostApps: hostApps,
                   minTarget: target,
                   onAction: onAction,
@@ -294,8 +296,8 @@ class SidebarThreadRow extends StatelessWidget {
     final environment = alias == null
         ? context.l10n.sidebarLocal
         : 'SSH · $alias';
-    final statusLabel = context.threadStatusLabel(thread.status);
-    final updated = _relativeUpdatedLabel(context, thread.updatedAt);
+    final statusLabel = context.threadStatusLabel(row.status);
+    final updated = _relativeUpdatedLabel(context, row.updatedAt);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -303,7 +305,7 @@ class SidebarThreadRow extends StatelessWidget {
         // 详情卡内部可滚动，完整展示 canonical 标题（含 80 字 CJK 长标题）；
         // 截断只发生在行内单行渲染。
         Text(
-          thread.title,
+          row.title,
           style: context.text.labelLarge?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
@@ -331,7 +333,7 @@ class SidebarThreadRow extends StatelessWidget {
             size: 15,
             color: context.colors.onSurfaceVariant,
           ),
-          value: thread.workspacePath,
+          value: row.workspacePath,
           monospace: true,
         ),
         _SidebarDetailRow(
@@ -348,7 +350,7 @@ class SidebarThreadRow extends StatelessWidget {
     );
   }
 
-  Color _statusDotColor(BuildContext context) => switch (thread.status) {
+  Color _statusDotColor(BuildContext context) => switch (row.status) {
     ThreadStatusView.faulted => context.colors.error,
     ThreadStatusView.waitingInteraction => context.statusColors.warning,
     ThreadStatusView.queued ||

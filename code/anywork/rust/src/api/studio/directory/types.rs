@@ -1,4 +1,4 @@
-use crate::api::studio::types::{BridgeResourceStamp, BridgeThread};
+use crate::api::studio::types::{BridgeResourceStamp, BridgeSessionDirectoryRow};
 
 #[derive(Debug, Clone)]
 pub enum BridgeThreadDirectoryFilter {
@@ -28,7 +28,7 @@ pub struct BridgeThreadDirectoryFrame {
     pub query: BridgeThreadDirectoryQuery,
     pub window: BridgeThreadDirectoryWindow,
     pub stamp: BridgeResourceStamp,
-    pub threads: Vec<BridgeThread>,
+    pub rows: Vec<BridgeSessionDirectoryRow>,
     pub next_cursor: Option<String>,
 }
 
@@ -36,5 +36,5 @@ pub struct BridgeThreadDirectoryFrame {
 pub struct BridgeThreadMetadataFrame {
     pub thread_id: String,
     pub stamp: BridgeResourceStamp,
-    pub thread: Option<BridgeThread>,
+    pub row: Option<BridgeSessionDirectoryRow>,
 }

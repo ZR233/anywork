@@ -120,13 +120,19 @@ impl ProductEventBus {
         // The catalog is already loaded. Register every persisted direct child before any
         // observation can publish a host collection; activation ancestry can omit siblings.
         let mut child_interactions = ChildInteractionsProjection::default();
-        let directory = store
-            .catalog()
-            .entries()
-            .into_iter()
-            .map(|entry| entry.to_thread())
+        let catalog = store.catalog();
+        let sessions = catalog.sessions();
+        let agents = catalog.agents();
+        let directory_rows = sessions
+            .iter()
+            .flat_map(|session| {
+                catalog
+                    .agents_for_session(&session.session_id)
+                    .into_iter()
+                    .map(move |agent| crate::studio::records::row_projection(session, &agent))
+            })
             .collect::<Vec<_>>();
-        child_interactions::prepare_entries(&mut child_interactions, &directory);
+        child_interactions::prepare_entries(&mut child_interactions, &directory_rows);
         let project_entries = store.workspaces().entries();
         let query_projects = project_entries
             .iter()
@@ -145,7 +151,8 @@ impl ProductEventBus {
             .filter(|(_, entry)| !entry.closed)
             .map(|(project, _)| project.clone())
             .collect::<Vec<_>>();
-        let thread_index = thread_directory::ThreadDirectoryIndex::new(directory, &query_projects);
+        let thread_index =
+            thread_directory::ThreadDirectoryIndex::new(sessions, agents, &query_projects);
         let events = Self {
             store,
             writer,

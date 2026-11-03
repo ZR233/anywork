@@ -31,7 +31,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-acp` | 外部智能体的 ACP 协商与认证协议、类型化请求结果及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
 | `pl-tool` | 文件读写、命令执行、SSH、Git、LSP、MCP、技能、网络搜索、图像生成与展示、用户交互、笔记、待办（todo）、轮次完成、多智能体协作与机器人会话工具 |
-| `pl-protocol` | Studio 与外围适配器共用的产品线协议（wire）、DTO、错误信封与业务状态类型 |
+| `pl-protocol` | Studio 与外围适配器共用的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |

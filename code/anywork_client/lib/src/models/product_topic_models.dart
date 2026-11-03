@@ -514,7 +514,7 @@ final class ThreadDirectoryChangedPayload extends ProductTopicEventPayload {
   });
 
   final int revision;
-  final List<StudioThread> upserted;
+  final List<SessionDirectoryRow> upserted;
   final List<String> removed;
 }
 

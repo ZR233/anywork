@@ -1,12 +1,12 @@
 //! `ObservedResource<T>` 到各 FRB concrete union 的穷尽转换。
 
+use crate::api::studio::convert::thread_stream::bridge_session_row;
 use pl_protocol::ObservedResource;
 use pl_studio_runtime::*;
 
 use crate::api::studio::convert::settings::{
     account_usage_dto, bridge_model_catalog_account, bridge_settings,
 };
-use crate::api::studio::convert::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
 
 use super::{
@@ -132,7 +132,7 @@ pub(crate) fn bridge_thread_directory_page(
     concrete_observed!(
         state,
         |data| BridgeThreadDirectoryPageData {
-            threads: data.threads.into_iter().map(bridge_thread).collect(),
+            rows: data.rows.into_iter().map(bridge_session_row).collect(),
             next_cursor: data.next_cursor,
         },
         BridgeThreadDirectoryPage

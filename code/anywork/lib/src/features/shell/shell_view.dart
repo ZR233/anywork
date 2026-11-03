@@ -155,24 +155,23 @@ HeaderView headerView(Ref ref) {
   final selectedId = selection.selectedThreadId;
   final selected = selectedId == null
       ? null
-      : ref.watch(threadMetadataStoreProvider(selectedId)).frame?.thread;
-  final rootId = selected?.effectiveRootThreadId;
-  final root = rootId == null
+      : ref.watch(threadMetadataStoreProvider(selectedId)).frame?.row;
+  final sessionId = selected?.sessionId;
+  final root = sessionId == null
       ? null
-      : rootId == selectedId
+      : sessionId == selectedId
       ? selected
-      : ref.watch(threadMetadataStoreProvider(rootId)).frame?.thread;
+      : ref.watch(threadMetadataStoreProvider(sessionId)).frame?.row;
   final workspaceId = root?.workspaceId ?? selection.selectedProjectId;
-  final workspaceAgents = AgentDirectoryQueries.forRoot(
-    rootThreadId: rootId,
+  final workspaceAgents = AgentDirectoryQueries.forSession(
+    sessionId: root?.sessionId,
     agents: agents,
-    threads: [?root],
   );
-  final workspaceThreads = [
-    ?root,
+  final workspaceRows = [
+    if (root != null && root.isRootRow) root,
     for (final agent in workspaceAgents)
-      if (agent.threadId != rootId)
-        ?ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.thread,
+      if (agent.threadId != root?.threadId)
+        ?ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.row,
   ];
   var runtime = shellEmptyRuntime;
   var pending = const <PendingInteraction>[];
@@ -182,19 +181,19 @@ HeaderView headerView(Ref ref) {
     pending = session.interactions;
   }
   return HeaderView(
-    selectedRootThread: root,
+    selectedRootRow: root != null && root.isRootRow ? root : null,
     selectedProject: projectById(
       projects.projects?.values ?? const [],
       workspaceId,
     ),
     selectedProjectId: selection.selectedProjectId,
-    workspaceThreads: workspaceThreads,
+    workspaceRows: workspaceRows,
     agents: workspaceAgents,
     selectedThreadId: selection.selectedThreadId,
     runtime: runtime,
-    sessionCost: rootId == null
+    sessionCost: sessionId == null
         ? null
-        : ref.watch(shellSessionCostProvider(rootId)),
+        : ref.watch(shellSessionCostProvider(sessionId)),
     pendingInteractions: pending,
   );
 }
@@ -212,21 +211,21 @@ AgentWorkspaceView? conversationWorkspace(
   if (!needsOpen) {
     session = ref.watch(threadSessionStoreProvider(threadId));
   }
-  final thread = ref.watch(threadMetadataStoreProvider(threadId)).frame?.thread;
-  if (thread == null) return null;
+  final row = ref.watch(threadMetadataStoreProvider(threadId)).frame?.row;
+  if (row == null) return null;
   final agents =
       ref.watch(projectStoreProvider).agents?.values ??
       const <StudioAgentView>[];
-  final rootId = thread.effectiveRootThreadId;
-  final root = rootId == threadId
-      ? thread
-      : ref.watch(threadMetadataStoreProvider(rootId)).frame?.thread;
+  final sessionId = row.sessionId;
+  final root = sessionId == threadId
+      ? row
+      : ref.watch(threadMetadataStoreProvider(sessionId)).frame?.row;
   if (root == null) return null;
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;
   return AgentWorkspaceView(
-    thread: thread,
-    rootThread: root,
+    row: row,
+    rootRow: root,
     syncState: session == null
         ? AgentWorkspaceSyncState.idle
         : sessionSyncState(session),
@@ -242,16 +241,15 @@ AgentWorkspaceView? conversationWorkspace(
       session?.interactions ?? const [],
     ),
     composer: const ComposerThreadState.idle(),
-    composerMode: thread.isAgent
+    composerMode: row.isChildRow
         ? AgentComposerMode.runtimeDriven
         : AgentComposerMode.editable,
     accounts: ref.watch(modelSelectionAccountsProvider),
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
-    agents: AgentDirectoryQueries.forRoot(
-      rootThreadId: rootId,
+    agents: AgentDirectoryQueries.forSession(
+      sessionId: sessionId,
       agents: agents,
-      threads: [thread, root],
     ),
   );
 }
@@ -324,7 +322,7 @@ PersistencePanelView persistencePanelView(Ref ref) {
     final storage = session.storage;
     if (storage != null) {
       final metadata = ref.watch(threadMetadataStoreProvider(selectedId));
-      final title = metadata.frame?.thread?.title.trim() ?? '';
+      final title = metadata.frame?.row?.title.trim() ?? '';
       selectedStorage = ShellStorageFact(
         threadId: selectedId,
         label: title.isEmpty ? selectedId : title,
@@ -397,41 +395,4 @@ StudioProject? projectById(List<StudioProject> projects, String? id) {
     if (project.id == id) return project;
   }
   return null;
-}
-
-List<StudioThread> threadsForRoot(
-  List<StudioThread> threads,
-  StudioThread root,
-) {
-  final scoped = [
-    for (final thread in threads)
-      if (thread.effectiveRootThreadId == root.id) thread,
-  ];
-  final children = <String?, List<StudioThread>>{};
-  for (final thread in scoped) {
-    children.putIfAbsent(thread.parentThreadId, () => []).add(thread);
-  }
-  for (final siblings in children.values) {
-    siblings.sort((left, right) {
-      final created = left.effectiveCreatedAt.compareTo(
-        right.effectiveCreatedAt,
-      );
-      return created != 0 ? created : left.id.compareTo(right.id);
-    });
-  }
-  final ordered = <StudioThread>[];
-  final visited = <String>{};
-  void append(StudioThread thread) {
-    if (!visited.add(thread.id)) return;
-    ordered.add(thread);
-    for (final child in children[thread.id] ?? const <StudioThread>[]) {
-      append(child);
-    }
-  }
-
-  append(root);
-  for (final thread in scoped) {
-    append(thread);
-  }
-  return ordered;
 }

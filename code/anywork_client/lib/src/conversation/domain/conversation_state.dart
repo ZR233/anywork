@@ -15,6 +15,7 @@ class ThreadSessionState {
   const ThreadSessionState({
     required this.threadId,
     this.workspace,
+    this.directoryRow,
     this.hasSnapshot = false,
     this.streamEpoch,
     this.baseRevision,
@@ -23,6 +24,12 @@ class ThreadSessionState {
 
   final String threadId;
   final ThreadWorkspace? workspace;
+
+  /// 本会话的目录行描述（typed 身份与目录事实）。
+  ///
+  /// 它与 [workspace] 的 Native Thread 投影分开保存：root/child 与成员归属
+  /// 只读这里的 `parentAgentId`/`sessionId`，不从执行快照反推。
+  final SessionDirectoryRow? directoryRow;
   final bool hasSnapshot;
   final int? streamEpoch;
   final int? baseRevision;
@@ -49,6 +56,7 @@ class ThreadSessionState {
   ThreadSessionState copyWith({
     ThreadWorkspace? workspace,
     bool clearWorkspace = false,
+    Object? directoryRow = _unset,
     bool? hasSnapshot,
     Object? streamEpoch = _unset,
     Object? baseRevision = _unset,
@@ -57,6 +65,9 @@ class ThreadSessionState {
     return ThreadSessionState(
       threadId: threadId,
       workspace: clearWorkspace ? null : workspace ?? this.workspace,
+      directoryRow: identical(directoryRow, _unset)
+          ? this.directoryRow
+          : directoryRow as SessionDirectoryRow?,
       hasSnapshot: hasSnapshot ?? this.hasSnapshot,
       streamEpoch: identical(streamEpoch, _unset)
           ? this.streamEpoch
@@ -78,6 +89,7 @@ class ThreadSessionState {
           streamEpoch == other.streamEpoch &&
           baseRevision == other.baseRevision &&
           sync == other.sync &&
+          directoryRow == other.directoryRow &&
           identical(workspace, other.workspace);
 
   @override
@@ -88,6 +100,7 @@ class ThreadSessionState {
     streamEpoch,
     baseRevision,
     sync,
+    directoryRow,
     identityHashCode(workspace),
   );
 }

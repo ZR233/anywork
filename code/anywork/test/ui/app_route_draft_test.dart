@@ -401,14 +401,14 @@ void main() {
           final directoryFrame = await directoryDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(directoryFrame.frame!.threads, isEmpty);
+          expect(directoryFrame.frame!.rows, isEmpty);
           final metadataDemand = graph.client.threadDirectory.observeThread(
             'thread-alt',
           );
           final metadataFrame = await metadataDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(metadataFrame.frame!.thread?.id, 'thread-alt');
+          expect(metadataFrame.frame!.row?.threadId, 'thread-alt');
           addTearDown(() async {
             await pumpClientFuture(
               tester,
@@ -575,11 +575,9 @@ void main() {
           expect(observed['navigation']['isStartPage'], isFalse);
           // The visible Conversation owns exact-ID metadata even though the
           // independent sidebar query still has no matching rows.
-          expect(
-            graph.client.findThread('thread-alt'),
-            same(facts.workspace!.thread),
-          );
-          expect(directoryDemand.state.value.frame!.threads, isEmpty);
+          expect(graph.client.findThread('thread-alt'), isNotNull);
+          expect(facts.workspace!.threadId, 'thread-alt');
+          expect(directoryDemand.state.value.frame!.rows, isEmpty);
           expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
           expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(

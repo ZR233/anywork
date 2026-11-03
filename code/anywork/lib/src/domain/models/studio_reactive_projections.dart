@@ -199,7 +199,7 @@ class StudioThroughputProjection {
 /// of this value; status widgets subscribe to their own projections.
 class StudioStatusProjection {
   const StudioStatusProjection({
-    required this.thread,
+    required this.row,
     required this.accounts,
     required this.roles,
     required this.isBusy,
@@ -207,14 +207,14 @@ class StudioStatusProjection {
 
   factory StudioStatusProjection.fromState(StudioState state) {
     return StudioStatusProjection(
-      thread: state.selectedThread,
+      row: state.selectedRow,
       accounts: state.accounts,
       roles: state.roles,
       isBusy: state.isBusy,
     );
   }
 
-  final StudioThread? thread;
+  final SessionDirectoryRow? row;
   final List<ModelSelectionAccount> accounts;
   final List<RoleSettingsView> roles;
   final bool isBusy;
@@ -223,7 +223,7 @@ class StudioStatusProjection {
   bool operator ==(Object other) {
     return identical(this, other) ||
         other is StudioStatusProjection &&
-            _threadEquals(thread, other.thread) &&
+            _rowEquals(row, other.row) &&
             _listEqualsBy(accounts, other.accounts, _accountEquals) &&
             _listEqualsBy(roles, other.roles, _roleEquals) &&
             isBusy == other.isBusy;
@@ -231,7 +231,7 @@ class StudioStatusProjection {
 
   @override
   int get hashCode => Object.hash(
-    _threadHash(thread),
+    _rowHash(row),
     Object.hashAll(accounts.map(_accountHash)),
     Object.hashAll(roles.map(_roleHash)),
     isBusy,
@@ -311,8 +311,8 @@ class StudioAccountUsageProjection {
 /// live usage counters, timeline rows and history state.
 class StudioComposerProjection {
   const StudioComposerProjection({
-    required this.thread,
-    required this.rootThread,
+    required this.row,
+    required this.rootRow,
     required this.syncState,
     required this.loadError,
     required this.composer,
@@ -328,17 +328,17 @@ class StudioComposerProjection {
   });
 
   static StudioComposerProjection? fromState(StudioState state) {
-    final thread = state.selectedThread;
-    final root = state.selectedRootThread;
-    if (thread == null || root == null) return null;
+    final row = state.selectedRow;
+    final root = state.selectedRootRow;
+    if (row == null || root == null) return null;
     final runtime = state.runtime;
     return StudioComposerProjection(
-      thread: thread,
-      rootThread: root,
+      row: row,
+      rootRow: root,
       syncState: state.selectedWorkspaceUi.syncState,
       loadError: state.selectedWorkspaceUi.loadError,
       composer: state.composer,
-      composerMode: thread.isAgent
+      composerMode: row.isChildRow
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
       accounts: state.accounts,
@@ -348,14 +348,14 @@ class StudioComposerProjection {
       turn: state.turn,
       modelRoute: state.modelRoute,
       workflow: runtime.workflow,
-      targetDiagnostic: state.composerDiagnostic(thread.workspaceId, thread.id),
+      targetDiagnostic: state.composerDiagnostic(row.workspaceId, row.threadId),
     );
   }
 
   static StudioComposerProjection fromWorkspace(AgentWorkspaceView workspace) {
     return StudioComposerProjection(
-      thread: workspace.thread,
-      rootThread: workspace.rootThread,
+      row: workspace.row,
+      rootRow: workspace.rootRow,
       syncState: workspace.syncState,
       loadError: workspace.loadError,
       composer: workspace.composer,
@@ -371,8 +371,8 @@ class StudioComposerProjection {
     );
   }
 
-  final StudioThread thread;
-  final StudioThread rootThread;
+  final SessionDirectoryRow row;
+  final SessionDirectoryRow rootRow;
   final AgentWorkspaceSyncState syncState;
   final String? loadError;
   final ComposerThreadState composer;
@@ -386,20 +386,20 @@ class StudioComposerProjection {
   final WorkflowRuntimeView? workflow;
   final ComposerTargetDiagnostic? targetDiagnostic;
 
-  String get threadId => thread.id;
+  String get threadId => row.threadId;
   bool get isBusy => turn?.state.isBusy ?? false;
   bool get hasActiveWorkflow => workflow?.isActive ?? false;
-  bool get isRoot => thread.isRoot;
+  bool get isRoot => row.isRootRow;
 
   /// Compatibility projection for callers that still accept
   /// [AgentWorkspaceView]. It has no timeline/history payload and a runtime
   /// containing only composer-relevant workflow fields; the route stays independent.
   AgentWorkspaceView get legacyWorkspace {
-    final thread = this.thread;
-    final rootThread = this.rootThread;
+    final row = this.row;
+    final rootRow = this.rootRow;
     return AgentWorkspaceView(
-      thread: thread,
-      rootThread: rootThread,
+      row: row,
+      rootRow: rootRow,
       syncState: syncState,
       loadError: loadError,
       todo: null,
@@ -431,8 +431,8 @@ class StudioComposerProjection {
   bool operator ==(Object other) {
     return identical(this, other) ||
         other is StudioComposerProjection &&
-            _threadEquals(thread, other.thread) &&
-            _threadEquals(rootThread, other.rootThread) &&
+            _rowEquals(row, other.row) &&
+            _rowEquals(rootRow, other.rootRow) &&
             syncState == other.syncState &&
             loadError == other.loadError &&
             composer == other.composer &&
@@ -453,8 +453,8 @@ class StudioComposerProjection {
 
   @override
   int get hashCode => Object.hash(
-    _threadHash(thread),
-    _threadHash(rootThread),
+    _rowHash(row),
+    _rowHash(rootRow),
     syncState,
     loadError,
     composer,
@@ -500,44 +500,50 @@ bool _listEqualsBy<T>(
   return true;
 }
 
-bool _threadEquals(StudioThread? left, StudioThread? right) {
+bool _rowEquals(SessionDirectoryRow? left, SessionDirectoryRow? right) {
   if (identical(left, right)) return true;
   if (left == null || right == null) return false;
-  return left.id == right.id &&
+  return left.sessionId == right.sessionId &&
+      left.agentId == right.agentId &&
+      left.parentAgentId == right.parentAgentId &&
+      left.threadId == right.threadId &&
       left.workspaceId == right.workspaceId &&
       left.title == right.title &&
       left.mode == right.mode &&
+      left.delegationMode == right.delegationMode &&
+      left.delegationPreference == right.delegationPreference &&
+      left.workspaceMode == right.workspaceMode &&
+      left.workspacePath == right.workspacePath &&
+      left.role == right.role &&
+      left.binding == right.binding &&
+      left.status == right.status &&
       left.createdAt == right.createdAt &&
       left.updatedAt == right.updatedAt &&
       left.lastUserMessageAt == right.lastUserMessageAt &&
-      left.parentThreadId == right.parentThreadId &&
-      left.rootThreadId == right.rootThreadId &&
-      left.agentPath == right.agentPath &&
-      left.role == right.role &&
-      left.status == right.status &&
-      left.archived == right.archived &&
-      left.workspaceMode == right.workspaceMode &&
-      left.workspacePath == right.workspacePath;
+      left.archived == right.archived;
 }
 
-int? _threadHash(StudioThread? thread) {
-  if (thread == null) return null;
+int? _rowHash(SessionDirectoryRow? row) {
+  if (row == null) return null;
   return Object.hash(
-    thread.id,
-    thread.workspaceId,
-    thread.title,
-    thread.mode,
-    thread.createdAt,
-    thread.updatedAt,
-    thread.lastUserMessageAt,
-    thread.parentThreadId,
-    thread.rootThreadId,
-    thread.agentPath,
-    thread.role,
-    thread.status,
-    thread.archived,
-    thread.workspaceMode,
-    thread.workspacePath,
+    row.sessionId,
+    row.agentId,
+    row.parentAgentId,
+    row.threadId,
+    row.workspaceId,
+    row.title,
+    row.mode,
+    row.delegationMode,
+    row.delegationPreference,
+    row.workspaceMode,
+    row.workspacePath,
+    row.role,
+    row.binding,
+    row.status,
+    row.createdAt,
+    row.updatedAt,
+    row.lastUserMessageAt,
+    row.archived,
   );
 }
 

@@ -1,4 +1,4 @@
-use pl_protocol::{ObservedResource, Thread, ThreadModeCatalogSnapshot};
+use pl_protocol::{ObservedResource, SessionDirectoryRow, ThreadModeCatalogSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::statistics::StudioModelPerformanceSnapshot;
@@ -80,19 +80,19 @@ pub struct StudioThreadDirectoryState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryData {
-    pub threads: Vec<Thread>,
+    pub rows: Vec<SessionDirectoryRow>,
 }
 
 /// Thread directory 增量事件 payload：由常驻内存目录索引派生，不再携带全量列表。
 ///
-/// `upserted` 按线程身份原位替换，`removed` 携带已归档/删除的 Thread id；
+/// `upserted` 按成员身份原位替换，`removed` 携带已归档/删除的成员 Thread id；
 /// 未加载进分页窗口的增量由消费端忽略。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryDelta {
     pub revision: u64,
     pub updated_at: i64,
-    pub upserted: Vec<Thread>,
+    pub upserted: Vec<SessionDirectoryRow>,
     pub removed: Vec<String>,
 }
 
@@ -106,7 +106,7 @@ pub struct StudioThreadDirectoryPage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryPageData {
-    pub threads: Vec<Thread>,
+    pub rows: Vec<SessionDirectoryRow>,
     /// `None` 表示没有更旧的页。
     pub next_cursor: Option<String>,
 }

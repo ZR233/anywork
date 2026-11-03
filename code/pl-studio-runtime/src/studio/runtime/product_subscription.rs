@@ -216,25 +216,27 @@ mod tests {
         })
         .await?;
         let project = runtime.open_project(&workspace).await?;
-        let (root_delta, root) = DirectoryDelta::register_root_thread(
+        let (root_delta, root_session, _) = DirectoryDelta::register_session(
             "interaction-root".into(),
             &project.id,
             "root",
             pl_protocol::ThreadModeId::simple(),
             pl_protocol::ThreadWorkspaceMode::Local,
             workspace.to_string_lossy().into_owned(),
+            crate::config::ROOT_AGENT_ROUTE_KEY,
         );
         runtime
             .agent_facility
             .product_events
             .commit_directory(root_delta)
             .await?;
+        let root_id = root_session.session_id.clone();
         let topic = StudioProductTopic::ChildInteractions {
-            host_thread_id: root.id.clone(),
+            host_thread_id: root_id.clone(),
         };
         let mut subscription = runtime.subscribe_product_topic(topic.clone()).await?;
         let empty = baseline_state(subscription.recv().await?)?;
-        assert_eq!(empty.host_thread_id, root.id);
+        assert_eq!(empty.host_thread_id, root_id);
         assert_eq!(empty.state.revision(), 0);
         assert!(matches!(
             &empty.state,
@@ -245,25 +247,26 @@ mod tests {
             "directory registration alone cannot publish a committed empty collection"
         );
 
-        let mut child = root.clone();
-        child.id = "interaction-child".into();
-        child.root_thread_id = root.id.clone();
-        child.parent_thread_id = Some(root.id.clone());
-        child.agent_path = format!("{}/{}", root.id, child.id);
-        child.role = "executor".into();
+        let child_id: String = "interaction-child".into();
         runtime
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta {
-                thread_upserts: vec![child.clone()],
-                ..Default::default()
-            })
+            .commit_directory(DirectoryDelta::register_child_agent(
+                crate::studio::store::directory::RegisteredChildAgent {
+                    agent_id: child_id.clone(),
+                    parent_agent_id: root_id.clone(),
+                    session_id: root_id.clone(),
+                    role: "executor".into(),
+                    title: "child".into(),
+                    frozen_model: None,
+                },
+            ))
             .await?;
-        assert!(runtime.threads.thread(&child.id).is_none());
+        assert!(runtime.threads.thread(&child_id).is_none());
         assert!(
             runtime
                 .read_product_baseline(&StudioProductTopic::ChildInteractions {
-                    host_thread_id: child.id.clone(),
+                    host_thread_id: child_id.clone(),
                 })
                 .await
                 .is_err(),
@@ -293,7 +296,7 @@ mod tests {
         runtime
             .agent_facility
             .product_events
-            .update_child_interactions(&child, &pending)?
+            .update_child_interactions(&child_id, &pending)?
             .context("pending collection change")?;
         let published = event_state(subscription.recv().await?)?;
         let pending_interactions = published.state.value().context("pending event")?;
@@ -301,7 +304,7 @@ mod tests {
         assert!(
             pending_interactions
                 .iter()
-                .all(|interaction| interaction.child_thread_id == child.id)
+                .all(|interaction| interaction.child_thread_id == child_id)
         );
         assert!(
             pending_interactions
@@ -313,7 +316,7 @@ mod tests {
                 interaction.kind == pl_protocol::InteractionKind::ToolApproval
             })
         );
-        assert!(runtime.threads.thread(&child.id).is_none());
+        assert!(runtime.threads.thread(&child_id).is_none());
 
         let nonempty = baseline_state(
             runtime
@@ -334,7 +337,7 @@ mod tests {
         runtime
             .agent_facility
             .product_events
-            .update_child_interactions(&child, &resolved)?
+            .update_child_interactions(&child_id, &resolved)?
             .context("decision removes pending interaction")?;
         let decided = event_state(subscription.recv().await?)?;
         assert!(decided.state.value().context("decision event")?.is_empty());
@@ -344,14 +347,14 @@ mod tests {
         runtime
             .agent_facility
             .product_events
-            .update_child_interactions(&child, &pending_again)?
+            .update_child_interactions(&child_id, &pending_again)?
             .context("new pending interaction")?;
         let republished = event_state(subscription.recv().await?)?;
         assert_eq!(republished.state.value().context("pending again")?.len(), 2);
 
         let barrier = Arc::new(Barrier::new(3));
         let bus = runtime.agent_facility.product_events.clone();
-        let newer_child = child.clone();
+        let newer_child = child_id.clone();
         let mut newer = resolved.clone();
         newer.commit_sequence = 4;
         let newer_barrier = barrier.clone();
@@ -360,7 +363,7 @@ mod tests {
             bus.update_child_interactions(&newer_child, &newer)
         });
         let bus = runtime.agent_facility.product_events.clone();
-        let stale_child = child.clone();
+        let stale_child = child_id.clone();
         let stale = resolved.clone();
         let stale_barrier = barrier.clone();
         let stale_task = tokio::spawn(async move {
@@ -389,42 +392,51 @@ mod tests {
         runtime
             .agent_facility
             .product_events
-            .update_child_interactions(&child, &removable)?
+            .update_child_interactions(&child_id, &removable)?
             .context("pending interaction before archive")?;
         let _ = event_state(subscription.recv().await?)?;
+        // 成员级移除与重新注册经观察侧目录 delta 表达（归档在目录中是会话级终态）。
         runtime
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::archive_threads(vec![child.id.clone()]))
+            .apply_thread_delta(Vec::new(), vec![child_id.clone()])
             .await?;
         let removed = event_state(subscription.recv().await?)?;
-        assert!(removed.state.value().context("archive event")?.is_empty());
+        assert!(
+            removed
+                .state
+                .value()
+                .context("member removal event")?
+                .is_empty()
+        );
         assert!(removed.state.revision() > republished.state.revision());
-        assert!(runtime.threads.thread(&child.id).is_none());
+        assert!(runtime.threads.thread(&child_id).is_none());
 
+        let child_row = {
+            let catalog = runtime.store.catalog();
+            let agent = catalog.get_agent(&child_id).context("seeded child row")?;
+            let session = catalog
+                .get_session(&agent.session_id)
+                .context("seeded child session")?;
+            crate::studio::records::row_projection(&session, &agent)
+        };
         runtime
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta {
-                thread_upserts: vec![child.clone()],
-                ..Default::default()
-            })
+            .apply_thread_delta(vec![child_row], Vec::new())
             .await?;
         let mut before_root_archive = pending;
         before_root_archive.commit_sequence = 6;
         runtime
             .agent_facility
             .product_events
-            .update_child_interactions(&child, &before_root_archive)?
+            .update_child_interactions(&child_id, &before_root_archive)?
             .context("restored child pending interaction")?;
         let restored = event_state(subscription.recv().await?)?;
         runtime
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::archive_threads(vec![
-                root.id.clone(),
-                child.id.clone(),
-            ]))
+            .commit_directory(DirectoryDelta::archive_sessions(vec![root_id.clone()]))
             .await?;
         let root_archived = event_state(subscription.recv().await?)?;
         assert!(
@@ -438,7 +450,7 @@ mod tests {
         let retained = runtime
             .agent_facility
             .product_events
-            .read_child_interactions_state(&root.id);
+            .read_child_interactions_state(&root_id);
         assert_eq!(retained.state.revision(), root_archived.state.revision());
 
         runtime.shutdown_runtime().await?;

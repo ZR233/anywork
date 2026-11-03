@@ -113,6 +113,38 @@ pub struct AgentProfileSnapshot {
     pub workspace_mode: AgentWorkspaceMode,
 }
 
+impl AgentProfileSnapshot {
+    /// 从冻结 Profile 提取可复用定义快照。
+    ///
+    /// 定义身份、显示文本与内容修订进入 [`AgentDefinitionSnapshot`]；模型选择与
+    /// 指令冻结仍归各自 owner，不在定义内复制第二份事实。
+    pub fn definition(&self) -> crate::agent::AgentDefinitionSnapshot {
+        crate::agent::AgentDefinitionSnapshot {
+            definition_id: self.profile_id.clone(),
+            display_name: self.display_name.clone(),
+            description: self.description.clone(),
+            when_to_use: self.when_to_use.clone(),
+            source: self.source.clone(),
+            revision: self.revision.clone(),
+            content_hash: self.content_hash.clone(),
+        }
+    }
+
+    /// 从冻结 Profile 提取 Native 绑定。
+    ///
+    /// Profile 冻结的账号、模型与推理强度复用既有 [`NewThreadModelRoute`]，不
+    /// 重新定义一份模型路由；指令正文留在指令快照与 Profile 冻结域。
+    pub fn native_binding(&self) -> crate::agent::AgentBinding {
+        crate::agent::AgentBinding::Native(crate::agent::NativeAgentConfig {
+            route: Some(crate::studio::NewThreadModelRoute {
+                account_id: self.account_id.clone(),
+                model_id: self.model_id.clone(),
+                effort: self.effort.clone(),
+            }),
+        })
+    }
+}
+
 const fn default_true() -> bool {
     true
 }

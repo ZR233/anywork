@@ -266,7 +266,7 @@ pub enum BridgeThreadDirectoryPage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeThreadDirectoryPageData {
-    pub threads: Vec<BridgeThread>,
+    pub rows: Vec<crate::api::studio::types::BridgeSessionDirectoryRow>,
     /// `None` 表示没有更旧的页。
     pub next_cursor: Option<String>,
 }

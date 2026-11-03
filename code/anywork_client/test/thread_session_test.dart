@@ -479,19 +479,23 @@ void main() {
         frame: ThreadSnapshotFrame(workspace: _workspace(revision: 12)),
       ),
     );
-    final changed = StudioThread(
-      id: 'thread',
+    final snapshotThread = session.state.workspace!.thread;
+    final changed = SessionDirectoryRow(
+      sessionId: 'thread',
+      agentId: 'thread',
+      threadId: 'thread',
       workspaceId: 'project',
       title: 'Renamed',
-      workspacePath: '/tmp/thread',
       mode: ThreadModeId.simple,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
+      workspacePath: '/tmp/thread',
       updatedAt: DateTime.utc(2026),
     );
     fixture.transport.emitThread(changed, 'thread', revision: 1);
     await Future<void>.delayed(Duration.zero);
-    expect(session.state.workspace!.thread, same(changed));
+    expect(session.state.directoryRow, same(changed));
+    expect(session.state.workspace!.thread, same(snapshotThread));
     expect(session.state.revision, 12);
     expect(session.state.hasSnapshot, isTrue);
     await fixture.close();

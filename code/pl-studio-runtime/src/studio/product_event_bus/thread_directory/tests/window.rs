@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Result<()> {
     let rows = (0..30)
-        .map(|n| thread(&format!("row-{n:03}"), "p1", n))
+        .map(|n| row(&format!("row-{n:03}"), "p1", n))
         .collect();
     let (_temp, events) =
         fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
@@ -20,19 +20,19 @@ async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Resu
     };
     let pins = query(&events, &pinned, None, 64)?;
     assert_eq!(
-        pins.threads
+        pins.rows
             .iter()
-            .map(|row| row.id.as_str())
+            .map(|row| row.thread_id.as_str())
             .collect::<Vec<_>>(),
         ["row-001", "row-000"]
     );
     assert!(pins.next_cursor.is_none());
     let first = query(&events, &ordinary, None, 20)?;
-    assert_eq!(first.threads.len(), 20);
-    assert_eq!(first.threads.last().unwrap().id, "row-010");
+    assert_eq!(first.rows.len(), 20);
+    assert_eq!(first.rows.last().unwrap().thread_id, "row-010");
     let next = query(&events, &ordinary, first.next_cursor.clone(), 20)?;
-    assert_eq!(next.threads.len(), 8);
-    assert_eq!(next.threads.last().unwrap().id, "row-002");
+    assert_eq!(next.rows.len(), 8);
+    assert_eq!(next.rows.last().unwrap().thread_id, "row-002");
     assert!(next.next_cursor.is_none());
     assert!(
         query(
@@ -44,7 +44,7 @@ async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Resu
             None,
             20
         )?
-        .threads
+        .rows
         .is_empty()
     );
 
@@ -52,18 +52,18 @@ async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Resu
         filter: pl_protocol::studio::ThreadDirectoryFilter::Running,
         ..pinned
     };
-    assert!(query(&events, &running_pins, None, 64)?.threads.is_empty());
-    let mut updated = events.thread_snapshot("row-000").unwrap();
+    assert!(query(&events, &running_pins, None, 64)?.rows.is_empty());
+    let mut updated = {
+        let (session, agent) = events.directory_facts("row-000").unwrap();
+        row_projection(&session, &agent)
+    };
     updated.title = "Changed outside the ordinary window".into();
     updated.status = pl_protocol::ThreadStatus::Running;
     events.apply_thread_delta(vec![updated], vec![]).await?;
     let changed = query(&events, &running_pins, None, 64)?;
-    assert_eq!(changed.threads.len(), 1);
-    assert_eq!(changed.threads[0].id, "row-000");
-    assert_eq!(
-        changed.threads[0].title,
-        "Changed outside the ordinary window"
-    );
+    assert_eq!(changed.rows.len(), 1);
+    assert_eq!(changed.rows[0].thread_id, "row-000");
+    assert_eq!(changed.rows[0].title, "Changed outside the ordinary window");
     assert!(changed.stamp.revision > pins.stamp.revision);
     events.writer.shutdown().await?;
     Ok(())
@@ -72,12 +72,15 @@ use pl_protocol::studio::{StudioError, StudioErrorCode, ThreadDirectoryFilter};
 
 #[tokio::test]
 async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
-    let root = thread("root", "p1", 3);
-    let mut archived = thread("archived", "p1", 2);
+    let root = row("root", "p1", 3);
+    let mut archived = row("archived", "p1", 2);
     archived.archived = true;
-    let mut child = thread("child", "p1", 1);
-    child.parent_thread_id = Some(root.id.clone());
-    child.root_thread_id = root.id.clone();
+    let mut child = row("child", "p1", 1);
+    child.session_id = root.session_id.clone();
+    child.parent_agent_id = Some(root.agent_id.clone());
+    // 会话级事实（工作区路径、最近用户消息时间）只随主成员行携带。
+    child.workspace_path = root.workspace_path.clone();
+    child.last_user_message_at = None;
     let (_temp, events) = fixture(
         vec![root.clone(), archived.clone(), child.clone()],
         vec![project("p1", "Project", "/workspace/project")],
@@ -85,19 +88,19 @@ async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
     .await?;
 
     for expected in [&root, &archived, &child] {
-        let frame = events.read_thread_metadata(&expected.id, "owner-a")?;
+        let frame = events.read_thread_metadata(&expected.thread_id, "owner-a")?;
         assert_eq!(frame.stamp.resource_key, THREAD_DIRECTORY_RESOURCE_KEY);
         assert_eq!(frame.stamp.owner_epoch, "owner-a");
-        assert_eq!(frame.thread.as_ref(), Some(expected));
+        assert_eq!(frame.row.as_ref(), Some(expected));
     }
     assert!(
         events
             .read_thread_metadata("missing", "owner-a")?
-            .thread
+            .row
             .is_none()
     );
     assert_eq!(
-        query(&events, &ThreadDirectoryQuery::default(), None, 10)?.threads,
+        query(&events, &ThreadDirectoryQuery::default(), None, 10)?.rows,
         vec![root]
     );
     let archived_query = ThreadDirectoryQuery {
@@ -105,7 +108,7 @@ async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
         ..Default::default()
     };
     assert_eq!(
-        query(&events, &archived_query, None, 10)?.threads,
+        query(&events, &archived_query, None, 10)?.rows,
         vec![archived]
     );
     events.writer.shutdown().await?;
@@ -115,7 +118,7 @@ async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
 #[tokio::test]
 async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -> Result<()> {
     let rows = (1..=6)
-        .map(|value| thread(&format!("t{value}"), "p1", value))
+        .map(|value| row(&format!("t{value}"), "p1", value))
         .collect::<Vec<_>>();
     let (_temp, events) =
         fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
@@ -128,9 +131,9 @@ async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -
     assert_eq!(
         first
             .frame
-            .threads
+            .rows
             .iter()
-            .map(|thread| thread.id.as_str())
+            .map(|row| row.thread_id.as_str())
             .collect::<Vec<_>>(),
         vec!["t6", "t5"]
     );
@@ -144,9 +147,9 @@ async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -
     )?;
     assert_eq!(
         second
-            .threads
+            .rows
             .iter()
-            .map(|thread| thread.id.as_str())
+            .map(|row| row.thread_id.as_str())
             .collect::<Vec<_>>(),
         vec!["t4", "t3"]
     );
@@ -160,13 +163,13 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
 {
     let p1 = project("p1", "Alpha", "/workspace/alpha");
     let p2 = project("p2", "Beta", "/workspace/beta");
-    let a = thread("a", "p1", 30);
-    let b = thread("b", "p1", 20);
-    let c = thread("c", "p1", 10);
+    let a = row("a", "p1", 30);
+    let b = row("b", "p1", 20);
+    let c = row("c", "p1", 10);
     let (_temp, events) =
         fixture(vec![a.clone(), b.clone(), c.clone()], vec![p1, p2.clone()]).await?;
     let initial = query(&events, &ThreadDirectoryQuery::default(), None, 1)?;
-    assert_eq!(initial.threads, vec![a]);
+    assert_eq!(initial.rows, vec![a]);
 
     let mut changed = c;
     changed.title = "Needle renamed".into();
@@ -184,13 +187,15 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
         ..Default::default()
     };
     let after = query(&events, &filtered, None, 1)?;
-    assert_eq!(after.threads, vec![changed.clone()]);
+    assert_eq!(after.rows, vec![changed.clone()]);
     assert!(after.stamp.revision > initial.stamp.revision);
 
     events
-        .commit_directory(DirectoryDelta::archive_threads(vec![changed.id.clone()]))
+        .commit_directory(DirectoryDelta::archive_sessions(vec![
+            changed.session_id.clone(),
+        ]))
         .await?;
-    assert!(query(&events, &filtered, None, 1)?.threads.is_empty());
+    assert!(query(&events, &filtered, None, 1)?.rows.is_empty());
     let archived = ThreadDirectoryQuery {
         archived: true,
         workspace_id: Some("p2".into()),
@@ -198,7 +203,7 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
         filter: ThreadDirectoryFilter::Running,
         ..Default::default()
     };
-    assert_eq!(query(&events, &archived, None, 1)?.threads[0].id, "c");
+    assert_eq!(query(&events, &archived, None, 1)?.rows[0].thread_id, "c");
 
     let mut renamed_project = p2;
     renamed_project.name = "Find Me Project".into();
@@ -214,7 +219,7 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
         ..Default::default()
     };
     let project_result = query(&events, &project_query, None, 10)?;
-    assert_eq!(project_result.threads[0].id, "c");
+    assert_eq!(project_result.rows[0].thread_id, "c");
     assert!(project_result.stamp.revision > before_project.revision);
     events.writer.shutdown().await?;
     Ok(())
@@ -222,7 +227,7 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
 
 #[tokio::test]
 async fn invalid_window_cursor_and_oversized_frame_are_typed_failures() -> Result<()> {
-    let mut oversized = thread("large", "p1", 1);
+    let mut oversized = row("large", "p1", 1);
     oversized.title = "x".repeat(ThreadDirectoryWindow::MAX_FRAME_BYTES);
     let (_temp, events) = fixture(
         vec![oversized],

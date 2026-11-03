@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1469349235;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 115187492;
 
 // Section: executor
 
@@ -2231,6 +2231,21 @@ fn wire__crate__api__studio__types__product_topic__bridge_product_topic_validate
             let api_that = <crate::api::studio::types::product_topic::BridgeProductTopic>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move ||  {
                          let output_ok = crate::api::studio::types::product_topic::BridgeProductTopic::validate_scope(&api_that)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+}
+fn wire__crate__api__studio__types__session_directory__bridge_session_directory_row_is_root_row_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "bridge_session_directory_row_is_root_row", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, ()>((move ||  {
+                         let output_ok = Ok::<_, ()>(crate::api::studio::types::session_directory::BridgeSessionDirectoryRow::is_root_row(&api_that))?;   std::result::Result::Ok(output_ok)
                     })())
                 } })
 }
@@ -9071,6 +9086,34 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeActiveTurn {
     }
 }
 
+impl SseDecode for crate::api::studio::types::session_directory::BridgeAgentBinding {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_route = <Option<
+                    crate::api::studio::types::delegation::BridgeNewThreadModelRoute,
+                >>::sse_decode(deserializer);
+                return crate::api::studio::types::session_directory::BridgeAgentBinding::Native {
+                    route: var_route,
+                };
+            }
+            1 => {
+                let mut var_accountId = <String>::sse_decode(deserializer);
+                let mut var_connectionRevision = <u64>::sse_decode(deserializer);
+                return crate::api::studio::types::session_directory::BridgeAgentBinding::Acp {
+                    account_id: var_accountId,
+                    connection_revision: var_connectionRevision,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::response::BridgeAgentDirectoryData {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9087,11 +9130,10 @@ impl SseDecode for crate::api::studio::types::response::BridgeAgentDirectoryData
 impl SseDecode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntryDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_agentId = <String>::sse_decode(deserializer);
+        let mut var_sessionId = <String>::sse_decode(deserializer);
+        let mut var_parentAgentId = <Option<String>>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
-        let mut var_rootThreadId = <String>::sse_decode(deserializer);
-        let mut var_path = <String>::sse_decode(deserializer);
-        let mut var_parentPath = <Option<String>>::sse_decode(deserializer);
         let mut var_role = <String>::sse_decode(deserializer);
         let mut var_delegationMode =
             <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_decode(deserializer);
@@ -9104,7 +9146,6 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
         >>::sse_decode(deserializer);
         let mut var_task = <String>::sse_decode(deserializer);
         let mut var_summary = <Option<String>>::sse_decode(deserializer);
-        let mut var_depth = <u32>::sse_decode(deserializer);
         let mut var_state =
             <crate::api::studio::types::runtime::BridgeAgentState>::sse_decode(deserializer);
         let mut var_execution =
@@ -9115,18 +9156,16 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
         let mut var_awaitingScheduling = <bool>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
         return crate::api::studio::types::runtime::BridgeAgentDirectoryEntryDto {
-            id: var_id,
+            agent_id: var_agentId,
+            session_id: var_sessionId,
+            parent_agent_id: var_parentAgentId,
             thread_id: var_threadId,
-            root_thread_id: var_rootThreadId,
-            path: var_path,
-            parent_path: var_parentPath,
             role: var_role,
             delegation_mode: var_delegationMode,
             delegation_preference: var_delegationPreference,
             frozen_model: var_frozenModel,
             task: var_task,
             summary: var_summary,
-            depth: var_depth,
             state: var_state,
             execution: var_execution,
             can_stop: var_canStop,
@@ -14736,6 +14775,60 @@ impl SseDecode for crate::api::studio::types::response::BridgeSessionCostsState 
     }
 }
 
+impl SseDecode for crate::api::studio::types::session_directory::BridgeSessionDirectoryRow {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_sessionId = <String>::sse_decode(deserializer);
+        let mut var_agentId = <String>::sse_decode(deserializer);
+        let mut var_parentAgentId = <Option<String>>::sse_decode(deserializer);
+        let mut var_threadId = <String>::sse_decode(deserializer);
+        let mut var_workspaceId = <String>::sse_decode(deserializer);
+        let mut var_title = <String>::sse_decode(deserializer);
+        let mut var_mode = <String>::sse_decode(deserializer);
+        let mut var_delegationMode =
+            <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_decode(deserializer);
+        let mut var_delegationPreference =
+            <crate::api::studio::types::delegation::BridgeDelegationPreference>::sse_decode(
+                deserializer,
+            );
+        let mut var_workspaceMode = <String>::sse_decode(deserializer);
+        let mut var_workspacePath = <String>::sse_decode(deserializer);
+        let mut var_role = <String>::sse_decode(deserializer);
+        let mut var_binding =
+            <crate::api::studio::types::session_directory::BridgeAgentBinding>::sse_decode(
+                deserializer,
+            );
+        let mut var_status =
+            <crate::api::studio::types::thread_stream::BridgeThreadStatus>::sse_decode(
+                deserializer,
+            );
+        let mut var_createdAt = <i64>::sse_decode(deserializer);
+        let mut var_updatedAt = <i64>::sse_decode(deserializer);
+        let mut var_lastUserMessageAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_archived = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::session_directory::BridgeSessionDirectoryRow {
+            session_id: var_sessionId,
+            agent_id: var_agentId,
+            parent_agent_id: var_parentAgentId,
+            thread_id: var_threadId,
+            workspace_id: var_workspaceId,
+            title: var_title,
+            mode: var_mode,
+            delegation_mode: var_delegationMode,
+            delegation_preference: var_delegationPreference,
+            workspace_mode: var_workspaceMode,
+            workspace_path: var_workspacePath,
+            role: var_role,
+            binding: var_binding,
+            status: var_status,
+            created_at: var_createdAt,
+            updated_at: var_updatedAt,
+            last_user_message_at: var_lastUserMessageAt,
+            archived: var_archived,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::bots::BridgeSetBotEnabledRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -16109,8 +16202,9 @@ impl SseDecode for crate::api::studio::types::event::BridgeThreadDirectoryDelta 
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_revision = <u64>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
-        let mut var_upserted =
-            <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_decode(deserializer);
+        let mut var_upserted = <Vec<
+            crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
+        >>::sse_decode(deserializer);
         let mut var_removed = <Vec<String>>::sse_decode(deserializer);
         return crate::api::studio::types::event::BridgeThreadDirectoryDelta {
             revision: var_revision,
@@ -16147,14 +16241,15 @@ impl SseDecode for crate::api::studio::directory::types::BridgeThreadDirectoryFr
             );
         let mut var_stamp =
             <crate::api::studio::types::command::BridgeResourceStamp>::sse_decode(deserializer);
-        let mut var_threads =
-            <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_decode(deserializer);
+        let mut var_rows = <Vec<
+            crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
+        >>::sse_decode(deserializer);
         let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::directory::types::BridgeThreadDirectoryFrame {
             query: var_query,
             window: var_window,
             stamp: var_stamp,
-            threads: var_threads,
+            rows: var_rows,
             next_cursor: var_nextCursor,
         };
     }
@@ -16250,11 +16345,12 @@ impl SseDecode for crate::api::studio::types::response::BridgeThreadDirectoryPag
 impl SseDecode for crate::api::studio::types::response::BridgeThreadDirectoryPageData {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_threads =
-            <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_decode(deserializer);
+        let mut var_rows = <Vec<
+            crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
+        >>::sse_decode(deserializer);
         let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::response::BridgeThreadDirectoryPageData {
-            threads: var_threads,
+            rows: var_rows,
             next_cursor: var_nextCursor,
         };
     }
@@ -16354,14 +16450,13 @@ impl SseDecode for crate::api::studio::directory::types::BridgeThreadMetadataFra
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_stamp =
             <crate::api::studio::types::command::BridgeResourceStamp>::sse_decode(deserializer);
-        let mut var_thread =
-            <Option<crate::api::studio::types::thread_stream::BridgeThread>>::sse_decode(
-                deserializer,
-            );
+        let mut var_row = <Option<
+            crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
+        >>::sse_decode(deserializer);
         return crate::api::studio::directory::types::BridgeThreadMetadataFrame {
             thread_id: var_threadId,
             stamp: var_stamp,
-            thread: var_thread,
+            row: var_row,
         };
     }
 }
@@ -19435,6 +19530,18 @@ impl SseDecode for Vec<crate::api::studio::types::response::BridgeSessionCostsSt
     }
 }
 
+impl SseDecode for Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::shutdown::BridgeShutdownIssue> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -19525,20 +19632,6 @@ impl SseDecode for Vec<crate::api::studio::types::runtime::BridgeStudioRecoveryI
                 <crate::api::studio::types::runtime::BridgeStudioRecoveryIssueDto>::sse_decode(
                     deserializer,
                 ),
-            );
-        }
-        return ans_;
-    }
-}
-
-impl SseDecode for Vec<crate::api::studio::types::thread_stream::BridgeThread> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(
-                <crate::api::studio::types::thread_stream::BridgeThread>::sse_decode(deserializer),
             );
         }
         return ans_;
@@ -20631,6 +20724,17 @@ impl SseDecode for Option<crate::api::studio::types::response::BridgeSessionCost
                     deserializer,
                 ),
             );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -21768,124 +21872,125 @@ fn pde_ffi_dispatcher_primary_impl(
 53 => wire__crate__api__studio__types__settings__bridge_general_settings_dto_default_impl(port, ptr, rust_vec_len, data_len),
 54 => wire__crate__api__studio__types__runtime__bridge_idle_agent_default_impl(port, ptr, rust_vec_len, data_len),
 55 => wire__crate__api__studio__types__product_topic__bridge_product_topic_validate_scope_impl(port, ptr, rust_vec_len, data_len),
-56 => wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tools_default_impl(port, ptr, rust_vec_len, data_len),
-57 => wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__studio__types__settings__bridge_ui_language_default_impl(port, ptr, rust_vec_len, data_len),
-59 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
-60 => wire__crate__api__studio__handlers__acp__cancel_acp_auth_impl(port, ptr, rust_vec_len, data_len),
-61 => wire__crate__api__studio__handlers__acp_install__cancel_acp_install_impl(port, ptr, rust_vec_len, data_len),
-62 => wire__crate__api__studio__handlers__bots__cancel_bot_registration_impl(port, ptr, rust_vec_len, data_len),
-63 => wire__crate__api__studio__accounts__chatgpt__cancel_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
-64 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-65 => wire__crate__api__studio__accounts__commands__check_account_usage_impl(port, ptr, rust_vec_len, data_len),
-66 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
-67 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__studio__handlers__ssh__close_remote_directory_impl(port, ptr, rust_vec_len, data_len),
-69 => wire__crate__api__studio__handlers__thread__compact_thread_impl(port, ptr, rust_vec_len, data_len),
-70 => wire__crate__api__studio__handlers__acp__continue_acp_auth_impl(port, ptr, rust_vec_len, data_len),
-71 => wire__crate__api__studio__handlers__prompt__continue_thread_impl(port, ptr, rust_vec_len, data_len),
-72 => wire__crate__api__studio__handlers__settings__create_account_impl(port, ptr, rust_vec_len, data_len),
-73 => wire__crate__api__studio__handlers__bots__create_bot_conversation_thread_impl(port, ptr, rust_vec_len, data_len),
-74 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
-75 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-76 => wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-77 => wire__crate__api__studio__handlers__accounts__discover_skills_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__studio__handlers__delegation__get_delegation_model_impl(port, ptr, rust_vec_len, data_len),
-80 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
-81 => wire__crate__api__studio__handlers__bots__list_bot_conversations_impl(port, ptr, rust_vec_len, data_len),
-82 => wire__crate__api__studio__handlers__delegation__list_delegation_models_impl(port, ptr, rust_vec_len, data_len),
-83 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
-84 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
-85 => wire__crate__api__studio__handlers__acp__load_acp_account_catalog_impl(port, ptr, rust_vec_len, data_len),
-86 => wire__crate__api__studio__accounts__feed__open_account_observation_impl(port, ptr, rust_vec_len, data_len),
-87 => wire__crate__api__studio__handlers__chat__open_conversation_feed_impl(port, ptr, rust_vec_len, data_len),
-88 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
-89 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__studio__statistics__feed__open_statistics_feed_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__studio__directory__feed__open_thread_observation_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__studio__directory__feed__open_threads_observation_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__studio__accounts__commands__patch_account_impl(port, ptr, rust_vec_len, data_len),
-94 => wire__crate__api__studio__handlers__lifecycle__prepare_standalone_workspace_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(port, ptr, rust_vec_len, data_len),
-97 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
-98 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__studio__accounts__feed__read_account_domain_impl(port, ptr, rust_vec_len, data_len),
-100 => wire__crate__api__studio__handlers__acp__read_acp_auth_state_impl(port, ptr, rust_vec_len, data_len),
-101 => wire__crate__api__studio__handlers__acp_install__read_acp_install_state_impl(port, ptr, rust_vec_len, data_len),
-102 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
-103 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-104 => wire__crate__api__studio__handlers__bots__read_bot_messages_impl(port, ptr, rust_vec_len, data_len),
-105 => wire__crate__api__studio__handlers__bots__read_bots_impl(port, ptr, rust_vec_len, data_len),
-106 => wire__crate__api__studio__handlers__prompt__read_child_interactions_impl(port, ptr, rust_vec_len, data_len),
-107 => wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(port, ptr, rust_vec_len, data_len),
-108 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
-110 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
-111 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
-112 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
-113 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
-114 => wire__crate__api__studio__handlers__accounts__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
-115 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
-116 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
-117 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
-118 => wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-119 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-120 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-121 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
-122 => wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(port, ptr, rust_vec_len, data_len),
-123 => wire__crate__api__studio__handlers__settings__remove_account_impl(port, ptr, rust_vec_len, data_len),
-124 => wire__crate__api__studio__handlers__settings__remove_account_model_impl(port, ptr, rust_vec_len, data_len),
-125 => wire__crate__api__studio__handlers__acp__remove_acp_account_impl(port, ptr, rust_vec_len, data_len),
-126 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-127 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
-128 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
-129 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-130 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
-131 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
-132 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
-133 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
-134 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
-135 => wire__crate__api__studio__handlers__bots__retry_bot_connection_impl(port, ptr, rust_vec_len, data_len),
-136 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
-137 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
-138 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
-139 => wire__crate__api__studio__handlers__acp__save_acp_account_impl(port, ptr, rust_vec_len, data_len),
-140 => wire__crate__api__studio__handlers__bots__save_bot_impl(port, ptr, rust_vec_len, data_len),
-141 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
-142 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-143 => wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
-144 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
-145 => wire__crate__api__studio__handlers__accounts__search_skills_impl(port, ptr, rust_vec_len, data_len),
-146 => wire__crate__api__studio__handlers__bots__send_bot_message_impl(port, ptr, rust_vec_len, data_len),
-147 => wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(port, ptr, rust_vec_len, data_len),
-148 => wire__crate__api__studio__accounts__commands__set_account_model_auto_compact_impl(port, ptr, rust_vec_len, data_len),
-149 => wire__crate__api__studio__accounts__commands__set_account_model_connection_impl(port, ptr, rust_vec_len, data_len),
-150 => wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(port, ptr, rust_vec_len, data_len),
-151 => wire__crate__api__studio__handlers__bots__set_bot_enabled_impl(port, ptr, rust_vec_len, data_len),
-152 => wire__crate__api__studio__handlers__bots__set_bot_trusted_chat_impl(port, ptr, rust_vec_len, data_len),
-153 => wire__crate__api__studio__handlers__bots__set_bot_trusted_user_impl(port, ptr, rust_vec_len, data_len),
-154 => wire__crate__api__studio__handlers__settings__set_default_account_impl(port, ptr, rust_vec_len, data_len),
-155 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
-156 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
-157 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
-158 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
-159 => wire__crate__api__studio__handlers__acp__start_acp_auth_impl(port, ptr, rust_vec_len, data_len),
-160 => wire__crate__api__studio__handlers__acp_install__start_acp_install_impl(port, ptr, rust_vec_len, data_len),
-161 => wire__crate__api__studio__handlers__bots__start_bot_registration_impl(port, ptr, rust_vec_len, data_len),
-162 => wire__crate__api__studio__accounts__chatgpt__start_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
-163 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
-164 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-165 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
-166 => wire__crate__api__studio__handlers__prompt__stop_thread_impl(port, ptr, rust_vec_len, data_len),
-167 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
-168 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
-169 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
-170 => wire__crate__api__studio__accounts__commands__sync_account_models_impl(port, ptr, rust_vec_len, data_len),
-171 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
-172 => wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(port, ptr, rust_vec_len, data_len),
-173 => wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__studio__types__session_directory__bridge_session_directory_row_is_root_row_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tools_default_impl(port, ptr, rust_vec_len, data_len),
+58 => wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__studio__types__settings__bridge_ui_language_default_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
+61 => wire__crate__api__studio__handlers__acp__cancel_acp_auth_impl(port, ptr, rust_vec_len, data_len),
+62 => wire__crate__api__studio__handlers__acp_install__cancel_acp_install_impl(port, ptr, rust_vec_len, data_len),
+63 => wire__crate__api__studio__handlers__bots__cancel_bot_registration_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__studio__accounts__chatgpt__cancel_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
+65 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+66 => wire__crate__api__studio__accounts__commands__check_account_usage_impl(port, ptr, rust_vec_len, data_len),
+67 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
+68 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
+69 => wire__crate__api__studio__handlers__ssh__close_remote_directory_impl(port, ptr, rust_vec_len, data_len),
+70 => wire__crate__api__studio__handlers__thread__compact_thread_impl(port, ptr, rust_vec_len, data_len),
+71 => wire__crate__api__studio__handlers__acp__continue_acp_auth_impl(port, ptr, rust_vec_len, data_len),
+72 => wire__crate__api__studio__handlers__prompt__continue_thread_impl(port, ptr, rust_vec_len, data_len),
+73 => wire__crate__api__studio__handlers__settings__create_account_impl(port, ptr, rust_vec_len, data_len),
+74 => wire__crate__api__studio__handlers__bots__create_bot_conversation_thread_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
+76 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+77 => wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+78 => wire__crate__api__studio__handlers__accounts__discover_skills_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__studio__handlers__delegation__get_delegation_model_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
+82 => wire__crate__api__studio__handlers__bots__list_bot_conversations_impl(port, ptr, rust_vec_len, data_len),
+83 => wire__crate__api__studio__handlers__delegation__list_delegation_models_impl(port, ptr, rust_vec_len, data_len),
+84 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
+85 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
+86 => wire__crate__api__studio__handlers__acp__load_acp_account_catalog_impl(port, ptr, rust_vec_len, data_len),
+87 => wire__crate__api__studio__accounts__feed__open_account_observation_impl(port, ptr, rust_vec_len, data_len),
+88 => wire__crate__api__studio__handlers__chat__open_conversation_feed_impl(port, ptr, rust_vec_len, data_len),
+89 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__studio__statistics__feed__open_statistics_feed_impl(port, ptr, rust_vec_len, data_len),
+92 => wire__crate__api__studio__directory__feed__open_thread_observation_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__studio__directory__feed__open_threads_observation_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__studio__accounts__commands__patch_account_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__studio__handlers__lifecycle__prepare_standalone_workspace_impl(port, ptr, rust_vec_len, data_len),
+96 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+100 => wire__crate__api__studio__accounts__feed__read_account_domain_impl(port, ptr, rust_vec_len, data_len),
+101 => wire__crate__api__studio__handlers__acp__read_acp_auth_state_impl(port, ptr, rust_vec_len, data_len),
+102 => wire__crate__api__studio__handlers__acp_install__read_acp_install_state_impl(port, ptr, rust_vec_len, data_len),
+103 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
+104 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+105 => wire__crate__api__studio__handlers__bots__read_bot_messages_impl(port, ptr, rust_vec_len, data_len),
+106 => wire__crate__api__studio__handlers__bots__read_bots_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__studio__handlers__prompt__read_child_interactions_impl(port, ptr, rust_vec_len, data_len),
+108 => wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+110 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
+111 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
+112 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
+113 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
+114 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
+115 => wire__crate__api__studio__handlers__accounts__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
+116 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
+117 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
+118 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
+119 => wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+120 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+121 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+122 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
+123 => wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(port, ptr, rust_vec_len, data_len),
+124 => wire__crate__api__studio__handlers__settings__remove_account_impl(port, ptr, rust_vec_len, data_len),
+125 => wire__crate__api__studio__handlers__settings__remove_account_model_impl(port, ptr, rust_vec_len, data_len),
+126 => wire__crate__api__studio__handlers__acp__remove_acp_account_impl(port, ptr, rust_vec_len, data_len),
+127 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+128 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
+129 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
+130 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+131 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
+132 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
+133 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
+134 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
+135 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
+136 => wire__crate__api__studio__handlers__bots__retry_bot_connection_impl(port, ptr, rust_vec_len, data_len),
+137 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
+138 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
+139 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
+140 => wire__crate__api__studio__handlers__acp__save_acp_account_impl(port, ptr, rust_vec_len, data_len),
+141 => wire__crate__api__studio__handlers__bots__save_bot_impl(port, ptr, rust_vec_len, data_len),
+142 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
+143 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+144 => wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+145 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
+146 => wire__crate__api__studio__handlers__accounts__search_skills_impl(port, ptr, rust_vec_len, data_len),
+147 => wire__crate__api__studio__handlers__bots__send_bot_message_impl(port, ptr, rust_vec_len, data_len),
+148 => wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(port, ptr, rust_vec_len, data_len),
+149 => wire__crate__api__studio__accounts__commands__set_account_model_auto_compact_impl(port, ptr, rust_vec_len, data_len),
+150 => wire__crate__api__studio__accounts__commands__set_account_model_connection_impl(port, ptr, rust_vec_len, data_len),
+151 => wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(port, ptr, rust_vec_len, data_len),
+152 => wire__crate__api__studio__handlers__bots__set_bot_enabled_impl(port, ptr, rust_vec_len, data_len),
+153 => wire__crate__api__studio__handlers__bots__set_bot_trusted_chat_impl(port, ptr, rust_vec_len, data_len),
+154 => wire__crate__api__studio__handlers__bots__set_bot_trusted_user_impl(port, ptr, rust_vec_len, data_len),
+155 => wire__crate__api__studio__handlers__settings__set_default_account_impl(port, ptr, rust_vec_len, data_len),
+156 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
+157 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
+158 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
+159 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
+160 => wire__crate__api__studio__handlers__acp__start_acp_auth_impl(port, ptr, rust_vec_len, data_len),
+161 => wire__crate__api__studio__handlers__acp_install__start_acp_install_impl(port, ptr, rust_vec_len, data_len),
+162 => wire__crate__api__studio__handlers__bots__start_bot_registration_impl(port, ptr, rust_vec_len, data_len),
+163 => wire__crate__api__studio__accounts__chatgpt__start_chatgpt_login_impl(port, ptr, rust_vec_len, data_len),
+164 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
+165 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+166 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
+167 => wire__crate__api__studio__handlers__prompt__stop_thread_impl(port, ptr, rust_vec_len, data_len),
+168 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
+169 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
+170 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
+171 => wire__crate__api__studio__accounts__commands__sync_account_models_impl(port, ptr, rust_vec_len, data_len),
+172 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
+173 => wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(port, ptr, rust_vec_len, data_len),
+174 => wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -24250,6 +24355,43 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::Bridg
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::session_directory::BridgeAgentBinding
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::session_directory::BridgeAgentBinding::Native { route } => {
+                [0.into_dart(), route.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::session_directory::BridgeAgentBinding::Acp {
+                account_id,
+                connection_revision,
+            } => [
+                1.into_dart(),
+                account_id.into_into_dart().into_dart(),
+                connection_revision.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::session_directory::BridgeAgentBinding
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::session_directory::BridgeAgentBinding,
+    > for crate::api::studio::types::session_directory::BridgeAgentBinding
+{
+    fn into_into_dart(self) -> crate::api::studio::types::session_directory::BridgeAgentBinding {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::response::BridgeAgentDirectoryData
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -24274,18 +24416,16 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.id.into_into_dart().into_dart(),
+            self.agent_id.into_into_dart().into_dart(),
+            self.session_id.into_into_dart().into_dart(),
+            self.parent_agent_id.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
-            self.root_thread_id.into_into_dart().into_dart(),
-            self.path.into_into_dart().into_dart(),
-            self.parent_path.into_into_dart().into_dart(),
             self.role.into_into_dart().into_dart(),
             self.delegation_mode.into_into_dart().into_dart(),
             self.delegation_preference.into_into_dart().into_dart(),
             self.frozen_model.into_into_dart().into_dart(),
             self.task.into_into_dart().into_dart(),
             self.summary.into_into_dart().into_dart(),
-            self.depth.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.execution.into_into_dart().into_dart(),
             self.can_stop.into_into_dart().into_dart(),
@@ -31088,6 +31228,49 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::response::Brid
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::session_directory::BridgeSessionDirectoryRow
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.session_id.into_into_dart().into_dart(),
+            self.agent_id.into_into_dart().into_dart(),
+            self.parent_agent_id.into_into_dart().into_dart(),
+            self.thread_id.into_into_dart().into_dart(),
+            self.workspace_id.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
+            self.mode.into_into_dart().into_dart(),
+            self.delegation_mode.into_into_dart().into_dart(),
+            self.delegation_preference.into_into_dart().into_dart(),
+            self.workspace_mode.into_into_dart().into_dart(),
+            self.workspace_path.into_into_dart().into_dart(),
+            self.role.into_into_dart().into_dart(),
+            self.binding.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+            self.created_at.into_into_dart().into_dart(),
+            self.updated_at.into_into_dart().into_dart(),
+            self.last_user_message_at.into_into_dart().into_dart(),
+            self.archived.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::session_directory::BridgeSessionDirectoryRow
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
+    > for crate::api::studio::types::session_directory::BridgeSessionDirectoryRow
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::session_directory::BridgeSessionDirectoryRow {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeSetBotEnabledRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -32644,7 +32827,7 @@ impl flutter_rust_bridge::IntoDart
             self.query.into_into_dart().into_dart(),
             self.window.into_into_dart().into_dart(),
             self.stamp.into_into_dart().into_dart(),
-            self.threads.into_into_dart().into_dart(),
+            self.rows.into_into_dart().into_dart(),
             self.next_cursor.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -32742,7 +32925,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.threads.into_into_dart().into_dart(),
+            self.rows.into_into_dart().into_dart(),
             self.next_cursor.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -32910,7 +33093,7 @@ impl flutter_rust_bridge::IntoDart
         [
             self.thread_id.into_into_dart().into_dart(),
             self.stamp.into_into_dart().into_dart(),
-            self.thread.into_into_dart().into_dart(),
+            self.row.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -38171,6 +38354,29 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeActiveTurn {
     }
 }
 
+impl SseEncode for crate::api::studio::types::session_directory::BridgeAgentBinding {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::session_directory::BridgeAgentBinding::Native { route } => {
+                <i32>::sse_encode(0, serializer);
+                <Option<crate::api::studio::types::delegation::BridgeNewThreadModelRoute>>::sse_encode(route, serializer);
+            }
+            crate::api::studio::types::session_directory::BridgeAgentBinding::Acp {
+                account_id,
+                connection_revision,
+            } => {
+                <i32>::sse_encode(1, serializer);
+                <String>::sse_encode(account_id, serializer);
+                <u64>::sse_encode(connection_revision, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for crate::api::studio::types::response::BridgeAgentDirectoryData {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -38184,11 +38390,10 @@ impl SseEncode for crate::api::studio::types::response::BridgeAgentDirectoryData
 impl SseEncode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntryDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.agent_id, serializer);
+        <String>::sse_encode(self.session_id, serializer);
+        <Option<String>>::sse_encode(self.parent_agent_id, serializer);
         <String>::sse_encode(self.thread_id, serializer);
-        <String>::sse_encode(self.root_thread_id, serializer);
-        <String>::sse_encode(self.path, serializer);
-        <Option<String>>::sse_encode(self.parent_path, serializer);
         <String>::sse_encode(self.role, serializer);
         <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_encode(
             self.delegation_mode,
@@ -38204,7 +38409,6 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
         );
         <String>::sse_encode(self.task, serializer);
         <Option<String>>::sse_encode(self.summary, serializer);
-        <u32>::sse_encode(self.depth, serializer);
         <crate::api::studio::types::runtime::BridgeAgentState>::sse_encode(self.state, serializer);
         <Option<crate::api::studio::types::runtime::BridgeAgentExecution>>::sse_encode(
             self.execution,
@@ -42673,6 +42877,42 @@ impl SseEncode for crate::api::studio::types::response::BridgeSessionCostsState 
     }
 }
 
+impl SseEncode for crate::api::studio::types::session_directory::BridgeSessionDirectoryRow {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.session_id, serializer);
+        <String>::sse_encode(self.agent_id, serializer);
+        <Option<String>>::sse_encode(self.parent_agent_id, serializer);
+        <String>::sse_encode(self.thread_id, serializer);
+        <String>::sse_encode(self.workspace_id, serializer);
+        <String>::sse_encode(self.title, serializer);
+        <String>::sse_encode(self.mode, serializer);
+        <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_encode(
+            self.delegation_mode,
+            serializer,
+        );
+        <crate::api::studio::types::delegation::BridgeDelegationPreference>::sse_encode(
+            self.delegation_preference,
+            serializer,
+        );
+        <String>::sse_encode(self.workspace_mode, serializer);
+        <String>::sse_encode(self.workspace_path, serializer);
+        <String>::sse_encode(self.role, serializer);
+        <crate::api::studio::types::session_directory::BridgeAgentBinding>::sse_encode(
+            self.binding,
+            serializer,
+        );
+        <crate::api::studio::types::thread_stream::BridgeThreadStatus>::sse_encode(
+            self.status,
+            serializer,
+        );
+        <i64>::sse_encode(self.created_at, serializer);
+        <i64>::sse_encode(self.updated_at, serializer);
+        <Option<i64>>::sse_encode(self.last_user_message_at, serializer);
+        <bool>::sse_encode(self.archived, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::bots::BridgeSetBotEnabledRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -43655,7 +43895,7 @@ impl SseEncode for crate::api::studio::types::event::BridgeThreadDirectoryDelta 
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u64>::sse_encode(self.revision, serializer);
         <i64>::sse_encode(self.updated_at, serializer);
-        <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_encode(
+        <Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>>::sse_encode(
             self.upserted,
             serializer,
         );
@@ -43693,9 +43933,8 @@ impl SseEncode for crate::api::studio::directory::types::BridgeThreadDirectoryFr
         <crate::api::studio::types::command::BridgeResourceStamp>::sse_encode(
             self.stamp, serializer,
         );
-        <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_encode(
-            self.threads,
-            serializer,
+        <Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>>::sse_encode(
+            self.rows, serializer,
         );
         <Option<String>>::sse_encode(self.next_cursor, serializer);
     }
@@ -43789,9 +44028,8 @@ impl SseEncode for crate::api::studio::types::response::BridgeThreadDirectoryPag
 impl SseEncode for crate::api::studio::types::response::BridgeThreadDirectoryPageData {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Vec<crate::api::studio::types::thread_stream::BridgeThread>>::sse_encode(
-            self.threads,
-            serializer,
+        <Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>>::sse_encode(
+            self.rows, serializer,
         );
         <Option<String>>::sse_encode(self.next_cursor, serializer);
     }
@@ -43860,10 +44098,7 @@ impl SseEncode for crate::api::studio::directory::types::BridgeThreadMetadataFra
         <crate::api::studio::types::command::BridgeResourceStamp>::sse_encode(
             self.stamp, serializer,
         );
-        <Option<crate::api::studio::types::thread_stream::BridgeThread>>::sse_encode(
-            self.thread,
-            serializer,
-        );
+        <Option<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>>::sse_encode(self.row, serializer);
     }
 }
 
@@ -46124,6 +46359,18 @@ impl SseEncode for Vec<crate::api::studio::types::response::BridgeSessionCostsSt
     }
 }
 
+impl SseEncode for Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::shutdown::BridgeShutdownIssue> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -46192,16 +46439,6 @@ impl SseEncode for Vec<crate::api::studio::types::runtime::BridgeStudioRecoveryI
             <crate::api::studio::types::runtime::BridgeStudioRecoveryIssueDto>::sse_encode(
                 item, serializer,
             );
-        }
-    }
-}
-
-impl SseEncode for Vec<crate::api::studio::types::thread_stream::BridgeThread> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::api::studio::types::thread_stream::BridgeThread>::sse_encode(item, serializer);
         }
     }
 }
@@ -47088,6 +47325,18 @@ impl SseEncode for Option<crate::api::studio::types::response::BridgeSessionCost
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::response::BridgeSessionCostSnapshot>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>::sse_encode(
                 value, serializer,
             );
         }

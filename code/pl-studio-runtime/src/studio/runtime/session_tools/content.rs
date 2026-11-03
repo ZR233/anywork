@@ -681,7 +681,7 @@ pub(super) async fn search(
                     .context("session directory is unavailable")?;
                 cursor.directory_cursor = directory.next_cursor.clone();
                 cursor.directory_done = directory.next_cursor.is_none();
-                cursor.session_id = directory.threads.first().map(|thread| thread.id.clone());
+                cursor.session_id = directory.rows.first().map(|row| row.thread_id.clone());
                 if cursor.session_id.is_none() {
                     continue;
                 }

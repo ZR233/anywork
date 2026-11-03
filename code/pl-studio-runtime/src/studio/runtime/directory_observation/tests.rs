@@ -10,15 +10,27 @@ async fn fixture() -> Result<(tempfile::TempDir, ProductEventBus)> {
     Ok((temp, events))
 }
 
-fn thread(id: &str, time: i64) -> pl_protocol::Thread {
-    let mut thread = pl_protocol::Thread::placeholder(id);
-    thread.workspace_id = "directory-pull-fixture".into();
-    thread.root_thread_id = id.into();
-    thread.agent_path = id.into();
-    thread.title = id.into();
-    thread.created_at = time;
-    thread.updated_at = time;
-    thread
+fn row(id: &str, time: i64) -> pl_protocol::SessionDirectoryRow {
+    pl_protocol::SessionDirectoryRow {
+        session_id: id.into(),
+        agent_id: id.into(),
+        parent_agent_id: None,
+        thread_id: id.into(),
+        workspace_id: "directory-pull-fixture".into(),
+        title: id.into(),
+        mode: pl_protocol::ThreadModeId::simple(),
+        workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+        delegation_mode: Default::default(),
+        delegation_preference: Default::default(),
+        workspace_path: format!("/tmp/{id}"),
+        role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
+        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig { route: None }),
+        status: pl_protocol::ThreadStatus::Idle,
+        created_at: time,
+        updated_at: time,
+        last_user_message_at: None,
+        archived: false,
+    }
 }
 
 fn observe(events: &ProductEventBus, limit: u32) -> Result<ThreadsObservation> {
@@ -39,14 +51,14 @@ async fn registration_and_consumer_in_flight_changes_are_retained() -> Result<()
     let observation = observe(&events, 2)?;
     // This mutation falls after registration but before the initial next.
     events
-        .apply_thread_delta(vec![thread("old", 1), thread("head", 3)], vec![])
+        .apply_thread_delta(vec![row("old", 1), row("head", 3)], vec![])
         .await?;
     let first = observation.next().await?.expect("initial result");
-    assert_eq!(first.threads[0].id, "head");
+    assert_eq!(first.rows[0].thread_id, "head");
     assert_eq!(first.stamp.resource_key, "thread-directory");
 
     // A completed native read has not yet been accepted by its consumer.
-    let mut outside = thread("outside", 2);
+    let mut outside = row("outside", 2);
     outside.title = "renamed while accepting".into();
     events
         .apply_thread_delta(vec![outside.clone()], vec![])
@@ -54,13 +66,13 @@ async fn registration_and_consumer_in_flight_changes_are_retained() -> Result<()
     let next = observation.next().await?.expect("retained notification");
     assert!(next.stamp.revision > first.stamp.revision);
     assert_eq!(
-        next.threads
+        next.rows
             .iter()
-            .map(|row| row.id.as_str())
+            .map(|row| row.thread_id.as_str())
             .collect::<Vec<_>>(),
         ["head", "outside"]
     );
-    assert_eq!(next.threads[1].title, outside.title);
+    assert_eq!(next.rows[1].title, outside.title);
     assert!(next.next_cursor.is_some());
     observation.close().await?;
     Ok(())
@@ -71,7 +83,7 @@ async fn selected_metadata_and_reopened_large_window_are_independent() -> Result
     let (_temp, events) = fixture().await?;
     events
         .apply_thread_delta(
-            (0..90).map(|n| thread(&format!("row-{n:03}"), n)).collect(),
+            (0..90).map(|n| row(&format!("row-{n:03}"), n)).collect(),
             vec![],
         )
         .await?;
@@ -79,29 +91,26 @@ async fn selected_metadata_and_reopened_large_window_are_independent() -> Result
         ThreadMetadataObservation::open(events.clone(), "pull-fixture".into(), "row-000".into())?;
     let wide = observe(&events, 80)?;
     let before = wide.next().await?.expect("wide result");
-    assert_eq!(before.threads.len(), 80);
-    assert_eq!(before.threads.last().unwrap().id, "row-010");
+    assert_eq!(before.rows.len(), 80);
+    assert_eq!(before.rows.last().unwrap().thread_id, "row-010");
     assert_eq!(
-        selected.next().await?.unwrap().thread.unwrap().id,
+        selected.next().await?.unwrap().row.unwrap().thread_id,
         "row-000"
     );
     wide.close().await?;
 
-    let mut outside = thread("row-000", 0);
+    let mut outside = row("row-000", 0);
     outside.title = "changed outside list".into();
     outside.archived = true;
     events.apply_thread_delta(vec![outside], vec![]).await?;
     let entity = selected.next().await?.expect("independent entity update");
-    assert!(entity.thread.as_ref().unwrap().archived);
-    assert_eq!(
-        entity.thread.as_ref().unwrap().title,
-        "changed outside list"
-    );
+    assert!(entity.row.as_ref().unwrap().archived);
+    assert_eq!(entity.row.as_ref().unwrap().title, "changed outside list");
     let reopened = observe(&events, 80)?;
     let after = reopened.next().await?.expect("same complete demand");
     assert_eq!(after.window, before.window);
-    assert_eq!(after.threads.len(), 80);
-    assert_eq!(after.threads.last().unwrap().id, "row-010");
+    assert_eq!(after.rows.len(), 80);
+    assert_eq!(after.rows.last().unwrap().thread_id, "row-010");
     assert!(after.stamp.revision > before.stamp.revision);
     reopened.close().await?;
     selected.close().await?;
@@ -112,7 +121,7 @@ async fn selected_metadata_and_reopened_large_window_are_independent() -> Result
 async fn close_wakes_the_actual_next_and_releases_its_receiver() -> Result<()> {
     let (_temp, events) = fixture().await?;
     let observation = observe(&events, 20)?;
-    assert!(observation.next().await?.unwrap().threads.is_empty());
+    assert!(observation.next().await?.unwrap().rows.is_empty());
     let mut waiting = std::pin::pin!(observation.next());
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     let error = observation
@@ -131,11 +140,14 @@ async fn close_wakes_the_actual_next_and_releases_its_receiver() -> Result<()> {
 
     let missing =
         ThreadMetadataObservation::open(events.clone(), "pull-fixture".into(), "missing".into())?;
-    assert!(missing.next().await?.unwrap().thread.is_none());
+    assert!(missing.next().await?.unwrap().row.is_none());
     events
-        .apply_thread_delta(vec![thread("missing", 1)], vec![])
+        .apply_thread_delta(vec![row("missing", 1)], vec![])
         .await?;
-    assert_eq!(missing.next().await?.unwrap().thread.unwrap().id, "missing");
+    assert_eq!(
+        missing.next().await?.unwrap().row.unwrap().thread_id,
+        "missing"
+    );
     missing.close().await?;
     assert!(missing.inner.next.lock().await.signal.is_none());
     Ok(())

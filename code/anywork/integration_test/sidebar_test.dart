@@ -199,11 +199,11 @@ void main() {
       DirectoryQuery(workspaceId: project.id, filter: DirectoryFilter.running),
     );
     expect(
-      runningFrame.threads.map((thread) => thread.id),
+      runningFrame.rows.map((row) => row.threadId),
       contains(fixture.runningThread.id),
     );
     expect(
-      runningFrame.threads.map((thread) => thread.id),
+      runningFrame.rows.map((row) => row.threadId),
       isNot(contains(fixture.attentionThread.id)),
     );
 
@@ -225,7 +225,7 @@ void main() {
       ),
     );
     expect(
-      attentionFrame.threads.map((thread) => thread.id),
+      attentionFrame.rows.map((row) => row.threadId),
       contains(fixture.attentionThread.id),
     );
 
@@ -403,7 +403,7 @@ void main() {
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
     expect(
-      archivedFrame.threads.map((thread) => thread.id),
+      archivedFrame.rows.map((row) => row.threadId),
       contains(fixture.thread.id),
     );
 
@@ -438,7 +438,7 @@ void main() {
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
     expect(
-      afterRestore.threads.map((thread) => thread.id),
+      afterRestore.rows.map((row) => row.threadId),
       isNot(contains(fixture.thread.id)),
     );
     await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
@@ -799,8 +799,8 @@ Future<void> _writeArchiveTargetDiagnostic(
   Map<String, Object?> windows(Map<String, SidebarWindow> source) => {
     for (final entry in source.entries)
       entry.key: {
-        'threadIds': entry.value.threads
-            .map((thread) => thread.id)
+        'threadIds': entry.value.rows
+            .map((row) => row.threadId)
             .toList(growable: false),
         'loading': entry.value.loading,
         'error': entry.value.error,

@@ -103,7 +103,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     if (!session.hasSnapshot || session.workspace?.thread.id != threadId) {
       throw StateError('Thread submission target is no longer available');
     }
-    if (!session.workspace!.thread.isRoot) {
+    if (session.directoryRow?.isChildRow ?? false) {
       throw const StudioFailure(
         code: StudioFailureCode.permissionDenied,
         message:

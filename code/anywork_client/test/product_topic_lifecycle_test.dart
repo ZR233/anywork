@@ -78,7 +78,7 @@ final class _BootstrapTopicTransport extends _TopicTransport {
   Future<StudioBootstrap> readBootstrap() async => StudioBootstrap(
     ownerEpoch: 'epoch-boot',
     projectDirectory: ProjectDirectoryState(),
-    threadDirectory: const ThreadDirectoryPage(threads: []),
+    threadDirectory: const ThreadDirectoryPage(rows: []),
     agentDirectory: AgentDirectoryState(),
     settingsState: SettingsStateSnapshot(),
     recoveryState: RecoveryStateSnapshot(),

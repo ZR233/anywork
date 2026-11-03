@@ -56,15 +56,18 @@ StudioDriverFacts queryStudioDriverFacts(
       const {},
 }) {
   final selection = client.selection.state;
-  final rootThreadsById = <String, StudioThread>{};
+  final rowsById = <String, SessionDirectoryRow>{};
   var directoryHasMore = false;
   for (final frame in client.threadDirectory.observedWindows) {
     directoryHasMore = directoryHasMore || frame.nextCursor != null;
-    for (final thread in frame.threads) {
-      if (thread.isRoot) rootThreadsById.putIfAbsent(thread.id, () => thread);
+    for (final row in frame.rows) {
+      rowsById.putIfAbsent(row.threadId, () => row);
     }
   }
-  final rootThreads = rootThreadsById.values.toList(growable: false);
+  final rootRows = [
+    for (final row in rowsById.values)
+      if (row.isRootRow) row,
+  ].toList(growable: false);
   final settings = client.settings.state;
   final canonical = settings.canonical;
   final summaries = accountsRepository.state.value;
@@ -90,19 +93,22 @@ StudioDriverFacts queryStudioDriverFacts(
               selection.needsOpen)
       ? null
       : client.conversations.sessionState(observedThreadId);
-  final thread =
-      client.findThread(observedThreadId ?? '') ?? session?.workspace?.thread;
   final agents = projects.agents?.values ?? const <StudioAgentView>[];
-  final rootId = thread?.effectiveRootThreadId;
-  final root = rootId == null
-      ? null
-      : client.findThread(rootId) ?? (thread?.id == rootId ? thread : null);
-  final observedThreadsById = <String, StudioThread>{
-    ...rootThreadsById,
-    ?thread?.id: ?thread,
-    ?root?.id: ?root,
-  };
-  final observedThreads = observedThreadsById.values.toList(growable: false);
+  final row = client.threadDirectory.observedThread(observedThreadId ?? '');
+  final sessionId = AgentDirectoryQueries.sessionId(
+    threadId: observedThreadId,
+    agents: agents,
+    rows: [?row],
+  );
+  SessionDirectoryRow? rootRow;
+  if (sessionId != null) {
+    final candidate = rowsById[sessionId];
+    if (candidate != null && candidate.isRootRow) {
+      rootRow = candidate;
+    } else if (row?.isRootRow == true && row?.sessionId == sessionId) {
+      rootRow = row;
+    }
+  }
   final threadComposer = observedThreadId == null
       ? const ComposerThreadState.idle()
       : client.drafts.existingComposer(observedThreadId)?.state ??
@@ -112,10 +118,10 @@ StudioDriverFacts queryStudioDriverFacts(
     selection.selectedProjectId,
   );
   AgentWorkspaceView? workspace;
-  if (thread != null && root != null) {
+  if (row != null && rootRow != null) {
     workspace = AgentWorkspaceView(
-      thread: thread,
-      rootThread: root,
+      row: row,
+      rootRow: rootRow,
       syncState: session == null
           ? AgentWorkspaceSyncState.idle
           : _sessionSyncState(session),
@@ -131,16 +137,15 @@ StudioDriverFacts queryStudioDriverFacts(
         session?.interactions ?? const [],
       ),
       composer: threadComposer,
-      composerMode: thread.isAgent
+      composerMode: row.isChildRow
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
       accounts: accounts,
       modeModelRoutes: canonical?.modeModelRoutes ?? const [],
       roles: canonical?.roles ?? const [],
-      agents: AgentDirectoryQueries.forRoot(
-        rootThreadId: rootId,
+      agents: AgentDirectoryQueries.forSession(
+        sessionId: sessionId,
         agents: agents,
-        threads: observedThreads,
       ),
     );
   }
@@ -155,7 +160,7 @@ StudioDriverFacts queryStudioDriverFacts(
             thread: client.findThread(state.threadId) ?? workspace.thread,
           ),
     },
-    rootThreads: rootThreads,
+    rootRows: rootRows,
     directoryHasMore: directoryHasMore,
     selectedProjectId: selection.selectedProjectId,
     selectedThreadId: selectedThreadId,
