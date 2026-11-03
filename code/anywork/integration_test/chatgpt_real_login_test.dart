@@ -328,7 +328,16 @@ void main() {
       (details.value.content as NativeAccountDetailsContent).value.usage.phase,
       AccountQueryPhase.ready,
     );
-    await tester.ensureVisible(find.byKey(const ValueKey('account-back')));
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('account-back')),
+      -400,
+      scrollable: find
+          .descendant(
+            of: find.byType(AccountDetailsView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await screenshot('quota-$phase');
     await tapKey('account-model-sync');
     await untilObserved(graph.models.state, (state) {
