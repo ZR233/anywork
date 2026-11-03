@@ -94,6 +94,13 @@ final class _ArchiveCall {
   final reply = Completer<ArchiveThreadCommandReply>();
 }
 
+final class _DeleteCall {
+  _DeleteCall(this.operationId, this.threadId);
+  final OperationId operationId;
+  final String threadId;
+  final reply = Completer<DeleteThreadCommandReply?>();
+}
+
 /// Only the external owner response is controlled. Operation allocation,
 /// command lanes, reducers, observation barriers and overlays are production.
 final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
@@ -106,6 +113,7 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
     addTearDown(() => continues.close());
     addTearDown(() => interactions.close());
     addTearDown(() => archives.close());
+    addTearDown(() => deletes.close());
     addTearDown(() async {
       for (final binding in threadBindings) {
         await binding.close();
@@ -122,7 +130,9 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   final continues = StreamController<_ContinueCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
   final archives = StreamController<_ArchiveCall>.broadcast();
+  final deletes = StreamController<_DeleteCall>.broadcast();
   final archiveCalls = <_ArchiveCall>[];
+  final deleteCalls = <_DeleteCall>[];
   final compactions = <Completer<void>>[];
   final Completer<void> compactEntered = Completer<void>();
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
@@ -323,6 +333,17 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) {
+    final call = _DeleteCall(operationId, threadId);
+    deleteCalls.add(call);
+    deletes.add(call);
+    return call.reply.future;
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnsupportedError('Unused transport: ${invocation.memberName}');
 }
@@ -444,10 +465,14 @@ const _project = StudioProject(
   path: '/project',
 );
 
-StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
-  id: 'thread',
+StudioThread _thread({
+  ThreadModeId mode = ThreadModeId.simple,
+  String id = 'thread',
+  String title = 'Thread',
+}) => StudioThread(
+  id: id,
   workspaceId: 'project',
-  title: 'Thread',
+  title: title,
   mode: mode,
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
@@ -834,13 +859,14 @@ StudioCommandReceipt _receipt(
   List<ResourceStamp> targets, {
   CommitDisposition disposition = CommitDisposition.applied,
   EffectPoint effect = EffectPoint.immediate,
+  bool durable = false,
 }) => StudioCommandReceipt(
   operationId: id,
   disposition: disposition,
   targets: targets,
   effect: effect,
   effective: effect == EffectPoint.immediate,
-  durable: false,
+  durable: durable,
 );
 
 void main() {
@@ -2057,6 +2083,175 @@ void main() {
     );
     expect(session.isActive, isFalse);
   });
+
+  test(
+    'delete submits an archived root absent from the active directory',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final request = client.threadCommands.deleteThread('archived-root');
+      final call = await transport.deletes.stream.first;
+
+      expect(call.threadId, 'archived-root');
+      call.reply.complete(
+        DeleteThreadCommandReply(
+          result: DeleteThreadResult(
+            deletedRootId: 'archived-root',
+            deletedThreadIds: const ['archived-root', 'archived-child'],
+            nextRoot: _thread(id: 'next-root'),
+          ),
+          receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+        ),
+      );
+      await request;
+
+      expect(transport.deleteCalls, hasLength(1));
+      expect(client.selection.state.selectedThreadId, 'thread');
+      final operation = client.mutations.lookup(call.operationId)!.state.value;
+      expect(operation.receipt, isNotNull);
+      expect(operation.observed, isFalse);
+      expect(operation.phase, OperationPhase.awaitingObservation);
+    },
+  );
+
+  test(
+    'an already absent root with no deletion responsibility is a no-op',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final request = client.threadCommands.deleteThread('already-absent');
+      final call = await transport.deletes.stream.first;
+      call.reply.complete(null);
+
+      await request;
+
+      expect(client.selection.state.selectedThreadId, 'thread');
+      final operation = client.mutations.lookup(call.operationId)!.state.value;
+      expect(operation.phase, OperationPhase.rejected);
+      expect(operation.receipt, isNull);
+    },
+  );
+
+  test('delete delegates child rejection to the canonical owner', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final rejection = StateError('only a root Thread can be deleted');
+    final request = expectLater(
+      client.threadCommands.deleteThread('child'),
+      throwsA(same(rejection)),
+    );
+    final call = await transport.deletes.stream.first;
+
+    expect(call.threadId, 'child');
+    call.reply.completeError(rejection);
+    await request;
+
+    expect(transport.deleteCalls, hasLength(1));
+    expect(client.selection.state.selectedThreadId, 'thread');
+  });
+
+  test(
+    'delete releases the selected tree and follows its canonical next root',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final session = client.conversations.existingSession('thread')!;
+      final request = client.threadCommands.deleteThread('thread');
+      final call = await transport.deletes.stream.first;
+      call.reply.complete(
+        DeleteThreadCommandReply(
+          result: DeleteThreadResult(
+            deletedRootId: 'thread',
+            deletedThreadIds: const ['thread', 'child'],
+            nextRoot: _thread(id: 'next-root', title: 'Next root'),
+          ),
+          receipt: _receipt(call.operationId, [
+            _stamp('thread-directory', 2),
+          ], durable: true),
+        ),
+      );
+      await request;
+
+      expect(client.selection.state.selectedThreadId, 'next-root');
+      expect(session.isActive, isFalse);
+      final operation = client.mutations.lookup(call.operationId)!.state.value;
+      expect(operation.receipt, isNotNull);
+      expect(operation.observed, isFalse);
+      expect(operation.durable, isTrue);
+      expect(operation.phase, OperationPhase.awaitingObservation);
+    },
+  );
+
+  test('a delayed delete cannot replace a later user selection', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final request = client.threadCommands.deleteThread('thread');
+    final call = await transport.deletes.stream.first;
+    client.selection.selectThread(
+      workspaceId: 'project',
+      threadId: 'later-choice',
+    );
+    call.reply.complete(
+      DeleteThreadCommandReply(
+        result: DeleteThreadResult(
+          deletedRootId: 'thread',
+          deletedThreadIds: const ['thread', 'child'],
+          nextRoot: _thread(id: 'next-root'),
+        ),
+        receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+      ),
+    );
+
+    await request;
+    expect(client.selection.state.selectedThreadId, 'later-choice');
+  });
+
+  test('a delayed archive cannot replace a later user selection', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final request = client.threadCommands.archiveThread('thread');
+    final call = await transport.archives.stream.first;
+    client.selection.selectThread(
+      workspaceId: 'project',
+      threadId: 'later-choice',
+    );
+    call.reply.complete(
+      ArchiveThreadCommandReply(
+        result: const ArchiveThreadResult(
+          archivedRootId: 'thread',
+          removedThreadIds: ['thread', 'child'],
+        ),
+        receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+      ),
+    );
+
+    await request;
+    expect(client.selection.state.selectedThreadId, 'later-choice');
+  });
+
+  test(
+    'a failed delete keeps the selected and visible session intact',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final session = client.conversations.existingSession('thread')!;
+      final failure = StateError('delete refused');
+      final request = expectLater(
+        client.threadCommands.deleteThread('thread'),
+        throwsA(same(failure)),
+      );
+      final call = await transport.deletes.stream.first;
+      call.reply.completeError(failure);
+      await request;
+
+      expect(client.selection.state.selectedThreadId, 'thread');
+      expect(session.isActive, isTrue);
+      final operation = client.mutations.lookup(call.operationId)!.state.value;
+      expect(operation.phase, OperationPhase.unknownOutcome);
+      expect(operation.error, same(failure));
+      expect(operation.receipt, isNull);
+    },
+  );
 
   test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
     final transport = _Transport();

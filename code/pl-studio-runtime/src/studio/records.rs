@@ -222,6 +222,7 @@ pub(in crate::studio) fn directory_facts_from_thread(
             .then(|| thread.title.clone()),
         binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
             route: thread.frozen_model.clone(),
+            system_instructions: None,
         }),
         status: thread.status,
         explicitly_closed: false,

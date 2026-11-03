@@ -1435,11 +1435,25 @@ mod tests {
         assert_eq!(loaded.web_search, config.web_search);
         assert_eq!(loaded.deepseek_web_search, config.deepseek_web_search);
         assert_eq!(loaded.skills, config.skills);
-        assert_eq!(
-            fs::read(agents.join("verify.toml")).expect("reread profile"),
-            profile.as_bytes(),
-            "user Agent Profile is preserved across the schema upgrade"
-        );
+        let profile_path = agents.join("verify.toml");
+        let current_profile = fs::read_to_string(&profile_path).expect("reread profile");
+        let current_profile =
+            super::super::document_migration::load_profile(&profile_path, &current_profile)
+                .expect("load migrated Profile");
+        assert_eq!(current_profile.source_version, 2);
+        assert!(!current_profile.migrated);
+        let current_profile = current_profile.document.into_profile().unwrap();
+        assert_eq!(current_profile.display_name, "Verify");
+        assert_eq!(current_profile.description, "Checks conversions");
+        assert_eq!(current_profile.when_to_use, "after a migration");
+        let pl_protocol::AgentBinding::Native(native) = current_profile.binding else {
+            panic!("schema 1 Profile must migrate to Native");
+        };
+        assert_eq!(native.system_instructions.as_deref(), Some("verify"));
+        let route = native.route.expect("migrated Native route");
+        assert_eq!(route.account_id, "deepseek");
+        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(route.effort.as_deref(), Some("high"));
         assert_eq!(
             fs::read(migrated_backups(path).pop().expect("migration backup")).expect("read backup"),
             original

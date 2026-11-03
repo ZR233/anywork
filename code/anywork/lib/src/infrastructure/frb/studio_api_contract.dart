@@ -1654,13 +1654,10 @@ class FrbStudioTransport
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           profileId: draft.id,
           enabled: draft.enabled,
-          displayName: draft.displayName,
-          description: draft.description,
-          whenToUse: draft.whenToUse,
-          systemInstructions: draft.systemInstructions,
-          accountId: draft.accountId,
-          modelId: draft.modelId,
-          effort: draft.effort,
+          displayName: draft.definition.displayName,
+          description: draft.definition.description,
+          whenToUse: draft.definition.whenToUse,
+          binding: agentBindingToFrb(draft.binding),
           workspaceMode: switch (draft.workspaceMode) {
             AgentWorkspaceMode.unrestricted =>
               frb.BridgeAgentWorkspaceMode.unrestricted,
@@ -2002,6 +1999,29 @@ class FrbStudioTransport
       result: ArchiveThreadResult(
         archivedRootId: response.result.archivedRootId,
         removedThreadIds: response.result.removedThreadIds,
+        nextRoot: response.result.nextRoot == null
+            ? null
+            : _threadFromFrb(response.result.nextRoot!),
+      ),
+      receipt: _commandReceiptFromFrb(response.receipt),
+    );
+  }
+
+  @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    final response = await _bridgeCall(
+      () =>
+          frb.deleteThread(operationId: operationId.value, threadId: threadId),
+    );
+    if (response == null) return null;
+    return DeleteThreadCommandReply(
+      result: DeleteThreadResult(
+        deletedRootId: response.result.deletedRootId,
+        deletedThreadIds: response.result.deletedThreadIds,
         nextRoot: response.result.nextRoot == null
             ? null
             : _threadFromFrb(response.result.nextRoot!),

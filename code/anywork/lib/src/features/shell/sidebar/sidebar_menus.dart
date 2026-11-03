@@ -9,6 +9,7 @@ Widget _tileIconButton({
   Key? key,
   required String tooltip,
   required IconData icon,
+  Color? color,
   double iconSize = 16,
   double minTarget = 32,
   VoidCallback? onPressed,
@@ -17,7 +18,7 @@ Widget _tileIconButton({
     key: key,
     tooltip: tooltip,
     onPressed: onPressed,
-    icon: Icon(icon, size: iconSize),
+    icon: Icon(icon, size: iconSize, color: color),
     visualDensity: VisualDensity.standard,
     style: const ButtonStyle(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
     padding: EdgeInsets.zero,
@@ -223,10 +224,20 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
           ),
           MenuItemButton(
             // 归档不依赖工作区访问状态；物理工作树检查与归档相互独立。
-            key: ValueKey('thread-menu-archive-${row.threadId}'),
+            key: StudioDriverKeys.archiveThread(row.threadId),
             overflowAxis: Axis.vertical,
             onPressed: () => _select(SidebarThreadAction.archive),
             child: Text(context.l10n.sidebarArchiveSession),
+          ),
+          MenuItemButton(
+            key: StudioDriverKeys.deleteThread(row.threadId),
+            leadingIcon: const Icon(Icons.delete_outline, size: 18),
+            style: ButtonStyle(
+              foregroundColor: WidgetStatePropertyAll(context.colors.error),
+            ),
+            overflowAxis: Axis.vertical,
+            onPressed: () => _select(SidebarThreadAction.delete),
+            child: Text(context.l10n.sidebarDeleteSession),
           ),
           MenuItemButton(
             key: StudioDriverKeys.copyThreadWorkspace(row.threadId),

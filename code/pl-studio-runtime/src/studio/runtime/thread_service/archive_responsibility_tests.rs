@@ -41,9 +41,21 @@ impl std::fmt::Debug for FailingPreparer {
     }
 }
 impl StudioChildFactory for FailingPreparer {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _: &str,
+        _: pl_protocol::DelegationSettings,
+        _: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         request: ChildThreadRequest,
+        _: (),
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         (self.prepare)(request).await
     }
@@ -356,6 +368,7 @@ async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
                 title: Some(protocol.id.clone()),
                 binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
                     route: None,
+                    system_instructions: None,
                 }),
                 status: protocol.status,
                 explicitly_closed: false,
@@ -734,6 +747,8 @@ async fn reject_changed_saved_projection(
     let catalog = runtime.store.catalog();
     let canonical_agent = catalog.get_agent("required-private").unwrap();
     let canonical_session = catalog.get_session(&canonical_agent.session_id).unwrap();
+    let canonical_sessions = catalog.sessions();
+    let canonical_agents = catalog.agents();
     let without_private = tree
         .iter()
         .filter(|thread| thread.id != "required-private")
@@ -765,8 +780,9 @@ async fn reject_changed_saved_projection(
         let outcome = runtime
             .freeze_thread_archive(scope.clone(), &without_private, &[])
             .await;
-        catalog.upsert_session(canonical_session.clone()).await?;
-        catalog.upsert_agent(canonical_agent.clone()).await?;
+        catalog
+            .test_restore_records(canonical_sessions.clone(), canonical_agents.clone())
+            .await?;
         let error = outcome.unwrap_err();
         assert!(
             error.to_string().contains("changed identity"),

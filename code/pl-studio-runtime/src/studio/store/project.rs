@@ -68,6 +68,7 @@ impl StudioStore {
             workspaces,
             thread_persistence: Default::default(),
             attachment_lock: Default::default(),
+            history_admission: Default::default(),
             paths,
         };
         Ok(store)
@@ -182,6 +183,7 @@ impl StudioStore {
             workspaces,
             thread_persistence: Default::default(),
             attachment_lock: Default::default(),
+            history_admission: Default::default(),
             paths,
         };
         Ok(store)

@@ -120,10 +120,10 @@ return acp(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeNewThreadModelRoute? route)?  native,TResult Function( String accountId,  BigInt connectionRevision)?  acp,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult Function( String accountId,  BigInt connectionRevision)?  acp,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native() when native != null:
-return native(_that.route);case BridgeAgentBinding_Acp() when acp != null:
+return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp() when acp != null:
 return acp(_that.accountId,_that.connectionRevision);case _:
   return orElse();
 
@@ -142,10 +142,10 @@ return acp(_that.accountId,_that.connectionRevision);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeNewThreadModelRoute? route)  native,required TResult Function( String accountId,  BigInt connectionRevision)  acp,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)  native,required TResult Function( String accountId,  BigInt connectionRevision)  acp,}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native():
-return native(_that.route);case BridgeAgentBinding_Acp():
+return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp():
 return acp(_that.accountId,_that.connectionRevision);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -160,10 +160,10 @@ return acp(_that.accountId,_that.connectionRevision);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeNewThreadModelRoute? route)?  native,TResult? Function( String accountId,  BigInt connectionRevision)?  acp,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult? Function( String accountId,  BigInt connectionRevision)?  acp,}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native() when native != null:
-return native(_that.route);case BridgeAgentBinding_Acp() when acp != null:
+return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp() when acp != null:
 return acp(_that.accountId,_that.connectionRevision);case _:
   return null;
 
@@ -176,10 +176,11 @@ return acp(_that.accountId,_that.connectionRevision);case _:
 
 
 class BridgeAgentBinding_Native extends BridgeAgentBinding {
-  const BridgeAgentBinding_Native({this.route}): super._();
+  const BridgeAgentBinding_Native({this.route, this.systemInstructions}): super._();
 
 
  final  BridgeNewThreadModelRoute? route;
+ final  String? systemInstructions;
 
 /// Create a copy of BridgeAgentBinding
 /// with the given fields replaced by the non-null parameter values.
@@ -191,18 +192,18 @@ $BridgeAgentBinding_NativeCopyWith<BridgeAgentBinding_Native> get copyWith => _$
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBinding_Native&&(identical(other.route, route) || other.route == route));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBinding_Native&&(identical(other.route, route) || other.route == route)&&(identical(other.systemInstructions, systemInstructions) || other.systemInstructions == systemInstructions));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,route);
+    return Object.hash(runtimeType,route,systemInstructions);
 }
 
 @override
 String toString() {
-    return 'BridgeAgentBinding.native(route: $route)';
+    return 'BridgeAgentBinding.native(route: $route, systemInstructions: $systemInstructions)';
 }
 
 
@@ -213,7 +214,7 @@ abstract mixin class $BridgeAgentBinding_NativeCopyWith<$Res> implements $Bridge
   factory $BridgeAgentBinding_NativeCopyWith(BridgeAgentBinding_Native value, $Res Function(BridgeAgentBinding_Native) _then) = _$BridgeAgentBinding_NativeCopyWithImpl;
 @useResult
 $Res call({
- BridgeNewThreadModelRoute? route
+ BridgeNewThreadModelRoute? route, String? systemInstructions
 });
 
 
@@ -230,10 +231,11 @@ class _$BridgeAgentBinding_NativeCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAgentBinding
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? route = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? route = freezed,Object? systemInstructions = freezed,}) {
   return _then(BridgeAgentBinding_Native(
 route: freezed == route ? _self.route : route // ignore: cast_nullable_to_non_nullable
-as BridgeNewThreadModelRoute?,
+as BridgeNewThreadModelRoute?,systemInstructions: freezed == systemInstructions ? _self.systemInstructions : systemInstructions // ignore: cast_nullable_to_non_nullable
+as String?,
   ));
 }
 

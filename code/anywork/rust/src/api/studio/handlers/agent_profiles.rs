@@ -2,7 +2,7 @@ use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::commands::settings_command_reply;
 use crate::api::studio::convert::runtime::bridge_agent_profiles;
 use crate::api::studio::types::{
-    BridgeAgentProfilesStateSnapshot, BridgeAgentWorkspaceMode, BridgeError,
+    BridgeAgentBinding, BridgeAgentProfilesStateSnapshot, BridgeAgentWorkspaceMode, BridgeError,
     BridgeSettingsCommandReply,
 };
 
@@ -45,10 +45,7 @@ pub async fn save_user_agent_profile(
     display_name: String,
     description: String,
     when_to_use: String,
-    system_instructions: String,
-    account_id: String,
-    model_id: String,
-    effort: Option<String>,
+    binding: BridgeAgentBinding,
     workspace_mode: BridgeAgentWorkspaceMode,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
@@ -57,13 +54,7 @@ pub async fn save_user_agent_profile(
         display_name,
         description,
         when_to_use,
-        system_instructions,
-        account_id: pl_studio_runtime::AccountId::new(account_id)?,
-        model_id,
-        effort: effort
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(pl_studio_runtime::ReasoningEffort::new),
+        binding: binding.into(),
         workspace_mode: match workspace_mode {
             BridgeAgentWorkspaceMode::Unrestricted => pl_protocol::AgentWorkspaceMode::Unrestricted,
             BridgeAgentWorkspaceMode::Directory => pl_protocol::AgentWorkspaceMode::Directory,

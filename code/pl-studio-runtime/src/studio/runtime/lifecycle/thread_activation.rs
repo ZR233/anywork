@@ -15,6 +15,8 @@ impl StudioRuntime {
             execution_activation = 1,
             "execution owner requested"
         );
+        // Directory identity/backend admission precedes workspace, history, model and tool reads.
+        let requested_activation = self.thread_factory.activation(id)?;
         // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
         // activation's inline future, while retaining this caller's cancellation ownership.
         Box::pin(self.verify_activation_preflight(id)).await?;
@@ -47,20 +49,19 @@ impl StudioRuntime {
                 "archived Thread cannot be activated for execution"
             );
             let parent = record.parent_thread_id.clone();
-            ancestry.push((
-                ThreadActivation {
-                    id: record.id.clone(),
-                    parent_id: parent.clone(),
-                },
-                record,
-            ));
+            let activation = if record.id == id {
+                requested_activation.clone()
+            } else {
+                self.thread_factory.activation(&record.id)?
+            };
+            ancestry.push((activation, record));
             let Some(parent) = parent else {
                 break;
             };
             cursor = parent;
         }
         for (identity, record) in ancestry.into_iter().rev() {
-            let activated_id = identity.id.clone();
+            let activated_id = identity.id().to_owned();
             // The assembler owns/coalesces preparation. Its waiter need not inline that
             // state alongside the runtime's ancestry records and residency protection.
             if let Err(error) =
@@ -157,10 +158,7 @@ mod future_sizes {
         );
         check("assembler activation", |runtime: &'static StudioRuntime| {
             runtime.threads.activate(
-                ThreadActivation {
-                    id: "size".into(),
-                    parent_id: None,
-                },
+                ThreadActivation::native_test("size", None),
                 runtime.thread_factory.clone(),
             )
         });

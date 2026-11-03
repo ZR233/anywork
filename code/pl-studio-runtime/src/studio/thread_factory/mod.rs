@@ -9,6 +9,7 @@ pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
 pub(crate) use execution_admission::ExecutionWorkspaceCheck;
+pub(in crate::studio) use worktree_close::removal_definitely_refused as worktree_removal_definitely_refused;
 #[cfg(test)]
 mod review_archive_tests;
 mod root_resources;
@@ -94,6 +95,35 @@ impl StudioThreadFactory {
             .get(id)
             .cloned()
     }
+
+    /// Resolves the directory owner's committed identity before assembly allocates resources.
+    pub(crate) fn activation(
+        &self,
+        thread_id: &str,
+    ) -> Result<
+        crate::thread_assembler::ThreadActivation,
+        crate::thread_assembler::ThreadAssemblyError,
+    > {
+        let (agent, binding, parent_thread_id) = self
+            .services
+            .product_events
+            .agent_execution_identity(thread_id)
+            .ok_or_else(|| {
+                crate::thread_assembler::ThreadAssemblyError::Identity(thread_id.to_owned())
+            })?;
+        if matches!(&binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(
+                crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                    backend: pl_protocol::AgentBackendKind::Acp,
+                },
+            );
+        }
+        Ok(crate::thread_assembler::ThreadActivation {
+            agent,
+            parent_thread_id,
+            binding,
+        })
+    }
 }
 impl std::fmt::Debug for StudioThreadFactory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,7 +148,7 @@ impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
         crate::thread_assembler::StudioThreadSpec,
         crate::thread_assembler::ThreadAssemblyError,
     > {
-        if request.identity.parent_id.is_some() {
+        if request.identity.parent_thread_id.is_some() {
             self.prepare_restored_child(request).await
         } else {
             self.prepare_root_thread(request).await

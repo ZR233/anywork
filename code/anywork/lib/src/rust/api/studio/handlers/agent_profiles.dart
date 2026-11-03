@@ -12,6 +12,7 @@ import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
+import '../types/session_directory.dart';
 import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -47,10 +48,7 @@ Future<BridgeSettingsCommandReply> saveUserAgentProfile({
   required String displayName,
   required String description,
   required String whenToUse,
-  required String systemInstructions,
-  required String accountId,
-  required String modelId,
-  String? effort,
+  required BridgeAgentBinding binding,
   required BridgeAgentWorkspaceMode workspaceMode,
 }) => RustLib.instance.api
     .crateApiStudioHandlersAgentProfilesSaveUserAgentProfile(
@@ -61,10 +59,7 @@ Future<BridgeSettingsCommandReply> saveUserAgentProfile({
       displayName: displayName,
       description: description,
       whenToUse: whenToUse,
-      systemInstructions: systemInstructions,
-      accountId: accountId,
-      modelId: modelId,
-      effort: effort,
+      binding: binding,
       workspaceMode: workspaceMode,
     );
 

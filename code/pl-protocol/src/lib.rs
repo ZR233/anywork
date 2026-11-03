@@ -54,8 +54,9 @@ pub use activity::{
 };
 pub use agent::*;
 pub use agent_profile::{
-    AgentProfileSnapshot, AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
-    AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot,
+    AgentProfile, AgentProfileSnapshot, AgentReviewBaseline, AgentReviewFeedback,
+    AgentReviewTargetSnapshot, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
+    AgentWorktreeSnapshot,
 };
 pub use agent_session::plan::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, AgentSessionPlanAvailableTransition,

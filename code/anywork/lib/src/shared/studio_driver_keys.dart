@@ -642,6 +642,15 @@ abstract final class StudioDriverKeys {
     'thread-archive-confirm',
   );
 
+  static ValueKey<String> deleteThread(String id) =>
+      ValueKey<String>(StudioDriverKeyValues.deleteThread(id));
+
+  static ValueKey<String> deleteThreadDialog(String id) =>
+      ValueKey<String>(StudioDriverKeyValues.deleteThreadDialog(id));
+
+  static ValueKey<String> deleteThreadConfirm(String id) =>
+      ValueKey<String>(StudioDriverKeyValues.deleteThreadConfirm(id));
+
   static ValueKey<String> renameThread(String id) =>
       ValueKey<String>('thread-rename-$id');
 

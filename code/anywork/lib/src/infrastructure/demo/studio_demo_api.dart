@@ -2479,17 +2479,16 @@ class DemoStudioTransport extends StudioTransport
     _checkSettingsRevision(expectedSettingsRevision);
     final previous = _userAgentProfiles[draft.id];
     _userAgentProfiles[draft.id] = AgentProfileView(
-      id: draft.id,
-      displayName: draft.displayName,
-      description: draft.description,
-      whenToUse: draft.whenToUse,
-      systemInstructions: draft.systemInstructions,
-      accountId: draft.accountId,
-      modelId: draft.modelId,
-      effort: draft.effort,
-      source: '~/.anywork/agents/${draft.id}.toml',
-      revision: 'demo-user-${draft.id}',
-      contentHash: 'demo-user-${draft.id}',
+      definition: AgentDefinitionView(
+        definitionId: draft.id,
+        displayName: draft.definition.displayName,
+        description: draft.definition.description,
+        whenToUse: draft.definition.whenToUse,
+        source: '~/.anywork/agents/${draft.id}.toml',
+        revision: 'demo-user-${draft.id}',
+        contentHash: 'demo-user-${draft.id}',
+      ),
+      binding: draft.binding,
       system: false,
       enabled: draft.enabled,
       workspaceMode: draft.workspaceMode,
@@ -3188,65 +3187,89 @@ class DemoStudioTransport extends StudioTransport
   List<AgentProfileView> _demoAgentProfilesSync() {
     return [
       AgentProfileView(
-        id: 'explorer',
-        displayName: 'Explorer',
-        description: '只读探索代码、文档和现场事实。',
-        whenToUse: '需要定位边界、依赖或验证事实时。',
-        systemInstructions: '优先收集事实并引用文件与命令。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v1',
-        contentHash: 'demo-explorer',
+        definition: const AgentDefinitionView(
+          definitionId: 'explorer',
+          displayName: 'Explorer',
+          description: '只读探索代码、文档和现场事实。',
+          whenToUse: '需要定位边界、依赖或验证事实时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v1',
+          contentHash: 'demo-explorer',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '优先收集事实并引用文件与命令。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('explorer'),
         workspaceMode: AgentWorkspaceMode.unrestricted,
       ),
       AgentProfileView(
-        id: 'executor',
-        displayName: 'Executor',
-        description: '在项目目录内实施边界明确的修改。',
-        whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
-        systemInstructions: '遵守冻结的 writablePaths。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-executor',
+        definition: const AgentDefinitionView(
+          definitionId: 'executor',
+          displayName: 'Executor',
+          description: '在项目目录内实施边界明确的修改。',
+          whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-executor',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '遵守冻结的 writablePaths。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('executor'),
         workspaceMode: AgentWorkspaceMode.directory,
       ),
       AgentProfileView(
-        id: 'worktree_executor',
-        displayName: 'Worktree Executor',
-        description: '在独立 Git worktree 内实施修改。',
-        whenToUse: '需要物理隔离并显式整合 commit 时。',
-        systemInstructions: '只修改分配的 worktree，不自动整合。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-worktree-executor',
+        definition: const AgentDefinitionView(
+          definitionId: 'worktree_executor',
+          displayName: 'Worktree Executor',
+          description: '在独立 Git worktree 内实施修改。',
+          whenToUse: '需要物理隔离并显式整合 commit 时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-worktree_executor',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '只修改分配的 worktree，不自动整合。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('worktree_executor'),
         workspaceMode: AgentWorkspaceMode.worktree,
       ),
       AgentProfileView(
-        id: 'reviewer',
-        displayName: 'Reviewer',
-        description: '独立审查实现和验证证据。',
-        whenToUse: '需要复核实现质量时。',
-        systemInstructions: '只读审查并报告具体证据。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-reviewer',
+        definition: const AgentDefinitionView(
+          definitionId: 'reviewer',
+          displayName: 'Reviewer',
+          description: '独立审查实现和验证证据。',
+          whenToUse: '需要复核实现质量时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-reviewer',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '只读审查并报告具体证据。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('reviewer'),
         workspaceMode: AgentWorkspaceMode.unrestricted,
@@ -3306,6 +3329,103 @@ class DemoStudioTransport extends StudioTransport
       result: ArchiveThreadResult(
         archivedRootId: threadId,
         removedThreadIds: removedThreadIds,
+        nextRoot: nextRoot,
+      ),
+      receipt: _demoReceipt(
+        operationId,
+        changed: true,
+        targets: [_demoStamp('thread-directory', _threadDirectoryRevision)],
+        effect: EffectPoint.immediate,
+      ),
+    );
+  }
+
+  @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    _ensureDemoRunning();
+    final allThreads = <StudioThread>[
+      ..._workspaces.values.map((workspace) => workspace.thread),
+      ..._createdRootThreads,
+      ..._pageFillThreads,
+    ];
+    final root = allThreads
+        .where((thread) => thread.id == threadId)
+        .firstOrNull;
+    if (root == null) return null;
+    if (!root.isRoot) {
+      throw StateError('only a root Thread can be deleted');
+    }
+
+    final roots = _sortedDirectoryRows()
+        .where((row) => row.isRootRow && !row.archived)
+        .toList();
+    final index = roots.indexWhere((row) => row.threadId == threadId);
+    final nextRow = index < 0
+        ? roots.where((row) => row.threadId != threadId).firstOrNull
+        : index + 1 < roots.length
+        ? roots[index + 1]
+        : index > 0
+        ? roots[index - 1]
+        : null;
+    final nextRoot = nextRow == null
+        ? null
+        : _demoDirectoryThreads()[nextRow.threadId];
+    final deletedThreadIds = <String>{
+      for (final thread in allThreads)
+        if (_demoSessionIdOf(thread) == _demoSessionIdOf(root)) thread.id,
+    }.toList();
+
+    for (final id in deletedThreadIds) {
+      final activeTurn = _workspaces[id]?.activeTurn;
+      if (activeTurn != null && activeTurn.state.isBusy) {
+        _interruptDemoTurn(id, activeTurn.turnId);
+      }
+    }
+    _workspaces.removeWhere(
+      (id, workspace) =>
+          deletedThreadIds.contains(id) ||
+          deletedThreadIds.contains(workspace.thread.id),
+    );
+    _createdRootThreads.removeWhere(
+      (thread) => deletedThreadIds.contains(thread.id),
+    );
+    _pageFillThreads.removeWhere(
+      (thread) => deletedThreadIds.contains(thread.id),
+    );
+    _archivedThreadIds.remove(threadId);
+    _histories.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _pendingItems.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _promptGenerations.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _threadModes.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _demoContinuationPoints.removeWhere(
+      (id, _) => deletedThreadIds.contains(id),
+    );
+    _resolvedInteractions.removeWhere(
+      (_, value) => deletedThreadIds.contains(value.interaction.threadId),
+    );
+    _demoUserInputInvocations.removeWhere(
+      (_, value) => deletedThreadIds.contains(value.$1.threadId),
+    );
+
+    if (_selectedThreadId != null &&
+        deletedThreadIds.contains(_selectedThreadId)) {
+      _selectedThreadId = nextRoot?.id;
+    }
+    _threadDirectoryRevision += 1;
+    _publishProductPayload(
+      ThreadDirectoryChangedPayload(
+        revision: _threadDirectoryRevision,
+        upserted: const [],
+        removed: deletedThreadIds,
+      ),
+    );
+    return DeleteThreadCommandReply(
+      result: DeleteThreadResult(
+        deletedRootId: threadId,
+        deletedThreadIds: deletedThreadIds,
         nextRoot: nextRoot,
       ),
       receipt: _demoReceipt(

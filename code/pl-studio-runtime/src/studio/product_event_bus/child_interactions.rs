@@ -290,6 +290,7 @@ mod tests {
             role: String::new(),
             binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
                 route: None,
+                system_instructions: None,
             }),
             status: pl_protocol::ThreadStatus::Idle,
             created_at: 0,

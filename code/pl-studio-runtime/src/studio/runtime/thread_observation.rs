@@ -4035,7 +4035,7 @@ mod storage_fault_tests {
             &self,
             request: ThreadPreparation,
         ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-            let id = request.identity.id.clone();
+            let id = request.identity.id().to_owned();
             let model_info = pl_model::model::ModelInfo::compatible("observation-parent");
             let route = pl_model::config::ResolvedModelRoute {
                 pricing_mode: Default::default(),
@@ -4154,10 +4154,7 @@ mod storage_fault_tests {
         let parent_handle = tokio::time::timeout(
             Duration::from_secs(10),
             fixture.services.threads.activate(
-                crate::thread_assembler::ThreadActivation {
-                    id: parent_id.into(),
-                    parent_id: None,
-                },
+                crate::thread_assembler::ThreadActivation::native_test(parent_id, None),
                 ParentActivation {
                     store: fixture.store.clone(),
                     sink: parent_sink.clone(),

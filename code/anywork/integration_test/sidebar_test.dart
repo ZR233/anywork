@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/features/shell/sidebar/studio_sidebar.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_models.dart';
@@ -378,20 +379,74 @@ void main() {
     await scene.until(
       () =>
           find
-              .byKey(ValueKey('thread-menu-archive-${fixture.thread.id}'))
+              .byKey(StudioDriverKeys.deleteThread(fixture.thread.id))
+              .evaluate()
+              .length ==
+          1,
+      'active thread menu exposes delete',
+    );
+    await tester.tap(
+      find.byKey(StudioDriverKeys.deleteThread(fixture.thread.id)),
+    );
+    final activeDeleteDialog = find.byKey(
+      StudioDriverKeys.deleteThreadDialog(fixture.thread.id),
+    );
+    await scene.until(
+      () => activeDeleteDialog.evaluate().length == 1,
+      'active delete confirmation opens',
+    );
+    final activeDeleteL10n = tester.element(activeDeleteDialog).l10n;
+    expect(
+      find.text(activeDeleteL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
+      findsOneWidget,
+    );
+    expect(
+      find.text(activeDeleteL10n.sidebarDeleteSessionConfirmBody),
+      findsOneWidget,
+    );
+    expect(
+      find.text(activeDeleteL10n.sidebarArchiveSessionConfirmBody),
+      findsNothing,
+    );
+    await tester.tap(find.text(activeDeleteL10n.commonCancel));
+    await scene.until(
+      () => activeDeleteDialog.evaluate().isEmpty,
+      'cancel closes active delete without invoking it',
+    );
+    expect(threadRow, findsOneWidget);
+    expect(fixture.threadSnapshot(fixture.thread.id), isNotNull);
+
+    await pointer.moveTo(tester.getCenter(threadRow));
+    await tester.pump();
+    await tester.tap(menuTrigger());
+    await scene.until(
+      () =>
+          find
+              .byKey(StudioDriverKeys.archiveThread(fixture.thread.id))
               .evaluate()
               .length ==
           1,
       'thread menu opens for archive',
     );
     await tester.tap(
-      find.byKey(ValueKey('thread-menu-archive-${fixture.thread.id}')),
+      find.byKey(StudioDriverKeys.archiveThread(fixture.thread.id)),
     );
     await scene.until(
       () =>
           find.byKey(StudioDriverKeys.archiveThreadConfirm).evaluate().length ==
           1,
       'archive confirmation opens',
+    );
+    final archiveL10n = tester
+        .element(find.byKey(StudioDriverKeys.archiveThreadConfirm))
+        .l10n;
+    expect(
+      find.text(archiveL10n.sidebarArchiveSessionConfirmBody),
+      findsOneWidget,
+    );
+    expect(
+      find.text(archiveL10n.sidebarDeleteSessionConfirmBody),
+      findsNothing,
     );
     await tester.tap(find.byKey(StudioDriverKeys.archiveThreadConfirm));
     await scene.until(
@@ -427,6 +482,39 @@ void main() {
     await tester.pump();
     await scene.capture('sidebar-archived');
     await tester.tap(
+      find.byKey(StudioDriverKeys.deleteThread(fixture.thread.id)),
+    );
+    final archivedDeleteDialog = find.byKey(
+      StudioDriverKeys.deleteThreadDialog(fixture.thread.id),
+    );
+    await scene.until(
+      () => archivedDeleteDialog.evaluate().length == 1,
+      'archived row exposes delete confirmation',
+    );
+    final archivedDeleteL10n = tester.element(archivedDeleteDialog).l10n;
+    expect(
+      find.text(archivedDeleteL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
+      findsOneWidget,
+    );
+    expect(
+      find.text(archivedDeleteL10n.sidebarDeleteSessionConfirmBody),
+      findsOneWidget,
+    );
+    expect(
+      find.text(archivedDeleteL10n.sidebarArchiveSessionConfirmBody),
+      findsNothing,
+    );
+    await tester.tap(find.text(archivedDeleteL10n.commonCancel));
+    await scene.until(
+      () => archivedDeleteDialog.evaluate().isEmpty,
+      'cancel closes archived delete without invoking it',
+    );
+    expect(threadRow, findsOneWidget);
+    expect(
+      find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
+      findsOneWidget,
+    );
+    await tester.tap(
       find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
     );
     await scene.until(
@@ -449,6 +537,7 @@ void main() {
           fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
       'restored thread returns to the live canonical directory',
     );
+
     expect(tester.takeException(), isNull);
   }, timeout: const Timeout(Duration(minutes: 5)));
 
@@ -750,6 +839,214 @@ void main() {
       expect(tester.takeException(), isNull);
     },
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  testWidgets(
+    'confirmed delete commits and its canonical directory observation removes the root',
+    (tester) async {
+      final scene = await harness.mount(tester);
+      addTearDown(scene.dispose);
+      final client = scene.graph.client;
+      final project = fixture.project;
+      final deletedThreadId = fixture.thread.id;
+      final query = DirectoryQuery(workspaceId: project.id);
+      final directory = client.threadDirectory.observeThreads(
+        query,
+        DirectoryWindow(),
+      );
+      try {
+        var baseline = directory.state.value;
+        if (baseline.frame == null &&
+            baseline.error == null &&
+            !baseline.closed) {
+          baseline = await directory.state
+              .waitFor(
+                (state) =>
+                    state.frame != null || state.error != null || state.closed,
+              )
+              .timeout(const Duration(seconds: 30));
+        }
+        if (baseline.error case final error?) {
+          throw StateError('Delete baseline directory failed: $error');
+        }
+        final baselineFrame = baseline.frame;
+        if (baseline.closed || baselineFrame == null) {
+          throw StateError(
+            'Delete baseline directory closed without a canonical frame',
+          );
+        }
+        expect(
+          baselineFrame.rows.any((row) => row.threadId == deletedThreadId),
+          isTrue,
+          reason: 'the held canonical directory must first contain the target',
+        );
+
+        final compact =
+            tester.view.physicalSize.width / tester.view.devicePixelRatio < 960;
+        if (compact) {
+          final shell = find.byKey(StudioDriverKeys.shell);
+          final scaffold = find
+              .ancestor(of: shell, matching: find.byType(Scaffold))
+              .first;
+          final scaffoldState = tester.state<ScaffoldState>(scaffold);
+          if (!scaffoldState.isDrawerOpen) {
+            await tester.tap(
+              find.byKey(const ValueKey<String>('sidebar-toggle')),
+            );
+            await scene.until(
+              () => scaffoldState.isDrawerOpen,
+              'compact shell opens the production navigation drawer',
+            );
+          }
+        }
+
+        final projectRow = find.byKey(StudioDriverKeys.projectRow(project.id));
+        await scene.until(
+          () => projectRow.evaluate().length == 1,
+          'target project appears in the actual sidebar',
+        );
+        final threadRow = find.byKey(
+          StudioDriverKeys.threadRow(deletedThreadId),
+        );
+        if (threadRow.evaluate().isEmpty) {
+          await tester.tap(
+            find.byKey(StudioDriverKeys.projectExpand(project.id)),
+          );
+        }
+        await scene.until(
+          () => threadRow.evaluate().length == 1,
+          'target root is available in the actual sidebar',
+        );
+        await tester.ensureVisible(threadRow);
+
+        final pointer = await tester.createGesture(
+          kind: ui.PointerDeviceKind.mouse,
+        );
+        await pointer.addPointer(location: tester.getCenter(threadRow));
+        addTearDown(pointer.removePointer);
+        await pointer.moveTo(tester.getCenter(threadRow));
+        await tester.pump();
+
+        final menu = find.byKey(StudioDriverKeys.threadMenu(deletedThreadId));
+        final menuTrigger = find.descendant(
+          of: menu,
+          matching: find.byType(IconButton),
+        );
+        await tester.tap(menuTrigger);
+        await scene.until(
+          () =>
+              tester.widget<MenuAnchor>(menu).controller?.isOpen == true &&
+              find
+                      .byKey(StudioDriverKeys.deleteThread(deletedThreadId))
+                      .evaluate()
+                      .length ==
+                  1,
+          'actual root menu exposes delete',
+        );
+        await tester.tap(
+          find.byKey(StudioDriverKeys.deleteThread(deletedThreadId)),
+        );
+        final dialog = find.byKey(
+          StudioDriverKeys.deleteThreadDialog(deletedThreadId),
+        );
+        await scene.until(
+          () => dialog.evaluate().length == 1,
+          'permanent delete confirmation opens',
+        );
+        final dialogL10n = tester.element(dialog).l10n;
+        expect(
+          find.text(dialogL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
+          findsOneWidget,
+        );
+        expect(
+          find.text(dialogL10n.sidebarDeleteSessionConfirmBody),
+          findsOneWidget,
+        );
+        expect(
+          find.text(dialogL10n.sidebarArchiveSessionConfirmBody),
+          findsNothing,
+        );
+
+        await tester.tap(
+          find.byKey(StudioDriverKeys.deleteThreadConfirm(deletedThreadId)),
+        );
+        bool commandSettled() {
+          if (dialog.evaluate().isEmpty) return true;
+          return client.mutations
+                  .latest('delete:$deletedThreadId')
+                  ?.state
+                  .value
+                  .failurePhase !=
+              null;
+        }
+
+        await scene.until(
+          commandSettled,
+          'delete command settles and closes confirmation',
+          timeout: const Duration(seconds: 60),
+        );
+        final operation = client.mutations
+            .latest('delete:$deletedThreadId')
+            ?.state
+            .value;
+        if (operation == null) {
+          throw StateError('Delete command did not register a mutation');
+        }
+        if (operation.failurePhase case final failure?) {
+          throw StateError(
+            'Delete command failed in $failure: ${operation.error}',
+          );
+        }
+        if (dialog.evaluate().isNotEmpty) {
+          throw StateError(
+            'Delete command returned without closing confirmation',
+          );
+        }
+        final receipt = operation.receipt;
+        if (receipt == null) {
+          throw StateError('Delete command settled without a commit receipt');
+        }
+        final directoryTargets = receipt.targets
+            .where((stamp) => stamp.resourceKey == 'thread-directory')
+            .toList(growable: false);
+        if (directoryTargets.isEmpty) {
+          throw StateError(
+            'Delete receipt is missing a thread-directory stamp',
+          );
+        }
+        final deletionStamp = directoryTargets.first;
+
+        final deletedState = await directory.state
+            .waitFor((state) {
+              if (state.error != null || state.closed) return true;
+              final frame = state.frame;
+              return frame != null &&
+                  frame.stamp.covers(deletionStamp) &&
+                  frame.rows.every((row) => row.threadId != deletedThreadId);
+            })
+            .timeout(const Duration(seconds: 60));
+        if (deletedState.error case final error?) {
+          throw StateError('Delete directory observation failed: $error');
+        }
+        if (deletedState.closed) {
+          throw StateError(
+            'Delete directory observation closed before confirming removal',
+          );
+        }
+        final deletedFrame = deletedState.frame;
+        if (deletedFrame == null ||
+            !deletedFrame.stamp.covers(deletionStamp) ||
+            deletedFrame.rows.any((row) => row.threadId == deletedThreadId)) {
+          throw StateError(
+            'Canonical directory did not confirm deletion of $deletedThreadId',
+          );
+        }
+        expect(tester.takeException(), isNull);
+      } finally {
+        await directory.release();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
   );
 }
 

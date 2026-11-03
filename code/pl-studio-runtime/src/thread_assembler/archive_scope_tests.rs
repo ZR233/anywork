@@ -97,9 +97,21 @@ struct Disposal {
 }
 
 impl StudioChildFactory for Disposal {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _: &str,
+        _: pl_protocol::DelegationSettings,
+        _: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         _: ChildThreadRequest,
+        _: (),
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         Err(ThreadAssemblyError::Closed)
     }

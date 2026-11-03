@@ -12,19 +12,6 @@
 
 mod schema;
 
-pub(in crate::studio) fn validate_current_content(
-    path: &std::path::Path,
-    content: &str,
-) -> Result<()> {
-    let table: toml::Table = toml::from_str(content)?;
-    anyhow::ensure!(
-        table.get("schemaVersion").and_then(toml::Value::as_integer) == Some(6),
-        "current catalog requires schema 6: {}",
-        path.display()
-    );
-    Ok(())
-}
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -74,7 +61,10 @@ impl CatalogStore {
         let document = match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
                 let loaded = schema::load_document(&path, &content)?;
-                validate_current_content(&path, &content)?;
+                ensure!(
+                    loaded.source_version >= 5,
+                    "retired catalog ownership requires explicit storage migration"
+                );
                 if loaded.migrated {
                     let bytes = toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
                     let path = path.clone();
@@ -178,6 +168,7 @@ impl CatalogStore {
     ///
     /// 迟到快照不得使最近用户消息时间回退：写回时与既有记录取较新值，其余目录列
     /// 以命令顺序为准（design/17 §17.1）。
+    #[cfg(test)]
     pub(in crate::studio) async fn upsert_session(
         &self,
         mut session: SessionDirectoryRecord,
@@ -209,6 +200,7 @@ impl CatalogStore {
     }
 
     /// 幂等写入/替换一个成员记录；内容不变时不推进 revision，也不落盘。
+    #[cfg(test)]
     pub(in crate::studio) async fn upsert_agent(
         &self,
         mut agent: AgentDirectoryRecord,
@@ -269,30 +261,107 @@ impl CatalogStore {
         .await
     }
 
-    /// 幂等标记会话归档；记录缺失或已归档时不落盘。成员的归档事实随会话派生。
-    pub(in crate::studio) async fn archive_sessions(
+    /// 一次校验并原子提交完整会话/成员 delta，禁止落盘半组身份。
+    pub(in crate::studio) async fn apply_delta(
         &self,
-        session_ids: &[String],
-        archived_at: i64,
+        delta: crate::studio::store::directory::DirectoryDelta,
     ) -> Result<()> {
-        let session_ids = session_ids.to_vec();
-        self.mutate_document(move |document| {
-            let mut changed = false;
-            for id in &session_ids {
-                if let Some(session) = document
-                    .sessions
-                    .iter_mut()
-                    .find(|session| session.session_id == *id)
-                    && !session.archived
-                {
-                    session.archived = true;
-                    session.updated_at = session.updated_at.max(archived_at);
-                    changed = true;
+        let inner = self.inner.clone();
+        let path = self.path.clone();
+        let now = crate::studio::ids::unix_seconds();
+        tokio::task::spawn_blocking(move || {
+            toml_store::mutate_document(&inner, &path, |document| {
+                let previous = document.clone();
+                for mut session in delta.session_upserts {
+                    if let Some(existing) = document
+                        .sessions
+                        .iter_mut()
+                        .find(|entry| entry.session_id == session.session_id)
+                    {
+                        session.last_user_message_at = existing
+                            .last_user_message_at
+                            .max(session.last_user_message_at);
+                        *existing = session;
+                    } else {
+                        document.sessions.push(session);
+                    }
                 }
-            }
-            changed
+                for mut agent in delta.agent_upserts {
+                    if let Some(existing) = document
+                        .agents
+                        .iter_mut()
+                        .find(|entry| entry.agent_id == agent.agent_id)
+                    {
+                        agent.explicitly_closed |= existing.explicitly_closed;
+                        if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
+                            agent.status = ThreadStatus::Closed;
+                        }
+                        *existing = agent;
+                    } else {
+                        document.agents.push(agent);
+                    }
+                }
+                let removals = delta
+                    .session_removals
+                    .iter()
+                    .flat_map(|removal| {
+                        removal
+                            .session_ids
+                            .iter()
+                            .map(move |id| (id, removal.archived_at))
+                    })
+                    .chain(delta.project_removals.iter().flat_map(|removal| {
+                        removal
+                            .session_ids
+                            .iter()
+                            .map(move |id| (id, removal.closed_at))
+                    }));
+                for (id, archived_at) in removals {
+                    if let Some(session) = document
+                        .sessions
+                        .iter_mut()
+                        .find(|entry| &entry.session_id == id)
+                    {
+                        session.archived = true;
+                        session.updated_at = session.updated_at.max(archived_at);
+                    }
+                }
+                for fault in delta.unregistered_faults {
+                    let agent = document
+                        .agents
+                        .iter_mut()
+                        .find(|agent| agent.agent_id == fault.agent_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "spawn compensation agent not found: {}",
+                                fault.agent_id
+                            )
+                        })?;
+                    if agent.status != fault.state.kind {
+                        agent.status = fault.state.kind;
+                        agent.updated_at = agent.updated_at.max(now);
+                    }
+                }
+                let removed_sessions = document
+                    .agents
+                    .iter()
+                    .filter(|agent| {
+                        agent.is_root_agent() && delta.thread_deletions.contains(&agent.thread_id)
+                    })
+                    .map(|agent| agent.session_id.clone())
+                    .collect::<std::collections::HashSet<_>>();
+                document
+                    .sessions
+                    .retain(|session| !removed_sessions.contains(&session.session_id));
+                document.agents.retain(|agent| {
+                    !delta.thread_deletions.contains(&agent.thread_id)
+                        && !removed_sessions.contains(&agent.session_id)
+                });
+                schema::validate(document)?;
+                Ok(*document != previous)
+            })
         })
-        .await
+        .await?
     }
 
     /// 把当前内存文档写入 canonical 文件；文件已存在时不覆盖。
@@ -318,6 +387,20 @@ impl CatalogStore {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, CatalogDocument> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) async fn test_restore_records(
+        &self,
+        sessions: Vec<SessionDirectoryRecord>,
+        agents: Vec<AgentDirectoryRecord>,
+    ) -> Result<()> {
+        self.mutate_document(move |document| {
+            document.sessions = sessions;
+            document.agents = agents;
+            true
+        })
+        .await
     }
 
     #[cfg(test)]
@@ -364,7 +447,35 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::store::directory::DirectoryDelta;
     use crate::toml_schema::DocumentMigrationFailed;
+
+    fn v5_content(document: &CatalogDocument) -> String {
+        let entries = document
+            .agents
+            .iter()
+            .map(|agent| {
+                let session = document
+                    .sessions
+                    .iter()
+                    .find(|session| session.session_id == agent.session_id)
+                    .expect("session");
+                let thread = super::super::records::thread_projection(session, agent);
+                let mut entry = toml::Value::try_from(thread)
+                    .expect("entry")
+                    .as_table()
+                    .expect("table")
+                    .clone();
+                entry.insert("explicitlyClosed".into(), agent.explicitly_closed.into());
+                toml::Value::Table(entry)
+            })
+            .collect::<Vec<_>>();
+        let mut table = toml::Table::new();
+        table.insert("schemaVersion".into(), 5_i64.into());
+        table.insert("revision".into(), (document.revision as i64).into());
+        table.insert("entries".into(), entries.into());
+        toml::to_string(&table).expect("legacy catalog")
+    }
 
     fn current_document() -> CatalogDocument {
         CatalogDocument {
@@ -393,6 +504,7 @@ mod tests {
                 title: None,
                 binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
                     route: None,
+                    system_instructions: None,
                 }),
                 status: ThreadStatus::Idle,
                 explicitly_closed: false,
@@ -433,6 +545,112 @@ mod tests {
             tokio::fs::read_to_string(&path).await.expect("read"),
             encoded
         );
+    }
+
+    #[tokio::test]
+    async fn v5_catalog_upgrades_atomically_and_reopens_without_rewriting() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let mut document = current_document();
+        document.sessions[0].archived = true;
+        let mut child = document.agents[0].clone();
+        child.agent_id = "child".into();
+        child.thread_id = "child".into();
+        child.parent_agent_id = Some("thread-a".into());
+        child.title = Some("Saved task".into());
+        child.explicitly_closed = true;
+        child.status = ThreadStatus::Closing;
+        child.binding = pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+            route: Some(pl_protocol::studio::NewThreadModelRoute {
+                account_id: "account".into(),
+                model_id: "model".into(),
+                effort: Some("high".into()),
+            }),
+            system_instructions: None,
+        });
+        document.agents.push(child);
+        let legacy = v5_content(&document);
+        tokio::fs::write(&path, &legacy)
+            .await
+            .expect("legacy source");
+        let store = CatalogStore::load(path.clone()).await.expect("upgrade V5");
+        assert_eq!(*store.lock(), document);
+        let upgraded = tokio::fs::read_to_string(&path).await.expect("upgraded");
+        assert_ne!(upgraded, legacy);
+        assert_eq!(
+            toml::from_str::<toml::Table>(&upgraded).unwrap()["schemaVersion"].as_integer(),
+            Some(6)
+        );
+        drop(store);
+        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V6");
+        assert_eq!(*reopened.lock(), document);
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), upgraded);
+    }
+
+    #[tokio::test]
+    async fn invalid_root_topologies_preserve_original_catalog() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let mut extra_root = current_document();
+        let mut extra = extra_root.agents[0].clone();
+        extra.agent_id = "extra-root".into();
+        extra.thread_id = "extra-thread".into();
+        extra_root.agents.push(extra);
+        let mut cross_root = current_document();
+        let mut other_session = cross_root.sessions[0].clone();
+        other_session.session_id = "other-session".into();
+        cross_root.sessions.push(other_session);
+        for raw in [
+            v5_content(&extra_root),
+            toml_schema::encode(&extra_root, schema::SCHEMA_KEY).unwrap(),
+            toml_schema::encode(&cross_root, schema::SCHEMA_KEY).unwrap(),
+        ] {
+            tokio::fs::write(&path, &raw).await.unwrap();
+            let error = CatalogStore::load(path.clone())
+                .await
+                .err()
+                .expect("reject topology");
+            assert!(error.is::<DocumentMigrationFailed>(), "{error:#}");
+            assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), raw);
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_delta_never_publishes_half_a_session_and_allows_last_deletion() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let store = CatalogStore::load(path.clone()).await.unwrap();
+        store.persist_if_absent().await.unwrap();
+        let before = tokio::fs::read(&path).await.unwrap();
+        let document = current_document();
+        let partial = DirectoryDelta {
+            session_upserts: document.sessions.clone(),
+            ..Default::default()
+        };
+        assert!(store.apply_delta(partial).await.is_err());
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), before);
+        assert!(store.sessions().is_empty());
+        let complete = DirectoryDelta {
+            session_upserts: document.sessions,
+            agent_upserts: document.agents,
+            ..Default::default()
+        };
+        store.apply_delta(complete.clone()).await.unwrap();
+        let committed = tokio::fs::read(&path).await.unwrap();
+        store.apply_delta(complete).await.unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), committed);
+        let reopened = CatalogStore::load(path.clone()).await.unwrap();
+        assert_eq!(reopened.agents().len(), 1);
+        drop(reopened);
+        store
+            .apply_delta(DirectoryDelta::delete_threads(vec!["thread-a".into()]))
+            .await
+            .unwrap();
+        let empty = CatalogStore::load(path)
+            .await
+            .expect("legitimate empty catalog");
+        assert!(empty.sessions().is_empty());
+        assert!(empty.agents().is_empty());
     }
 
     #[tokio::test]
@@ -494,12 +712,12 @@ mod tests {
     async fn validation_failure_leaves_original_bytes() {
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join("catalog.toml");
-        let raw = "schemaVersion = 4\nrevision = 2\nentries = []\n";
+        let raw = "schemaVersion = 6\nrevision = 0\nsessions = []\nagents = []\n";
         tokio::fs::write(&path, raw).await.expect("write");
         let error = CatalogStore::load(path.clone())
             .await
             .err()
-            .expect("empty catalog");
+            .expect("invalid revision");
         assert!(error.is::<DocumentMigrationFailed>());
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("unchanged"),

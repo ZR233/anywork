@@ -32,6 +32,9 @@ impl StudioRuntime {
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         let thread_id = thread_id.into();
+        self.store
+            .ensure_delete_execution_allowed(Some(&thread_id))
+            .await?;
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
                 existing.workspace_id == workspace_id,
@@ -567,21 +570,6 @@ impl StudioRuntime {
         if !root.archived {
             return Ok(ThreadRecord::from_directory_thread(root));
         }
-        let mut tree = self
-            .store
-            .read_directory_tree(&thread_id)
-            .await?
-            .into_iter()
-            .map(|record| (record.id.clone(), pl_protocol::Thread::from(record)))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        for thread in self
-            .agent_facility
-            .product_events
-            .threads_for_root(&thread_id)
-        {
-            tree.insert(thread.id.clone(), thread);
-        }
-        tree.insert(root.id.clone(), root.clone());
         // 取消归档只改变目录可见性，不检查、重建或授权重建原工作区。
         // 归档是会话级事实：恢复只更新会话记录，成员可见性随会话派生。
         let mut restored_session = self
@@ -601,7 +589,12 @@ impl StudioRuntime {
             })
             .await?;
         self.model_performance.refresh_directory_visibility().await;
-        Ok(ThreadRecord::from_directory_thread(root))
+        let restored = self
+            .agent_facility
+            .product_events
+            .thread_snapshot(&thread_id)
+            .context("committed restored root is missing")?;
+        Ok(ThreadRecord::from_directory_thread(restored))
     }
 
     async fn compensate_unstarted_thread(&self, thread_id: &str) -> Result<()> {
@@ -700,7 +693,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_thread_archive_scope(
+    pub(super) async fn load_thread_archive_scope(
         &self,
         root_thread_id: &str,
     ) -> Result<Option<(ThreadRecord, Vec<ThreadRecord>, Vec<ThreadRecord>)>> {
@@ -801,7 +794,7 @@ impl StudioRuntime {
     /// 并发契约：`archive_thread` 与所有输入提交入口（`prompt_runner/submit.rs` 的
     /// `submit_prompt*`、`threads.rs` 的 `start_new_thread`）都在同一把 `lifecycle_lock`
     /// 下进入 owner mailbox，因此归档期间不会有并发新输入落入这棵树。
-    async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
+    pub(super) async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
         for thread_id in thread_ids {
             let Some(thread) = self.threads.observed_thread(thread_id) else {
                 // Cold history has no active work and must not be activated for archiving.

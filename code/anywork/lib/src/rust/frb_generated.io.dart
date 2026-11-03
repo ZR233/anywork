@@ -431,6 +431,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentBinding dco_decode_box_autoadd_bridge_agent_binding(dynamic raw);
+
+  @protected
   BridgeAgentDirectoryData dco_decode_box_autoadd_bridge_agent_directory_data(
     dynamic raw,
   );
@@ -596,6 +599,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeDegradedResource dco_decode_box_autoadd_bridge_degraded_resource(
     dynamic raw,
   );
+
+  @protected
+  BridgeDeleteThreadCommandReply
+  dco_decode_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
   @protected
   BridgeDisabledUpdaterState
@@ -1431,6 +1438,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAgentBinding dco_decode_bridge_agent_binding(dynamic raw);
 
   @protected
+  BridgeAgentDefinitionSnapshot dco_decode_bridge_agent_definition_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentDirectoryData dco_decode_bridge_agent_directory_data(dynamic raw);
 
   @protected
@@ -1855,6 +1867,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDelegationSettings dco_decode_bridge_delegation_settings(dynamic raw);
+
+  @protected
+  BridgeDeleteThreadCommandReply dco_decode_bridge_delete_thread_command_reply(
+    dynamic raw,
+  );
 
   @protected
   BridgeDisabledUpdaterState dco_decode_bridge_disabled_updater_state(
@@ -2925,6 +2942,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DeepSeekBalanceInfoDto dco_decode_deep_seek_balance_info_dto(dynamic raw);
 
   @protected
+  DeleteThreadResult dco_decode_delete_thread_result(dynamic raw);
+
+  @protected
   double dco_decode_f_32(dynamic raw);
 
   @protected
@@ -3487,6 +3507,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCurrentTurnHead? dco_decode_opt_box_autoadd_bridge_current_turn_head(
     dynamic raw,
   );
+
+  @protected
+  BridgeDeleteThreadCommandReply?
+  dco_decode_opt_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
   @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
@@ -4141,6 +4165,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentBinding sse_decode_box_autoadd_bridge_agent_binding(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentDirectoryData sse_decode_box_autoadd_bridge_agent_directory_data(
     SseDeserializer deserializer,
   );
@@ -4344,6 +4373,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDegradedResource sse_decode_box_autoadd_bridge_degraded_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDeleteThreadCommandReply
+  sse_decode_box_autoadd_bridge_delete_thread_command_reply(
     SseDeserializer deserializer,
   );
 
@@ -5455,6 +5490,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentDefinitionSnapshot sse_decode_bridge_agent_definition_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentDirectoryData sse_decode_bridge_agent_directory_data(
     SseDeserializer deserializer,
   );
@@ -5995,6 +6035,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDelegationSettings sse_decode_bridge_delegation_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDeleteThreadCommandReply sse_decode_bridge_delete_thread_command_reply(
     SseDeserializer deserializer,
   );
 
@@ -7319,6 +7364,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DeleteThreadResult sse_decode_delete_thread_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
@@ -7993,6 +8043,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCurrentTurnHead? sse_decode_opt_box_autoadd_bridge_current_turn_head(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDeleteThreadCommandReply?
+  sse_decode_opt_box_autoadd_bridge_delete_thread_command_reply(
     SseDeserializer deserializer,
   );
 
@@ -8795,6 +8851,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_agent_binding(
+    BridgeAgentBinding self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_agent_directory_data(
     BridgeAgentDirectoryData self,
     SseSerializer serializer,
@@ -9025,6 +9087,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_degraded_resource(
     BridgeDegradedResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_delete_thread_command_reply(
+    BridgeDeleteThreadCommandReply self,
     SseSerializer serializer,
   );
 
@@ -10292,6 +10360,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_agent_definition_snapshot(
+    BridgeAgentDefinitionSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_agent_directory_data(
     BridgeAgentDirectoryData self,
     SseSerializer serializer,
@@ -10954,6 +11028,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_delegation_settings(
     BridgeDelegationSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delete_thread_command_reply(
+    BridgeDeleteThreadCommandReply self,
     SseSerializer serializer,
   );
 
@@ -12575,6 +12655,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_delete_thread_result(
+    DeleteThreadResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
@@ -13360,6 +13446,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_current_turn_head(
     BridgeCurrentTurnHead? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_delete_thread_command_reply(
+    BridgeDeleteThreadCommandReply? self,
     SseSerializer serializer,
   );
 

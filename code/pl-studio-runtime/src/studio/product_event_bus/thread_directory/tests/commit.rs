@@ -2,6 +2,56 @@ use super::*;
 use futures::poll;
 
 #[tokio::test]
+async fn typed_session_archive_and_delete_use_thread_references_without_resurrection() -> Result<()>
+{
+    let mut root = row("root-thread", "p1", 10);
+    // Native physical history retains its original root Thread bytes in S1.
+    root.session_id = root.thread_id.clone();
+    root.agent_id = "root-agent".into();
+    let mut child = row("child-thread", "p1", 11);
+    child.session_id = root.session_id.clone();
+    child.agent_id = "child-agent".into();
+    child.parent_agent_id = Some(root.agent_id.clone());
+    let (_temp, events) = fixture(
+        vec![root.clone(), child.clone()],
+        vec![project("p1", "Project", "/workspace/project")],
+    )
+    .await?;
+    let archived = event_delta(
+        events
+            .commit_directory(DirectoryDelta::archive_sessions(vec![
+                root.session_id.clone(),
+            ]))
+            .await?,
+    );
+    assert_eq!(
+        archived.removed.into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([root.thread_id.clone(), child.thread_id.clone()])
+    );
+    assert!(
+        query(&events, &ThreadDirectoryQuery::default(), None, 10)?
+            .rows
+            .is_empty()
+    );
+    // This unit isolates directory publication, not the lifecycle deletion journal. Settle the
+    // preceding archive first; real delete_thread installs its durable replay fence before removal.
+    events.writer.flush().await?;
+    events
+        .commit_directory(DirectoryDelta::delete_threads(vec![
+            child.thread_id.clone(),
+            root.thread_id.clone(),
+        ]))
+        .await?;
+    // A late observation cannot recreate either member or its now-absent session.
+    events.publish_thread_delta(vec![root.clone(), child], vec![], vec![root]);
+    assert!(events.store.catalog().sessions().is_empty());
+    assert!(events.store.catalog().agents().is_empty());
+    assert!(events.thread_index.lock().unwrap().sessions.is_empty());
+    events.writer.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn durable_first_commit_keeps_old_slice_readable_then_publishes_one_new_slice() -> Result<()>
 {
     let original_project = project("p1", "Before Project", "/workspace/project");

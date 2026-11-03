@@ -74,6 +74,8 @@ pub(super) struct ThreadDirectoryIndex {
     order: BTreeSet<(i64, String)>,
     projects: HashMap<String, String>,
     explicitly_closed: HashSet<String>,
+    deleted: HashSet<String>,
+    deleted_sessions: HashSet<String>,
 }
 
 impl ThreadDirectoryIndex {
@@ -87,6 +89,8 @@ impl ThreadDirectoryIndex {
             order: BTreeSet::new(),
             projects: HashMap::new(),
             explicitly_closed: HashSet::new(),
+            deleted: HashSet::new(),
+            deleted_sessions: HashSet::new(),
         };
         for session in sessions {
             let key = (session.directory_sort_time(), session.session_id.clone());
@@ -97,7 +101,7 @@ impl ThreadDirectoryIndex {
             index.order.insert(key);
         }
         for agent in agents {
-            if matches!(agent.status, ThreadStatus::Closing | ThreadStatus::Closed) {
+            if agent.explicitly_closed {
                 index.explicitly_closed.insert(agent.agent_id.clone());
             }
             index.insert_agent(agent);
@@ -107,6 +111,9 @@ impl ThreadDirectoryIndex {
     }
 
     fn insert_session(&mut self, session: SessionDirectoryRecord) {
+        if self.deleted_sessions.contains(&session.session_id) {
+            return;
+        }
         let key = (session.directory_sort_time(), session.session_id.clone());
         if let Some(previous) = self.sessions.get_mut(&session.session_id) {
             self.order.remove(&(
@@ -124,6 +131,9 @@ impl ThreadDirectoryIndex {
     }
 
     fn insert_agent(&mut self, agent: AgentDirectoryRecord) -> Option<()> {
+        if self.deleted.contains(&agent.thread_id) {
+            return None;
+        }
         self.sessions
             .get_mut(&agent.session_id)?
             .insert_agent(agent);
@@ -140,6 +150,27 @@ impl ThreadDirectoryIndex {
             entry.agents_by_thread.remove(&agent.thread_id);
         }
         self.explicitly_closed.remove(agent_id);
+    }
+
+    fn delete_thread(&mut self, thread_id: &str) {
+        if let Some(agent) = self.agent_by_thread(thread_id).cloned() {
+            if agent.is_root_agent() {
+                if let Some(entry) = self.sessions.remove(&agent.session_id) {
+                    self.order.remove(&(
+                        entry.session.directory_sort_time(),
+                        agent.session_id.clone(),
+                    ));
+                    for member in entry.agents.values() {
+                        self.explicitly_closed.remove(&member.agent_id);
+                        self.deleted.insert(member.thread_id.clone());
+                    }
+                }
+                self.deleted_sessions.insert(agent.session_id);
+            } else {
+                self.remove_agent(&agent.agent_id);
+            }
+        }
+        self.deleted.insert(thread_id.to_owned());
     }
 
     fn get_session(&self, session_id: &str) -> Option<&SessionDirectoryRecord> {
@@ -168,6 +199,40 @@ impl ThreadDirectoryIndex {
             .find(|entry| entry.agent_by_thread(thread_id).is_some())?;
         let agent = entry.agent_by_thread(thread_id)?;
         Some((&entry.session, agent))
+    }
+
+    /// 从 owner 的已提交目录切面读取成员身份、绑定及父成员默认 Thread。
+    fn execution_identity(
+        &self,
+        thread_id: &str,
+    ) -> Option<(
+        pl_protocol::AgentThreadIdentity,
+        pl_protocol::AgentBinding,
+        Option<pl_protocol::ThreadId>,
+    )> {
+        let (session, agent) = self.directory_facts(thread_id)?;
+        let parent_thread_id = agent
+            .parent_agent_id
+            .as_deref()
+            .and_then(|parent| self.sessions.get(&session.session_id)?.agents.get(parent))
+            .map(|parent| pl_protocol::ThreadId::new(parent.thread_id.clone()))
+            .transpose()
+            .ok()?;
+        Some((
+            pl_protocol::AgentThreadIdentity {
+                session_id: pl_protocol::SessionId::new(session.session_id.clone()).ok()?,
+                agent_id: pl_protocol::AgentId::new(agent.agent_id.clone()).ok()?,
+                parent_agent_id: agent
+                    .parent_agent_id
+                    .clone()
+                    .map(pl_protocol::AgentId::new)
+                    .transpose()
+                    .ok()?,
+                thread_id: pl_protocol::ThreadId::new(agent.thread_id.clone()).ok()?,
+            },
+            agent.binding.clone(),
+            parent_thread_id,
+        ))
     }
 
     /// 从目录事实投影 Native 执行域 Thread（既有 Native 消费方使用）。
@@ -572,6 +637,7 @@ impl ProductEventBus {
         removed: Vec<String>,
         archived: Vec<SessionDirectoryRow>,
     ) -> StudioProductEventEnvelope {
+        upserted.retain(|row| !index.deleted.contains(&row.thread_id));
         for row in &mut upserted {
             Self::apply_explicit_close_row(index, row);
             // 迟到快照不得使最近用户消息时间回退：目录命令携带的完整行可能
@@ -599,6 +665,11 @@ impl ProductEventBus {
 
     /// 把行投影拆回会话/成员事实写入索引。
     fn index_insert_row(index: &mut ThreadDirectoryIndex, row: SessionDirectoryRow) {
+        if index.deleted.contains(&row.thread_id)
+            || index.deleted_sessions.contains(&row.session_id)
+        {
+            return;
+        }
         let session = SessionDirectoryRecord {
             session_id: row.session_id.clone(),
             root_agent_id: if row.is_root_row() {
@@ -968,17 +1039,17 @@ impl ProductEventBus {
         self.store.persist_directory_summaries(&delta).await?;
         #[cfg(test)]
         tests::pause(&self.directory_test_pauses.commit_persisted).await;
-        let removed_agent_ids = delta
+        let archived_sessions = delta
             .session_removals
             .iter()
-            .flat_map(|removal| removal.session_ids.iter().cloned())
+            .flat_map(|removal| removal.session_ids.iter())
             .chain(
                 delta
                     .project_removals
                     .iter()
-                    .flat_map(|removal| removal.session_ids.iter().cloned()),
+                    .flat_map(|removal| removal.session_ids.iter()),
             )
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
         let project_upserts = delta
             .project_upserts
             .iter()
@@ -997,9 +1068,21 @@ impl ProductEventBus {
                 .thread_index
                 .lock()
                 .expect("thread index lock poisoned");
+            let removed_agent_ids = index
+                .sessions
+                .values()
+                .filter(|entry| archived_sessions.contains(&entry.session.session_id))
+                .flat_map(|entry| entry.agents.values().map(|agent| agent.thread_id.clone()))
+                .chain(delta.thread_deletions.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
             let mut published_rows = Vec::new();
             let mut frozen_sessions = BTreeMap::new();
             for requested in &delta.session_upserts {
+                if index.deleted_sessions.contains(&requested.session_id) {
+                    continue;
+                }
                 let mut merged = match bases.sessions.get(&requested.session_id) {
                     None => requested.clone(),
                     Some(baseline) => {
@@ -1023,6 +1106,11 @@ impl ProductEventBus {
             }
             let mut frozen_agents = BTreeMap::new();
             for requested in &delta.agent_upserts {
+                if index.deleted.contains(&requested.thread_id)
+                    || index.deleted_sessions.contains(&requested.session_id)
+                {
+                    continue;
+                }
                 let mut merged = match bases.agents.get(&requested.agent_id) {
                     None => requested.clone(),
                     Some(baseline) => {
@@ -1059,6 +1147,9 @@ impl ProductEventBus {
                     index.insert_session(current.clone());
                     frozen_sessions.insert(current.session_id.clone(), current);
                 }
+            }
+            for id in &delta.thread_deletions {
+                index.delete_thread(id);
             }
             if project_changed {
                 index.update_projects(&project_upserts, &delta.project_removals);
@@ -1118,6 +1209,21 @@ impl ProductEventBus {
             .lock()
             .expect("thread index lock poisoned")
             .thread_snapshot(thread_id)
+    }
+
+    /// 纯读目录提交切面；不激活成员，也不读取 Native history/snapshot。
+    pub(crate) fn agent_execution_identity(
+        &self,
+        thread_id: &str,
+    ) -> Option<(
+        pl_protocol::AgentThreadIdentity,
+        pl_protocol::AgentBinding,
+        Option<pl_protocol::ThreadId>,
+    )> {
+        self.thread_index
+            .lock()
+            .expect("thread index lock poisoned")
+            .execution_identity(thread_id)
     }
 
     /// 注册一个 child 成员：typed delta 与摘要集合共同形成内存提交。

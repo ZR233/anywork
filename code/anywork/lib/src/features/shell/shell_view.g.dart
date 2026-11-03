@@ -358,7 +358,7 @@ final class HeaderViewProvider
   }
 }
 
-String _$headerViewHash() => r'f7f12c668b0dc03b0f7e53321f8ed1f65953ef3f';
+String _$headerViewHash() => r'fd1f85113ce805a213ec5e41376be9d0f8fb8d12';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -439,7 +439,7 @@ final class ConversationWorkspaceProvider
 }
 
 String _$conversationWorkspaceHash() =>
-    r'3352003414a19397971629b50833fcc9e9cdf3cc';
+    r'ba4e79fe7acf0953a89fbfe2abda9d24a3c9a040';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///

@@ -276,6 +276,20 @@ impl WorktreeLeaseOwner {
             .collect()
     }
 
+    pub(in crate::studio) fn forget_deleted(&self, id: &str) -> Result<()> {
+        let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        anyhow::ensure!(
+            state
+                .entries
+                .get(id)
+                .is_none_or(|entry| entry.lease.state == WorktreeLeaseState::Cleaned),
+            "cannot forget an unfinished worktree cleanup"
+        );
+        state.entries.remove(id);
+        state.creating.remove(id);
+        Ok(())
+    }
+
     pub(in crate::studio) fn is_durable(&self, lease: &WorktreeLease) -> bool {
         self.state
             .lock()

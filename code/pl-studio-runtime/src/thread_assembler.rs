@@ -163,6 +163,10 @@ impl std::fmt::Debug for StudioThreadSpec {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadAssemblyError {
+    #[error("Agent backend {backend:?} is not executable in S1; ACP execution requires S4")]
+    UnsupportedBackend {
+        backend: pl_protocol::AgentBackendKind,
+    },
     #[error("Thread activation failed")]
     ActivationFailed(#[source] Arc<ThreadAssemblyError>),
     #[error("Thread resource preparation panicked")]

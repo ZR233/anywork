@@ -665,6 +665,18 @@ impl ModelPerformanceOwner {
         Ok(())
     }
 
+    pub(crate) async fn delete_session(&self, root_thread_id: &str) -> Result<(), PureError> {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.recent.remove_root(root_thread_id);
+            state.revision = state.revision.saturating_add(1);
+            state.updated_at = unix_seconds();
+        }
+        self.persist_state().await?;
+        self.emit_snapshot_after_flush();
+        Ok(())
+    }
+
     async fn read_projection(
         &self,
         force_costs: bool,

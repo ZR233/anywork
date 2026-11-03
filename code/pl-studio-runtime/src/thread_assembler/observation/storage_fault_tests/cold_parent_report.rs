@@ -45,23 +45,23 @@ impl StudioActivationFactory for ReactivationFactory {
     ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
         let checkpoint = self
             .0
-            .history(&identity.id)
+            .history(identity.id())
             .await
             .map_err(storage_error)?
             .checkpoint()
             .await
             .map_err(storage_error)?
-            .ok_or_else(|| ThreadAssemblyError::Identity(identity.id.clone()))?;
+            .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
         crate::studio::delegation::saved(&checkpoint.state)
             .map_err(storage_error)?
-            .ok_or_else(|| ThreadAssemblyError::Identity(identity.id.clone()))
+            .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))
     }
 
     async fn prepare(
         &self,
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        let id = request.identity.id;
+        let id = request.identity.id().to_owned();
         let protocol = Fixture::protocol(&id, None);
         let checkpoint = self
             .0
@@ -168,10 +168,7 @@ async fn activate_parent(fixture: &Fixture) -> Result<ThreadHandle> {
     Ok(tokio::time::timeout(
         std::time::Duration::from_secs(10),
         fixture.owner.activate(
-            ThreadActivation {
-                id: "parent".into(),
-                parent_id: None,
-            },
+            ThreadActivation::native_test("parent", None),
             ReactivationFactory(fixture.store.clone()),
         ),
     )
@@ -363,10 +360,7 @@ struct SavedClose {
     sequence: u64,
 }
 
-async fn save_pending_close(
-    store: &StudioStore,
-    factory: &crate::studio::StudioThreadFactory,
-) -> Result<SavedClose> {
+async fn save_pending_close(store: &StudioStore) -> Result<SavedClose> {
     let parent = Fixture::protocol("parent", None);
     let child = Fixture::protocol("child", Some("parent"));
     save_cold_thread(store, &parent).await?;
@@ -393,15 +387,6 @@ async fn save_pending_close(
         }],
     };
     save_terminal_report(store, &child, message.clone()).await?;
-    let checkpoint = store
-        .history("child")
-        .await?
-        .checkpoint()
-        .await?
-        .context("saved terminal child")?;
-    factory
-        .begin_child_close(&child, Some(&checkpoint.state), false)
-        .await?;
     Ok(SavedClose {
         child,
         message,
@@ -484,8 +469,18 @@ async fn prove_report_and_reactivate(fixture: &Fixture, saved: &SavedClose) -> R
 async fn detached_receiver_writer_retry_joins_only_the_original_binding() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+    let saved = save_pending_close(&store).await?;
     let resources = close_factory(&store)?;
-    let saved = save_pending_close(&store, &resources.factory).await?;
+    let checkpoint = store
+        .history("child")
+        .await?
+        .checkpoint()
+        .await?
+        .context("saved terminal child")?;
+    resources
+        .factory
+        .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+        .await?;
     let fixture = Fixture::new(store.clone())?;
     resources.install(&fixture.owner)?;
     assert!(fixture.owner.0.state().entries.is_empty());
@@ -547,8 +542,18 @@ async fn detached_receiver_writer_retry_joins_only_the_original_binding() -> Res
 async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+    let saved = save_pending_close(&store).await?;
     let resources = close_factory(&store)?;
-    let saved = save_pending_close(&store, &resources.factory).await?;
+    let checkpoint = store
+        .history("child")
+        .await?
+        .checkpoint()
+        .await?
+        .context("saved terminal child")?;
+    resources
+        .factory
+        .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+        .await?;
     let fixture = Fixture::new(store.clone())?;
     resources.install(&fixture.owner)?;
     assert!(fixture.owner.0.state().entries.is_empty());
@@ -592,10 +597,7 @@ async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Resu
     let activating = tokio::spawn(async move {
         owner
             .activate(
-                ThreadActivation {
-                    id: "parent".into(),
-                    parent_id: None,
-                },
+                ThreadActivation::native_test("parent", None),
                 ReactivationFactory(activating_store),
             )
             .await

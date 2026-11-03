@@ -17,11 +17,49 @@ pub enum BridgeAgentBinding {
     Native {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         route: Option<BridgeNewThreadModelRoute>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_instructions: Option<String>,
     },
     Acp {
         account_id: String,
         connection_revision: u64,
     },
+}
+
+impl From<pl_protocol::AgentBinding> for BridgeAgentBinding {
+    fn from(binding: pl_protocol::AgentBinding) -> Self {
+        match binding {
+            pl_protocol::AgentBinding::Native(config) => Self::Native {
+                route: config.route.map(Into::into),
+                system_instructions: config.system_instructions,
+            },
+            pl_protocol::AgentBinding::Acp(config) => Self::Acp {
+                account_id: config.account_id,
+                connection_revision: config.connection_revision,
+            },
+        }
+    }
+}
+
+impl From<BridgeAgentBinding> for pl_protocol::AgentBinding {
+    fn from(binding: BridgeAgentBinding) -> Self {
+        match binding {
+            BridgeAgentBinding::Native {
+                route,
+                system_instructions,
+            } => Self::Native(pl_protocol::NativeAgentConfig {
+                route: route.map(Into::into),
+                system_instructions,
+            }),
+            BridgeAgentBinding::Acp {
+                account_id,
+                connection_revision,
+            } => Self::Acp(pl_protocol::AcpAgentConfig {
+                account_id,
+                connection_revision,
+            }),
+        }
+    }
 }
 
 /// 会话目录行的 FRB 镜像（目录 owner 提交切面的轻量行投影）。

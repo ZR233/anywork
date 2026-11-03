@@ -130,10 +130,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
     let activation = tokio::spawn(async move {
         activating
             .activate(
-                ThreadActivation {
-                    id: "root".into(),
-                    parent_id: None,
-                },
+                ThreadActivation::native_test("root", None),
                 CapturedPreparation {
                     entered: std::sync::Mutex::new(Some(entered)),
                 },
@@ -160,6 +157,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
             .save_thread_archive(&ThreadArchiveOperation {
                 scope: ArchiveScope::Thread("root".into()),
                 revision: 1,
+                worktrees: Vec::new(),
                 members: vec![ArchiveMember {
                     parent_id: None,
                     thread_id: "root".into(),
@@ -434,6 +432,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
             revision: 1,
             members,
             private_members: Vec::new(),
+            worktrees: Vec::new(),
             phase: ArchivePhase::Sealed,
         })
         .await?;

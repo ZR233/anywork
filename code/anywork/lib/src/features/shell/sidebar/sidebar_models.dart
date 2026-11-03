@@ -7,6 +7,7 @@ enum SidebarThreadAction {
   pin,
   rename,
   archive,
+  delete,
   copyWorkspace,
   openVsCode,
   openZed,

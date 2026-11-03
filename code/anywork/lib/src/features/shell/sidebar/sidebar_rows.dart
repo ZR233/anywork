@@ -267,6 +267,14 @@ class SidebarThreadRow extends StatelessWidget {
                       minTarget: target,
                       onPressed: () => onAction(SidebarThreadAction.restore),
                     ),
+                    _tileIconButton(
+                      key: StudioDriverKeys.deleteThread(row.threadId),
+                      tooltip: context.l10n.sidebarDeleteSession,
+                      icon: Icons.delete_outline,
+                      color: context.colors.error,
+                      minTarget: target,
+                      onPressed: () => onAction(SidebarThreadAction.delete),
+                    ),
                   ],
                 )
               : SidebarThreadMenu(

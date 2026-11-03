@@ -16,7 +16,10 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（类型定义见 `pl-protocol` 的 `session`/`agent` 模块，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
 - **成员描述（`AgentDescriptor`）**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、backend 类别与工作区引用。root/child 表达成员关系，Native/ACP 表达执行方式，两者正交；不得用 `AcpRootThread`、`AcpChildSession` 等交叉类型复制业务逻辑。首版一名成员对应一个默认 Thread。
 - **定义快照（`AgentDefinitionSnapshot`）**：可复用定义的不可变快照——定义 ID、显示名、描述、用途、来源与修订/内容身份；不混入模型配置与运行状态，也不拥有线程、连接或任务。修改可复用定义只影响后续新实例。
-- **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`），指令正文仍归指令快照与 Profile 冻结域；`AcpAgentConfig` 只引用既有 ACP 账号 ID 与连接配置身份，不包含 Native model/effort/system-instruction 占位值。类型中存在 `Acp` 分支不代表它可以执行：在 ACP 执行后端接通之前出现即明确失败，不提供空实现或假成功。
+- **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`）；当前 Profile 的指令正文位于 Native 分支，目录投影省略正文，执行历史继续按既有格式冻结。`AcpAgentConfig` 只引用既有 ACP 账号 ID 与连接配置身份，不包含 Native model/effort/system-instruction 占位值。类型中存在 `Acp` 分支不代表它可以执行：在 ACP 执行后端接通之前出现即在资源准备前明确失败，不提供空实现或假成功。
+- **当前配置与历史分界**：配置 owner 发布 `AgentProfile { definition, binding, system, enabled, workspace_mode }`；配置文件正式迁移到 schema 2，把原 Native 路由与指令完整移入 binding。当前配置、设置与派发消费者读取这份描述，不把所有后端强制解析成 Native。仅在 Native 实例创建期通过 `freeze_native` 生成原 `AgentProfileSnapshot` 历史载荷；恢复消费保存的冻结值，不跟随当前定义变化。
+- **Native 装配身份**：目录 owner 解析并校验 `SessionId/AgentId/ThreadId/parent AgentId` 后交给现有 Native factory；后端准入先于历史、工作区、工具和模型资源准备。恢复同样读取目录 binding，不以缺少模型字段猜 Native。该 seam 不增加 Session registry 或改变 S2 的 owner 迁移范围。
+- **派发准入切面**：新 child 的 factory 先解析并冻结配置准入值，确认后端可执行，再建立 reservation 与私有 preparation 责任；实际 `prepare` 消费同一准入值，不二次读取当前配置。已有 child 的内部恢复先取得目录 activation 身份并拒绝不支持后端，之后才核验 Native 工作区或读取 checkpoint，所有入口具有相同拒绝顺序。
 
 冻结 Profile（`AgentProfileSnapshot`）是上述定义与 Native 绑定在 child 创建期的联合冻结来源：当前 Profile 的配置消费者改读定义与 binding；Native 历史/checkpoint 中已有的 `AgentProfileSnapshot` 按原冻结语义读取，可用于构造只读新描述，不为重命名重写已完成对话。实例的 backend 类别与会话归属在运行期间固定；根 Native 的模型路由仍按既有产品命令修改并在下一 Turn 冻结，child 的模型与 Profile 仍按创建期 spawn 冻结规则，不因新增 binding 而禁止根模型切换，也不让已启动 child 跟随配置变化偷偷换模型。根会话当前模型路由的唯一可写入口仍是既有产品命令，descriptor/binding 只读取它的提交事实，不增设第二个会话设置字段双写。
 
@@ -142,9 +145,9 @@ effort = "high"
 
 创建错误的“可能有副作用”仅表示结果未决，不证明当前路径中的现场由本次调用新建。未发布资源仍由原准备所有者承担保存、真实退出和责任归还；无法证明物理现场归属时保留并报告，不自动接管、重建或删除，也不以分支存在性预检补造所有权。
 
-### 当前归档与独立恢复清理
+### 归档与独立恢复清理
 
-根会话归档与子智能体最终关闭是独立操作。当前归档收束并保存会话树的活动工作后更新目录可见性，不自动清理工作树或新增永久关闭意图；取消归档不重建工作树、不切换到项目主目录、不隐式恢复执行。界面不能提前承诺尚未接通的资源清理，工作区故障不因归档而消失，也不应阻塞不依赖工作区的目录操作。Recovery 独立安全清理仍核对修订、归属及非活动 owner，保护未提交、未跟踪和 ignored 内容；缺失、身份不一致或未知目标保留诊断与重试，陈旧卡片不授予删除权限。归档强制清理属于后续独立接线，不因本次 `close_agent` 落地而自动启用（见 [侧栏](./concepts/project-sidebar.md)）。
+根会话归档与子智能体最终关闭是独立操作。归档的完整范围、强制内容授权、专属工作树清理、历史保留及永久删除边界统一见 [17.16](./17-studio-storage.md#1716-会话归档与临时数据清理)。取消归档不重建工作树、不切换到项目主目录、不隐式恢复执行。Recovery 独立安全清理仍核对修订、归属及非活动 owner，保护未提交、未跟踪和 ignored 内容；缺失、身份不一致或未知目标保留诊断与重试，陈旧卡片不授予删除权限。
 
 ### 子智能体最终关闭
 
@@ -196,12 +199,6 @@ enum AgentWorktreeCleanup {
     Failed { path: Option<String>, error: StateError },
 }
 ```
-
-### 后续范围：归档强制清理
-
-以下是独立的后续目标，不是当前 `close_agent` 的隐含副作用或本次交付能力：归档确认显式授权 `force=true` 并提示内容损失，收束范围内所有成员及真实借用后，按绑定清理子工作树和根自有工作树，全部必要步骤成功才发布完整归档成功。local 根不删除项目目录，但其自有子工作树仍在范围内；未提交、未跟踪、ignored 文件及无其他引用的 detached 提交可能丢失，分支与会话资料保留。取消归档不撤销最终关闭或重建 checkout。
-
-接入前必须证明归档可接续已准入但未发布分配的原创建责任，不仅枚举目录成员。合法私有 owner 即使初始 checkpoint 已耐久、目录发布失败，也必须能够保存、关闭并排空观察；不依赖不存在的公开目录关联，不提前公开 child 来解循环。原子替换后确认失败须在既有 canonical 边界裁决可能已提交的事实，不以旧缓存 absence 授权回滚或删除；已发布 checkpoint 缺失仍是故障。取消、清理失败、发布失败及重启窗口的验证独立于本次子智能体关闭验收。
 
 ## 12.6 桌面界面智能体配置中心
 

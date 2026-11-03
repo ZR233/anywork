@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::Result;
+use pl_protocol::studio::NewThreadModelRoute;
+use pl_protocol::{AcpAgentConfig, AgentBinding, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
@@ -75,19 +77,143 @@ impl MigratesTo<ProfileV1> for ProfileImport {
     }
 }
 
-impl IntoDomain<ProfileV1> for ProfileV1 {
+/// Profile schema 2：当前配置按定义元数据 + 后端 binding 表达。
+///
+/// binding 使用本文件冻结的 wire 形状，不直接借用会随产品演进的 domain 结构；
+/// V1 的原 Native 字段在迁移中无损进入 Native binding。
+#[derive(Debug, Clone, Serialize, Deserialize, Versioned)]
+#[versioned(version = "2.0.0")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfileV2 {
+    #[serde(default = "enabled")]
+    enabled: bool,
+    display_name: String,
+    description: String,
+    when_to_use: String,
+    #[serde(default)]
+    workspace_mode: AgentWorkspaceMode,
+    binding: ProfileBindingWire,
+}
+
+/// Schema 2 的冻结 binding wire；与 domain `AgentBinding` 显式互转，不共享类型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ProfileBindingWire {
+    Native(ProfileNativeWire),
+    Acp(ProfileAcpWire),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileNativeWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<ProfileRouteWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileRouteWire {
+    account_id: String,
+    model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileAcpWire {
+    account_id: String,
+    connection_revision: u64,
+}
+
+/// V1 的全部原字段无损进入 Native binding；Acp 绑定只能由 schema 2 显式表达。
+impl MigratesTo<ProfileV2> for ProfileV1 {
+    fn migrate(self) -> ProfileV2 {
+        ProfileV2 {
+            enabled: self.enabled,
+            display_name: self.display_name,
+            description: self.description,
+            when_to_use: self.when_to_use,
+            workspace_mode: self.workspace_mode,
+            binding: ProfileBindingWire::Native(ProfileNativeWire {
+                route: Some(ProfileRouteWire {
+                    account_id: self.account_id,
+                    model_id: self.model_id,
+                    effort: self.effort,
+                }),
+                system_instructions: Some(self.system_instructions),
+            }),
+        }
+    }
+}
+
+impl From<&AgentBinding> for ProfileBindingWire {
+    fn from(binding: &AgentBinding) -> Self {
+        match binding {
+            AgentBinding::Native(native) => Self::Native(ProfileNativeWire {
+                route: native.route.as_ref().map(|route| ProfileRouteWire {
+                    account_id: route.account_id.clone(),
+                    model_id: route.model_id.clone(),
+                    effort: route.effort.clone(),
+                }),
+                system_instructions: native.system_instructions.clone(),
+            }),
+            AgentBinding::Acp(acp) => Self::Acp(ProfileAcpWire {
+                account_id: acp.account_id.clone(),
+                connection_revision: acp.connection_revision,
+            }),
+        }
+    }
+}
+
+impl From<ProfileBindingWire> for AgentBinding {
+    fn from(wire: ProfileBindingWire) -> Self {
+        match wire {
+            ProfileBindingWire::Native(native) => Self::Native(NativeAgentConfig {
+                route: native.route.map(|route| NewThreadModelRoute {
+                    account_id: route.account_id,
+                    model_id: route.model_id,
+                    effort: route.effort,
+                }),
+                system_instructions: native.system_instructions,
+            }),
+            ProfileBindingWire::Acp(acp) => Self::Acp(AcpAgentConfig {
+                account_id: acp.account_id,
+                connection_revision: acp.connection_revision,
+            }),
+        }
+    }
+}
+
+impl IntoDomain<ProfileV2> for ProfileV2 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl ProfileV1 {
+impl ProfileV2 {
     pub(crate) fn from_current(profile: &super::super::UserAgentProfile) -> Result<Self> {
-        into_current(profile)
+        Ok(Self {
+            enabled: profile.enabled,
+            display_name: profile.display_name.clone(),
+            description: profile.description.clone(),
+            when_to_use: profile.when_to_use.clone(),
+            workspace_mode: into_current(&profile.workspace_mode)?,
+            binding: (&profile.binding).into(),
+        })
     }
 
     pub(crate) fn into_profile(self) -> Result<super::super::UserAgentProfile> {
-        into_current(&self)
+        Ok(super::super::UserAgentProfile {
+            enabled: self.enabled,
+            display_name: self.display_name,
+            description: self.description,
+            when_to_use: self.when_to_use,
+            workspace_mode: into_current(&self.workspace_mode)?,
+            binding: self.binding.into(),
+        })
     }
 
     pub(crate) fn encode(&self) -> Result<String> {
@@ -103,17 +229,18 @@ fn migrator() -> Result<Migrator> {
                 .with_keys(VERSION_KEY, "data")
                 .from::<ProfileImport>()
                 .step::<ProfileV1>()
-                .into::<ProfileV1>(),
+                .step::<ProfileV2>()
+                .into::<ProfileV2>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<ProfileV1>> {
+pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<ProfileV2>> {
     let migrator = migrator()?;
-    let mut value = toml_schema::parse(path, content, ENTITY, 1)?;
+    let mut value = toml_schema::parse(path, content, ENTITY, 2)?;
     if value.contains_key(VERSION_KEY) {
-        return toml_schema::load::<ProfileV1, ProfileV1>(
+        return toml_schema::load::<ProfileV1, ProfileV2>(
             path,
             content,
             &migrator,
@@ -124,7 +251,7 @@ pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<
     value.insert(VERSION_KEY.into(), "0.0.0".into());
     let document = migrator
         .load_flat_from(ENTITY, value)
-        .map_err(|error| toml_schema::migration_error(path, ENTITY, None, 1, "import", error))?;
+        .map_err(|error| toml_schema::migration_error(path, ENTITY, None, 2, "import", error))?;
     Ok(LoadedDocument {
         document,
         source_version: 0,
@@ -132,8 +259,8 @@ pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<
     })
 }
 
-pub(in crate::config) fn load_current(path: &Path, content: &str) -> Result<ProfileV1> {
-    toml_schema::load::<ProfileV1, ProfileV1>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(in crate::config) fn load_current(path: &Path, content: &str) -> Result<ProfileV2> {
+    toml_schema::load::<ProfileV2, ProfileV2>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -161,8 +288,13 @@ mod tests {
             assert!(imported.migrated);
             let profile = imported.document.into_profile().unwrap();
             assert!(!profile.enabled);
-            assert_eq!(profile.account_id.as_str(), "account");
-            assert_eq!(profile.model_id, "model");
+            let AgentBinding::Native(native) = profile.binding else {
+                panic!("legacy Profile must migrate to Native");
+            };
+            let route = native.route.expect("legacy Native route");
+            assert_eq!(route.account_id, "account");
+            assert_eq!(route.model_id, "model");
+            assert_eq!(native.system_instructions.as_deref(), Some("i"));
         }
     }
 
@@ -199,7 +331,7 @@ mod tests {
         let encoded = imported.document.encode().unwrap();
         assert_eq!(
             toml::from_str::<toml::Table>(&encoded).unwrap()[VERSION_KEY].as_integer(),
-            Some(1)
+            Some(2)
         );
         let current = load_profile(Path::new("profile.toml"), &encoded).unwrap();
         assert!(!current.migrated);
@@ -207,6 +339,33 @@ mod tests {
             current.document.into_profile().unwrap(),
             imported.document.into_profile().unwrap()
         );
+    }
+
+    #[test]
+    fn v1_migration_preserves_native_effort_instructions_disabled_and_workspace() {
+        let migrated = load_profile(
+            Path::new("profile.toml"),
+            "schema_version=1\nenabled=false\ndisplay_name='Saved'\n\
+             description='d'\nwhen_to_use='w'\nsystem_instructions='instructions'\n\
+             account_id='account'\nmodel_id='model'\neffort='high'\nworkspace_mode='worktree'\n",
+        )
+        .unwrap();
+        assert_eq!(migrated.source_version, 1);
+        assert!(migrated.migrated);
+        let profile = migrated.document.into_profile().unwrap();
+        assert!(!profile.enabled);
+        assert_eq!(
+            profile.workspace_mode,
+            pl_protocol::AgentWorkspaceMode::Worktree
+        );
+        let AgentBinding::Native(native) = profile.binding else {
+            panic!("V1 must migrate to Native");
+        };
+        assert_eq!(native.system_instructions.as_deref(), Some("instructions"));
+        let route = native.route.expect("V1 Native route");
+        assert_eq!(route.account_id, "account");
+        assert_eq!(route.model_id, "model");
+        assert_eq!(route.effort.as_deref(), Some("high"));
     }
 
     #[test]

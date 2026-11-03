@@ -5,7 +5,9 @@ import '../support/test_statistics_feed.dart';
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/recording_demo_transport.dart';
@@ -24,6 +26,67 @@ void main() {
     await client.directoryCommands.selectAgentThread(fixture.child.threadId);
     await _expectSelectedHistory(fixture);
   });
+
+  test(
+    'shell resolves child root metadata through the root agent thread ID',
+    () async {
+      final fixture = await _fixture(distinctRootIdentity: true);
+      final graph = fixture.graph;
+      final root = fixture.root;
+      final child = fixture.child;
+      expect((root.sessionId, root.agentId, root.threadId), ('S', 'A', 'T'));
+      expect(child.parentAgentId, 'A');
+      expect(child.sessionId, 'S');
+      expect(child.threadId, 'C');
+      expect(
+        fixture.agents.singleWhere((agent) => agent.agentId == 'A').threadId,
+        'T',
+      );
+
+      final childObservation = graph.client.threadDirectory.observeThread(
+        child.threadId,
+      );
+      await childObservation.state
+          .waitFor((state) => state.frame?.row != null)
+          .timeout(const Duration(seconds: 5));
+      addTearDown(childObservation.release);
+
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final header = container.listen(headerViewProvider, (_, _) {});
+      final workspace = container.listen(
+        conversationWorkspaceProvider(root.threadId),
+        (_, _) {},
+      );
+      addTearDown(header.close);
+      addTearDown(workspace.close);
+
+      expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(
+        container
+            .read(conversationWorkspaceProvider(root.threadId))
+            ?.rootRow
+            .threadId,
+        'T',
+      );
+
+      graph.client.selection.restoreStartup(
+        workspaceId: root.workspaceId,
+        threadId: 'C',
+        needsOpen: true,
+      );
+      await container.pump();
+      expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(
+        container.read(conversationWorkspaceProvider('C'))?.rootRow.threadId,
+        'T',
+      );
+      expect(fixture.transport.metadataReads, isNot(contains('S')));
+      expect(fixture.transport.metadataReads, contains('C'));
+    },
+  );
 
   test(
     'restored cold selection stays unopened until its explicit open command',
@@ -729,12 +792,25 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(fixture.transport.restoreCalls, 0);
 }
 
-Future<_ColdFixture> _fixture() async {
+Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
   final transport = _ColdSelectionTransport();
   final saved = await transport.savedThreads();
-  final root = saved[0];
-  final child = saved[1].copyWith(status: ThreadStatusView.closed);
+  final root = distinctRootIdentity
+      ? saved[0].copyWith(sessionId: 'S', agentId: 'A', threadId: 'T')
+      : saved[0];
+  final child = distinctRootIdentity
+      ? saved[1].copyWith(
+          status: ThreadStatusView.closed,
+          threadId: 'C',
+          sessionId: root.sessionId,
+          parentAgentId: root.agentId,
+        )
+      : saved[1].copyWith(status: ThreadStatusView.closed);
   final other = saved[2];
+  transport.rowOverrides.addAll({
+    saved[0].threadId: root,
+    saved[1].threadId: child,
+  });
   transport.child = child;
   final graph = AppGraph(
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -855,12 +931,13 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   var restoreCalls = 0;
 
   int _metadataRevision = 0;
+  final rowOverrides = <String, SessionDirectoryRow>{};
 
   Future<List<SessionDirectoryRow>> savedThreads() async {
     final rows = (await super.readBootstrap()).threadDirectory.rows;
     return [
       for (final id in ['thread-main', 'thread-reviewer', 'thread-alt'])
-        rows.singleWhere((row) => row.threadId == id),
+        rowOverrides[id] ?? rows.singleWhere((row) => row.threadId == id),
     ];
   }
 

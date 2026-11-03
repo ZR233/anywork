@@ -570,9 +570,21 @@ mod storage_fault_tests {
     #[derive(Debug)]
     struct ResourceIo(Arc<Mutex<Vec<WorkspaceRelease>>>);
     impl StudioChildFactory for ResourceIo {
+        type Admission = ();
+
+        async fn admit(
+            &self,
+            _: &str,
+            _: pl_protocol::DelegationSettings,
+            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+        ) -> Result<(), ThreadAssemblyError> {
+            Ok(())
+        }
+
         async fn prepare(
             &self,
             _: ChildThreadRequest,
+            _: (),
         ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
             Err(ThreadAssemblyError::Identity(
                 "storage fixture does not prepare workspaces".into(),
@@ -778,9 +790,21 @@ mod storage_fault_tests {
             release: Arc<tokio::sync::Semaphore>,
         }
         impl StudioChildFactory for DelayedDisposal {
+            type Admission = ();
+
+            async fn admit(
+                &self,
+                _: &str,
+                _: pl_protocol::DelegationSettings,
+                _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            ) -> Result<(), ThreadAssemblyError> {
+                Ok(())
+            }
+
             async fn prepare(
                 &self,
                 _: ChildThreadRequest,
+                _: (),
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
                 Err(ThreadAssemblyError::Closed)
             }

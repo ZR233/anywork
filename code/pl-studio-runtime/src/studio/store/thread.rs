@@ -52,12 +52,12 @@ impl StudioStore {
             .collect())
     }
 
-    /// Archive scope includes every active descendant without replaying its journal.
+    /// Cleanup includes archived descendants without replaying their journals.
     pub async fn list_threads_for_archive(
         &self,
         root_thread_id: &str,
     ) -> Result<Vec<ThreadRecord>> {
-        Ok(session_tree(self.catalog(), root_thread_id, false)
+        Ok(session_tree(self.catalog(), root_thread_id, true)
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot.agents.into_iter().map(move |agent| {

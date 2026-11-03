@@ -24,36 +24,81 @@ impl From<pl_protocol::AgentWorkspaceMode> for BridgeAgentWorkspaceMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAgentProfileDto {
-    pub profile_id: String,
-    pub display_name: String,
-    pub description: String,
-    pub when_to_use: String,
-    pub system_instructions: String,
-    pub account_id: String,
-    pub model_id: String,
-    pub effort: Option<String>,
-    pub source: String,
-    pub revision: String,
-    pub content_hash: String,
+    pub definition: BridgeAgentDefinitionSnapshot,
+    pub binding: super::BridgeAgentBinding,
     pub system: bool,
     pub enabled: bool,
     pub workspace_mode: BridgeAgentWorkspaceMode,
 }
 
-impl From<pl_protocol::AgentProfileSnapshot> for BridgeAgentProfileDto {
-    fn from(profile: pl_protocol::AgentProfileSnapshot) -> Self {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeAgentDefinitionSnapshot {
+    pub definition_id: String,
+    pub display_name: String,
+    pub description: String,
+    pub when_to_use: String,
+    pub source: String,
+    pub revision: String,
+    pub content_hash: String,
+}
+
+impl From<pl_protocol::AgentDefinitionSnapshot> for BridgeAgentDefinitionSnapshot {
+    fn from(profile: pl_protocol::AgentDefinitionSnapshot) -> Self {
         Self {
-            profile_id: profile.profile_id,
+            definition_id: profile.definition_id,
             display_name: profile.display_name,
             description: profile.description,
             when_to_use: profile.when_to_use,
-            system_instructions: profile.system_instructions,
-            account_id: profile.account_id,
-            model_id: profile.model_id,
-            effort: profile.effort,
             source: profile.source,
             revision: profile.revision,
             content_hash: profile.content_hash,
+        }
+    }
+}
+
+impl From<BridgeAgentDefinitionSnapshot> for pl_protocol::AgentDefinitionSnapshot {
+    fn from(profile: BridgeAgentDefinitionSnapshot) -> Self {
+        Self {
+            definition_id: profile.definition_id,
+            display_name: profile.display_name,
+            description: profile.description,
+            when_to_use: profile.when_to_use,
+            source: profile.source,
+            revision: profile.revision,
+            content_hash: profile.content_hash,
+        }
+    }
+}
+
+impl From<pl_protocol::AgentProfile> for BridgeAgentProfileDto {
+    fn from(profile: pl_protocol::AgentProfile) -> Self {
+        Self {
+            definition: profile.definition.into(),
+            binding: profile.binding.into(),
+            system: profile.system,
+            enabled: profile.enabled,
+            workspace_mode: profile.workspace_mode.into(),
+        }
+    }
+}
+
+impl From<BridgeAgentWorkspaceMode> for pl_protocol::AgentWorkspaceMode {
+    fn from(value: BridgeAgentWorkspaceMode) -> Self {
+        match value {
+            BridgeAgentWorkspaceMode::Unrestricted => Self::Unrestricted,
+            BridgeAgentWorkspaceMode::Directory => Self::Directory,
+            BridgeAgentWorkspaceMode::Worktree => Self::Worktree,
+            BridgeAgentWorkspaceMode::Review => Self::Review,
+        }
+    }
+}
+
+impl From<BridgeAgentProfileDto> for pl_protocol::AgentProfile {
+    fn from(profile: BridgeAgentProfileDto) -> Self {
+        Self {
+            definition: profile.definition.into(),
+            binding: profile.binding.into(),
             system: profile.system,
             enabled: profile.enabled,
             workspace_mode: profile.workspace_mode.into(),

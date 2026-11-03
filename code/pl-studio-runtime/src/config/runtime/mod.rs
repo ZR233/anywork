@@ -105,6 +105,8 @@ pub struct ResolvedAgentProfile {
     pub config: StudioConfig,
     pub revision: u64,
     pub profile: pl_protocol::AgentProfileSnapshot,
+    pub definition: pl_protocol::AgentDefinitionSnapshot,
+    pub binding: pl_protocol::AgentBinding,
     pub route: pl_model::config::ResolvedModelRoute,
 }
 
@@ -459,12 +461,17 @@ impl ConfigRuntime {
         let mut profile = catalog
             .profiles
             .into_iter()
-            .find(|profile| profile.profile_id == profile_id && profile.enabled)
+            .find(|profile| profile.definition.definition_id == profile_id && profile.enabled)
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
                     "Agent Profile is missing or disabled: {profile_id}"
                 ))
             })?;
+        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(
+                PureError::ConfigError("ACP execution is not supported before S4".into()).into(),
+            );
+        }
         match (mode, selection) {
             (pl_protocol::DelegationMode::Profile, None) => {}
             (pl_protocol::DelegationMode::Profile, Some(_)) => {
@@ -480,21 +487,25 @@ impl ConfigRuntime {
                 .into());
             }
             (pl_protocol::DelegationMode::Automatic, Some(selection)) => {
-                profile.account_id = selection.account_id;
-                profile.model_id = selection.model_id;
-                profile.effort = selection.effort;
-                let mut identity = profile.clone();
+                let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                    unreachable!("ACP rejected before Native selection");
+                };
+                native.route = Some(selection);
+                let mut identity = profile.freeze_native()?;
                 identity.content_hash.clear();
-                profile.content_hash = crate::canonical_content_hash(
+                profile.definition.content_hash = crate::canonical_content_hash(
                     &serde_json::to_vec(&identity).map_err(PureError::from)?,
                 );
             }
         }
-        let route = crate::studio::delegation::resolve_child_route(&snapshot.config, &profile)?;
+        let route =
+            crate::studio::delegation::resolve_current_child_route(&snapshot.config, &profile)?;
         Ok(ResolvedAgentProfile {
             config: snapshot.config,
             revision: snapshot.revision,
-            profile,
+            definition: profile.definition.clone(),
+            binding: profile.binding.clone(),
+            profile: profile.freeze_native()?,
             route,
         })
     }
@@ -972,5 +983,72 @@ mod tests {
                 .user,
             "first",
         );
+    }
+
+    #[test]
+    fn acp_profile_is_configurable_but_rejected_before_native_resolution() {
+        let (_directory, runtime) = runtime();
+        let before = runtime.read().expect("read config");
+        let configured = runtime
+            .update(before.revision, |config| {
+                let mut next = config.clone();
+                next.acp.accounts.insert(
+                    "acp-fixture".into(),
+                    crate::config::AcpAccountConfig {
+                        name: "ACP fixture".into(),
+                        provider: crate::config::AcpProvider::Antigravity,
+                    },
+                );
+                Ok(next)
+            })
+            .expect("configure ACP account");
+        let profile = super::super::UserAgentProfile {
+            enabled: true,
+            display_name: "ACP child".into(),
+            description: "ACP configuration boundary".into(),
+            when_to_use: "ACP rejection fixture".into(),
+            binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+                account_id: "acp-fixture".into(),
+                connection_revision: 7,
+            }),
+            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+        };
+        let (saved, _) = runtime
+            .save_user_agent_profile(configured.revision, "acp-child", &profile)
+            .expect("ACP Profile is a valid current configuration");
+
+        let catalog = runtime
+            .agent_profiles_snapshot()
+            .expect("current profiles")
+            .catalog;
+        assert!(
+            catalog
+                .profiles
+                .iter()
+                .any(|profile| profile.definition.definition_id == "acp-child")
+        );
+        for mode in [
+            pl_protocol::DelegationMode::Profile,
+            pl_protocol::DelegationMode::Automatic,
+        ] {
+            assert!(
+                catalog
+                    .executable(mode)
+                    .expect("dispatch view")
+                    .profiles
+                    .iter()
+                    .all(|profile| profile.definition.definition_id != "acp-child")
+            );
+        }
+
+        let error = runtime
+            .resolve_agent_profile("acp-child")
+            .expect_err("S4 execution is not available");
+        assert!(
+            error
+                .to_string()
+                .contains("ACP execution is not supported before S4")
+        );
+        assert_eq!(runtime.read().unwrap().revision, saved.revision);
     }
 }

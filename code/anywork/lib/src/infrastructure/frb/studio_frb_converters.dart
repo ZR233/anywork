@@ -318,7 +318,7 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
     workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
     workspacePath: value.workspacePath,
     role: value.role,
-    binding: _agentBindingFromFrb(value.binding),
+    binding: agentBindingFromFrb(value.binding),
     status: _threadStatusFromFrb(value.status),
     createdAt: _dateFromUnix(value.createdAt),
     updatedAt: _dateFromUnix(value.updatedAt),
@@ -329,11 +329,13 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
   );
 }
 
-AgentBindingView _agentBindingFromFrb(frb.BridgeAgentBinding value) {
+AgentBindingView agentBindingFromFrb(frb.BridgeAgentBinding value) {
   return switch (value) {
-    frb.BridgeAgentBinding_Native(:final route) => NativeAgentBindingView(
-      route: route == null ? null : _savedRouteFromFrb(route),
-    ),
+    frb.BridgeAgentBinding_Native(:final route, :final systemInstructions) =>
+      NativeAgentBindingView(
+        route: route == null ? null : _savedRouteFromFrb(route),
+        systemInstructions: systemInstructions,
+      ),
     frb.BridgeAgentBinding_Acp(:final accountId, :final connectionRevision) =>
       AcpAgentBindingView(
         accountId: accountId,
@@ -341,6 +343,26 @@ AgentBindingView _agentBindingFromFrb(frb.BridgeAgentBinding value) {
       ),
   };
 }
+
+frb.BridgeAgentBinding agentBindingToFrb(AgentBindingView value) =>
+    switch (value) {
+      NativeAgentBindingView(:final route, :final systemInstructions) =>
+        frb.BridgeAgentBinding.native(
+          route: route == null
+              ? null
+              : frb.BridgeNewThreadModelRoute(
+                  accountId: route.accountId,
+                  modelId: route.modelId,
+                  effort: route.effort,
+                ),
+          systemInstructions: systemInstructions,
+        ),
+      AcpAgentBindingView(:final accountId, :final connectionRevision) =>
+        frb.BridgeAgentBinding.acp(
+          accountId: accountId,
+          connectionRevision: BigInt.from(connectionRevision),
+        ),
+    };
 
 ThreadStatusView _threadStatusFromFrb(frb.BridgeThreadStatus value) {
   return switch (value) {
@@ -719,17 +741,16 @@ PersistenceQueueStateView _persistenceQueueStateFromFrb(
 
 AgentProfileView _agentProfileFromFrb(frb.BridgeAgentProfileDto profile) {
   return AgentProfileView(
-    id: profile.profileId,
-    displayName: profile.displayName,
-    description: profile.description,
-    whenToUse: profile.whenToUse,
-    systemInstructions: profile.systemInstructions,
-    accountId: profile.accountId,
-    modelId: profile.modelId,
-    effort: profile.effort,
-    source: profile.source,
-    revision: profile.revision,
-    contentHash: profile.contentHash,
+    definition: AgentDefinitionView(
+      definitionId: profile.definition.definitionId,
+      displayName: profile.definition.displayName,
+      description: profile.definition.description,
+      whenToUse: profile.definition.whenToUse,
+      source: profile.definition.source,
+      revision: profile.definition.revision,
+      contentHash: profile.definition.contentHash,
+    ),
+    binding: agentBindingFromFrb(profile.binding),
     system: profile.system,
     enabled: profile.enabled,
     workspaceMode: switch (profile.workspaceMode) {

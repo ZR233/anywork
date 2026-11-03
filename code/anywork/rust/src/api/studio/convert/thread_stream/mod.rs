@@ -128,6 +128,7 @@ pub(crate) fn bridge_session_row(
         binding: match value.binding {
             pl_protocol::AgentBinding::Native(config) => BridgeAgentBinding::Native {
                 route: config.route.map(Into::into),
+                system_instructions: None,
             },
             pl_protocol::AgentBinding::Acp(config) => BridgeAgentBinding::Acp {
                 account_id: config.account_id,

@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use pl_protocol::{ThreadModeId, ThreadStatus, ThreadWorkspaceMode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
@@ -56,6 +56,11 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         SCHEMA_KEY,
     )?;
     let target = current_version()?;
+    if loaded.source_version == 5 {
+        validate_v5_inheritance(path, content).map_err(|error| {
+            toml_schema::migration_error(path, ENTITY, Some(5), target, "validate", error)
+        })?;
+    }
     let document = CatalogDocument::try_from(loaded.document).map_err(|error| {
         toml_schema::migration_error(
             path,
@@ -83,6 +88,38 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
     })
 }
 
+/// V6 intentionally drops inherited copies; reject disagreements before those copies disappear.
+fn validate_v5_inheritance(path: &Path, content: &str) -> Result<()> {
+    let mut value = toml_schema::parse(path, content, ENTITY, 6)?;
+    value.remove(SCHEMA_KEY);
+    let document: CatalogV5 = value.try_into()?;
+    for child in &document.entries {
+        if child.parent_thread_id.is_none() {
+            continue;
+        }
+        let Some(root) = document
+            .entries
+            .iter()
+            .find(|root| root.id == child.root_thread_id && root.parent_thread_id.is_none())
+        else {
+            // The topology validator supplies the missing-root diagnostic.
+            continue;
+        };
+        ensure!(
+            child.workspace_id == root.workspace_id
+                && child.workspace_mode == root.workspace_mode
+                && child.workspace_path == root.workspace_path
+                && child.delegation_mode == root.delegation_mode
+                && child.delegation_preference == root.delegation_preference
+                && child.mode == root.mode
+                && child.archived == root.archived,
+            "Studio catalog child {} has conflicting inherited session facts",
+            child.id
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
     ensure!(document.revision >= 1, "Studio catalog revision is invalid");
     let mut sessions = std::collections::BTreeSet::new();
@@ -92,7 +129,7 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
             "Studio catalog has a duplicate session identity"
         );
         ensure!(
-            !session.session_id.is_empty() && !session.root_agent_id.is_empty(),
+            !session.session_id.trim().is_empty() && !session.root_agent_id.trim().is_empty(),
             "Studio catalog session identity is incomplete"
         );
         ensure!(
@@ -104,6 +141,16 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
     let mut agents = std::collections::BTreeMap::new();
     let mut threads = std::collections::BTreeSet::new();
     for agent in &document.agents {
+        ensure!(
+            !agent.agent_id.trim().is_empty() && !agent.thread_id.trim().is_empty(),
+            "Studio catalog member identity is incomplete"
+        );
+        if let pl_protocol::AgentBinding::Native(native) = &agent.binding {
+            ensure!(
+                native.system_instructions.is_none(),
+                "Studio catalog cannot contain Native instruction bodies"
+            );
+        }
         ensure!(
             agents
                 .insert(agent.agent_id.clone(), agent.parent_agent_id.clone())
@@ -137,18 +184,26 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
         }
     }
     // 会话的主成员必须存在且确为主成员（parent 为空并属于该会话）。
-    let agent_roots: std::collections::BTreeMap<&str, bool> = document
-        .agents
-        .iter()
-        .map(|agent| (agent.agent_id.as_str(), agent.parent_agent_id.is_none()))
-        .collect();
     for session in &document.sessions {
         ensure!(
-            agent_roots
-                .get(session.root_agent_id.as_str())
-                .copied()
-                .unwrap_or(false),
+            document.agents.iter().any(|agent| {
+                agent.agent_id == session.root_agent_id
+                    && agent.session_id == session.session_id
+                    && agent.parent_agent_id.is_none()
+            }),
             "Studio catalog session {} has no root member",
+            session.session_id
+        );
+        ensure!(
+            document
+                .agents
+                .iter()
+                .filter(|agent| {
+                    agent.session_id == session.session_id && agent.parent_agent_id.is_none()
+                })
+                .count()
+                == 1,
+            "Studio catalog session {} has multiple root members",
             session.session_id
         );
     }
@@ -163,9 +218,6 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
             );
             current = agents.get(&id).cloned().flatten();
         }
-    }
-    if document.sessions.is_empty() && document.revision > 1 {
-        bail!("Studio catalog lost all sessions without a fresh install");
     }
     Ok(())
 }
@@ -373,7 +425,7 @@ pub(super) struct CatalogAgentV6 {
 /// 成员 backend 绑定的冻结 wire 形状；与 `pl_protocol::AgentBinding` 的
 /// internally-tagged 形状保持一致，但字段固定在迁移边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(super) enum FrozenAgentBinding {
     Native {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -783,6 +835,7 @@ impl TryFrom<CatalogAgentV6> for AgentDirectoryRecord {
                 FrozenAgentBinding::Native { route } => {
                     pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
                         route: route.map(FrozenModelRoute::current),
+                        system_instructions: None,
                     })
                 }
                 FrozenAgentBinding::Acp {

@@ -38,6 +38,9 @@ pub struct NativeAgentConfig {
     /// 创建期冻结的完整模型路由；根成员为 `None`（由既有路由 owner 管理）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<NewThreadModelRoute>,
+    /// 当前 Profile 的 Native 指令正文；目录投影必须省略，历史按自身冻结格式保存。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_instructions: Option<String>,
 }
 
 /// ACP 后端绑定：引用既有 ACP 账号与协议配置身份。

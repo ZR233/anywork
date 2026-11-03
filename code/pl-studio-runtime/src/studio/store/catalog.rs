@@ -3,7 +3,7 @@
 //! 本模块负责已提交摘要的持久化，不承担运行期目录查询；不读取任何会话
 //! `state.toml`/`history.sqlite`（design/17 §17.1、§17.2）。目录 mutation 的唯一
 //! 命令通道是 `ProductEventBus::commit_directory`：它同步写入本模块的 `catalog.toml`
-//! 事实，write-behind 队列再把同一 delta 异步落到 SQLite 镜像并幂等重放 TOML。
+//! 事实，write-behind 队列再幂等重放同一 TOML delta。
 
 use anyhow::Result;
 
@@ -22,6 +22,17 @@ impl StudioStore {
         &self,
         delta: &DirectoryDelta,
     ) -> Result<()> {
+        self.persist_directory_summaries_on(delta, self.database())
+            .await
+    }
+
+    /// Write-behind already owns the single product connection. Read its deletion fences on that
+    /// same transaction, rather than waiting for a second pool connection while holding the first.
+    pub(in crate::studio) async fn persist_directory_summaries_on(
+        &self,
+        delta: &DirectoryDelta,
+        db: &impl sea_orm::ConnectionTrait,
+    ) -> Result<()> {
         // Workspace/Project TOML is the canonical directory fact.
         for project in &delta.project_upserts {
             self.prepare_workspace_manifest(&crate::studio::records::WorkspaceRecord {
@@ -36,52 +47,37 @@ impl StudioStore {
         }
         self.workspaces().apply_delta(delta).await?;
         let catalog = self.catalog();
+        let deletions = Self::thread_deletes_on(db).await?;
+        let mut delta = delta.clone();
+        delta.session_upserts.retain(|session| {
+            !deletions.iter().any(|operation| {
+                operation.phase != super::thread_delete::DeletePhase::Sealed
+                    && operation.root_id == session.session_id
+            })
+        });
+        delta.agent_upserts.retain(|agent| {
+            !deletions.iter().any(|operation| {
+                operation.phase != super::thread_delete::DeletePhase::Sealed
+                    && operation.thread_ids.contains(&agent.thread_id)
+            })
+        });
         for session in &delta.session_upserts {
             if let Some(root) = catalog.get_agent(&session.root_agent_id) {
                 self.prepare_session_manifest(session, &root).await?;
             }
-            catalog.upsert_session(session.clone()).await?;
         }
         for agent in &delta.agent_upserts {
-            let session = catalog.get_session(&agent.session_id).ok_or_else(|| {
-                anyhow::anyhow!("agent session is not registered: {}", agent.session_id)
-            })?;
+            let session = delta
+                .session_upserts
+                .iter()
+                .find(|session| session.session_id == agent.session_id)
+                .cloned()
+                .or_else(|| catalog.get_session(&agent.session_id))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("agent session is not registered: {}", agent.session_id)
+                })?;
             self.prepare_session_manifest(&session, agent).await?;
-            catalog.upsert_agent(agent.clone()).await?;
         }
-        let archived_at = delta
-            .session_removals
-            .iter()
-            .map(|removal| removal.archived_at)
-            .chain(
-                delta
-                    .project_removals
-                    .iter()
-                    .map(|removal| removal.closed_at),
-            )
-            .max();
-        let archived_ids = delta
-            .session_removals
-            .iter()
-            .flat_map(|removal| removal.session_ids.iter().cloned())
-            .chain(
-                delta
-                    .project_removals
-                    .iter()
-                    .flat_map(|removal| removal.session_ids.iter().cloned()),
-            )
-            .collect::<Vec<_>>();
-        if let Some(archived_at) = archived_at {
-            catalog.archive_sessions(&archived_ids, archived_at).await?;
-        }
-        for fault in &delta.unregistered_faults {
-            let mut agent = catalog.get_agent(&fault.agent_id).ok_or_else(|| {
-                anyhow::anyhow!("spawn compensation agent not found: {}", fault.agent_id)
-            })?;
-            agent.status = fault.state.kind;
-            agent.updated_at = crate::studio::ids::unix_seconds();
-            catalog.upsert_agent(agent).await?;
-        }
-        Ok(())
+        catalog.apply_delta(delta).await
     }
 }

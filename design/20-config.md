@@ -52,7 +52,7 @@
 
 ### 主配置与 Profile 的类型迁移和恢复
 
-文件级 schema 规则统一见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。主配置的当前整数版本以配置代码为准，完整保留从 18 开始的连续类型迁移链；用户 Profile 使用独立整数 `schema_version=1`，不依赖主配置版本判断。主配置已经是当前版本时，后来导入的无版本 Profile 仍须在启动/显式导入边界独立升级。普通查询与订阅只读取已发布快照，不执行迁移写回。
+文件级 schema 规则统一见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。主配置的当前整数版本以配置代码为准，完整保留从 18 开始的连续类型迁移链；用户 Profile 使用独立整数 `schema_version=2`，不依赖主配置版本判断。Profile 1→2 把原 Native 账号、模型、effort 与指令完整迁入封闭 `binding`，保留显示信息、启用状态、工作区模式和凭据关联；ACP 分支只引用已有账号与连接修订，不制造 Native 占位值。主配置已经是当前版本时，后来导入的无版本或 schema 1 Profile 仍须在启动/显式导入边界独立升级。普通查询与订阅只读取已发布的 definition/binding 描述，不执行迁移写回；Native 历史的冻结 Profile 格式不受本配置迁移影响。
 
 Profile 的专属无版本 DTO 分别接收 `provider` / `account_id` 与 `model` / `model_id`：单旧键、单新键、同值双键或能确定唯一完整身份的混合可导入；冲突、缺身份、类型错误及未知结构均拒绝。已有根版本绝不回退无版本导入。格式升级保留 `enabled=false` 等用户选择；主配置 26→27 仅将原禁用模型转换为 `model_enabled_overrides=false`，不为其他模型补造显式 true。
 

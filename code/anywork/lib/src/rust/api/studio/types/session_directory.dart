@@ -12,14 +12,16 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream.dart';
 part 'session_directory.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
 
 @freezed
 sealed class BridgeAgentBinding with _$BridgeAgentBinding {
   const BridgeAgentBinding._();
 
-  const factory BridgeAgentBinding.native({BridgeNewThreadModelRoute? route}) =
-      BridgeAgentBinding_Native;
+  const factory BridgeAgentBinding.native({
+    BridgeNewThreadModelRoute? route,
+    String? systemInstructions,
+  }) = BridgeAgentBinding_Native;
   const factory BridgeAgentBinding.acp({
     required String accountId,
     required BigInt connectionRevision,

@@ -20,7 +20,7 @@ impl StudioThreadFactory {
         &self,
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        let id = &request.identity.id;
+        let id = request.identity.id();
         let verified = request.workspace_owner.take_review();
         self.services
             .store
@@ -33,10 +33,10 @@ impl StudioThreadFactory {
             .ensure_archive_execution_allowed(&thread.workspace_id, Some(id))
             .await
             .map_err(|error| resource_error("restore child archive admission", error))?;
-        if thread.parent_thread_id != request.identity.parent_id
+        if thread.parent_thread_id.as_deref() != request.identity.parent_id()
             || thread.parent_thread_id.is_none()
         {
-            return Err(ThreadAssemblyError::Identity(id.clone()));
+            return Err(ThreadAssemblyError::Identity(id.to_owned()));
         }
         if thread.visibility != crate::studio::ThreadVisibility::Active {
             return Err(ThreadAssemblyError::Closed);
@@ -353,7 +353,7 @@ impl StudioThreadFactory {
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
             },
-            id: id.clone(),
+            id: id.to_owned(),
             parent_id: thread.parent_thread_id,
             route,
             model_available,

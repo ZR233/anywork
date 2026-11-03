@@ -24,6 +24,7 @@ pub(in crate::studio) struct DirectoryDelta {
     pub(in crate::studio) agent_upserts: Vec<AgentDirectoryRecord>,
     pub(in crate::studio) session_removals: Vec<SessionRemoval>,
     pub(in crate::studio) unregistered_faults: Vec<UnregisteredChildFault>,
+    pub(in crate::studio) thread_deletions: Vec<String>,
     pub(in crate::studio) project_upserts: Vec<ProjectDirectoryRecord>,
     pub(in crate::studio) project_removals: Vec<ProjectRemoval>,
 }
@@ -40,6 +41,7 @@ impl DirectoryDelta {
             && self.session_upserts.is_empty()
             && self.agent_upserts.is_empty()
             && self.session_removals.is_empty()
+            && self.thread_deletions.is_empty()
             && self.project_upserts.is_empty()
             && self.project_removals.is_empty()
     }
@@ -78,7 +80,10 @@ impl DirectoryDelta {
             thread_id: session_id,
             role: role.to_string(),
             title: None,
-            binding: AgentBinding::Native(NativeAgentConfig { route: None }),
+            binding: AgentBinding::Native(NativeAgentConfig {
+                route: None,
+                system_instructions: None,
+            }),
             status: pl_protocol::ThreadStatus::Idle,
             explicitly_closed: false,
             created_at: now,
@@ -108,6 +113,7 @@ impl DirectoryDelta {
                 title: Some(non_empty_title(&spec.title)),
                 binding: AgentBinding::Native(NativeAgentConfig {
                     route: spec.frozen_model,
+                    system_instructions: None,
                 }),
                 status: pl_protocol::ThreadStatus::Idle,
                 explicitly_closed: false,
@@ -125,6 +131,13 @@ impl DirectoryDelta {
                 session_ids,
                 archived_at: unix_seconds(),
             }],
+            ..Default::default()
+        }
+    }
+
+    pub(in crate::studio) fn delete_threads(thread_ids: Vec<String>) -> Self {
+        Self {
+            thread_deletions: thread_ids,
             ..Default::default()
         }
     }
@@ -186,8 +199,7 @@ pub(in crate::studio) async fn apply_directory_delta(
     tx: &sea_orm::DatabaseTransaction,
     delta: &DirectoryDelta,
 ) -> Result<()> {
-    let _ = tx;
-    store.persist_directory_summaries(delta).await
+    store.persist_directory_summaries_on(delta, tx).await
 }
 
 /// Thread 目录 keyset 分页游标：`v2:{sort_time}:{id}`。

@@ -24,7 +24,10 @@ fn row(id: &str, time: i64) -> pl_protocol::SessionDirectoryRow {
         delegation_preference: Default::default(),
         workspace_path: format!("/tmp/{id}"),
         role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
-        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig { route: None }),
+        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+            route: None,
+            system_instructions: None,
+        }),
         status: pl_protocol::ThreadStatus::Idle,
         created_at: time,
         updated_at: time,

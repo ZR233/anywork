@@ -20,6 +20,7 @@ pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;
 pub(in crate::studio) mod thread_archive;
+pub(in crate::studio) mod thread_delete;
 pub(crate) mod thread_preparation;
 pub(in crate::studio) mod workspaces;
 
@@ -32,6 +33,7 @@ pub struct StudioStore {
     workspaces: workspaces::WorkspaceStore,
     thread_persistence: ThreadPersistenceCoordinator,
     attachment_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    history_admission: std::sync::Arc<tokio::sync::RwLock<()>>,
     paths: StudioPaths,
 }
 
@@ -78,6 +80,8 @@ impl StudioStore {
         workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
+        let _admission = self.history_admission.read().await;
+        self.ensure_delete_read_allowed(thread_id).await?;
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
             return Ok(shared);
         }
@@ -141,6 +145,12 @@ impl StudioStore {
 
     pub(crate) fn thread_persistence(&self) -> &ThreadPersistenceCoordinator {
         &self.thread_persistence
+    }
+
+    pub(in crate::studio) async fn deletion_storage_admission(
+        &self,
+    ) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.history_admission.write().await
     }
 
     pub(super) fn attachment_lock(&self) -> &tokio::sync::Mutex<()> {

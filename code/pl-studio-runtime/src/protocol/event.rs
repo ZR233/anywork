@@ -178,7 +178,7 @@ pub struct StudioAgentProfilesStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioAgentProfilesData {
-    pub profiles: Vec<pl_protocol::AgentProfileSnapshot>,
+    pub profiles: Vec<pl_protocol::AgentProfile>,
     pub diagnostics: Vec<StudioAgentProfileDiagnostic>,
 }
 

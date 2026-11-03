@@ -63,17 +63,20 @@ sealed class AgentBindingView {
 }
 
 final class NativeAgentBindingView extends AgentBindingView {
-  const NativeAgentBindingView({this.route});
+  const NativeAgentBindingView({this.route, this.systemInstructions});
 
   final NewThreadModelRoute? route;
+  final String? systemInstructions;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is NativeAgentBindingView && route == other.route;
+      other is NativeAgentBindingView &&
+          route == other.route &&
+          systemInstructions == other.systemInstructions;
 
   @override
-  int get hashCode => Object.hash(runtimeType, route);
+  int get hashCode => Object.hash(runtimeType, route, systemInstructions);
 }
 
 final class AcpAgentBindingView extends AgentBindingView {

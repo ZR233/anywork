@@ -85,6 +85,7 @@ fn directory_bytes(delta: &DirectoryDelta) -> usize {
         + delta.agent_upserts.len()
         + delta.unregistered_faults.len()
         + delta.session_removals.len()
+        + delta.thread_deletions.len()
         + delta.project_upserts.len()
         + delta.project_removals.len())
 }
@@ -138,6 +139,9 @@ fn merge_directory_delta(target: &mut DirectoryDelta, incoming: &DirectoryDelta)
     target
         .session_upserts
         .extend(incoming.session_upserts.iter().cloned());
+    target
+        .thread_deletions
+        .extend(incoming.thread_deletions.iter().cloned());
     target
         .agent_upserts
         .extend(incoming.agent_upserts.iter().cloned());

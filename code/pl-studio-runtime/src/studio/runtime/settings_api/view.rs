@@ -108,13 +108,22 @@ fn settings_view(
         .collect();
     let roles = crate::config::system_agent_profiles(config)?
         .into_iter()
-        .map(|profile| StudioRoleSettings {
-            key: profile.profile_id,
-            account_id: profile.account_id,
-            model_id: profile.model_id,
-            effort: profile.effort.unwrap_or_default(),
+        .map(|profile| {
+            let route = crate::config::effective_system_profile_route(
+                config,
+                &profile.definition.definition_id,
+            )?;
+            Ok(StudioRoleSettings {
+                key: profile.definition.definition_id,
+                account_id: route.account_id.to_string(),
+                model_id: route.model_id,
+                effort: route
+                    .effort
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_default(),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let mcp_servers = crate::config::effective_mcp_servers(config)
         .into_values()
         .map(|server| StudioMcpServerSettings {

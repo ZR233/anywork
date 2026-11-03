@@ -291,6 +291,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
               await _renameThreadFromSidebar(context, client, row);
             case SidebarThreadAction.archive:
               await _archiveThreadFromSidebar(context, client, row.threadId);
+            case SidebarThreadAction.delete:
+              await _deleteThreadFromSidebar(context, client, row);
             case SidebarThreadAction.copyWorkspace:
               await Clipboard.setData(ClipboardData(text: row.workspacePath));
             case SidebarThreadAction.openVsCode:

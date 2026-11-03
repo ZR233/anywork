@@ -1,7 +1,6 @@
 //! Physical child resources assembled from one resolved product configuration snapshot.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
-use crate::agent::definition::ResolvedAgentDefinition;
 use crate::resource_store::FileResourceStore;
 use crate::studio::ThreadRecord;
 use crate::thread_assembler::{
@@ -20,10 +19,35 @@ impl StudioChildResources for StudioThreadFactory {
         profile: &crate::config::ResolvedAgentProfile,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         check_cancelled(request)?;
+        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(ThreadAssemblyError::UnsupportedBackend {
+                backend: pl_protocol::AgentBackendKind::Acp,
+            });
+        }
+        let (caller_identity, caller_binding, _) = self
+            .services
+            .product_events
+            .agent_execution_identity(&request.caller)
+            .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
+        if !matches!(caller_binding, pl_protocol::AgentBinding::Native(_)) {
+            return Err(ThreadAssemblyError::UnsupportedBackend {
+                backend: pl_protocol::AgentBackendKind::Acp,
+            });
+        }
+        let child_identity = pl_protocol::AgentThreadIdentity {
+            session_id: caller_identity.session_id.clone(),
+            agent_id: pl_protocol::AgentId::new(request.id.clone()).map_err(|error| {
+                ThreadAssemblyError::Identity(format!("invalid child Agent identity: {error}"))
+            })?,
+            parent_agent_id: Some(caller_identity.agent_id.clone()),
+            thread_id: pl_protocol::ThreadId::new(request.id.clone()).map_err(|error| {
+                ThreadAssemblyError::Identity(format!("invalid child Thread identity: {error}"))
+            })?,
+        };
         let parent = self
             .services
             .product_events
-            .thread_snapshot(&request.caller)
+            .thread_snapshot(caller_identity.thread_id.as_str())
             .map(ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
         self.services
@@ -217,9 +241,15 @@ impl StudioChildResources for StudioThreadFactory {
             &assignment,
         )?;
         let receipt = workspace_payload.content().to_owned();
-        let agent = ResolvedAgentDefinition::from_profile(&profile.profile).map_err(|error| {
-            ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
-        })?;
+        let agent = crate::agent::definition::ResolvedAgentDefinition::from_current(
+            &pl_protocol::AgentProfile {
+                definition: profile.definition.clone(),
+                binding: profile.binding.clone(),
+                system: profile.profile.system,
+                enabled: profile.profile.enabled,
+                workspace_mode: profile.profile.workspace_mode,
+            },
+        )?;
         let (mut initial_context, instruction_sources) =
             super::thread_seed::capture(super::thread_seed::ThreadInstructionSeed {
                 thread_id: &request.id,
@@ -283,9 +313,9 @@ impl StudioChildResources for StudioThreadFactory {
         self.services
             .product_events
             .register_child_agent(crate::studio::store::directory::RegisteredChildAgent {
-                agent_id: request.id.clone(),
-                parent_agent_id: request.caller.clone(),
-                session_id: parent.root_thread_id,
+                agent_id: child_identity.agent_id.to_string(),
+                parent_agent_id: caller_identity.agent_id.to_string(),
+                session_id: child_identity.session_id.to_string(),
                 role: profile.profile.profile_id.clone(),
                 title: request.task_summary.as_str().to_owned(),
                 frozen_model: Some(crate::studio::delegation::profile_model(&profile.profile)),

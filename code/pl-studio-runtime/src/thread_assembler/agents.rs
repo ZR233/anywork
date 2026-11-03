@@ -214,7 +214,28 @@ impl AgentHost {
             .ensure_agent_admission_open(&context.thread_id)
             .map_err(ToolError::new)?;
         Self::ensure_archive_execution_admission(&owner, &context.thread_id).await?;
-        let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+        let delegation = {
+            let state = owner.0.state();
+            let caller = state
+                .entries
+                .get(&context.thread_id)
+                .ok_or_else(|| ToolError::new(ControlError::Missing(context.thread_id.clone())))?;
+            crate::studio::delegation::saved(&caller.thread.snapshot())
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| {
+                    ToolError::new(ControlError::Missing("saved delegation selection".into()))
+                })?
+        };
+        let factory = owner.child_factory(&context).map_err(ToolError::new)?;
+        let admission = factory
+            .admit(
+                &request.profile_id,
+                delegation,
+                request.model_selection.clone(),
+            )
+            .await
+            .map_err(ToolError::new)?;
+        let (_, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
         if let Some(services) = { owner.0.state().agent_services.clone() } {
             let parent = services
                 .record(&context.thread_id)
@@ -255,18 +276,6 @@ impl AgentHost {
             Some((target, workspace, check)) => (Some(target), Some(workspace), Some(check)),
             None => (None, None, None),
         };
-        let delegation = {
-            let state = owner.0.state();
-            let caller = state
-                .entries
-                .get(&context.thread_id)
-                .ok_or_else(|| ToolError::new(ControlError::Missing(context.thread_id.clone())))?;
-            crate::studio::delegation::saved(&caller.thread.snapshot())
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
-                .ok_or_else(|| {
-                    ToolError::new(ControlError::Missing("saved delegation selection".into()))
-                })?
-        };
         let workspace_owner = {
             owner
                 .0
@@ -277,30 +286,29 @@ impl AgentHost {
                 .workspace
                 .clone()
         };
-        let spec = factory
-            .prepare(super::ChildThreadRequest {
-                workspace_owner,
-                id: reservation.id.clone(),
-                cancellation: reservation.cancellation.clone(),
-                caller: context.thread_id.clone(),
-                call_id: context.call_id.clone(),
-                profile_id: request.profile_id.clone(),
-                model_selection: request.model_selection,
-                delegation,
-                task_summary: request.task_summary,
-                writable_paths: request.writable_paths,
-                review_target_agent_id: request.review_target_agent_id,
-                review_feedback: request.review_feedback,
-                review_target,
-                review_workspace,
-                metadata: OpaquePayload::new(
-                    "pl.studio.agent-metadata",
-                    1,
-                    serde_json::to_string(&request.metadata).map_err(ToolError::new)?,
-                )
-                .map_err(ToolError::new)?,
-            })
-            .await;
+        let spec = admission(super::ChildThreadRequest {
+            workspace_owner,
+            id: reservation.id.clone(),
+            cancellation: reservation.cancellation.clone(),
+            caller: context.thread_id.clone(),
+            call_id: context.call_id.clone(),
+            profile_id: request.profile_id.clone(),
+            model_selection: request.model_selection,
+            delegation,
+            task_summary: request.task_summary,
+            writable_paths: request.writable_paths,
+            review_target_agent_id: request.review_target_agent_id,
+            review_feedback: request.review_feedback,
+            review_target,
+            review_workspace,
+            metadata: OpaquePayload::new(
+                "pl.studio.agent-metadata",
+                1,
+                serde_json::to_string(&request.metadata).map_err(ToolError::new)?,
+            )
+            .map_err(ToolError::new)?,
+        })
+        .await;
         let spec = match spec {
             Ok(spec) => spec,
             Err(error) => {
@@ -780,14 +788,16 @@ impl StudioThreadAssembler {
                 source: Box::new(source),
             })?;
         catalog.profiles.retain(|profile| {
-            profile.profile_id != crate::config::ROOT_AGENT_ROUTE_KEY
-                && !crate::agent::definition::is_root_definition_id(&profile.profile_id)
+            profile.definition.definition_id != crate::config::ROOT_AGENT_ROUTE_KEY
+                && !crate::agent::definition::is_root_definition_id(
+                    &profile.definition.definition_id,
+                )
         });
         let profiles = catalog
             .profiles
             .iter()
             .map(|profile| AgentSpawnProfile {
-                profile_id: profile.profile_id.clone(),
+                profile_id: profile.definition.definition_id.clone(),
                 workspace_mode: profile.workspace_mode,
             })
             .collect::<Vec<_>>();

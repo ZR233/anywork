@@ -157,11 +157,21 @@ HeaderView headerView(Ref ref) {
       ? null
       : ref.watch(threadMetadataStoreProvider(selectedId)).frame?.row;
   final sessionId = selected?.sessionId;
-  final root = sessionId == null
+  final rootAgent = sessionId == null
       ? null
-      : sessionId == selectedId
+      : agents
+            .where(
+              (agent) =>
+                  agent.sessionId == sessionId && agent.parentAgentId == null,
+            )
+            .firstOrNull;
+  final root = selected == null
+      ? null
+      : selected.isRootRow
       ? selected
-      : ref.watch(threadMetadataStoreProvider(sessionId)).frame?.row;
+      : rootAgent == null
+      ? null
+      : ref.watch(threadMetadataStoreProvider(rootAgent.threadId)).frame?.row;
   final workspaceId = root?.workspaceId ?? selection.selectedProjectId;
   final workspaceAgents = AgentDirectoryQueries.forSession(
     sessionId: root?.sessionId,
@@ -217,9 +227,19 @@ AgentWorkspaceView? conversationWorkspace(
       ref.watch(projectStoreProvider).agents?.values ??
       const <StudioAgentView>[];
   final sessionId = row.sessionId;
-  final root = sessionId == threadId
+  final rootAgent = row.isRootRow
+      ? null
+      : agents
+            .where(
+              (agent) =>
+                  agent.sessionId == sessionId && agent.parentAgentId == null,
+            )
+            .firstOrNull;
+  final root = row.isRootRow
       ? row
-      : ref.watch(threadMetadataStoreProvider(sessionId)).frame?.row;
+      : rootAgent == null
+      ? null
+      : ref.watch(threadMetadataStoreProvider(rootAgent.threadId)).frame?.row;
   if (root == null) return null;
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;

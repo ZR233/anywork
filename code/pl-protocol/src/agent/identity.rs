@@ -44,6 +44,18 @@ pub enum AgentBackendKind {
     Acp,
 }
 
+/// 目录 owner 已解析的成员与默认执行上下文对应关系。
+///
+/// Native factory 在资源准备前消费本值；不通过 ID 同字节约定推导归属。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentThreadIdentity {
+    pub session_id: SessionId,
+    pub agent_id: AgentId,
+    pub parent_agent_id: Option<AgentId>,
+    pub thread_id: ThreadId,
+}
+
 /// 一个会话成员的目录描述。
 ///
 /// 与 [`SessionDescriptor`] 一样是目录 owner 的只读结果；成员关系由

@@ -160,13 +160,15 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
                           onChanged: (enabled) =>
                               _setSystemEnabled(profile, enabled),
                         )
-                      else
+                      else if (profile.binding is NativeAgentBindingView)
                         TextButton.icon(
                           key: ValueKey('agent-profile-edit-${profile.id}'),
                           onPressed: () => _editProfile(profile),
                           icon: const Icon(Icons.edit_outlined, size: 16),
                           label: Text(context.l10n.settingsAgentsEditTooltip),
-                        ),
+                        )
+                      else
+                        const Text('ACP · not executable'),
                     ],
                     children: [
                       if (profile.system) AgentRouteConnector(role: profile.id),
