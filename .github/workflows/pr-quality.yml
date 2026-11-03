@@ -235,7 +235,7 @@ jobs:
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
-      - name: Check and test Rust once with the locked SQLite profile
+      - name: Check Rust and test the workspace with SQLite enabled
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo fmt --all --check
@@ -549,7 +549,7 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test Rust on Windows with the locked SQLite profile
+      - name: Test the Rust workspace on Windows with SQLite enabled
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
@@ -615,7 +615,7 @@ jobs:
       - name: Use the runner's physical temporary directory
         shell: bash
         run: echo "TMPDIR=$(cd "$RUNNER_TEMP" && pwd -P)" >> "$GITHUB_ENV"
-      - name: Test Rust on macOS with the locked SQLite profile
+      - name: Test the Rust workspace on macOS with SQLite enabled
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests

@@ -661,43 +661,6 @@ async fn tamper(options: &SqliteSessionOptions, sql: &str) {
 }
 
 #[tokio::test]
-async fn a_thread_turn_is_durable_in_the_sqlite_cold_store() {
-    let store = SqliteSessionStore::open_memory().await.unwrap();
-    let (model, _) = ScriptedModel::new(&[]);
-    let thread = ThreadHandle::start("stored-thread".into(), DynModelSession::new(model)).unwrap();
-    thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
-        .await
-        .unwrap();
-
-    let completion = thread.run_turn(turn("stored-turn")).await.unwrap();
-    assert_eq!(completion.outcome, TurnOutcome::Completed);
-    thread.flush().await.unwrap();
-    let snapshot = thread.snapshot();
-    assert!(snapshot.persistence.durable_sequence >= snapshot.commit_sequence);
-    let history = store
-        .query_thread_effects(
-            "stored-thread",
-            ThreadEffectQuery {
-                before_sequence: None,
-                limit: 32,
-            },
-        )
-        .await
-        .unwrap();
-    let turns: Vec<_> = history
-        .effects
-        .iter()
-        .filter_map(|effect| effect.turn.as_ref())
-        .collect();
-    assert!(turns.iter().any(|turn| {
-        turn.turn_id == "stored-turn" && turn.state == TurnState::Finished(TurnOutcome::Completed)
-    }));
-    thread.close().await.unwrap();
-    store.shutdown().await.unwrap();
-}
-
-#[tokio::test]
 async fn thread_effect_queries_page_by_sequence_and_keep_threads_isolated() {
     let directory = tempfile::tempdir().unwrap();
     let options = SqliteSessionOptions {
@@ -951,8 +914,32 @@ async fn thread_checkpoint_is_durable_with_its_effect_and_reopens() {
         .attach_storage(ColdStoreHandle::new(store.clone()))
         .await
         .unwrap();
-    thread.run_turn(turn("checkpoint-turn")).await.unwrap();
+    let completion = thread.run_turn(turn("checkpoint-turn")).await.unwrap();
+    assert_eq!(completion.outcome, TurnOutcome::Completed);
     thread.flush().await.unwrap();
+    let snapshot = thread.snapshot();
+    assert!(snapshot.persistence.durable_sequence >= snapshot.commit_sequence);
+
+    let history = store
+        .query_thread_effects(
+            "checkpoint-thread",
+            ThreadEffectQuery {
+                before_sequence: None,
+                limit: 32,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        history
+            .effects
+            .iter()
+            .filter_map(|effect| effect.turn.as_ref())
+            .any(|turn| {
+                turn.turn_id == "checkpoint-turn"
+                    && turn.state == TurnState::Finished(TurnOutcome::Completed)
+            })
+    );
 
     let checkpoint = store
         .read_thread_checkpoint("checkpoint-thread")
