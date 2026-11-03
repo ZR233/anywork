@@ -802,11 +802,23 @@ async fn background_result_precedes_unfinished_foreground_and_mid_set_preserves_
     };
     let env = support::Environment::new(vec![], vec![]).await?;
     let result = async {
-        let thread = Thread::from(
-            env.runtime
-                .create_thread(&env.project.id, "background order")
-                .await?,
+        // This test owns the projection and its synthetic Core effects. Register only the durable
+        // directory fact: create_thread also activates a real observation worker, which would race
+        // this owner over the same execution index and overwrite its completion identity knowledge.
+        let (delta, thread) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
+            "background-order".into(),
+            &env.project.id,
+            "background order",
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            env.project.path.clone(),
         );
+        env.runtime
+            .agent_facility
+            .product_events
+            .commit_directory(delta)
+            .await?;
+        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
         let history = env.runtime.store.history(&thread.id).await?;
         history.prepare_write().await?;
         let database = history

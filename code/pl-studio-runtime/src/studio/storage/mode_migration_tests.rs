@@ -2763,6 +2763,7 @@ async fn restore_pre_timeline_history_fixture(
          DROP TABLE conversation_view_state;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
+         DROP TABLE conversation_sources;
          DROP TABLE timeline_records;
          ALTER TABLE history_meta DROP COLUMN model_route_json;
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
@@ -2780,7 +2781,7 @@ async fn restore_pre_timeline_history_fixture(
 
 /// Recreate the published schema12 boundary without asking the current writer to accept v1.
 /// Only the ordinary checkpoint/context facts are seeded through that writer; the frozen old
-/// extension payloads are installed after removing the schema13 outputs and completion record.
+/// extension payloads are installed after removing the schema13/14 outputs and completion records.
 async fn persist_schema12_fixture(
     path: &std::path::Path,
     thread_id: &str,
@@ -2802,10 +2803,13 @@ async fn persist_schema12_fixture(
     let db = raw_database(path).await?;
     let tx = db.begin().await?;
     tx.execute_unprepared(
-        "ALTER TABLE history_meta DROP COLUMN model_route_json;
+        "DROP TABLE conversation_sources;
+         ALTER TABLE conversation_items DROP COLUMN metadata;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
          DELETE FROM seaql_migrations
-             WHERE version='m20261101_000010_history_model_route_head';
+             WHERE version IN ('m20261101_000010_history_model_route_head',
+                               'm20261102_000001_history_atom_metadata');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
     .await?;
@@ -2826,7 +2830,13 @@ async fn persist_schema12_fixture(
                 (SELECT COUNT(*) FROM pragma_table_info('history_meta')
                  WHERE name IN ('model_route_json','model_route_hash')) AS head_columns,
                 (SELECT COUNT(*) FROM seaql_migrations
-                 WHERE version='m20261101_000010_history_model_route_head') AS head_completed
+                 WHERE version='m20261101_000010_history_model_route_head') AS head_completed,
+                (SELECT COUNT(*) FROM pragma_table_info('conversation_items')
+                 WHERE name='metadata') AS metadata_columns,
+                (SELECT COUNT(*) FROM sqlite_schema
+                 WHERE name='conversation_sources') AS source_tables,
+                (SELECT COUNT(*) FROM seaql_migrations
+                 WHERE version='m20261102_000001_history_atom_metadata') AS metadata_completed
              FROM history_meta WHERE id=1",
         ))
         .await?
@@ -2834,6 +2844,9 @@ async fn persist_schema12_fixture(
     assert_eq!(boundary.try_get::<i64>("", "schema_version")?, 12);
     assert_eq!(boundary.try_get::<i64>("", "head_columns")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "head_completed")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "metadata_columns")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "source_tables")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "metadata_completed")?, 0);
     assert_eq!(saved_checkpoint_payload(&db).await?, payload);
     db.close().await?;
     Ok(checkpoint)

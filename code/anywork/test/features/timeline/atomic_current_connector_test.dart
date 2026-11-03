@@ -8,6 +8,9 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
@@ -246,6 +249,86 @@ final class _Scope extends Fake implements ConversationQueryScope {
 
 void main() {
   testWidgets(
+    'real operation compaction renders one active receipt row, not a work group or fallback bar',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      const source = OperationChatSource(operationId: 'compact-1');
+      final atom = ChatAtom(
+        id: 'compaction:9:compact-1',
+        source: source,
+        sourceOrder: 0,
+        kind: ChatAtomKind.compaction,
+        delivery: ChatDeliveryKind.independent,
+        lifecycle: const ActiveChatAtom(
+          started: null,
+          status: ChatActiveStatus.running,
+        ),
+        contents: const [],
+      );
+      h.current = CurrentProjection(
+        sourceEffectSeq: 1,
+        logicalStatus: ThreadStatusView.running,
+        executionPresent: true,
+        active: const CurrentActivityHead(
+          id: 'compact-1',
+          kind: ThreadActivityKind.compacting,
+          summary: '正在压缩上下文',
+          toolCount: 0,
+          backgroundToolCount: 0,
+        ),
+        sources: const [
+          ChatSourceState(
+            source: source,
+            lifecycle: ActiveChatSource(),
+            started: null,
+            ended: null,
+          ),
+        ],
+        atoms: [atom],
+        previews: const [],
+        collections: const [],
+      );
+      await h.presentation.applyBatch(
+        ChatBatch(
+          placement: ChatPlacement.set,
+          entries: const [],
+          current: h.current,
+        ),
+      );
+      final view = projectConversationActivity(current: h.current)!;
+      expect(view.kind, ConversationActivityKind.compacting);
+      await tester.pumpWidget(h.host(view: view));
+      final unit = h.presentation.live.value.single;
+      expect(unit.kind, TimelineUnitKind.receipt);
+      expect(unit.live, isTrue);
+      expect(unit.members.single, same(atom));
+      final unitView = find.byKey(ValueKey(unit.id));
+      expect(unitView, findsOneWidget);
+      expect(tester.widget<TimelineDisplayUnitView>(unitView).unit, same(unit));
+      final rows = find.descendant(
+        of: unitView,
+        matching: find.byType(TimelineActivityRow),
+      );
+      expect(rows, findsOneWidget);
+      final row = tester.widget<TimelineActivityRow>(rows);
+      expect(
+        row.label,
+        AppLocalizations.of(tester.element(unitView))
+            .conversationActivityCompacting,
+      );
+      expect(row.icon, Icons.compress_outlined);
+      expect(row.active, isTrue);
+      expect(row.expandable, isFalse);
+      expect(find.byType(ConversationActivityBar), findsNothing);
+      expect(h.controller.messages, isEmpty);
+      expect(h.content.scopes, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _flush(tester);
+    },
+  );
+
+  testWidgets(
     'after-text projects thinking without a phantom group, then admits real text and new work',
     (tester) async {
       final h = _Harness();
@@ -253,7 +336,7 @@ void main() {
       const coarse = CurrentActivityHead(
         id: 'attempt',
         kind: ThreadActivityKind.responding,
-        summary: '原始粗阶段',
+        summary: '正文A',
         toolCount: 0,
         backgroundToolCount: 0,
       );
@@ -384,6 +467,9 @@ void main() {
       final aScope = h.content.scopes.single;
       expect(aScope.requests.single.$1, same(textA.contents.single.reference));
       aScope.watches.single.add(_window('正文A'));
+      // Deliver the asynchronous watch event, then draw the frame its owner
+      // notification schedules. Accepted bytes alone are not rendered content.
+      await tester.pump();
       await tester.pump();
       expect(find.text('正文A'), findsOneWidget);
       final afterText = await accept(
@@ -393,6 +479,11 @@ void main() {
         ],
       );
       expect(afterText.kind, ConversationActivityKind.thinking);
+      expect(
+        afterText.summary,
+        isNull,
+        reason: 'A finished response summary is not a new thinking summary',
+      );
       expect(mainMembers(), ['user', 'G1', 'text-A']);
       final originalHistory = List.of(h.controller.messages);
       expect(h.presentation.live.value, isEmpty);
@@ -403,6 +494,7 @@ void main() {
       final readsAfterText = h.content.scopes.length;
       final stalePreview = await accept([], oldPreview: true);
       expect(stalePreview.kind, ConversationActivityKind.thinking);
+      expect(stalePreview.summary, isNull);
       expect(
         stalePreview.responseParts.single.text,
         '正文A',
@@ -426,6 +518,7 @@ void main() {
       expect((await accept([textB])).kind, ConversationActivityKind.responding);
       final bScope = h.content.scopes.last;
       bScope.watches.single.add(_window('正文B'));
+      await tester.pump();
       await tester.pump();
       expect(find.text('正文B'), findsOneWidget);
       expect(mainMembers(), ['user', 'G1', 'text-A']);
@@ -491,11 +584,12 @@ void main() {
     expect(view.identity, 'retained-attempt');
     expect(
       (view.turnId, view.summary, view.thinkingSummary, view.thinkingSeconds),
-      ('T', '原始摘要', '保留思考摘要', 7),
+      ('T', null, '保留思考摘要', 7),
     );
     expect((view.activeToolCount, view.backgroundToolCount), (2, 1));
     expect(value.atoms.single, same(terminal));
     expect(value.active!.kind, ThreadActivityKind.responding);
+    expect(value.active!.summary, ' 原始摘要 ');
     expect(projectConversationActivity(current: null), isNull);
   });
   testWidgets(

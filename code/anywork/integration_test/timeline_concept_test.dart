@@ -1033,11 +1033,42 @@ final class _ConceptScene {
     );
     await release('before-turn-end');
     await idle();
-    await expand(main.singleWhere((unit) => unit.id == g1));
+    final firstGroup = main.singleWhere((unit) => unit.id == g1);
+    await expand(firstGroup);
+    final reasoningBody = find.descendant(
+      of: find.descendant(
+        of: unitFinder(g1),
+        matching: itemFinder(
+          firstGroup.members
+              .singleWhere((atom) => atom.kind == ChatAtomKind.reasoning)
+              .id,
+        ),
+      ),
+      matching: find.text('梳理会话共享组件与锁定边界', findRichText: true),
+    );
     await _until(
       tester,
-      () => hasText('梳理会话共享组件与锁定边界'),
+      () => reasoningBody.evaluate().length == 1,
       'reasoning body on first group expansion',
+    );
+    // Drain this ExpansionTile animation only; active indicators elsewhere need
+    // not settle, and the first-content/fill timing witnesses are unchanged.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+    expect(reasoningBody, findsOneWidget);
+    expect(reasoningBody.hitTestable(), findsOneWidget);
+    final reasoningBounds = tester.getRect(reasoningBody);
+    expect(reasoningBounds.width, greaterThan(0));
+    expect(reasoningBounds.height, greaterThan(0));
+    expect(
+      reasoningBounds.intersect(tester.getRect(unitFinder(g1))),
+      reasoningBounds,
+      reason: 'The expanded group must not clip its reasoning body',
+    );
+    expect(
+      reasoningBounds.intersect(tester.getRect(find.byKey(lease.chatKey))),
+      reasoningBounds,
+      reason: 'The reasoning body must be visible in the timeline viewport',
     );
     // A work unit is not a Turn container; tool call identities are singular.
     for (final call in [
@@ -1192,6 +1223,31 @@ final class _ConceptScene {
   }
 
   Future<void> compact() async {
+    final owner = lease;
+    final selectedThread = threadId;
+    final currentConnector = find.byWidgetPredicate(
+      (widget) =>
+          widget is ConversationCurrentConnector &&
+          identical(widget.content, owner.content) &&
+          identical(widget.units, owner.liveUnits),
+    );
+    List<ChatAtom> activeCompactions() => [
+      for (final atom in owner.content.current.value?.atoms ?? <ChatAtom>[])
+        if (atom.kind == ChatAtomKind.compaction &&
+            atom.lifecycle is ActiveChatAtom)
+          atom,
+    ];
+    Finder currentUnit(TimelineDisplayUnit unit) => find.descendant(
+      of: currentConnector,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is TimelineDisplayUnitView && identical(widget.unit, unit),
+      ),
+    );
+    Finder currentRows(TimelineDisplayUnit unit) => find.descendant(
+      of: currentUnit(unit),
+      matching: find.byType(TimelineActivityRow),
+    );
     final hover = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await hover.addPointer(
       location: tester.getCenter(find.byKey(StudioDriverKeys.contextUsage())),
@@ -1208,14 +1264,62 @@ final class _ConceptScene {
     );
     await tap(control);
     await hover.moveTo(Offset.zero);
-    await reach(
-      'compacting',
-      () => tester
-          .widgetList<ConversationActivityBar>(
-            find.byType(ConversationActivityBar),
-          )
-          .any((bar) => bar.view.kind == ConversationActivityKind.compacting),
+    await reach('compacting', () {
+      final active = activeCompactions();
+      final units = owner.liveUnits.value;
+      return active.length == 1 &&
+          units.length == 1 &&
+          units.single.members.any((atom) => atom.id == active.single.id) &&
+          currentRows(units.single).evaluate().length == 1;
+    });
+    expect(lease, same(owner));
+    expect(threadId, selectedThread);
+    final active = activeCompactions().single;
+    final unit = owner.liveUnits.value.single;
+    expect(active.source, isA<OperationChatSource>());
+    expect(
+      owner.content.current.value!.sources
+          .singleWhere((source) => source.source == active.source)
+          .lifecycle,
+      isA<ActiveChatSource>(),
     );
+    expect(unit.kind, TimelineUnitKind.receipt);
+    expect(unit.live, isTrue);
+    expect(unit.source, active.source);
+    expect(unit.sourceLifecycle, isA<ActiveChatSource>());
+    expect(unit.members.single.id, active.id);
+    expect(unit.members.single.lifecycle, isA<ActiveChatAtom>());
+    expect(unit.memberCount, 1);
+    expect(main.where((value) => value.source == active.source), isEmpty);
+    expect(currentConnector, findsOneWidget);
+    expect(currentUnit(unit), findsOneWidget);
+    expect(
+      find.descendant(
+        of: currentConnector,
+        matching: find.byType(ConversationActivityBar),
+      ),
+      findsNothing,
+    );
+    final rowFinder = currentRows(unit);
+    expect(rowFinder, findsOneWidget);
+    final row = tester.widget<TimelineActivityRow>(rowFinder);
+    expect(
+      row.label,
+      AppLocalizations.of(tester.element(rowFinder))
+          .conversationActivityCompacting,
+    );
+    expect(row.icon, Icons.compress_outlined);
+    expect(row.active, isTrue);
+    expect(row.expandable, isFalse);
+    report['compactionCurrent'] = {
+      'atomId': active.id,
+      'unitId': unit.id,
+      'unitKind': unit.kind.name,
+      'operationId': (active.source as OperationChatSource).operationId,
+      'rowLabel': row.label,
+      'rowActive': row.active,
+      'rowExpandable': row.expandable,
+    };
     expect(
       tester
           .widget<ContextUsageReadout>(find.byType(ContextUsageReadout))
@@ -1240,22 +1344,43 @@ final class _ConceptScene {
       'real completed compaction receipt',
     );
     await idle();
-    final receipt = atoms.lastWhere(
-      (atom) => atom.kind == ChatAtomKind.compaction,
-    );
+    final receipt = atoms
+        .where(
+          (atom) =>
+              atom.kind == ChatAtomKind.compaction && !prior.contains(atom.id),
+        )
+        .single;
+    expect(receipt.lifecycle, isA<TerminalChatAtom>());
     report['compactionAtomId'] = receipt.id;
-    await showUnit(
-      main
-          .singleWhere(
-            (unit) => unit.members.any((atom) => atom.id == receipt.id),
-          )
-          .id,
+    final completedUnit = main.singleWhere(
+      (unit) => unit.members.any((atom) => atom.id == receipt.id),
     );
+    expect(completedUnit.kind, TimelineUnitKind.receipt);
+    expect(completedUnit.live, isFalse);
+    expect(completedUnit.members.single.id, receipt.id);
+    expect(completedUnit.memberCount, 1);
+    await showUnit(completedUnit.id);
     await _until(
       tester,
       () => hasText('已完成压缩'),
       'completed compaction on production page',
     );
+    final completedItem = itemFinder(receipt.id);
+    expect(completedItem, findsOneWidget);
+    final completedRows = find.descendant(
+      of: completedItem,
+      matching: find.byType(TimelineActivityRow),
+    );
+    expect(completedRows, findsOneWidget);
+    final completedRow = tester.widget<TimelineActivityRow>(completedRows);
+    expect(
+      completedRow.label,
+      AppLocalizations.of(tester.element(completedRows))
+          .timelineContextCompacted,
+    );
+    expect(completedRow.icon, Icons.compress_outlined);
+    expect(completedRow.active, isFalse);
+    expect(completedRow.expandable, isFalse);
     await capture('compacted');
   }
 

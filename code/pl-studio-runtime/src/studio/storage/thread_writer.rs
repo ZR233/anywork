@@ -5376,6 +5376,12 @@ pub(crate) mod storage_fault_tests {
             next_prepared.completions = Arc::from([]);
             sink.admit(id, next_write)?;
             assert!(sink.0.channel.prepare(Arc::new(next_prepared)));
+            sink.0
+                .channel
+                .set_projection_retention(ProjectionRetention {
+                    resident_bytes: projection.retained_bytes(),
+                    pending: None,
+                })?;
             drop(lease);
             tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 3)).await??;
             let history = store.history(id).await?;
@@ -5385,6 +5391,10 @@ pub(crate) mod storage_fault_tests {
             assert_eq!(saved.created_at, old_placement.created_at);
             assert_eq!(history.watermark().await?, 3);
             assert_eq!(index.retained_bytes(), 0);
+            // Saving releases the writer/index, not the still-live current projection owner.
+            assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+            drop(projection);
+            sink.0.channel.release_projection_retention();
             assert_eq!(sink.pressure(id).thread_bytes, 0);
             assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
             sink.0.channel.stop_and_join().await?;
@@ -5442,6 +5452,8 @@ pub(crate) mod storage_fault_tests {
         let chat = store.chat_session(id).await?;
         let index = sink.0.channel.order_index();
         for sequence in 1..=20 {
+            // Mirror LiveOwner::observe_storage using only the writer's real durable watermark.
+            projection.confirm_sources(store.history(id).await?.watermark().await?);
             let mut write = ticket(id, sequence);
             let mut records = Vec::new();
             for part in 0..80 {
@@ -5477,7 +5489,12 @@ pub(crate) mod storage_fault_tests {
             sink.flush(id, sequence).await?;
             assert!(index.inner.lock().unwrap().assigned.len() <= 81);
             assert!(index.retained_bytes() < 32 * 1024);
-            assert!(sink.pressure(id).thread_bytes < 128 * 1024);
+            assert!(
+                sink.pressure(id).thread_bytes < 128 * 1024,
+                "scope {sequence}: projection={}, thread={}",
+                projection.retained_bytes(),
+                sink.pressure(id).thread_bytes
+            );
         }
         drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 21)).await?;
         sink.0
@@ -5488,6 +5505,9 @@ pub(crate) mod storage_fault_tests {
             })?;
         sink.flush(id, 21).await?;
         assert_eq!(index.retained_bytes(), 0);
+        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+        drop(projection);
+        sink.0.channel.release_projection_retention();
         assert_eq!(sink.pressure(id).thread_bytes, 0);
         assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
         assert_eq!(chat.head_seq(), 1620);
@@ -5622,6 +5642,9 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(chat.durable_seq(), 1);
         drop(lease);
         sink.flush(id, 3).await?;
+        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+        drop(projection);
+        sink.0.channel.release_projection_retention();
         assert_eq!(sink.pressure(id).thread_bytes, 0);
         sink.0.channel.stop_and_join().await?;
         Ok(())
@@ -6798,8 +6821,10 @@ pub(crate) mod storage_fault_tests {
         accounting_only.current_handoff = None;
         assert_eq!(
             accounting_only.retained_bytes(),
-            accounting_only.accounting.retained_bytes(),
-            "content-empty handoffs still own their prepared accounting"
+            accounting_only.accounting.retained_bytes()
+                + serde_json::to_vec(&accounting_only.current.projection)?.len() as u64
+                + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64,
+            "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
             prepared.retained_bytes() > accounting_only.retained_bytes(),
@@ -6934,7 +6959,11 @@ pub(crate) mod storage_fault_tests {
         let completion_head = chat.head_seq();
         assert_eq!(index_bytes, 0);
         assert_eq!(index_state, (0, 0, false, 0));
-        assert_eq!(projection_bytes, 0);
+        assert_eq!(
+            projection_bytes,
+            crate::studio::thread_projection::LiveProjection::new().retained_bytes(),
+            "an empty projection retains only its empty provenance containers"
+        );
         assert_eq!(completion_head, 0);
         let failure = projection
             .prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, true)
@@ -6999,7 +7028,14 @@ pub(crate) mod storage_fault_tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(ordinals, [1, 2, 3].into_iter().collect());
         assert_eq!(index.inner.lock().unwrap().ceiling, 3);
-        assert_eq!(prepared.completions.len(), 3);
+        // The third execution identity is inference accounting, not a conversation completion.
+        assert_eq!(prepared.completions.len(), 2);
+        assert!(prepared.completions.iter().all(|record| {
+            prepared.items.iter().any(|item| {
+                item.id == record.header.item_id
+                    && !matches!(item.state(), pl_protocol::ThreadItemState::Inference(_))
+            })
+        }));
         for (offset, completion) in prepared.completions.iter().enumerate() {
             assert_eq!(completion.header.append_seq, offset as u64 + 1);
         }
@@ -7008,12 +7044,12 @@ pub(crate) mod storage_fault_tests {
         assert!(Arc::ptr_eq(&published, &prepared));
         assert_eq!(
             chat.head_seq(),
-            3,
+            2,
             "publication retry cannot append duplicate identities"
         );
         assert!(sink.0.channel.prepare(prepared));
         sink.flush(id, 1).await?;
-        assert_eq!(chat.head_seq(), 3);
+        assert_eq!(chat.head_seq(), 2);
         assert_eq!(
             store
                 .history(id)
@@ -7417,6 +7453,15 @@ pub(crate) mod storage_fault_tests {
         );
         let mut projection = live_projection(&sink).await?;
         let mut update = ticket(id, 2);
+        projection.bind_conversation_identity(
+            history
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+        )?;
+        projection
+            .restore_current(&chat, &sink.0.thread, &checkpoint.state)
+            .await?;
         update.checkpoint.state.turns = Arc::from([running.clone()]);
         Arc::make_mut(&mut update.effect).turn = Some(running);
         let prepared = drive_live_projection(&mut projection, &chat, &sink, id, update).await?;
@@ -8355,7 +8400,10 @@ pub(crate) mod storage_fault_tests {
                 drop(projection);
                 sink.0.channel.release_projection_retention();
                 projection = live_projection(&sink).await?;
-                assert_eq!(projection.retained_bytes(), 0);
+                assert_eq!(
+                    projection.retained_bytes(),
+                    crate::studio::thread_projection::LiveProjection::new().retained_bytes()
+                );
             }
             sink.0
                 .channel

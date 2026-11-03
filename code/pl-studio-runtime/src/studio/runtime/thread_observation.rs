@@ -4723,7 +4723,8 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_current_compaction_receipt_is_projected_and_saved() -> Result<()> {
         use pl_core::thread::{
-            ContextReplacement, ContextReplacementReason,
+            ContextCompactionEvent, ContextCompactionOutcome, ContextReplacement,
+            ContextReplacementReason,
             extensions::{ExtensionChange, ExtensionRecord},
         };
         use pl_model::{
@@ -4774,6 +4775,15 @@ mod storage_fault_tests {
             thread_id: thread.id.clone(),
             sequence: 1,
             committed_at: 10,
+            // The model receipt supplies accounting; Core's operation fact supplies the atom.
+            // No start was saved in this fixture, so its true start must remain unknown.
+            context_compactions: [ContextCompactionEvent::Finished {
+                operation_id: "current-compaction".into(),
+                outcome: ContextCompactionOutcome::Changed {
+                    context_revision: state.context.revision,
+                },
+            }]
+            .into(),
             extensions: [ExtensionChange::Put {
                 id: crate::compaction::LATEST_RECEIPT.into(),
                 record: extension,
@@ -4805,13 +4815,47 @@ mod storage_fault_tests {
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
         let history = store.history(&thread.id).await?;
-        let items = history.items_for_turn(&receipt.turn_id).await?;
+        let items = history.items_for_turn("").await?;
         assert_eq!(items.len(), 1);
         let saved = &items[0];
-        assert_eq!(saved.turn_id, receipt.turn_id);
+        assert!(
+            saved.turn_id.is_empty(),
+            "an operation must not borrow the model receipt's Turn"
+        );
         assert!(matches!(
             saved.state(),
             ThreadItemState::ContextCompaction(_)
+        ));
+        let checkpoint = history
+            .checkpoint()
+            .await?
+            .context("saved receipt checkpoint")?;
+        let saved_receipt = &checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT];
+        let decoded = crate::compaction::decode_receipt(
+            saved_receipt.payload.version(),
+            saved_receipt.payload.content(),
+        )?;
+        assert_eq!(
+            serde_json::to_value(decoded)?,
+            serde_json::to_value(&receipt)?
+        );
+        let record = pl_core::chat::ChatHistory::item(&history, &saved.id)
+            .await?
+            .context("saved operation atom")?;
+        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+        assert_eq!(
+            atom.source,
+            pl_protocol::ChatSourceId::Operation {
+                operation_id: "current-compaction".into(),
+            }
+        );
+        assert!(matches!(
+            atom.lifecycle,
+            pl_protocol::ChatAtomLifecycle::Terminal {
+                started: None,
+                ended: Some(_),
+                outcome: pl_protocol::ChatTerminalOutcome::Completed,
+            }
         ));
         Ok(())
     }
@@ -4919,6 +4963,15 @@ mod storage_fault_tests {
         let mut restored = LiveProjection::new();
         restored.bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
         restored.seed(items, hidden);
+        restored.bind_conversation_identity(
+            store
+                .history(&thread.id)
+                .await?
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+        )?;
+        restored.restore_current(&chat, &thread, &current).await?;
         restored.stream(&chat, &thread, &current, 2).await?;
         if delayed_admission {
             sink.admit(&thread.id, recovery.clone())?;

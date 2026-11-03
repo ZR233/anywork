@@ -923,6 +923,7 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
+         DROP TABLE conversation_sources;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          ALTER TABLE history_input_identities DROP COLUMN request_digest;
