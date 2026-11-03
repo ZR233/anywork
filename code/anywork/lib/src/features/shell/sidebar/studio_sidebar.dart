@@ -316,7 +316,12 @@ class _StudioSidebarState extends State<StudioSidebar> {
                               _threads(standalone)
                             else
                               Padding(
-                                padding: const EdgeInsets.all(12),
+                                padding: EdgeInsets.fromLTRB(
+                                  _touchInput ? 66 : 50,
+                                  8,
+                                  12,
+                                  8,
+                                ),
                                 child: Text(
                                   _filtered
                                       ? context.l10n.sidebarNoResults
@@ -352,8 +357,15 @@ class _StudioSidebarState extends State<StudioSidebar> {
     final showOrdinaryEmpty =
         pinnedWindow == null ||
         (pinnedWindow.loaded && pinnedWindow.threads.isEmpty);
+    // 第一列展开箭头宽度为 28px（触控 44px）：
+    // 竖向引导线居中在第一列中心 x = 14px（触控 22px），
+    // 会话行卡片从 x = 20px（触控 36px）起，配合 8px 左内边距使
+    // 16px 前导状态槽位落在 x = 28..44px（与项目图标对齐），
+    // 会话标题落在 x = 50px（与项目标题对齐）。非项目会话同样保持两列对齐。
+    final guideLeft = _touchInput ? 22.0 : 14.0;
+    final rowIndent = _touchInput ? 14.0 : 6.0;
     return Padding(
-      padding: EdgeInsets.only(left: project.isStandalone ? 0 : 16),
+      padding: EdgeInsets.only(left: guideLeft),
       child: DecoratedBox(
         decoration: BoxDecoration(
           border: project.isStandalone
@@ -361,7 +373,7 @@ class _StudioSidebarState extends State<StudioSidebar> {
               : Border(left: BorderSide(color: context.colors.outlineVariant)),
         ),
         child: Padding(
-          padding: EdgeInsets.only(left: project.isStandalone ? 0 : 6),
+          padding: EdgeInsets.only(left: rowIndent),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

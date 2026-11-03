@@ -697,6 +697,7 @@
             data-hover-kind="thread"
             data-thread-id="${escape(thread.id)}">
             <div class="sb-thread-select">
+              <span class="sb-thread-status is-empty" aria-hidden="true"></span>
               <span class="sb-thread-title">${escape(title)}</span>
             </div>
             <div class="sb-thread-meta">
@@ -714,8 +715,17 @@
         `;
       }
 
-      // Fixed 4-axis trailing coordinate system: [pin (Col 1)] [worktree (Col 2)] [status (Col 3, always reserved)] [more (Col 4, always reserved)]
-      // Ensures ZERO icon horizontal drift across idle / running / attention / failed / hover / active / pin transitions!
+      // Leading status icon aligned on Col 2 (x = 28..44px) with project folder icon;
+      // Session title aligned on Col 3 (x = 50px) with project name text.
+      let statusSlotHTML = `<span class="sb-thread-status is-empty" aria-hidden="true"></span>`;
+      if (status === 'running') {
+        statusSlotHTML = `<span class="sb-thread-status is-running" title="进行中" aria-label="进行中"><span class="sb-ring"></span></span>`;
+      } else if (status === 'attention') {
+        statusSlotHTML = `<span class="sb-thread-status is-attention" title="等待你的确认或回答" aria-label="待处理">${lucideIcon('circle-help')}</span>`;
+      } else if (status === 'failed') {
+        statusSlotHTML = `<span class="sb-thread-status is-failed" title="上次执行异常中断" aria-label="执行失败">${lucideIcon('circle-alert')}</span>`;
+      }
+
       const pinSlotHTML = thread.pinned
         ? `<button
             type="button"
@@ -732,15 +742,6 @@
         ? `<span class="sb-slot sb-worktree-slot is-worktree" title="独立 Git 工作树${thread.branch ? ' · ' + escape(thread.branch) : ''}">${lucideIcon('git-branch')}</span>`
         : (thread.pinned ? `<span class="sb-slot sb-worktree-slot is-empty" aria-hidden="true"></span>` : '');
 
-      let statusSlotHTML = `<span class="sb-slot sb-status-slot is-empty" aria-hidden="true"></span>`;
-      if (status === 'running') {
-        statusSlotHTML = `<span class="sb-slot sb-status-slot is-running" title="进行中" aria-label="进行中"><span class="sb-ring"></span></span>`;
-      } else if (status === 'attention') {
-        statusSlotHTML = `<span class="sb-slot sb-status-slot is-attention" title="等待你的确认或回答" aria-label="待处理">${lucideIcon('circle-help')}</span>`;
-      } else if (status === 'failed') {
-        statusSlotHTML = `<span class="sb-slot sb-status-slot is-failed" title="上次执行异常中断" aria-label="执行失败">${lucideIcon('circle-alert')}</span>`;
-      }
-
       return `
         <div
           class="sb-thread-row ${isSelected ? 'is-active' : ''} ${isMenuOpen ? 'is-menu-open' : ''}"
@@ -753,12 +754,12 @@
             class="sb-thread-select"
             data-sb-action="select-thread"
             data-thread-id="${escape(thread.id)}">
+            ${statusSlotHTML}
             <span class="sb-thread-title">${escape(title)}</span>
           </button>
           <div class="sb-thread-meta">
             ${pinSlotHTML}
             ${worktreeSlotHTML}
-            ${statusSlotHTML}
             <span class="sb-slot sb-more-slot">
               <button
                 type="button"

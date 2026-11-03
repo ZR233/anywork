@@ -29,7 +29,7 @@ class SidebarProjectRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final issue = recoveryIssue;
-    final target = touchMode ? 44.0 : 30.0;
+    final target = touchMode ? 44.0 : 28.0;
     return KeyedSubtree(
       key: StudioDriverKeys.projectRow(project.id),
       child: _SidebarHoverDetail(
@@ -45,6 +45,7 @@ class SidebarProjectRow extends StatelessWidget {
           selected: selected,
           emphasized: true,
           title: project.name,
+          leadingPadding: 0,
           leading: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -55,11 +56,17 @@ class SidebarProjectRow extends StatelessWidget {
                 minTarget: target,
                 onPressed: onToggle,
               ),
-              Icon(
-                project.sshAlias == null
-                    ? Icons.folder_outlined
-                    : Icons.dns_outlined,
-                size: 16,
+              SizedBox.square(
+                dimension: 16,
+                child: Center(
+                  child: Icon(
+                    project.sshAlias == null
+                        ? Icons.folder_outlined
+                        : Icons.dns_outlined,
+                    size: 16,
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
               ),
               const SizedBox(width: 6),
             ],
@@ -169,12 +176,8 @@ class SidebarThreadRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final issue = recoveryIssue;
-    final target = touchMode ? 44.0 : 30.0;
+    final target = touchMode ? 44.0 : 28.0;
     final alias = project.sshAlias;
-    Widget statusSlot(Widget child) => Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: child,
-    );
     return KeyedSubtree(
       key: StudioDriverKeys.threadRow(thread.id),
       child: _SidebarHoverDetail(
@@ -190,30 +193,63 @@ class SidebarThreadRow extends StatelessWidget {
           selected: selected && !archived,
           title: thread.title,
           touchMode: touchMode,
+          leadingPadding: 8,
+          leading: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox.square(
+                key: ValueKey('thread-status-slot-${thread.id}'),
+                dimension: 16,
+                child: Center(
+                  child: archived
+                      ? const SizedBox.shrink()
+                      : _ThreadStatusBadge(status: thread.status),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ),
           onTap: archived || issue?.blocksAccess == true ? null : onSelect,
+          leadingActionsAlwaysVisible: pinned && !archived,
+          leadingActions: archived
+              ? null
+              : _tileIconButton(
+                  key: StudioDriverKeys.pinThread(thread.id),
+                  tooltip: pinned
+                      ? context.l10n.sidebarUnpin
+                      : context.l10n.sidebarPin,
+                  icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  minTarget: target,
+                  onPressed: () => onAction(SidebarThreadAction.pin),
+                ),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (issue != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: _recoveryIndicator(context, issue),
+                ),
               if (thread.workspaceMode.isWorktree)
-                statusSlot(
-                  Tooltip(
-                    message: context.l10n.sidebarSessionWorktree,
-                    child: Icon(
-                      Icons.account_tree_outlined,
-                      key: StudioDriverKeys.threadWorkspaceMode(thread.id),
-                      size: 15,
+                SizedBox.square(
+                  dimension: 28,
+                  child: Center(
+                    child: Tooltip(
+                      message: context.l10n.sidebarSessionWorktree,
+                      child: Icon(
+                        Icons.account_tree_outlined,
+                        key: StudioDriverKeys.threadWorkspaceMode(thread.id),
+                        size: 15,
+                      ),
                     ),
                   ),
                 ),
-              if (thread.status != ThreadStatusView.idle)
-                statusSlot(_ThreadStatusBadge(status: thread.status)),
-              if (issue != null) statusSlot(_recoveryIndicator(context, issue)),
             ],
           ),
-          actions: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: archived
-                ? [
+          actions: archived
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     _tileIconButton(
                       key: ValueKey('thread-archived-workspace-${thread.id}'),
                       tooltip: context.l10n.sidebarOriginalWorkspace,
@@ -229,36 +265,25 @@ class SidebarThreadRow extends StatelessWidget {
                       minTarget: target,
                       onPressed: () => onAction(SidebarThreadAction.restore),
                     ),
-                  ]
-                : [
-                    _tileIconButton(
-                      key: StudioDriverKeys.pinThread(thread.id),
-                      tooltip: pinned
-                          ? context.l10n.sidebarUnpin
-                          : context.l10n.sidebarPin,
-                      icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                      minTarget: target,
-                      onPressed: () => onAction(SidebarThreadAction.pin),
-                    ),
-                    SidebarThreadMenu(
-                      thread: thread,
-                      blocked: issue?.blocksAccess == true,
-                      recoveryIssue: issue,
-                      recoveryIssueId: issue?.scope == RecoveryIssueScope.thread
-                          ? issue?.id
-                          : null,
-                      canRetryRecovery:
-                          issue?.scope == RecoveryIssueScope.thread &&
-                          issue?.canRetry == true,
-                      targetDescription: alias == null
-                          ? thread.workspacePath
-                          : '$alias:${thread.workspacePath}',
-                      hostApps: hostApps,
-                      minTarget: target,
-                      onAction: onAction,
-                    ),
                   ],
-          ),
+                )
+              : SidebarThreadMenu(
+                  thread: thread,
+                  blocked: issue?.blocksAccess == true,
+                  recoveryIssue: issue,
+                  recoveryIssueId: issue?.scope == RecoveryIssueScope.thread
+                      ? issue?.id
+                      : null,
+                  canRetryRecovery:
+                      issue?.scope == RecoveryIssueScope.thread &&
+                      issue?.canRetry == true,
+                  targetDescription: alias == null
+                      ? thread.workspacePath
+                      : '$alias:${thread.workspacePath}',
+                  hostApps: hostApps,
+                  minTarget: target,
+                  onAction: onAction,
+                ),
         ),
       ),
     );
