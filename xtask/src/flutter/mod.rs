@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod codegen;
+mod preview;
+pub(crate) use preview::run as preview_gui;
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -333,7 +335,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
-    let run_args = run_gui_args(target, &version_define, options.capture);
+    let run_args = run_gui_args(target, &version_define, &options);
     let bridge_artifacts =
         prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Debug)?;
     run_flutter_with_process_mode(
@@ -342,7 +344,11 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         &run_args,
         FlutterInvocation {
             demo_mode,
-            process_mode: FlutterProcessMode::Batch,
+            process_mode: if options.inspect {
+                FlutterProcessMode::Resident
+            } else {
+                FlutterProcessMode::Batch
+            },
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
@@ -499,8 +505,8 @@ impl NativeExitReport {
 /// Launch contract for a directly started debug/profile artifact.
 ///
 /// Entrypoint, build mode, capture, and the native exit report are explicit.
-/// Driver targets and disabled VM service auth codes are not part of this
-/// contract; capture uses the ordinary authenticated VM service.
+/// Inspection uses the official Driver extension in a dedicated debug target;
+/// VM service authentication remains enabled for inspection and capture.
 struct NativeLaunchSpec {
     entrypoint: String,
     profile: bool,
@@ -525,6 +531,7 @@ impl NativeLaunchSpec {
                 );
                 path.to_string_lossy().into_owned()
             }
+            None if options.inspect => "tool/inspect_main.dart".to_owned(),
             None => "lib/main.dart".to_owned(),
         };
         Ok(Self {
@@ -575,7 +582,11 @@ fn run_native_launch_args<'a>(
     args
 }
 
-fn run_gui_args(target: DesktopTarget, version_define: &str, capture: bool) -> Vec<&str> {
+fn run_gui_args<'a>(
+    target: DesktopTarget,
+    version_define: &'a str,
+    options: &RunGuiOptions,
+) -> Vec<&'a str> {
     let mut args = vec![
         "run",
         "-d",
@@ -583,8 +594,11 @@ fn run_gui_args(target: DesktopTarget, version_define: &str, capture: bool) -> V
         version_define,
         "--no-pub",
     ];
-    if capture {
+    if options.capture {
         args.push("--dart-define=ANYWORK_CAPTURE=true");
+    }
+    if options.inspect {
+        args.extend(["-t", "tool/inspect_main.dart", "--print-dtd"]);
     }
     args
 }

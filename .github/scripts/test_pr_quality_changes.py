@@ -77,19 +77,24 @@ class PlanFromPathsTest(unittest.TestCase):
             "linux-tools", "remote-helpers", "windows-build", "macos-build",
         })
 
-    def test_ui_only_selects_flutter(self):
+    def test_ui_only_selects_flutter_and_its_container_without_rust_jobs(self):
         plan = plan_from_paths(
             ["code/anywork/test/ui/composer_button_matrix_test.dart"],
             event_name="pull_request",
         )
         self.assertTrue(plan["flutter_checks"])
         self.assertFalse(plan["rust_checks"])
-        self.assertFalse(plan["linux_environment"])
+        self.assertTrue(plan["linux_environment"])
+        self.assertFalse(plan["linux_tools"])
+        self.assertFalse(plan["remote_helpers"])
         self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["linux_native"])
         self.assertFalse(plan["windows_build"])
         self.assertFalse(plan["macos_build"])
-        self.assertEqual(plan["required_jobs"], ("changes", "pr-title", "flutter-checks"))
+        self.assertEqual(
+            plan["required_jobs"],
+            ("changes", "pr-title", "linux-environment", "flutter-checks"),
+        )
 
     def test_platform_directories_follow_platform_boundaries(self):
         expectations = {

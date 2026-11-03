@@ -1,14 +1,16 @@
 ---
 name: flutter-studio-build
-description: Use when building anywork on Windows, Linux or macOS, validating pure widgets with the official Widget Previewer, manually validating the native GUI with keyboard/pointer input and Flutter content capture (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
-category: guides
-platforms: [windows, linux, macos]
+description: Use when building anywork on Windows, Linux or macOS, preparing official Widget Previewer runs, connecting Dart MCP to the native GUI, or collecting Flutter content evidence, debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
+metadata:
+  category: guides
+  platforms: windows, linux, macos
 ---
 
 # anywork 构建
 
 涉及跨层分工、状态与资源所有权或页面路由时，先使用 `flutter-frb-rust-design`；
-本技能只维护生成、构建与运行观察方法。
+本技能只维护项目生成、构建、运行与证据边界。通用预览、布局、测试和 Dart 教程使用
+用户级官方 `flutter-*` / `dart-*` 技能；发现与命令映射见根 `AGENTS.md`，不在项目复制上游内容。
 
 ## 会话临时文件
 
@@ -25,6 +27,8 @@ xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临�
 cargo xtask run-gui
 cargo xtask run-gui --demo
 cargo xtask run-gui --capture
+cargo xtask run-gui --inspect
+cargo xtask preview-gui --headless --no-devtools
 cargo xtask run-gui --release
 cargo xtask test-project --suite desktop
 cargo xtask test-project --suite native
@@ -147,11 +151,12 @@ Linux 缺少编译器、CMake、Ninja、pkg-config 或 GTK 3 开发文件时，�
 ## 原生 GUI 人工验收
 
 需要原生观察时可参考 [人工验收操作指南](references/manual-gui.md)：包含隔离 harness、Linux SSH 下的
-伪终端与 Xvfb、真实键盘/指针、Flutter 内容捕获、截图/快照核对及进程回收。不要将无交互终端直接
+官方 MCP 的组件树、交互和截图，Linux 的显示条件、隔离配置及进程回收。不要将无交互终端直接
 等同于无法验收，也不要把 demo、静态分析或成功启动等同于完整业务验收。
 
 ## 官方组件预览
 
-验证无需业务运行时的生产组件时，读取 [Widget Previewer 指南](references/widget-preview.md)。
-优先使用官方预览编译、缓存和热更新，分别验证纯入口、主题/本地化、交互与进程回收；
-浏览器预览不替代原生 GUI、bridge、凭据或持久化验收。
+组件作者使用用户级 `flutter-add-widget-preview`；本项目启动与依赖适配见
+[预览入口](references/widget-preview.md)。已有预览直接复用生产 View、主题及合成数据。
+原生交互用 `run-gui --inspect` 或 `manual-gui --preset gui --inspect`，自动化业务断言用
+`test-project --suite desktop`；组件截图、原生交互和持久化分别报告覆盖，不层层重复验收。
