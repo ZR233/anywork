@@ -144,20 +144,35 @@ impl SessionTempBackend<'_> {
     /// Removes only the dedicated temp directory. Explicit absence is idempotent success.
     /// Callers must stop/join producers and confirm reliable persistence before invoking this.
     pub async fn remove(&self, files: &SessionFiles) -> Result<()> {
-        let path = files.temp();
-        if !self.exists(&path).await? {
+        self.remove_dedicated(&files.temp()).await
+    }
+
+    /// Permanently removes only this Thread's private execution SessionFiles directory.
+    /// The lifecycle owner must have joined its producers and released reliable readers/writers.
+    pub async fn remove_session(&self, files: &SessionFiles) -> Result<()> {
+        self.remove_dedicated(&files.root()).await
+    }
+
+    /// Inspects this bound SessionFiles root without following links. An I/O or transport error
+    /// is never absence; a lifecycle owner uses this to reconcile an unacknowledged removal.
+    pub async fn session_exists(&self, files: &SessionFiles) -> Result<bool> {
+        self.exists(&files.root()).await
+    }
+
+    async fn remove_dedicated(&self, path: &Path) -> Result<()> {
+        if !self.exists(path).await? {
             return Ok(());
         }
         match self {
             Self::Local(root) => {
-                path_safety::remove_dir_all_no_follow_async(root, &root.join(&path))
+                path_safety::remove_dir_all_no_follow_async(root, &root.join(path))
                     .await
                     .map_err(failure)?
             }
-            Self::Ssh(backend) => backend.remove_path(posix(&path), None, true).await?,
+            Self::Ssh(backend) => backend.remove_path(posix(path), None, true).await?,
         }
-        if self.exists(&path).await? {
-            return Err(failure("session temp remains after removal"));
+        if self.exists(path).await? {
+            return Err(failure("session directory remains after removal"));
         }
         Ok(())
     }
@@ -430,6 +445,15 @@ mod tests {
             .unwrap();
         assert!(root.join(files.commands()).is_dir());
         assert!(!root.join(files.scratch()).join("probe.py").exists());
+        backend.remove_session(&files).await.unwrap();
+        backend.remove_session(&files).await.unwrap();
+        assert!(!root.join(files.root()).exists());
+        assert!(!backend.session_exists(&files).await.unwrap());
+        assert_eq!(
+            std::fs::read(root.join(neighbor.temp()).join("active")).unwrap(),
+            b"neighbor"
+        );
+        assert_eq!(std::fs::read(root.join("user-file")).unwrap(), b"user");
     }
 
     #[tokio::test]
@@ -513,10 +537,22 @@ mod tests {
             b"keep"
         );
         assert!(!root.join(files.temp()).exists());
+        symlink(outside.path(), root.join(files.root()).join("linked")).unwrap();
+        backend.remove_session(&files).await.unwrap();
+        assert_eq!(
+            std::fs::read(outside.path().join("important")).unwrap(),
+            b"keep"
+        );
+        symlink(outside.path(), root.join(files.root())).unwrap();
+        assert!(backend.remove_session(&files).await.is_err());
+        assert!(backend.session_exists(&files).await.is_err());
+        std::fs::remove_file(root.join(files.root())).unwrap();
 
         std::fs::remove_dir_all(root.join(".anywork")).unwrap();
         symlink(outside.path(), root.join(".anywork")).unwrap();
         assert!(backend.remove(&files).await.is_err());
+        assert!(backend.remove_session(&files).await.is_err());
+        assert!(backend.session_exists(&files).await.is_err());
         assert_eq!(
             std::fs::read(outside.path().join("important")).unwrap(),
             b"keep"

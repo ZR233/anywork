@@ -181,6 +181,10 @@ abstract class StudioTransport
     String threadId, {
     required OperationId operationId,
   });
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  });
   Future<void> archiveProject(String workspaceId);
   Future<PersistenceStateSnapshot> retryPersistence();
 

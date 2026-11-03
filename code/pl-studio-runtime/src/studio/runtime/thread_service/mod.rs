@@ -1,6 +1,8 @@
 //! Thread/Project 生命周期命令目录页：对外命令入口与 projects/threads 子模块组织。
 
 mod archive;
+mod archive_worktrees;
+mod delete;
 mod projects;
 mod threads;
 

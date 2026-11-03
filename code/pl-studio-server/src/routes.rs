@@ -281,6 +281,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(create_thread))
         .routes(routes!(read_thread))
         .routes(routes!(archive_thread))
+        .routes(routes!(delete_thread))
         .routes(routes!(query_threads))
         .routes(routes!(restore_thread))
         .routes(routes!(rename_thread))
@@ -559,6 +560,21 @@ async fn archive_thread(
     let result = state
         .runtime
         .archive_thread(request.operation_id, thread_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError(StudioError::not_found("Thread")))?;
+    Ok(Json(result))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/delete", operation_id = "thread.delete", params(("thread_id" = String, Path)), request_body = StudioCommandRequest, responses(StudioApiErrors, (status = 200)))]
+async fn delete_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    ApiJson(request): ApiJson<StudioCommandRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let result = state
+        .runtime
+        .delete_thread(request.operation_id, thread_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError(StudioError::not_found("Thread")))?;

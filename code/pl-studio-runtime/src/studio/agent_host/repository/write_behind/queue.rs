@@ -86,6 +86,7 @@ fn directory_bytes(delta: &DirectoryDelta) -> usize {
         + delta.thread_upserts.len()
         + delta.unregistered_faults.len()
         + delta.thread_removals.len()
+        + delta.thread_deletions.len()
         + delta.project_upserts.len()
         + delta.project_removals.len())
 }
@@ -136,6 +137,9 @@ pub(super) fn try_coalesce_directory(
 }
 
 fn merge_directory_delta(target: &mut DirectoryDelta, incoming: &DirectoryDelta) {
+    target
+        .thread_deletions
+        .extend(incoming.thread_deletions.iter().cloned());
     target
         .session_activity
         .extend(incoming.session_activity.iter().cloned());

@@ -11,6 +11,17 @@ use super::{
     object::{PersistedStudioObject, decode_object, load_object, put_object},
 };
 use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
+use crate::studio::agent_host::worktree_lease::WorktreeLease;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::studio) struct ArchiveWorktree {
+    pub lease: WorktreeLease,
+    pub identity: WorkspaceIdentity,
+    pub common_dir: Option<String>,
+    pub removal_started: bool,
+    pub cleaned: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -77,6 +88,8 @@ pub(in crate::studio) struct ThreadArchiveOperation {
     pub revision: u64,
     pub members: Vec<ArchiveMember>,
     pub private_members: Vec<PrivateArchiveMember>,
+    #[serde(default)]
+    pub worktrees: Vec<ArchiveWorktree>,
     pub phase: ArchivePhase,
 }
 
@@ -158,7 +171,42 @@ impl PersistedStudioObject for ThreadArchiveOperation {
                 );
             }
         }
+        let mut worktree_owners = std::collections::HashSet::new();
+        for worktree in &self.worktrees {
+            ensure!(
+                ids.contains(&worktree.lease.owner_thread_id)
+                    && worktree_owners.insert(&worktree.lease.owner_thread_id),
+                "archive worktree has no unique member owner"
+            );
+            worktree.lease.validate_identity()?;
+            ensure!(
+                worktree.identity.matches_root(&worktree.lease.path),
+                "archive worktree physical binding differs from lease"
+            );
+            let original = self
+                .members
+                .iter()
+                .find(|member| member.thread_id == worktree.lease.owner_thread_id)
+                .map(|member| &member.execution)
+                .or_else(|| {
+                    self.private_members
+                        .iter()
+                        .find(|member| member.identity.thread_id == worktree.lease.owner_thread_id)
+                        .and_then(|member| match &member.binding {
+                            PreparationBinding::Bound { identity } => Some(identity),
+                            PreparationBinding::Unbound => None,
+                        })
+                });
+            ensure!(
+                original == Some(&worktree.identity),
+                "archive worktree is not the member's original physical binding"
+            );
+        }
         if matches!(self.phase, ArchivePhase::Cleaned | ArchivePhase::Published) {
+            ensure!(
+                self.worktrees.iter().all(|worktree| worktree.cleaned),
+                "archive worktree cleanup is unfinished"
+            );
             ensure!(
                 self.members
                     .iter()
@@ -215,6 +263,7 @@ impl StudioStore {
         workspace_id: &str,
         thread_id: Option<&str>,
     ) -> Result<()> {
+        self.ensure_delete_execution_allowed(thread_id).await?;
         for operation in self.thread_archives().await? {
             if operation.phase == ArchivePhase::Published {
                 continue;

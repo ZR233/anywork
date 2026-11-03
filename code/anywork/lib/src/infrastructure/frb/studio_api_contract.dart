@@ -2011,6 +2011,29 @@ class FrbStudioTransport
   }
 
   @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    final response = await _bridgeCall(
+      () =>
+          frb.deleteThread(operationId: operationId.value, threadId: threadId),
+    );
+    if (response == null) return null;
+    return DeleteThreadCommandReply(
+      result: DeleteThreadResult(
+        deletedRootId: response.result.deletedRootId,
+        deletedThreadIds: response.result.deletedThreadIds,
+        nextRoot: response.result.nextRoot == null
+            ? null
+            : _threadFromFrb(response.result.nextRoot!),
+      ),
+      receipt: _commandReceiptFromFrb(response.receipt),
+    );
+  }
+
+  @override
   Future<void> archiveProject(String workspaceId) async {
     await _ensureReady();
     await _bridgeCall(() => frb.archiveProject(workspaceId: workspaceId));

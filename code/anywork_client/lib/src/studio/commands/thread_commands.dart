@@ -17,7 +17,6 @@ import '../../../anywork_client.dart'
         ResourcePermit,
         ValueObservation;
 import '../anywork_client.dart';
-import '../agent_directory_queries.dart';
 import '../stores/domain_sync.dart';
 import '../stores/project_store.dart';
 import '../bridge/product_topic_registry.dart' show BridgeTopicLease;
@@ -1123,18 +1122,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
 
   Future<void> archiveThread(String threadId) {
     _ensureOpen();
-    if (AgentDirectoryQueries.rootThreadId(
-          threadId: _client.selection.state.selectedThreadId,
-          agents: _client.project.state.agents?.values ?? const [],
-          threads: [
-            if (_directoryThread(_client.selection.state.selectedThreadId ?? '')
-                case final selected?)
-              selected,
-          ],
-        ) ==
-        threadId) {
-      _client.selection.beginNavigation();
-    }
+    final navigationGeneration = _client.selection.navigationGeneration;
     final key = 'archive:$threadId';
     final operation = _client.mutations.begin(target: key);
     _begin(key, label: threadId);
@@ -1159,24 +1147,69 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           operationId: operation.id,
         );
         operation.accept(response.receipt.toCommitReceipt());
-        final result = response.result;
-        if (!_client.isClosed) {
-          for (final id in result.removedThreadIds) {
-            if (_client.selection.state.selectedThreadId == id) {
-              _client.conversations.setVisibleThread(null);
-            }
-          }
-          final selected = _client.selection.state.selectedThreadId;
-          if (selected != null && result.removedThreadIds.contains(selected)) {
-            _client.selection.replaceRemovedThread(result.nextRoot?.id);
-          }
-        }
+        _replaceRemovedThreadIfCurrent(
+          response.result.removedThreadIds,
+          nextRootId: response.result.nextRoot?.id,
+          navigationGeneration: navigationGeneration,
+        );
       } catch (error) {
         _failOperation(operation, error);
         if (_isLatest(operation)) _fail(key, threadId, error);
         rethrow;
       }
     });
+  }
+
+  /// Permanently deletes the backend-authoritative root and its whole tree.
+  ///
+  /// The target may be archived and absent from the active directory, so the
+  /// backend owns root/child validation. A null reply means there was no
+  /// remaining deletion responsibility and carries no command receipt.
+  Future<void> deleteThread(String threadId) {
+    _ensureOpen();
+    final navigationGeneration = _client.selection.navigationGeneration;
+    final key = 'delete:$threadId';
+    final operation = _client.mutations.begin(target: key);
+    _begin(key, label: threadId);
+    _watchObservation(operation, () => _clear(key));
+    return _lane.enqueue(() async {
+      try {
+        final response = await _api.deleteThread(
+          threadId,
+          operationId: operation.id,
+        );
+        if (response == null) {
+          operation.reject(StateError('Thread no longer exists'));
+          if (_isLatest(operation)) _clear(key);
+          return;
+        }
+        operation.accept(response.receipt.toCommitReceipt());
+        _replaceRemovedThreadIfCurrent(
+          response.result.deletedThreadIds,
+          nextRootId: response.result.nextRoot?.id,
+          navigationGeneration: navigationGeneration,
+        );
+      } catch (error) {
+        _failOperation(operation, error);
+        if (_isLatest(operation)) _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+  }
+
+  void _replaceRemovedThreadIfCurrent(
+    Iterable<String> removedThreadIds, {
+    required String? nextRootId,
+    required int navigationGeneration,
+  }) {
+    if (_client.isClosed ||
+        !_client.selection.isCurrentNavigation(navigationGeneration)) {
+      return;
+    }
+    final selected = _client.selection.state.selectedThreadId;
+    if (selected == null || !removedThreadIds.contains(selected)) return;
+    _client.conversations.setVisibleThread(null);
+    _client.selection.replaceRemovedThread(nextRootId);
   }
 
   Future<void> _applyThreadModelRoute({

@@ -3283,6 +3283,100 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    _ensureDemoRunning();
+    final allThreads = <StudioThread>[
+      ..._workspaces.values.map((workspace) => workspace.thread),
+      ..._createdRootThreads,
+      ..._pageFillThreads,
+    ];
+    final root = allThreads
+        .where((thread) => thread.id == threadId)
+        .firstOrNull;
+    if (root == null) return null;
+    if (!root.isRoot) {
+      throw StateError('only a root Thread can be deleted');
+    }
+
+    final roots = _sortedDirectoryThreads()
+        .where((thread) => thread.isRoot)
+        .toList();
+    final index = roots.indexWhere((thread) => thread.id == threadId);
+    final nextRoot = index < 0
+        ? roots.firstOrNull
+        : index + 1 < roots.length
+        ? roots[index + 1]
+        : index > 0
+        ? roots[index - 1]
+        : null;
+    final deletedThreadIds = <String>{
+      for (final thread in allThreads)
+        if (thread.effectiveRootThreadId == threadId) thread.id,
+    }.toList();
+
+    for (final id in deletedThreadIds) {
+      final activeTurn = _workspaces[id]?.activeTurn;
+      if (activeTurn != null && activeTurn.state.isBusy) {
+        _interruptDemoTurn(id, activeTurn.turnId);
+      }
+    }
+    _workspaces.removeWhere(
+      (id, workspace) =>
+          deletedThreadIds.contains(id) ||
+          deletedThreadIds.contains(workspace.thread.id),
+    );
+    _createdRootThreads.removeWhere(
+      (thread) => deletedThreadIds.contains(thread.id),
+    );
+    _pageFillThreads.removeWhere(
+      (thread) => deletedThreadIds.contains(thread.id),
+    );
+    _archivedThreadIds.remove(threadId);
+    _histories.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _pendingItems.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _promptGenerations.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _threadModes.removeWhere((id, _) => deletedThreadIds.contains(id));
+    _demoContinuationPoints.removeWhere(
+      (id, _) => deletedThreadIds.contains(id),
+    );
+    _resolvedInteractions.removeWhere(
+      (_, value) => deletedThreadIds.contains(value.interaction.threadId),
+    );
+    _demoUserInputInvocations.removeWhere(
+      (_, value) => deletedThreadIds.contains(value.$1.threadId),
+    );
+
+    if (_selectedThreadId != null &&
+        deletedThreadIds.contains(_selectedThreadId)) {
+      _selectedThreadId = nextRoot?.id;
+    }
+    _threadDirectoryRevision += 1;
+    _publishProductPayload(
+      ThreadDirectoryChangedPayload(
+        revision: _threadDirectoryRevision,
+        upserted: const [],
+        removed: deletedThreadIds,
+      ),
+    );
+    return DeleteThreadCommandReply(
+      result: DeleteThreadResult(
+        deletedRootId: threadId,
+        deletedThreadIds: deletedThreadIds,
+        nextRoot: nextRoot,
+      ),
+      receipt: _demoReceipt(
+        operationId,
+        changed: true,
+        targets: [_demoStamp('thread-directory', _threadDirectoryRevision)],
+        effect: EffectPoint.immediate,
+      ),
+    );
+  }
+
+  @override
   Future<void> archiveProject(String workspaceId) async {
     if (workspaceId == 'project-local' &&
         _archivedProjectIds.add(workspaceId)) {

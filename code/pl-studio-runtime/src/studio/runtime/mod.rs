@@ -149,6 +149,22 @@ pub struct ArchiveThreadCommandReply {
     pub receipt: pl_protocol::studio::StudioCommandReceipt,
 }
 
+/// Result of permanently deleting a root Thread and all its descendants.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioDeleteThreadResult {
+    pub deleted_root_id: String,
+    pub deleted_thread_ids: Vec<String>,
+    pub next_root: Option<ThreadRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteThreadCommandReply {
+    pub result: StudioDeleteThreadResult,
+    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+}
+
 /// Studio UI resolve interaction 后的核心响应。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

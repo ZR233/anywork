@@ -1492,6 +1492,10 @@ impl BotRuntime {
                         (creation_id.as_str(), 2),
                         ("creating", 1),
                     ])?)?;
+                    // This check and the later frozen-target check run under managed.admission,
+                    // the same lock permanent deletion takes before its final ledger clear.
+                    self.ensure_reply_admission(&workspace_id, &creation_id)
+                        .await?;
                     let claim = managed
                         .store
                         .claim_thread_binding(&chat_id, &creation_id, &workspace_id)
@@ -1521,6 +1525,34 @@ impl BotRuntime {
                         .store
                         .binding_for_chat(&chat_id, bot_id, &workspace_id)
                         .await?;
+                    #[cfg(test)]
+                    {
+                        let pause = {
+                            let mut gate = self
+                                .inner
+                                .deletion_tests
+                                .inbound
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if gate
+                                .as_ref()
+                                .is_some_and(|(target, _, _)| target == &chat_id)
+                            {
+                                gate.take()
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some((_, entered, release)) = pause {
+                            let _ = entered.send(());
+                            let _ = release.await;
+                        }
+                    }
+                    self.ensure_reply_admission(&workspace_id, &projection.creation_id)
+                        .await?;
+                    if let Some(target) = &projection.thread_id {
+                        self.ensure_reply_admission(&workspace_id, target).await?;
+                    }
                     if projection.creation_id.is_empty() {
                         return Err(super::storage::binding_needs_recovery());
                     }

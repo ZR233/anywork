@@ -18,6 +18,200 @@ pub(in crate::bots) struct Fixture {
     _temp: tempfile::TempDir,
 }
 
+#[tokio::test]
+async fn permanent_delete_bot_ledger_removes_only_the_bound_tree_and_retains_neighbor() -> Result<()>
+{
+    let fixture = Fixture::new().await?;
+    let deleted = fixture.inbound("deleted", true).await?;
+    let neighbor = fixture.inbound("neighbor", true).await?;
+    fixture
+        .host
+        .runtime
+        .delete_thread("delete-bot-tree".into(), deleted.creation_id.clone())
+        .await?
+        .expect("root deletion");
+    assert!(
+        fixture
+            .bots
+            .config_for_thread(&deleted.creation_id)
+            .await?
+            .is_none()
+    );
+    assert!(
+        fixture
+            .bots
+            .config_for_thread(&neighbor.creation_id)
+            .await?
+            .is_some()
+    );
+    let due = fixture
+        .managed
+        .store
+        .list_due_inbound(&deleted.bot_id)
+        .await?;
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0], neighbor);
+    let db = fixture.ledger_probe().await?;
+    assert!(
+        db.query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT 1 FROM inbound_identities WHERE bot_id=? AND chat_id=? AND message_id=?",
+            [
+                deleted.bot_id.into(),
+                deleted.chat_id.into(),
+                deleted.message_id.into()
+            ]
+        ))
+        .await?
+        .is_none()
+    );
+    assert!(!fixture.bots.runtime_released());
+    db.close().await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_delete_waits_for_frozen_bot_admission_and_rejects_late_body_before_write()
+-> Result<()> {
+    let fixture = Fixture::new().await?;
+    let deleted = fixture.inbound("frozen-deleted", true).await?;
+    let neighbor = fixture.inbound("frozen-neighbor", true).await?;
+    let (inbound_entered, inbound_ready) = tokio::sync::oneshot::channel();
+    let (release_inbound, inbound_release) = tokio::sync::oneshot::channel();
+    *fixture.bots.inner.deletion_tests.inbound.lock().unwrap() =
+        Some((deleted.chat_id.clone(), inbound_entered, inbound_release));
+    let (delete_attempt, delete_waiting) = tokio::sync::oneshot::channel();
+    *fixture
+        .bots
+        .inner
+        .deletion_tests
+        .admission_attempt
+        .lock()
+        .unwrap() = Some(delete_attempt);
+    let (clear_entered, mut clear_ready) = tokio::sync::oneshot::channel();
+    let (release_clear, clear_release) = tokio::sync::oneshot::channel();
+    *fixture
+        .bots
+        .inner
+        .deletion_tests
+        .ledger_clear
+        .lock()
+        .unwrap() = Some((clear_entered, clear_release));
+    let generation = fixture.managed.generation.load(Ordering::Acquire);
+    let inbound = tokio::spawn({
+        let bots = fixture.bots.clone();
+        let bot_id = deleted.bot_id.clone();
+        let chat_id = deleted.chat_id.clone();
+        async move {
+            bots.admit_decision(
+                &bot_id,
+                generation,
+                InboundDecision::Execute {
+                    message_id: "late-frozen-message".into(),
+                    chat_id,
+                    open_id: "fixture-user".into(),
+                    text: "late text must never be reinserted".into(),
+                    attachments: vec![crate::bots::inbound::InboundAttachment::File {
+                        key: "late-private-file".into(),
+                        filename: "private.txt".into(),
+                    }],
+                    content_hash: "late-frozen-hash".into(),
+                    chat_kind: ChatKind::Direct,
+                },
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), inbound_ready).await??;
+    let deletion = tokio::spawn({
+        let runtime = fixture.host.runtime.clone();
+        let target = deleted.creation_id.clone();
+        async move {
+            runtime
+                .delete_thread("delete-frozen-inbound".into(), target)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(20), delete_waiting).await??;
+    // On this current-thread runtime, the delete worker polls from its synchronous attempt
+    // notification until the admission wait. Crossing that wait would reach clear_ready in the
+    // same poll; no wall-clock delay or scheduler race is used to establish the interleaving.
+    let crossed_admission = clear_ready.try_recv().is_ok();
+    assert!(!deletion.is_finished());
+    release_inbound.send(()).unwrap();
+    let inbound_result = tokio::time::timeout(Duration::from_secs(10), inbound).await??;
+    if !crossed_admission {
+        tokio::time::timeout(Duration::from_secs(10), &mut clear_ready).await??;
+    }
+    let db = fixture.ledger_probe().await?;
+    let late = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT 1 FROM inbound_identities WHERE bot_id=? AND message_id='late-frozen-message'",
+            [deleted.bot_id.clone().into()],
+        ))
+        .await?;
+    let rejected_before_write = late.is_none();
+    release_clear.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), deletion)
+        .await???
+        .expect("delete reply");
+    assert!(
+        !crossed_admission,
+        "ledger deletion crossed an original frozen inbound admission"
+    );
+    assert!(
+        inbound_result.is_err(),
+        "the frozen target must be revalidated before persistence"
+    );
+    assert!(
+        rejected_before_write,
+        "late inbound body/identity was inserted before enqueue rejected it"
+    );
+    assert_eq!(
+        fixture
+            .managed
+            .store
+            .list_due_inbound(&deleted.bot_id)
+            .await?,
+        vec![neighbor.clone()]
+    );
+    db.close().await?;
+    fixture.shutdown().await?;
+    let restarted = fixture.host.restart().await?;
+    let bots = restarted.bots();
+    let managed = bots.managed(&deleted.bot_id).await?;
+    assert_eq!(
+        managed.store.list_due_inbound(&deleted.bot_id).await?,
+        vec![neighbor.clone()]
+    );
+    assert!(
+        bots.config_for_thread(&deleted.creation_id)
+            .await?
+            .is_none()
+    );
+    assert!(
+        bots.config_for_thread(&neighbor.creation_id)
+            .await?
+            .is_some()
+    );
+    let probe = fixture.ledger_probe().await?;
+    assert!(
+        probe
+            .query_one_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "SELECT 1 FROM inbound_identities WHERE bot_id=? AND chat_id=?",
+                [deleted.bot_id.into(), deleted.chat_id.into()]
+            ))
+            .await?
+            .is_none()
+    );
+    probe.close().await?;
+    restarted.runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
 impl Fixture {
     pub(in crate::bots) async fn new() -> Result<Self> {
         Self::new_with_optional_file_input(false).await
