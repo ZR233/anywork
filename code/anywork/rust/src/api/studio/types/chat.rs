@@ -83,6 +83,7 @@ pub struct BridgeChatAtom {
     pub turn_id: Option<String>,
     pub attempt_id: Option<String>,
     pub tool: Option<BridgeChatToolIdentity>,
+    pub wait: Option<super::BridgeThreadWaitPresentation>,
     pub text_channel: Option<BridgeThreadTextChannel>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,

@@ -31,6 +31,7 @@ Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
   'tool': atom.tool == null
       ? null
       : {'callId': atom.tool!.callId, 'name': atom.tool!.name},
+  if (atom.wait case final wait?) 'wait': _threadWaitToJson(wait),
   'textChannel': atom.textChannel?.name,
   'startedAt': atom.startedAt,
   'finishedAt': atom.finishedAt,
@@ -42,6 +43,33 @@ Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
       },
   ],
   'payload': atom.payload == null ? null : chatPayloadToJson(atom.payload!),
+};
+
+Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
+  'intent': switch (wait.intent) {
+    ThreadWaitEventsIntentView(:final targets, :final timeoutMs) => {
+      'kind': 'events',
+      'data': {
+        'targets': [
+          for (final target in targets)
+            {
+              'taskId': target.taskId,
+              if (target.toolName != null) 'toolName': target.toolName,
+              if (target.summary != null) 'summary': target.summary,
+              if (target.summaryTruncated) 'summaryTruncated': true,
+              if (target.status != null) 'status': target.status!.name,
+            },
+        ],
+        'timeoutMs': timeoutMs,
+      },
+    },
+    ThreadWaitTimerIntentView(:final durationMs) => {
+      'kind': 'timer',
+      'data': {'durationMs': durationMs},
+    },
+  },
+  'state': wait.state.name,
+  if (wait.messagesReady != null) 'messagesReady': wait.messagesReady,
 };
 
 Map<String, Object?> chatEntryToJson(ChatEntry entry) => switch (entry) {

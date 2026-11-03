@@ -183,6 +183,7 @@ fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
             call_id: tool.call_id,
             name: tool.name,
         }),
+        wait: value.wait.map(super::thread_stream::wait_presentation),
         text_channel: value.text_channel.map(|channel| match channel {
             protocol::ThreadTextChannel::User => BridgeThreadTextChannel::User,
             protocol::ThreadTextChannel::ParentAgent => BridgeThreadTextChannel::ParentAgent,
@@ -501,6 +502,7 @@ mod tests {
                     turn_id: Some("turn-id".into()),
                     attempt_id: None,
                     tool: None,
+                    wait: None,
                     text_channel: None,
                     started_at: None,
                     finished_at: None,

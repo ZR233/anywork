@@ -96,6 +96,10 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
             }),
             _ => None,
         },
+        wait: match item.state() {
+            ThreadItemState::Tool(tool) if !item.is_terminal() => tool.wait().cloned(),
+            _ => None,
+        },
         text_channel: match item.state() {
             ThreadItemState::Text(text) => Some(text.channel()),
             _ => None,

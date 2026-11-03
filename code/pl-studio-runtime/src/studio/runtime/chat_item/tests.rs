@@ -1,6 +1,98 @@
 use super::*;
 use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel};
 
+#[test]
+fn active_wait_is_typed_without_payload_and_completion_keeps_only_original_wait() -> Result<()> {
+    use pl_protocol::*;
+    let waiting = ThreadWaitPresentation::new(
+        ThreadWaitIntent::Events {
+            targets: vec![ThreadWaitTarget::new(
+                "task:timer".into(),
+                None,
+                None,
+                Some(ThreadWaitTargetStatus::Running),
+            )],
+            timeout_ms: 30_000,
+        },
+        ThreadWaitState::Waiting,
+        None,
+    );
+    let tool_item = |state, wait| {
+        ThreadItem::new(
+            "tool:4:call".into(),
+            "thread".into(),
+            "turn".into(),
+            7,
+            1,
+            10,
+            11,
+            ThreadItemState::Tool(
+                ThreadToolItem::new(
+                    ThreadToolInvocation::new("call".into(), "wait".into(), "{}".into()),
+                    state,
+                )
+                .with_wait(wait),
+            ),
+        )
+    };
+    let active = tool_item(
+        ThreadToolState::Running(RunningThreadTool::new(String::new())),
+        Some(waiting.clone()),
+    );
+    let live = atom(&active);
+    assert_eq!(live.id, active.id);
+    assert_eq!(live.tool.as_ref().unwrap().call_id, "call");
+    assert_eq!(live.wait, Some(waiting.clone()));
+    assert!(matches!(live.lifecycle, ChatAtomLifecycle::Active { .. }));
+    assert!(live.payload.is_none());
+    assert!(live.contents.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<ChatAtom>(&serde_json::to_vec(&live)?)?,
+        live
+    );
+    // Tool names and generic running state do not manufacture typed Waiting.
+    assert!(
+        atom(&tool_item(
+            ThreadToolState::Running(RunningThreadTool::new(String::new())),
+            None,
+        ))
+        .wait
+        .is_none()
+    );
+    assert!(atom(&text("not-a-tool", String::new())).wait.is_none());
+
+    let handoff = background_started_draft(&active, "task", "accepted", 3, 12, "database")?;
+    let handoff_atom: ChatAtom = serde_json::from_slice(&handoff.metadata)?;
+    assert!(handoff_atom.wait.is_none());
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&handoff.metadata)?
+            .get("wait")
+            .is_none()
+    );
+
+    let ready =
+        ThreadWaitPresentation::new(waiting.intent().clone(), ThreadWaitState::Ready, Some(true));
+    let terminal = tool_item(
+        ThreadToolState::Succeeded(SucceededThreadTool::new(
+            12,
+            ThreadToolOutput::new("ready".into(), Vec::new(), Vec::new(), None),
+        )),
+        Some(ready.clone()),
+    );
+    assert!(atom(&terminal).wait.is_none());
+    let draft = completion_draft(&terminal, 4, "database")?;
+    let metadata: serde_json::Value = serde_json::from_slice(&draft.metadata)?;
+    assert!(metadata.get("wait").is_none());
+    let decoded: ChatAtom = serde_json::from_value(metadata)?;
+    assert!(
+        decoded.wait.is_none(),
+        "old metadata without wait must decode"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&draft.payload)?;
+    assert_eq!(payload["data"]["wait"], serde_json::to_value(ready)?);
+    Ok(())
+}
+
 fn text(id: &str, body: String) -> ThreadItem {
     ThreadItem::new(
         id.into(),

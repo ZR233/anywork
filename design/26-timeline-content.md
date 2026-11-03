@@ -104,6 +104,15 @@ Rust 产品契约统一归 pl-protocol，FRB/HTTP 同语义；Core 仅持产品�
 
 当前协议统一为 `ChatEntry::Atom(ChatAtom)` / `ChatEntry::Source(ChatSourceState)`。Atom 的 payload 可在真实开始时缺省，完成时引用原 item；completion_seq 由完成 header 取得，与可空的 source_order 分开，缺来源位置不伪造。SourceState 只表示实际来源 Active/Ended/Unknown 与确有的开始/终态位置。CurrentProjection 只含有界真实 source 状态及未终态 atoms，不含已完成尾组或展示范围。部分页的 source 状态来自同切面的实际生命周期，不能用“未加载”补成 Ended。普通 Main 项统一进入 conversation 查询类，Children 使用同类及真实业务 parent；诊断单独保留，不改完成 seq。
 
+活动 `wait`／`sleep` 原子的 `wait` 可选字段直接交付原工具投影已产生的 `ThreadWaitPresentation`，
+绑定同一 atom/call 和同 effect 切面，不依赖尚不存在的完成 payload。运行中等待、超时参数、计时器时长及
+确知目标均来自原参数与任务事实；缺失保持缺失，不从工具名或通用 `running`／`waiting` 状态猜测。
+该字段只表达工具领域事实，不定义工作组、来源结束或新的接纳资格，计入原 current／批次的编码预算，
+不提高预算或预读隐藏参数、正文、输出。终态继续使用原完成 payload 中的 typed wait；不在完成 metadata
+重复保存活动投影，旧冻结 metadata 缺省此字段仍解码为无活动事实，无需改库或回填。
+FRB、HTTP 与 SDK 机械传递同一字段，Flutter 复用现有 Waiting 组件，不建立另一套等待状态或任务查询。
+取消 Waiting 仍由真实 Stop 与原任务 owner 执行，不能因显示变化取消之前 Turn 的计时器或伪造终态。
+
 Core ChatDraft/Header 的不透明轻量 metadata 随原冻结完成记录发布、查询和保存，产品 reader 无需解码 payload 即可映射 Atom；Core 不解析其领域内容。实际来源开始/结束经原 Thread effect/current handoff 一次交付并同事务保存，历史页按真实来源身份有界取得同切点状态。它们不是工作段起止或前缀，不能按正文/工具 UI 分类制造来源闭合。来源可跨 attempt，idle 压缩有独立真实操作身份；后台最终结果独立来源，保原 call 关联。
 
 | 来源 | placement | before | current |

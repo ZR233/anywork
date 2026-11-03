@@ -136,6 +136,10 @@ pub struct ChatAtom {
     pub turn_id: Option<String>,
     pub attempt_id: Option<String>,
     pub tool: Option<ChatToolIdentity>,
+    /// Existing typed tool facts while active; never a completion payload or group state.
+    /// Terminal atoms retain the original wait facts in their frozen payload instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::ThreadWaitPresentation>,
     pub text_channel: Option<crate::ThreadTextChannel>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,

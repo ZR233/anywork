@@ -65,6 +65,7 @@ fn atom(id: &str, turn: Option<&str>, kind: ChatAtomKind, payload: PayloadData) 
         turn_id: turn.map(str::to_owned),
         attempt_id: None,
         tool: None,
+        wait: None,
         text_channel: None,
         started_at: None,
         finished_at: None,

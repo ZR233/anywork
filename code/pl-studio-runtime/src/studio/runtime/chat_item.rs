@@ -295,6 +295,9 @@ fn freeze(
         envelope["turnId"] = item.turn_id.clone().into();
     }
     let mut atom = atom(item);
+    // Frozen completions (including background handoff receipts) carry the original
+    // typed tool payload, never a duplicate of the active wait presentation.
+    atom.wait = None;
     if kind == "plan" {
         atom.kind = pl_protocol::ChatAtomKind::Plan;
     }

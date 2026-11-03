@@ -33,6 +33,7 @@ class BridgeChatAtom {
   final String? turnId;
   final String? attemptId;
   final BridgeChatToolIdentity? tool;
+  final BridgeThreadWaitPresentation? wait;
   final BridgeThreadTextChannel? textChannel;
   final PlatformInt64? startedAt;
   final PlatformInt64? finishedAt;
@@ -52,6 +53,7 @@ class BridgeChatAtom {
     this.turnId,
     this.attemptId,
     this.tool,
+    this.wait,
     this.textChannel,
     this.startedAt,
     this.finishedAt,
@@ -73,6 +75,7 @@ class BridgeChatAtom {
       turnId.hashCode ^
       attemptId.hashCode ^
       tool.hashCode ^
+      wait.hashCode ^
       textChannel.hashCode ^
       startedAt.hashCode ^
       finishedAt.hashCode ^
@@ -96,6 +99,7 @@ class BridgeChatAtom {
           turnId == other.turnId &&
           attemptId == other.attemptId &&
           tool == other.tool &&
+          wait == other.wait &&
           textChannel == other.textChannel &&
           startedAt == other.startedAt &&
           finishedAt == other.finishedAt &&

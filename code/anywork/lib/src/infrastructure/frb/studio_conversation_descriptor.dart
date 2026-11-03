@@ -99,6 +99,7 @@ ChatAtom _chatAtomFromFrb(frb_chat_types.BridgeChatAtom value) => ChatAtom(
   tool: value.tool == null
       ? null
       : ChatToolIdentity(callId: value.tool!.callId, name: value.tool!.name),
+  wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   textChannel: value.textChannel == null
       ? null
       : ThreadTextChannel.values.byName(value.textChannel!.name),

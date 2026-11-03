@@ -61,6 +61,7 @@ fn active_member_can_transition_to_terminal_but_duplicate_terminal_is_rejected()
         turn_id: None,
         attempt_id: None,
         tool: None,
+        wait: None,
         text_channel: None,
         started_at: None,
         finished_at: None,

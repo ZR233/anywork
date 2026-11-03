@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
 use pl_protocol::{
-    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatEntry,
-    ChatFactPosition, ChatPlacement, ChatScope, ChatSourceId, ChatSourceLifecycle, ChatSourceState,
-    ChatTerminalOutcome, PayloadData, ReadDemand, studio::StudioErrorCode,
+    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind,
+    ChatEntry, ChatFactPosition, ChatPlacement, ChatScope, ChatSourceId, ChatSourceLifecycle,
+    ChatSourceState, ChatTerminalOutcome, ChatToolIdentity, PayloadData, ReadDemand,
+    ThreadWaitIntent, ThreadWaitPresentation, ThreadWaitState, studio::StudioErrorCode,
 };
 
 use super::*;
@@ -144,6 +145,7 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
                 turn_id: Some("turn-a".into()),
                 attempt_id: Some("attempt-a".into()),
                 tool: None,
+                wait: None,
                 text_channel: Some(pl_protocol::ThreadTextChannel::Final),
                 started_at: None,
                 finished_at: None,
@@ -151,6 +153,40 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
                 payload: Some(PayloadData::Inline {
                     bytes: b"  body\n".to_vec(),
                 }),
+            })),
+            ChatEntry::Atom(Box::new(ChatAtom {
+                id: "active-wait".into(),
+                completion_item_id: None,
+                completion_seq: None,
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: "turn-a".into(),
+                },
+                source_state: None,
+                source_order: Some(4),
+                kind: ChatAtomKind::ToolCall,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Active {
+                    started: None,
+                    status: ChatActiveStatus::Running,
+                },
+                turn_id: Some("turn-a".into()),
+                attempt_id: Some("attempt-a".into()),
+                tool: Some(ChatToolIdentity {
+                    call_id: "wait-call".into(),
+                    name: "wait".into(),
+                }),
+                wait: Some(ThreadWaitPresentation::new(
+                    ThreadWaitIntent::Timer {
+                        duration_ms: 30_000,
+                    },
+                    ThreadWaitState::Waiting,
+                    None,
+                )),
+                text_channel: None,
+                started_at: None,
+                finished_at: None,
+                contents: Vec::new(),
+                payload: None,
             })),
             ChatEntry::Source(ChatSourceState {
                 source: ChatSourceId::ForegroundTurn {

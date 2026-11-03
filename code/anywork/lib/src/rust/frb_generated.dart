@@ -11713,8 +11713,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeChatAtom dco_decode_bridge_chat_atom(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 17)
-      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return BridgeChatAtom(
       id: dco_decode_String(arr[0]),
       completionItemId: dco_decode_opt_String(arr[1]),
@@ -11728,13 +11728,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       turnId: dco_decode_opt_String(arr[9]),
       attemptId: dco_decode_opt_String(arr[10]),
       tool: dco_decode_opt_box_autoadd_bridge_chat_tool_identity(arr[11]),
+      wait: dco_decode_opt_box_autoadd_bridge_thread_wait_presentation(arr[12]),
       textChannel: dco_decode_opt_box_autoadd_bridge_thread_text_channel(
-        arr[12],
+        arr[13],
       ),
-      startedAt: dco_decode_opt_box_autoadd_i_64(arr[13]),
-      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[14]),
-      contents: dco_decode_list_bridge_chat_atom_content(arr[15]),
-      payload: dco_decode_opt_box_autoadd_bridge_payload_data(arr[16]),
+      startedAt: dco_decode_opt_box_autoadd_i_64(arr[14]),
+      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[15]),
+      contents: dco_decode_list_bridge_chat_atom_content(arr[16]),
+      payload: dco_decode_opt_box_autoadd_bridge_payload_data(arr[17]),
     );
   }
 
@@ -24490,6 +24491,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_tool = sse_decode_opt_box_autoadd_bridge_chat_tool_identity(
       deserializer,
     );
+    var var_wait = sse_decode_opt_box_autoadd_bridge_thread_wait_presentation(
+      deserializer,
+    );
     var var_textChannel = sse_decode_opt_box_autoadd_bridge_thread_text_channel(
       deserializer,
     );
@@ -24512,6 +24516,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       turnId: var_turnId,
       attemptId: var_attemptId,
       tool: var_tool,
+      wait: var_wait,
       textChannel: var_textChannel,
       startedAt: var_startedAt,
       finishedAt: var_finishedAt,
@@ -39424,6 +39429,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.turnId, serializer);
     sse_encode_opt_String(self.attemptId, serializer);
     sse_encode_opt_box_autoadd_bridge_chat_tool_identity(self.tool, serializer);
+    sse_encode_opt_box_autoadd_bridge_thread_wait_presentation(
+      self.wait,
+      serializer,
+    );
     sse_encode_opt_box_autoadd_bridge_thread_text_channel(
       self.textChannel,
       serializer,

@@ -71,6 +71,7 @@ pub(super) fn metadata(id: &str) -> Arc<[u8]> {
         turn_id: None,
         attempt_id: None,
         tool: None,
+        wait: None,
         text_channel: None,
         started_at: None,
         finished_at: None,

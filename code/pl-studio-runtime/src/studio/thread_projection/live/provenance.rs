@@ -426,6 +426,7 @@ impl LiveProjection {
                     turn_id: turn_id.clone(),
                     attempt_id: attempt_id.clone(),
                     tool: None,
+                    wait: None,
                     text_channel: None,
                     started_at: Some(effect.committed_at),
                     finished_at: None,

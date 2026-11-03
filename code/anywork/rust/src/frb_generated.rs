@@ -10651,6 +10651,9 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatAtom {
             <Option<crate::api::studio::types::chat::BridgeChatToolIdentity>>::sse_decode(
                 deserializer,
             );
+        let mut var_wait = <Option<
+            crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation,
+        >>::sse_decode(deserializer);
         let mut var_textChannel =
             <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_decode(
                 deserializer,
@@ -10674,6 +10677,7 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatAtom {
             turn_id: var_turnId,
             attempt_id: var_attemptId,
             tool: var_tool,
+            wait: var_wait,
             text_channel: var_textChannel,
             started_at: var_startedAt,
             finished_at: var_finishedAt,
@@ -26462,6 +26466,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCh
             self.turn_id.into_into_dart().into_dart(),
             self.attempt_id.into_into_dart().into_dart(),
             self.tool.into_into_dart().into_dart(),
+            self.wait.into_into_dart().into_dart(),
             self.text_channel.into_into_dart().into_dart(),
             self.started_at.into_into_dart().into_dart(),
             self.finished_at.into_into_dart().into_dart(),
@@ -40269,6 +40274,7 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatAtom {
         <Option<crate::api::studio::types::chat::BridgeChatToolIdentity>>::sse_encode(
             self.tool, serializer,
         );
+        <Option<crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation>>::sse_encode(self.wait, serializer);
         <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_encode(
             self.text_channel,
             serializer,

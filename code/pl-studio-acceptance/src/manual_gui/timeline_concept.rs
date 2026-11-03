@@ -75,9 +75,11 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
                 .current_dir(context.workspace)
                 .args([
                     "xtask",
-                    "run-gui",
-                    "--integration-test",
-                    "integration_test/timeline_concept_test.dart",
+                    "test-project",
+                    "--suite",
+                    "desktop",
+                    "--case",
+                    "timeline_concept",
                 ])
                 .env("ANYWORK_HOME", context.home)
                 .env("ANYWORK_TIMELINE_CONCEPT_PROJECT", &project)

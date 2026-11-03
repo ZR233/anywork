@@ -29,6 +29,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'support/conversation_credit_observation.dart';
 import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_concept_images.dart';
@@ -885,6 +886,76 @@ final class _ConceptScene {
     expect(live, isEmpty);
     expect(find.byType(ConversationCurrentConnector), findsNothing);
     await capture('empty');
+    final evidence = <String, Object?>{};
+    report['conversationCredit'] = evidence;
+    Future<ConversationFeed>? opening;
+    ConversationCreditObservation? credit;
+    Object? primaryFailure;
+    try {
+      await _creditAsync(() async {
+        opening = graph.client.transport.openConversationFeed(
+          lease.threadId,
+          scope: const MainChatScope(),
+          demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
+        );
+        final feed = await opening!.timeout(
+          ConversationCreditObservation.deadline,
+        );
+        credit = ConversationCreditObservation(feed, evidence);
+        await credit!.holdInitialSet();
+      });
+      await _journeyWithCredit(project, credit!);
+    } catch (error, stack) {
+      primaryFailure = error;
+      evidence['primaryFailure'] = error.toString();
+      evidence['primaryStack'] = stack.toString();
+      rethrow;
+    } finally {
+      try {
+        await _creditAsync(() async {
+          if (opening == null) return;
+          // Retain cleanup on the opening future even if open timed out. A
+          // late handle must still close; the timeout is not cancellation.
+          Future<void> cleanup() async {
+            final feed = await opening!;
+            credit ??= ConversationCreditObservation(feed, evidence);
+            await credit!.close();
+          }
+
+          await cleanup().timeout(ConversationCreditObservation.deadline);
+        });
+      } catch (error, stack) {
+        evidence['cleanupFailure'] = error.toString();
+        evidence['cleanupStack'] = stack.toString();
+        if (primaryFailure == null) rethrow;
+        debugPrint('CREDIT_CLEANUP_ERROR\n$error\n$stack');
+      }
+    }
+  }
+
+  /// Keep native futures and their deadlines outside widget virtual time.
+  /// Capture inside runAsync so its runner error reporting cannot swallow the
+  /// failure before the journey's original-handle finally block sees it.
+  Future<void> _creditAsync(Future<void> Function() action) async {
+    Object? failure;
+    StackTrace? failureStack;
+    await tester.runAsync(() async {
+      try {
+        await action();
+      } catch (error, stack) {
+        failure = error;
+        failureStack = stack;
+      }
+    });
+    if (failure != null) {
+      Error.throwWithStackTrace(failure!, failureStack!);
+    }
+  }
+
+  Future<void> _journeyWithCredit(
+    String project,
+    ConversationCreditObservation credit,
+  ) async {
     await submit(_prompt);
     await reach(
       'thinking',
@@ -1043,6 +1114,15 @@ final class _ConceptScene {
     );
     await release('before-turn-end');
     await idle();
+    final completedTextB = main
+        .singleWhere((unit) => unit.id == b)
+        .members
+        .single;
+    await _creditAsync(() async {
+      await credit.queryCompletedText(completedTextB);
+      await credit.observeSuccessors();
+      await credit.verifyClosed(completedTextB.completionItemId!);
+    });
     final firstGroup = main.singleWhere((unit) => unit.id == g1);
     final terminalReceipt = main.singleWhere(
       (unit) =>

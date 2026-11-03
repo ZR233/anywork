@@ -137,6 +137,7 @@ final class ChatAtom {
     this.turnId,
     this.attemptId,
     this.tool,
+    this.wait,
     this.textChannel,
     this.startedAt,
     this.finishedAt,
@@ -157,6 +158,7 @@ final class ChatAtom {
   final String? turnId;
   final String? attemptId;
   final ChatToolIdentity? tool;
+  final ThreadWaitPresentationView? wait;
   final ThreadTextChannel? textChannel;
   final int? startedAt;
   final int? finishedAt;

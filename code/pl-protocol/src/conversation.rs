@@ -399,6 +399,7 @@ mod tests {
             turn_id: None,
             attempt_id: None,
             tool: None,
+            wait: None,
             text_channel: Some(crate::ThreadTextChannel::User),
             started_at: None,
             finished_at: None,

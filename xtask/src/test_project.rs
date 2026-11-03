@@ -210,6 +210,7 @@ fn desktop_harness_preset(id: &str) -> Option<&'static str> {
         "question_history" => Some("question-history"),
         "realtime_presentation" => Some("realtime-presentation"),
         "timeline_presentation" => Some("timeline-history"),
+        "timeline_concept" => Some("timeline-concept"),
         "sidebar" => Some("sidebar-query"),
         _ => None,
     }
@@ -234,6 +235,13 @@ fn desktop_env_ready(id: &str) -> bool {
             env_present("ANYWORK_TIMELINE_PHASE")
                 && env_present("ANYWORK_TIMELINE_PROJECT")
                 && env_present("ANYWORK_TIMELINE_OUTPUT")
+        }
+        "timeline_concept" => {
+            env_present("ANYWORK_HOME")
+                && env_present("ANYWORK_TIMELINE_CONCEPT_PROJECT")
+                && env_present("ANYWORK_TIMELINE_CONCEPT_OUTPUT")
+                && env_present("ANYWORK_TIMELINE_CONCEPT_PROVIDER")
+                && env_present("ANYWORK_TIMELINE_CONCEPT_EMPTY_THREAD")
         }
         "sidebar" => {
             env_present("ANYWORK_HOME")
@@ -562,6 +570,10 @@ mod tests {
         assert_eq!(
             desktop_harness_preset("timeline_presentation"),
             Some("timeline-history")
+        );
+        assert_eq!(
+            desktop_harness_preset("timeline_concept"),
+            Some("timeline-concept")
         );
         assert_eq!(desktop_harness_preset("sidebar"), Some("sidebar-query"));
         assert_eq!(desktop_harness_preset("session_open"), None);

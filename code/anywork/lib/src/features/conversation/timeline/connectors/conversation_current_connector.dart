@@ -20,6 +20,7 @@ import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/timeline_display_unit_view.dart';
 import '../widgets/timeline_tool_blocks.dart';
+import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_activity_row.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
@@ -438,7 +439,7 @@ class _LiveAtomState extends State<_LiveAtom> {
       );
     }
     if (atom.tool case final tool?) {
-      return TimelineToolDetails(
+      final details = TimelineToolDetails(
         item: TimelineToolPresentation(
           id: atom.id,
           toolCallId: tool.callId,
@@ -459,6 +460,14 @@ class _LiveAtomState extends State<_LiveAtom> {
         onExpansionChanged: _expandTool,
         declaredContents: [_windows()],
       );
+      return atom.wait == null
+          ? details
+          : TimelineWaitPanel(
+              identity: atom.id,
+              presentation: atom.wait!,
+              diagnostics: details,
+              onExpansionChanged: _expandTool,
+            );
     }
     if (atom.kind == ChatAtomKind.toolCall) {
       return TimelineActivityDisclosure(

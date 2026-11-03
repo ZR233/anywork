@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/view_models/timeline_
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
@@ -41,6 +42,8 @@ ChatAtom _atom(
   ChatAtomKind kind = ChatAtomKind.reasoning,
   ContentRef? reference,
   PayloadData? payload,
+  ChatToolIdentity? tool,
+  ThreadWaitPresentationView? wait,
 }) => ChatAtom(
   id: id,
   source: _source,
@@ -48,6 +51,8 @@ ChatAtom _atom(
   kind: kind,
   delivery: ChatDeliveryKind.foreground,
   payload: payload,
+  tool: tool,
+  wait: wait,
   lifecycle: const ActiveChatAtom(
     started: null,
     status: ChatActiveStatus.running,
@@ -637,6 +642,74 @@ void main() {
       h.dispose();
     },
   );
+  testWidgets(
+    'active typed wait uses its real atom without a payload or hidden content read',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      const tool = ChatToolIdentity(callId: 'wait-call', name: 'wait');
+      final waiting = ThreadWaitPresentationView(
+        intent: ThreadWaitEventsIntentView(
+          targets: const [
+            ThreadWaitTargetView(
+              taskId: 'task:timer',
+              toolName: 'sleep',
+              status: ThreadWaitTargetStatusView.running,
+            ),
+          ],
+          timeoutMs: 120000,
+        ),
+        state: ThreadWaitStateView.waiting,
+      );
+      await h.accept([
+        _atom('wait-atom', 1, kind: ChatAtomKind.toolCall, tool: tool),
+      ]);
+      await tester.pumpWidget(h.host());
+      // A tool name and generic running lifecycle cannot manufacture Waiting.
+      expect(find.byType(TimelineWaitPanel), findsNothing);
+      expect(h.content.scopes, isEmpty);
+      final unitId = h.presentation.live.value.single.id;
+      await h.accept([
+        _atom(
+          'wait-atom',
+          1,
+          kind: ChatAtomKind.toolCall,
+          tool: tool,
+          wait: waiting,
+        ),
+      ]);
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      expect(h.presentation.live.value.single.id, unitId);
+      final panel = find.byType(TimelineWaitPanel);
+      expect(panel, findsOneWidget);
+      final widget = tester.widget<TimelineWaitPanel>(panel);
+      expect(widget.identity, 'wait-atom');
+      expect(widget.presentation, same(waiting));
+      final atom = h.presentation.live.value.single.members.single;
+      expect(atom.payload, isNull);
+      expect(atom.lifecycle, isA<ActiveChatAtom>());
+      expect(atom.tool!.callId, 'wait-call');
+      expect(h.content.scopes, isEmpty);
+      final title = find.descendant(
+        of: panel,
+        matching: find.byType(TimelineActivityRow),
+      );
+      expect(title, findsOneWidget);
+      final label = find.descendant(
+        of: title,
+        matching: find.text(tester.widget<TimelineActivityRow>(title).label),
+      );
+      expect(label.hitTestable(), findsOneWidget);
+      await tester.tap(label);
+      await _flush(tester);
+      expect(find.byType(TimelineWaitDetails), findsOneWidget);
+      expect(h.content.scopes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+    },
+  );
+
   testWidgets(
     'typed live tool observes only its declared body after explicit expansion and cancels on fold',
     (tester) async {
