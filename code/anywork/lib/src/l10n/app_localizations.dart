@@ -809,7 +809,7 @@ abstract class AppLocalizations {
   /// No description provided for @sidebarArchiveSessionConfirmBody.
   ///
   /// In en, this message translates to:
-  /// **'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?'**
+  /// **'Archiving stops this session and its child sessions, removes their dedicated worktrees including uncommitted content, and clears temporary files. Conversation history and attachments are kept.'**
   String get sidebarArchiveSessionConfirmBody;
 
   /// No description provided for @sidebarArchiveSessionConfirmAction.
@@ -817,6 +817,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Archive'**
   String get sidebarArchiveSessionConfirmAction;
+
+  /// No description provided for @sidebarDeleteSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete session'**
+  String get sidebarDeleteSession;
+
+  /// No description provided for @sidebarDeleteSessionConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Permanently delete “{title}” and all its child sessions?'**
+  String sidebarDeleteSessionConfirmTitle(String title);
+
+  /// No description provided for @sidebarDeleteSessionConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This permanently deletes the tree’s chat history, attachments and resources, notes and plans, reports and evaluations, call statistics, temporary files, artifacts, and dedicated worktree. This cannot be undone. The ordinary project directory is not affected.'**
+  String get sidebarDeleteSessionConfirmBody;
+
+  /// No description provided for @sidebarDeleteSessionConfirmAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete permanently'**
+  String get sidebarDeleteSessionConfirmAction;
 
   /// No description provided for @sidebarRenameSession.
   ///

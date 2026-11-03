@@ -47,7 +47,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["docs_policy"])
         self.assertFalse(any(plan[name] for name in (
             "rust_checks", "linux_environment", "flutter_checks", "gui_generated",
-            "linux_tools", "remote_helpers", "linux_desktop", "linux_native",
+            "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
             "windows_build", "macos_build",
         )))
         self.assertEqual(
@@ -62,7 +62,7 @@ class PlanFromPathsTest(unittest.TestCase):
     def test_rust_only_requires_native_platform_checks_and_builds(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="pull_request")
         for flag in (
-            "rust_checks", "linux_environment", "linux_tools",
+            "rust_checks", "linux_environment", "linux_inputs",
             "remote_helpers", "windows_build", "macos_build",
         ):
             self.assertTrue(plan[flag], flag)
@@ -74,7 +74,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["docs_policy"])
         self.assertEqual(set(plan["required_jobs"]), {
             "changes", "pr-title", "rust-checks", "linux-environment",
-            "linux-tools", "remote-helpers", "windows-build", "macos-build",
+            "linux-inputs", "windows-build", "macos-build",
         })
 
     def test_ui_only_selects_flutter_and_its_container_without_rust_jobs(self):
@@ -85,7 +85,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["flutter_checks"])
         self.assertFalse(plan["rust_checks"])
         self.assertTrue(plan["linux_environment"])
-        self.assertFalse(plan["linux_tools"])
+        self.assertFalse(plan["linux_inputs"])
         self.assertFalse(plan["remote_helpers"])
         self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["linux_native"])
@@ -128,7 +128,7 @@ class PlanFromPathsTest(unittest.TestCase):
         )
         for name in (
             "flutter_checks", "gui_generated", "linux_desktop", "linux_native",
-            "windows_build", "macos_build", "remote_helpers", "linux_tools",
+            "windows_build", "macos_build", "remote_helpers", "linux_inputs",
             "linux_environment",
         ):
             self.assertTrue(bridge[name], name)
@@ -136,9 +136,8 @@ class PlanFromPathsTest(unittest.TestCase):
             set(bridge["required_jobs"]),
             {
                 "changes", "pr-title", "flutter-checks", "gui-generated",
-                "linux-environment", "linux-tools", "remote-helpers",
-                "windows-build", "macos-build", "linux-environment",
-                "linux-integration",
+                "linux-environment", "linux-inputs", "windows-build",
+                "macos-build", "linux-desktop", "linux-native",
             },
         )
         rust_bridge = plan_from_paths(
@@ -164,6 +163,8 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(native["macos_build"])
         self.assertFalse(native["linux_desktop"])
         self.assertFalse(native["gui_generated"])
+        self.assertIn("linux-native", native["required_jobs"])
+        self.assertNotIn("linux-desktop", native["required_jobs"])
 
     def test_production_bridge_composition_uses_bridge_checks(self):
         for path in (
@@ -175,10 +176,13 @@ class PlanFromPathsTest(unittest.TestCase):
                 for flag in (
                     "flutter_checks", "gui_generated", "linux_desktop",
                     "linux_native", "windows_build", "macos_build",
-                    "linux_tools", "remote_helpers", "linux_environment",
+                    "linux_inputs", "remote_helpers", "linux_environment",
                 ):
                     self.assertTrue(plan[flag], flag)
-                self.assertIn("linux-integration", plan["required_jobs"])
+                self.assertIn("linux-inputs", plan["required_jobs"])
+                self.assertNotIn("remote-helpers", plan["required_jobs"])
+                self.assertIn("linux-desktop", plan["required_jobs"])
+                self.assertIn("linux-native", plan["required_jobs"])
                 self.assertIn("gui-generated", plan["required_jobs"])
                 self.assertFalse(plan["rust_checks"])
 
@@ -206,7 +210,7 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(all(plan[name] for name in (
                 "docs_policy", "release_configuration", "rust_checks",
                 "linux_environment", "flutter_checks", "gui_generated",
-                "linux_tools", "remote_helpers", "linux_desktop", "linux_native",
+                "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
                 "windows_build", "macos_build",
             )), path)
 
@@ -219,10 +223,12 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(all(plan[name] for name in plan if name in {
                 "docs_policy", "release_configuration", "rust_checks",
                 "linux_environment", "flutter_checks", "gui_generated",
-                "linux_tools", "remote_helpers", "linux_desktop", "linux_native",
+                "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
                 "windows_build", "macos_build",
             }))
             self.assertIn("pr-title", plan["required_jobs"])
+            for removed in ("remote-helpers", "linux-tools", "linux-integration"):
+                self.assertNotIn(removed, plan["required_jobs"])
 
     def test_mixed_docs_and_rust_keeps_docs_policy(self):
         plan = plan_from_paths(
@@ -243,8 +249,6 @@ class PlanFromPathsTest(unittest.TestCase):
         text = buffer.getvalue()
         self.assertIn("docs_policy=true\n", text)
         self.assertIn("rust_checks=false\n", text)
-        self.assertNotIn("flutter_ui=", text)
-        self.assertNotIn("rust_quality=", text)
         self.assertIn("required_jobs=changes,docs-policy\n", text)
 
     def test_host_lifecycle_native_scope_excludes_desktop_and_generation(self):

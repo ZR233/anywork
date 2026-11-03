@@ -124,6 +124,12 @@ pub(crate) struct TestProjectOptions {
     /// Run or list one case. The id names the target and its environment, not assertions.
     #[arg(long, value_name = "ID")]
     pub(crate) case: Option<String>,
+    /// Zero-based shard of the sorted, selected suite. Empty shards fail.
+    #[arg(long, requires = "shard_count", conflicts_with = "case")]
+    pub(crate) shard_index: Option<usize>,
+    /// Number of disjoint shards, used with --shard-index.
+    #[arg(long, requires = "shard_index", conflicts_with = "case")]
+    pub(crate) shard_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

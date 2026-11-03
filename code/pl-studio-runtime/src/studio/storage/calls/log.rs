@@ -341,6 +341,50 @@ impl CallLog {
     }
 
     /// Rebuilds the disposable locator index from complete retained records after a crash.
+    pub(super) async fn delete_threads(&mut self, ids: &BTreeSet<String>) -> Result<()> {
+        self.sync_pending().await?;
+        self.current.take();
+        let mut segments = list_segments(&self.dir).await?;
+        segments.sort_by_key(|segment| (segment.day, segment.seq));
+        for segment in segments {
+            ensure!(
+                segment.len <= SEGMENT_MAX_BYTES,
+                "oversized diagnostic segment"
+            );
+            let path = self.dir.join(&segment.name);
+            let bytes = tokio::fs::read(&path).await?;
+            let mut retained = Vec::with_capacity(bytes.len());
+            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                ensure!(
+                    line.last() == Some(&b'\n'),
+                    "incomplete call record during permanent deletion"
+                );
+                let record = event::decode_record(std::str::from_utf8(&line[..line.len() - 1])?)?;
+                if !ids.contains(&record.thread_id)
+                    && !record
+                        .root_thread_id
+                        .as_ref()
+                        .is_some_and(|id| ids.contains(id))
+                {
+                    retained.extend_from_slice(line);
+                }
+            }
+            if retained != bytes {
+                tokio::task::spawn_blocking(move || {
+                    pl_tool::workspace::write_file_atomically(&path, &retained)
+                })
+                .await??;
+            }
+        }
+        self.total_bytes = list_segments(&self.dir)
+            .await?
+            .iter()
+            .map(|segment| segment.len)
+            .sum();
+        Ok(())
+    }
+
+    /// Rebuilds the disposable locator index from complete retained records after a crash.
     pub(super) async fn rebuild_index(&self, db: &DatabaseConnection) -> Result<()> {
         let mut segments = list_segments(&self.dir).await?;
         segments.sort_by_key(|segment| (segment.day, segment.seq));

@@ -89,6 +89,19 @@ impl BotArchiveTestHost {
         self.runtime.bots.clone()
     }
 
+    pub(crate) async fn restart(&self) -> Result<Self> {
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            studio_home: Some(self.runtime.store.paths().home().to_owned()),
+            host: StudioHostKind::Test,
+            ..StudioRuntimeOptions::desktop()
+        })
+        .await?;
+        Ok(Self {
+            runtime: Arc::new(runtime),
+            _endpoint: self._endpoint.try_clone()?,
+        })
+    }
+
     pub(crate) fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         &self.runtime.lifecycle_lock
     }
@@ -119,6 +132,7 @@ impl BotArchiveTestHost {
                 revision: 1,
                 members: Vec::new(),
                 private_members: Vec::new(),
+                worktrees: Vec::new(),
                 phase: ArchivePhase::Sealed,
             })
             .await

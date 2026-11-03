@@ -410,10 +410,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?';
+      'Archiving stops this session and its child sessions, removes their dedicated worktrees including uncommitted content, and clears temporary files. Conversation history and attachments are kept.';
 
   @override
   String get sidebarArchiveSessionConfirmAction => 'Archive';
+
+  @override
+  String get sidebarDeleteSession => 'Delete session';
+
+  @override
+  String sidebarDeleteSessionConfirmTitle(String title) {
+    return 'Permanently delete “$title” and all its child sessions?';
+  }
+
+  @override
+  String get sidebarDeleteSessionConfirmBody =>
+      'This permanently deletes the tree’s chat history, attachments and resources, notes and plans, reports and evaluations, call statistics, temporary files, artifacts, and dedicated worktree. This cannot be undone. The ordinary project directory is not affected.';
+
+  @override
+  String get sidebarDeleteSessionConfirmAction => 'Delete permanently';
 
   @override
   String get sidebarRenameSession => 'Rename session';

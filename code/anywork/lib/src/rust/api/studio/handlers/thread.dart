@@ -55,6 +55,18 @@ Future<BridgeArchiveThreadCommandReply> archiveThread({
   threadId: threadId,
 );
 
+/// Permanently deletes a root Thread and its descendants.
+///
+/// A missing root with no outstanding deletion responsibility is an idempotent
+/// no-op and returns `None`.
+Future<BridgeDeleteThreadCommandReply?> deleteThread({
+  required String operationId,
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersThreadDeleteThread(
+  operationId: operationId,
+  threadId: threadId,
+);
+
 /// Forces one idle context compaction through the canonical Thread owner.
 Future<void> compactThread({required String threadId}) => RustLib.instance.api
     .crateApiStudioHandlersThreadCompactThread(threadId: threadId);

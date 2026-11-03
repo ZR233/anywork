@@ -145,7 +145,7 @@ impl ConversationReader {
         epoch: u64,
         resources: ReadResources,
     ) -> Self {
-        Self {
+        let reader = Self {
             inner: Arc::new(ReadLease {
                 projection_generation: resources.projection_generation.clone(),
                 generation: resources.history.timeline_generation_changes(),
@@ -161,7 +161,9 @@ impl ConversationReader {
                 resync: AtomicBool::new(false),
                 resources: RwLock::new(Some(resources)),
             }),
-        }
+        };
+        reader.inner.slot.register_reader(&reader);
+        reader
     }
     pub fn thread_id(&self) -> &str {
         &self.inner.thread_id

@@ -16,9 +16,9 @@ KNOWN_JOBS = (
     "linux-environment",
     "flutter-checks",
     "gui-generated",
-    "linux-tools",
-    "remote-helpers",
-    "linux-integration",
+    "linux-inputs",
+    "linux-desktop",
+    "linux-native",
     "windows-build",
     "macos-build",
 )

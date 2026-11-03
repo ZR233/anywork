@@ -10,9 +10,10 @@ use crate::api::studio::convert::{
     thread_stream::{bridge_thread, runtime_snapshot},
 };
 use crate::api::studio::types::{
-    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError, BridgeNewThreadStartEvent,
-    BridgeRenameThreadCommandReply, BridgeStartNewThreadRequest, BridgeThread,
-    BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply, StartNewThreadResponse,
+    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeDeleteThreadCommandReply,
+    BridgeError, BridgeNewThreadStartEvent, BridgeRenameThreadCommandReply,
+    BridgeStartNewThreadRequest, BridgeThread, BridgeThreadModeCommandReply,
+    BridgeThreadModelRouteCommandReply, DeleteThreadResult, StartNewThreadResponse,
     SubmitPromptResponse,
 };
 use pl_studio_runtime::ThreadModeId;
@@ -141,6 +142,30 @@ pub async fn archive_thread(
         },
         receipt: command_receipt(archived.receipt),
     })
+}
+
+/// Permanently deletes a root Thread and its descendants.
+///
+/// A missing root with no outstanding deletion responsibility is an idempotent
+/// no-op and returns `None`.
+pub async fn delete_thread(
+    operation_id: String,
+    thread_id: String,
+) -> Result<Option<BridgeDeleteThreadCommandReply>, BridgeError> {
+    let bridge = active_bridge().await?;
+    let deleted = bridge.studio.delete_thread(operation_id, thread_id).await?;
+    Ok(deleted.map(|deleted| BridgeDeleteThreadCommandReply {
+        result: DeleteThreadResult {
+            deleted_root_id: deleted.result.deleted_root_id,
+            deleted_thread_ids: deleted.result.deleted_thread_ids,
+            next_root: deleted
+                .result
+                .next_root
+                .map(thread_from_record)
+                .map(bridge_thread),
+        },
+        receipt: command_receipt(deleted.receipt),
+    }))
 }
 
 /// Forces one idle context compaction through the canonical Thread owner.

@@ -105,6 +105,10 @@ struct PersistenceQueuePublication {
 }
 
 impl ProductEventBus {
+    pub(in crate::studio) async fn drain_directory_writes(&self) -> anyhow::Result<()> {
+        self.writer.flush().await?;
+        Ok(())
+    }
     /// Registers before the caller reads a baseline. Only source changes are retained, not frames.
     pub(crate) fn subscribe_topic_signal(
         &self,

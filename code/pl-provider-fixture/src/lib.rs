@@ -151,10 +151,9 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the operator runbook. `--delegation-driver`
 /// only records an optional script path in evidence; the harness does not launch it.
-pub const GUI_SCENARIOS: [&str; 34] = [
+pub const GUI_SCENARIOS: [&str; 33] = [
     "gui",
     "markdown-layout",
-    "single-instance",
     "storage-compaction",
     "skill-activity",
     "stress",
@@ -2339,8 +2338,8 @@ pub fn gui_script() -> Vec<Step> {
     ]
 }
 
-/// One paced turn for native single-instance and hidden-window observation.
-pub fn gui_single_instance_script() -> Vec<Step> {
+/// One paced turn shared by the stress fixture's sessions.
+fn gui_paced_turn_script() -> Vec<Step> {
     let mut steps = gui_script();
     for step in &mut steps {
         if matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_PROMPT) {
@@ -2360,7 +2359,7 @@ pub fn gui_single_instance_script() -> Vec<Step> {
 }
 
 pub fn gui_stress_script() -> Vec<Step> {
-    let mut steps = gui_single_instance_script();
+    let mut steps = gui_paced_turn_script();
     for ordinal in 1..=GUI_STRESS_SESSION_COUNT {
         let prompt = format!("{GUI_STRESS_FOLLOWUP_PROMPT_PREFIX} {ordinal}");
         let title_prompt = session_title_prompt(&prompt);

@@ -158,8 +158,19 @@
     }
   },
   "sidebarArchiveSessionConfirmTitle": "Archive session",
-  "sidebarArchiveSessionConfirmBody": "Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?",
+  "sidebarArchiveSessionConfirmBody": "Archiving stops this session and its child sessions, removes their dedicated worktrees including uncommitted content, and clears temporary files. Conversation history and attachments are kept.",
   "sidebarArchiveSessionConfirmAction": "Archive",
+  "sidebarDeleteSession": "Delete session",
+  "sidebarDeleteSessionConfirmTitle": "Permanently delete “{title}” and all its child sessions?",
+  "@sidebarDeleteSessionConfirmTitle": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "sidebarDeleteSessionConfirmBody": "This permanently deletes the tree’s chat history, attachments and resources, notes and plans, reports and evaluations, call statistics, temporary files, artifacts, and dedicated worktree. This cannot be undone. The ordinary project directory is not affected.",
+  "sidebarDeleteSessionConfirmAction": "Delete permanently",
   "sidebarRenameSession": "Rename session",
   "sidebarRenameSessionTitle": "Rename session",
   "sidebarRenameSessionInput": "Session title",

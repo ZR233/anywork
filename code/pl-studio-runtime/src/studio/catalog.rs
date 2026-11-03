@@ -245,6 +245,16 @@ impl CatalogStore {
         .await
     }
 
+    pub(in crate::studio) async fn delete(&self, ids: &[String]) -> Result<()> {
+        let ids = ids.to_owned();
+        self.mutate(move |document| {
+            let before = document.entries.len();
+            document.entries.retain(|entry| !ids.contains(&entry.id));
+            before != document.entries.len()
+        })
+        .await
+    }
+
     pub(in crate::studio) async fn project_explicit_close(&self, id: &str) -> Result<()> {
         ensure!(
             self.get(id)

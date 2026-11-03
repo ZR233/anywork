@@ -1,4 +1,4 @@
-use super::response::{ArchiveThreadResult, BridgeSettingsStateResponse};
+use super::response::{ArchiveThreadResult, BridgeSettingsStateResponse, DeleteThreadResult};
 use super::thread_stream::{BridgeInteractionRequest, BridgeThread, BridgeThreadRuntimeSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +61,12 @@ pub struct BridgeRenameThreadCommandReply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeArchiveThreadCommandReply {
     pub result: ArchiveThreadResult,
+    pub receipt: BridgeStudioCommandReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeDeleteThreadCommandReply {
+    pub result: DeleteThreadResult,
     pub receipt: BridgeStudioCommandReceipt,
 }
 
