@@ -238,6 +238,10 @@ jobs:
             cargo fmt --all --check
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
+            # Library tests run outside the Flutter bundle and need the
+            # current-source stdio supervisor on this container's PATH.
+            cargo install --locked --path code/pl-remote-helper --root "$HOME/.quality-tools" --force
+            export PATH="$HOME/.quality-tools/bin:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
             cargo build --locked -p pl-studio-server
           '
