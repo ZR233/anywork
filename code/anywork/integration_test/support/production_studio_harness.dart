@@ -279,7 +279,7 @@ final class ProductionStudioScene {
     if (boundary == null || boundary.debugNeedsPaint) {
       throw StateError('Production Studio capture boundary is not painted');
     }
-    final view = ui.PlatformDispatcher.instance.views.single;
+    final view = tester.view;
     final rendered = await boundary.toImage(pixelRatio: view.devicePixelRatio);
     final data = await rendered.toByteData(format: ui.ImageByteFormat.png);
     rendered.dispose();

@@ -557,13 +557,47 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 100));
 
+      final statusSlot = find.byKey(ValueKey('thread-status-slot-${root.id}'));
       expect(
         find.descendant(
-          of: rootRow,
+          of: statusSlot,
           matching: find.byType(CircularProgressIndicator),
         ),
         findsOneWidget,
-        reason: 'canonical running state keeps its activity badge',
+        reason: 'canonical running state renders its activity badge in the leading status slot',
+      );
+      final projectIconRect = tester.getRect(
+        find.descendant(
+          of: projectRow,
+          matching: find.byIcon(Icons.folder_outlined),
+        ),
+      );
+      final statusSlotRect = tester.getRect(statusSlot);
+      expect(
+        statusSlotRect.left,
+        closeTo(projectIconRect.left, 0.5),
+        reason: 'session status slot aligns vertically with the project icon',
+      );
+      expect(
+        statusSlotRect.center.dx,
+        closeTo(projectIconRect.center.dx, 0.5),
+        reason: 'session status icon center aligns vertically with the project icon center',
+      );
+      final projectTitleRect = tester.getRect(
+        find.descendant(of: projectRow, matching: find.byType(Text)).first,
+      );
+      final rootTitleRect = tester.getRect(
+        find.descendant(of: rootRow, matching: find.text(root.title)),
+      );
+      expect(
+        rootTitleRect.left,
+        closeTo(projectTitleRect.left, 0.5),
+        reason: 'session title left edge aligns vertically with project name',
+      );
+      expect(
+        statusSlotRect.right,
+        lessThanOrEqualTo(rootTitleRect.left),
+        reason: 'session status icon sits in front of the session title',
       );
       expect(
         find.descendant(of: rootRow, matching: find.byIcon(Icons.info_outline)),
