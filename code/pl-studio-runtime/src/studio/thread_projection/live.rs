@@ -500,6 +500,29 @@ fn timeline_payload(
     }
 }
 
+/// Persisted item form: no transient member ids and no second body copy.
+fn stored_timeline_item(
+    database_id: &str,
+    item: &pl_protocol::TimelineItem,
+) -> pl_protocol::TimelineItem {
+    let mut stored = item.clone();
+    stored.current_members.clear();
+    if let Some(pl_protocol::PayloadData::Inline { bytes }) = &item.payload {
+        let target = item
+            .content_item_id
+            .clone()
+            .unwrap_or_else(|| item.id.clone());
+        stored.payload = Some(pl_protocol::PayloadData::Deferred {
+            reference: pl_protocol::ContentRef {
+                database_id: database_id.into(),
+                target: pl_protocol::ContentTarget::ItemPayload { item_id: target },
+            },
+            byte_length: bytes.len() as u64,
+        });
+    }
+    stored
+}
+
 fn completion_bytes(id: &str, payload: &[u8], contents: &pl_core::chat::ChatContents) -> u64 {
     contents.iter().fold(
         (id.len() as u64).saturating_add(payload.len() as u64),
@@ -1281,6 +1304,8 @@ pub(in crate::studio) struct LiveProjection {
     /// Single Studio Timeline display projection. Live effects, restart recovery
     /// and derived-data rebuild all run this same fold.
     timeline: Option<super::TimelineProjection>,
+    /// Whether the item order cursor was restored from the derived store.
+    timeline_position_restored: bool,
 }
 
 impl LiveProjection {
@@ -1309,6 +1334,7 @@ impl LiveProjection {
             current: Default::default(),
             main_through: 0,
             timeline: None,
+            timeline_position_restored: false,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1339,6 +1365,25 @@ impl LiveProjection {
             .bind(database_id)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.ensure_timeline_owner();
+        Ok(())
+    }
+
+    async fn ensure_timeline_position(&mut self) -> Result<(), ProjectionError> {
+        if self.timeline_position_restored {
+            return Ok(());
+        }
+        self.ensure_timeline_owner();
+        if let (Some(timeline), Some(history)) =
+            (self.timeline.as_mut(), self.execution_history.as_ref())
+        {
+            timeline.set_next_position(
+                history
+                    .timeline_next_position()
+                    .await
+                    .map_err(|error| ProjectionError::History(error.to_string()))?,
+            );
+        }
+        self.timeline_position_restored = true;
         Ok(())
     }
 
@@ -1411,27 +1456,15 @@ impl LiveProjection {
             .map_err(|error| ProjectionError::History(error.to_string()))
     }
 
-    /// Runs the one Timeline fold over this effect's current facts and frozen
-    /// completions. Returns the items that became history in this effect.
-    fn advance_timeline(
-        &mut self,
-        drafts: &[ChatDraft],
-        current: &pl_protocol::CurrentProjection,
-    ) -> Result<Vec<pl_protocol::TimelineItem>, ProjectionError> {
+    /// Observes this effect's current facts. Completion folding is deferred to
+    /// publication so no history read happens before the batch is charged.
+    fn sync_timeline_current(&mut self, current: &pl_protocol::CurrentProjection) {
         self.ensure_timeline_owner();
-        let timeline = self.timeline.as_mut().ok_or_else(|| {
-            ProjectionError::History("timeline projection has no database identity".into())
-        })?;
+        let Some(timeline) = self.timeline.as_mut() else {
+            return;
+        };
         for atom in &current.atoms {
             timeline.observe(atom, None);
-        }
-        for draft in drafts {
-            let atom: pl_protocol::ChatAtom =
-                serde_json::from_slice(&draft.metadata).map_err(|error| {
-                    ProjectionError::History(format!("invalid frozen timeline atom: {error}"))
-                })?;
-            let payload = timeline_payload(timeline.database_id(), &atom, &draft.payload);
-            timeline.complete(atom, 0, Some(payload));
         }
         for state in &current.sources {
             if matches!(
@@ -1441,8 +1474,73 @@ impl LiveProjection {
                 timeline.end_source(&state.source);
             }
         }
+    }
+
+    /// Drains the items this fold step proved ready, in history order, together
+    /// with their bounded persisted form.
+    fn drain_timeline(
+        &mut self,
+    ) -> Result<
+        (
+            Vec<pl_protocol::TimelineItem>,
+            Arc<[crate::studio::storage::history::conversation::current::PreparedTimelineItem]>,
+        ),
+        ProjectionError,
+    > {
+        self.ensure_timeline_owner();
+        let Some(timeline) = self.timeline.as_mut() else {
+            return Ok((Vec::new(), Arc::from([])));
+        };
         timeline.commit_ready();
-        Ok(timeline.take_committed())
+        let database_id = timeline.database_id().to_owned();
+        let committed = timeline.take_committed();
+        let members = timeline.take_committed_members();
+        let prepared: Vec<_> = committed
+            .iter()
+            .map(|item| crate::studio::storage::history::conversation::current::PreparedTimelineItem {
+                item: stored_timeline_item(&database_id, item),
+                members: members
+                    .get(&item.id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(member_id, completion_item_id)| {
+                        crate::studio::storage::history::conversation::current::PreparedTimelineMember {
+                            member_id,
+                            completion_item_id,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok((committed, prepared.into()))
+    }
+
+    fn current_timeline_items(&self) -> Vec<pl_protocol::TimelineItem> {
+        self.timeline
+            .as_ref()
+            .map(super::TimelineProjection::current_items)
+            .unwrap_or_default()
+    }
+
+    /// Folds the completions this effect actually published. Drafts that were
+    /// already durable are filtered before this call, so a replayed effect never
+    /// creates a second display item.
+    fn publish_timeline(&mut self, records: &[Arc<ChatItem>]) -> Result<(), ProjectionError> {
+        self.ensure_timeline_owner();
+        let Some(timeline) = self.timeline.as_mut() else {
+            return Ok(());
+        };
+        let database_id = timeline.database_id().to_owned();
+        for record in records {
+            let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)
+                .map_err(|error| {
+                    ProjectionError::History(format!("invalid published timeline atom: {error}"))
+                })?;
+            let payload = timeline_payload(&database_id, &atom, &record.payload);
+            timeline.complete(atom, record.header.append_seq, Some(payload));
+        }
+        Ok(())
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -1613,6 +1711,7 @@ impl LiveProjection {
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         self.ensure_database_identity().await?;
+        self.ensure_timeline_position().await?;
         let current_before = self.current_before(thread);
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
@@ -1625,12 +1724,10 @@ impl LiveProjection {
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
-        let timeline = self.advance_timeline(&completion_drafts, &current.projection)?;
-        let live_items = self
-            .timeline
-            .as_ref()
-            .map(super::TimelineProjection::current_items)
-            .unwrap_or_default();
+        self.sync_timeline_current(&current.projection);
+        let (timeline, prepared_timeline) = self.drain_timeline()?;
+        Arc::make_mut(&mut current).timeline = prepared_timeline;
+        let live_items = self.current_timeline_items();
         Arc::make_mut(&mut current).projection.items = live_items.clone();
         let current_state = super::CurrentState::with_items(current_state, live_items);
         let prepared = Arc::new(PreparedEffect {
@@ -1684,6 +1781,7 @@ impl LiveProjection {
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.ensure_database_identity().await?;
+        self.ensure_timeline_position().await?;
         let current_before = self.current_before(thread);
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
@@ -1693,12 +1791,10 @@ impl LiveProjection {
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
-        let timeline = self.advance_timeline(&completion_drafts, &current.projection)?;
-        let live_items = self
-            .timeline
-            .as_ref()
-            .map(super::TimelineProjection::current_items)
-            .unwrap_or_default();
+        self.sync_timeline_current(&current.projection);
+        let (timeline, prepared_timeline) = self.drain_timeline()?;
+        Arc::make_mut(&mut current).timeline = prepared_timeline;
+        let live_items = self.current_timeline_items();
         Arc::make_mut(&mut current).projection.items = live_items.clone();
         let current_state = super::CurrentState::with_items(current_state, live_items);
         let prepared = Arc::new(PreparedEffect {
@@ -2131,7 +2227,7 @@ impl LiveProjection {
             self.order_index_of()?
                 .mark_completion(&record.header.item_id, true);
         }
-        let handoff = prepared.current_handoff.as_ref().ok_or_else(|| {
+        let handoff = prepared.current_handoff.clone().ok_or_else(|| {
             ProjectionError::History("prepared completion has no current handoff".into())
         })?;
         let main_through = records
@@ -2168,14 +2264,40 @@ impl LiveProjection {
                     })
             })
             .collect::<Vec<_>>();
+        // The Timeline fold sees only the completions this publication really
+        // produced, and runs after the batch was charged to the reliable queue.
+        self.publish_timeline(&records)?;
+        let (extra_live, extra_stored) = self.drain_timeline()?;
+        let mut current_after = prepared.current.as_ref().clone();
+        if !extra_stored.is_empty() {
+            let mut timeline: Vec<_> = current_after.timeline.iter().cloned().collect();
+            timeline.extend(extra_stored.iter().cloned());
+            current_after.timeline = timeline.into();
+        }
+        if !current_after.timeline.is_empty() {
+            current_after.timeline_commit = main_through;
+        }
+        let mut live_items = current_after.projection.items.clone();
+        if !extra_live.is_empty() {
+            live_items = self.current_timeline_items();
+            current_after.projection.items = live_items.clone();
+        }
+        let after = Arc::new(current_after.projection.clone());
         let handoff = Arc::new(super::CurrentHandoff {
             main_through,
             before: handoff.before.clone(),
-            after: handoff.after.clone(),
+            after,
             retirements: retirements.into(),
             entries: handoff.entries.clone(),
         });
         let prepared = Arc::make_mut(prepared);
+        if !extra_live.is_empty() {
+            prepared.timeline.extend(extra_live);
+        }
+        if let Some(state) = prepared.current_state.take() {
+            prepared.current_state = Some(super::CurrentState::with_items(state, live_items));
+        }
+        prepared.current = Arc::new(current_after);
         prepared.completions = records;
         prepared.completion_drafts = None;
         prepared.current_handoff = Some(handoff);

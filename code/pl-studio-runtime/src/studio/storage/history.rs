@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 14;
+const HISTORY_SCHEMA_VERSION: i64 = 15;
 
 pub(in crate::studio) mod conversation;
 
@@ -643,15 +643,14 @@ impl HistoryStore {
             current_view.projection.source_effect_seq == write_seq,
             "current projection is not frozen from this effect"
         );
-        conversation::current::validate_database(
-            &current_view.projection,
-            &self
-                .state
-                .writer
-                .get()
-                .context("effect transaction has no writer identity")?
-                .database_id,
-        )?;
+        let database_id = self
+            .state
+            .writer
+            .get()
+            .context("effect transaction has no writer identity")?
+            .database_id
+            .clone();
+        conversation::current::validate_database(&current_view.projection, &database_id)?;
         let write_seq = integer(write_seq)?;
         let (current, prior_context) = if checkpoint.is_some() {
             let head = checkpoint::read_commit_head(tx).await?;
@@ -671,6 +670,7 @@ impl HistoryStore {
                 )
                 .await?;
             }
+            conversation::timeline::verify(tx, &database_id, current_view).await?;
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
             }
@@ -694,6 +694,7 @@ impl HistoryStore {
         }
         conversation::append_records(tx, completions.iter().map(AsRef::as_ref), true).await?;
         conversation::current::apply(tx, u64::try_from(write_seq)?, current_view).await?;
+        conversation::timeline::apply(tx, &database_id, current_view).await?;
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
@@ -1430,6 +1431,17 @@ impl HistoryStore {
         let current = conversation::current::read(&tx).await?;
         tx.commit().await?;
         Ok(Some(current))
+    }
+
+    /// Next free Timeline item order from the derived projection state.
+    pub(crate) async fn timeline_next_position(&self) -> Result<u64> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(0);
+        };
+        let tx = connection.db.begin().await?;
+        let next = conversation::timeline::next_position(&tx).await?;
+        tx.commit().await?;
+        Ok(next)
     }
 
     /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
@@ -2834,7 +2846,10 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         ensure!(count == 0, "legacy fixture must not discard {table} facts");
     }
     db.execute_unprepared(
-        "DROP TABLE conversation_sources;
+        "DROP TABLE timeline_item_members;
+         DROP TABLE timeline_items;
+         DROP TABLE timeline_projection_state;
+         DROP TABLE conversation_sources;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          DROP TABLE conversation_content_chunks;
@@ -2845,7 +2860,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          DELETE FROM seaql_migrations
          WHERE version IN ('m20261029_000001_history_demand_conversation',
                            'm20261101_000010_history_model_route_head',
-                           'm20261102_000001_history_atom_metadata')",
+                           'm20261102_000001_history_atom_metadata',
+                           'm20261103_000001_history_timeline_items')",
     )
     .await?;
     Ok(())
@@ -2854,6 +2870,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 #[cfg(test)]
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
     conversation::current::PreparedCurrent {
+        timeline: std::sync::Arc::from([]),
+        timeline_commit: 0,
         source_changes: std::sync::Arc::from([]),
         projection: pl_protocol::CurrentProjection::empty(
             sequence,

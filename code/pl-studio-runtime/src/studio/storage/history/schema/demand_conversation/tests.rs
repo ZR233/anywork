@@ -17,7 +17,7 @@ impl MigratorTraitSelf for Published11 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA
+                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
             )
         })
         .collect()
@@ -35,7 +35,12 @@ impl MigratorTraitSelf for Published12 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), MODEL_ROUTE_HEAD | ATOM_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }

@@ -4622,6 +4622,8 @@ mod storage_fault_tests {
             )),
         );
         let current = crate::studio::storage::history::conversation::current::PreparedCurrent {
+            timeline: std::sync::Arc::from([]),
+            timeline_commit: 0,
             projection: pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
             changes: Arc::from([]),
             contents: Arc::from([]),

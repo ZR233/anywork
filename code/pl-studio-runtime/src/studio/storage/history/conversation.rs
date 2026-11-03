@@ -21,6 +21,8 @@ pub(in super::super) mod sources;
 #[cfg(test)]
 #[path = "conversation/tests.rs"]
 mod tests;
+#[path = "conversation/timeline.rs"]
+pub(in super::super) mod timeline;
 pub(super) use content::{list_contents, read_contents, write_contents};
 pub(super) use range::read_content;
 

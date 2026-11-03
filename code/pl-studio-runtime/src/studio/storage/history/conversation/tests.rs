@@ -643,6 +643,8 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
     let entries = [(37, "first"), (900, "second")];
     let body: Arc<[u8]> = Arc::from(vec![255; 64 * 1024]);
     let prepared = current::PreparedCurrent {
+        timeline: std::sync::Arc::from([]),
+        timeline_commit: 0,
         source_changes: Arc::from([]),
         projection,
         changes: entries
@@ -797,6 +799,8 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 revision,
             });
         Ok(current::PreparedCurrent {
+            timeline: std::sync::Arc::from([]),
+            timeline_commit: 0,
             source_changes: Arc::from([]),
             projection,
             changes: Arc::from([
@@ -1250,6 +1254,8 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         ended: None,
     };
     let prepared = current::PreparedCurrent {
+        timeline: std::sync::Arc::from([]),
+        timeline_commit: 0,
         source_changes: Arc::from([source_state.clone()]),
         projection,
         changes: Arc::from([current::CurrentEntryChange::Put(
@@ -1319,6 +1325,8 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         &tx,
         1,
         &current::PreparedCurrent {
+            timeline: std::sync::Arc::from([]),
+            timeline_commit: 0,
             source_changes: std::sync::Arc::from([]),
             projection: prepared.projection.clone(),
             changes: Arc::from([

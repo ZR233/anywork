@@ -114,6 +114,10 @@ pub struct TimelineItem {
     /// Inline or deferred original payload for a text/status item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<PayloadData>,
+    /// Original completion item that owns the payload/contents of a text/status
+    /// item. A derived row stores only this reference, never a second body copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_item_id: Option<String>,
     /// Current fragments only: the exact member identities this item owns. The
     /// client never discovers membership; the typed member scope resolves it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

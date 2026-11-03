@@ -2758,7 +2758,10 @@ async fn restore_pre_timeline_history_fixture(
         "legacy fixture must not discard completed history"
     );
     db.execute_unprepared(
-        "DROP TABLE conversation_content_chunks;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          DROP TABLE conversation_contents;
@@ -2803,13 +2806,17 @@ async fn persist_schema12_fixture(
     let db = raw_database(path).await?;
     let tx = db.begin().await?;
     tx.execute_unprepared(
-        "DROP TABLE conversation_sources;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_sources;
          ALTER TABLE conversation_items DROP COLUMN metadata;
          ALTER TABLE history_meta DROP COLUMN model_route_json;
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
          DELETE FROM seaql_migrations
              WHERE version IN ('m20261101_000010_history_model_route_head',
-                               'm20261102_000001_history_atom_metadata');
+                               'm20261102_000001_history_atom_metadata',
+                               'm20261103_000001_history_timeline_items');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
     .await?;

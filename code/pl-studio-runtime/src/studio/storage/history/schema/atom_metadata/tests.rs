@@ -13,7 +13,7 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != ATOM_METADATA)
+        .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -162,6 +162,8 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
         db,
         0,
         &PreparedCurrent {
+            timeline: std::sync::Arc::from([]),
+            timeline_commit: 0,
             projection: current.clone(),
             changes: changes.into(),
             contents: contents.into(),
@@ -349,7 +351,7 @@ async fn migration_preserves_completion_bytes_seq_parent_and_content_owners() ->
     .await?;
 
     prepare(&db, THREAD, Preparation::Schema, None).await?;
-    assert_eq!(version(&db).await?, 14);
+    assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
     let tool = conversation::read_item(&db, "tool").await?;
     assert_eq!(
         tool.unwrap()

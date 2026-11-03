@@ -19,7 +19,12 @@ impl MigratorTraitSelf for Published12 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), MODEL_ROUTE_HEAD | ATOM_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }

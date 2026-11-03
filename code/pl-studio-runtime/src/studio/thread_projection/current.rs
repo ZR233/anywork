@@ -226,6 +226,8 @@ impl CurrentOwner {
             .collect::<Vec<_>>();
         Ok((
             Arc::new(PreparedCurrent {
+                timeline: std::sync::Arc::from([]),
+                timeline_commit: 0,
                 projection: snapshot.projection.clone(),
                 changes: changes.into(),
                 contents: writes.into(),

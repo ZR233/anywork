@@ -200,6 +200,8 @@ pub(in super::super) async fn seed_current(
         .context("history identity missing")?
         .try_get::<String>("", "database_id")?;
     let mut prepared = PreparedCurrent {
+        timeline: std::sync::Arc::from([]),
+        timeline_commit: 0,
         source_changes: std::sync::Arc::from([]),
         projection: CurrentProjection::empty(watermark, ThreadStatus::Idle),
         changes: Arc::from([]),

@@ -18,7 +18,7 @@ impl MigratorTraitSelf for PublishedV11 {
         .filter(|migration| {
             !matches!(
                 migration.name(),
-                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA
+                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
             )
         })
         .collect()
@@ -50,6 +50,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | DEMAND_CONVERSATION
                     | MODEL_ROUTE_HEAD
                     | ATOM_METADATA
+                    | TIMELINE_ITEMS
             )
         })
         .collect()
@@ -75,7 +76,7 @@ impl MigratorTraitSelf for PublishedV10 {
             migration.name() != COMBINED_CONTENT
                 && migration.name() != DEMAND_CONVERSATION
                 && migration.name() != MODEL_ROUTE_HEAD
-                && migration.name() != ATOM_METADATA
+                && !matches!(migration.name(), ATOM_METADATA | TIMELINE_ITEMS)
                 && migration.name()
                     != if self.atomic {
                         METERING_FACTS

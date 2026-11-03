@@ -267,6 +267,12 @@ impl LiveProjection {
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.ensure_timeline_owner();
         if let Some(timeline) = self.timeline.as_mut() {
+            timeline.set_next_position(
+                history
+                    .timeline_next_position()
+                    .await
+                    .map_err(|error| ProjectionError::History(error.to_string()))?,
+            );
             timeline.restore(&observed.projection.items, &observed.projection.atoms)?;
         }
         Ok(())

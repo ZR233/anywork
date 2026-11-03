@@ -222,6 +222,7 @@ impl LiveItem {
                 if let Some(member) = members.first() {
                     self.item.contents = member.atom.contents.clone();
                     self.item.payload = member.payload.clone();
+                    self.item.content_item_id = member.atom.completion_item_id.clone();
                     self.item.started_at = member.atom.started_at;
                     self.item.finished_at = member.atom.finished_at;
                 }
@@ -251,6 +252,7 @@ impl LiveItem {
             members: None,
             contents: atom.contents.clone(),
             payload: None,
+            content_item_id: atom.completion_item_id.clone(),
             current_members: vec![atom.id.clone()],
             position: None,
             admission_closed: false,
@@ -282,6 +284,7 @@ impl LiveItem {
             members: None,
             contents: Vec::new(),
             payload: None,
+            content_item_id: None,
             current_members: Vec::new(),
             position: None,
             admission_closed: false,
@@ -305,6 +308,7 @@ pub(in crate::studio) struct TimelineProjection {
     next_position: u64,
     items: Vec<LiveItem>,
     committed: Vec<TimelineItem>,
+    committed_members: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl TimelineProjection {
@@ -314,6 +318,7 @@ impl TimelineProjection {
             next_position,
             items: Vec::new(),
             committed: Vec::new(),
+            committed_members: BTreeMap::new(),
         }
     }
 
@@ -505,6 +510,22 @@ impl TimelineProjection {
             item.item.position = Some(self.next_position);
             item.item.admission_closed = true;
             self.next_position = self.next_position.saturating_add(1);
+            let mut members: Vec<(String, String)> = item
+                .members
+                .values()
+                .map(|member| {
+                    (
+                        member.atom.id.clone(),
+                        member
+                            .atom
+                            .completion_item_id
+                            .clone()
+                            .unwrap_or_else(|| member.atom.id.clone()),
+                    )
+                })
+                .collect();
+            members.sort();
+            self.committed_members.insert(item.item.id.clone(), members);
             self.committed.push(item.item);
         }
         self.items
@@ -571,6 +592,22 @@ impl TimelineProjection {
     /// item delta has been frozen into its prepared publication.
     pub(in crate::studio) fn take_committed(&mut self) -> Vec<TimelineItem> {
         std::mem::take(&mut self.committed)
+    }
+
+    /// Member identities for the committed delta, keyed by display item id.
+    /// Each pair is (atom identity, original completion item identity).
+    pub(in crate::studio) fn take_committed_members(
+        &mut self,
+    ) -> BTreeMap<String, Vec<(String, String)>> {
+        std::mem::take(&mut self.committed_members)
+    }
+
+    pub(in crate::studio) fn set_next_position(&mut self, position: u64) {
+        self.next_position = position;
+    }
+
+    pub(in crate::studio) fn next_position(&self) -> u64 {
+        self.next_position
     }
 
     #[cfg(test)]

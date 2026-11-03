@@ -919,6 +919,9 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
     db.execute_unprepared(
         "DROP TABLE seaql_migrations;
+         DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
          DROP TABLE IF EXISTS timeline_records;
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
