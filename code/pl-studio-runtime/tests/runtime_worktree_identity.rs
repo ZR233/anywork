@@ -609,7 +609,7 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
 }
 
 #[tokio::test]
-async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_branch() -> Result<()> {
+async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch() -> Result<()> {
     let mut env = Environment::new(
         vec![prompt_step(
             "root-identity",
@@ -647,22 +647,16 @@ async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_bran
         )?;
         env.restart().await?;
         let before = support::saved(&env.home, &root.thread.id).await?;
-        // Current-stage archive is directory visibility/retirement only. It is not the pending
-        // final-close/force contract and must not delete or invent a permanent close intent.
-        env.runtime
-            .archive_thread("identity-visible-history".into(), root.thread.id.clone())
-            .await?
-            .context("archive identity owner")?;
         recovery_ready(&env.runtime).await?;
         ensure!(
             !env.runtime
                 .recovery_issues()
                 .iter()
                 .any(|issue| { issue.thread_id.as_deref() == Some(&root.thread.id) }),
-            "normal archive reported its healthy retained workspace as a recovery problem"
+            "normal restart reported its healthy retained workspace as a recovery problem"
         );
-        let archived = env.runtime.thread_snapshot(&root.thread.id).await?;
-        ensure!(archived.thread.workspace_path == root.thread.workspace_path);
+        let restarted = env.runtime.thread_snapshot(&root.thread.id).await?;
+        ensure!(restarted.thread.workspace_path == root.thread.workspace_path);
         let lease = lease_fact(&env.home, &root.thread.id, false).await?;
         ensure!(
             env.runtime
@@ -675,34 +669,34 @@ async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_bran
                 )
                 .await
                 .is_err(),
-            "removing a normal reminder granted permission to discard local content"
+            "safe Recovery treated a retained owner as deletion permission"
         );
-        let observation = preview(
-            &env.runtime,
-            &root.thread.id,
-            StudioWorktreeInspection::Available,
-        )
-        .await?;
+        let observed_branch = git(path, &["branch", "--show-current"])?;
+        let observed_head = git(path, &["rev-parse", "HEAD"])?;
         ensure!(
-            observation.branch.as_deref() == Some("renamed-business")
-                && observation.head_commit.as_deref() == Some(head.as_str())
+            observed_branch == "renamed-business" && observed_head == head,
+            "restart lost the observed branch or HEAD"
+        );
+        let observed_status = git(
+            path,
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ],
+        )?;
+        ensure!(
+            !observed_status.is_empty(),
+            "restart lost the dirty workspace state"
         );
         ensure!(
-            observation.dirty == Some(true),
-            "Recovery lost real local content state"
+            observed_status
+                .lines()
+                .any(|line| line == "?? untracked.txt")
         );
-        let changed = observation
-            .changed_files
-            .as_ref()
-            .context("pending changes")?;
-        let ignored = observation
-            .ignored_files
-            .as_ref()
-            .context("ignored content")?;
-        ensure!(changed.iter().any(|path| path == "untracked.txt"));
-        ensure!(!changed.iter().any(|path| path == "ignored.txt"));
-        ensure!(ignored.iter().any(|path| path == "ignored.txt"));
-        env.runtime.restore_thread(root.thread.id.clone()).await?;
+        ensure!(!observed_status.lines().any(|line| line == "?? ignored.txt"));
+        ensure!(observed_status.lines().any(|line| line == "!! ignored.txt"));
         let _subscription = env
             .runtime
             .subscribe_thread(ThreadSubscriptionRequest {
@@ -727,7 +721,7 @@ async fn changed_root_is_rebound_in_place_and_recovery_reports_the_observed_bran
                     "--format=%(refname):%(objectname)"
                 ]
             )? == branches,
-            "directory visibility or binding changed a branch"
+            "restart or cold binding changed a branch"
         );
         let after = support::saved(&env.home, &root.thread.id).await?;
         ensure!(
@@ -1092,7 +1086,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
 }
 
 #[tokio::test]
-async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorization() -> Result<()>
+async fn safe_recovery_preserves_authorization_and_explicit_archive_reports_git_lock() -> Result<()>
 {
     let mut env = Environment::new(
         vec![prompt_step(
@@ -1110,17 +1104,13 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             .await?;
         completed_prompt(&env.runtime, &root.thread.id, "locked-identity").await?;
         env.restart().await?;
-        env.runtime
-            .archive_thread("retire-identity-owner".into(), root.thread.id.clone())
-            .await?
-            .context("retire owner without deleting its site")?;
         recovery_ready(&env.runtime).await?;
         ensure!(
             !env.runtime
                 .recovery_issues()
                 .iter()
                 .any(|issue| { issue.thread_id.as_deref() == Some(&root.thread.id) }),
-            "normal archive produced a recovery reminder for ignored session files"
+            "normal restart produced a recovery reminder for ignored session files"
         );
         let lease = lease_fact(&env.home, &root.thread.id, false).await?;
         let session_files = Path::new(&root.thread.workspace_path).join(".anywork");
@@ -1139,38 +1129,45 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
                 )
                 .await
                 .is_err(),
-            "safe Recovery treated ignored content as deletion permission"
+            "safe Recovery treated a retained owner as deletion permission"
         );
         ensure!(
             session_files.exists(),
             "safe Recovery deleted ignored session files"
         );
-        let protected = preview(
-            &env.runtime,
-            &root.thread.id,
-            StudioWorktreeInspection::Available,
-        )
-        .await?;
-        ensure!(protected.dirty == Some(true));
-        ensure!(protected.changed_files.as_ref().is_some_and(Vec::is_empty));
+        let root_path = Path::new(&root.thread.workspace_path);
+        let protected = git(
+            root_path,
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ],
+        )?;
         ensure!(
-            protected
-                .ignored_files
-                .as_ref()
-                .is_some_and(|files| { files.iter().any(|path| path == ".anywork/") })
+            protected.lines().any(|line| line == "!! .anywork/"),
+            "ignored session files were not observed in the retained checkout"
         );
         // The original runtime resources are already closed. Remove only this fixture's own
         // ignored session files to isolate Git-lock refusal from content-preservation refusal.
         std::fs::remove_dir_all(session_files)?;
-        let initial = preview(
-            &env.runtime,
-            &root.thread.id,
-            StudioWorktreeInspection::Available,
-        )
-        .await?;
+        let initial_revision = lease_fact(&env.home, &root.thread.id, false).await?["revision"]
+            .as_u64()
+            .context("initial lease revision")?;
         ensure!(
-            initial.branch.is_none() && initial.dirty == Some(false),
-            "available detached inspection lost its observed state: {initial:?}"
+            git(root_path, &["branch", "--show-current"])?.is_empty()
+                && git(
+                    root_path,
+                    &[
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                        "--ignored=matching",
+                    ],
+                )?
+                .is_empty(),
+            "available detached checkout lost its observed clean state"
         );
         git(
             &env.repo,
@@ -1179,14 +1176,10 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
         locked = Some(root.thread.workspace_path.clone());
         let failure = env
             .runtime
-            .cleanup_preserved_worktree(
-                StudioRecoveryWorktreeOwner::Session,
-                &root.thread.id,
-                initial.lease_revision,
-            )
+            .archive_thread("locked-identity-archive".into(), root.thread.id.clone())
             .await
             .err()
-            .context("safe cleanup ignored a Git lock")?;
+            .context("explicit archive ignored a Git lock")?;
         let error = pl_studio_runtime::studio_error_from_anyhow(failure);
         ensure!(
             error.code == pl_protocol::studio::StudioErrorCode::Unavailable
@@ -1196,7 +1189,6 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             error.code,
             error.message
         );
-        let root_path = Path::new(&root.thread.workspace_path);
         ensure!(root_path.exists(), "failed cleanup removed the checkout");
         let worktrees = git(&env.repo, &["worktree", "list", "--porcelain", "-z"])?;
         ensure!(
@@ -1211,23 +1203,17 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             &["worktree", "unlock", &root.thread.workspace_path],
         )?;
         locked = None;
-        let retry = preview(
-            &env.runtime,
-            &root.thread.id,
-            StudioWorktreeInspection::Available,
-        )
-        .await?;
+        let retry_revision = lease_fact(&env.home, &root.thread.id, false).await?["revision"]
+            .as_u64()
+            .context("retry lease revision")?;
         ensure!(
-            retry.lease_revision > initial.lease_revision,
+            retry_revision > initial_revision,
             "failed cleanup did not publish its retry revision"
         );
         env.runtime
-            .cleanup_preserved_worktree(
-                StudioRecoveryWorktreeOwner::Session,
-                &root.thread.id,
-                retry.lease_revision,
-            )
-            .await?;
+            .archive_thread("discard-locked-identity".into(), root.thread.id.clone())
+            .await?
+            .context("explicit archive retry")?;
         ensure!(!Path::new(&root.thread.workspace_path).exists());
         ensure!(git(&env.repo, &["branch", "--format=%(refname:short)"])? == "main");
         Ok(())

@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mcp_store.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
@@ -46,7 +47,7 @@ class ThreadStatusConnector extends ConsumerWidget {
     if (status == null) return const SizedBox(height: 38);
     return ThreadStatusBar(
       threadId: threadId,
-      thread: status.thread,
+      row: status.row,
       accounts: status.accounts,
       lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
       modelRoute: status.modelRoute,
@@ -63,11 +64,11 @@ class ThreadStatusConnector extends ConsumerWidget {
   }
 }
 
-class ThreadStatusBar extends StatelessWidget {
+class ThreadStatusBar extends ConsumerWidget {
   const ThreadStatusBar({
     super.key,
     required this.threadId,
-    required this.thread,
+    required this.row,
     required this.accounts,
     required this.lspServers,
     this.modelRoute,
@@ -83,7 +84,7 @@ class ThreadStatusBar extends StatelessWidget {
   });
 
   final String threadId;
-  final StudioThread thread;
+  final SessionDirectoryRow row;
   final List<ModelSelectionAccount> accounts;
   final List<LspServerStateView> lspServers;
   final ThreadModelRouteView? modelRoute;
@@ -98,11 +99,18 @@ class ThreadStatusBar extends StatelessWidget {
   final VoidCallback? onOpenPlan;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final threadMcp = threadId.trim().isEmpty
+        ? null
+        : ref.watch(threadMcpProvider(threadId)).value;
+    final effectiveMcpServers =
+        (threadMcp != null && threadMcp.servers.isNotEmpty)
+        ? [for (final server in threadMcp.servers) server.id]
+        : activeMcpServers;
     final capabilityLabel = _capabilityLabel(
       context,
       activeSkills: activeSkills,
-      activeMcpServers: activeMcpServers,
+      activeMcpServers: effectiveMcpServers,
       activeLspServers: activeLspServers,
     );
     final lspActiveServers = [
@@ -127,12 +135,12 @@ class ThreadStatusBar extends StatelessWidget {
                     ? null
                     : modelForRoute(accounts, route.accountId, route.modelId);
                 final hasOverflow =
-                    (thread.isRoot &&
+                    (row.isRootRow &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
                     (!showCapabilities && capabilityLabel.isNotEmpty) ||
                     (!showLspActivity && lspActiveServers.isNotEmpty) ||
                     showPlanEntry;
-                final rootEffort = thread.isRoot ? route?.effort?.trim() : null;
+                final rootEffort = row.isRootRow ? route?.effort?.trim() : null;
                 return Row(
                   children: [
                     if (showTodo)
@@ -157,15 +165,15 @@ class ThreadStatusBar extends StatelessWidget {
                       ),
                     _StatusReadout(
                       icon: Icons.account_tree_outlined,
-                      label: thread.isRetiredAgent
+                      label: row.isChildRow && isRetiredAgentRole(row.role)
                           ? context.l10n.settingsStateDisabled
-                          : context.roleLabel(thread.role),
-                      tooltip: thread.isRetiredAgent
+                          : context.roleLabel(row.role),
+                      tooltip: row.isChildRow && isRetiredAgentRole(row.role)
                           ? context.l10n.agentRoleRetired
-                          : '${thread.title} · ${context.threadStatusLabel(thread.status)}',
+                          : '${row.title} · ${context.threadStatusLabel(row.status)}',
                       maxWidth: 96,
                     ),
-                    if (showModel && thread.isAgent)
+                    if (showModel && row.isChildRow)
                       _StatusReadout(
                         icon: Icons.smart_toy_outlined,
                         label: route?.modelId.isNotEmpty == true
@@ -197,6 +205,7 @@ class ThreadStatusBar extends StatelessWidget {
                         detailWidth: 520,
                         maxWidth: 160,
                         detailBuilder: (context) => _CapabilityDetail(
+                          threadId: threadId,
                           activeSkills: activeSkills,
                           activeMcpServers: activeMcpServers,
                           activeLspServers: activeLspServers,
@@ -204,6 +213,7 @@ class ThreadStatusBar extends StatelessWidget {
                       ),
                     if (hasOverflow)
                       _StatusOverflow(
+                        threadId: threadId,
                         effort: (rootEffort?.isEmpty ?? true)
                             ? null
                             : rootEffort,
@@ -441,6 +451,7 @@ String _capabilityLabel(
 
 class _StatusOverflow extends StatefulWidget {
   const _StatusOverflow({
+    required this.threadId,
     required this.effort,
     required this.capabilities,
     required this.activeSkills,
@@ -451,6 +462,7 @@ class _StatusOverflow extends StatefulWidget {
     this.onOpenPlan,
   });
 
+  final String threadId;
   final String? effort;
   final String capabilities;
   final List<String> activeSkills;
@@ -534,6 +546,7 @@ class _StatusOverflowState extends State<_StatusOverflow> {
   void _showDetail(BuildContext context, _StatusOverflowAction action) {
     final detail = switch (action) {
       _StatusOverflowAction.capabilities => _CapabilityDetail(
+        threadId: widget.threadId,
         activeSkills: widget.activeSkills,
         activeMcpServers: widget.activeMcpServers,
         activeLspServers: widget.activeLspServers,
@@ -606,19 +619,25 @@ class _StatusReadout extends StatelessWidget {
   }
 }
 
-class _CapabilityDetail extends StatelessWidget {
+class _CapabilityDetail extends ConsumerWidget {
   const _CapabilityDetail({
+    required this.threadId,
     required this.activeSkills,
     required this.activeMcpServers,
     required this.activeLspServers,
   });
 
+  final String threadId;
   final List<String> activeSkills;
   final List<String> activeMcpServers;
   final List<String> activeLspServers;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final threadMcp = threadId.trim().isEmpty
+        ? null
+        : ref.watch(threadMcpProvider(threadId)).value;
+    final mcpServers = threadMcp?.servers ?? const <ThreadMcpServerState>[];
     return StatusDetailPanel(
       title: context.l10n.statusCapabilitiesTitle,
       children: [
@@ -630,7 +649,81 @@ class _CapabilityDetail extends StatelessWidget {
             itemKey: StudioDriverKeys.statusActiveSkill,
             tone: StudioTone.brand,
           ),
-        if (activeMcpServers.isNotEmpty)
+        if (mcpServers.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  context.l10n.statusMcpSection,
+                  style: context.text.labelMedium,
+                ),
+              ),
+              TextButton.icon(
+                key: StudioDriverKeys.mcpResetAll,
+                onPressed: () => unawaited(
+                  ref
+                      .read(anyworkClientProvider)
+                      .directoryCommands
+                      .reconnectThreadMcp(threadId: threadId)
+                      .catchError(
+                        (Object _) => ThreadMcpStateSnapshot(
+                          threadId: threadId,
+                          scope: const HostMcpScope(),
+                        ),
+                      ),
+                ),
+                icon: const Icon(Icons.sync, size: 14),
+                label: Text(context.l10n.settingsMcpReconnect),
+              ),
+            ],
+          ),
+          for (final server in mcpServers)
+            Row(
+              key: StudioDriverKeys.mcpServerRow(server.id),
+              children: [
+                Expanded(
+                  child: StatusDetailIconRow(
+                    icon: Icons.hub_outlined,
+                    title: server.id,
+                    detail: [
+                      server.lifecycle.name,
+                      if (server.toolCount case final count?) '$count tools',
+                      if (server.message case final msg? when msg.isNotEmpty)
+                        msg,
+                    ].join(' · '),
+                    tone: switch (server.lifecycle) {
+                      ThreadMcpLifecycleKind.available => StudioTone.success,
+                      ThreadMcpLifecycleKind.connecting ||
+                      ThreadMcpLifecycleKind.shuttingDown => StudioTone.warning,
+                      ThreadMcpLifecycleKind.unavailable ||
+                      ThreadMcpLifecycleKind.unsupported => StudioTone.error,
+                    },
+                  ),
+                ),
+                IconButton(
+                  key: StudioDriverKeys.mcpResetServer(server.id),
+                  tooltip: context.l10n.settingsMcpReconnect,
+                  iconSize: 16,
+                  onPressed: () => unawaited(
+                    ref
+                        .read(anyworkClientProvider)
+                        .directoryCommands
+                        .reconnectThreadMcp(
+                          threadId: threadId,
+                          serverId: server.id,
+                        )
+                        .catchError(
+                          (Object _) => ThreadMcpStateSnapshot(
+                            threadId: threadId,
+                            scope: const HostMcpScope(),
+                          ),
+                        ),
+                  ),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+        ] else if (activeMcpServers.isNotEmpty)
           StatusDetailIconRow(
             icon: Icons.hub_outlined,
             title: context.l10n.statusMcpSection,

@@ -42,8 +42,8 @@ List<LspServerStateView> statusLspServers(Ref ref) {
 /// part of this value, so response-timing updates cannot rebuild the chrome.
 @riverpod
 StatusBarView? statusBarView(Ref ref, String threadId) {
-  final thread = _threadIdentity(ref, threadId);
-  if (thread == null) return null;
+  final row = _threadIdentity(ref, threadId);
+  if (row == null) return null;
   final accounts = ref.watch(modelSelectionAccountsProvider);
   final roles = ref.watch(settingsStoreProvider).canonical?.roles;
   final chrome =
@@ -62,7 +62,7 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
         activeLspServers: const <String>[],
       );
   return StatusBarView(
-    thread: thread,
+    row: row,
     accounts: accounts,
     roles: roles ?? const [],
     isBusy: chrome.isBusy,
@@ -188,6 +188,6 @@ T? _observeSession<T>(
   return current;
 }
 
-StudioThread? _threadIdentity(Ref ref, String threadId) {
-  return ref.watch(threadMetadataStoreProvider(threadId)).frame?.thread;
+SessionDirectoryRow? _threadIdentity(Ref ref, String threadId) {
+  return ref.watch(threadMetadataStoreProvider(threadId)).frame?.row;
 }

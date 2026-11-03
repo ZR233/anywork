@@ -311,7 +311,8 @@ async fn archive_temp_removes_only_bound_disposable_directories_and_restores_laz
         tokio::fs::read(workspace.join("business")).await?,
         b"keep business"
     );
-    runtime.restore_thread(thread.id.clone()).await?;
+    let restored = runtime.restore_thread(thread.id.clone()).await?;
+    assert_eq!(restored.visibility, crate::studio::ThreadVisibility::Active);
     assert!(
         !workspace.join(files.temp()).exists(),
         "catalog restoration is not execution"
@@ -798,7 +799,7 @@ async fn standalone_start_directory_creation_failure_is_not_published() -> Resul
             .state
             .value()
             .context("ready directory")?
-            .threads
+            .rows
             .is_empty()
     );
     assert!(

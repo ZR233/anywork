@@ -86,9 +86,21 @@ struct SpawnFactory {
     root: std::path::PathBuf,
 }
 impl StudioChildFactory for SpawnFactory {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _: &str,
+        _: pl_protocol::DelegationSettings,
+        _: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         request: ChildThreadRequest,
+        _: (),
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         *self.id.lock().unwrap() = Some(request.id.clone());
         self.release.acquire().await.unwrap().forget();
@@ -103,6 +115,41 @@ impl StudioChildFactory for SpawnFactory {
     ) -> Result<(), ThreadAssemblyError> {
         self.dispositions.lock().unwrap().push(disposition);
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct UnsupportedAdmission;
+
+impl StudioChildFactory for UnsupportedAdmission {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _: &str,
+        _: pl_protocol::DelegationSettings,
+        _: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Err(ThreadAssemblyError::UnsupportedBackend {
+            backend: pl_protocol::AgentBackendKind::Acp,
+        })
+    }
+
+    async fn prepare(
+        &self,
+        _: ChildThreadRequest,
+        _: (),
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        panic!("unsupported admission must not enter preparation")
+    }
+
+    async fn discard_unpublished(
+        &self,
+        _: &str,
+        _: Option<&crate::studio::WorkspaceUsageLease>,
+        _: pl_tool::collaboration::thread::WorkspaceRelease,
+    ) -> Result<(), ThreadAssemblyError> {
+        panic!("unsupported admission must not own unpublished resources")
     }
 }
 
@@ -143,6 +190,64 @@ pub(crate) async fn spawn_failed_archive_fixture(
     AgentHost(Arc::downgrade(&owner.0))
         .spawn_owned(owner, context, request, permit)
         .await
+}
+
+#[tokio::test]
+async fn unsupported_profile_fails_outer_spawn_before_reservation_or_review_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    let owner = StudioThreadAssembler::default();
+    owner.set_child_factory(UnsupportedAdmission).unwrap();
+    let parent = owner
+        .assemble(spec("root".into(), None, root.path()))
+        .await
+        .unwrap();
+    parent
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: crate::studio::delegation::EXTENSION.into(),
+            expected_revision: None,
+            payload: crate::studio::delegation::encode(Default::default()).unwrap(),
+        }])
+        .await
+        .unwrap();
+    let context = pl_core::tool::opaque::CallContext {
+        grant: Default::default(),
+        context: Default::default(),
+        history_fence: 0,
+        model_projection: None,
+        tasks: None,
+        thread_id: "root".into(),
+        turn_id: "turn".into(),
+        call_id: "unsupported-spawn".into(),
+        cancellation: Default::default(),
+        extensions: Arc::new(BTreeMap::new()),
+        catalog: Arc::from([]),
+        extension_sequence: 0,
+    };
+    let request = AgentSpawn {
+        profile_id: "acp-profile".into(),
+        model_selection: None,
+        task_summary: "must reject before review".to_owned().try_into().unwrap(),
+        message: "must never be delivered".into(),
+        writable_paths: None,
+        review_target_agent_id: Some("root".into()),
+        review_feedback: None,
+        metadata: serde_json::Value::Null,
+    };
+    let permit = owner.agent_operation("root").await;
+    let error = AgentHost(Arc::downgrade(&owner.0))
+        .spawn_owned(owner.clone(), context, request, permit)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.source.downcast_ref::<ThreadAssemblyError>(),
+        Some(ThreadAssemblyError::UnsupportedBackend {
+            backend: pl_protocol::AgentBackendKind::Acp
+        })
+    ));
+    let state = owner.0.state();
+    assert!(state.preparing_children.is_empty());
+    assert!(state.unpublished_children.is_empty());
+    assert_eq!(state.entries.len(), 1);
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 use super::types::*;
-use crate::api::studio::{convert::thread_stream::bridge_thread, types::BridgeResourceStamp};
+use crate::api::studio::convert::thread_stream::bridge_session_row;
+use crate::api::studio::types::BridgeResourceStamp;
 use pl_protocol::studio as p;
 
 impl From<BridgeThreadDirectoryQuery> for p::ThreadDirectoryQuery {
@@ -55,7 +56,7 @@ pub(crate) fn directory_frame(value: p::ThreadDirectoryFrame) -> BridgeThreadDir
             limit: value.window.limit,
         },
         stamp: stamp(value.stamp),
-        threads: value.threads.into_iter().map(bridge_thread).collect(),
+        rows: value.rows.into_iter().map(bridge_session_row).collect(),
         next_cursor: value.next_cursor,
     }
 }
@@ -64,6 +65,6 @@ pub(crate) fn metadata_frame(value: p::ThreadMetadataFrame) -> BridgeThreadMetad
     BridgeThreadMetadataFrame {
         thread_id: value.thread_id,
         stamp: stamp(value.stamp),
-        thread: value.thread.map(bridge_thread),
+        row: value.row.map(bridge_session_row),
     }
 }

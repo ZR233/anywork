@@ -7,7 +7,7 @@ class _Header extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final thread = state.selectedRootThread;
+    final thread = state.selectedRootRow;
     final project = state.selectedProject;
     final recoveryIssues =
         ref.watch(recoveryStoreProvider).value?.values ??
@@ -77,7 +77,7 @@ class _Header extends ConsumerWidget {
             children: [
               AgentSwitcherMenu(
                 agents: state.agents,
-                workspaceThreads: state.workspaceThreads,
+                workspaceRows: state.workspaceRows,
                 recoveryIssues: recoveryIssues,
                 selectedThreadId: state.selectedThreadId,
                 pendingInteractionThreadIds: {
@@ -173,7 +173,7 @@ class _SessionOpenWorkspaceMenuState
   @override
   Widget build(BuildContext context) {
     final project = widget.state.selectedProject;
-    final thread = widget.state.selectedRootThread;
+    final thread = widget.state.selectedRootRow;
     if (project == null || thread == null) {
       return const SizedBox.shrink();
     }
@@ -311,7 +311,7 @@ Future<void> _openThreadWorkspaceInVsCode(
   BuildContext context,
   WidgetRef ref,
   StudioProject project,
-  StudioThread thread,
+  SessionDirectoryRow row,
 ) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   final l10n = context.l10n;
@@ -336,14 +336,14 @@ Future<void> _openThreadWorkspaceInVsCode(
       } else {
         uri = buildRemoteVsCodeFolderUri(
           alias: server.alias,
-          remotePath: thread.workspacePath,
+          remotePath: row.workspacePath,
         );
       }
     } on Object {
       failure = l10n.sessionVsCodeOpenFailed;
     }
   } else {
-    uri = buildLocalVsCodeFolderUri(thread.workspacePath);
+    uri = buildLocalVsCodeFolderUri(row.workspacePath);
   }
   if (uri != null) {
     try {
@@ -366,7 +366,7 @@ Future<void> _openThreadWorkspaceInZed(
   BuildContext context,
   WidgetRef ref,
   StudioProject project,
-  StudioThread thread,
+  SessionDirectoryRow row,
 ) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   final l10n = context.l10n;
@@ -391,14 +391,14 @@ Future<void> _openThreadWorkspaceInZed(
       } else {
         target = RemoteSshZedWorkspaceTarget(
           alias: server.alias,
-          remotePath: thread.workspacePath,
+          remotePath: row.workspacePath,
         );
       }
     } on Object {
       failure = l10n.sessionZedOpenFailed;
     }
   } else {
-    target = LocalZedWorkspaceTarget(directory: thread.workspacePath);
+    target = LocalZedWorkspaceTarget(directory: row.workspacePath);
   }
   if (target != null) {
     try {
@@ -421,7 +421,7 @@ Future<void> _openThreadWorkspaceInTerminal(
   BuildContext context,
   WidgetRef ref,
   StudioProject project,
-  StudioThread thread,
+  SessionDirectoryRow row,
 ) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   final l10n = context.l10n;
@@ -446,14 +446,14 @@ Future<void> _openThreadWorkspaceInTerminal(
       } else {
         target = RemoteSshTerminalTarget(
           alias: server.alias,
-          remotePath: thread.workspacePath,
+          remotePath: row.workspacePath,
         );
       }
     } on Object {
       failure = l10n.sessionTerminalOpenFailed;
     }
   } else {
-    target = LocalHostTerminalTarget(directory: thread.workspacePath);
+    target = LocalHostTerminalTarget(directory: row.workspacePath);
   }
   if (target != null) {
     try {

@@ -1,11 +1,11 @@
 //! Typed, frozen TOML formats. The resource owner retains all IO and commit state.
 mod main;
 mod profile;
-mod wire;
+pub(super) mod wire;
 
-pub(super) use main::{MainV30, load_current_main, load_main};
+pub(super) use main::{MainV31, extract_legacy_mcp_from_main, load_current_main, load_main};
 pub(super) use profile::load_current as load_current_profile;
-pub(super) use profile::{ProfileV1, load_profile};
+pub(super) use profile::{ProfileV2, load_profile};
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};

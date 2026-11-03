@@ -8,18 +8,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioAgentDirectoryEntry {
-    pub id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    /// 所属会话内的父成员；主成员为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
     pub thread_id: String,
-    pub root_thread_id: String,
-    pub path: String,
-    pub parent_path: Option<String>,
     pub role: String,
     pub delegation_mode: pl_protocol::DelegationMode,
     pub delegation_preference: pl_protocol::DelegationPreference,
     pub frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
     pub task: String,
     pub summary: Option<String>,
-    pub depth: u32,
     pub state: pl_protocol::AgentState,
     /// 该成员当前拥有的执行；未装载、无当前执行时为 `None`。
     ///
@@ -41,27 +41,9 @@ pub struct StudioAgentDirectoryEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioMcpHealth {
-    pub mcp_servers: Vec<StudioMcpServer>,
-    pub active_mcp_servers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct StudioLspHealth {
     pub lsp_servers: Vec<StudioLspServer>,
     pub active_lsp_servers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioMcpServer {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub source_kind: String,
-    pub mutation_policy: String,
-    pub state: crate::StudioMcpServerState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

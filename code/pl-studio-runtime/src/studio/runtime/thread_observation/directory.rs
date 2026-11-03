@@ -21,7 +21,7 @@ pub(super) async fn publish(
     // process) and waits for the main agent to schedule it. A claimed point means an operation
     // already carries it, so the row is not "waiting" any more.
     let awaiting_scheduling = awaiting_scheduling(snapshot)?;
-    let Some(thread) = projector.events.patch_thread_runtime(
+    let Some(row) = projector.events.patch_thread_runtime(
         &thread.id,
         thread.status,
         thread.updated_at,
@@ -31,28 +31,29 @@ pub(super) async fn publish(
         return Ok(());
     };
     let entry = crate::StudioAgentDirectoryEntry {
-        id: thread.id.clone(),
-        thread_id: thread.id.clone(),
-        root_thread_id: thread.root_thread_id.clone(),
-        path: thread.agent_path.clone(),
-        parent_path: thread.parent_thread_id.clone(),
-        role: thread.role.clone(),
-        delegation_mode: thread.delegation_mode,
-        delegation_preference: thread.delegation_preference,
-        frozen_model: thread.frozen_model.clone(),
-        task: thread.title.clone(),
+        agent_id: row.agent_id.clone(),
+        session_id: row.session_id.clone(),
+        parent_agent_id: row.parent_agent_id.clone(),
+        thread_id: row.thread_id.clone(),
+        role: row.role.clone(),
+        delegation_mode: row.delegation_mode,
+        delegation_preference: row.delegation_preference,
+        frozen_model: match &row.binding {
+            pl_protocol::AgentBinding::Native(config) => config.route.clone(),
+            pl_protocol::AgentBinding::Acp(_) => None,
+        },
+        task: row.title.clone(),
         summary,
-        depth: u32::from(thread.parent_thread_id.is_some()),
         state,
         execution,
         can_stop,
         awaiting_scheduling,
-        updated_at: thread.updated_at,
+        updated_at: row.updated_at,
     };
     projector.events.update_agent_directory(entry).await;
     projector
         .events
-        .update_child_interactions(&thread, snapshot)?;
+        .update_child_interactions(&row.thread_id, snapshot)?;
     Ok(())
 }
 
@@ -82,13 +83,18 @@ pub(super) async fn publish_cold_scheduling_state(
     thread: &pl_protocol::Thread,
     snapshot: &ThreadSnapshot,
 ) -> Result<()> {
-    let Some(record) = projector.store.catalog().get(&thread.id) else {
+    let Some((session_record, agent_record)) = (|| {
+        let catalog = projector.store.catalog();
+        let agent = catalog.agent_by_thread(&thread.id)?;
+        let session = catalog.get_session(&agent.session_id)?;
+        Some((session, agent))
+    })() else {
         return Ok(());
     };
     let awaiting_scheduling = awaiting_scheduling(snapshot)?;
     // Everything except the interruption fact stays the directory's own cold status: a crashed Turn
     // is never presented as running, and no current execution nor stop qualification is invented.
-    let state = match record.projected_status() {
+    let state = match agent_record.projected_status() {
         pl_protocol::ThreadStatus::Closed => {
             pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
         }
@@ -98,18 +104,19 @@ pub(super) async fn publish_cold_scheduling_state(
         _ => pl_protocol::AgentState::idle(),
     };
     let entry = crate::StudioAgentDirectoryEntry {
-        id: record.id.clone(),
-        thread_id: record.id.clone(),
-        root_thread_id: record.root_thread_id.clone(),
-        path: record.agent_path.clone(),
-        parent_path: record.parent_thread_id.clone(),
-        role: record.role.clone(),
-        delegation_mode: record.delegation_mode,
-        delegation_preference: record.delegation_preference,
-        frozen_model: record.frozen_model.clone(),
-        task: record.title.clone(),
+        agent_id: agent_record.agent_id.clone(),
+        session_id: agent_record.session_id.clone(),
+        parent_agent_id: agent_record.parent_agent_id.clone(),
+        thread_id: agent_record.thread_id.clone(),
+        role: agent_record.role.clone(),
+        delegation_mode: session_record.delegation_mode,
+        delegation_preference: session_record.delegation_preference,
+        frozen_model: agent_record.frozen_model(),
+        task: agent_record
+            .title
+            .clone()
+            .unwrap_or_else(|| session_record.title.clone()),
         summary: None,
-        depth: 1,
         state,
         execution: None,
         can_stop: false,
@@ -119,7 +126,7 @@ pub(super) async fn publish_cold_scheduling_state(
     projector.events.update_agent_directory(entry).await;
     projector
         .events
-        .update_child_interactions(thread, snapshot)?;
+        .update_child_interactions(&thread.id, snapshot)?;
     Ok(())
 }
 

@@ -1,8 +1,48 @@
 //! Resolved MCP connection options. Provider and product policy belong to the host.
 use crate::approval::ToolEffect;
+use crate::remote::RemoteCommandBackend;
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
+
+#[derive(Debug, Clone, Default)]
+pub enum McpExecutionContext {
+    #[default]
+    Host,
+    Remote {
+        commands: RemoteCommandBackend,
+    },
+}
+
+impl PartialEq for McpExecutionContext {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Host, Self::Host) => true,
+            (Self::Remote { commands: left }, Self::Remote { commands: right }) => {
+                left.is_same_binding(right)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for McpExecutionContext {}
+
+impl Hash for McpExecutionContext {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Host => 0u8.hash(state),
+            Self::Remote { commands } => {
+                1u8.hash(state);
+                commands.canonical_workspace_path().hash(state);
+                if let Some(session) = commands.client().session() {
+                    session.instance_id.hash(state);
+                }
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct McpServerConfig {
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -49,6 +89,7 @@ pub struct EffectiveMcpServerConfig {
     pub mutation_policy: McpServerMutationPolicy,
     pub bearer_token: Option<String>,
     pub tool_effect: Option<ToolEffect>,
+    pub execution_context: McpExecutionContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

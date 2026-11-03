@@ -39,6 +39,25 @@ class ClassifyPathTest(unittest.TestCase):
         self.assertIn("bridge", classify_path("code/pl-studio-bridge/src/lib.rs"))
         self.assertIn("native_exact", classify_path("code/anywork/tool/native_fault_main.dart"))
 
+    def test_only_external_rust_test_files_are_pure_tests(self):
+        self.assertIn("pure_test", classify_path("code/pl-core/tests/chat_page.rs"))
+        for path in (
+            "code/pl-core/src/chat/tests.rs",
+            "code/pl-core/Cargo.toml",
+            "code/pl-core/config/test.toml",
+            "code/pl-core/assets/schema.json",
+        ):
+            with self.subTest(path=path):
+                self.assertNotIn("pure_test", classify_path(path))
+
+    def test_shared_test_stems_are_full_not_pure_tests(self):
+        for stem in ("common", "fixture", "fixtures", "helper", "helpers", "support"):
+            path = f"code/pl-core/tests/{stem}.rs"
+            with self.subTest(path=path):
+                tags = classify_path(path)
+                self.assertNotIn("pure_test", tags)
+                self.assertIn("full", tags)
+
 
 class PlanFromPathsTest(unittest.TestCase):
     def test_design_only_runs_docs_policy(self):
@@ -48,7 +67,7 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(any(plan[name] for name in (
             "rust_checks", "linux_environment", "flutter_checks", "gui_generated",
             "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
-            "windows_build", "macos_build",
+            "windows_build", "macos_build", "windows_gui_build", "macos_gui_build",
         )))
         self.assertEqual(
             plan["required_jobs"],
@@ -64,6 +83,7 @@ class PlanFromPathsTest(unittest.TestCase):
         for flag in (
             "rust_checks", "linux_environment", "linux_inputs",
             "remote_helpers", "windows_build", "macos_build",
+            "windows_gui_build", "macos_gui_build",
         ):
             self.assertTrue(plan[flag], flag)
         self.assertFalse(plan["release_configuration"])
@@ -91,6 +111,8 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["linux_native"])
         self.assertFalse(plan["windows_build"])
         self.assertFalse(plan["macos_build"])
+        self.assertFalse(plan["windows_gui_build"])
+        self.assertFalse(plan["macos_gui_build"])
         self.assertEqual(
             plan["required_jobs"],
             ("changes", "pr-title", "linux-environment", "flutter-checks"),
@@ -99,17 +121,18 @@ class PlanFromPathsTest(unittest.TestCase):
     def test_platform_directories_follow_platform_boundaries(self):
         expectations = {
             "code/anywork/linux/CMakeLists.txt": ("linux_desktop", "linux_native"),
-            "code/anywork/windows/runner/main.cpp": ("windows_build",),
-            "code/anywork/macos/Runner/AppDelegate.swift": ("macos_build",),
+            "code/anywork/windows/runner/main.cpp": ("windows_build", "windows_gui_build"),
+            "code/anywork/macos/Runner/AppDelegate.swift": ("macos_build", "macos_gui_build"),
             "code/anywork/runner_common/window.cpp": (
                 "linux_desktop", "linux_native", "windows_build", "macos_build",
+                "windows_gui_build", "macos_gui_build",
             ),
             "code/anywork/integration_test/smoke_test.dart": ("linux_desktop",),
             "code/anywork/tool/inspect.dart": ("linux_desktop",),
         }
         heavy_flags = (
             "linux_desktop", "linux_native", "windows_build", "macos_build",
-            "gui_generated", "rust_checks",
+            "windows_gui_build", "macos_gui_build", "gui_generated", "rust_checks",
         )
         for path, selected in expectations.items():
             with self.subTest(path=path):
@@ -161,6 +184,8 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(native["linux_native"])
         self.assertTrue(native["windows_build"])
         self.assertTrue(native["macos_build"])
+        self.assertTrue(native["windows_gui_build"])
+        self.assertTrue(native["macos_gui_build"])
         self.assertFalse(native["linux_desktop"])
         self.assertFalse(native["gui_generated"])
         self.assertIn("linux-native", native["required_jobs"])
@@ -176,6 +201,7 @@ class PlanFromPathsTest(unittest.TestCase):
                 for flag in (
                     "flutter_checks", "gui_generated", "linux_desktop",
                     "linux_native", "windows_build", "macos_build",
+                    "windows_gui_build", "macos_gui_build",
                     "linux_inputs", "remote_helpers", "linux_environment",
                 ):
                     self.assertTrue(plan[flag], flag)
@@ -185,6 +211,48 @@ class PlanFromPathsTest(unittest.TestCase):
                 self.assertIn("linux-native", plan["required_jobs"])
                 self.assertIn("gui-generated", plan["required_jobs"])
                 self.assertFalse(plan["rust_checks"])
+
+    def test_pure_rust_test_keeps_host_checks_and_helpers_without_gui_builds(self):
+        plan = plan_from_paths(["code/pl-core/tests/chat_page.rs"], event_name="push")
+        for flag in (
+            "rust_checks", "linux_environment", "linux_inputs", "remote_helpers",
+            "windows_build", "macos_build",
+        ):
+            self.assertTrue(plan[flag], flag)
+        self.assertFalse(plan["windows_gui_build"])
+        self.assertFalse(plan["macos_gui_build"])
+        self.assertNotIn("gui-generated", plan["required_jobs"])
+
+    def test_shared_test_support_is_full_suite(self):
+        plan = plan_from_paths(["code/pl-core/tests/support/mod.rs"], event_name="push")
+        self.assertEqual(plan["plan"], "full")
+        self.assertTrue(all(plan[name] for name in (
+            "windows_build", "macos_build", "windows_gui_build", "macos_gui_build",
+        )))
+
+    def test_production_and_pure_test_changes_union_gui_responsibility(self):
+        plan = plan_from_paths(
+            ["code/pl-core/src/lib.rs", "code/pl-core/tests/chat_page.rs"],
+            event_name="push",
+        )
+        self.assertTrue(plan["rust_checks"])
+        self.assertTrue(plan["windows_build"])
+        self.assertTrue(plan["macos_build"])
+        self.assertTrue(plan["windows_gui_build"])
+        self.assertTrue(plan["macos_gui_build"])
+
+    def test_policy_and_pure_test_changes_force_full_suite(self):
+        plan = plan_from_paths(
+            [".github/workflows/pr-quality.yml", "code/pl-core/tests/chat_page.rs"],
+            event_name="push",
+        )
+        self.assertEqual(plan["plan"], "full")
+        self.assertTrue(all(plan[name] for name in (
+            "docs_policy", "release_configuration", "rust_checks",
+            "linux_environment", "flutter_checks", "gui_generated", "linux_inputs",
+            "remote_helpers", "linux_desktop", "linux_native", "windows_build",
+            "macos_build", "windows_gui_build", "macos_gui_build",
+        )))
 
     def test_mixed_changes_are_union_not_full(self):
         plan = plan_from_paths(
@@ -211,7 +279,7 @@ class PlanFromPathsTest(unittest.TestCase):
                 "docs_policy", "release_configuration", "rust_checks",
                 "linux_environment", "flutter_checks", "gui_generated",
                 "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
-                "windows_build", "macos_build",
+                "windows_build", "macos_build", "windows_gui_build", "macos_gui_build",
             )), path)
 
     def test_empty_or_unknown_runs_full_suite(self):
@@ -224,7 +292,7 @@ class PlanFromPathsTest(unittest.TestCase):
                 "docs_policy", "release_configuration", "rust_checks",
                 "linux_environment", "flutter_checks", "gui_generated",
                 "linux_inputs", "remote_helpers", "linux_desktop", "linux_native",
-                "windows_build", "macos_build",
+                "windows_build", "macos_build", "windows_gui_build", "macos_gui_build",
             }))
             self.assertIn("pr-title", plan["required_jobs"])
             for removed in ("remote-helpers", "linux-tools", "linux-integration"):
@@ -249,6 +317,8 @@ class PlanFromPathsTest(unittest.TestCase):
         text = buffer.getvalue()
         self.assertIn("docs_policy=true\n", text)
         self.assertIn("rust_checks=false\n", text)
+        self.assertIn("windows_gui_build=false\n", text)
+        self.assertIn("macos_gui_build=false\n", text)
         self.assertIn("required_jobs=changes,docs-policy\n", text)
 
     def test_host_lifecycle_native_scope_excludes_desktop_and_generation(self):
@@ -261,6 +331,8 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["linux_native"], path)
             self.assertTrue(plan["windows_build"], path)
             self.assertTrue(plan["macos_build"], path)
+            self.assertTrue(plan["windows_gui_build"], path)
+            self.assertTrue(plan["macos_gui_build"], path)
             self.assertFalse(plan["linux_desktop"], path)
             self.assertFalse(plan["gui_generated"], path)
 

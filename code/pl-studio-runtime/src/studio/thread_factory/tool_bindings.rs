@@ -205,19 +205,20 @@ impl StudioThreadFactory {
             }
         }
     }
-    pub(in crate::studio) fn forget_tool_binding(&self, id: &str) {
-        if let Some(binding) = self
+    pub(in crate::studio) async fn forget_tool_binding(&self, id: &str) {
+        let removed = self
             .bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
-        {
+            .remove(id);
+        if let Some(binding) = &removed {
             binding.lifetime.cancellation.cancel();
-            if self.services.worktrees.get(id).is_none() {
-                self.services
-                    .worktrees
-                    .release_stopped_runtime_resources(id);
-            }
+        }
+        let _ = self.shutdown_thread_mcp(id).await;
+        if removed.is_some() && self.services.worktrees.get(id).is_none() {
+            self.services
+                .worktrees
+                .release_stopped_runtime_resources(id);
         }
     }
     pub(super) fn forget_tool_binding_if_current(
@@ -234,7 +235,9 @@ impl StudioThreadFactory {
             .is_some_and(|binding| std::sync::Arc::ptr_eq(&binding.lifetime, lifetime))
             && let Some(binding) = bindings.remove(id)
         {
+            drop(bindings);
             binding.lifetime.cancellation.cancel();
+            self.retire_thread_mcp_if_current(id, lifetime);
             if self.services.worktrees.get(id).is_none() {
                 self.services
                     .worktrees
@@ -427,6 +430,7 @@ impl StudioThreadFactory {
                     store: resources,
                     helper_source: self.services.helper_source.clone(),
                 },
+                &binding.lifetime,
                 CatalogPreparation::Refresh {
                     policy_key: binding.policy_key.clone(),
                     policies: binding.policies.clone(),

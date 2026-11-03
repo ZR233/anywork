@@ -534,6 +534,47 @@ impl RemoteClient {
     ) -> Result<crate::command::ManagedCommand, RemoteClientError> {
         process::spawn(self, request, Some(lease), start).await
     }
+    pub(super) async fn open_http_wire(
+        &self,
+    ) -> Result<(String, u64, u64, WireClient, CancellationToken), RemoteClientError> {
+        if self.is_closing() {
+            return Err(RemoteClientError::Disconnected);
+        }
+        let (generation, wire) = ready(&self.inner).await?;
+        let epoch = self
+            .inner
+            .hello
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |hello| hello.session.epoch);
+        let exchange_id = format!(
+            "http-{}-{}",
+            self.inner.request_namespace,
+            self.inner.next_request_id.fetch_add(1, Ordering::Relaxed)
+        );
+        Ok((
+            exchange_id,
+            generation,
+            epoch,
+            wire,
+            self.inner.stopped.clone(),
+        ))
+    }
+    pub(super) async fn reserve_http_bytes(
+        &self,
+        bytes: usize,
+    ) -> Result<pl_remote_helper::budget::ByteLease, RemoteClientError> {
+        let clamped = bytes.min(self.inner.budget.allocation().fragment_bytes.max(1));
+        Ok(self
+            .inner
+            .budget
+            .reserve(clamped, &self.inner.stopped)
+            .await?)
+    }
+    pub(super) fn notify_wire_detached(&self, generation: u64, reason: String) {
+        mark_detached(&self.inner, generation, reason);
+    }
 }
 
 /// A complete next-step reservation: staging bytes, wire request and retained reply.

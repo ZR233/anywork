@@ -62,10 +62,10 @@ abstract class SidebarView with _$SidebarView {
 @freezed
 abstract class HeaderView with _$HeaderView {
   const factory HeaderView({
-    required StudioThread? selectedRootThread,
+    required SessionDirectoryRow? selectedRootRow,
     required StudioProject? selectedProject,
     required String? selectedProjectId,
-    required List<StudioThread> workspaceThreads,
+    required List<SessionDirectoryRow> workspaceRows,
     required List<StudioAgentView> agents,
     required String? selectedThreadId,
     required ThreadRuntimeView runtime,
@@ -74,7 +74,7 @@ abstract class HeaderView with _$HeaderView {
   }) = _HeaderView;
 
   factory HeaderView.fromState(StudioState state) {
-    final root = state.selectedRootThread;
+    final root = state.selectedRootRow;
     final workspaceId = root?.workspaceId ?? state.selectedProjectId;
     StudioProject? selectedProject;
     for (final project in state.projects) {
@@ -84,10 +84,10 @@ abstract class HeaderView with _$HeaderView {
       }
     }
     return HeaderView(
-      selectedRootThread: root,
+      selectedRootRow: root,
       selectedProject: selectedProject,
       selectedProjectId: state.selectedProjectId,
-      workspaceThreads: state.threadsForSelectedRoot,
+      workspaceRows: state.rowsForSelectedSession,
       agents: state.selectedAgents,
       selectedThreadId: state.selectedThreadId,
       runtime: state.runtime,
@@ -102,7 +102,7 @@ abstract class StatusBarView with _$StatusBarView {
   const StatusBarView._();
 
   const factory StatusBarView({
-    required StudioThread thread,
+    required SessionDirectoryRow row,
     required List<ModelSelectionAccount> accounts,
     required List<RoleSettingsView> roles,
     required bool isBusy,
@@ -116,7 +116,7 @@ abstract class StatusBarView with _$StatusBarView {
   factory StatusBarView.fromWorkspace(AgentWorkspaceView workspace) {
     final runtime = workspace.runtime;
     return StatusBarView(
-      thread: workspace.thread,
+      row: workspace.row,
       accounts: workspace.accounts,
       roles: workspace.roles,
       isBusy: workspace.isBusy,

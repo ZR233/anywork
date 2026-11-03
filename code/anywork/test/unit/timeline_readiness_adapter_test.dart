@@ -88,10 +88,10 @@ void main() {
     final metadataState = await metadata.state
         .waitFor((state) => state.frame != null)
         .timeout(const Duration(seconds: 5));
-    final thread = metadataState.frame!.thread!;
+    final row = metadataState.frame!.row!;
     await metadata.release();
     graph.setConversationPageVisible(true);
-    await graph.client.directoryCommands.selectThread(thread.id);
+    await graph.client.directoryCommands.selectThread(row.threadId);
     final held = await opened.future;
     await held.initialEntered.future;
     await held.stateAckCompleted.future;

@@ -41,9 +41,21 @@ impl std::fmt::Debug for FailingPreparer {
     }
 }
 impl StudioChildFactory for FailingPreparer {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _: &str,
+        _: pl_protocol::DelegationSettings,
+        _: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         request: ChildThreadRequest,
+        _: (),
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         (self.prepare)(request).await
     }
@@ -347,7 +359,22 @@ async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
         .agent_facility
         .product_events
         .commit_directory(crate::studio::store::directory::DirectoryDelta {
-            thread_upserts: vec![protocol.clone()],
+            agent_upserts: vec![crate::studio::records::AgentDirectoryRecord {
+                agent_id: protocol.id.clone(),
+                session_id: protocol.root_thread_id.clone(),
+                parent_agent_id: protocol.parent_thread_id.clone(),
+                thread_id: protocol.id.clone(),
+                role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
+                title: Some(protocol.id.clone()),
+                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+                    route: None,
+                    system_instructions: None,
+                }),
+                status: protocol.status,
+                explicitly_closed: false,
+                created_at: protocol.created_at,
+                updated_at: protocol.updated_at,
+            }],
             ..Default::default()
         })
         .await?;
@@ -385,12 +412,14 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
         .flush()
         .await?;
     eprintln!("private crash fixture: root owner restored");
-    let protocol = runtime
-        .store
-        .catalog()
-        .get("required-private")
-        .context("seeded required-private catalog row")?
-        .to_thread();
+    let catalog = runtime.store.catalog();
+    let private_agent = catalog
+        .get_agent("required-private")
+        .context("seeded required-private catalog row")?;
+    let private_session = catalog
+        .get_session(&private_agent.session_id)
+        .context("seeded required-private session row")?;
+    let protocol = crate::studio::records::thread_projection(&private_session, &private_agent);
     let checkpoint = runtime
         .store
         .history(&protocol.id)
@@ -715,25 +744,45 @@ async fn reject_changed_saved_projection(
     }
     // A filtered projection can lose P precisely because its canonical ownership changed.
     // Its absence must not be mistaken for a private identity that never had a catalog row.
-    let canonical = runtime.store.catalog().get("required-private").unwrap();
+    let catalog = runtime.store.catalog();
+    let canonical_agent = catalog.get_agent("required-private").unwrap();
+    let canonical_session = catalog.get_session(&canonical_agent.session_id).unwrap();
+    let canonical_sessions = catalog.sessions();
+    let canonical_agents = catalog.agents();
     let without_private = tree
         .iter()
         .filter(|thread| thread.id != "required-private")
         .cloned()
         .collect::<Vec<_>>();
     for field in ["workspace", "root", "parent"] {
-        let mut shifted = canonical.clone();
+        // 保持 read_thread 仍能定位该成员，仅替换身份事实，模拟另一份目录写入。
         match field {
-            "workspace" => shifted.workspace_id = "different-workspace".into(),
-            "root" => shifted.root_thread_id = "different-root".into(),
-            "parent" => shifted.parent_thread_id = Some("different-parent".into()),
+            "workspace" => {
+                let mut shifted = canonical_session.clone();
+                shifted.workspace_id = "different-workspace".into();
+                catalog.upsert_session(shifted).await?;
+            }
+            "root" => {
+                let mut shifted = canonical_session.clone();
+                shifted.session_id = "different-root".into();
+                catalog.upsert_session(shifted).await?;
+                let mut shifted_agent = canonical_agent.clone();
+                shifted_agent.session_id = "different-root".into();
+                catalog.upsert_agent(shifted_agent).await?;
+            }
+            "parent" => {
+                let mut shifted = canonical_agent.clone();
+                shifted.parent_agent_id = Some("different-parent".into());
+                catalog.upsert_agent(shifted).await?;
+            }
             _ => unreachable!(),
         }
-        runtime.store.catalog().upsert(shifted).await?;
         let outcome = runtime
             .freeze_thread_archive(scope.clone(), &without_private, &[])
             .await;
-        runtime.store.catalog().upsert(canonical.clone()).await?;
+        catalog
+            .test_restore_records(canonical_sessions.clone(), canonical_agents.clone())
+            .await?;
         let error = outcome.unwrap_err();
         assert!(
             error.to_string().contains("changed identity"),

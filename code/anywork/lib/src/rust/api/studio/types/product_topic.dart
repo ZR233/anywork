@@ -12,12 +12,14 @@ import 'chatgpt_auth.dart';
 import 'delegation.dart';
 import 'error.dart';
 import 'event.dart';
+import 'mcp.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'response.dart';
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
@@ -121,8 +123,12 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.recovery(
     BridgeRecoveryStateSnapshot field0,
   ) = BridgeProductBaseline_Recovery;
-  const factory BridgeProductBaseline.mcp(BridgeMcpStateSnapshot field0) =
-      BridgeProductBaseline_Mcp;
+  const factory BridgeProductBaseline.mcpCatalog(
+    BridgeMcpCatalogSnapshot field0,
+  ) = BridgeProductBaseline_McpCatalog;
+  const factory BridgeProductBaseline.threadMcp(
+    BridgeThreadMcpStateSnapshot field0,
+  ) = BridgeProductBaseline_ThreadMcp;
   const factory BridgeProductBaseline.lsp(BridgeLspStateSnapshot field0) =
       BridgeProductBaseline_Lsp;
   const factory BridgeProductBaseline.skills(BridgeSkillsStateSnapshot field0) =
@@ -175,7 +181,10 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
   const factory BridgeProductTopic.modelCatalog() =
       BridgeProductTopic_ModelCatalog;
   const factory BridgeProductTopic.recovery() = BridgeProductTopic_Recovery;
-  const factory BridgeProductTopic.mcp() = BridgeProductTopic_Mcp;
+  const factory BridgeProductTopic.mcpCatalog({required BridgeMcpScope scope}) =
+      BridgeProductTopic_McpCatalog;
+  const factory BridgeProductTopic.threadMcp({required String threadId}) =
+      BridgeProductTopic_ThreadMcp;
   const factory BridgeProductTopic.lsp() = BridgeProductTopic_Lsp;
   const factory BridgeProductTopic.skills({required String workspaceId}) =
       BridgeProductTopic_Skills;

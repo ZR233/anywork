@@ -3,13 +3,15 @@
 use crate::environment::ExecutionEnvironment;
 pub use pl_protocol::remote::{
     RemoteAllocation, RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, RemoteHello,
-    RemoteRequest, RemoteResponse, RemoteSession, RemoteSpawnRequest,
+    RemoteHttpExchangeStart, RemoteHttpHeader, RemoteHttpRequestHead, RemoteHttpResponseHead,
+    RemoteProcessLeaseId, RemoteRequest, RemoteResponse, RemoteSession, RemoteSpawnRequest,
 };
 pub use pl_remote_helper::transport::Bytes;
 
 mod client;
 mod command;
 mod execution;
+mod http;
 mod lsp;
 mod manager;
 pub(crate) mod path;
@@ -21,8 +23,9 @@ mod workspace;
 pub use client::{
     RemoteClient, RemoteClientError, RemoteReply, RemoteRequestTiming, SshAuthFailure,
 };
-pub use command::RemoteCommandBackend;
+pub use command::{RemoteCommandBackend, RemoteProtocolSpawnRequest};
 pub use execution::{RemoteExecutionBackend, RemoteExecutionError};
+pub use http::RemoteHttpResponse;
 pub use manager::{
     RemoteHelperAssets, RemoteHelperTarget, SshConnectionSnapshot, SshConnectionState, SshManager,
     SshServerProfile,

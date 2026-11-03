@@ -125,7 +125,7 @@ impl ProductEventBus {
             &[],
             &[ProjectRemoval {
                 workspace_id: workspace_id.to_string(),
-                thread_ids: Vec::new(),
+                session_ids: Vec::new(),
                 closed_at: unix_seconds(),
             }],
         )

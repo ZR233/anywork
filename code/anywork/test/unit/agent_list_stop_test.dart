@@ -7,14 +7,14 @@ StudioAgentView _agent({
   bool canStop = false,
   bool awaitingScheduling = false,
   StudioAgentState state = const RunningStudioAgent('turn-1'),
-  String? parentPath = 'root',
+  String? parentAgentId = 'thread-root',
   String role = 'executor',
 }) {
   return StudioAgentView(
-    id: 'child-1',
+    agentId: 'child-1',
+    sessionId: 'thread-root',
+    parentAgentId: parentAgentId,
     threadId: 'thread-child',
-    path: 'root/child',
-    parentPath: parentPath,
     role: role,
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
@@ -252,7 +252,7 @@ void main() {
         execution: _execution,
         canStop: true,
         role: 'planner',
-        parentPath: 'root',
+        parentAgentId: 'thread-root',
       ),
     );
     expect(resolved.action, AgentListStopAction.none);
@@ -267,7 +267,7 @@ void main() {
         execution: _execution,
         canStop: true,
         role: 'planner',
-        parentPath: null,
+        parentAgentId: null,
       ),
     );
     expect(resolved.action, AgentListStopAction.stop);

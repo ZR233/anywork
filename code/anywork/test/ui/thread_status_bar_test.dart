@@ -214,7 +214,7 @@ void main() {
 
     expect(throughput.read()?.tokensPerSecond, 25);
     expect(context.read()?.contextTokens, 100);
-    expect(chrome.read()?.thread.id, 'thread-main');
+    expect(chrome.read()?.row.threadId, 'thread-main');
     expect(chrome.read()?.activeSkills, ['skill-a']);
     throughputNotifications = 0;
     contextNotifications = 0;

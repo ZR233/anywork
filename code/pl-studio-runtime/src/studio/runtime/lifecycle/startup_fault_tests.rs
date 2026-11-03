@@ -147,7 +147,7 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     let persisted = runtime
         .store
         .catalog()
-        .get(&thread.id)
+        .get_session(&thread.id)
         .expect("canonical Thread survived restart");
     assert_eq!(persisted.workspace_id, "project-published");
     assert!(
@@ -248,7 +248,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
         .join(".migration-complete");
     let completion = tokio::fs::read(&marker).await?;
     tokio::fs::rename(&original, temp.path().join("original-offline")).await?;
-    let before = runtime.store.catalog().entries().len();
+    let before = runtime.store.catalog().sessions().len();
     // No scan has described this failure yet: actual new-root preparation must still reject it
     // before directory publication, and the hot ordinary owner cannot reuse a cached binding.
     assert!(
@@ -257,7 +257,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
             .await
             .is_err()
     );
-    assert_eq!(runtime.store.catalog().entries().len(), before);
+    assert_eq!(runtime.store.catalog().sessions().len(), before);
     let physical = runtime.ensure_thread_owner(&ordinary.id).await.unwrap_err();
     assert!(
         physical
@@ -295,7 +295,7 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
             .await
             .is_err()
     );
-    assert_eq!(runtime.store.catalog().entries().len(), before);
+    assert_eq!(runtime.store.catalog().sessions().len(), before);
     assert!(
         runtime.thread_snapshot(&ordinary.id).await.is_ok(),
         "execution blockage preserves safe readonly history"
@@ -353,15 +353,17 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
             closed: false,
         },
     );
-    let (thread_delta, _) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
+    let (thread_delta, _, _) = crate::studio::store::directory::DirectoryDelta::register_session(
         "cold".into(),
         "project-cold",
         "cold",
         pl_protocol::ThreadModeId::simple(),
         pl_protocol::ThreadWorkspaceMode::Local,
         "/tmp/project-cold".into(),
+        crate::config::ROOT_AGENT_ROUTE_KEY,
     );
-    delta.thread_upserts = thread_delta.thread_upserts;
+    delta.session_upserts = thread_delta.session_upserts;
+    delta.agent_upserts = thread_delta.agent_upserts;
     store.persist_directory_summaries(&delta).await?;
     runtime.shutdown_runtime().await?;
     let paths = StudioPaths::resolve(Some(home.to_owned()))?;

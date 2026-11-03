@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
+import '../types/session_directory.dart';
 import '../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -18,14 +19,14 @@ class BridgeThreadDirectoryFrame {
   final BridgeThreadDirectoryQuery query;
   final BridgeThreadDirectoryWindow window;
   final BridgeResourceStamp stamp;
-  final List<BridgeThread> threads;
+  final List<BridgeSessionDirectoryRow> rows;
   final String? nextCursor;
 
   const BridgeThreadDirectoryFrame({
     required this.query,
     required this.window,
     required this.stamp,
-    required this.threads,
+    required this.rows,
     this.nextCursor,
   });
 
@@ -34,7 +35,7 @@ class BridgeThreadDirectoryFrame {
       query.hashCode ^
       window.hashCode ^
       stamp.hashCode ^
-      threads.hashCode ^
+      rows.hashCode ^
       nextCursor.hashCode;
 
   @override
@@ -45,7 +46,7 @@ class BridgeThreadDirectoryFrame {
           query == other.query &&
           window == other.window &&
           stamp == other.stamp &&
-          threads == other.threads &&
+          rows == other.rows &&
           nextCursor == other.nextCursor;
 }
 
@@ -109,16 +110,16 @@ class BridgeThreadDirectoryWindow {
 class BridgeThreadMetadataFrame {
   final String threadId;
   final BridgeResourceStamp stamp;
-  final BridgeThread? thread;
+  final BridgeSessionDirectoryRow? row;
 
   const BridgeThreadMetadataFrame({
     required this.threadId,
     required this.stamp,
-    this.thread,
+    this.row,
   });
 
   @override
-  int get hashCode => threadId.hashCode ^ stamp.hashCode ^ thread.hashCode;
+  int get hashCode => threadId.hashCode ^ stamp.hashCode ^ row.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -127,5 +128,5 @@ class BridgeThreadMetadataFrame {
           runtimeType == other.runtimeType &&
           threadId == other.threadId &&
           stamp == other.stamp &&
-          thread == other.thread;
+          row == other.row;
 }

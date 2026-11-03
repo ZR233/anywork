@@ -292,18 +292,16 @@ pub struct BridgeFaultedAgent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAgentDirectoryEntryDto {
-    pub id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub parent_agent_id: Option<String>,
     pub thread_id: String,
-    pub root_thread_id: String,
-    pub path: String,
-    pub parent_path: Option<String>,
     pub role: String,
     pub delegation_mode: super::BridgeDelegationMode,
     pub delegation_preference: super::BridgeDelegationPreference,
     pub frozen_model: Option<super::BridgeNewThreadModelRoute>,
     pub task: String,
     pub summary: Option<String>,
-    pub depth: u32,
     pub state: BridgeAgentState,
     /// 该成员当前执行；未装载或无当前执行时为空。
     pub execution: Option<BridgeAgentExecution>,
@@ -331,46 +329,6 @@ pub enum BridgeAgentExecutionPhase {
     AwaitingAdmission,
     Running,
     Stopping,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeMcpHealthDto {
-    pub active_mcp_servers: Vec<String>,
-    pub mcp_servers: Vec<BridgeMcpServerDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeMcpServerDto {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub source_kind: String,
-    pub mutation_policy: String,
-    pub state: BridgeMcpServerState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeMcpServerState {
-    Disabled {
-        message: String,
-    },
-    MissingCredential {
-        message: String,
-    },
-    Checking {
-        message: String,
-    },
-    Available {
-        checked_at: i64,
-        tool_count: u64,
-    },
-    Unavailable {
-        checked_at: i64,
-        error: BridgeStateError,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

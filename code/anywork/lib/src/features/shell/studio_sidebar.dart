@@ -137,27 +137,20 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     final selectedThreadId = client.selection.state.selectedThreadId;
     final selectedThread = selectedThreadId == null
         ? null
-        : ref
-              .watch(threadMetadataStoreProvider(selectedThreadId))
-              .frame
-              ?.thread;
-    final selectedRootThreadId = switch (selectedThread) {
-      null => null,
-      final thread when thread.isRoot => thread.id,
-      final thread => thread.rootThreadId,
-    };
+        : ref.watch(threadMetadataStoreProvider(selectedThreadId)).frame?.row;
+    final selectedRootThreadId = selectedThread?.sessionId;
     final recovery =
         ref.watch(recoveryStoreProvider).value?.values ??
         const <StudioRecoveryIssue>[];
     final threadIssues = <String, StudioRecoveryIssue>{};
     for (final window in [...pinnedWindows.values, ...windows.values]) {
-      for (final thread in window.threads) {
+      for (final row in window.rows) {
         final issue = recoveryIssuesForTarget(
           recovery,
-          workspaceId: thread.workspaceId,
-          threadId: thread.id,
+          workspaceId: row.workspaceId,
+          threadId: row.threadId,
         ).firstOrNull;
-        if (issue != null) threadIssues[thread.id] = issue;
+        if (issue != null) threadIssues[row.threadId] = issue;
       }
     }
     return StudioSidebar(
@@ -234,10 +227,10 @@ class _SidebarState extends ConsumerState<_Sidebar> {
               client.selection.state.selectedThreadId == null,
         ),
       ),
-      onSelectThread: (thread) => unawaited(
+      onSelectThread: (row) => unawaited(
         _navigate(
-          () => client.directoryCommands.selectThread(thread.id),
-          () => client.selection.state.selectedThreadId == thread.id,
+          () => client.directoryCommands.selectThread(row.threadId),
+          () => client.selection.state.selectedThreadId == row.threadId,
         ),
       ),
       onProjectAction: (project, action) => unawaited(
@@ -285,42 +278,35 @@ class _SidebarState extends ConsumerState<_Sidebar> {
           }
         }),
       ),
-      onThreadAction: (project, thread, action) => unawaited(
+      onThreadAction: (project, row, action) => unawaited(
         _run(() async {
           switch (action) {
             case SidebarThreadAction.pin:
               await _saveSidebarPreferences(
                 ref,
                 general: general,
-                threadId: thread.id,
+                threadId: row.threadId,
               );
             case SidebarThreadAction.rename:
-              await _renameThreadFromSidebar(context, client, thread);
+              await _renameThreadFromSidebar(context, client, row);
             case SidebarThreadAction.archive:
-              await _archiveThreadFromSidebar(context, client, thread.id);
+              await _archiveThreadFromSidebar(context, client, row.threadId);
             case SidebarThreadAction.delete:
-              await _deleteThreadFromSidebar(context, client, thread);
+              await _deleteThreadFromSidebar(context, client, row);
             case SidebarThreadAction.copyWorkspace:
-              await Clipboard.setData(
-                ClipboardData(text: thread.workspacePath),
-              );
+              await Clipboard.setData(ClipboardData(text: row.workspacePath));
             case SidebarThreadAction.openVsCode:
-              await _openThreadWorkspaceInVsCode(context, ref, project, thread);
+              await _openThreadWorkspaceInVsCode(context, ref, project, row);
             case SidebarThreadAction.openZed:
-              await _openThreadWorkspaceInZed(context, ref, project, thread);
+              await _openThreadWorkspaceInZed(context, ref, project, row);
             case SidebarThreadAction.openTerminal:
-              await _openThreadWorkspaceInTerminal(
-                context,
-                ref,
-                project,
-                thread,
-              );
+              await _openThreadWorkspaceInTerminal(context, ref, project, row);
             case SidebarThreadAction.retryRecovery:
               await client.directoryCommands.retryRecovery();
             case SidebarThreadAction.restore:
-              await client.directoryCommands.restoreThread(thread.id);
+              await client.directoryCommands.restoreThread(row.threadId);
             case SidebarThreadAction.originalWorkspace:
-              await _showArchivedWorkspace(thread, project);
+              await _showArchivedWorkspace(row, project);
           }
         }),
       ),
@@ -333,7 +319,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   }
 
   Future<void> _showArchivedWorkspace(
-    StudioThread thread,
+    SessionDirectoryRow row,
     StudioProject project,
   ) => showDialog<void>(
     context: context,
@@ -344,24 +330,22 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(thread.title),
+          Text(row.title),
           if (project.sshAlias != null) Text(project.sshAlias!),
           const SizedBox(height: 12),
           SelectableText(
-            thread.workspacePath.isEmpty
+            row.workspacePath.isEmpty
                 ? context.l10n.sidebarOriginalWorkspaceUnknown
-                : thread.workspacePath,
+                : row.workspacePath,
           ),
         ],
       ),
       actions: [
         TextButton(
-          key: StudioDriverKeys.copyThreadWorkspace(thread.id),
-          onPressed: thread.workspacePath.isEmpty
+          key: StudioDriverKeys.copyThreadWorkspace(row.threadId),
+          onPressed: row.workspacePath.isEmpty
               ? null
-              : () => Clipboard.setData(
-                  ClipboardData(text: thread.workspacePath),
-                ),
+              : () => Clipboard.setData(ClipboardData(text: row.workspacePath)),
           child: Text(context.l10n.sidebarCopyPath),
         ),
         TextButton(

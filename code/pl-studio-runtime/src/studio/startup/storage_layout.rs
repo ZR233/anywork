@@ -587,9 +587,9 @@ async fn build(
             }
             session_layout::persist_workspace_manifest(stage, &expected).await?;
         }
-        for mut entry in catalog.entries() {
-            let key = storage_key(&entry.id, "Thread")?;
-            let owner_key = storage_key(&entry.workspace_id, "Workspace")?;
+        for (mut session, agent) in catalog_directory_threads(&catalog) {
+            let key = storage_key(&agent.thread_id, "Thread")?;
+            let owner_key = storage_key(&session.workspace_id, "Workspace")?;
             let grouped = layout_root
                 .first()
                 .map(|root| root.join(&owner_key).join("sessions").join(&key));
@@ -606,9 +606,9 @@ async fn build(
             ensure!(
                 candidates.len() == 1,
                 "registered v2 session source missing or duplicated: {}",
-                entry.id
+                agent.thread_id
             );
-            if let Some(item) = legacy_journal.get(&entry.id)
+            if let Some(item) = legacy_journal.get(&agent.thread_id)
                 && item.phase != LegacyPhase::Planned
             {
                 ensure!(
@@ -618,17 +618,17 @@ async fn build(
                     "legacy layout journal says moved but only source exists"
                 );
             }
-            let original_manifest = SessionManifest::from_thread(&entry.to_thread());
+            let original_manifest = SessionManifest::from_directory_facts(&session, &agent);
             if let Some(mapping) = journal.bot_roots.iter().find(|mapping| {
                 mapping
                     .threads
-                    .get(&entry.id)
+                    .get(&agent.thread_id)
                     .is_some_and(|proof| proof.proven_local_root)
             }) {
-                entry.workspace_path = mapping.new_root.clone();
+                session.workspace_path = mapping.new_root.clone();
             }
-            let expected = SessionManifest::from_thread(&entry.to_thread());
-            let target = stage.session_paths(&entry.workspace_id, &entry.id)?;
+            let expected = SessionManifest::from_directory_facts(&session, &agent);
+            let target = stage.session_paths(&session.workspace_id, &agent.thread_id)?;
             {
                 let source = &candidates[0];
                 ensure_tree_safe(paths.home(), source).await?;
@@ -646,7 +646,7 @@ async fn build(
                     );
                 }
                 validate_family(&source.join("history.sqlite"))?;
-                let label = format!("session:{}", entry.id);
+                let label = format!("session:{}", agent.thread_id);
                 if !journal.copied.contains(&label) {
                     // Copy only owned files: opaque history and its WAL family are byte-preserved.
                     for name in [
@@ -672,7 +672,7 @@ async fn build(
                     journal.copied.insert(label);
                     persist(journal_path, journal).await?;
                 }
-                let previous_flat = if legacy_journal.contains_key(&entry.id) {
+                let previous_flat = if legacy_journal.contains_key(&agent.thread_id) {
                     flat.as_ref()
                         .map(|path| original_path(paths, path))
                         .transpose()?
@@ -717,31 +717,47 @@ fn validate_directory(
     catalog: &CatalogStore,
     workspaces: &workspaces::WorkspaceStore,
 ) -> Result<()> {
-    let entries = catalog.entries();
-    let ids: BTreeMap<_, _> = entries
+    let owned_sessions = catalog.sessions();
+    let sessions: BTreeMap<_, _> = owned_sessions
         .iter()
-        .map(|entry| (entry.id.as_str(), entry))
+        .map(|session| (session.session_id.as_str(), session))
         .collect();
-    for entry in &entries {
+    let agents = catalog.agents();
+    let agent_ids: BTreeMap<_, _> = agents
+        .iter()
+        .map(|agent| (agent.agent_id.as_str(), agent))
+        .collect();
+    for session in sessions.values() {
         ensure!(
-            workspaces.get(&entry.workspace_id).is_some(),
+            workspaces.get(&session.workspace_id).is_some(),
             "catalog owner is missing"
         );
+        ensure!(
+            agent_ids.contains_key(session.root_agent_id.as_str()),
+            "catalog session has no root member"
+        );
+    }
+    for agent in &agents {
+        let Some(session) = sessions.get(agent.session_id.as_str()) else {
+            anyhow::bail!("catalog agent references a missing session");
+        };
         let mut seen = BTreeSet::new();
-        let mut cursor = entry;
+        let mut cursor = agent;
         loop {
-            ensure!(seen.insert(&cursor.id), "catalog parent cycle");
-            if let Some(parent) = &cursor.parent_thread_id {
-                cursor = ids
+            ensure!(seen.insert(&cursor.agent_id), "catalog parent cycle");
+            if let Some(parent) = &cursor.parent_agent_id {
+                cursor = agent_ids
                     .get(parent.as_str())
                     .context("catalog parent is missing")?;
                 ensure!(
-                    cursor.workspace_id == entry.workspace_id
-                        && cursor.root_thread_id == entry.root_thread_id,
+                    cursor.session_id == agent.session_id,
                     "catalog ownership mismatch"
                 );
             } else {
-                ensure!(cursor.id == entry.root_thread_id, "catalog root mismatch");
+                ensure!(
+                    cursor.agent_id == session.root_agent_id,
+                    "catalog root mismatch"
+                );
                 break;
             }
         }
@@ -912,7 +928,13 @@ async fn load_legacy_journal(
         let _preserved_orphans = record.orphans;
         for item in record.moves {
             let entry = catalog
-                .get(&item.thread_id)
+                .agent_by_thread(&item.thread_id)
+                .and_then(|agent| {
+                    catalog
+                        .get_session(&agent.session_id)
+                        .map(|session| (session, agent))
+                })
+                .map(|(session, _)| session)
                 .context("v2 layout journal Thread is not registered")?;
             ensure!(
                 entry.workspace_id == item.project_id
@@ -933,6 +955,22 @@ async fn load_legacy_journal(
         }
     }
     Ok(result)
+}
+
+/// 展开目录的会话×成员事实，供 v2 布局迁移逐 Thread 物理目录处理。
+fn catalog_directory_threads(
+    catalog: &CatalogStore,
+) -> Vec<(
+    crate::studio::records::SessionDirectoryRecord,
+    crate::studio::records::AgentDirectoryRecord,
+)> {
+    let mut pairs = Vec::new();
+    for session in catalog.sessions() {
+        for agent in catalog.agents_for_session(&session.session_id) {
+            pairs.push((session.clone(), agent));
+        }
+    }
+    pairs
 }
 
 /// Copy without following links or overwriting a conflicting file; a previously copied exact file

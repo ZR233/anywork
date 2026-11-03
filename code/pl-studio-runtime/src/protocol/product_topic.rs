@@ -10,10 +10,10 @@ use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioChildInteractionsState, StudioLspStateSnapshot,
-    StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
-    StudioProductEventKind, StudioProjectDirectoryState, StudioRecoveryStateSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot,
-    StudioThreadDirectoryPage, StudioUpdateStateSnapshot,
+    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventKind,
+    StudioProjectDirectoryState, StudioRecoveryStateSnapshot, StudioSessionCostsState,
+    StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
+    StudioUpdateStateSnapshot,
 };
 
 /// 一个产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -31,7 +31,8 @@ pub enum StudioProductTopic {
     SettingsConfig,
     ModelCatalog,
     Recovery,
-    Mcp,
+    McpCatalog { scope: pl_protocol::McpScope },
+    ThreadMcp { thread_id: String },
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
@@ -60,6 +61,12 @@ impl StudioProductTopic {
     /// 校验作用域身份；空/空白 scope 是协议错误，不静默落到全局。
     pub fn validate(&self) -> Result<(), StudioProductTopicScopeError> {
         match self {
+            Self::McpCatalog {
+                scope: pl_protocol::McpScope::Ssh { ssh_alias },
+            } if ssh_alias.trim().is_empty() => Err(scope_error("mcpCatalog", "sshAlias")),
+            Self::ThreadMcp { thread_id } if thread_id.trim().is_empty() => {
+                Err(scope_error("threadMcp", "threadId"))
+            }
             Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
                 Err(scope_error("skills", "workspaceId"))
             }
@@ -82,7 +89,12 @@ impl StudioProductTopic {
             StudioProductEventKind::SettingsConfigStateChanged(_) => Self::SettingsConfig,
             StudioProductEventKind::ModelCatalogStateChanged(_) => Self::ModelCatalog,
             StudioProductEventKind::RecoveryStateChanged(_) => Self::Recovery,
-            StudioProductEventKind::McpStateChanged(_) => Self::Mcp,
+            StudioProductEventKind::McpCatalogChanged(state) => Self::McpCatalog {
+                scope: state.scope.clone(),
+            },
+            StudioProductEventKind::ThreadMcpStateChanged(state) => Self::ThreadMcp {
+                thread_id: state.thread_id.clone(),
+            },
             StudioProductEventKind::LspStateChanged(_) => Self::Lsp,
             StudioProductEventKind::SkillsStateChanged(state) => Self::Skills {
                 workspace_id: state.workspace_id.clone(),
@@ -133,7 +145,8 @@ pub enum StudioProductBaselineState {
     SettingsConfig(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalog(Box<StudioModelCatalogStateSnapshot>),
     Recovery(Box<StudioRecoveryStateSnapshot>),
-    Mcp(Box<StudioMcpStateSnapshot>),
+    McpCatalog(Box<pl_protocol::McpCatalogSnapshot>),
+    ThreadMcp(Box<pl_protocol::ThreadMcpStateSnapshot>),
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
     ThreadModeCatalog(Box<pl_protocol::ThreadModeCatalogSnapshot>),
@@ -160,7 +173,8 @@ impl StudioProductBaselineState {
             Self::SettingsConfig(state) => revision_of(&state.state),
             Self::ModelCatalog(state) => revision_of(&state.state),
             Self::Recovery(state) => revision_of(&state.state),
-            Self::Mcp(state) => revision_of(&state.state),
+            Self::McpCatalog(state) => state.revision,
+            Self::ThreadMcp(state) => state.generation,
             Self::Lsp(state) => revision_of(&state.state),
             Self::Skills(state) => revision_of(&state.state),
             Self::ThreadModeCatalog(state) => state.revision,

@@ -19,7 +19,7 @@ const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 final class _DraftTransport extends AccountsTestTransport
     with DirectoryFeedFixture {
   _DraftTransport() {
-    seedThread(_thread());
+    seedThread(_row());
     addTearDown(() => frames.close());
     addTearDown(() => _startEvents?.close());
   }
@@ -233,6 +233,9 @@ final class _DraftTransport extends AccountsTestTransport
     unawaited(
       startReply.future.then(
         (result) {
+          // 生产端 create_thread 会先 register_session 提交目录行再交付回执；
+          // fixture 同步该契约，宿主判定才能读到 typed 目录行。
+          seedThread(_row(result.thread.id));
           startEvents.add(NewThreadStartSucceeded(result));
           unawaited(startEvents.close());
         },
@@ -335,6 +338,23 @@ StudioThread _thread([String id = 'thread', String? parentThreadId]) =>
       updatedAt: DateTime.utc(2026),
       parentThreadId: parentThreadId,
       rootThreadId: parentThreadId == null ? '' : 'thread',
+      workspacePath: _project.path,
+    );
+
+/// The directory row shape of [_thread]: root rows own the session identity,
+/// child rows name their parent agent.
+SessionDirectoryRow _row([String id = 'thread', String? parentAgentId]) =>
+    SessionDirectoryRow(
+      sessionId: parentAgentId ?? id,
+      agentId: id,
+      parentAgentId: parentAgentId,
+      threadId: id,
+      workspaceId: _project.id,
+      title: 'Thread',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(2026),
       workspacePath: _project.path,
     );
 
@@ -623,7 +643,14 @@ void main() {
       if (!transport.startCancelGate!.isCompleted)
         transport.startCancelGate!.complete();
     });
-    final initialObservers = client.budget.used(ResourceKind.observer);
+    int nonMcpObservers() => client.budget.usage
+        .where(
+          (usage) =>
+              usage.kind == ResourceKind.observer &&
+              !usage.owner.startsWith('topic:threadMcp:'),
+        )
+        .length;
+    final initialObservers = nonMcpObservers();
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'new input');
     final submission = owner.submit(_project.id);
@@ -690,11 +717,30 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
-    // The visible root page releases its child-interactions share. The new
+    // The visible root page releases its MCP and child-interactions shares. The new
     // Conversation still owns exactly one independent metadata observation.
-    client.conversations.setVisibleThread(null);
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    bool pageObserversReleased() => !client.budget.usage.any(
+      (usage) =>
+          usage.kind == ResourceKind.observer &&
+          (usage.owner.startsWith('topic:threadMcp:') ||
+              usage.owner.startsWith('topic:childInteractions:')),
+    );
+    final released = Completer<void>();
+    void observeRelease() {
+      if (pageObserversReleased() && !released.isCompleted) released.complete();
+    }
+
+    final releaseWatch = client.budget.watchAvailability(
+      ResourceKind.observer,
+      observeRelease,
+    );
+    try {
+      client.conversations.setVisibleThread(null);
+      observeRelease();
+      await released.future.timeout(const Duration(seconds: 5));
+    } finally {
+      releaseWatch.cancel();
+    }
     expect(
       client.budget.usage.where(
         (usage) =>
@@ -703,7 +749,9 @@ void main() {
       ),
       hasLength(1),
     );
-    expect(client.budget.used(ResourceKind.observer), initialObservers + 1);
+    // 旧线程的页面份额已释放；新会话只保留自己的元数据观察（目录行随观察
+    // 交付，页面份额在隐藏时同步释放，不再依赖快照时序悬留一个 permit）。
+    expect(nonMcpObservers(), initialObservers);
     selected.cancel();
     await _close(client, transport);
   });
@@ -924,7 +972,7 @@ void main() {
 
   test('child conversation is read-only before submission preparation or attachment admission', () async {
     final transport = _DraftTransport();
-    transport.seedThread(_thread('thread', 'parent'));
+    transport.seedThread(_row('thread', 'parent'));
     final client = await _client(transport);
     await client.conversations
         .session('thread')
@@ -2428,8 +2476,8 @@ void main() {
     final transport = _DraftTransport();
     final client = await _client(transport);
     transport
-      ..seedThread(_thread())
-      ..seedThread(_thread('child-thread', 'thread'));
+      ..seedThread(_row())
+      ..seedThread(_row('child-thread', 'thread'));
     final session = client.conversations.session('thread');
     await session.deliverWorkspace(_workspace());
     client.recovery.apply(
@@ -2695,8 +2743,8 @@ void main() {
       ProjectDirectoryState(values: [_project, otherProject], revision: 2),
     );
     transport
-      ..seedThread(_thread())
-      ..seedThread(_thread('affected-thread'));
+      ..seedThread(_row())
+      ..seedThread(_row('affected-thread'));
     final session = client.conversations.session('thread');
     await session.deliverWorkspace(_workspace());
     client.recovery.apply(
@@ -2858,7 +2906,7 @@ void main() {
   test('multiple application, project and thread issues select the exact blocking owner and preserve composer state', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
-    transport.seedThread(_thread());
+    transport.seedThread(_row());
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     client.recovery.apply(
       RecoveryStateSnapshot(
@@ -3040,13 +3088,9 @@ void main() {
         final transport = _DraftTransport();
         final client = await _client(transport);
         transport
+          ..emitThread(_row().copyWith(status: status), 'thread', revision: 2)
           ..emitThread(
-            _thread().copyWith(status: status),
-            'thread',
-            revision: 2,
-          )
-          ..emitThread(
-            _thread('closed-child', 'thread').copyWith(status: status),
+            _row('closed-child', 'thread').copyWith(status: status),
             'closed-child',
             revision: 2,
           );
@@ -3082,7 +3126,7 @@ void main() {
             ),
           ),
         );
-        transport.emitThread(_thread(), 'thread', revision: 2);
+        transport.emitThread(_row(), 'thread', revision: 2);
         await Future<void>.delayed(Duration.zero);
         await session.deliverWorkspace(_workspace(revision: 2));
         expect(client.conversations.existingSession('closed-child'), isNull);

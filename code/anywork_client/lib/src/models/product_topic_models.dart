@@ -7,6 +7,7 @@ import 'bot_models.dart';
 import 'command_receipts.dart' show ChildInteractionSummary;
 import 'persistence_models.dart';
 import 'runtime_models.dart';
+import 'settings_models.dart';
 import '../modes/domain/mode_catalog_models.dart';
 import 'studio_state_snapshots.dart';
 import 'thread_directory_models.dart';
@@ -79,14 +80,30 @@ final class RecoveryTopic extends ProductTopic {
   int get hashCode => 0x0105;
 }
 
-final class McpTopic extends ProductTopic {
-  const McpTopic();
+final class McpCatalogTopic extends ProductTopic {
+  const McpCatalogTopic({this.scope = const McpScope.host()});
+
+  final McpScope scope;
 
   @override
-  bool operator ==(Object other) => other is McpTopic;
+  bool operator ==(Object other) =>
+      other is McpCatalogTopic && scope == other.scope;
 
   @override
-  int get hashCode => 0x0106;
+  int get hashCode => Object.hash(0x0106, scope);
+}
+
+final class ThreadMcpTopic extends ProductTopic {
+  const ThreadMcpTopic({required this.threadId});
+
+  final String threadId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadMcpTopic && threadId == other.threadId;
+
+  @override
+  int get hashCode => Object.hash(0x011c, threadId);
 }
 
 final class LspTopic extends ProductTopic {
@@ -281,10 +298,16 @@ final class RecoveryBaseline extends ProductTopicBaselineState {
   final RecoveryStateSnapshot state;
 }
 
-final class McpBaseline extends ProductTopicBaselineState {
-  const McpBaseline(this.state);
+final class McpCatalogBaseline extends ProductTopicBaselineState {
+  const McpCatalogBaseline(this.state);
 
-  final McpStateSnapshot state;
+  final McpCatalogSnapshot state;
+}
+
+final class ThreadMcpBaseline extends ProductTopicBaselineState {
+  const ThreadMcpBaseline(this.state);
+
+  final ThreadMcpStateSnapshot state;
 }
 
 final class LspBaseline extends ProductTopicBaselineState {
@@ -475,7 +498,12 @@ sealed class ProductTopicEventPayload {
     SettingsConfigStateChangedPayload() => const SettingsConfigTopic(),
     ModelCatalogStateChangedPayload() => const ModelCatalogTopic(),
     RecoveryStateChangedPayload() => const RecoveryTopic(),
-    McpStateChangedPayload() => const McpTopic(),
+    McpCatalogChangedPayload(:final state) => McpCatalogTopic(
+      scope: state.scope,
+    ),
+    ThreadMcpStateChangedPayload(:final state) => ThreadMcpTopic(
+      threadId: state.threadId,
+    ),
     LspStateChangedPayload() => const LspTopic(),
     SkillsStateChangedPayload(:final state) => SkillsTopic(
       workspaceId: state.workspaceId,
@@ -514,7 +542,7 @@ final class ThreadDirectoryChangedPayload extends ProductTopicEventPayload {
   });
 
   final int revision;
-  final List<StudioThread> upserted;
+  final List<SessionDirectoryRow> upserted;
   final List<String> removed;
 }
 
@@ -542,10 +570,16 @@ final class RecoveryStateChangedPayload extends ProductTopicEventPayload {
   final RecoveryStateSnapshot state;
 }
 
-final class McpStateChangedPayload extends ProductTopicEventPayload {
-  const McpStateChangedPayload(this.state);
+final class McpCatalogChangedPayload extends ProductTopicEventPayload {
+  const McpCatalogChangedPayload(this.state);
 
-  final McpStateSnapshot state;
+  final McpCatalogSnapshot state;
+}
+
+final class ThreadMcpStateChangedPayload extends ProductTopicEventPayload {
+  const ThreadMcpStateChangedPayload(this.state);
+
+  final ThreadMcpStateSnapshot state;
 }
 
 final class LspStateChangedPayload extends ProductTopicEventPayload {

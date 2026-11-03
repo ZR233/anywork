@@ -163,6 +163,10 @@ impl std::fmt::Debug for StudioThreadSpec {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadAssemblyError {
+    #[error("Agent backend {backend:?} is not executable in S1; ACP execution requires S4")]
+    UnsupportedBackend {
+        backend: pl_protocol::AgentBackendKind,
+    },
     #[error("Thread activation failed")]
     ActivationFailed(#[source] Arc<ThreadAssemblyError>),
     #[error("Thread resource preparation panicked")]
@@ -505,9 +509,7 @@ impl StudioThreadAssembler {
                 thread: thread.clone(),
             },
         );
-        if let Some(guard) = spec.preparation_guard.take() {
-            guard.disarm();
-        }
+        let mut preparation_guard = spec.preparation_guard.take();
         let setup = async {
             thread
                 .set_context_preparation(spec.context_preparation)
@@ -567,6 +569,9 @@ impl StudioThreadAssembler {
             // Freeze the observer's recovery baseline before exposing this owner to execution.
             // Observers may query the registry, so invoke them without its lock held.
             self.publish_observation(&spec.id, &thread);
+            if let Some(guard) = preparation_guard.take() {
+                guard.disarm();
+            }
             let mut state = self.0.state();
             if state.closing {
                 return Err(ThreadAssemblyError::Thread(ThreadError::Closed));

@@ -217,39 +217,39 @@ class AgentStateError {
   int get hashCode => Object.hash(code, message, retryable);
 }
 
+/// 智能体目录行：成员身份四元组加成员执行事实。
+///
+/// `sessionId` 是归属判据，`parentAgentId` 是 root/child 判据；两者都只读
+/// 目录字段，不从 Thread 快照或 ID 形状推导。
 class StudioAgentView {
   const StudioAgentView({
-    required this.id,
+    required this.agentId,
+    required this.sessionId,
     required this.threadId,
-    required this.path,
     required this.role,
     required this.delegationMode,
     required this.delegationPreference,
+    this.parentAgentId,
     this.frozenModel,
     required this.task,
     required this.state,
     required this.updatedAt,
-    this.parentPath,
     this.summary,
-    this.depth = 0,
-    this.rootThreadId,
     this.execution,
     this.canStop = false,
     this.awaitingScheduling = false,
   });
 
-  final String id;
+  final String agentId;
+  final String sessionId;
+  final String? parentAgentId;
   final String threadId;
-  final String path;
-  final String? parentPath;
   final String role;
   final DelegationMode delegationMode;
   final DelegationPreference delegationPreference;
   final NewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
-  final int depth;
-  final String? rootThreadId;
   final StudioAgentState state;
   final DateTime updatedAt;
 
@@ -267,6 +267,10 @@ class StudioAgentView {
   /// [canStop]，也不代表用户可以在客户端继续该成员。
   final bool awaitingScheduling;
 
+  bool get isRootAgent => parentAgentId == null;
+
+  bool get isChildAgent => parentAgentId != null;
+
   String get status => state.label;
 
   String? get error => state.errorMessage;
@@ -275,18 +279,16 @@ class StudioAgentView {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is StudioAgentView &&
-          id == other.id &&
+          agentId == other.agentId &&
+          sessionId == other.sessionId &&
+          parentAgentId == other.parentAgentId &&
           threadId == other.threadId &&
-          path == other.path &&
-          parentPath == other.parentPath &&
           role == other.role &&
           delegationMode == other.delegationMode &&
           delegationPreference == other.delegationPreference &&
           frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
-          depth == other.depth &&
-          rootThreadId == other.rootThreadId &&
           state == other.state &&
           updatedAt == other.updatedAt &&
           execution == other.execution &&
@@ -295,18 +297,16 @@ class StudioAgentView {
 
   @override
   int get hashCode => Object.hash(
-    id,
+    agentId,
+    sessionId,
+    parentAgentId,
     threadId,
-    path,
-    parentPath,
     role,
     delegationMode,
     delegationPreference,
     frozenModel,
     task,
     summary,
-    depth,
-    rootThreadId,
     state,
     updatedAt,
     execution,

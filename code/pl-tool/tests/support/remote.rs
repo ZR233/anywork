@@ -93,6 +93,7 @@ impl Helper {
                 environment: Default::default(),
                 capture: RemoteCapture::None,
                 remaining_timeout_ms: None,
+                process_lease: None,
             })
             .await?)
     }

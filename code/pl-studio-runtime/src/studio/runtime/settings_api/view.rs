@@ -8,9 +8,9 @@ use pl_protocol::search::WebSearchMode;
 use pl_protocol::studio::{
     ModelCatalogSnapshot, SettingsConfigSnapshot, SettingsStateResponse, StudioAccountModelCatalog,
     StudioAccountSettings, StudioCustomModelSettings, StudioDeepSeekWebSearchSettings,
-    StudioGeneralSettings, StudioInstructionsSettings, StudioMcpServerSettings,
-    StudioModeModelSettings, StudioModelAutoCompactSettings, StudioModelConnectionSettings,
-    StudioRoleSettings, StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
+    StudioGeneralSettings, StudioInstructionsSettings, StudioModeModelSettings,
+    StudioModelAutoCompactSettings, StudioModelConnectionSettings, StudioRoleSettings,
+    StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
@@ -108,34 +108,22 @@ fn settings_view(
         .collect();
     let roles = crate::config::system_agent_profiles(config)?
         .into_iter()
-        .map(|profile| StudioRoleSettings {
-            key: profile.profile_id,
-            account_id: profile.account_id,
-            model_id: profile.model_id,
-            effort: profile.effort.unwrap_or_default(),
+        .map(|profile| {
+            let route = crate::config::effective_system_profile_route(
+                config,
+                &profile.definition.definition_id,
+            )?;
+            Ok(StudioRoleSettings {
+                key: profile.definition.definition_id,
+                account_id: route.account_id.to_string(),
+                model_id: route.model_id,
+                effort: route
+                    .effort
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_default(),
+            })
         })
-        .collect();
-    let mcp_servers = crate::config::effective_mcp_servers(config)
-        .into_values()
-        .map(|server| StudioMcpServerSettings {
-            id: server.id,
-            transport: server.config.transport.as_str().to_string(),
-            endpoint: server.config.endpoint_summary(),
-            configuration: match server.status_kind {
-                pl_tool::mcp::config::McpServerStatusKind::Enabled => {
-                    pl_protocol::studio::StudioMcpServerConfiguration::Enabled
-                }
-                pl_tool::mcp::config::McpServerStatusKind::Disabled => {
-                    pl_protocol::studio::StudioMcpServerConfiguration::Disabled
-                }
-                pl_tool::mcp::config::McpServerStatusKind::MissingCredential => {
-                    pl_protocol::studio::StudioMcpServerConfiguration::MissingCredential
-                }
-            },
-            source_kind: server.source_kind.as_str().to_string(),
-            mutation_policy: server.mutation_policy.as_str().to_string(),
-        })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let (web_search, deepseek_web_search) = search_settings(config)?;
     Ok(StudioSettings {
         delegation: config.delegation,
@@ -167,7 +155,6 @@ fn settings_view(
             disabled: config.skills.disabled.clone(),
             auto_learn_min_tool_calls: config.skills.auto_learn_min_tool_calls,
         },
-        mcp_servers,
         general: StudioGeneralSettings {
             language: config.ui.language,
             follow_active_turn: config.ui.follow_active_turn,

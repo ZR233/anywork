@@ -9,7 +9,7 @@ ProductTopicEventPayload _productPayloadFromFrb(
     frb.BridgeProductEventPayload_ThreadDirectoryChanged(:final field0) =>
       ThreadDirectoryChangedPayload(
         revision: field0.revision.toInt(),
-        upserted: field0.upserted.map(_threadFromFrb).toList(),
+        upserted: field0.upserted.map(_sessionDirectoryRowFromFrb).toList(),
         removed: field0.removed.toList(),
       ),
     frb.BridgeProductEventPayload_AgentDirectoryChanged(:final field0) =>
@@ -20,8 +20,10 @@ ProductTopicEventPayload _productPayloadFromFrb(
       ModelCatalogStateChangedPayload(_modelCatalogStateFromFrb(field0)),
     frb.BridgeProductEventPayload_RecoveryStateChanged(:final field0) =>
       RecoveryStateChangedPayload(_recoveryStateFromFrb(field0)),
-    frb.BridgeProductEventPayload_McpStateChanged(:final field0) =>
-      McpStateChangedPayload(_mcpStateFromFrb(field0)),
+    frb.BridgeProductEventPayload_McpCatalogChanged(:final field0) =>
+      McpCatalogChangedPayload(_mcpCatalogFromFrb(field0)),
+    frb.BridgeProductEventPayload_ThreadMcpStateChanged(:final field0) =>
+      ThreadMcpStateChangedPayload(_threadMcpStateFromFrb(field0)),
     frb.BridgeProductEventPayload_LspStateChanged(:final field0) =>
       LspStateChangedPayload(_lspStateFromFrb(field0)),
     frb.BridgeProductEventPayload_SkillsStateChanged(:final field0) =>
@@ -112,7 +114,10 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
     frb_topic_types.BridgeProductTopic_ModelCatalog() =>
       const ModelCatalogTopic(),
     frb_topic_types.BridgeProductTopic_Recovery() => const RecoveryTopic(),
-    frb_topic_types.BridgeProductTopic_Mcp() => const McpTopic(),
+    frb_topic_types.BridgeProductTopic_McpCatalog(:final scope) =>
+      McpCatalogTopic(scope: _mcpScopeFromFrb(scope)),
+    frb_topic_types.BridgeProductTopic_ThreadMcp(:final threadId) =>
+      ThreadMcpTopic(threadId: threadId),
     frb_topic_types.BridgeProductTopic_Lsp() => const LspTopic(),
     frb_topic_types.BridgeProductTopic_Skills(:final workspaceId) =>
       SkillsTopic(workspaceId: workspaceId),
@@ -153,7 +158,10 @@ ProductTopic _productPayloadTopicFromBridge(
       const ModelCatalogTopic(),
     frb.BridgeProductEventPayload_RecoveryStateChanged() =>
       const RecoveryTopic(),
-    frb.BridgeProductEventPayload_McpStateChanged() => const McpTopic(),
+    frb.BridgeProductEventPayload_McpCatalogChanged(:final field0) =>
+      McpCatalogTopic(scope: _mcpScopeFromFrb(field0.scope)),
+    frb.BridgeProductEventPayload_ThreadMcpStateChanged(:final field0) =>
+      ThreadMcpTopic(threadId: field0.threadId),
     frb.BridgeProductEventPayload_LspStateChanged() => const LspTopic(),
     frb.BridgeProductEventPayload_SkillsStateChanged(:final field0) =>
       SkillsTopic(workspaceId: field0.workspaceId),
@@ -192,7 +200,12 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     ModelCatalogTopic() =>
       const frb_topic_types.BridgeProductTopic.modelCatalog(),
     RecoveryTopic() => const frb_topic_types.BridgeProductTopic.recovery(),
-    McpTopic() => const frb_topic_types.BridgeProductTopic.mcp(),
+    McpCatalogTopic(:final scope) =>
+      frb_topic_types.BridgeProductTopic.mcpCatalog(
+        scope: _mcpScopeToFrb(scope),
+      ),
+    ThreadMcpTopic(:final threadId) =>
+      frb_topic_types.BridgeProductTopic.threadMcp(threadId: threadId),
     LspTopic() => const frb_topic_types.BridgeProductTopic.lsp(),
     SkillsTopic(:final workspaceId) =>
       frb_topic_types.BridgeProductTopic.skills(workspaceId: workspaceId),
@@ -237,9 +250,10 @@ ProductTopicBaselineState _productBaselineFromFrb(
       ModelCatalogBaseline(_modelCatalogStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Recovery(:final field0) =>
       RecoveryBaseline(_recoveryStateFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_Mcp(:final field0) => McpBaseline(
-      _mcpStateFromFrb(field0),
-    ),
+    frb_topic_types.BridgeProductBaseline_McpCatalog(:final field0) =>
+      McpCatalogBaseline(_mcpCatalogFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_ThreadMcp(:final field0) =>
+      ThreadMcpBaseline(_threadMcpStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Lsp(:final field0) => LspBaseline(
       _lspStateFromFrb(field0),
     ),
@@ -275,11 +289,10 @@ StudioAgentView _agentDirectoryEntryFromFrb(
   frb.BridgeAgentDirectoryEntryDto agent,
 ) {
   return StudioAgentView(
-    id: agent.id,
+    agentId: agent.agentId,
+    sessionId: agent.sessionId,
+    parentAgentId: agent.parentAgentId,
     threadId: agent.threadId,
-    rootThreadId: agent.rootThreadId,
-    path: agent.path,
-    parentPath: agent.parentPath,
     role: agent.role,
     delegationMode: _delegationModeFromFrb(agent.delegationMode),
     delegationPreference: _delegationPreferenceFromFrb(
@@ -290,7 +303,6 @@ StudioAgentView _agentDirectoryEntryFromFrb(
         : _savedRouteFromFrb(agent.frozenModel!),
     task: agent.task,
     summary: agent.summary,
-    depth: agent.depth,
     state: _agentStateFromFrb(agent.state),
     updatedAt: _dateFromUnix(agent.updatedAt),
     execution: agent.execution == null
@@ -299,6 +311,86 @@ StudioAgentView _agentDirectoryEntryFromFrb(
     canStop: agent.canStop,
     awaitingScheduling: agent.awaitingScheduling,
   );
+}
+
+/// 目录行的 typed 身份转换：root/child 与成员归属只读这里的四元组字段。
+SessionDirectoryRow _sessionDirectoryRowFromFrb(
+  frb.BridgeSessionDirectoryRow value,
+) {
+  return SessionDirectoryRow(
+    sessionId: value.sessionId,
+    agentId: value.agentId,
+    parentAgentId: value.parentAgentId,
+    threadId: value.threadId,
+    workspaceId: value.workspaceId,
+    title: value.title,
+    mode: ThreadModeId.fromId(value.mode),
+    delegationMode: _delegationModeFromFrb(value.delegationMode),
+    delegationPreference: _delegationPreferenceFromFrb(
+      value.delegationPreference,
+    ),
+    workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
+    workspacePath: value.workspacePath,
+    role: value.role,
+    binding: agentBindingFromFrb(value.binding),
+    status: _threadStatusFromFrb(value.status),
+    createdAt: _dateFromUnix(value.createdAt),
+    updatedAt: _dateFromUnix(value.updatedAt),
+    lastUserMessageAt: value.lastUserMessageAt == null
+        ? null
+        : _dateFromUnix(value.lastUserMessageAt!),
+    archived: value.archived,
+  );
+}
+
+AgentBindingView agentBindingFromFrb(frb.BridgeAgentBinding value) {
+  return switch (value) {
+    frb.BridgeAgentBinding_Native(:final route, :final systemInstructions) =>
+      NativeAgentBindingView(
+        route: route == null ? null : _savedRouteFromFrb(route),
+        systemInstructions: systemInstructions,
+      ),
+    frb.BridgeAgentBinding_Acp(:final accountId, :final connectionRevision) =>
+      AcpAgentBindingView(
+        accountId: accountId,
+        connectionRevision: connectionRevision.toInt(),
+      ),
+  };
+}
+
+frb.BridgeAgentBinding agentBindingToFrb(AgentBindingView value) =>
+    switch (value) {
+      NativeAgentBindingView(:final route, :final systemInstructions) =>
+        frb.BridgeAgentBinding.native(
+          route: route == null
+              ? null
+              : frb.BridgeNewThreadModelRoute(
+                  accountId: route.accountId,
+                  modelId: route.modelId,
+                  effort: route.effort,
+                ),
+          systemInstructions: systemInstructions,
+        ),
+      AcpAgentBindingView(:final accountId, :final connectionRevision) =>
+        frb.BridgeAgentBinding.acp(
+          accountId: accountId,
+          connectionRevision: BigInt.from(connectionRevision),
+        ),
+    };
+
+ThreadStatusView _threadStatusFromFrb(frb.BridgeThreadStatus value) {
+  return switch (value) {
+    frb.BridgeThreadStatus.idle => ThreadStatusView.idle,
+    frb.BridgeThreadStatus.queued => ThreadStatusView.queued,
+    frb.BridgeThreadStatus.running => ThreadStatusView.running,
+    frb.BridgeThreadStatus.waitingTool => ThreadStatusView.waitingTool,
+    frb.BridgeThreadStatus.waitingInteraction =>
+      ThreadStatusView.waitingInteraction,
+    frb.BridgeThreadStatus.cancelling => ThreadStatusView.cancelling,
+    frb.BridgeThreadStatus.closing => ThreadStatusView.closing,
+    frb.BridgeThreadStatus.closed => ThreadStatusView.closed,
+    frb.BridgeThreadStatus.faulted => ThreadStatusView.faulted,
+  };
 }
 
 /// 目录行与主会话运行时的执行身份；阶段是规范枚举，不按轮次投影推导。
@@ -382,37 +474,173 @@ SshServer _sshServerFromFrb(frb_ssh_types.SshServerDto server) {
   );
 }
 
-McpServerSettingsView _mcpServerFromFrb(frb.BridgeMcpServerDto server) {
-  return McpServerSettingsView(
-    id: server.id,
-    transport: server.transport,
-    endpoint: server.endpoint,
-    state: switch (server.state) {
-      frb.BridgeMcpServerState_Disabled(:final message) => McpDisabledState(
-        message: message,
-      ),
-      frb.BridgeMcpServerState_MissingCredential(:final message) =>
-        McpMissingCredentialState(message: message),
-      frb.BridgeMcpServerState_Checking(:final message) => McpCheckingState(
-        message: message,
-      ),
-      frb.BridgeMcpServerState_Available(:final checkedAt, :final toolCount) =>
-        McpAvailableState(
-          checkedAt: checkedAt.toInt(),
-          toolCount: toolCount.toInt(),
-        ),
-      frb.BridgeMcpServerState_Unavailable(:final checkedAt, :final error) =>
-        McpUnavailableState(
-          checkedAt: checkedAt.toInt(),
-          code: error.code,
-          message: error.message,
-          retryable: error.retryable,
-        ),
-    },
-    sourceKind: server.sourceKind,
-    mutationPolicy: server.mutationPolicy,
-  );
-}
+McpScope _mcpScopeFromFrb(frb.BridgeMcpScope scope) => switch (scope) {
+  frb.BridgeMcpScope_Host() => const HostMcpScope(),
+  frb.BridgeMcpScope_Ssh(:final sshAlias) => SshMcpScope(sshAlias: sshAlias),
+};
+
+frb.BridgeMcpScope _mcpScopeToFrb(McpScope scope) => switch (scope) {
+  HostMcpScope() => const frb.BridgeMcpScope.host(),
+  SshMcpScope(:final sshAlias) => frb.BridgeMcpScope.ssh(sshAlias: sshAlias),
+};
+
+McpDocumentRef _mcpDocumentRefFromFrb(frb.BridgeMcpDocumentRef document) =>
+    McpDocumentRef(
+      scope: _mcpScopeFromFrb(document.scope),
+      relativePath: document.relativePath,
+    );
+
+frb.BridgeMcpDocumentRef _mcpDocumentRefToFrb(McpDocumentRef document) =>
+    frb.BridgeMcpDocumentRef(
+      scope: _mcpScopeToFrb(document.scope),
+      relativePath: document.relativePath,
+    );
+
+McpConfigStatusKind _mcpConfigStatusFromFrb(
+  frb.BridgeMcpConfigStatusKind status,
+) => switch (status) {
+  frb.BridgeMcpConfigStatusKind.enabled => McpConfigStatusKind.enabled,
+  frb.BridgeMcpConfigStatusKind.disabled => McpConfigStatusKind.disabled,
+  frb.BridgeMcpConfigStatusKind.shadowedDisable =>
+    McpConfigStatusKind.shadowedDisable,
+  frb.BridgeMcpConfigStatusKind.missingPrereq =>
+    McpConfigStatusKind.missingPrereq,
+  frb.BridgeMcpConfigStatusKind.invalidDocument =>
+    McpConfigStatusKind.invalidDocument,
+};
+
+McpEffectiveSource _mcpEffectiveSourceFromFrb(
+  frb.BridgeMcpEffectiveSource source,
+) => switch (source) {
+  frb.BridgeMcpEffectiveSource.hostServer => McpEffectiveSource.hostServer,
+  frb.BridgeMcpEffectiveSource.hostBuiltin => McpEffectiveSource.hostBuiltin,
+  frb.BridgeMcpEffectiveSource.inheritedHostServer =>
+    McpEffectiveSource.inheritedHostServer,
+  frb.BridgeMcpEffectiveSource.inheritedHostBuiltin =>
+    McpEffectiveSource.inheritedHostBuiltin,
+  frb.BridgeMcpEffectiveSource.sshOverrideServer =>
+    McpEffectiveSource.sshOverrideServer,
+  frb.BridgeMcpEffectiveSource.sshOverrideBuiltin =>
+    McpEffectiveSource.sshOverrideBuiltin,
+  frb.BridgeMcpEffectiveSource.sshDisabledTombstone =>
+    McpEffectiveSource.sshDisabledTombstone,
+  frb.BridgeMcpEffectiveSource.invalidFile => McpEffectiveSource.invalidFile,
+};
+
+McpExecutionLocation _mcpExecutionLocationFromFrb(
+  frb.BridgeMcpExecutionLocation location,
+) => switch (location) {
+  frb.BridgeMcpExecutionLocation_HostLocal() =>
+    const HostLocalMcpExecutionLocation(),
+  frb.BridgeMcpExecutionLocation_HostRemoteStreamableHttp() =>
+    const HostRemoteStreamableHttpMcpExecutionLocation(),
+  frb.BridgeMcpExecutionLocation_SshRemote(:final sshAlias) =>
+    SshRemoteMcpExecutionLocation(sshAlias: sshAlias),
+  frb.BridgeMcpExecutionLocation_SshRemoteStreamableHttp(:final sshAlias) =>
+    SshRemoteStreamableHttpMcpExecutionLocation(sshAlias: sshAlias),
+};
+
+McpCatalogEntry _mcpCatalogEntryFromFrb(frb.BridgeMcpCatalogEntry entry) =>
+    McpCatalogEntry(
+      id: entry.id,
+      document: entry.document == null
+          ? null
+          : _mcpDocumentRefFromFrb(entry.document!),
+      configStatus: _mcpConfigStatusFromFrb(entry.configStatus),
+      effectiveSource: _mcpEffectiveSourceFromFrb(entry.effectiveSource),
+      executionLocation: entry.executionLocation == null
+          ? null
+          : _mcpExecutionLocationFromFrb(entry.executionLocation!),
+      transport: entry.transport,
+      endpointSummary: entry.endpointSummary,
+      builtIn: entry.builtIn,
+      inheritedFromHost: entry.inheritedFromHost,
+      overriddenInScope: entry.overriddenInScope,
+      canOverrideInSsh: entry.canOverrideInSsh,
+      canDisableInSsh: entry.canDisableInSsh,
+      canRestoreInheritance: entry.canRestoreInheritance,
+      message: entry.message,
+    );
+
+McpDocumentDiagnostic _mcpDocumentDiagnosticFromFrb(
+  frb.BridgeMcpDocumentDiagnostic diagnostic,
+) => McpDocumentDiagnostic(
+  document: _mcpDocumentRefFromFrb(diagnostic.document),
+  id: diagnostic.id,
+  code: diagnostic.code,
+  message: diagnostic.message,
+);
+
+McpCatalogSnapshot _mcpCatalogFromFrb(frb.BridgeMcpCatalogSnapshot snapshot) =>
+    McpCatalogSnapshot(
+      scope: _mcpScopeFromFrb(snapshot.scope),
+      revision: snapshot.revision.toInt(),
+      entries: snapshot.entries.map(_mcpCatalogEntryFromFrb).toList(),
+      diagnostics: snapshot.diagnostics
+          .map(_mcpDocumentDiagnosticFromFrb)
+          .toList(),
+    );
+
+McpDocumentContent _mcpDocumentContentFromFrb(
+  frb.BridgeMcpDocumentContent content,
+) => McpDocumentContent(
+  document: _mcpDocumentRefFromFrb(content.document),
+  id: content.id,
+  revision: content.revision.toInt(),
+  rawToml: content.rawToml,
+  diagnostic: content.diagnostic == null
+      ? null
+      : _mcpDocumentDiagnosticFromFrb(content.diagnostic!),
+);
+
+McpDocumentCommitReceipt _mcpDocumentCommitReceiptFromFrb(
+  frb.BridgeMcpDocumentCommitReceipt receipt,
+) => McpDocumentCommitReceipt(
+  document: receipt.document == null
+      ? null
+      : _mcpDocumentRefFromFrb(receipt.document!),
+  revision: receipt.revision.toInt(),
+  snapshot: _mcpCatalogFromFrb(receipt.snapshot),
+);
+
+ThreadMcpLifecycleKind _threadMcpLifecycleFromFrb(
+  frb.BridgeThreadMcpLifecycleKind lifecycle,
+) => switch (lifecycle) {
+  frb.BridgeThreadMcpLifecycleKind.connecting =>
+    ThreadMcpLifecycleKind.connecting,
+  frb.BridgeThreadMcpLifecycleKind.available =>
+    ThreadMcpLifecycleKind.available,
+  frb.BridgeThreadMcpLifecycleKind.unavailable =>
+    ThreadMcpLifecycleKind.unavailable,
+  frb.BridgeThreadMcpLifecycleKind.unsupported =>
+    ThreadMcpLifecycleKind.unsupported,
+  frb.BridgeThreadMcpLifecycleKind.shuttingDown =>
+    ThreadMcpLifecycleKind.shuttingDown,
+};
+
+ThreadMcpServerState _threadMcpServerFromFrb(
+  frb.BridgeThreadMcpServerState server,
+) => ThreadMcpServerState(
+  id: server.id,
+  effectiveSource: _mcpEffectiveSourceFromFrb(server.effectiveSource),
+  executionLocation: _mcpExecutionLocationFromFrb(server.executionLocation),
+  transport: server.transport,
+  endpointSummary: server.endpointSummary,
+  builtIn: server.builtIn,
+  lifecycle: _threadMcpLifecycleFromFrb(server.lifecycle),
+  toolCount: server.toolCount?.toInt(),
+  message: server.message,
+  lastCheckedAt: server.lastCheckedAt,
+);
+
+ThreadMcpStateSnapshot _threadMcpStateFromFrb(
+  frb.BridgeThreadMcpStateSnapshot snapshot,
+) => ThreadMcpStateSnapshot(
+  threadId: snapshot.threadId,
+  scope: _mcpScopeFromFrb(snapshot.scope),
+  generation: snapshot.generation.toInt(),
+  servers: snapshot.servers.map(_threadMcpServerFromFrb).toList(),
+);
 
 StudioBootstrap studioBootstrapFromFrbSnapshot(
   frb.BridgeStudioStateSnapshot value,
@@ -441,7 +669,7 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
     agentDirectory: _agentDirectoryFromFrb(value.agentDirectory),
     settingsState: settingsProjection.canonical ?? configSnapshot,
     recoveryState: _recoveryStateFromFrb(value.recovery),
-    mcpState: _mcpStateFromFrb(value.mcp),
+    mcpCatalog: _mcpCatalogFromFrb(value.hostMcpCatalog),
     lspState: _lspStateFromFrb(value.lsp),
     skillsByProject: {
       for (final snapshot in value.skillsByProject)
@@ -663,17 +891,16 @@ PersistenceQueueStateView _persistenceQueueStateFromFrb(
 
 AgentProfileView _agentProfileFromFrb(frb.BridgeAgentProfileDto profile) {
   return AgentProfileView(
-    id: profile.profileId,
-    displayName: profile.displayName,
-    description: profile.description,
-    whenToUse: profile.whenToUse,
-    systemInstructions: profile.systemInstructions,
-    accountId: profile.accountId,
-    modelId: profile.modelId,
-    effort: profile.effort,
-    source: profile.source,
-    revision: profile.revision,
-    contentHash: profile.contentHash,
+    definition: AgentDefinitionView(
+      definitionId: profile.definition.definitionId,
+      displayName: profile.definition.displayName,
+      description: profile.definition.description,
+      whenToUse: profile.definition.whenToUse,
+      source: profile.definition.source,
+      revision: profile.definition.revision,
+      contentHash: profile.definition.contentHash,
+    ),
+    binding: agentBindingFromFrb(profile.binding),
     system: profile.system,
     enabled: profile.enabled,
     workspaceMode: switch (profile.workspaceMode) {
@@ -764,7 +991,7 @@ ThreadDirectoryPage _threadDirectoryPageFromFrb(
     frb.BridgeThreadDirectoryPageData data,
     int revision,
   ) => ThreadDirectoryPage(
-    threads: data.threads.map(_threadFromFrb).toList(),
+    rows: data.rows.map(_sessionDirectoryRowFromFrb).toList(),
     nextCursor: data.nextCursor,
     revision: revision,
   );
@@ -786,7 +1013,7 @@ ThreadDirectoryPage _threadDirectoryPageFromFrb(
     frb.BridgeThreadDirectoryPage_Stopped(:final field0) =>
       _stoppedResource<ThreadDirectoryPage>(field0),
   };
-  return resource.value ?? const ThreadDirectoryPage(threads: []);
+  return resource.value ?? const ThreadDirectoryPage(rows: []);
 }
 
 ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
@@ -816,7 +1043,7 @@ ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
     ownerEpoch: value.stamp.ownerEpoch,
     revision: value.stamp.revision.toInt(),
   ),
-  threads: value.threads.map(_threadFromFrb).toList(),
+  rows: value.rows.map(_sessionDirectoryRowFromFrb).toList(),
   nextCursor: value.nextCursor,
 );
 
@@ -829,7 +1056,7 @@ ThreadMetadataFrame _threadMetadataFrameFromFrb(
     ownerEpoch: value.stamp.ownerEpoch,
     revision: value.stamp.revision.toInt(),
   ),
-  thread: value.thread == null ? null : _threadFromFrb(value.thread!),
+  row: value.row == null ? null : _sessionDirectoryRowFromFrb(value.row!),
 );
 
 AgentDirectoryState _agentDirectoryFromFrb(
@@ -889,38 +1116,6 @@ RecoveryStateSnapshot _recoveryStateFromFrb(
       ),
       frb.BridgeRecoveryStateSnapshot_Stopped(:final field0) =>
         _stoppedResource(field0),
-    },
-  );
-}
-
-McpStateSnapshot _mcpStateFromFrb(frb.BridgeMcpStateSnapshot snapshot) {
-  McpStateData convert(frb.BridgeMcpStateData data) => McpStateData(
-    desiredConfigFingerprint: data.desiredConfigFingerprint,
-    appliedConfigFingerprint: data.appliedConfigFingerprint,
-    activeServers: data.health.activeMcpServers,
-    servers: data.health.mcpServers.map(_mcpServerFromFrb).toList(),
-  );
-  return McpStateSnapshot.fromState(
-    state: switch (snapshot) {
-      frb.BridgeMcpStateSnapshot_Uninitialized(:final field0) =>
-        _uninitializedResource(field0),
-      frb.BridgeMcpStateSnapshot_Loading(:final field0) => _loadingResource(
-        field0,
-      ),
-      frb.BridgeMcpStateSnapshot_Ready(:final resource, :final value) =>
-        _readyResource(resource, convert(value)),
-      frb.BridgeMcpStateSnapshot_Refreshing(:final resource, :final value) =>
-        _refreshingResource(resource, convert(value)),
-      frb.BridgeMcpStateSnapshot_Stale(:final resource, :final value) =>
-        _staleResource(resource, convert(value)),
-      frb.BridgeMcpStateSnapshot_Degraded(:final resource, :final value) =>
-        _degradedResource(resource, convert(value)),
-      frb.BridgeMcpStateSnapshot_Failed(:final field0) => _failedResource(
-        field0,
-      ),
-      frb.BridgeMcpStateSnapshot_Stopped(:final field0) => _stoppedResource(
-        field0,
-      ),
     },
   );
 }

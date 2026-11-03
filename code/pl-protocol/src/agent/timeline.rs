@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ThreadId, ThreadItem};
+use crate::{AgentId, ThreadItem};
 
 /// `read_agent_session` 返回 Item 的排列方向。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,8 +26,8 @@ pub enum AgentSessionReadDetail {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSessionPage {
-    pub agent_id: ThreadId,
-    pub path: Vec<ThreadId>,
+    pub agent_id: AgentId,
+    pub path: Vec<AgentId>,
     pub through_sequence: u64,
     pub order: AgentSessionReadOrder,
     pub detail: AgentSessionReadDetail,

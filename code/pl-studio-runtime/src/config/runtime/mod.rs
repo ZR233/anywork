@@ -8,11 +8,18 @@ use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
-use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
+use super::{
+    AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
+    McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig,
+};
 use crate::mode::ThreadModeManager;
 use pl_model::config::AccountId;
 use pl_protocol::ThreadModeDocument;
-use pl_protocol::{ThreadModeId, studio::StudioModelCatalogStatus};
+use pl_protocol::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogSnapshot,
+    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, ThreadModeId,
+    UpdateMcpDocumentRequest, studio::StudioModelCatalogStatus,
+};
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。
@@ -31,6 +38,8 @@ pub struct ConfigRuntime {
     settings_observer: Arc<Mutex<Vec<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
+    /// 配置 owner 持有的按环境作用域组织的单文件 MCP 配置目录资源。
+    mcp_catalog: McpCatalogResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
     modes: ThreadModeManager,
     /// 文件定义的完整编辑文档；查询只读该缓存，不扫描目录。
@@ -105,6 +114,8 @@ pub struct ResolvedAgentProfile {
     pub config: StudioConfig,
     pub revision: u64,
     pub profile: pl_protocol::AgentProfileSnapshot,
+    pub definition: pl_protocol::AgentDefinitionSnapshot,
+    pub binding: pl_protocol::AgentBinding,
     pub route: pl_model::config::ResolvedModelRoute,
 }
 
@@ -175,6 +186,7 @@ impl ConfigRuntime {
         super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
+        let mcp_catalog = McpCatalogResource::new(store.paths(), &config.models);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
@@ -208,6 +220,7 @@ impl ConfigRuntime {
                 observations,
             })),
             profiles,
+            mcp_catalog,
             modes,
             mode_documents: Arc::new(RwLock::new(mode_documents)),
         })
@@ -385,6 +398,159 @@ impl ConfigRuntime {
         self.profiles.subscribe()
     }
 
+    /// 读取指定环境作用域的 MCP 配置目录快照。
+    pub fn mcp_catalog_snapshot(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<McpCatalogSnapshot> {
+        let snapshot = self.read()?;
+        Ok(self
+            .mcp_catalog
+            .read_catalog(self.store.paths(), &snapshot.config.models, scope)?)
+    }
+
+    /// 订阅指定环境作用域的 MCP 配置目录变更唤醒。
+    pub fn subscribe_mcp_catalog(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, tokio::sync::watch::Receiver<u64>)> {
+        let snapshot = self.read()?;
+        Ok(self
+            .mcp_catalog
+            .subscribe(self.store.paths(), &snapshot.config.models, scope)?)
+    }
+
+    /// 解析指定环境作用域内所有有效 MCP 条目（含启用、禁用、缺前置条件）。
+    pub fn effective_mcp_servers_for_scope(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<BTreeMap<String, ScopedEffectiveMcpServer>> {
+        let snapshot = self.read()?;
+        Ok(self.mcp_catalog.effective_servers_for_scope(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+        )?)
+    }
+
+    /// 解析单个 Thread 在指定环境作用域下需要连接的 MCP servers。
+    pub fn resolve_thread_mcp_configs(
+        &self,
+        scope: &McpScope,
+        workspace_root: &std::path::Path,
+        host_base_cwd: &std::path::Path,
+        remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
+    ) -> ConfigRuntimeResult<BTreeMap<String, ResolvedThreadMcpServer>> {
+        let snapshot = self.read()?;
+        Ok(self.mcp_catalog.resolve_thread_mcp_configs(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+            workspace_root,
+            host_base_cwd,
+            remote_commands,
+        )?)
+    }
+
+    /// 读取单个 MCP 配置文件的完整源码与诊断。
+    pub fn read_mcp_document(
+        &self,
+        document: &McpDocumentRef,
+    ) -> std::result::Result<McpDocumentContent, McpDocumentError> {
+        self.mcp_catalog.read_document(self.store.paths(), document)
+    }
+
+    /// 创建单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn create_mcp_document(
+        &self,
+        request: &CreateMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .create_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 更新单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn update_mcp_document(
+        &self,
+        request: &UpdateMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .update_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 删除单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn delete_mcp_document(
+        &self,
+        request: &DeleteMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .delete_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 重新扫描指定环境作用域的 MCP 配置目录，返回最新快照与受影响的作用域列表。
+    pub fn reload_mcp_catalog(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, Vec<McpScope>)> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let snapshot = self.read()?;
+        let (catalog, _) =
+            self.mcp_catalog
+                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
+        let mut changed_scopes = vec![scope.clone()];
+        if matches!(scope, McpScope::Host) {
+            for changed in self.mcp_catalog.refresh_all_scopes(
+                self.store.paths(),
+                &snapshot.config.models,
+                &[],
+            ) {
+                if !changed_scopes.contains(&changed) {
+                    changed_scopes.push(changed);
+                }
+            }
+        }
+        Ok((catalog, changed_scopes))
+    }
+
+    /// 当模型账号/凭据发生变化时，重新扫描已加载作用域的 MCP 配置目录（更新内置 MCP 前置条件状态）。
+    pub fn refresh_mcp_catalogs_for_models(
+        &self,
+        models: &pl_model::config::AgentModelConfig,
+    ) -> Vec<McpCatalogSnapshot> {
+        let changed_scopes = self
+            .mcp_catalog
+            .refresh_all_scopes(self.store.paths(), models, &[]);
+        changed_scopes
+            .into_iter()
+            .filter_map(|scope| {
+                self.mcp_catalog
+                    .read_catalog(self.store.paths(), models, &scope)
+                    .ok()
+            })
+            .collect()
+    }
+
     /// 读取系统凭据库或当前进程租约中的 SSH 主机密码。
     pub fn load_ssh_password(&self, alias: &str) -> Result<Option<String>> {
         self.store.load_ssh_password(alias)
@@ -459,12 +625,17 @@ impl ConfigRuntime {
         let mut profile = catalog
             .profiles
             .into_iter()
-            .find(|profile| profile.profile_id == profile_id && profile.enabled)
+            .find(|profile| profile.definition.definition_id == profile_id && profile.enabled)
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
                     "Agent Profile is missing or disabled: {profile_id}"
                 ))
             })?;
+        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(
+                PureError::ConfigError("ACP execution is not supported before S4".into()).into(),
+            );
+        }
         match (mode, selection) {
             (pl_protocol::DelegationMode::Profile, None) => {}
             (pl_protocol::DelegationMode::Profile, Some(_)) => {
@@ -480,21 +651,25 @@ impl ConfigRuntime {
                 .into());
             }
             (pl_protocol::DelegationMode::Automatic, Some(selection)) => {
-                profile.account_id = selection.account_id;
-                profile.model_id = selection.model_id;
-                profile.effort = selection.effort;
-                let mut identity = profile.clone();
+                let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                    unreachable!("ACP rejected before Native selection");
+                };
+                native.route = Some(selection);
+                let mut identity = profile.freeze_native()?;
                 identity.content_hash.clear();
-                profile.content_hash = crate::canonical_content_hash(
+                profile.definition.content_hash = crate::canonical_content_hash(
                     &serde_json::to_vec(&identity).map_err(PureError::from)?,
                 );
             }
         }
-        let route = crate::studio::delegation::resolve_child_route(&snapshot.config, &profile)?;
+        let route =
+            crate::studio::delegation::resolve_current_child_route(&snapshot.config, &profile)?;
         Ok(ResolvedAgentProfile {
             config: snapshot.config,
             revision: snapshot.revision,
-            profile,
+            definition: profile.definition.clone(),
+            binding: profile.binding.clone(),
+            profile: profile.freeze_native()?,
             route,
         })
     }
@@ -643,6 +818,8 @@ impl ConfigRuntime {
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.mcp_catalog
+            .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)
@@ -697,6 +874,8 @@ impl ConfigRuntime {
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.mcp_catalog
+            .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)
@@ -972,5 +1151,72 @@ mod tests {
                 .user,
             "first",
         );
+    }
+
+    #[test]
+    fn acp_profile_is_configurable_but_rejected_before_native_resolution() {
+        let (_directory, runtime) = runtime();
+        let before = runtime.read().expect("read config");
+        let configured = runtime
+            .update(before.revision, |config| {
+                let mut next = config.clone();
+                next.acp.accounts.insert(
+                    "acp-fixture".into(),
+                    crate::config::AcpAccountConfig {
+                        name: "ACP fixture".into(),
+                        provider: crate::config::AcpProvider::Antigravity,
+                    },
+                );
+                Ok(next)
+            })
+            .expect("configure ACP account");
+        let profile = super::super::UserAgentProfile {
+            enabled: true,
+            display_name: "ACP child".into(),
+            description: "ACP configuration boundary".into(),
+            when_to_use: "ACP rejection fixture".into(),
+            binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+                account_id: "acp-fixture".into(),
+                connection_revision: 7,
+            }),
+            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+        };
+        let (saved, _) = runtime
+            .save_user_agent_profile(configured.revision, "acp-child", &profile)
+            .expect("ACP Profile is a valid current configuration");
+
+        let catalog = runtime
+            .agent_profiles_snapshot()
+            .expect("current profiles")
+            .catalog;
+        assert!(
+            catalog
+                .profiles
+                .iter()
+                .any(|profile| profile.definition.definition_id == "acp-child")
+        );
+        for mode in [
+            pl_protocol::DelegationMode::Profile,
+            pl_protocol::DelegationMode::Automatic,
+        ] {
+            assert!(
+                catalog
+                    .executable(mode)
+                    .expect("dispatch view")
+                    .profiles
+                    .iter()
+                    .all(|profile| profile.definition.definition_id != "acp-child")
+            );
+        }
+
+        let error = runtime
+            .resolve_agent_profile("acp-child")
+            .expect_err("S4 execution is not available");
+        assert!(
+            error
+                .to_string()
+                .contains("ACP execution is not supported before S4")
+        );
+        assert_eq!(runtime.read().unwrap().revision, saved.revision);
     }
 }

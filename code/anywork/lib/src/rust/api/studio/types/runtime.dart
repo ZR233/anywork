@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'runtime.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeActiveTurn {
   final String threadId;
@@ -31,18 +31,16 @@ class BridgeActiveTurn {
 }
 
 class BridgeAgentDirectoryEntryDto {
-  final String id;
+  final String agentId;
+  final String sessionId;
+  final String? parentAgentId;
   final String threadId;
-  final String rootThreadId;
-  final String path;
-  final String? parentPath;
   final String role;
   final BridgeDelegationMode delegationMode;
   final BridgeDelegationPreference delegationPreference;
   final BridgeNewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
-  final int depth;
   final BridgeAgentState state;
 
   /// 该成员当前执行；未装载或无当前执行时为空。
@@ -56,18 +54,16 @@ class BridgeAgentDirectoryEntryDto {
   final PlatformInt64 updatedAt;
 
   const BridgeAgentDirectoryEntryDto({
-    required this.id,
+    required this.agentId,
+    required this.sessionId,
+    this.parentAgentId,
     required this.threadId,
-    required this.rootThreadId,
-    required this.path,
-    this.parentPath,
     required this.role,
     required this.delegationMode,
     required this.delegationPreference,
     this.frozenModel,
     required this.task,
     this.summary,
-    required this.depth,
     required this.state,
     this.execution,
     required this.canStop,
@@ -77,18 +73,16 @@ class BridgeAgentDirectoryEntryDto {
 
   @override
   int get hashCode =>
-      id.hashCode ^
+      agentId.hashCode ^
+      sessionId.hashCode ^
+      parentAgentId.hashCode ^
       threadId.hashCode ^
-      rootThreadId.hashCode ^
-      path.hashCode ^
-      parentPath.hashCode ^
       role.hashCode ^
       delegationMode.hashCode ^
       delegationPreference.hashCode ^
       frozenModel.hashCode ^
       task.hashCode ^
       summary.hashCode ^
-      depth.hashCode ^
       state.hashCode ^
       execution.hashCode ^
       canStop.hashCode ^
@@ -100,18 +94,16 @@ class BridgeAgentDirectoryEntryDto {
       identical(this, other) ||
       other is BridgeAgentDirectoryEntryDto &&
           runtimeType == other.runtimeType &&
-          id == other.id &&
+          agentId == other.agentId &&
+          sessionId == other.sessionId &&
+          parentAgentId == other.parentAgentId &&
           threadId == other.threadId &&
-          rootThreadId == other.rootThreadId &&
-          path == other.path &&
-          parentPath == other.parentPath &&
           role == other.role &&
           delegationMode == other.delegationMode &&
           delegationPreference == other.delegationPreference &&
           frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
-          depth == other.depth &&
           state == other.state &&
           execution == other.execution &&
           canStop == other.canStop &&
@@ -467,87 +459,6 @@ sealed class BridgeLspServerState with _$BridgeLspServerState {
   }) = BridgeLspServerState_Unavailable;
   const factory BridgeLspServerState.disabled({required String message}) =
       BridgeLspServerState_Disabled;
-}
-
-class BridgeMcpHealthDto {
-  final List<String> activeMcpServers;
-  final List<BridgeMcpServerDto> mcpServers;
-
-  const BridgeMcpHealthDto({
-    required this.activeMcpServers,
-    required this.mcpServers,
-  });
-
-  @override
-  int get hashCode => activeMcpServers.hashCode ^ mcpServers.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeMcpHealthDto &&
-          runtimeType == other.runtimeType &&
-          activeMcpServers == other.activeMcpServers &&
-          mcpServers == other.mcpServers;
-}
-
-class BridgeMcpServerDto {
-  final String id;
-  final String transport;
-  final String endpoint;
-  final String sourceKind;
-  final String mutationPolicy;
-  final BridgeMcpServerState state;
-
-  const BridgeMcpServerDto({
-    required this.id,
-    required this.transport,
-    required this.endpoint,
-    required this.sourceKind,
-    required this.mutationPolicy,
-    required this.state,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      transport.hashCode ^
-      endpoint.hashCode ^
-      sourceKind.hashCode ^
-      mutationPolicy.hashCode ^
-      state.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeMcpServerDto &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          transport == other.transport &&
-          endpoint == other.endpoint &&
-          sourceKind == other.sourceKind &&
-          mutationPolicy == other.mutationPolicy &&
-          state == other.state;
-}
-
-@freezed
-sealed class BridgeMcpServerState with _$BridgeMcpServerState {
-  const BridgeMcpServerState._();
-
-  const factory BridgeMcpServerState.disabled({required String message}) =
-      BridgeMcpServerState_Disabled;
-  const factory BridgeMcpServerState.missingCredential({
-    required String message,
-  }) = BridgeMcpServerState_MissingCredential;
-  const factory BridgeMcpServerState.checking({required String message}) =
-      BridgeMcpServerState_Checking;
-  const factory BridgeMcpServerState.available({
-    required PlatformInt64 checkedAt,
-    required BigInt toolCount,
-  }) = BridgeMcpServerState_Available;
-  const factory BridgeMcpServerState.unavailable({
-    required PlatformInt64 checkedAt,
-    required BridgeStateError error,
-  }) = BridgeMcpServerState_Unavailable;
 }
 
 class BridgeQueuedAgent {

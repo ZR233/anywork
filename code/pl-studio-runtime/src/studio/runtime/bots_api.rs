@@ -23,9 +23,13 @@ impl StudioRuntime {
         self.store
             .ensure_archive_execution_allowed(workspace_id, Some(thread_id))
             .await?;
-        if let Some(thread) = self.store.catalog().get(thread_id) {
+        let catalog = self.store.catalog();
+        if let Some(agent) = catalog.agent_by_thread(thread_id) {
+            let session = catalog.get_session(&agent.session_id);
             anyhow::ensure!(
-                thread.workspace_id == workspace_id && !thread.archived,
+                session.is_some_and(|session| {
+                    session.workspace_id == workspace_id && !session.archived
+                }),
                 "bot Thread is archived or belongs to another workspace"
             );
         }

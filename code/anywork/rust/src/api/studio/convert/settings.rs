@@ -2,12 +2,12 @@ use crate::api::studio::types::{
     AccountSecretInput, AccountSettingsInput, AccountUsageDto, BridgeAccountSettingsDto,
     BridgeAccountUsageData, BridgeAccountUsageState, BridgeCustomModelSettingsDto,
     BridgeDeepSeekWebSearchSettingsDto, BridgeGeneralSettingsDto, BridgeInstructionsSettingsDto,
-    BridgeMcpServerConfiguration, BridgeMcpServerSettingsDto, BridgeModeModelSettingsDto,
-    BridgeModelAutoCompactSettingsDto, BridgeModelCatalogAccountDto, BridgeModelCatalogSnapshotDto,
-    BridgeModelConnectionSettingsDto, BridgeRoleSettingsDto, BridgeSettingsConfigSnapshotDto,
-    BridgeSettingsStateResponse, BridgeSkillsSettingsDto, BridgeStudioSettingsDto,
-    BridgeWebSearchSettingsDto, DeepSeekBalanceDto, DeepSeekBalanceInfoDto,
-    SubscriptionQuotaLimitDto, SubscriptionUsageDetailDto, SubscriptionUsageDto,
+    BridgeModeModelSettingsDto, BridgeModelAutoCompactSettingsDto, BridgeModelCatalogAccountDto,
+    BridgeModelCatalogSnapshotDto, BridgeModelConnectionSettingsDto, BridgeRoleSettingsDto,
+    BridgeSettingsConfigSnapshotDto, BridgeSettingsStateResponse, BridgeSkillsSettingsDto,
+    BridgeStudioSettingsDto, BridgeWebSearchSettingsDto, DeepSeekBalanceDto,
+    DeepSeekBalanceInfoDto, SubscriptionQuotaLimitDto, SubscriptionUsageDetailDto,
+    SubscriptionUsageDto,
 };
 use pl_studio_runtime::{AccountUsageData, AccountUsageState, SubscriptionQuotaWindow};
 
@@ -118,28 +118,6 @@ pub(crate) fn bridge_settings(
             disabled: settings.skills.disabled,
             auto_learn_min_tool_calls: settings.skills.auto_learn_min_tool_calls,
         },
-        mcp_servers: settings
-            .mcp_servers
-            .into_iter()
-            .map(|server| BridgeMcpServerSettingsDto {
-                id: server.id,
-                transport: server.transport,
-                endpoint: server.endpoint,
-                configuration: match server.configuration {
-                    pl_protocol::studio::StudioMcpServerConfiguration::Enabled => {
-                        BridgeMcpServerConfiguration::Enabled
-                    }
-                    pl_protocol::studio::StudioMcpServerConfiguration::Disabled => {
-                        BridgeMcpServerConfiguration::Disabled
-                    }
-                    pl_protocol::studio::StudioMcpServerConfiguration::MissingCredential => {
-                        BridgeMcpServerConfiguration::MissingCredential
-                    }
-                },
-                source_kind: server.source_kind,
-                mutation_policy: server.mutation_policy,
-            })
-            .collect(),
         general: BridgeGeneralSettingsDto {
             language: settings.general.language.into(),
             follow_active_turn: settings.general.follow_active_turn,

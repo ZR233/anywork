@@ -19,8 +19,10 @@ const _project = StudioProject(
   path: '/project',
 );
 
-StudioThread _thread({required String id}) => StudioThread(
-  id: id,
+SessionDirectoryRow _thread({required String id}) => SessionDirectoryRow(
+  sessionId: 'session-$id',
+  agentId: 'agent-$id',
+  threadId: id,
   workspaceId: _project.id,
   title: 'Session $id',
   mode: ThreadModeId.simple,
@@ -87,11 +89,11 @@ Widget _sidebarRowHost(Widget row) => MaterialApp(
 );
 
 SidebarThreadRow _sidebarRow({
-  required StudioThread thread,
+  required SessionDirectoryRow thread,
   required ValueChanged<SidebarThreadAction> onAction,
   bool archived = false,
 }) => SidebarThreadRow(
-  thread: thread,
+  row: thread,
   project: _project,
   selected: false,
   pinned: false,
@@ -112,21 +114,23 @@ void main() {
       _sidebarRowHost(_sidebarRow(thread: thread, onAction: actions.add)),
     );
     final menuTrigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.threadMenu(thread.id)),
+      of: find.byKey(StudioDriverKeys.threadMenu(thread.threadId)),
       matching: find.byType(IconButton),
     );
     await tester.tap(menuTrigger);
     await tester.pumpAndSettle();
 
     expect(
-      find.byKey(StudioDriverKeys.deleteThread(thread.id)),
+      find.byKey(StudioDriverKeys.deleteThread(thread.threadId)),
       findsOneWidget,
     );
     expect(
-      find.byKey(StudioDriverKeys.archiveThread(thread.id)),
+      find.byKey(StudioDriverKeys.archiveThread(thread.threadId)),
       findsOneWidget,
     );
-    await tester.tap(find.byKey(StudioDriverKeys.deleteThread(thread.id)));
+    await tester.tap(
+      find.byKey(StudioDriverKeys.deleteThread(thread.threadId)),
+    );
     await tester.pumpAndSettle();
 
     expect(actions, [SidebarThreadAction.delete]);
@@ -143,11 +147,16 @@ void main() {
         ),
       );
 
-      final deleteButton = StudioDriverKeys.deleteThread(thread.id);
-      final restoreButton = ValueKey<String>('thread-restore-${thread.id}');
+      final deleteButton = StudioDriverKeys.deleteThread(thread.threadId);
+      final restoreButton = ValueKey<String>(
+        'thread-restore-${thread.threadId}',
+      );
       expect(find.byKey(deleteButton), findsOneWidget);
       expect(find.byKey(restoreButton), findsOneWidget);
-      expect(find.byKey(StudioDriverKeys.threadMenu(thread.id)), findsNothing);
+      expect(
+        find.byKey(StudioDriverKeys.threadMenu(thread.threadId)),
+        findsNothing,
+      );
       await tester.tap(find.byKey(deleteButton));
       await tester.pump();
 

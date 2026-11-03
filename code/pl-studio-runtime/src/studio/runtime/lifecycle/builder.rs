@@ -4,12 +4,11 @@ use crate::config::ConfigRuntime;
 use crate::studio::agent_host::ThreadWriteBehindWriter;
 use crate::studio::runtime_lock::RuntimeLockOwner;
 use crate::studio::{ProductEventBus, StudioRuntimeState, StudioStore};
-use pl_tool::mcp::{McpConnector, McpRuntime};
+use pl_tool::mcp::McpConnector;
 
 use super::super::StudioRuntime;
 use super::super::attachment_drafts::AttachmentDraftRuntime;
 use super::super::lsp_state::LspStateRuntime;
-use super::super::mcp_health::McpStateRuntime;
 use super::super::residency::ThreadResidency;
 use super::super::{
     AccountUsageRuntime, ModelPerformanceOwner, ShutdownProgressBus, SkillCatalogRuntime,
@@ -79,7 +78,6 @@ impl StudioRuntime {
             product_events.clone(),
         );
         let updater = StudioUpdateRuntime::new(product_events.clone())?;
-        let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
         // The configuration owner established and loaded the one canonical Mode manager.
@@ -88,15 +86,15 @@ impl StudioRuntime {
         // supervised worker resource used by local tool exec, inject it; otherwise the connector
         // fails loud for any local stdio server (and empty MCP hosts still boot).
         #[cfg(target_os = "linux")]
-        let mcp = {
+        let mcp_connector = {
             let mut connector = McpConnector::default();
             if let Some(worker) = stdio_worker {
                 connector = connector.with_stdio_worker(worker);
             }
-            McpRuntime::new(connector).handle()
+            connector
         };
         #[cfg(not(target_os = "linux"))]
-        let mcp = McpRuntime::new(McpConnector::default()).handle();
+        let mcp_connector = McpConnector::default();
         let lsp = pl_lsp::runtime::LspRuntimeRegistry::new();
         let skills = SkillCatalogRuntime::new(product_events.clone(), system_skills_dir);
         let recovery = crate::studio::StudioRecoveryRegistry::new();
@@ -107,7 +105,7 @@ impl StudioRuntime {
                 recovery: recovery.clone(),
                 product_events: product_events.clone(),
                 config_runtime: config_runtime.clone(),
-                mcp_runtime: mcp.clone(),
+                mcp_connector,
                 lsp_runtime: lsp.clone(),
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
@@ -164,10 +162,6 @@ impl StudioRuntime {
             shutdown_progress: ShutdownProgressBus::new(),
             config_runtime,
             external_runtimes: StudioExternalRuntimes {
-                mcp,
-                mcp_state,
-                mcp_config_watcher: Default::default(),
-                mcp_health_watcher: Default::default(),
                 lsp,
                 lsp_state,
                 lsp_state_watcher: Default::default(),

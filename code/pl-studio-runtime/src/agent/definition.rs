@@ -115,35 +115,68 @@ impl ResolvedAgentDefinition {
     ///
     /// 身份与修订来自该 Profile 快照本身，因此重启或配置更新不会重新选择 child 角色。
     pub(crate) fn from_profile(profile: &AgentProfileSnapshot) -> Result<Self, PureError> {
-        if profile.profile_id.trim().is_empty() || profile.profile_id.trim() != profile.profile_id {
+        Self::from_definition(
+            &profile.definition(),
+            &profile.system_instructions,
+            profile.system,
+            profile.workspace_mode,
+        )
+    }
+
+    pub(crate) fn from_current(profile: &pl_protocol::AgentProfile) -> Result<Self, PureError> {
+        let pl_protocol::AgentBinding::Native(native) = &profile.binding else {
+            return Err(PureError::ConfigError(
+                "ACP execution is not supported before S4".into(),
+            ));
+        };
+        let instructions = native.system_instructions.as_deref().ok_or_else(|| {
+            PureError::ConfigError("child Native Profile has no instructions".into())
+        })?;
+        Self::from_definition(
+            &profile.definition,
+            instructions,
+            profile.system,
+            profile.workspace_mode,
+        )
+    }
+
+    fn from_definition(
+        definition: &pl_protocol::AgentDefinitionSnapshot,
+        instructions: &str,
+        system: bool,
+        workspace_mode: AgentWorkspaceMode,
+    ) -> Result<Self, PureError> {
+        if definition.definition_id.trim().is_empty()
+            || definition.definition_id.trim() != definition.definition_id
+        {
             return Err(PureError::ConfigError(
                 "saved Agent Profile has an invalid identity".into(),
             ));
         }
-        if is_root_definition_id(&profile.profile_id) {
+        if is_root_definition_id(&definition.definition_id) {
             return Err(PureError::ConfigError(format!(
                 "root Agent definition `{}` cannot become a child Agent",
-                profile.profile_id
+                definition.definition_id
             )));
         }
-        let origin = if profile.system {
+        let origin = if system {
             AgentDefinitionOrigin::Builtin
         } else {
             AgentDefinitionOrigin::Profile
         };
         Ok(Self {
             identity: AgentDefinitionIdentity {
-                id: profile.profile_id.clone(),
+                id: definition.definition_id.clone(),
                 scope: AgentDefinitionScope::Child,
                 usage_binding: AgentUsageBinding::Child,
-                revision: profile.revision.clone(),
+                revision: definition.revision.clone(),
                 origin,
             },
-            display_name: profile.display_name.clone(),
-            description: profile.description.clone(),
-            when_to_use: profile.when_to_use.clone(),
-            instructions: profile.system_instructions.trim().to_owned(),
-            workspace_mode: Some(profile.workspace_mode),
+            display_name: definition.display_name.clone(),
+            description: definition.description.clone(),
+            when_to_use: definition.when_to_use.clone(),
+            instructions: instructions.trim().to_owned(),
+            workspace_mode: Some(workspace_mode),
         })
     }
 

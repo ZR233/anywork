@@ -4053,6 +4053,7 @@ dependencies = [
  "pl-protocol",
  "process-wrap",
  "procfs",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -4209,6 +4210,7 @@ name = "pl-tool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.23.1",
  "bytes",
  "dunce",
@@ -4242,6 +4244,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2 0.11.1",
+ "sse-stream",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

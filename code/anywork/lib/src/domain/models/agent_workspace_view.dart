@@ -11,8 +11,8 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
   const AgentWorkspaceView._();
 
   const factory AgentWorkspaceView({
-    required StudioThread thread,
-    required StudioThread rootThread,
+    required SessionDirectoryRow row,
+    required SessionDirectoryRow rootRow,
     required AgentWorkspaceSyncState syncState,
     String? loadError,
     required TimelineTodoListUpdate? todo,
@@ -29,9 +29,10 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     required List<StudioAgentView> agents,
   }) = _AgentWorkspaceView;
 
-  String get threadId => thread.id;
+  String get threadId => row.threadId;
 
-  bool get isRoot => thread.isRoot;
+  /// root/child 只读目录行 `parentAgentId`（issue #280）。
+  bool get isRoot => row.isRootRow;
 
   bool get isLoading =>
       syncState == AgentWorkspaceSyncState.loading ||

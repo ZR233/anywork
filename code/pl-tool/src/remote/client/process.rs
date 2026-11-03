@@ -141,6 +141,7 @@ async fn supervise(
         start,
     } = streams;
     let id = request.process_id.clone();
+    let process_lease = request.process_lease.clone();
     let expects_capture = matches!(request.capture, RemoteCapture::Files { .. });
     let result = if cancellation.is_cancelled() {
         Err(RemoteClientError::Cancelled)
@@ -178,6 +179,60 @@ async fn supervise(
         return Err(reason);
     }
     let _ = started.send(Ok(()));
+    let helper_instance_id = inner
+        .hello
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|hello| hello.session.instance_id.clone());
+    let stop_lease = CancellationToken::new();
+    let mut lease_task = process_lease.map(|lease_id| {
+        let lease_owner = inner.clone();
+        let lease_process_id = id.clone();
+        let lease_stop = stop_lease.clone();
+        inner.streams.spawn(async move {
+            let mut interval = tokio::time::interval(REMOTE_PROCESS_LEASE_RENEWAL_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = lease_stop.cancelled() => break,
+                    _ = lease_owner.stopped.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                if lease_stop.is_cancelled() || lease_owner.stopped.is_cancelled() {
+                    break;
+                }
+                let current_instance = lease_owner
+                    .hello
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .map(|hello| hello.session.instance_id.clone());
+                if helper_instance_id.is_some() && current_instance != helper_instance_id {
+                    break;
+                }
+                let renew_request = RemoteRequest::RenewProcessLease {
+                    process_id: lease_process_id.clone(),
+                    lease_id: lease_id.clone(),
+                };
+                let result = tokio::select! {
+                    _ = lease_stop.cancelled() => break,
+                    result = request_inner(&lease_owner, renew_request, &[]) => result,
+                };
+                if let Err(RemoteClientError::Remote { code, .. }) = result
+                    && matches!(
+                        code,
+                        RemoteErrorCode::ProcessNotFound
+                            | RemoteErrorCode::InvalidRequest
+                            | RemoteErrorCode::SessionExpired
+                    )
+                {
+                    break;
+                }
+            }
+        })
+    });
     let stop_input = CancellationToken::new();
     let stdin_owner = inner.clone();
     let input_id = id.clone();
@@ -214,6 +269,10 @@ async fn supervise(
             _ = cancellation.cancelled(), if !terminating => {
                 terminating = true;
                 stop_input.cancel();
+                stop_lease.cancel();
+                if let Some(task) = lease_task.take() {
+                    let _ = task.await;
+                }
                 // Termination never waits for the stdin mutex or for business output consumption.
                 if let Err(error) = request_inner(&inner, RemoteRequest::Terminate { process_id: id.clone() }, &[]).await { failure = Some(error.to_string()); }
             }
@@ -224,12 +283,20 @@ async fn supervise(
                     failure = Some(error);
                     terminating = true;
                     stop_input.cancel();
+                    stop_lease.cancel();
+                    if let Some(task) = lease_task.take() {
+                        let _ = task.await;
+                    }
                     let _ = request_inner(&inner, RemoteRequest::Terminate { process_id: id.clone() }, &[]).await;
                 }
             }
         }
     };
     stop_input.cancel();
+    stop_lease.cancel();
+    if let Some(task) = lease_task.take() {
+        let _ = task.await;
+    }
     if !input_finished {
         let _ = input.await;
     }

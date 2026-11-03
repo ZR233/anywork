@@ -444,7 +444,7 @@ closed = true
                 )],
                 project_removals: vec![ProjectRemoval {
                     workspace_id: "created-standalone".into(),
-                    thread_ids: Vec::new(),
+                    session_ids: Vec::new(),
                     closed_at: 3,
                 }],
                 ..Default::default()

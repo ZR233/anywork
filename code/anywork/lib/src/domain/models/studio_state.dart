@@ -34,7 +34,7 @@ class StudioState {
     required this.accountsState,
     required this.modelDirectoryState,
     required this.recoveryState,
-    required this.mcpState,
+    required this.mcpCatalog,
     required this.lspState,
     required this.skillsByProject,
     this.threadModeCatalog = const ThreadModeCatalogView(),
@@ -82,7 +82,7 @@ class StudioState {
   final AgentDirectoryState agentDirectory;
   final SettingsStateSnapshot settingsState;
   final RecoveryStateSnapshot recoveryState;
-  final McpStateSnapshot mcpState;
+  final McpCatalogSnapshot mcpCatalog;
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
@@ -122,7 +122,7 @@ class StudioState {
       topicConnections[topic];
 
   List<StudioProject> get projects => projectDirectory.values;
-  List<StudioThread> get threads => threadDirectory.threads;
+  List<SessionDirectoryRow> get rows => threadDirectory.rows;
   Map<String, StudioAgentView> get agentsByThread => {
     for (final agent in agentDirectory.values) agent.threadId: agent,
   };
@@ -140,13 +140,12 @@ class StudioState {
   List<AccountUsageObservation> get accountUsages =>
       accountUsageState.value?.values.toList(growable: false) ?? const [];
   SessionCostsStateView? get selectedSessionCostState {
-    final rootId = selectedRootThread?.id;
-    return rootId == null ? null : sessionCostsByRoot[rootId];
+    final sessionId = selectedRootRow?.sessionId;
+    return sessionId == null ? null : sessionCostsByRoot[sessionId];
   }
 
   SessionCostView? get selectedSessionCost => selectedSessionCostState?.cost;
   List<RoleSettingsView> get roles => settingsState.roles;
-  List<McpServerSettingsView> get mcpServers => settingsState.mcpServers;
   InstructionsSettingsView get instructions => settingsState.instructions;
   SkillsSettingsView get skills => settingsState.skills;
   GeneralSettingsView get general => settingsState.general;
@@ -214,58 +213,62 @@ class StudioState {
               ThreadWorkspaceMode.local;
   }
 
-  List<StudioThread> get rootThreads =>
-      threads.where((thread) => thread.isRoot).toList();
+  List<SessionDirectoryRow> get rootRows =>
+      rows.where((row) => row.isRootRow).toList();
 
-  StudioThread? get selectedThread {
+  SessionDirectoryRow? get selectedRow {
     final id = selectedThreadId;
     return id == null
         ? null
-        : threads.where((thread) => thread.id == id).firstOrNull;
+        : rows.where((row) => row.threadId == id).firstOrNull;
   }
 
-  StudioThread? get selectedRootThread {
-    final rootId = AgentDirectoryQueries.rootThreadId(
+  /// 选中会话的 root 行：归属只读目录行的 `sessionId`，不从 Thread 快照推导。
+  SessionDirectoryRow? get selectedRootRow {
+    final sessionId = AgentDirectoryQueries.sessionId(
       threadId: selectedThreadId,
       agents: agentDirectory.values,
-      threads: threads,
+      rows: rows,
     );
-    return threads
-        .where((thread) => thread.id == rootId && thread.isRoot)
+    if (sessionId == null) return null;
+    return rows
+        .where((row) => row.isRootRow && row.sessionId == sessionId)
         .firstOrNull;
   }
 
-  List<StudioThread> get threadsForSelectedRoot {
-    final root = selectedRootThread;
+  /// 当前会话的目录行（root 在前，成员按 `parentAgentId` 父先序）。
+  List<SessionDirectoryRow> get rowsForSelectedSession {
+    final root = selectedRootRow;
     if (root == null) return const [];
-    final scoped = threads
-        .where((thread) => thread.effectiveRootThreadId == root.id)
+    final scoped = rows
+        .where((row) => row.sessionId == root.sessionId)
         .toList();
-    final children = <String?, List<StudioThread>>{};
-    for (final thread in scoped) {
-      children.putIfAbsent(thread.parentThreadId, () => []).add(thread);
+    final children = <String?, List<SessionDirectoryRow>>{};
+    for (final row in scoped) {
+      children.putIfAbsent(row.parentAgentId, () => []).add(row);
     }
     for (final siblings in children.values) {
       siblings.sort((left, right) {
         final created = left.effectiveCreatedAt.compareTo(
           right.effectiveCreatedAt,
         );
-        return created != 0 ? created : left.id.compareTo(right.id);
+        return created != 0 ? created : left.threadId.compareTo(right.threadId);
       });
     }
-    final ordered = <StudioThread>[];
+    final ordered = <SessionDirectoryRow>[];
     final visited = <String>{};
-    void append(StudioThread thread) {
-      if (!visited.add(thread.id)) return;
-      ordered.add(thread);
-      for (final child in children[thread.id] ?? const <StudioThread>[]) {
+    void append(SessionDirectoryRow row) {
+      if (!visited.add(row.threadId)) return;
+      ordered.add(row);
+      for (final child
+          in children[row.agentId] ?? const <SessionDirectoryRow>[]) {
         append(child);
       }
     }
 
     append(root);
-    for (final thread in scoped) {
-      append(thread);
+    for (final row in scoped) {
+      append(row);
     }
     return ordered;
   }
@@ -288,24 +291,23 @@ class StudioState {
   }
 
   List<StudioAgentView> get selectedAgents {
-    return AgentDirectoryQueries.forRoot(
-      rootThreadId: AgentDirectoryQueries.rootThreadId(
+    return AgentDirectoryQueries.forSession(
+      sessionId: AgentDirectoryQueries.sessionId(
         threadId: selectedThreadId,
         agents: agentDirectory.values,
-        threads: threads,
+        rows: rows,
       ),
       agents: agentDirectory.values,
-      threads: threads,
     );
   }
 
   AgentWorkspaceView? get selectedAgentWorkspace {
-    final thread = selectedThread;
-    final root = selectedRootThread;
-    if (thread == null || root == null) return null;
+    final row = selectedRow;
+    final root = selectedRootRow;
+    if (row == null || root == null) return null;
     return AgentWorkspaceView(
-      thread: thread,
-      rootThread: root,
+      row: row,
+      rootRow: root,
       syncState: selectedWorkspaceUi.syncState,
       loadError: selectedWorkspaceUi.loadError,
       todo: selectedTodoList,
@@ -315,7 +317,7 @@ class StudioState {
       lastTurn: selectedWorkspace?.lastTurn,
       activeInteraction: activeInteraction,
       composer: composer,
-      composerMode: thread.isAgent
+      composerMode: row.isChildRow
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
       accounts: accounts,
@@ -351,7 +353,7 @@ class StudioState {
     AccountsState? accountsState,
     ModelDirectoryState? modelDirectoryState,
     RecoveryStateSnapshot? recoveryState,
-    McpStateSnapshot? mcpState,
+    McpCatalogSnapshot? mcpCatalog,
     LspStateSnapshot? lspState,
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
@@ -391,7 +393,7 @@ class StudioState {
       accountsState: accountsState ?? this.accountsState,
       modelDirectoryState: modelDirectoryState ?? this.modelDirectoryState,
       recoveryState: recoveryState ?? this.recoveryState,
-      mcpState: mcpState ?? this.mcpState,
+      mcpCatalog: mcpCatalog ?? this.mcpCatalog,
       lspState: lspState ?? this.lspState,
       skillsByProject: skillsByProject ?? this.skillsByProject,
       threadModeCatalog: threadModeCatalog ?? this.threadModeCatalog,

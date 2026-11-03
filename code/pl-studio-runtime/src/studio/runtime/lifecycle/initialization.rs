@@ -356,11 +356,7 @@ impl StudioRuntime {
             .await
             .map_err(|error| internal("start_model_catalogs", error))?;
         self.start_tool_refresh().await;
-        self.start_mcp_health_watcher().await;
         self.start_lsp_state_watcher().await;
-        self.start_mcp_config_watcher()
-            .await
-            .map_err(|error| internal("start_mcp", error))?;
         check_cancelled(cancellation)?;
         self.runtime_state
             .apply(crate::studio::StudioRuntimeCommand::FinishInitialize {
@@ -385,13 +381,11 @@ impl StudioRuntime {
             self.stop_recovery_scan(),
             self.stop_model_refresh(),
             self.stop_tool_refresh(),
-            self.stop_mcp_config_watcher(),
-            self.stop_mcp_health_watcher(),
             self.stop_lsp_state_watcher(),
             self.stop_agent_profiles_forwarder()
         );
         let observer = background_task::stop(&self.persistence_observer).await;
-        let mcp = self.external_runtimes.mcp.shutdown().await;
+        let mcp = self.thread_factory.shutdown_all_mcp().await;
         let lsp = self.external_runtimes.lsp.shutdown().await;
         let ssh = self.ssh_manager.shutdown().await;
         // Clone (never `take`) the retained writer first, then stop it, and only drop the retained
@@ -411,9 +405,7 @@ impl StudioRuntime {
         let storage = self.store.close().await;
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         usage.map_err(|error| internal("stop_account_usage", error))?;
-        for result in [
-            results.0, results.1, results.2, results.3, results.4, results.5, results.6,
-        ] {
+        for result in [results.0, results.1, results.2, results.3, results.4] {
             result.map_err(|error| internal("stop_services", error))?;
         }
         observer.map_err(|error| {

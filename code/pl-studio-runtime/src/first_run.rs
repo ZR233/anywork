@@ -292,7 +292,6 @@ impl FirstRunConfigDraft {
             runtime: Default::default(),
             instructions: Default::default(),
             skills: Default::default(),
-            mcp: Default::default(),
             lsp: Default::default(),
             ui: Default::default(),
             acp: Default::default(),

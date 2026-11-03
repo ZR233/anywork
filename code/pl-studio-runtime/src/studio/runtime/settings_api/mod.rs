@@ -188,15 +188,6 @@ impl StudioRuntime {
                     SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { value } => {
                         config.skills.auto_learn_min_tool_calls = value;
                     }
-                    SettingsFieldUpdate::McpServerEnabled { id, value } => {
-                        apply_mcp_server_enabled(&mut config, &id, value)?;
-                    }
-                    SettingsFieldUpdate::McpServerTransport { id, transport } => {
-                        apply_mcp_server_transport(&mut config, &id, &transport)?;
-                    }
-                    SettingsFieldUpdate::McpServerEndpoint { id, endpoint } => {
-                        apply_mcp_server_endpoint(&mut config, &id, &endpoint)?;
-                    }
                     SettingsFieldUpdate::GeneralFollowActiveTurn { value } => {
                         config.ui.follow_active_turn = value;
                     }
@@ -866,92 +857,6 @@ fn update_web_search_location(
     if location.is_empty() {
         config.web_search.location = None;
     }
-}
-
-fn mcp_server_id(id: &str) -> Option<String> {
-    let id = id.trim().to_string();
-    if id.is_empty() { None } else { Some(id) }
-}
-
-fn apply_mcp_server_enabled(
-    config: &mut crate::StudioConfig,
-    id: &str,
-    enabled: bool,
-) -> pl_protocol::Result<()> {
-    let Some(id) = mcp_server_id(id) else {
-        return Ok(());
-    };
-    if crate::config::mcp::is_builtin_mcp_server_id(&id) {
-        config.mcp.builtin_servers.entry(id).or_default().enabled = enabled;
-        return Ok(());
-    }
-    config.mcp.servers.entry(id).or_default().enabled = enabled;
-    Ok(())
-}
-
-fn apply_mcp_server_transport(
-    config: &mut crate::StudioConfig,
-    id: &str,
-    transport: &str,
-) -> pl_protocol::Result<()> {
-    let Some(id) = mcp_server_id(id) else {
-        return Ok(());
-    };
-    if crate::config::mcp::is_builtin_mcp_server_id(&id) {
-        return Ok(());
-    }
-    let transport = match transport.trim() {
-        "stdio" => pl_tool::mcp::config::McpServerTransport::Stdio,
-        "streamableHttp" => pl_tool::mcp::config::McpServerTransport::StreamableHttp,
-        _ => {
-            return Err(pl_protocol::PureError::ConfigError(
-                "Unsupported MCP transport".to_string(),
-            ));
-        }
-    };
-    let server = config.mcp.servers.entry(id).or_default();
-    let endpoint = match server.transport {
-        pl_tool::mcp::config::McpServerTransport::Stdio => server.command.take(),
-        pl_tool::mcp::config::McpServerTransport::StreamableHttp => server.url.take(),
-    };
-    server.transport = transport;
-    match transport {
-        pl_tool::mcp::config::McpServerTransport::Stdio => {
-            server.command = endpoint;
-            server.url = None;
-        }
-        pl_tool::mcp::config::McpServerTransport::StreamableHttp => {
-            server.url = endpoint;
-            server.command = None;
-        }
-    }
-    Ok(())
-}
-
-fn apply_mcp_server_endpoint(
-    config: &mut crate::StudioConfig,
-    id: &str,
-    endpoint: &str,
-) -> pl_protocol::Result<()> {
-    let Some(id) = mcp_server_id(id) else {
-        return Ok(());
-    };
-    if crate::config::mcp::is_builtin_mcp_server_id(&id) {
-        return Ok(());
-    }
-    let server = config.mcp.servers.entry(id).or_default();
-    let endpoint = endpoint.trim();
-    match server.transport {
-        pl_tool::mcp::config::McpServerTransport::Stdio => {
-            server.command = (!endpoint.is_empty()).then(|| endpoint.to_string());
-            server.url = None;
-        }
-        pl_tool::mcp::config::McpServerTransport::StreamableHttp => {
-            server.url = (!endpoint.is_empty()).then(|| endpoint.to_string());
-            server.command = None;
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn validated_route(

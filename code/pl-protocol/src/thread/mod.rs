@@ -3,6 +3,8 @@ pub mod mode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub use crate::id::ThreadId;
+
 use crate::{
     InteractionRequest, McpHealthSnapshot, RuntimeCostAmount, ThreadItem, ThreadModeId,
     TodoListSnapshot, Turn,

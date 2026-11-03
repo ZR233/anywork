@@ -18,11 +18,11 @@ final mcpStoreProvider = McpStoreProvider._();
 final class McpStoreProvider
     extends
         $FunctionalProvider<
-          CanonicalClockState<McpStateSnapshot>,
-          CanonicalClockState<McpStateSnapshot>,
-          CanonicalClockState<McpStateSnapshot>
+          CanonicalClockState<McpCatalogSnapshot>,
+          CanonicalClockState<McpCatalogSnapshot>,
+          CanonicalClockState<McpCatalogSnapshot>
         >
-    with $Provider<CanonicalClockState<McpStateSnapshot>> {
+    with $Provider<CanonicalClockState<McpCatalogSnapshot>> {
   /// Riverpod owns this display observation; the Client owns the resource.
   McpStoreProvider._()
     : super(
@@ -40,23 +40,203 @@ final class McpStoreProvider
 
   @$internal
   @override
-  $ProviderElement<CanonicalClockState<McpStateSnapshot>> $createElement(
+  $ProviderElement<CanonicalClockState<McpCatalogSnapshot>> $createElement(
     $ProviderPointer pointer,
   ) => $ProviderElement(pointer);
 
   @override
-  CanonicalClockState<McpStateSnapshot> create(Ref ref) {
+  CanonicalClockState<McpCatalogSnapshot> create(Ref ref) {
     return mcpStore(ref);
   }
 
   /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(CanonicalClockState<McpStateSnapshot> value) {
+  Override overrideWithValue(CanonicalClockState<McpCatalogSnapshot> value) {
     return $ProviderOverride(
       origin: this,
       providerOverride:
-          $SyncValueProvider<CanonicalClockState<McpStateSnapshot>>(value),
+          $SyncValueProvider<CanonicalClockState<McpCatalogSnapshot>>(value),
     );
   }
 }
 
-String _$mcpStoreHash() => r'62d169e67e548a8bc4cfd778aa75d061c156c4ec';
+String _$mcpStoreHash() => r'1585bd20342309d0dc53749987802e131569cf4d';
+
+@ProviderFor(mcpCatalogByScope)
+final mcpCatalogByScopeProvider = McpCatalogByScopeFamily._();
+
+final class McpCatalogByScopeProvider
+    extends
+        $FunctionalProvider<
+          CanonicalClockState<McpCatalogSnapshot>,
+          CanonicalClockState<McpCatalogSnapshot>,
+          CanonicalClockState<McpCatalogSnapshot>
+        >
+    with $Provider<CanonicalClockState<McpCatalogSnapshot>> {
+  McpCatalogByScopeProvider._({
+    required McpCatalogByScopeFamily super.from,
+    required McpScope super.argument,
+  }) : super(
+         retry: null,
+         name: r'mcpCatalogByScopeProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$mcpCatalogByScopeHash();
+
+  @override
+  String toString() {
+    return r'mcpCatalogByScopeProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<CanonicalClockState<McpCatalogSnapshot>> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  CanonicalClockState<McpCatalogSnapshot> create(Ref ref) {
+    final argument = this.argument as McpScope;
+    return mcpCatalogByScope(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(CanonicalClockState<McpCatalogSnapshot> value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride:
+          $SyncValueProvider<CanonicalClockState<McpCatalogSnapshot>>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is McpCatalogByScopeProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$mcpCatalogByScopeHash() => r'f314d063b410064081cc0ae7127c01c57c413eb0';
+
+final class McpCatalogByScopeFamily extends $Family
+    with
+        $FunctionalFamilyOverride<
+          CanonicalClockState<McpCatalogSnapshot>,
+          McpScope
+        > {
+  McpCatalogByScopeFamily._()
+    : super(
+        retry: null,
+        name: r'mcpCatalogByScopeProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  McpCatalogByScopeProvider call(McpScope scope) =>
+      McpCatalogByScopeProvider._(argument: scope, from: this);
+
+  @override
+  String toString() => r'mcpCatalogByScopeProvider';
+}
+
+@ProviderFor(threadMcp)
+final threadMcpProvider = ThreadMcpFamily._();
+
+final class ThreadMcpProvider
+    extends
+        $FunctionalProvider<
+          CanonicalClockState<ThreadMcpStateSnapshot>,
+          CanonicalClockState<ThreadMcpStateSnapshot>,
+          CanonicalClockState<ThreadMcpStateSnapshot>
+        >
+    with $Provider<CanonicalClockState<ThreadMcpStateSnapshot>> {
+  ThreadMcpProvider._({
+    required ThreadMcpFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'threadMcpProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$threadMcpHash();
+
+  @override
+  String toString() {
+    return r'threadMcpProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<CanonicalClockState<ThreadMcpStateSnapshot>> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  CanonicalClockState<ThreadMcpStateSnapshot> create(Ref ref) {
+    final argument = this.argument as String;
+    return threadMcp(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(
+    CanonicalClockState<ThreadMcpStateSnapshot> value,
+  ) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride:
+          $SyncValueProvider<CanonicalClockState<ThreadMcpStateSnapshot>>(
+            value,
+          ),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is ThreadMcpProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$threadMcpHash() => r'2601df1af413fb691122e65ac5669e37cc1bedb5';
+
+final class ThreadMcpFamily extends $Family
+    with
+        $FunctionalFamilyOverride<
+          CanonicalClockState<ThreadMcpStateSnapshot>,
+          String
+        > {
+  ThreadMcpFamily._()
+    : super(
+        retry: null,
+        name: r'threadMcpProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  ThreadMcpProvider call(String threadId) =>
+      ThreadMcpProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'threadMcpProvider';
+}

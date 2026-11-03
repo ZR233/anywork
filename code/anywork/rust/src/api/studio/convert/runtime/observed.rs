@@ -1,17 +1,17 @@
 //! `ObservedResource<T>` 到各 FRB concrete union 的穷尽转换。
 
+use crate::api::studio::convert::thread_stream::bridge_session_row;
 use pl_protocol::ObservedResource;
 use pl_studio_runtime::*;
 
 use crate::api::studio::convert::settings::{
     account_usage_dto, bridge_model_catalog_account, bridge_settings,
 };
-use crate::api::studio::convert::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
 
 use super::{
     bridge_agent_directory_entry, bridge_degraded_resource, bridge_failed_resource,
-    bridge_loading_resource, bridge_mcp_health, bridge_ready_resource, bridge_recovery_issue,
+    bridge_loading_resource, bridge_ready_resource, bridge_recovery_issue,
     bridge_refreshing_resource, bridge_stale_resource, bridge_stopped_resource,
     bridge_uninitialized_resource,
 };
@@ -132,7 +132,7 @@ pub(crate) fn bridge_thread_directory_page(
     concrete_observed!(
         state,
         |data| BridgeThreadDirectoryPageData {
-            threads: data.threads.into_iter().map(bridge_thread).collect(),
+            rows: data.rows.into_iter().map(bridge_session_row).collect(),
             next_cursor: data.next_cursor,
         },
         BridgeThreadDirectoryPage
@@ -212,20 +212,6 @@ pub(crate) fn bridge_recovery_state(
             issues: issues.into_iter().map(bridge_recovery_issue).collect(),
         },
         BridgeRecoveryStateSnapshot
-    )
-}
-
-pub(crate) fn bridge_mcp_state(
-    state: ObservedResource<StudioMcpStateData>,
-) -> BridgeMcpStateSnapshot {
-    concrete_observed!(
-        state,
-        |data| BridgeMcpStateData {
-            desired_config_fingerprint: data.desired_config_fingerprint,
-            applied_config_fingerprint: data.applied_config_fingerprint,
-            health: bridge_mcp_health(data.health),
-        },
-        BridgeMcpStateSnapshot
     )
 }
 

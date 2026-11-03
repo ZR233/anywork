@@ -4,40 +4,68 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
+import 'session_directory.dart';
 
-/// Agent Profile 设置页使用的只读快照；系统 Profile 的 `system` 为 true。
-class BridgeAgentProfileDto {
-  final String profileId;
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+
+class BridgeAgentDefinitionSnapshot {
+  final String definitionId;
   final String displayName;
   final String description;
   final String whenToUse;
-  final String systemInstructions;
-  final String accountId;
-  final String modelId;
-  final String? effort;
   final String source;
   final String revision;
   final String contentHash;
+
+  const BridgeAgentDefinitionSnapshot({
+    required this.definitionId,
+    required this.displayName,
+    required this.description,
+    required this.whenToUse,
+    required this.source,
+    required this.revision,
+    required this.contentHash,
+  });
+
+  @override
+  int get hashCode =>
+      definitionId.hashCode ^
+      displayName.hashCode ^
+      description.hashCode ^
+      whenToUse.hashCode ^
+      source.hashCode ^
+      revision.hashCode ^
+      contentHash.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAgentDefinitionSnapshot &&
+          runtimeType == other.runtimeType &&
+          definitionId == other.definitionId &&
+          displayName == other.displayName &&
+          description == other.description &&
+          whenToUse == other.whenToUse &&
+          source == other.source &&
+          revision == other.revision &&
+          contentHash == other.contentHash;
+}
+
+/// Agent Profile 设置页使用的只读快照；系统 Profile 的 `system` 为 true。
+class BridgeAgentProfileDto {
+  final BridgeAgentDefinitionSnapshot definition;
+  final BridgeAgentBinding binding;
   final bool system;
   final bool enabled;
   final BridgeAgentWorkspaceMode workspaceMode;
 
   const BridgeAgentProfileDto({
-    required this.profileId,
-    required this.displayName,
-    required this.description,
-    required this.whenToUse,
-    required this.systemInstructions,
-    required this.accountId,
-    required this.modelId,
-    this.effort,
-    required this.source,
-    required this.revision,
-    required this.contentHash,
+    required this.definition,
+    required this.binding,
     required this.system,
     required this.enabled,
     required this.workspaceMode,
@@ -45,17 +73,8 @@ class BridgeAgentProfileDto {
 
   @override
   int get hashCode =>
-      profileId.hashCode ^
-      displayName.hashCode ^
-      description.hashCode ^
-      whenToUse.hashCode ^
-      systemInstructions.hashCode ^
-      accountId.hashCode ^
-      modelId.hashCode ^
-      effort.hashCode ^
-      source.hashCode ^
-      revision.hashCode ^
-      contentHash.hashCode ^
+      definition.hashCode ^
+      binding.hashCode ^
       system.hashCode ^
       enabled.hashCode ^
       workspaceMode.hashCode;
@@ -65,17 +84,8 @@ class BridgeAgentProfileDto {
       identical(this, other) ||
       other is BridgeAgentProfileDto &&
           runtimeType == other.runtimeType &&
-          profileId == other.profileId &&
-          displayName == other.displayName &&
-          description == other.description &&
-          whenToUse == other.whenToUse &&
-          systemInstructions == other.systemInstructions &&
-          accountId == other.accountId &&
-          modelId == other.modelId &&
-          effort == other.effort &&
-          source == other.source &&
-          revision == other.revision &&
-          contentHash == other.contentHash &&
+          definition == other.definition &&
+          binding == other.binding &&
           system == other.system &&
           enabled == other.enabled &&
           workspaceMode == other.workspaceMode;

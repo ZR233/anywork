@@ -141,7 +141,7 @@ final class _AcpTransport extends AccountsTestTransport {
 StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
   ownerEpoch: _epoch,
   projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-  threadDirectory: const ThreadDirectoryPage(threads: [], revision: 1),
+  threadDirectory: const ThreadDirectoryPage(rows: [], revision: 1),
   agentDirectory: AgentDirectoryState(revision: 1),
   settingsState: SettingsStateSnapshot(
     revision: 1,
@@ -156,7 +156,7 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
     ],
   ),
   recoveryState: RecoveryStateSnapshot(revision: 1),
-  mcpState: McpStateSnapshot(revision: 1),
+  mcpCatalog: const McpCatalogSnapshot(revision: 1),
   lspState: LspStateSnapshot(revision: 1),
   skillsByProject: const {},
   threadModeCatalog: const ThreadModeCatalogView(),

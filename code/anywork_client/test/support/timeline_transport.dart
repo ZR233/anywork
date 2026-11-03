@@ -415,6 +415,10 @@ class TestConversationTransport extends StudioTransport
     })
   >
   opens = [];
+  final List<ProductTopic> productTopics = [];
+  final Map<ProductTopic, Completer<void>> _topicOpening = {};
+  final Map<ProductTopic, StreamController<ProductTopicFrame>> _topicStreams =
+      {};
   final Map<int, Completer<void>> _opening = {};
   @override
   Future<ConversationFeed> openConversationFeed(
@@ -437,9 +441,41 @@ class TestConversationTransport extends StudioTransport
   Future<void> opened(int index) => opens.length > index
       ? Future.value()
       : (_opening[index] ??= Completer<void>()).future;
+
+  Future<void> productTopicOpened(ProductTopic topic) =>
+      _topicStreams.containsKey(topic)
+      ? Future.value()
+      : (_topicOpening[topic] ??= Completer<void>()).future;
+
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
+  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+    productTopics.add(topic);
+    final stream = StreamController<ProductTopicFrame>();
+    stream.onCancel = () {
+      unawaited(stream.close());
+    };
+    _topicStreams[topic] = stream;
+    _topicOpening.remove(topic)?.complete();
+    return stream.stream;
+  }
+
+  void emitProductTopicFrame(ProductTopicFrame frame) {
+    final topic = switch (frame) {
+      ProductTopicBaselineFrame(:final topic) => topic,
+      ProductTopicDataFrame(:final topic) => topic,
+      ProductTopicLaggedFrame(:final topic) => topic,
+      ProductTopicFailureFrame(:final topic) => topic,
+    };
+    _topicStreams[topic]?.add(frame);
+  }
+
+  Future<void> closeProductTopicStreams() async {
+    for (final stream in _topicStreams.values) {
+      await stream.close();
+    }
+    _topicStreams.clear();
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unscripted transport capability: ${invocation.memberName}',
@@ -487,8 +523,11 @@ class ConversationFixture {
     return feed;
   }
 
-  Future<CloseReport> close({DateTime? deadline}) =>
-      client.close(deadline: deadline);
+  Future<CloseReport> close({DateTime? deadline}) async {
+    final report = await client.close(deadline: deadline);
+    await transport.closeProductTopicStreams();
+    return report;
+  }
 }
 
 final class TestCompletionConsumer implements ConversationBatchConsumer {

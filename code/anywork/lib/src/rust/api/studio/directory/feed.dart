@@ -7,6 +7,7 @@ import '../../../frb_generated.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
+import '../types/session_directory.dart';
 import '../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';

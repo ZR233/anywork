@@ -81,11 +81,10 @@ impl StudioMutation {
 }
 
 fn directory_bytes(delta: &DirectoryDelta) -> usize {
-    128 * (delta.session_activity.len()
-        + delta.session_registrations.len()
-        + delta.thread_upserts.len()
+    128 * (delta.session_upserts.len()
+        + delta.agent_upserts.len()
         + delta.unregistered_faults.len()
-        + delta.thread_removals.len()
+        + delta.session_removals.len()
         + delta.thread_deletions.len()
         + delta.project_upserts.len()
         + delta.project_removals.len())
@@ -138,23 +137,20 @@ pub(super) fn try_coalesce_directory(
 
 fn merge_directory_delta(target: &mut DirectoryDelta, incoming: &DirectoryDelta) {
     target
+        .session_upserts
+        .extend(incoming.session_upserts.iter().cloned());
+    target
         .thread_deletions
         .extend(incoming.thread_deletions.iter().cloned());
     target
-        .session_activity
-        .extend(incoming.session_activity.iter().cloned());
-    target
-        .session_registrations
-        .extend(incoming.session_registrations.iter().cloned());
-    target
-        .thread_upserts
-        .extend(incoming.thread_upserts.iter().cloned());
+        .agent_upserts
+        .extend(incoming.agent_upserts.iter().cloned());
     target
         .unregistered_faults
         .extend(incoming.unregistered_faults.iter().cloned());
     target
-        .thread_removals
-        .extend(incoming.thread_removals.iter().cloned());
+        .session_removals
+        .extend(incoming.session_removals.iter().cloned());
     target
         .project_upserts
         .extend(incoming.project_upserts.iter().cloned());

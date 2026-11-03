@@ -95,6 +95,12 @@ void main() {
       await runZoned(() async {
         final fixture = ConversationFixture();
         var feed = await fixture.open(demand: _demand);
+        await fixture.transport.productTopicOpened(
+          ThreadMcpTopic(threadId: fixture.repository.visibleThreadId.value!),
+        );
+        // Settle the independent MCP topic's stability timer before driving
+        // the conversation retry timers below.
+        await timers.fireNext();
         final content = fixture.session().content;
         for (var index = 0; index < 4; index++) {
           feed.send(const ConversationClosedEvent());
@@ -185,7 +191,17 @@ void main() {
         expect(closing, isNotNull);
         expect(fixture.transport.opens, isEmpty);
         expect((await closing!).complete, isTrue);
-        expect(fixture.client.budget.usage, isEmpty);
+        if (owner == 'repository') {
+          // Closing the conversation repository cannot release the Client's MCP mirror.
+          expect(
+            fixture.client.budget.usage.map(
+              (usage) => (usage.kind, usage.owner),
+            ),
+            [(ResourceKind.readModel, 'thread-mcp:A')],
+          );
+        } else {
+          expect(fixture.client.budget.usage, isEmpty);
+        }
         expect(session.content.state.value, isA<ChatClosed<bool>>());
         observation.cancel();
         // No retryCleanup is necessary, and the original close result stays clean.
@@ -319,6 +335,128 @@ void main() {
     expect((await fixture.close()).complete, isTrue);
     observation.cancel();
     expect(fixture.client.budget.usage, isEmpty);
+  });
+
+  test(
+    'visible Thread MCP owns a page topic lease and releases it on navigation',
+    () async {
+      final fixture = ConversationFixture();
+      await fixture.open(threadId: 'A', demand: _demand);
+      expect(fixture.repository.visibleThreadId.value, 'A');
+      expect(fixture.client.existingThreadMcp('A'), isNotNull);
+      expect(
+        fixture.client.channels.activeTopicRefCountViews()['threadMcp:A'],
+        1,
+      );
+      expect(
+        fixture.transport.productTopics,
+        contains(const ThreadMcpTopic(threadId: 'A')),
+      );
+
+      fixture.repository.setVisibleThread(null);
+      expect(
+        fixture.client.channels.activeTopicRefCountViews()['threadMcp:A'] ?? 0,
+        0,
+      );
+      expect(fixture.client.existingThreadMcp('A'), isNotNull);
+
+      await fixture.open(threadId: 'B', index: 1, demand: _demand);
+      expect(fixture.repository.visibleThreadId.value, 'B');
+      expect(
+        fixture.client.channels.activeTopicRefCountViews()['threadMcp:B'],
+        1,
+      );
+      expect(
+        fixture.client.channels.activeTopicRefCountViews()['threadMcp:A'] ?? 0,
+        0,
+      );
+      expect((await fixture.close()).complete, isTrue);
+      expect(fixture.client.budget.usage, isEmpty);
+    },
+  );
+
+  test(
+    'rejected visible Thread MCP demand creates no implicit mirror owner',
+    () async {
+      final fixture = ConversationFixture(
+        budget: ResourceBudget(
+          capacities: {
+            ...ResourceBudget().capacities,
+            ResourceKind.readModel: 2,
+          },
+        ),
+      );
+      await fixture.open(threadId: 'A', demand: _demand);
+      expect(fixture.repository.visibleThreadId.value, 'A');
+      expect(fixture.client.existingThreadMcp('A'), isNull);
+      expect(fixture.client.channels.activeTopicRefCountViews(), isEmpty);
+      expect(fixture.client.resourceFailure.value?.owner, 'thread-mcp-page:A');
+      expect((await fixture.close()).complete, isTrue);
+      expect(fixture.client.budget.usage, isEmpty);
+    },
+  );
+
+  test('visible Thread MCP retries observer admission and keeps its mirror owner', () async {
+    final budget = ResourceBudget(
+      capacities: {
+        ...ResourceBudget().capacities,
+        // The directory observation owns one permit; reserve the other so only
+        // the later Thread MCP topic admission is rejected.
+        ResourceKind.observer: 2,
+        ResourceKind.readModel: 3,
+      },
+    );
+    final fixture = ConversationFixture(budget: budget);
+    final reservedObserver = budget.acquire(
+      ResourceKind.observer,
+      owner: 'test-observer-reservation',
+    );
+    await fixture.open(threadId: 'A', demand: _demand);
+
+    final owner = fixture.client.existingThreadMcp('A');
+    expect(owner, isNotNull);
+    expect(budget.used(ResourceKind.readModel), 3);
+    final admissionFailure = fixture.client.resourceFailure.value;
+    expect(admissionFailure?.owner, 'thread-mcp-page:A');
+    expect(admissionFailure?.reason, isA<ResourceBudgetExceeded>());
+    expect(
+      (admissionFailure!.reason as ResourceBudgetExceeded).kind,
+      ResourceKind.observer,
+    );
+    expect(fixture.client.channels.activeTopicRefCountViews(), isEmpty);
+
+    final observed = Completer<void>();
+    final observation = owner!.source.watch((state) {
+      if (state.value?.generation == 7 && !observed.isCompleted) {
+        observed.complete();
+      }
+    });
+    reservedObserver.release();
+    const topic = ThreadMcpTopic(threadId: 'A');
+    fixture.client.retryResource(topic);
+    await fixture.transport.productTopicOpened(topic);
+
+    expect(fixture.client.existingThreadMcp('A'), same(owner));
+    expect(
+      fixture.client.channels.activeTopicRefCountViews()['threadMcp:A'],
+      1,
+    );
+    expect(fixture.client.resourceFailure.value, isNull);
+    fixture.transport.emitProductTopicFrame(
+      const ProductTopicBaselineFrame(
+        topic: topic,
+        revision: 7,
+        state: ThreadMcpBaseline(
+          ThreadMcpStateSnapshot(threadId: 'A', generation: 7),
+        ),
+      ),
+    );
+    await observed.future;
+    expect(owner.state.value?.generation, 7);
+
+    observation.cancel();
+    expect((await fixture.close()).complete, isTrue);
+    expect(budget.usage, isEmpty);
   });
 
   test(

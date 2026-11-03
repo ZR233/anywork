@@ -18,6 +18,13 @@ mod settings_update;
 mod thread_preparation;
 mod workspace;
 
+pub use crate::mcp::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogEntry, McpCatalogSnapshot,
+    McpConfigStatusKind, McpDocumentCommitReceipt, McpDocumentContent, McpDocumentDiagnostic,
+    McpDocumentRef, McpEffectiveSource, McpExecutionLocation, McpScope, McpServerKey,
+    ReconnectThreadMcpRequest, ReloadMcpCatalogRequest, ThreadMcpLifecycleKind,
+    ThreadMcpServerState, ThreadMcpStateSnapshot, UpdateMcpDocumentRequest,
+};
 pub use accounts::*;
 pub use acp::*;
 pub use acp_install::*;

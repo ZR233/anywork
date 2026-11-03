@@ -60,8 +60,8 @@ class ComposerDockConnector extends ConsumerWidget {
       );
     }
     final view = viewAsync.requireValue;
-    final thread = view.thread;
-    if (thread == null) return const SizedBox.shrink();
+    final row = view.row;
+    if (row == null) return const SizedBox.shrink();
     // 最终关闭（closing/closed）是永久只读事实：不显示执行入口，正文历史仍在
     // Timeline 展示，草稿由 SDK owner 保留不清。
     if (view.executionClosed) return const SizedBox.shrink();
@@ -76,32 +76,32 @@ class ComposerDockConnector extends ConsumerWidget {
         for (final diagnostic in additionalDiagnostics)
           ComposerTargetDiagnosticView(diagnostic: diagnostic),
       ],
-      childInteractions: thread.isAgent
+      childInteractions: row.isChildRow
           ? null
           : ChildInteractionConnector(
-              key: ValueKey(thread.id),
-              hostThreadId: thread.id,
+              key: ValueKey(row.threadId),
+              hostThreadId: row.threadId,
               items: view.childInteractions,
               sync: view.childInteractionSync,
               sources: view.childInteractionSources,
             ),
-      content: thread.isRetiredAgent
+      content: row.isChildRow && isRetiredAgentRole(row.role)
           ? Text(
               context.l10n.agentRoleRetired,
               key: const ValueKey('retired-agent-notice'),
             )
-          : thread.isAgent
+          : row.isChildRow
           ? AgentReadOnlyDockView(view: view)
           : interaction == null
           ? _PromptComposer(
-              key: ValueKey('composer-${thread.id}'),
-              thread: thread,
+              key: ValueKey('composer-${row.threadId}'),
+              row: row,
               view: view,
               enabled: true,
               compact: compact,
             )
           : _InteractionDock(
-              threadId: thread.id,
+              threadId: row.threadId,
               interaction: interaction,
               stop: view.interactionStop,
               enabled: true,
@@ -376,14 +376,14 @@ class _StartPageComposerBodyState
 
 class _PromptComposer extends ConsumerStatefulWidget {
   const _PromptComposer({
-    required this.thread,
+    required this.row,
     required this.view,
     required this.enabled,
     this.compact = false,
     super.key,
   });
 
-  final StudioThread thread;
+  final SessionDirectoryRow row;
   final ComposerDockViewState view;
   final bool enabled;
   final bool compact;
@@ -400,12 +400,12 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     super.didUpdateWidget(oldWidget);
     // 会话身份变化：线程级本地状态一律清空。迟到的异步回调即使仍然 mounted，也只
     // 属于发起它的那个会话，由回调内的 threadId 校验丢弃。
-    if (oldWidget.thread.id != widget.thread.id) {
+    if (oldWidget.row.threadId != widget.row.threadId) {
       _modelNotice = null;
       return;
     }
-    if (oldWidget.thread.id != widget.thread.id ||
-        oldWidget.thread.status != widget.thread.status ||
+    if (oldWidget.row.threadId != widget.row.threadId ||
+        oldWidget.row.status != widget.row.status ||
         oldWidget.view.displayRoute != widget.view.displayRoute) {
       _modelNotice = null;
     }
@@ -425,7 +425,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
   void _requestStop() {
     final execution = widget.view.execution;
     if (execution == null) return;
-    final threadId = widget.thread.id;
+    final threadId = widget.row.threadId;
     final viewModel = ref.read(
       composerDockViewModelProvider(threadId).notifier,
     );
@@ -447,7 +447,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
       );
       return;
     }
-    final threadId = widget.thread.id;
+    final threadId = widget.row.threadId;
     final viewModel = ref.read(
       composerDockViewModelProvider(threadId).notifier,
     );
@@ -464,13 +464,13 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
 
   @override
   Widget build(BuildContext context) {
-    final thread = widget.thread;
+    final row = widget.row;
     final view = widget.view;
     final route = view.displayRoute;
     final model = route == null
         ? null
         : modelForRoute(view.accounts, route.accountId, route.modelId);
-    final blockedReason = switch (thread.status) {
+    final blockedReason = switch (row.status) {
       // Turn 真正结束后的 canonical idle 即可换路由：workflow run/阶段保持 active
       // 不再阻塞，新路由在下一次输入生效，也不重置 workflow/Plan（design/19 §19.2）。
       ThreadStatusView.idle => null,
@@ -486,7 +486,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     final draftController = ref
         .read(anyworkClientProvider)
         .drafts
-        .existingComposer(thread.id);
+        .existingComposer(row.threadId);
     if (draftController == null) {
       return Column(
         mainAxisSize: MainAxisSize.min,
@@ -494,8 +494,8 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           if (view.composer.error case final error?) Text(error),
           TextButton(
             onPressed: () => ref
-                .read(composerDockViewModelProvider(thread.id).notifier)
-                .refreshSession(thread.id),
+                .read(composerDockViewModelProvider(row.threadId).notifier)
+                .refreshSession(row.threadId),
             child: Text(context.l10n.runtimeFatalRetry),
           ),
         ],
@@ -539,7 +539,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           ),
         PromptComposerView(
           composer: view.composer,
-          pasteTargetId: thread.id,
+          pasteTargetId: row.threadId,
           targetDiagnostic: view.targetDiagnostic,
           enabled: widget.enabled,
           execution: view.execution,
@@ -552,29 +552,30 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           stopCommand: view.stopCommand,
           queuedStopStartedAtMs: view.queuedStopStartedAtMs,
           compact: widget.compact,
-          selectorBar: thread.isRoot
+          selectorBar: row.isRootRow
               ? Wrap(
                   crossAxisAlignment: WrapCrossAlignment.center,
                   spacing: 2,
                   runSpacing: 4,
                   children: [
                     SessionModeSelector(
-                      mode: thread.mode,
+                      mode: row.mode,
                       usesSnapshot: true,
                       snapshotDisplayName:
                           view.workflow?.currentRun?.modeDisplayName,
                       enabled:
                           !view.hasActiveWorkflow &&
-                          thread.status == ThreadStatusView.idle &&
+                          row.status == ThreadStatusView.idle &&
                           view.activeInteraction == null,
                       onExplain: (message) =>
                           setState(() => _modelNotice = message),
                       onSelected: (mode) => unawaited(
                         ref
                             .read(
-                              composerDockViewModelProvider(thread.id).notifier,
+                              composerDockViewModelProvider(row.threadId)
+                                  .notifier,
                             )
-                            .setThreadMode(mode, threadId: thread.id),
+                            .setThreadMode(mode, threadId: row.threadId),
                       ),
                     ),
                     if (view.modelRoute?.botId case final botId?)
@@ -605,11 +606,11 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                           unawaited(
                             ref
                                 .read(
-                                  composerDockViewModelProvider(thread.id)
+                                  composerDockViewModelProvider(row.threadId)
                                       .notifier,
                                 )
                                 .setThreadRoute(
-                                  threadId: thread.id,
+                                  threadId: row.threadId,
                                   accountId: accountId,
                                   modelId: modelId,
                                   effort:
@@ -629,11 +630,11 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                           unawaited(
                             ref
                                 .read(
-                                  composerDockViewModelProvider(thread.id)
+                                  composerDockViewModelProvider(row.threadId)
                                       .notifier,
                                 )
                                 .setThreadRoute(
-                                  threadId: thread.id,
+                                  threadId: row.threadId,
                                   accountId: route.accountId,
                                   modelId: route.modelId,
                                   effort: effort,
@@ -645,12 +646,12 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                 )
               : null,
           onChanged: (text) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .updateDraft(thread.id, text),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .updateDraft(row.threadId, text),
           onSubmit: () {
             // 草案 owner 先同步冻结目标、payload、route 与 operation，再等待展示准备；
             // 这里只捕当前 Thread 身份，不改动已冻结的目标（design/26 §26.8）。
-            final target = thread.id;
+            final target = row.threadId;
             unawaited(
               ref
                   .read(composerDockViewModelProvider(target).notifier)
@@ -661,20 +662,20 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           onContinue: _requestContinue,
           inputCapabilities: model?.inputCapabilities ?? const [],
           onPasteImage: (bytes) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .pasteImage(thread.id, bytes),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .pasteImage(row.threadId, bytes),
           onReportFailure: (error) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .reportDraftFailure(thread.id, error),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .reportDraftFailure(row.threadId, error),
           onAddLocal: (paths) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .addLocalAttachments(thread.id, paths),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .addLocalAttachments(row.threadId, paths),
           onAddUrl: (url) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .addRemoteAttachment(thread.id, url),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .addRemoteAttachment(row.threadId, url),
           onRemoveAttachment: (id) => ref
-              .read(composerDockViewModelProvider(thread.id).notifier)
-              .removeAttachment(thread.id, id),
+              .read(composerDockViewModelProvider(row.threadId).notifier)
+              .removeAttachment(row.threadId, id),
           onPasteClipboard: (pasteText, supportsImages, isCurrent) =>
               _pasteClipboardFromConnector(
                 context,
@@ -683,21 +684,21 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                 supportsImages,
                 isCurrent: () => context.mounted && isCurrent(),
                 onPasteImage: (bytes) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .pasteImage(thread.id, bytes),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .pasteImage(row.threadId, bytes),
                 onReportFailure: (error) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .reportDraftFailure(thread.id, error),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .reportDraftFailure(row.threadId, error),
               ),
           onPickLocalAttachments: (capabilities, isCurrent) =>
               _pickAttachmentsFromConnector(
                 capabilities,
                 (paths) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .addLocalAttachments(thread.id, paths),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .addLocalAttachments(row.threadId, paths),
                 (error) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .reportDraftFailure(thread.id, error),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .reportDraftFailure(row.threadId, error),
                 isCurrent: () => context.mounted && isCurrent(),
                 pickPaths: ref.read(attachmentPathPickerProvider),
               ),
@@ -705,11 +706,11 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
               _dropAttachmentsFromConnector(
                 files,
                 (paths) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .addLocalAttachments(thread.id, paths),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .addLocalAttachments(row.threadId, paths),
                 (error) => ref
-                    .read(composerDockViewModelProvider(thread.id).notifier)
-                    .reportDraftFailure(thread.id, error),
+                    .read(composerDockViewModelProvider(row.threadId).notifier)
+                    .reportDraftFailure(row.threadId, error),
                 isCurrent: () => context.mounted && isCurrent(),
               ),
         ),

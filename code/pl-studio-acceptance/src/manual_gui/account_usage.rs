@@ -2,7 +2,9 @@
 
 use super::*;
 use pl_model::config::builtin_account_catalog;
-use pl_studio_runtime::config::{StudioBuiltinMcpServerState, effective_mcp_servers};
+use pl_studio_runtime::config::{
+    McpFileV1, build_builtin_effective_config, builtin_mcp_server_ids, canonical_mcp_filename,
+};
 use serde_json::{Value, json};
 
 const SLOW_ENV: &str = "ANYWORK_FIXTURE_USAGE_SLOW";
@@ -48,19 +50,27 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             .accounts
             .insert(AccountId::new(format!("{}-{suffix}", prefix()))?, account);
     }
+    persist_config(home, &config)?;
+
+    let host_mcp_dir = home.join("mcp/host");
+    fs::create_dir_all(&host_mcp_dir)?;
     // Never connect an official endpoint or invoke npm in this isolated scenario.
-    for id in pl_studio_runtime::config::builtin_mcp_server_ids() {
-        config.mcp.builtin_servers.insert(
-            id.to_owned(),
-            StudioBuiltinMcpServerState { enabled: false },
+    for id in builtin_mcp_server_ids() {
+        let doc = McpFileV1::new_builtin(
+            id,
+            false,
+            (id == pl_studio_runtime::config::mcp::ZHIPU_VISION_MCP_ID)
+                .then(|| home.to_string_lossy().into_owned()),
         );
+        let filename = canonical_mcp_filename(id)?;
+        fs::write(host_mcp_dir.join(filename), doc.encode()?)?;
     }
     let host = ready
         .base_url
         .strip_suffix("/v1")
         .context("fixture URL has no /v1")?;
-    config.mcp.servers.insert(
-        "fixture_usage_mcp".into(),
+    let fixture_doc = McpFileV1::new_server(
+        "fixture_usage_mcp",
         StudioMcpServerEntry {
             enabled: true,
             transport: McpServerTransport::StreamableHttp,
@@ -78,7 +88,9 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             ..StudioMcpServerEntry::default()
         },
     );
-    persist_config(home, &config)
+    let filename = canonical_mcp_filename("fixture_usage_mcp")?;
+    fs::write(host_mcp_dir.join(filename), fixture_doc.encode()?)?;
+    Ok(())
 }
 
 /// Checks the existing public composition boundary, without constructing a runtime or doing IO.
@@ -100,17 +112,10 @@ fn credential_contract() -> Result<Value> {
         .clone();
     let mut config = StudioConfig::default_config()?;
     config.models.accounts.clear();
-    config.mcp.builtin_servers.clear();
     let assert_key = |config: &StudioConfig, expected: Option<&str>| -> Result<()> {
-        ensure!(
-            effective_mcp_servers(config).len()
-                == pl_studio_runtime::config::builtin_mcp_server_ids().len(),
-            "builtin composition is incomplete"
-        );
-        for server in effective_mcp_servers(config)
-            .into_values()
-            .filter(|server| pl_studio_runtime::config::is_builtin_mcp_server_id(&server.id))
-        {
+        for id in builtin_mcp_server_ids() {
+            let server = build_builtin_effective_config(id, true, None, &config.models)
+                .context("missing builtin definition")?;
             ensure!(
                 server.bearer_token.as_deref() == expected,
                 "builtin MCP credential source differs from the contract"
@@ -162,19 +167,14 @@ fn credential_contract() -> Result<Value> {
         .accounts
         .insert(AccountId::new("plan-a")?, first);
     assert_key(&config, Some("fixture-plan-a"))?;
-    for id in pl_studio_runtime::config::builtin_mcp_server_ids() {
-        config.mcp.builtin_servers.insert(
-            id.to_owned(),
-            StudioBuiltinMcpServerState { enabled: false },
-        );
-    }
     ensure!(
-        effective_mcp_servers(&config).into_values().all(|server| {
-            server.status_kind == pl_studio_runtime::config::McpServerStatusKind::Disabled
+        builtin_mcp_server_ids().iter().all(|id| {
+            build_builtin_effective_config(id, false, None, &config.models).is_some_and(|server| {
+                server.status_kind == pl_studio_runtime::config::McpServerStatusKind::Disabled
+            })
         }),
         "explicit builtin disable was lost"
     );
-    config.mcp.builtin_servers.clear();
     config.models.accounts.remove(&AccountId::new("plan-a")?);
     assert_key(&config, Some("fixture-plan-b"))?;
     config.models.accounts.remove(&AccountId::new("plan-b")?);

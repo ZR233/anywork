@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
-    BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
+    BridgeMcpCatalogSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
     BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSettingsConfigStateSnapshot,
-    BridgeSkillsStateSnapshot, BridgeThread, BridgeThreadModeCatalogSnapshot,
+    BridgeSkillsStateSnapshot, BridgeThreadMcpStateSnapshot, BridgeThreadModeCatalogSnapshot,
     BridgeUpdaterStateSnapshot,
 };
 
@@ -31,7 +31,8 @@ pub enum BridgeProductEventPayload {
     SettingsConfigStateChanged(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<BridgeModelCatalogStateSnapshot>),
     RecoveryStateChanged(BridgeRecoveryStateSnapshot),
-    McpStateChanged(BridgeMcpStateSnapshot),
+    McpCatalogChanged(BridgeMcpCatalogSnapshot),
+    ThreadMcpStateChanged(BridgeThreadMcpStateSnapshot),
     LspStateChanged(BridgeLspStateSnapshot),
     SkillsStateChanged(BridgeSkillsStateSnapshot),
     ThreadModeCatalogChanged(BridgeThreadModeCatalogSnapshot),
@@ -53,7 +54,7 @@ pub enum BridgeProductEventPayload {
 pub struct BridgeThreadDirectoryDelta {
     pub revision: u64,
     pub updated_at: i64,
-    pub upserted: Vec<BridgeThread>,
+    pub upserted: Vec<crate::api::studio::types::BridgeSessionDirectoryRow>,
     pub removed: Vec<String>,
 }
 

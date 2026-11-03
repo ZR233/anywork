@@ -949,7 +949,7 @@ impl Observation<'_> {
                 .await?;
             let data = page.state.value().context("Thread directory unavailable")?;
             ensure!(
-                data.threads.iter().all(|thread| ids.contains(&thread.id)),
+                data.rows.iter().all(|row| ids.contains(&row.thread_id)),
                 "public root directory contains an unpersisted Thread"
             );
             cursor = data.next_cursor.clone();

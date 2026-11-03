@@ -79,12 +79,10 @@ StudioAgentView _agent({
   String role = 'executor',
 }) {
   return StudioAgentView(
-    id: threadId,
+    agentId: threadId,
+    sessionId: _rootId,
+    parentAgentId: _rootId,
     threadId: threadId,
-    path: 'root/$threadId',
-    parentPath: 'root',
-    rootThreadId: _rootId,
-    depth: 1,
     role: role,
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
@@ -138,7 +136,7 @@ Future<void> _pump(
         home: Scaffold(
           body: AgentSwitcherMenu(
             agents: agents,
-            workspaceThreads: const [],
+            workspaceRows: const [],
             recoveryIssues: recoveryIssues,
             selectedThreadId: _rootId,
           ),
@@ -862,7 +860,7 @@ void main() {
             body: AgentSwitcherMenu(
               key: UniqueKey(),
               agents: _members(),
-              workspaceThreads: const [],
+              workspaceRows: const [],
               selectedThreadId: _rootId,
             ),
           ),
@@ -981,7 +979,7 @@ void main() {
             body: AgentSwitcherMenu(
               key: UniqueKey(),
               agents: _members(),
-              workspaceThreads: const [],
+              workspaceRows: const [],
               selectedThreadId: _rootId,
             ),
           ),

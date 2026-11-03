@@ -8,18 +8,20 @@ import 'acp.dart';
 import 'agent_profile.dart';
 import 'chatgpt_auth.dart';
 import 'delegation.dart';
+import 'mcp.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
 part 'response.freezed.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AccountUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class AccountUsageDto {
   final String accountId;
@@ -348,64 +350,6 @@ sealed class BridgeLspStateSnapshot with _$BridgeLspStateSnapshot {
       BridgeLspStateSnapshot_Failed;
   const factory BridgeLspStateSnapshot.stopped(BridgeStoppedResource field0) =
       BridgeLspStateSnapshot_Stopped;
-}
-
-class BridgeMcpStateData {
-  final String desiredConfigFingerprint;
-  final String appliedConfigFingerprint;
-  final BridgeMcpHealthDto health;
-
-  const BridgeMcpStateData({
-    required this.desiredConfigFingerprint,
-    required this.appliedConfigFingerprint,
-    required this.health,
-  });
-
-  @override
-  int get hashCode =>
-      desiredConfigFingerprint.hashCode ^
-      appliedConfigFingerprint.hashCode ^
-      health.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeMcpStateData &&
-          runtimeType == other.runtimeType &&
-          desiredConfigFingerprint == other.desiredConfigFingerprint &&
-          appliedConfigFingerprint == other.appliedConfigFingerprint &&
-          health == other.health;
-}
-
-@freezed
-sealed class BridgeMcpStateSnapshot with _$BridgeMcpStateSnapshot {
-  const BridgeMcpStateSnapshot._();
-
-  const factory BridgeMcpStateSnapshot.uninitialized(
-    BridgeUninitializedResource field0,
-  ) = BridgeMcpStateSnapshot_Uninitialized;
-  const factory BridgeMcpStateSnapshot.loading(BridgeLoadingResource field0) =
-      BridgeMcpStateSnapshot_Loading;
-  const factory BridgeMcpStateSnapshot.ready({
-    required BridgeReadyResource resource,
-    required BridgeMcpStateData value,
-  }) = BridgeMcpStateSnapshot_Ready;
-  const factory BridgeMcpStateSnapshot.refreshing({
-    required BridgeRefreshingResource resource,
-    required BridgeMcpStateData value,
-  }) = BridgeMcpStateSnapshot_Refreshing;
-  const factory BridgeMcpStateSnapshot.stale({
-    required BridgeStaleResource resource,
-    required BridgeMcpStateData value,
-  }) = BridgeMcpStateSnapshot_Stale;
-  const factory BridgeMcpStateSnapshot.degraded({
-    required BridgeDegradedResource resource,
-    required BridgeMcpStateData value,
-  }) = BridgeMcpStateSnapshot_Degraded;
-  const factory BridgeMcpStateSnapshot.failed(BridgeFailedResource field0) =
-      BridgeMcpStateSnapshot_Failed;
-  const factory BridgeMcpStateSnapshot.stopped(BridgeStoppedResource field0) =
-      BridgeMcpStateSnapshot_Stopped;
 }
 
 class BridgeModelCatalogSnapshotDto {
@@ -1044,7 +988,7 @@ class BridgeStudioStateSnapshot {
   final BridgeSettingsConfigStateSnapshot settingsConfig;
   final BridgeModelCatalogStateSnapshot modelCatalog;
   final BridgeRecoveryStateSnapshot recovery;
-  final BridgeMcpStateSnapshot mcp;
+  final BridgeMcpCatalogSnapshot hostMcpCatalog;
   final BridgeLspStateSnapshot lsp;
   final List<BridgeSkillsStateSnapshot> skillsByProject;
   final BridgeThreadModeCatalogSnapshot threadModeCatalog;
@@ -1064,7 +1008,7 @@ class BridgeStudioStateSnapshot {
     required this.settingsConfig,
     required this.modelCatalog,
     required this.recovery,
-    required this.mcp,
+    required this.hostMcpCatalog,
     required this.lsp,
     required this.skillsByProject,
     required this.threadModeCatalog,
@@ -1086,7 +1030,7 @@ class BridgeStudioStateSnapshot {
       settingsConfig.hashCode ^
       modelCatalog.hashCode ^
       recovery.hashCode ^
-      mcp.hashCode ^
+      hostMcpCatalog.hashCode ^
       lsp.hashCode ^
       skillsByProject.hashCode ^
       threadModeCatalog.hashCode ^
@@ -1110,7 +1054,7 @@ class BridgeStudioStateSnapshot {
           settingsConfig == other.settingsConfig &&
           modelCatalog == other.modelCatalog &&
           recovery == other.recovery &&
-          mcp == other.mcp &&
+          hostMcpCatalog == other.hostMcpCatalog &&
           lsp == other.lsp &&
           skillsByProject == other.skillsByProject &&
           threadModeCatalog == other.threadModeCatalog &&
@@ -1157,22 +1101,22 @@ sealed class BridgeThreadDirectoryPage with _$BridgeThreadDirectoryPage {
 
 /// Thread directory 分页窗口页数据（按 `updatedAt` 倒序、id 倒序的 keyset cursor）。
 class BridgeThreadDirectoryPageData {
-  final List<BridgeThread> threads;
+  final List<BridgeSessionDirectoryRow> rows;
 
   /// `None` 表示没有更旧的页。
   final String? nextCursor;
 
-  const BridgeThreadDirectoryPageData({required this.threads, this.nextCursor});
+  const BridgeThreadDirectoryPageData({required this.rows, this.nextCursor});
 
   @override
-  int get hashCode => threads.hashCode ^ nextCursor.hashCode;
+  int get hashCode => rows.hashCode ^ nextCursor.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeThreadDirectoryPageData &&
           runtimeType == other.runtimeType &&
-          threads == other.threads &&
+          rows == other.rows &&
           nextCursor == other.nextCursor;
 }
 

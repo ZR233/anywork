@@ -1,11 +1,11 @@
-use pl_protocol::{ObservedResource, Thread, ThreadModeCatalogSnapshot};
+use pl_protocol::{ObservedResource, SessionDirectoryRow, ThreadModeCatalogSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
-    StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
-    StudioUpdateStateSnapshot, WorkspaceRecord,
+    StudioAgentDirectoryEntry, StudioLspHealth, StudioRecoveryIssue, StudioUpdateStateSnapshot,
+    WorkspaceRecord,
 };
 
 /// Studio 产品级事件信封。
@@ -31,7 +31,8 @@ pub enum StudioProductEventKind {
     SettingsConfigStateChanged(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<StudioModelCatalogStateSnapshot>),
     RecoveryStateChanged(StudioRecoveryStateSnapshot),
-    McpStateChanged(StudioMcpStateSnapshot),
+    McpCatalogChanged(pl_protocol::McpCatalogSnapshot),
+    ThreadMcpStateChanged(pl_protocol::ThreadMcpStateSnapshot),
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),
@@ -80,19 +81,19 @@ pub struct StudioThreadDirectoryState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryData {
-    pub threads: Vec<Thread>,
+    pub rows: Vec<SessionDirectoryRow>,
 }
 
 /// Thread directory 增量事件 payload：由常驻内存目录索引派生，不再携带全量列表。
 ///
-/// `upserted` 按线程身份原位替换，`removed` 携带已归档/删除的 Thread id；
+/// `upserted` 按成员身份原位替换，`removed` 携带已归档/删除的成员 Thread id；
 /// 未加载进分页窗口的增量由消费端忽略。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryDelta {
     pub revision: u64,
     pub updated_at: i64,
-    pub upserted: Vec<Thread>,
+    pub upserted: Vec<SessionDirectoryRow>,
     pub removed: Vec<String>,
 }
 
@@ -106,7 +107,7 @@ pub struct StudioThreadDirectoryPage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioThreadDirectoryPageData {
-    pub threads: Vec<Thread>,
+    pub rows: Vec<SessionDirectoryRow>,
     /// `None` 表示没有更旧的页。
     pub next_cursor: Option<String>,
 }
@@ -178,7 +179,7 @@ pub struct StudioAgentProfilesStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioAgentProfilesData {
-    pub profiles: Vec<pl_protocol::AgentProfileSnapshot>,
+    pub profiles: Vec<pl_protocol::AgentProfile>,
     pub diagnostics: Vec<StudioAgentProfileDiagnostic>,
 }
 
@@ -211,20 +212,6 @@ pub struct StudioPurposeCostSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct StudioRecoveryStateSnapshot {
     pub state: ObservedResource<Vec<StudioRecoveryIssue>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioMcpStateSnapshot {
-    pub state: ObservedResource<StudioMcpStateData>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioMcpStateData {
-    pub desired_config_fingerprint: String,
-    pub applied_config_fingerprint: String,
-    pub health: StudioMcpHealth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -274,7 +261,7 @@ pub struct StudioStateSnapshot {
     pub settings_config: StudioSettingsConfigStateSnapshot,
     pub model_catalog: StudioModelCatalogStateSnapshot,
     pub recovery: StudioRecoveryStateSnapshot,
-    pub mcp: StudioMcpStateSnapshot,
+    pub host_mcp_catalog: pl_protocol::McpCatalogSnapshot,
     pub lsp: StudioLspStateSnapshot,
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,
     pub thread_mode_catalog: ThreadModeCatalogSnapshot,

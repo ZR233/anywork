@@ -8,25 +8,25 @@ use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
-    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
-    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
+    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioModelCatalogStateSnapshot,
+    StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
+    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
+    StudioUpdateStateSnapshot,
 };
 
 use super::ProductEventBus;
 
 impl ProductEventBus {
     pub async fn read_agent_directory(&self) -> StudioAgentDirectoryState {
-        let mut agents = self
-            .store
-            .catalog()
-            .entries()
+        let catalog = self.store.catalog();
+        let mut agents = catalog
+            .agents()
             .into_iter()
-            .filter(|entry| entry.parent_thread_id.is_some())
-            .map(|entry| {
-                let id = entry.id.clone();
-                let state = match entry.projected_status() {
+            .filter(|agent| agent.parent_agent_id.is_some())
+            .filter_map(|agent| {
+                let session = catalog.get_session(&agent.session_id)?;
+                let id = agent.agent_id.clone();
+                let state = match agent.projected_status() {
                     pl_protocol::ThreadStatus::Closed => {
                         pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
                     }
@@ -35,18 +35,16 @@ impl ProductEventBus {
                     }
                     _ => pl_protocol::AgentState::idle(),
                 };
-                (
+                Some((
                     id.clone(),
                     StudioAgentDirectoryEntry {
-                        id: id.clone(),
-                        thread_id: id,
-                        root_thread_id: entry.root_thread_id,
-                        path: entry.agent_path,
-                        parent_path: entry.parent_thread_id,
-                        role: entry.role,
-                        task: entry.title,
+                        agent_id: id.clone(),
+                        session_id: agent.session_id.clone(),
+                        parent_agent_id: agent.parent_agent_id.clone(),
+                        thread_id: agent.thread_id.clone(),
+                        role: agent.role.clone(),
+                        task: agent.title.clone().unwrap_or_else(|| session.title.clone()),
                         summary: None,
-                        depth: 1,
                         state,
                         // A cold directory row owns no live execution: the observation projection is
                         // the only source of a stoppable identity, so nothing is fabricated here.
@@ -54,19 +52,19 @@ impl ProductEventBus {
                         can_stop: false,
                         // 冷目录行没有任何 continue 事实可读，不据旧运行摘要虚构“等待调度”。
                         awaiting_scheduling: false,
-                        delegation_mode: entry.delegation_mode,
-                        delegation_preference: entry.delegation_preference,
-                        frozen_model: entry.frozen_model,
-                        updated_at: entry.updated_at,
+                        delegation_mode: session.delegation_mode,
+                        delegation_preference: session.delegation_preference,
+                        frozen_model: agent.frozen_model(),
+                        updated_at: agent.updated_at,
                     },
-                )
+                ))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         for (id, mut observed) in self.agents.lock().await.clone() {
-            if let Some(entry) = self.store.catalog().get(&id)
-                && entry.explicitly_closed
+            if let Some(agent) = catalog.get_agent(&id)
+                && agent.explicitly_closed
             {
-                if entry.projected_status() == pl_protocol::ThreadStatus::Closed {
+                if agent.projected_status() == pl_protocol::ThreadStatus::Closed {
                     observed.state =
                         pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new());
                 } else if !matches!(observed.state, pl_protocol::AgentState::Closed(_)) {
@@ -103,10 +101,10 @@ impl ProductEventBus {
             // it again would bump the directory revision and wake every observer for a fact that did
             // not change, so an identical row is dropped here: revision and event mean "the directory
             // really changed".
-            if agents.get(&agent.id) == Some(&agent) {
+            if agents.get(&agent.agent_id) == Some(&agent) {
                 return None;
             }
-            agents.insert(agent.id.clone(), agent);
+            agents.insert(agent.agent_id.clone(), agent);
         }
         self.bump(&self.revisions.agent);
         Some(self.emit_agent_directory(self.read_agent_directory().await))
@@ -139,8 +137,18 @@ impl ProductEventBus {
         ))
     }
 
-    pub fn emit_mcp_state(&self, state: StudioMcpStateSnapshot) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::McpStateChanged(state))
+    pub fn emit_mcp_catalog(
+        &self,
+        snapshot: pl_protocol::McpCatalogSnapshot,
+    ) -> StudioProductEventEnvelope {
+        self.emit(StudioProductEventKind::McpCatalogChanged(snapshot))
+    }
+
+    pub fn emit_thread_mcp_state(
+        &self,
+        state: pl_protocol::ThreadMcpStateSnapshot,
+    ) -> StudioProductEventEnvelope {
+        self.emit(StudioProductEventKind::ThreadMcpStateChanged(state))
     }
 
     pub fn emit_lsp_state(&self, state: StudioLspStateSnapshot) -> StudioProductEventEnvelope {

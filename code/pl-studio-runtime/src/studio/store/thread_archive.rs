@@ -277,7 +277,7 @@ impl StudioStore {
                     .any(|member| member.thread_id == id)
                     || operation.private_members.iter().any(|member| member.identity.thread_id == id)
                     || matches!(&operation.scope, ArchiveScope::Thread(root)
-                        if self.catalog().get(id).is_some_and(|thread| thread.root_thread_id == *root))
+                        if self.catalog().agent_by_thread(id).is_some_and(|agent| &agent.session_id == root))
             });
             ensure!(
                 !workspace && !member,
@@ -294,9 +294,10 @@ impl StudioStore {
                 && thread_id.is_some_and(|id| {
                     id == preparation.identity.thread_id
                         || id == preparation.identity.root_id
-                        || self.catalog().get(id).is_some_and(|record| {
-                            record.root_thread_id == preparation.identity.root_id
-                        })
+                        || self
+                            .catalog()
+                            .agent_by_thread(id)
+                            .is_some_and(|agent| agent.session_id == preparation.identity.root_id)
                 })
             {
                 anyhow::bail!("Thread archive cleanup must be retried before execution");

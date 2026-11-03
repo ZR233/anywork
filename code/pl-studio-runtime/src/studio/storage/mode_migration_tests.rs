@@ -2722,7 +2722,11 @@ async fn register_test_thread(
             closed: false,
         },
     );
-    delta.thread_upserts = vec![thread.clone()];
+    let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+    if let Some(session) = session {
+        delta.session_upserts = vec![session];
+    }
+    delta.agent_upserts = vec![agent];
     store.persist_directory_summaries(&delta).await
 }
 
@@ -3117,7 +3121,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         child.role = role.into();
         store
             .persist_directory_summaries(&DirectoryDelta {
-                thread_upserts: vec![child.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&child).1],
                 ..Default::default()
             })
             .await?;
@@ -3281,12 +3285,15 @@ async fn archive_cold_tree_prepares_legacy_checkpoints_without_execution() -> Re
         thread.workspace_path = project.path.clone();
         thread.root_thread_id = root_id.into();
         thread.parent_thread_id = (id != root_id).then(|| root_id.to_owned());
-        store
-            .persist_directory_summaries(&DirectoryDelta {
-                thread_upserts: vec![thread.clone()],
-                ..Default::default()
-            })
-            .await?;
+        let (session, member) = crate::studio::records::directory_facts_from_thread(&thread);
+        let mut delta = DirectoryDelta {
+            agent_upserts: vec![member],
+            ..Default::default()
+        };
+        if let Some(session) = session {
+            delta.session_upserts = vec![session];
+        }
+        store.persist_directory_summaries(&delta).await?;
         let session = store.session_paths(&project.id, id)?;
         let path = session.history_database();
         let mut original = saved_state(BTreeMap::from([(

@@ -27,11 +27,22 @@ pub struct ChildThreadRequest {
 
 /// Resolves configuration, creation permissions, limits and physical resources for one child.
 pub trait StudioChildFactory: Send + Sync + std::fmt::Debug + 'static {
+    type Admission: Send;
+
+    /// Resolves and validates one immutable Profile snapshot before core reserves an identity.
+    fn admit(
+        &self,
+        profile_id: &str,
+        delegation: pl_protocol::DelegationSettings,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> impl Future<Output = Result<Self::Admission, ThreadAssemblyError>> + Send;
+
     /// Must reject unauthorized profiles and exceeded product limits before allocating resources.
     /// The factory owns unpublished resources and must honor cancellation during preparation.
     fn prepare(
         &self,
         request: ChildThreadRequest,
+        admission: Self::Admission,
     ) -> impl Future<Output = Result<StudioThreadSpec, ThreadAssemblyError>> + Send;
 
     /// Finishes published physical resources after the Thread and observation barrier close.
@@ -113,6 +124,28 @@ impl<R: StudioChildResources> ConfiguredChildFactory<R> {
 }
 
 impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
+    type Admission = crate::config::ResolvedAgentProfile;
+
+    async fn admit(
+        &self,
+        profile_id: &str,
+        delegation: pl_protocol::DelegationSettings,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<Self::Admission, ThreadAssemblyError> {
+        let config = self.config.clone();
+        let profile_id = profile_id.to_owned();
+        let profile = tokio::task::spawn_blocking(move || {
+            config.resolve_delegated_profile(&profile_id, delegation.mode, selection)
+        })
+        .await??;
+        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(ThreadAssemblyError::UnsupportedBackend {
+                backend: pl_protocol::AgentBackendKind::Acp,
+            });
+        }
+        Ok(profile)
+    }
+
     fn close_published(
         &self,
         id: &str,
@@ -133,18 +166,8 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
     async fn prepare(
         &self,
         request: ChildThreadRequest,
+        profile: Self::Admission,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        if request.cancellation.is_cancelled() {
-            return Err(pl_core::thread::ThreadError::Cancelled.into());
-        }
-        let config = self.config.clone();
-        let profile_id = request.profile_id.clone();
-        let selection = request.model_selection.clone();
-        let delegation = request.delegation;
-        let profile = tokio::task::spawn_blocking(move || {
-            config.resolve_delegated_profile(&profile_id, delegation.mode, selection)
-        })
-        .await??;
         if request.cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
@@ -191,7 +214,20 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
     }
 }
 
+type ErasedAdmission<'a> = Box<
+    dyn FnOnce(ChildThreadRequest) -> BoxFuture<'a, Result<StudioThreadSpec, ThreadAssemblyError>>
+        + Send
+        + 'a,
+>;
+
 trait ErasedFactory: Send + Sync + std::fmt::Debug {
+    fn admit<'a>(
+        &'a self,
+        profile_id: String,
+        delegation: pl_protocol::DelegationSettings,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> BoxFuture<'a, Result<ErasedAdmission<'a>, ThreadAssemblyError>>;
+
     fn close_published<'a>(
         &'a self,
         id: &'a str,
@@ -204,12 +240,25 @@ trait ErasedFactory: Send + Sync + std::fmt::Debug {
         usage: Option<&'a super::WorkspaceUsageLease>,
         disposition: WorkspaceRelease,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>>;
-    fn prepare(
-        &self,
-        request: ChildThreadRequest,
-    ) -> BoxFuture<'_, Result<StudioThreadSpec, ThreadAssemblyError>>;
 }
 impl<T: StudioChildFactory> ErasedFactory for T {
+    fn admit<'a>(
+        &'a self,
+        profile_id: String,
+        delegation: pl_protocol::DelegationSettings,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> BoxFuture<'a, Result<ErasedAdmission<'a>, ThreadAssemblyError>> {
+        Box::pin(async move {
+            let admission =
+                StudioChildFactory::admit(self, &profile_id, delegation, selection).await?;
+            Ok(Box::new(move |request| {
+                let future: BoxFuture<'a, Result<StudioThreadSpec, ThreadAssemblyError>> =
+                    Box::pin(StudioChildFactory::prepare(self, request, admission));
+                future
+            }) as ErasedAdmission<'a>)
+        })
+    }
+
     fn close_published<'a>(
         &'a self,
         id: &'a str,
@@ -230,12 +279,6 @@ impl<T: StudioChildFactory> ErasedFactory for T {
             usage,
             disposition,
         ))
-    }
-    fn prepare(
-        &self,
-        request: ChildThreadRequest,
-    ) -> BoxFuture<'_, Result<StudioThreadSpec, ThreadAssemblyError>> {
-        Box::pin(StudioChildFactory::prepare(self, request))
     }
 }
 
@@ -261,11 +304,16 @@ impl ChildFactory {
     pub(super) fn new(factory: impl StudioChildFactory) -> Self {
         Self(Arc::new(factory))
     }
-    pub(super) async fn prepare(
+
+    pub(super) async fn admit(
         &self,
-        request: ChildThreadRequest,
-    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        self.0.prepare(request).await
+        profile_id: &str,
+        delegation: pl_protocol::DelegationSettings,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> Result<ErasedAdmission<'_>, ThreadAssemblyError> {
+        self.0
+            .admit(profile_id.to_owned(), delegation, selection)
+            .await
     }
 }
 
@@ -290,6 +338,34 @@ impl Drop for ChildReservation {
 }
 
 impl super::StudioThreadAssembler {
+    pub(super) fn child_factory(
+        &self,
+        context: &pl_core::tool::opaque::CallContext,
+    ) -> Result<ChildFactory, ThreadAssemblyError> {
+        let state = self.0.state();
+        if state.closing
+            || state.sealed_agents.contains_key(&context.thread_id)
+            || context.cancellation.is_cancelled()
+        {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        let parent = state
+            .entries
+            .get(&context.thread_id)
+            .filter(|entry| {
+                entry.ready
+                    && entry.thread.snapshot().lifecycle == pl_core::thread::ThreadLifecycle::Open
+            })
+            .ok_or_else(|| ThreadAssemblyError::Identity(context.thread_id.clone()))?;
+        if parent.parent_id.is_some() {
+            return Err(ThreadAssemblyError::ChildDepth);
+        }
+        state
+            .child_factory
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)
+    }
+
     pub(super) fn reserve_child(
         &self,
         context: &pl_core::tool::opaque::CallContext,

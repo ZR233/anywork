@@ -26,6 +26,7 @@ pub(super) const VERSION: u32 = 2;
 enum DocumentFamily {
     Main,
     Profile,
+    Mcp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +166,7 @@ fn validate_profile(
     config: &StudioConfig,
     require_current: bool,
 ) -> Result<(u32, bool)> {
-    let loaded = load_profile(path, text(path, content, "agent-profile", 1)?)?;
+    let loaded = load_profile(path, text(path, content, "agent-profile", 2)?)?;
     if require_current {
         ensure!(
             !loaded.migrated,
@@ -174,7 +175,7 @@ fn validate_profile(
     }
     let source = loaded.source_version;
     let profile = loaded.document.into_profile().map_err(|error| {
-        migration_error(path, "agent-profile", Some(source), 1, "validate", error)
+        migration_error(path, "agent-profile", Some(source), 2, "validate", error)
     })?;
     let profile_id = path
         .file_stem()
@@ -182,23 +183,37 @@ fn validate_profile(
         .context("invalid Profile filename")?;
     crate::config::agent_profile::validate_user_agent_profile_id(profile_id)?;
     crate::config::agent_profile::validate_user_profile_fields(profile_id, &profile).map_err(
-        |error| migration_error(path, "agent-profile", Some(source), 1, "validate", error),
+        |error| migration_error(path, "agent-profile", Some(source), 2, "validate", error),
     )?;
     // Unchanged current Profiles retain editable declarations and catalog diagnostics even
     // when a normal settings command removed their route. Only migration candidates require
     // joint reference admission before commit; this also applies to disabled candidates.
     if loaded.migrated || require_current {
-        config
-            .models
-            .route_availability(&crate::config::ModelRouteConfig {
-                account_id: profile.account_id,
-                model_id: profile.model_id,
-                effort: profile.effort,
-            })
-            .map(|_| ())
-            .map_err(|error| {
-                migration_error(path, "agent-profile", Some(source), 1, "references", error)
-            })?;
+        let references = match &profile.binding {
+            pl_protocol::AgentBinding::Native(native) => {
+                let route = native
+                    .route
+                    .as_ref()
+                    .context("Native Profile route is required")?;
+                config
+                    .models
+                    .route_availability(&crate::config::ModelRouteConfig {
+                        account_id: crate::config::AccountId::new(route.account_id.clone())?,
+                        model_id: route.model_id.clone(),
+                        effort: route
+                            .effort
+                            .clone()
+                            .map(crate::config::ReasoningEffort::new),
+                    })
+                    .map(|_| ())
+            }
+            pl_protocol::AgentBinding::Acp(_) => {
+                crate::config::agent_profile::validate_user_profile(profile_id, &profile, config)
+            }
+        };
+        references.map_err(|error| {
+            migration_error(path, "agent-profile", Some(source), 2, "references", error)
+        })?;
     }
     Ok((source, loaded.migrated))
 }
@@ -220,6 +235,277 @@ fn resource(
     }
 }
 
+fn read_resource_disk_bytes(
+    paths: &ConfigPaths,
+    document: DocumentFamily,
+    relative_path: &str,
+) -> Result<Vec<u8>> {
+    let path = config_resource_path(paths, relative_path);
+    match document {
+        DocumentFamily::Main | DocumentFamily::Profile => Ok(fs::read(path)?),
+        DocumentFamily::Mcp => match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                ensure!(
+                    !meta.file_type().is_symlink() && meta.is_file(),
+                    "MCP migration resource {relative_path} is not a regular file"
+                );
+                Ok(fs::read(&path)?)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        },
+    }
+}
+
+fn validate_mcp_resource_path(relative_path: &str) -> Result<()> {
+    let Some(file_name) = relative_path.strip_prefix("mcp/host/") else {
+        anyhow::bail!("invalid MCP migration resource path `{relative_path}`");
+    };
+    let Some(stem) = file_name.strip_suffix(".toml") else {
+        anyhow::bail!("invalid MCP migration resource path `{relative_path}`");
+    };
+    ensure!(
+        stem.len() == 64
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "invalid MCP migration resource filename `{file_name}`"
+    );
+    Ok(())
+}
+
+fn validate_mcp_candidate(path: &Path, content: &[u8]) -> Result<()> {
+    let raw = text(path, content, "mcp-document", 1)?;
+    let table: toml::Table = toml::from_str(raw)
+        .map_err(|error| migration_error(path, "mcp-document", None, 1, "parse", error))?;
+    let version = table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        .context("MCP candidate missing schema_version")?;
+    ensure!(version == 1, "MCP candidate must have schema_version = 1");
+    let id = table
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .context("MCP candidate missing id")?;
+    ensure!(!id.is_empty(), "MCP candidate id must not be empty");
+    Ok(())
+}
+
+fn encode_fallback_legacy_mcp_server(
+    id: &str,
+    transport: pl_tool::mcp::config::McpServerTransport,
+    server: &pl_tool::mcp::config::McpServerConfig,
+) -> Result<String> {
+    let mut table = toml::Table::new();
+    table.insert("schema_version".into(), toml::Value::Integer(1));
+    table.insert("id".into(), toml::Value::String(id.to_owned()));
+    table.insert("kind".into(), toml::Value::String("server".into()));
+    table.insert("enabled".into(), toml::Value::Boolean(server.enabled));
+    table.insert(
+        "transport".into(),
+        toml::Value::String(transport.as_str().to_owned()),
+    );
+    if let Some(command) = &server.command {
+        table.insert("command".into(), toml::Value::String(command.clone()));
+    }
+    if !server.args.is_empty() {
+        table.insert(
+            "args".into(),
+            toml::Value::Array(
+                server
+                    .args
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    if !server.env.is_empty() {
+        let mut env_table = toml::Table::new();
+        for (k, v) in &server.env {
+            env_table.insert(k.clone(), toml::Value::String(v.clone()));
+        }
+        table.insert("env".into(), toml::Value::Table(env_table));
+    }
+    if let Some(cwd) = &server.cwd {
+        table.insert("cwd".into(), toml::Value::String(cwd.clone()));
+    }
+    if let Some(url) = &server.url {
+        table.insert("url".into(), toml::Value::String(url.clone()));
+    }
+    if let Some(var) = &server.bearer_token_env_var {
+        table.insert(
+            "bearer_token_env_var".into(),
+            toml::Value::String(var.clone()),
+        );
+    }
+    if !server.headers.is_empty() {
+        let mut headers = toml::Table::new();
+        for (k, v) in &server.headers {
+            headers.insert(k.clone(), toml::Value::String(v.clone()));
+        }
+        table.insert("headers".into(), toml::Value::Table(headers));
+    }
+    if let Some(secs) = server.startup_timeout_secs
+        && let Ok(v) = i64::try_from(secs)
+    {
+        table.insert("startup_timeout_secs".into(), toml::Value::Integer(v));
+    }
+    if let Some(secs) = server.tool_timeout_secs
+        && let Ok(v) = i64::try_from(secs)
+    {
+        table.insert("tool_timeout_secs".into(), toml::Value::Integer(v));
+    }
+    if let Some(enabled_tools) = &server.enabled_tools {
+        table.insert(
+            "enabled_tools".into(),
+            toml::Value::Array(
+                enabled_tools
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    if !server.disabled_tools.is_empty() {
+        table.insert(
+            "disabled_tools".into(),
+            toml::Value::Array(
+                server
+                    .disabled_tools
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    Ok(toml::to_string_pretty(&table)?)
+}
+
+fn prepare_legacy_mcp_plans(
+    paths: &ConfigPaths,
+    original_main: &[u8],
+    plans: &mut Vec<ResourcePlan>,
+    resources: &mut Vec<Resource>,
+) -> Result<()> {
+    let raw_main = text(
+        paths.config_file(),
+        original_main,
+        "studio-config",
+        STUDIO_CONFIG_SCHEMA_VERSION,
+    )?;
+    let Some(legacy_mcp) = crate::config::document_migration::extract_legacy_mcp_from_main(
+        paths.config_file(),
+        raw_main,
+    )?
+    else {
+        return Ok(());
+    };
+    let host_base_cwd =
+        std::env::current_dir().context("failed to resolve current directory for MCP migration")?;
+    let host_base_cwd_str = host_base_cwd
+        .to_str()
+        .context("current directory is not valid UTF-8 for MCP migration")?
+        .to_owned();
+
+    let mut target_files: std::collections::BTreeMap<String, Vec<u8>> =
+        std::collections::BTreeMap::new();
+
+    for builtin_id in crate::config::mcp::builtin_mcp_server_ids() {
+        let enabled = legacy_mcp
+            .builtin_servers
+            .get(builtin_id)
+            .is_none_or(|state| state.enabled);
+        let cwd = (builtin_id == crate::config::mcp::ZHIPU_VISION_MCP_ID)
+            .then(|| host_base_cwd_str.clone());
+        let doc = crate::config::mcp_document::McpFileV1::new_builtin(builtin_id, enabled, cwd);
+        let candidate = doc.encode()?.into_bytes();
+        let filename = crate::config::mcp_resource::canonical_mcp_filename(builtin_id)?;
+        let relative_path = format!("mcp/host/{filename}");
+        target_files.insert(relative_path, candidate);
+    }
+
+    for (server_id, wire_server) in &legacy_mcp.servers {
+        let mut domain_server: pl_tool::mcp::config::McpServerConfig = wire_server.clone().into();
+        match domain_server.transport {
+            pl_tool::mcp::config::McpServerTransport::Stdio => {
+                domain_server.url = None;
+                domain_server.bearer_token_env_var = None;
+                domain_server.headers.clear();
+                match domain_server.cwd.take() {
+                    None => {
+                        domain_server.cwd = Some(host_base_cwd_str.clone());
+                    }
+                    Some(raw) if raw.trim().is_empty() => {
+                        domain_server.cwd = Some(raw);
+                    }
+                    Some(raw) => {
+                        let p = Path::new(&raw);
+                        if p.is_relative() {
+                            let joined = host_base_cwd.join(p);
+                            let joined_str = joined
+                                .to_str()
+                                .context("joined MCP cwd is not valid UTF-8")?
+                                .to_owned();
+                            domain_server.cwd = Some(joined_str);
+                        } else {
+                            domain_server.cwd = Some(raw);
+                        }
+                    }
+                }
+            }
+            pl_tool::mcp::config::McpServerTransport::StreamableHttp => {
+                domain_server.command = None;
+                domain_server.args.clear();
+                domain_server.env.clear();
+                domain_server.cwd = None;
+            }
+        }
+        let encoded = match crate::config::mcp_document::McpFileV1::new_server(
+            server_id.clone(),
+            domain_server.clone(),
+        )
+        .encode()
+        {
+            Ok(encoded) => encoded,
+            Err(_) => encode_fallback_legacy_mcp_server(
+                server_id,
+                domain_server.transport,
+                &domain_server,
+            )?,
+        };
+        let key = crate::studio::paths::storage_key(server_id, "MCP server")?;
+        let relative_path = format!("mcp/host/{key}.toml");
+        ensure!(
+            !target_files.contains_key(&relative_path),
+            "conflicting legacy MCP server id `{server_id}` at `{relative_path}`"
+        );
+        target_files.insert(relative_path, encoded.into_bytes());
+    }
+
+    for (relative_path, candidate) in target_files {
+        let original = read_resource_disk_bytes(paths, DocumentFamily::Mcp, &relative_path)?;
+        if !original.is_empty() {
+            ensure!(
+                original == candidate,
+                "existing MCP document `{relative_path}` conflicts with migration candidate"
+            );
+        }
+        let plan = ResourcePlan {
+            relative_path,
+            original,
+            candidate,
+        };
+        resources.push(resource(&plan, DocumentFamily::Mcp, None, 1));
+        plans.push(plan);
+    }
+
+    Ok(())
+}
+
 pub(super) fn prepare(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
@@ -232,7 +518,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV30::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV31::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -245,6 +531,7 @@ pub(super) fn prepare(
                 STUDIO_CONFIG_SCHEMA_VERSION,
             ));
             plans.push(plan);
+            prepare_legacy_mcp_plans(paths, original, &mut plans, &mut resources)?;
             (config, None)
         } else {
             (config, Some(digest(original)))
@@ -268,11 +555,11 @@ pub(super) fn prepare(
     names.sort();
     for path in names {
         let original = fs::read(&path)?;
-        let (_, migrated) = validate_profile(&path, &original, &config, false)?;
+        let (source, migrated) = validate_profile(&path, &original, &config, false)?;
         if !migrated {
             continue;
         }
-        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 1)?)?;
+        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 2)?)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -282,26 +569,37 @@ pub(super) fn prepare(
             original,
             candidate: loaded.document.encode()?.into_bytes(),
         };
-        resources.push(resource(&plan, DocumentFamily::Profile, None, 1));
+        resources.push(resource(
+            &plan,
+            DocumentFamily::Profile,
+            (source != 0).then_some(source),
+            2,
+        ));
         plans.push(plan);
     }
     if plans.is_empty() {
         return Ok(config);
     }
-    for plan in &plans {
+    for (plan, entry) in plans.iter().zip(&resources) {
         ensure!(
-            fs::read(config_resource_path(paths, &plan.relative_path))? == plan.original,
+            read_resource_disk_bytes(paths, entry.document, &plan.relative_path)? == plan.original,
             "configuration resource changed during migration preparation"
         );
         let path = config_resource_path(paths, &plan.relative_path);
-        if plan.relative_path == STUDIO_CONFIG_FILE_NAME {
-            let (_, version, migrated) = main_document(&path, &plan.candidate)?;
-            ensure!(
-                version == STUDIO_CONFIG_SCHEMA_VERSION && !migrated,
-                "invalid main candidate"
-            );
-        } else {
-            validate_profile(&path, &plan.candidate, &config, true)?;
+        match entry.document {
+            DocumentFamily::Main => {
+                let (_, version, migrated) = main_document(&path, &plan.candidate)?;
+                ensure!(
+                    version == STUDIO_CONFIG_SCHEMA_VERSION && !migrated,
+                    "invalid main candidate"
+                );
+            }
+            DocumentFamily::Profile => {
+                validate_profile(&path, &plan.candidate, &config, true)?;
+            }
+            DocumentFamily::Mcp => {
+                validate_mcp_candidate(&path, &plan.candidate)?;
+            }
         }
     }
     let directory = operation_dir(paths);
@@ -309,12 +607,14 @@ pub(super) fn prepare(
         !directory.join(JOURNAL_FILE_NAME).exists(),
         "pending configuration migration must be resumed first"
     );
-    for plan in &plans {
-        crate::config::store::write_config_backup(
-            &config_resource_path(paths, &plan.relative_path),
-            &plan.original,
-            "migrated",
-        )?;
+    for (plan, entry) in plans.iter().zip(&resources) {
+        if !(entry.document == DocumentFamily::Mcp && plan.original.is_empty()) {
+            crate::config::store::write_config_backup(
+                &config_resource_path(paths, &plan.relative_path),
+                &plan.original,
+                "migrated",
+            )?;
+        }
         write_protected(&directory, ORIGINAL_DIR_NAME, plan, &plan.original)?;
         write_protected(&directory, CANDIDATE_DIR_NAME, plan, &plan.candidate)?;
     }
@@ -370,8 +670,17 @@ fn validate_resources(journal: &Journal) -> Result<()> {
             DocumentFamily::Profile => {
                 validate_profile_resource_path(&resource.relative_path)?;
                 ensure!(
-                    resource.source_version.is_none() && resource.target_version == 1,
+                    (resource.target_version == 1 && resource.source_version.is_none())
+                        || (resource.target_version == 2
+                            && resource.source_version.is_none_or(|source| source == 1)),
                     "invalid Profile resource versions"
+                );
+            }
+            DocumentFamily::Mcp => {
+                validate_mcp_resource_path(&resource.relative_path)?;
+                ensure!(
+                    resource.source_version.is_none() && resource.target_version == 1,
+                    "invalid MCP resource versions"
                 );
             }
         }
@@ -417,7 +726,7 @@ fn commit(
             digest(&candidate) == resource.candidate_hash,
             "candidate digest conflict"
         );
-        let disk = fs::read(config_resource_path(paths, &resource.relative_path))?;
+        let disk = read_resource_disk_bytes(paths, resource.document, &resource.relative_path)?;
         let hash = digest(&disk);
         ensure!(
             hash == resource.original_hash || hash == resource.candidate_hash,
@@ -456,14 +765,36 @@ fn commit(
         )
     };
     for (entry, plan) in journal.resources.iter().zip(&verified) {
-        if entry.document == DocumentFamily::Profile {
-            let path = config_resource_path(paths, &entry.relative_path);
-            let (source, migrated) = validate_profile(&path, &plan.original, &config, false)?;
-            ensure!(
-                source == 0 && migrated,
-                "Profile original contradicts import journal"
-            );
-            validate_profile(&path, &plan.candidate, &config, true)?;
+        let path = config_resource_path(paths, &entry.relative_path);
+        match entry.document {
+            DocumentFamily::Main => {}
+            DocumentFamily::Profile => {
+                let (source, migrated) = validate_profile(&path, &plan.original, &config, false)?;
+                ensure!(
+                    source == entry.source_version.unwrap_or(0) && migrated,
+                    "Profile original contradicts import journal"
+                );
+                if entry.target_version == 1 {
+                    // Finish an already protected V1 import, then the next scan upgrades it to V2.
+                    let (candidate_source, _) =
+                        validate_profile(&path, &plan.candidate, &config, false)?;
+                    ensure!(
+                        candidate_source == 1,
+                        "invalid protected V1 Profile candidate"
+                    );
+                } else {
+                    validate_profile(&path, &plan.candidate, &config, true)?;
+                }
+            }
+            DocumentFamily::Mcp => {
+                if !plan.original.is_empty() {
+                    ensure!(
+                        plan.original == plan.candidate,
+                        "MCP original contradicts migration journal"
+                    );
+                }
+                validate_mcp_candidate(&path, &plan.candidate)?;
+            }
         }
     }
     if journal.phase == MigrationPhase::Prepared {
@@ -483,7 +814,11 @@ fn commit(
         for (index, plan) in verified.iter().enumerate() {
             let entry = &mut journal.resources[index];
             let path = config_resource_path(paths, &entry.relative_path);
-            let hash = digest(&fs::read(&path)?);
+            let hash = digest(&read_resource_disk_bytes(
+                paths,
+                entry.document,
+                &entry.relative_path,
+            )?);
             ensure!(
                 hash == entry.original_hash || hash == entry.candidate_hash,
                 "resource changed during pending commit"
@@ -491,6 +826,11 @@ fn commit(
             if hash != entry.candidate_hash {
                 if main.is_none() {
                     verify_profile_main_guard(paths, main_guard.as_deref())?;
+                }
+                if entry.document == DocumentFamily::Mcp
+                    && let Some(parent) = path.parent()
+                {
+                    fs::create_dir_all(parent)?;
                 }
                 write(&path, &plan.candidate)?;
                 if main.is_none() {
@@ -506,10 +846,11 @@ fn commit(
     }
     for entry in &journal.resources {
         ensure!(
-            digest(&fs::read(config_resource_path(
+            digest(&read_resource_disk_bytes(
                 paths,
-                &entry.relative_path
-            ))?) == entry.candidate_hash,
+                entry.document,
+                &entry.relative_path,
+            )?) == entry.candidate_hash,
             "resource did not reach its verified candidate"
         );
     }
@@ -614,7 +955,7 @@ workspace_mode = "directory"
             operation_id: format!("schema-{}-profile-only", main_schema.unwrap_or_default()),
             phase: MigrationPhase::Prepared,
             unchanged_main_hash: main_bytes.as_deref().map(digest),
-            resources: vec![resource(&plan, DocumentFamily::Profile, None, 1)],
+            resources: vec![resource(&plan, DocumentFamily::Profile, None, 2)],
         };
         write_journal(&directory, &journal).unwrap();
         let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
@@ -915,7 +1256,7 @@ workspace_mode = "directory"
         assert_eq!(journal.resources.len(), 1);
         assert_eq!(journal.resources[0].document, DocumentFamily::Profile);
         assert_eq!(journal.resources[0].source_version, None);
-        assert_eq!(journal.resources[0].target_version, 1);
+        assert_eq!(journal.resources[0].target_version, 2);
         assert_eq!(journal.unchanged_main_hash, Some(digest(&main_before)));
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
         let recovered = resume(paths, &credentials, &journal_bytes).unwrap();
@@ -985,9 +1326,13 @@ workspace_mode = "directory"
                 .document
                 .into_profile()
                 .unwrap();
-            profile.account_id = account_id.clone();
+            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                panic!("imported Profile must be Native");
+            };
+            let route = native.route.as_mut().expect("imported Native route");
+            route.account_id = account_id.to_string();
             profile.enabled = enabled;
-            profile.effort = Some(crate::config::ReasoningEffort::new("high"));
+            route.effort = Some("high".into());
             let (saved, _) = runtime
                 .save_user_agent_profile(runtime.read().unwrap().revision, "saved", &profile)
                 .unwrap();
@@ -1014,9 +1359,19 @@ workspace_mode = "directory"
                     .catalog
                     .profiles
                     .iter()
-                    .find(|profile| profile.profile_id == "saved")
+                    .find(|profile| profile.definition.definition_id == "saved")
                     .expect("unavailable Profile stays in the editable settings catalog");
-                assert_eq!(saved.account_id, "profile-only");
+                let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+                    panic!("saved Profile must be Native");
+                };
+                assert_eq!(
+                    native
+                        .route
+                        .as_ref()
+                        .expect("saved Native route")
+                        .account_id,
+                    "profile-only"
+                );
                 assert_eq!(saved.enabled, enabled);
                 assert!(
                     snapshot
@@ -1031,7 +1386,7 @@ workspace_mode = "directory"
                         .unwrap()
                         .profiles
                         .iter()
-                        .any(|profile| profile.profile_id == "saved")
+                        .any(|profile| profile.definition.definition_id == "saved")
                 );
             };
             assert_unavailable(&runtime);
@@ -1056,7 +1411,14 @@ workspace_mode = "directory"
                     .starts_with("saved.toml.migrated.")
             }));
 
-            profile.account_id = crate::config::AccountId::new("deepseek").unwrap();
+            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                panic!("saved Profile must be Native");
+            };
+            native
+                .route
+                .as_mut()
+                .expect("saved Native route")
+                .account_id = "deepseek".into();
             profile.description = "Repaired after account deletion".into();
             let (_, changed) = restarted
                 .save_user_agent_profile(restarted.read().unwrap().revision, "saved", &profile)
@@ -1074,11 +1436,21 @@ workspace_mode = "directory"
                 .catalog
                 .profiles
                 .iter()
-                .find(|profile| profile.profile_id == "saved")
+                .find(|profile| profile.definition.definition_id == "saved")
                 .unwrap();
-            assert_eq!(saved.account_id, "deepseek");
+            let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+                panic!("repaired Profile must be Native");
+            };
+            assert_eq!(
+                native
+                    .route
+                    .as_ref()
+                    .expect("repaired Native route")
+                    .account_id,
+                "deepseek"
+            );
             assert_eq!(saved.enabled, enabled);
-            assert_eq!(saved.description, profile.description);
+            assert_eq!(saved.definition.description, profile.description);
         }
     }
 
@@ -1256,5 +1628,209 @@ workspace_mode = "directory"
         assert_eq!(fs::read(paths.config_file()).unwrap(), main);
         assert_eq!(fs::read_to_string(profile_path).unwrap(), invalid);
         assert!(!operation_dir(paths).exists());
+    }
+
+    #[test]
+    fn schema_30_migrates_mcp_servers_and_builtins_to_single_files_and_rejects_mcp_in_v31() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut table: toml::Table =
+            toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+        table.insert("schema_version".into(), 30.into());
+        let mcp_table: toml::Value = toml::from_str(
+            r#"
+[builtin_servers.zhipu_search]
+enabled = false
+
+[servers.git_tools]
+enabled = true
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-git"]
+cwd = "sub/dir"
+"#,
+        )
+        .unwrap();
+        table.insert("mcp".into(), mcp_table);
+        let v30_bytes = toml::to_string_pretty(&table).unwrap().into_bytes();
+        fs::write(paths.config_file(), &v30_bytes).unwrap();
+
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded.schema_version, 31);
+
+        let migrated_main: toml::Table =
+            toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+        assert_eq!(
+            migrated_main
+                .get("schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(31)
+        );
+        assert!(!migrated_main.contains_key("mcp"));
+
+        let catalog = crate::config::McpCatalogResource::new(paths, &loaded.models);
+        let host_snapshot = catalog
+            .read_catalog(paths, &loaded.models, &pl_protocol::McpScope::Host)
+            .unwrap();
+        let git_entry = host_snapshot
+            .entries
+            .iter()
+            .find(|e| e.id == "git_tools")
+            .expect("migrated git_tools server must exist in Host catalog");
+        assert_eq!(
+            git_entry.config_status,
+            pl_protocol::McpConfigStatusKind::Enabled
+        );
+        assert_eq!(
+            git_entry.effective_source,
+            pl_protocol::McpEffectiveSource::HostServer
+        );
+        let search_entry = host_snapshot
+            .entries
+            .iter()
+            .find(|e| e.id == "zhipu_search")
+            .expect("migrated zhipu_search builtin must exist in Host catalog");
+        assert_eq!(
+            search_entry.config_status,
+            pl_protocol::McpConfigStatusKind::Disabled
+        );
+
+        // Verify schema_version = 31 rejects legacy [mcp] table (no dual-read).
+        let mut v31_with_mcp = migrated_main;
+        v31_with_mcp.insert("mcp".into(), toml::Value::Table(toml::Table::new()));
+        fs::write(
+            paths.config_file(),
+            toml::to_string_pretty(&v31_with_mcp).unwrap(),
+        )
+        .unwrap();
+        assert!(store.load_for_startup().is_err());
+    }
+
+    #[test]
+    fn schema_30_mcp_and_v1_profile_migration_recovers_idempotently_after_interrupted_commit() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut table: toml::Table =
+            toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+        table.insert("schema_version".into(), 30.into());
+        let mcp_table: toml::Value = toml::from_str(
+            r#"
+[servers.alpha]
+enabled = true
+transport = "streamableHttp"
+url = "https://example.com/mcp"
+"#,
+        )
+        .unwrap();
+        table.insert("mcp".into(), mcp_table);
+        let v30_bytes = toml::to_string_pretty(&table).unwrap().into_bytes();
+        fs::write(paths.config_file(), &v30_bytes).unwrap();
+
+        let profile_path = paths.agents_dir().join("saved.toml");
+        let profile_v1 = format!(
+            "schema_version = 1\n{}",
+            IMPORT
+                .replace("provider =", "account_id =")
+                .replace("model =", "model_id =")
+        );
+        fs::write(&profile_path, profile_v1).unwrap();
+
+        let credentials = MemoryCredentialStore::default();
+        let writes = std::cell::Cell::new(0usize);
+        let interrupted = prepare(paths, &credentials, Some(&v30_bytes), &|path, bytes| {
+            writes.set(writes.get() + 1);
+            atomic_write(path, bytes)?;
+            if writes.get() == 2 {
+                return Err(PureError::Io(std::io::Error::other(
+                    "interrupted mid-MCP-migration",
+                )));
+            }
+            Ok(())
+        });
+        assert!(interrupted.is_err());
+        assert!(operation_dir(paths).join(JOURNAL_FILE_NAME).exists());
+
+        let recovered = store.load_for_startup().unwrap();
+        assert_eq!(recovered.schema_version, 31);
+        assert!(!operation_dir(paths).exists());
+
+        let catalog = crate::config::McpCatalogResource::new(paths, &recovered.models);
+        let snapshot = catalog
+            .read_catalog(paths, &recovered.models, &pl_protocol::McpScope::Host)
+            .unwrap();
+        let mcp_document = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.id == "alpha")
+            .and_then(|entry| entry.document.as_ref())
+            .expect("migrated server must retain its document identity");
+
+        let profile_bytes = fs::read_to_string(&profile_path).unwrap();
+        let loaded_profile = load_profile(&profile_path, &profile_bytes).unwrap();
+        assert_eq!(loaded_profile.source_version, 2);
+        assert!(!loaded_profile.migrated);
+        let profile = loaded_profile.document.into_profile().unwrap();
+        assert!(!profile.enabled);
+        let pl_protocol::AgentBinding::Native(native) = profile.binding else {
+            panic!("migrated Profile must retain its Native binding");
+        };
+        let route = native.route.unwrap();
+        assert_eq!(route.account_id, "deepseek");
+        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(
+            native.system_instructions.as_deref(),
+            Some("Saved instructions")
+        );
+
+        let main_bytes = fs::read(paths.config_file()).unwrap();
+        let mcp_path = crate::config::resolve_document_path(paths, mcp_document).unwrap();
+        let mcp_bytes = fs::read(&mcp_path).unwrap();
+        assert_eq!(store.load_for_startup().unwrap(), recovered);
+        assert_eq!(fs::read(paths.config_file()).unwrap(), main_bytes);
+        assert_eq!(fs::read_to_string(profile_path).unwrap(), profile_bytes);
+        assert_eq!(fs::read(mcp_path).unwrap(), mcp_bytes);
+        assert!(!operation_dir(paths).exists());
+    }
+
+    #[test]
+    fn schema_30_invalid_disabled_legacy_mcp_server_migrates_to_diagnostic_file() {
+        let (_directory, store) = fixture();
+        let paths = store.paths();
+        let mut table: toml::Table =
+            toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+        table.insert("schema_version".into(), 30.into());
+        let mcp_table: toml::Value = toml::from_str(
+            r#"
+[servers.broken_disabled]
+enabled = false
+transport = "stdio"
+"#,
+        )
+        .unwrap();
+        table.insert("mcp".into(), mcp_table);
+        let v30_bytes = toml::to_string_pretty(&table).unwrap().into_bytes();
+        fs::write(paths.config_file(), &v30_bytes).unwrap();
+
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded.schema_version, 31);
+        let catalog = crate::config::McpCatalogResource::new(paths, &loaded.models);
+        let snapshot = catalog
+            .read_catalog(paths, &loaded.models, &pl_protocol::McpScope::Host)
+            .unwrap();
+        let broken = snapshot
+            .entries
+            .iter()
+            .find(|e| e.id == "broken_disabled")
+            .expect("broken_disabled should surface as InvalidDocument entry");
+        assert_eq!(
+            broken.config_status,
+            pl_protocol::McpConfigStatusKind::InvalidDocument
+        );
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|d| d.id.as_deref() == Some("broken_disabled"))
+        );
     }
 }

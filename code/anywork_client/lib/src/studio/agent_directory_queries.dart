@@ -1,44 +1,58 @@
 import '../../models.dart';
 
 /// Agent membership comes from the complete AgentDirectory, never a Thread page.
-/// Known Thread facts may complete a root identity, but cannot create members.
+/// Known directory rows may complete a session identity, but Native thread
+/// snapshots never decide membership.
 abstract final class AgentDirectoryQueries {
-  static String? rootThreadId({
+  /// 目录身份判据：优先智能体目录行的 `sessionId`，其次目录行自身的
+  /// `sessionId`；Native Thread 快照不参与归属判定。
+  static String? sessionId({
     required String? threadId,
     required List<StudioAgentView> agents,
-    Iterable<StudioThread> threads = const [],
-  }) => _AgentDirectoryIndex(agents, threads).rootOf(threadId);
-
-  /// Stable parent-first members; duplicate Thread identities never add rows.
-  static List<StudioAgentView> forRoot({
-    required String? rootThreadId,
-    required List<StudioAgentView> agents,
-    Iterable<StudioThread> threads = const [],
+    Iterable<SessionDirectoryRow> rows = const [],
   }) {
-    if (rootThreadId == null) return const [];
-    final index = _AgentDirectoryIndex(agents, threads);
-    final members = <String, StudioAgentView>{};
-    for (final agent in index.byThread.values) {
-      if (index.rootOf(agent.threadId) == rootThreadId) {
-        members[agent.threadId] = agent;
-      }
+    if (threadId == null) return null;
+    for (final agent in agents) {
+      if (agent.threadId == threadId) return agent.sessionId;
     }
+    for (final row in rows) {
+      if (row.threadId == threadId) return row.sessionId;
+    }
+    return null;
+  }
+
+  /// Stable parent-first members of one session; duplicate identities never add
+  /// rows and membership only reads `sessionId`/`parentAgentId`.
+  static List<StudioAgentView> forSession({
+    required String? sessionId,
+    required List<StudioAgentView> agents,
+  }) {
+    if (sessionId == null) return const [];
+    final members = <String, StudioAgentView>{
+      for (final agent in agents)
+        if (agent.sessionId == sessionId) agent.agentId: agent,
+    };
     final byParent = <String?, List<StudioAgentView>>{};
     for (final agent in members.values) {
-      byParent.putIfAbsent(agent.parentPath, () => []).add(agent);
+      byParent.putIfAbsent(agent.parentAgentId, () => []).add(agent);
     }
     final ordered = <StudioAgentView>[];
     final seen = <String>{};
     void append(StudioAgentView agent) {
-      if (!seen.add(agent.threadId)) return;
+      if (!seen.add(agent.agentId)) return;
       ordered.add(agent);
-      for (final child in byParent[agent.path] ?? const <StudioAgentView>[]) {
+      for (final child
+          in byParent[agent.agentId] ?? const <StudioAgentView>[]) {
         append(child);
       }
     }
 
-    final root = members[rootThreadId];
-    if (root != null) append(root);
+    for (final agent in members.values) {
+      if (agent.parentAgentId == null ||
+          !members.containsKey(agent.parentAgentId)) {
+        append(agent);
+      }
+    }
     for (final agent in members.values) {
       append(agent);
     }
@@ -69,40 +83,4 @@ abstract final class AgentDirectoryQueries {
     IdleStudioAgent() => 2,
     ClosingStudioAgent() || ClosedStudioAgent() => 3,
   };
-}
-
-/// One local index per query, not a retained membership cache. Canonical order
-/// wins duplicate identities and exact parent links are never parsed as paths.
-final class _AgentDirectoryIndex {
-  _AgentDirectoryIndex(
-    List<StudioAgentView> agents,
-    Iterable<StudioThread> threads,
-  ) {
-    for (final agent in agents) {
-      if (byThread.containsKey(agent.threadId)) continue;
-      byThread[agent.threadId] = agent;
-      _byPath.putIfAbsent(agent.path, () => agent);
-    }
-    for (final thread in threads) {
-      _threads.putIfAbsent(thread.id, () => thread);
-    }
-  }
-
-  final byThread = <String, StudioAgentView>{};
-  final _byPath = <String, StudioAgentView>{};
-  final _threads = <String, StudioThread>{};
-
-  String? rootOf(String? threadId) {
-    if (threadId == null) return null;
-    var current = byThread[threadId];
-    final visited = <String>{};
-    while (current != null && visited.add(current.threadId)) {
-      final savedRoot = current.rootThreadId;
-      if (savedRoot != null && savedRoot.isNotEmpty) return savedRoot;
-      final parent = current.parentPath;
-      if (parent == null && current.depth == 0) return current.threadId;
-      current = parent == null ? null : _byPath[parent];
-    }
-    return _threads[threadId]?.effectiveRootThreadId;
-  }
 }

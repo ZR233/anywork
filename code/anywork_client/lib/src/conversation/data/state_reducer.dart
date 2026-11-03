@@ -7,7 +7,7 @@ import 'thread_stream_gate.dart';
 ThreadSessionState applyThreadSnapshotState(
   ThreadSessionState current,
   ThreadWorkspace snapshot, {
-  StudioThread? directoryThread,
+  SessionDirectoryRow? directoryRow,
 }) {
   if (snapshot.thread.id.isEmpty || snapshot.thread.id != current.threadId) {
     return current;
@@ -15,7 +15,6 @@ ThreadSessionState applyThreadSnapshotState(
   final previous = current.workspace;
   final base = previous ?? snapshot;
   final next = base.copyWith(
-    thread: directoryThread ?? snapshot.thread,
     revision: snapshot.revision,
     activeTurn: snapshot.activeTurn,
     interactions: snapshot.interactions,
@@ -34,6 +33,7 @@ ThreadSessionState applyThreadSnapshotState(
   );
   return current.copyWith(
     workspace: next,
+    directoryRow: directoryRow ?? current.directoryRow,
     hasSnapshot: true,
     baseRevision: snapshot.revision,
     sync: current.sync.connected(),

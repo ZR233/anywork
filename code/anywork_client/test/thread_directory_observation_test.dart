@@ -81,21 +81,24 @@ final class _Handle implements ThreadsObservationHandle {
   }
 }
 
-StudioThread _thread(String id, {String title = 'Thread'}) => StudioThread(
-  id: id,
-  workspaceId: 'workspace',
-  title: title,
-  mode: ThreadModeId.simple,
-  delegationMode: DelegationMode.profile,
-  delegationPreference: DelegationPreference.balanced,
-  updatedAt: DateTime.utc(2026),
-  workspacePath: '/workspace',
-);
+SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
+    SessionDirectoryRow(
+      sessionId: id,
+      agentId: id,
+      threadId: id,
+      workspaceId: 'workspace',
+      title: title,
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(2026),
+      workspacePath: '/workspace',
+    );
 
 ThreadDirectoryFrame _frame(
   DirectoryQuery query,
   DirectoryWindow window,
-  List<StudioThread> threads, {
+  List<SessionDirectoryRow> rows, {
   int revision = 1,
   String? nextCursor,
 }) => ThreadDirectoryFrame(
@@ -106,7 +109,7 @@ ThreadDirectoryFrame _frame(
     ownerEpoch: 'runtime',
     revision: revision,
   ),
-  threads: threads,
+  rows: rows,
   nextCursor: nextCursor,
 );
 
@@ -205,7 +208,7 @@ void main() {
       final refreshed = await observation.state.waitFor(
         (state) => state.frame?.stamp.revision == 2,
       );
-      expect(refreshed.frame!.threads.single.title, 'changed');
+      expect(refreshed.frame!.rows.single.title, 'changed');
 
       final closing = observation.release();
       await second.closeEntered.future;

@@ -212,7 +212,15 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
     };
     let mut headers = BTreeMap::new();
     headers.insert("Authorization".to_string(), format!("Bearer {mcp_key}"));
-    config.mcp.servers.insert(
+
+    config.validate()?;
+    let file = home.join("config.toml");
+    fs::write(&file, toml::to_string_pretty(&config)?)
+        .with_context(|| format!("failed to create isolated config: {}", file.display()))?;
+
+    let host_mcp_dir = home.join("mcp/host");
+    fs::create_dir_all(&host_mcp_dir)?;
+    let doc = McpFileV1::new_server(
         pl_provider_fixture::MCP_SERVER_ID.to_string(),
         McpServerConfig {
             enabled: true,
@@ -222,11 +230,9 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             ..McpServerConfig::default()
         },
     );
-
-    config.validate()?;
-    let file = home.join("config.toml");
-    fs::write(&file, toml::to_string_pretty(&config)?)
-        .with_context(|| format!("failed to create isolated config: {}", file.display()))
+    let filename = canonical_mcp_filename(pl_provider_fixture::MCP_SERVER_ID)?;
+    fs::write(host_mcp_dir.join(filename), doc.encode()?)
+        .with_context(|| "failed to create isolated MCP config")
 }
 
 fn start_gui(

@@ -356,7 +356,7 @@ impl StudioRuntime {
             && !self
                 .store
                 .catalog()
-                .get(&lease.owner_thread_id)
+                .get_agent(&lease.owner_thread_id)
                 .is_some_and(|entry| entry.explicitly_closed)
     }
 
@@ -644,8 +644,17 @@ impl StudioRuntime {
         &self,
         issues: &mut Vec<StudioRecoveryIssue>,
     ) -> Result<()> {
-        for entry in self.store.catalog().entries() {
-            let thread = entry.to_thread();
+        let catalog = self.store.catalog();
+        let sessions: std::collections::BTreeMap<_, _> = catalog
+            .sessions()
+            .into_iter()
+            .map(|session| (session.session_id.clone(), session))
+            .collect();
+        for entry in catalog.agents() {
+            let Some(session) = sessions.get(&entry.session_id) else {
+                continue;
+            };
+            let thread = crate::studio::records::thread_projection(session, &entry);
             if thread.archived || entry.explicitly_closed {
                 continue;
             }

@@ -1139,7 +1139,20 @@ class DemoStudioTransport extends StudioTransport
   int _acpInstallRevision = 0;
   final Map<AcpProviderView, AcpInstallStateView> _acpInstalls = {};
   final Map<AcpProviderView, Timer> _acpInstallTimers = {};
-  int _mcpRevision = 0;
+  final Map<McpScope, int> _mcpCatalogRevisions = {};
+  final Map<McpDocumentRef, ({String id, int revision, String rawToml})>
+  _mcpDocuments = {
+    const McpDocumentRef(
+      scope: HostMcpScope(),
+      relativePath: 'mcp/dart.toml',
+    ): (
+      id: 'dart',
+      revision: 1,
+      rawToml:
+          'id = "dart"\nkind = "builtin"\nbuiltin = "dart"\nenabled = true\n',
+    ),
+  };
+  final Map<String, int> _threadMcpGenerations = {};
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
   int _projectDirectoryRevision = 1;
@@ -1274,14 +1287,14 @@ class DemoStudioTransport extends StudioTransport
             .firstOrNull
             ?.id ??
         projects.values.firstOrNull?.id;
-    final selectedThreadId = _sortedDirectoryThreads()
+    final selectedThreadId = _sortedDirectoryRows()
         .where(
-          (thread) =>
-              thread.id == _selectedThreadId &&
-              thread.workspaceId == selectedProjectId,
+          (row) =>
+              row.threadId == _selectedThreadId &&
+              row.workspaceId == selectedProjectId,
         )
         .firstOrNull
-        ?.id;
+        ?.threadId;
     return StudioBootstrap(
       ownerEpoch: _ownerEpoch,
       projectDirectory: projects,
@@ -1289,7 +1302,7 @@ class DemoStudioTransport extends StudioTransport
       agentDirectory: _demoAgentDirectory(),
       settingsState: _demoSettingsState(),
       recoveryState: _demoRecoveryState(),
-      mcpState: _demoMcpState(),
+      mcpCatalog: _demoMcpCatalog(const HostMcpScope()),
       lspState: _demoLspState(),
       skillsByProject: {
         for (final project in projects.values)
@@ -1301,10 +1314,8 @@ class DemoStudioTransport extends StudioTransport
       persistenceQueueState: _demoPersistenceQueueState(),
       agentProfilesState: readAgentProfilesStateSync(),
       sessionCostsByRoot: {
-        for (final root in _sortedDirectoryThreads().where(
-          (thread) => thread.isRoot,
-        ))
-          root.id: _demoSessionCosts(root.id),
+        for (final root in _sortedDirectoryRows().where((row) => row.isRootRow))
+          root.sessionId: _demoSessionCosts(root.sessionId),
       },
       selectedProjectId: selectedProjectId,
       selectedThreadId: selectedThreadId,
@@ -1358,9 +1369,9 @@ class DemoStudioTransport extends StudioTransport
   }
 
   ThreadDirectoryPage _demoThreadDirectory() {
-    final directory = _sortedDirectoryThreads();
+    final directory = _sortedDirectoryRows();
     return ThreadDirectoryPage(
-      threads: directory.take(directoryPageSize).toList(),
+      rows: directory.take(directoryPageSize).toList(),
       nextCursor: directory.length > directoryPageSize
           ? _demoDirectoryCursor(directoryPageSize - 1)
           : null,
@@ -1371,7 +1382,7 @@ class DemoStudioTransport extends StudioTransport
   ThreadDirectoryPage _demoDirectoryPage() {
     final window = _demoThreadDirectory();
     return ThreadDirectoryPage(
-      threads: window.threads,
+      rows: window.rows,
       nextCursor: window.nextCursor,
       revision: window.revision,
     );
@@ -1636,7 +1647,7 @@ class DemoStudioTransport extends StudioTransport
         .where(
           (thread) =>
               !_archivedThreadIds.contains(thread.id) &&
-              !_archivedThreadIds.contains(thread.effectiveRootThreadId),
+              !_archivedThreadIds.contains(_demoSessionIdOf(thread)),
         )
         .toList();
     for (final thread in _createdRootThreads) {
@@ -1691,22 +1702,22 @@ class DemoStudioTransport extends StudioTransport
     }
   }
 
-  /// 目录完整排序视图（最近用户消息时间倒序、id 倒序），分页窗口的模拟数据源。
-  List<StudioThread> _sortedDirectoryThreads() {
+  /// 目录完整排序视图（最近用户消息时间倒序、threadId 倒序），分页窗口的数据源。
+  List<SessionDirectoryRow> _sortedDirectoryRows() {
     final fixture = _ensureWorkspaceFixture();
-    final threads =
-        [
-              ...fixture.threads,
-              ..._pageFillThreads.where(
-                (thread) => !_archivedThreadIds.contains(thread.id),
-              ),
-            ]
-            .where(
-              (thread) => !_archivedProjectIds.contains(thread.workspaceId),
-            )
-            .toList()
-          ..sort(StudioThread.compareDirectoryOrder);
-    return threads;
+    return [
+      for (final thread in [
+        ...fixture.threads,
+        ..._pageFillThreads.where(
+          (thread) => !_archivedThreadIds.contains(thread.id),
+        ),
+      ])
+        if (!_archivedProjectIds.contains(thread.workspaceId))
+          _directoryRowOf(
+            thread,
+            archived: _archivedThreadIds.contains(_demoSessionIdOf(thread)),
+          ),
+    ]..sort(SessionDirectoryRow.compareDirectoryOrder);
   }
 
   @override
@@ -1729,28 +1740,18 @@ class DemoStudioTransport extends StudioTransport
     DirectoryWindow window,
   ) {
     final projects = _demoProjectDirectory().values;
-    final all = <String, StudioThread>{
-      for (final thread in [
-        ..._workspaces.values.map((w) => w.thread),
-        ..._createdRootThreads,
-        ..._pageFillThreads,
-      ])
-        thread.id: thread.copyWith(
-          archived: _archivedThreadIds.contains(thread.effectiveRootThreadId),
-        ),
-    };
-    final rows =
-        all.values
-            .where((thread) => _matchesDirectoryQuery(query, thread, projects))
+    final matching =
+        _demoAllRows()
+            .where((row) => _matchesDirectoryQuery(query, row, projects))
             .toList()
-          ..sort(StudioThread.compareDirectoryOrder);
+          ..sort(SessionDirectoryRow.compareDirectoryOrder);
     final offset = window.before == null
         ? 0
         : int.tryParse(window.before!) ??
               (throw ArgumentError.value(window.before, 'before'));
     if (offset < 0) throw ArgumentError.value(window.before, 'before');
-    final threads = rows.skip(offset).take(window.limit).toList();
-    final nextOffset = offset + threads.length;
+    final rows = matching.skip(offset).take(window.limit).toList();
+    final nextOffset = offset + rows.length;
     final stamp = _demoStamp('thread-directory', _threadDirectoryRevision);
     _checkDemoFrameSize({
       'query': {
@@ -1763,15 +1764,15 @@ class DemoStudioTransport extends StudioTransport
       },
       'window': {'before': window.before, 'limit': window.limit},
       'stamp': _demoStampWireFields(stamp),
-      'threads': threads.map(_demoThreadWireFields).toList(),
-      'nextCursor': nextOffset < rows.length ? '$nextOffset' : null,
+      'rows': rows.map(_demoRowWireFields).toList(),
+      'nextCursor': nextOffset < matching.length ? '$nextOffset' : null,
     });
     return ThreadDirectoryFrame(
       query: query,
       window: window,
       stamp: stamp,
-      threads: threads,
-      nextCursor: nextOffset < rows.length ? '$nextOffset' : null,
+      rows: rows,
+      nextCursor: nextOffset < matching.length ? '$nextOffset' : null,
     );
   }
 
@@ -1781,31 +1782,41 @@ class DemoStudioTransport extends StudioTransport
     'revision': stamp.revision,
   };
 
-  Map<String, Object?> _demoThreadWireFields(StudioThread thread) => {
-    'id': thread.id,
-    'workspaceId': thread.workspaceId,
-    'title': thread.title,
-    'mode': thread.mode.id,
-    'delegationMode': thread.delegationMode.name,
-    'delegationPreference': thread.delegationPreference.name,
-    'frozenModel': thread.frozenModel == null
-        ? null
-        : {
-            'accountId': thread.frozenModel!.accountId,
-            'modelId': thread.frozenModel!.modelId,
-            'effort': thread.frozenModel!.effort,
-          },
-    'workspaceMode': thread.workspaceMode.id,
-    'workspacePath': thread.workspacePath,
-    'rootThreadId': thread.rootThreadId,
-    'parentThreadId': thread.parentThreadId,
-    'role': thread.role,
-    'agentPath': thread.agentPath,
-    'status': thread.status.name,
-    'createdAt': thread.effectiveCreatedAt.millisecondsSinceEpoch,
-    'updatedAt': thread.updatedAt.millisecondsSinceEpoch,
-    'lastUserMessageAt': thread.lastUserMessageAt?.millisecondsSinceEpoch,
-    'archived': thread.archived,
+  Map<String, Object?> _demoRowWireFields(SessionDirectoryRow row) => {
+    'sessionId': row.sessionId,
+    'agentId': row.agentId,
+    'parentAgentId': row.parentAgentId,
+    'threadId': row.threadId,
+    'workspaceId': row.workspaceId,
+    'title': row.title,
+    'mode': row.mode.id,
+    'delegationMode': row.delegationMode.name,
+    'delegationPreference': row.delegationPreference.name,
+    'workspaceMode': row.workspaceMode.id,
+    'workspacePath': row.workspacePath,
+    'role': row.role,
+    'binding': switch (row.binding) {
+      NativeAgentBindingView(:final route) => {
+        'kind': 'native',
+        'route': route == null
+            ? null
+            : {
+                'accountId': route.accountId,
+                'modelId': route.modelId,
+                'effort': route.effort,
+              },
+      },
+      AcpAgentBindingView(:final accountId, :final connectionRevision) => {
+        'kind': 'acp',
+        'accountId': accountId,
+        'connectionRevision': connectionRevision,
+      },
+    },
+    'status': row.status.name,
+    'createdAt': row.effectiveCreatedAt.millisecondsSinceEpoch,
+    'updatedAt': row.updatedAt.millisecondsSinceEpoch,
+    'lastUserMessageAt': row.lastUserMessageAt?.millisecondsSinceEpoch,
+    'archived': row.archived,
   };
 
   void _checkDemoFrameSize(Map<String, Object?> frame) {
@@ -1824,76 +1835,113 @@ class DemoStudioTransport extends StudioTransport
 
   bool _matchesDirectoryQuery(
     DirectoryQuery query,
-    StudioThread thread,
+    SessionDirectoryRow row,
     Iterable<StudioProject> projects,
   ) {
-    if (!thread.isRoot ||
-        thread.archived != query.archived ||
-        (query.workspaceId != null &&
-            thread.workspaceId != query.workspaceId) ||
-        (query.threadIds != null && !query.threadIds!.contains(thread.id)) ||
-        query.excludedThreadIds.contains(thread.id)) {
+    if (!row.isRootRow ||
+        row.archived != query.archived ||
+        (query.workspaceId != null && row.workspaceId != query.workspaceId) ||
+        (query.threadIds != null && !query.threadIds!.contains(row.threadId)) ||
+        query.excludedThreadIds.contains(row.threadId)) {
       return false;
     }
     if (query.filter == DirectoryFilter.running &&
-        (!thread.status.isActive ||
-            thread.status == ThreadStatusView.waitingInteraction)) {
+        (!row.status.isActive ||
+            row.status == ThreadStatusView.waitingInteraction)) {
       return false;
     }
     if (query.filter == DirectoryFilter.attention &&
-        thread.status != ThreadStatusView.waitingInteraction &&
-        thread.status != ThreadStatusView.faulted) {
+        row.status != ThreadStatusView.waitingInteraction &&
+        row.status != ThreadStatusView.faulted) {
       return false;
     }
     final term = query.search?.trim().toLowerCase() ?? '';
     String projectText = '';
     for (final project in projects) {
-      if (project.id == thread.workspaceId) {
+      if (project.id == row.workspaceId) {
         projectText = '${project.name} ${project.path}'.toLowerCase();
         break;
       }
     }
     return term.isEmpty ||
-        thread.title.toLowerCase().contains(term) ||
+        row.title.toLowerCase().contains(term) ||
         projectText.contains(term);
   }
 
   ThreadMetadataFrame _readMetadataFrame(String threadId) {
-    final all = <String, StudioThread>{
-      for (final thread in [
-        ..._workspaces.values.map((workspace) => workspace.thread),
-        ..._createdRootThreads,
-        ..._pageFillThreads,
-      ])
-        thread.id: thread.copyWith(
-          archived: _archivedThreadIds.contains(thread.effectiveRootThreadId),
-        ),
-    };
-    final thread = all[threadId];
+    final row = _demoAllRows()
+        .where((row) => row.threadId == threadId)
+        .firstOrNull;
     final stamp = _demoStamp('thread-directory', _threadDirectoryRevision);
     _checkDemoFrameSize({
       'threadId': threadId,
       'stamp': _demoStampWireFields(stamp),
-      'thread': thread == null ? null : _demoThreadWireFields(thread),
+      'row': row == null ? null : _demoRowWireFields(row),
     });
-    return ThreadMetadataFrame(
-      threadId: threadId,
-      stamp: stamp,
-      thread: thread,
-    );
+    return ThreadMetadataFrame(threadId: threadId, stamp: stamp, row: row);
   }
 
   @override
   Future<StudioThread> restoreThread(String threadId) async {
     _archivedThreadIds.remove(threadId);
-    final restored = _sortedDirectoryThreads().firstWhere(
-      (thread) => thread.id == threadId,
-    );
+    final restored = _demoDirectoryThreads()[threadId];
+    if (restored == null) {
+      throw StateError('unknown demo Thread $threadId');
+    }
     _emitThreadDirectoryUpdate(restored);
     return restored;
   }
 
   String _demoDirectoryCursor(int lastIndex) => 'demo:$lastIndex';
+
+  /// Demo fixture 的会话身份：root Thread 自持会话，child 显式携带 root 链接。
+  ///
+  /// 这是数据制造侧的显式字段读取，不是运行期从 ID 形状推断身份。
+  String _demoSessionIdOf(StudioThread thread) =>
+      thread.rootThreadId.isEmpty ? thread.id : thread.rootThreadId;
+
+  /// 目录行的 demo 投影：身份四元组来自 fixture 的显式父子/根链接字段。
+  SessionDirectoryRow _directoryRowOf(
+    StudioThread thread, {
+    bool archived = false,
+  }) => SessionDirectoryRow(
+    sessionId: _demoSessionIdOf(thread),
+    agentId: thread.id,
+    parentAgentId: thread.parentThreadId,
+    threadId: thread.id,
+    workspaceId: thread.workspaceId,
+    title: thread.title,
+    mode: thread.mode,
+    delegationMode: thread.delegationMode,
+    delegationPreference: thread.delegationPreference,
+    workspaceMode: thread.workspaceMode,
+    workspacePath: thread.workspacePath,
+    role: thread.role,
+    binding: NativeAgentBindingView(route: thread.frozenModel),
+    status: thread.status,
+    createdAt: thread.effectiveCreatedAt,
+    updatedAt: thread.updatedAt,
+    lastUserMessageAt: thread.lastUserMessageAt,
+    archived: archived,
+  );
+
+  /// 目录可见的全部 fixture Thread（工作区、已创建 root 与分页填充）。
+  Map<String, StudioThread> _demoDirectoryThreads() => {
+    for (final thread in [
+      ..._workspaces.values.map((workspace) => workspace.thread),
+      ..._createdRootThreads,
+      ..._pageFillThreads,
+    ])
+      thread.id: thread,
+  };
+
+  List<SessionDirectoryRow> _demoAllRows() => [
+    for (final thread in _demoDirectoryThreads().values)
+      _directoryRowOf(
+        thread,
+        archived: _archivedThreadIds.contains(_demoSessionIdOf(thread)),
+      ),
+  ];
 
   ThreadWorkspace _rootWorkspace(StudioThread thread, DateTime now) {
     final route = _demoModeRoute(thread.mode);
@@ -2445,17 +2493,16 @@ class DemoStudioTransport extends StudioTransport
     _checkSettingsRevision(expectedSettingsRevision);
     final previous = _userAgentProfiles[draft.id];
     _userAgentProfiles[draft.id] = AgentProfileView(
-      id: draft.id,
-      displayName: draft.displayName,
-      description: draft.description,
-      whenToUse: draft.whenToUse,
-      systemInstructions: draft.systemInstructions,
-      accountId: draft.accountId,
-      modelId: draft.modelId,
-      effort: draft.effort,
-      source: '~/.anywork/agents/${draft.id}.toml',
-      revision: 'demo-user-${draft.id}',
-      contentHash: 'demo-user-${draft.id}',
+      definition: AgentDefinitionView(
+        definitionId: draft.id,
+        displayName: draft.definition.displayName,
+        description: draft.definition.description,
+        whenToUse: draft.definition.whenToUse,
+        source: '~/.anywork/agents/${draft.id}.toml',
+        revision: 'demo-user-${draft.id}',
+        contentHash: 'demo-user-${draft.id}',
+      ),
+      binding: draft.binding,
       system: false,
       enabled: draft.enabled,
       workspaceMode: draft.workspaceMode,
@@ -3051,10 +3098,6 @@ class DemoStudioTransport extends StudioTransport
       for (final role in s.roles)
         role.key: [role.accountId, role.modelId, role.effort],
     },
-    {
-      for (final server in s.mcpServers)
-        server.id: [server.transport, server.endpoint],
-    },
     [
       s.instructions.baseOverride,
       s.instructions.developer,
@@ -3117,7 +3160,12 @@ class DemoStudioTransport extends StudioTransport
     _publishProductPayload(
       ThreadDirectoryChangedPayload(
         revision: _threadDirectoryRevision,
-        upserted: [thread],
+        upserted: [
+          _directoryRowOf(
+            thread,
+            archived: _archivedThreadIds.contains(_demoSessionIdOf(thread)),
+          ),
+        ],
         removed: const [],
       ),
     );
@@ -3149,65 +3197,89 @@ class DemoStudioTransport extends StudioTransport
   List<AgentProfileView> _demoAgentProfilesSync() {
     return [
       AgentProfileView(
-        id: 'explorer',
-        displayName: 'Explorer',
-        description: '只读探索代码、文档和现场事实。',
-        whenToUse: '需要定位边界、依赖或验证事实时。',
-        systemInstructions: '优先收集事实并引用文件与命令。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v1',
-        contentHash: 'demo-explorer',
+        definition: const AgentDefinitionView(
+          definitionId: 'explorer',
+          displayName: 'Explorer',
+          description: '只读探索代码、文档和现场事实。',
+          whenToUse: '需要定位边界、依赖或验证事实时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v1',
+          contentHash: 'demo-explorer',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '优先收集事实并引用文件与命令。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('explorer'),
         workspaceMode: AgentWorkspaceMode.unrestricted,
       ),
       AgentProfileView(
-        id: 'executor',
-        displayName: 'Executor',
-        description: '在项目目录内实施边界明确的修改。',
-        whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
-        systemInstructions: '遵守冻结的 writablePaths。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-executor',
+        definition: const AgentDefinitionView(
+          definitionId: 'executor',
+          displayName: 'Executor',
+          description: '在项目目录内实施边界明确的修改。',
+          whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-executor',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '遵守冻结的 writablePaths。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('executor'),
         workspaceMode: AgentWorkspaceMode.directory,
       ),
       AgentProfileView(
-        id: 'worktree_executor',
-        displayName: 'Worktree Executor',
-        description: '在独立 Git worktree 内实施修改。',
-        whenToUse: '需要物理隔离并显式整合 commit 时。',
-        systemInstructions: '只修改分配的 worktree，不自动整合。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-worktree-executor',
+        definition: const AgentDefinitionView(
+          definitionId: 'worktree_executor',
+          displayName: 'Worktree Executor',
+          description: '在独立 Git worktree 内实施修改。',
+          whenToUse: '需要物理隔离并显式整合 commit 时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-worktree_executor',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '只修改分配的 worktree，不自动整合。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('worktree_executor'),
         workspaceMode: AgentWorkspaceMode.worktree,
       ),
       AgentProfileView(
-        id: 'reviewer',
-        displayName: 'Reviewer',
-        description: '独立审查实现和验证证据。',
-        whenToUse: '需要复核实现质量时。',
-        systemInstructions: '只读审查并报告具体证据。',
-        accountId: 'demo',
-        modelId: 'demo',
-        effort: 'medium',
-        source: 'studio-builtin',
-        revision: 'studio-system-agent-v2',
-        contentHash: 'demo-reviewer',
+        definition: const AgentDefinitionView(
+          definitionId: 'reviewer',
+          displayName: 'Reviewer',
+          description: '独立审查实现和验证证据。',
+          whenToUse: '需要复核实现质量时。',
+          source: 'studio-builtin',
+          revision: 'studio-system-agent-v2',
+          contentHash: 'demo-reviewer',
+        ),
+        binding: const NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: 'demo',
+            modelId: 'demo',
+            effort: 'medium',
+          ),
+          systemInstructions: '只读审查并报告具体证据。',
+        ),
         system: true,
         enabled: !_disabledSystemAgents.contains('reviewer'),
         workspaceMode: AgentWorkspaceMode.unrestricted,
@@ -3221,10 +3293,11 @@ class DemoStudioTransport extends StudioTransport
     String threadId, {
     required OperationId operationId,
   }) async {
-    final thread = _sortedDirectoryThreads()
-        .where((candidate) => candidate.id == threadId)
+    final rows = _sortedDirectoryRows();
+    final row = rows
+        .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
-    if (thread == null || !thread.isRoot) {
+    if (row == null || !row.isRootRow) {
       throw StateError('only a root Thread can be archived');
     }
     // 归档前先结束会话树的活动工作：中断正在运行的 Turn，再归档。
@@ -3232,20 +3305,23 @@ class DemoStudioTransport extends StudioTransport
     if (activeTurn != null && activeTurn.state.isBusy) {
       _interruptDemoTurn(threadId, activeTurn.turnId);
     }
-    final roots = _sortedDirectoryThreads()
-        .where((candidate) => candidate.isRoot)
-        .toList();
-    final index = roots.indexWhere((candidate) => candidate.id == threadId);
+    final roots = rows.where((candidate) => candidate.isRootRow).toList();
+    final index = roots.indexWhere(
+      (candidate) => candidate.threadId == threadId,
+    );
     if (index < 0) throw StateError('unknown demo root Thread $threadId');
-    final nextRoot = index + 1 < roots.length
-        ? roots[index + 1]
+    final nextRootId = index + 1 < roots.length
+        ? roots[index + 1].threadId
         : index > 0
-        ? roots[index - 1]
+        ? roots[index - 1].threadId
         : null;
+    final nextRoot = nextRootId == null
+        ? null
+        : _demoDirectoryThreads()[nextRootId];
     final removedThreadIds = <String>{
       threadId,
       for (final candidate in _ensureWorkspaceFixture().threads)
-        if (candidate.effectiveRootThreadId == threadId) candidate.id,
+        if (_demoSessionIdOf(candidate) == threadId) candidate.id,
     }.toList();
     _archivedThreadIds.add(threadId);
     if (_selectedThreadId == threadId) _selectedThreadId = nextRoot?.id;
@@ -3293,20 +3369,23 @@ class DemoStudioTransport extends StudioTransport
       throw StateError('only a root Thread can be deleted');
     }
 
-    final roots = _sortedDirectoryThreads()
-        .where((thread) => thread.isRoot)
+    final roots = _sortedDirectoryRows()
+        .where((row) => row.isRootRow && !row.archived)
         .toList();
-    final index = roots.indexWhere((thread) => thread.id == threadId);
-    final nextRoot = index < 0
-        ? roots.firstOrNull
+    final index = roots.indexWhere((row) => row.threadId == threadId);
+    final nextRow = index < 0
+        ? roots.where((row) => row.threadId != threadId).firstOrNull
         : index + 1 < roots.length
         ? roots[index + 1]
         : index > 0
         ? roots[index - 1]
         : null;
+    final nextRoot = nextRow == null
+        ? null
+        : _demoDirectoryThreads()[nextRow.threadId];
     final deletedThreadIds = <String>{
       for (final thread in allThreads)
-        if (thread.effectiveRootThreadId == threadId) thread.id,
+        if (_demoSessionIdOf(thread) == _demoSessionIdOf(root)) thread.id,
     }.toList();
 
     for (final id in deletedThreadIds) {
@@ -3471,13 +3550,6 @@ class DemoStudioTransport extends StudioTransport
         _skills = _skills.copyWith(disabled: value);
       case SkillsAutoLearnMinToolCallsCommand(:final value):
         _skills = _skills.copyWith(autoLearnMinToolCalls: value);
-      case McpServerEnabledCommand():
-      case McpServerTransportCommand():
-      case McpServerEndpointCommand():
-        // The demo fixture has no configurable MCP entries. Keep the command
-        // observable through the same revision/resource boundary as Bridge.
-        _mcpRevision += 1;
-        _publishProductPayload(McpStateChangedPayload(_demoMcpState()));
       case GeneralFollowActiveTurnCommand(:final value):
         _general = _general.copyWith(followActiveTurn: value);
       case GeneralCompactTimelineCommand(:final value):
@@ -3691,11 +3763,11 @@ class DemoStudioTransport extends StudioTransport
   }) async {
     final current = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
-    final thread = _sortedDirectoryThreads()
-        .where((candidate) => candidate.id == threadId)
+    final row = _sortedDirectoryRows()
+        .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
     final workspace = _workspaces[threadId];
-    if (thread == null || !thread.isRoot || workspace == null) {
+    if (row == null || !row.isRootRow || workspace == null) {
       throw StateError('unknown root demo thread $threadId');
     }
     final previousRoute = workspace.modelRoute;
@@ -3714,9 +3786,9 @@ class DemoStudioTransport extends StudioTransport
         : selected.reasoningEfforts.firstOrNull ?? '';
     _modeRoutes = [
       for (final route in current.modeModelRoutes)
-        if (route.modeId != thread.mode) route,
+        if (route.modeId != row.mode) route,
       ModeModelRouteView(
-        modeId: thread.mode,
+        modeId: row.mode,
         accountId: accountId,
         modelId: modelId,
         effort: selectedEffort ?? '',
@@ -3776,16 +3848,16 @@ class DemoStudioTransport extends StudioTransport
     required String threadId,
     required ThreadModeId mode,
   }) async {
-    final thread = _sortedDirectoryThreads()
-        .where((candidate) => candidate.id == threadId)
+    final row = _sortedDirectoryRows()
+        .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
-    if (thread == null) {
+    if (row == null) {
       throw StateError('unknown demo thread $threadId');
     }
-    if (!thread.isRoot) {
+    if (!row.isRootRow) {
       throw StateError('only a root Thread can change mode');
     }
-    if (thread.status != ThreadStatusView.idle) {
+    if (row.status != ThreadStatusView.idle) {
       throw StateError(
         'thread mode cannot change while the Thread is running or has pending input',
       );
@@ -3808,7 +3880,7 @@ class DemoStudioTransport extends StudioTransport
       final thread = workspace.thread;
       final updatedThread = thread.copyWith(
         mode: mode,
-        role: thread.isRoot ? 'planner' : thread.role,
+        role: row.isRootRow ? 'planner' : thread.role,
       );
       final modelRoute = route == null || workspace.modelRoute == null
           ? workspace.modelRoute
@@ -4289,7 +4361,12 @@ class DemoStudioTransport extends StudioTransport
       SettingsConfigTopic() => SettingsConfigBaseline(_demoSettingsState()),
       ModelCatalogTopic() => ModelCatalogBaseline(_demoSettingsState()),
       RecoveryTopic() => RecoveryBaseline(_demoRecoveryState()),
-      McpTopic() => McpBaseline(_demoMcpState()),
+      McpCatalogTopic(:final scope) => McpCatalogBaseline(
+        _demoMcpCatalog(scope),
+      ),
+      ThreadMcpTopic(:final threadId) => ThreadMcpBaseline(
+        _demoThreadMcp(threadId),
+      ),
       LspTopic() => LspBaseline(_demoLspState()),
       SkillsTopic(:final workspaceId) => SkillsBaseline(
         _demoSkillsState(workspaceId, _skillsRevision),
@@ -4323,7 +4400,8 @@ class DemoStudioTransport extends StudioTransport
       SettingsConfigBaseline(:final state) => state.revision,
       ModelCatalogBaseline(:final state) => state.modelCatalogRevision,
       RecoveryBaseline(:final state) => state.revision,
-      McpBaseline(:final state) => state.revision,
+      McpCatalogBaseline(:final state) => state.revision,
+      ThreadMcpBaseline(:final state) => state.generation,
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
@@ -5001,10 +5079,10 @@ class DemoStudioTransport extends StudioTransport
     _ensureDemoRunning();
     final workspace = _workspaces[threadId];
     if (workspace == null) throw StateError('unknown demo thread $threadId');
-    final thread = _sortedDirectoryThreads()
-        .where((candidate) => candidate.id == threadId)
+    final row = _sortedDirectoryRows()
+        .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
-    if (thread != null && !thread.isRoot) {
+    if (row != null && !row.isRootRow) {
       throw const StudioFailure(
         code: StudioFailureCode.permissionDenied,
         message:
@@ -5220,7 +5298,7 @@ class DemoStudioTransport extends StudioTransport
     final summaries = <ChildInteractionSummary>[];
     for (final workspace in _workspaces.values) {
       if (workspace.thread.parentThreadId != hostThreadId) continue;
-      if (_archivedThreadIds.contains(workspace.thread.effectiveRootThreadId)) {
+      if (_archivedThreadIds.contains(_demoSessionIdOf(workspace.thread))) {
         continue;
       }
       for (final interaction in workspace.interactions) {
@@ -5872,18 +5950,147 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<McpStateSnapshot> readMcpState() async => _demoMcpState();
+  Future<McpCatalogSnapshot> readMcpCatalog(McpScope scope) async =>
+      _demoMcpCatalog(scope);
 
   @override
-  Future<McpStateSnapshot> resetMcpServer(String serverId) async {
-    _mcpRevision += 1;
-    return _mcpWriteResult();
+  Future<McpCatalogSnapshot> reloadMcpCatalog(McpScope scope) async {
+    _bumpDemoMcpCatalogRevision(scope);
+    final snapshot = _demoMcpCatalog(scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return snapshot;
   }
 
   @override
-  Future<McpStateSnapshot> resetAllMcp() async {
-    _mcpRevision += 1;
-    return _mcpWriteResult();
+  Future<McpDocumentContent> readMcpDocument(McpDocumentRef document) async {
+    final stored = _mcpDocuments[document];
+    if (stored == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    return McpDocumentContent(
+      document: document,
+      id: stored.id,
+      revision: stored.revision,
+      rawToml: stored.rawToml,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> createMcpDocument({
+    required McpScope scope,
+    required String id,
+    required String rawToml,
+  }) async {
+    final trimmed = id.trim();
+    final document = McpDocumentRef(
+      scope: scope,
+      relativePath: switch (scope) {
+        HostMcpScope() => 'mcp/$trimmed.toml',
+        SshMcpScope(:final sshAlias) => 'ssh/$sshAlias/mcp/$trimmed.toml',
+      },
+    );
+    _mcpDocuments[document] = (id: trimmed, revision: 1, rawToml: rawToml);
+    _bumpDemoMcpCatalogRevision(scope);
+    final snapshot = _demoMcpCatalog(scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: document,
+      revision: 1,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> updateMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+    required String rawToml,
+  }) async {
+    final existing = _mcpDocuments[document];
+    if (existing == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    if (existing.revision != expectedRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'MCP document revision conflict',
+        retryable: true,
+        correlationId: 'demo-mcp-document-stale-revision',
+      );
+    }
+    final nextRevision = existing.revision + 1;
+    _mcpDocuments[document] = (
+      id: existing.id,
+      revision: nextRevision,
+      rawToml: rawToml,
+    );
+    _bumpDemoMcpCatalogRevision(document.scope);
+    final snapshot = _demoMcpCatalog(document.scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: document,
+      revision: nextRevision,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> deleteMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+  }) async {
+    final existing = _mcpDocuments[document];
+    if (existing == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'MCP document not found',
+        retryable: false,
+        correlationId: 'demo-mcp-document-not-found',
+      );
+    }
+    if (existing.revision != expectedRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'MCP document revision conflict',
+        retryable: true,
+        correlationId: 'demo-mcp-document-stale-revision',
+      );
+    }
+    _mcpDocuments.remove(document);
+    _bumpDemoMcpCatalogRevision(document.scope);
+    final snapshot = _demoMcpCatalog(document.scope);
+    _publishProductPayload(McpCatalogChangedPayload(snapshot));
+    return McpDocumentCommitReceipt(
+      document: null,
+      revision: snapshot.revision,
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) async =>
+      _demoThreadMcp(threadId);
+
+  @override
+  Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
+    required String threadId,
+    String? serverId,
+  }) async {
+    _threadMcpGenerations[threadId] =
+        (_threadMcpGenerations[threadId] ?? 1) + 1;
+    final snapshot = _demoThreadMcp(threadId);
+    _publishProductPayload(ThreadMcpStateChangedPayload(snapshot));
+    return snapshot;
   }
 
   @override
@@ -6332,10 +6539,82 @@ class DemoStudioTransport extends StudioTransport
     );
   }
 
-  McpStateSnapshot _mcpWriteResult() {
-    final state = _demoMcpState();
-    _publishProductPayload(McpStateChangedPayload(state));
-    return state;
+  void _bumpDemoMcpCatalogRevision(McpScope scope) {
+    _mcpCatalogRevisions[scope] = (_mcpCatalogRevisions[scope] ?? 1) + 1;
+  }
+
+  McpCatalogSnapshot _demoMcpCatalog(McpScope scope) {
+    final revision = _mcpCatalogRevisions[scope] ?? 1;
+    final entries = <McpCatalogEntry>[];
+    for (final entry in _mcpDocuments.entries) {
+      if (entry.key.scope != scope) continue;
+      final id = entry.value.id;
+      final raw = entry.value.rawToml;
+      final disabled =
+          raw.contains('enabled = false') || raw.contains('kind = "disabled"');
+      final builtIn = raw.contains('kind = "builtin"');
+      entries.add(
+        McpCatalogEntry(
+          id: id,
+          document: entry.key,
+          configStatus: disabled
+              ? McpConfigStatusKind.disabled
+              : McpConfigStatusKind.enabled,
+          effectiveSource: switch (scope) {
+            HostMcpScope() =>
+              builtIn
+                  ? McpEffectiveSource.hostBuiltin
+                  : McpEffectiveSource.hostServer,
+            SshMcpScope() =>
+              raw.contains('kind = "disabled"')
+                  ? McpEffectiveSource.sshDisabledTombstone
+                  : builtIn
+                  ? McpEffectiveSource.sshOverrideBuiltin
+                  : McpEffectiveSource.sshOverrideServer,
+          },
+          executionLocation: switch (scope) {
+            HostMcpScope() => const HostLocalMcpExecutionLocation(),
+            SshMcpScope(:final sshAlias) => SshRemoteMcpExecutionLocation(
+              sshAlias: sshAlias,
+            ),
+          },
+          transport: 'stdio',
+          endpointSummary: builtIn ? 'dart mcp-server' : id,
+          builtIn: builtIn,
+          inheritedFromHost: false,
+          overriddenInScope: scope is SshMcpScope,
+          canOverrideInSsh: scope is SshMcpScope,
+          canDisableInSsh: scope is SshMcpScope && !disabled,
+          canRestoreInheritance: scope is SshMcpScope,
+        ),
+      );
+    }
+    return McpCatalogSnapshot(
+      scope: scope,
+      revision: revision,
+      entries: entries,
+    );
+  }
+
+  ThreadMcpStateSnapshot _demoThreadMcp(String threadId) {
+    final generation = _threadMcpGenerations[threadId] ?? 1;
+    return ThreadMcpStateSnapshot(
+      threadId: threadId,
+      scope: const HostMcpScope(),
+      generation: generation,
+      servers: const [
+        ThreadMcpServerState(
+          id: 'dart',
+          effectiveSource: McpEffectiveSource.hostBuiltin,
+          executionLocation: HostLocalMcpExecutionLocation(),
+          transport: 'stdio',
+          endpointSummary: 'dart mcp-server',
+          builtIn: true,
+          lifecycle: ThreadMcpLifecycleKind.available,
+          toolCount: 4,
+        ),
+      ],
+    );
   }
 
   LspStateSnapshot _lspWriteResult() {
@@ -6343,12 +6622,6 @@ class DemoStudioTransport extends StudioTransport
     final state = _demoLspState();
     _publishProductPayload(LspStateChangedPayload(state));
     return state;
-  }
-
-  McpStateSnapshot _demoMcpState() {
-    return McpStateSnapshot.fromState(
-      state: _demoReadyResource(_mcpRevision, const McpStateData()),
-    );
   }
 
   LspStateSnapshot _demoLspState() {

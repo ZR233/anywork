@@ -26,9 +26,9 @@ impl StudioThreadFactory {
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
     ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
-        let thread = self.thread_record(&identity.id).await?;
-        if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
-            return Err(ThreadAssemblyError::Identity(identity.id.clone()));
+        let thread = self.thread_record(identity.id()).await?;
+        if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
+            return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
         }
         self.ensure_bot_execution_workspace(&thread.clone().into(), None)
             .await?;
@@ -213,7 +213,7 @@ impl StudioThreadFactory {
             agent_controls,
             delegation: preflight_delegation,
         } = request;
-        let id = identity.id.as_str();
+        let id = identity.id();
         let thread = self.thread_record(id).await?;
         self.services
             .store
@@ -227,7 +227,7 @@ impl StudioThreadFactory {
             )
             .await
             .map_err(|error| resource_error("record root assembly owner", error))?;
-        if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
+        if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         self.ensure_bot_execution_workspace(&thread.clone().into(), None)

@@ -11,10 +11,18 @@ use std::collections::BTreeMap;
 #[derive(Clone, Default)]
 struct CatalogSources(BTreeMap<String, String>);
 impl CatalogSources {
-    fn for_project(&self, project: Option<&crate::studio::WorkspaceRecord>) -> Self {
+    fn for_project(
+        &self,
+        project: Option<&crate::studio::WorkspaceRecord>,
+        thread_id: &str,
+    ) -> Self {
         let key = project
             .and_then(|project| project.ssh_alias.as_ref())
             .map(|server| format!("ssh-ready:{server}"));
+        let mcp_ssh_key = project
+            .and_then(|project| project.ssh_alias.as_ref())
+            .map(|server| format!("mcp-catalog:ssh:{server}"));
+        let thread_mcp_key = format!("thread-mcp:{thread_id}");
         let skill_key = project.map(|project| format!("skills:{}", project.id));
         let project_key = project.map(|project| format!("project:{}", project.id));
         Self(
@@ -23,6 +31,10 @@ impl CatalogSources {
                 .filter(|(name, _)| {
                     if name.starts_with("ssh-ready:") {
                         key.as_ref() == Some(name)
+                    } else if name.starts_with("mcp-catalog:ssh:") {
+                        mcp_ssh_key.as_ref() == Some(name)
+                    } else if name.starts_with("thread-mcp:") {
+                        *name == &thread_mcp_key
                     } else if name.starts_with("skills:") {
                         skill_key.as_ref() == Some(name)
                     } else if name.starts_with("project:") {
@@ -78,11 +90,23 @@ impl CatalogSources {
                 "model-catalogs".into(),
                 model_catalog_witness(value.as_ref()),
             )),
+            StudioProductEventKind::McpCatalogChanged(value) => {
+                let key = match &value.scope {
+                    pl_protocol::McpScope::Host => "mcp-catalog:host".to_owned(),
+                    pl_protocol::McpScope::Ssh { ssh_alias } => {
+                        format!("mcp-catalog:ssh:{ssh_alias}")
+                    }
+                };
+                Some((key, serde_json::json!(value.revision)))
+            }
+            StudioProductEventKind::ThreadMcpStateChanged(value) => Some((
+                format!("thread-mcp:{}", value.thread_id),
+                serde_json::json!(value.generation),
+            )),
             StudioProductEventKind::ThreadDirectoryChanged(_)
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)
             | StudioProductEventKind::RecoveryStateChanged(_)
-            | StudioProductEventKind::McpStateChanged(_)
             | StudioProductEventKind::AccountUsageStateChanged(_)
             | StudioProductEventKind::ModelPerformanceStateChanged(_)
             | StudioProductEventKind::SessionCostsChanged(_)
@@ -146,7 +170,6 @@ impl StudioRuntime {
         let stopping = self.rejected_tools.start();
         let mut settings = self.settings_updates.subscribe();
         let mut profiles = self.config_runtime.subscribe_agent_profiles();
-        let mut mcp = self.external_runtimes.mcp.subscribe();
         let mut events = self.agent_facility.product_events.subscribe_internal();
         let mut ssh_ready = self.ssh_manager.subscribe_ready();
         let runtime = self.clone();
@@ -157,19 +180,9 @@ impl StudioRuntime {
                 (ThreadHandle, tokio::sync::watch::Sender<CatalogSources>),
             > = BTreeMap::new();
             let mut tasks = tokio::task::JoinSet::new();
-            let mut mcp_changed = true;
             loop {
                 if stopping.is_cancelled() {
                     break;
-                }
-                if mcp_changed {
-                    let generation = match runtime.external_runtimes.mcp.acquire_turn_lease().await
-                    {
-                        Ok(lease) => lease.generation().0.to_string(),
-                        Err(error) => format!("unavailable:{error}"),
-                    };
-                    sources.0.insert("mcp".into(), generation);
-                    mcp_changed = false;
                 }
                 sources.0.insert(
                     "settings".into(),
@@ -206,7 +219,7 @@ impl StudioRuntime {
                 });
                 for (id, thread) in active {
                     let project = runtime.thread_factory.tool_project(&id);
-                    let selected = sources.for_project(project.as_ref());
+                    let selected = sources.for_project(project.as_ref(), &id);
                     if let Some((_, updates)) = workers.get(&id) {
                         updates.send_replace(selected);
                         continue;
@@ -257,10 +270,6 @@ impl StudioRuntime {
                     changed = settings.changed() => if changed.is_err() { break; },
                     changed = profiles.changed() => if changed.is_err() { break; },
                     changed = ssh_ready.changed() => if changed.is_err() { break; },
-                    changed = mcp.recv() => {
-                        if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) { break; }
-                        mcp_changed = true;
-                    },
                     event = events.recv() => match event {
                         Ok(event) => sources.observe(event.kind),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sources.0.insert("lag".into(), runtime.agent_facility.product_events.current_sequence().to_string()); },
@@ -335,7 +344,7 @@ impl StudioRuntime {
             }
             let project = self.thread_factory.tool_project(&id);
             let fingerprint =
-                catalog_fingerprint(&sources.for_project(project.as_ref()), &snapshot);
+                catalog_fingerprint(&sources.for_project(project.as_ref(), &id), &snapshot);
             if attempted.get(&id).is_some_and(|(previous, key)| {
                 previous.same_instance(&thread) && key == &fingerprint
             }) {
