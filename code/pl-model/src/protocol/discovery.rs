@@ -132,6 +132,14 @@ impl ModelCatalogQuery {
             .map_err(|_| ModelCatalogQueryError::Configuration)?
             .pop_if_empty()
             .push("models");
+        if endpoint
+            .chatgpt_session
+            .as_ref()
+            .is_some_and(|session| session.codex_account().is_some())
+        {
+            url.query_pairs_mut()
+                .append_pair("client_version", env!("CARGO_PKG_VERSION"));
+        }
         let headers = transport::headers(
             endpoint.bearer_token.as_deref(),
             endpoint.http_headers.as_ref(),
@@ -228,7 +236,7 @@ impl ModelCatalogQuery {
         previous: Option<&ModelCatalogQueryCache>,
     ) -> Result<ModelCatalogQueryResult, ModelCatalogQueryError> {
         let token = if let Some(session) = &self.endpoint.chatgpt_session {
-            super::chatgpt::ChatGptSession::validate_resource(&self.endpoint.base_url)?;
+            session.validate_resource(&self.endpoint.base_url)?;
             Some(session.access_token().await?)
         } else {
             self.endpoint.bearer_token.clone()

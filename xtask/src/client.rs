@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use pl_dev_support::{paths, process};
 use serde::Deserialize;
 

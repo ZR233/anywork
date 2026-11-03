@@ -158,6 +158,18 @@ AccountUsagePresentation projectUsage(
               ),
           ]
         : const [],
+    levelLabel: summary.chatgptAccount?.codex != null
+        ? 'ChatGPT ${value is AccountSubscription ? value.level ?? summary.chatgptAccount?.codex?.planType ?? '' : summary.chatgptAccount?.codex?.planType ?? ''}'
+              .trim()
+        : value is AccountSubscription
+        ? value.level
+        : null,
+    emptyLabel: value is AccountSubscription && value.quotas.isEmpty
+        ? strings['acpUsage.noActiveLimits']
+        : null,
+    missingCredentialLabel: summary.chatgptAccount == null
+        ? null
+        : strings['chatGptNotConnected'],
     hasLastGood: success != null,
     updatedLabel: success == null ? null : strings.date(success.checkedAt),
     error: error,

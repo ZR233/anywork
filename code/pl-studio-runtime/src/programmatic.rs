@@ -54,6 +54,7 @@ mod tests {
             client_id: "synthetic-issued".into(),
             email: None,
             plan_usage_enabled: true,
+            codex: None,
         });
         config.models.accounts.insert(id, account);
         let siwc = config

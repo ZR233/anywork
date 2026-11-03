@@ -97,7 +97,8 @@ class AppGraph {
   }
 
   final StudioStartupHost startupHost;
-  ValueListenable<StudioStartupPhase> get startupProgress => startupHost.progress;
+  ValueListenable<StudioStartupPhase> get startupProgress =>
+      startupHost.progress;
   ValueListenable<StartupRecoveryReport?> get startupRecovery =>
       startupHost.recovery;
   void dismissStartupRecovery() => startupHost.dismissRecovery();

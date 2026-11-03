@@ -552,6 +552,9 @@ class AccountsViewModel extends _$AccountsViewModel {
                   ? AccountRowContent.native(
                       billing: displayBilling(account.billingKind),
                       displayEndpoint: account.displayEndpoint,
+                      accountLabel:
+                          account.chatgptAccount?.email ??
+                          account.chatgptAccount?.codex?.accountId,
                       usage: projectUsage(
                         account,
                         _usage.state.value,

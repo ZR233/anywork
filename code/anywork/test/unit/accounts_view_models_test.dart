@@ -2955,7 +2955,7 @@ void main() {
         created.protocol,
         created.baseUrl,
       ),
-      ('native-2', 'Native brand', 'open_ai', 'https://native.example/v1'),
+      (key.target.id, 'Native brand', 'open_ai', 'https://native.example/v1'),
     );
     expect(created.secret.action, AccountSecretAction.preserve);
     expect(created.customModels, isEmpty);
@@ -3418,10 +3418,9 @@ void main() {
       ),
       token: session.beginTemplateReplacement(initial)!,
     )!;
-    expect(
-      acp.target,
-      const AccountDisplayKey(kind: AccountKind.acp, id: 'antigravity-3'),
-    );
+    expect(acp.target.kind, AccountKind.acp);
+    expect(acp.template!.id, 'antigravity');
+    expect(acp.target.id, isNot(isIn(['antigravity', 'antigravity-2'])));
     final native = session.replaceTemplate(
       source: acp,
       template: const AccountTemplateKey(
@@ -3533,7 +3532,7 @@ void main() {
     const freshEntry = AccountEditorEntryKey.creating(routeEntryId: 'fresh');
     final freshSession = await h.session(freshEntry);
     templateEntry = freshEntry;
-    expect(freshSession.currentEditor!.target.id, 'fresh');
+    expect(freshSession.currentEditor!.template!.id, 'fresh');
     expect(
       templateContent(
         const AccountTemplateKey(kind: AccountKind.native, id: 'fresh'),

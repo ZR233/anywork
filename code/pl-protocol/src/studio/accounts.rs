@@ -41,6 +41,8 @@ pub struct AccountSummary {
     pub brand_key: Option<String>,
     /// Display-only URL origin; never an editable endpoint or raw configuration fallback.
     pub display_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chatgpt_account: Option<super::ChatGptAccountInfo>,
     pub is_default: bool,
     pub billing_kind: Option<crate::BillingKind>,
     pub billing_kind_override: Option<crate::BillingKind>,

@@ -583,9 +583,9 @@ final class DeepSeekBalanceAccountUsageView extends AccountUsageDataView {
   final DeepSeekBalanceUsageView balance;
 }
 
-final class ZhipuCodingPlanAccountUsageView extends AccountUsageDataView {
-  const ZhipuCodingPlanAccountUsageView({required this.codingPlan});
-  final ZhipuCodingPlanUsageView codingPlan;
+final class SubscriptionAccountUsageView extends AccountUsageDataView {
+  const SubscriptionAccountUsageView({required this.codingPlan});
+  final SubscriptionUsageView codingPlan;
 }
 
 class DeepSeekBalanceUsageView {
@@ -612,15 +612,15 @@ class DeepSeekBalanceInfoView {
   final String toppedUpBalance;
 }
 
-class ZhipuCodingPlanUsageView {
-  const ZhipuCodingPlanUsageView({this.level, required this.limits});
+class SubscriptionUsageView {
+  const SubscriptionUsageView({this.level, required this.limits});
 
   final String? level;
-  final List<ZhipuQuotaLimitView> limits;
+  final List<SubscriptionQuotaLimitView> limits;
 }
 
-class ZhipuQuotaLimitView {
-  const ZhipuQuotaLimitView({
+class SubscriptionQuotaLimitView {
+  const SubscriptionQuotaLimitView({
     required this.window,
     required this.label,
     required this.percentage,
@@ -638,11 +638,11 @@ class ZhipuQuotaLimitView {
   final double? total;
   final double? remaining;
   final int? nextResetAt;
-  final List<ZhipuToolUsageDetailView> usageDetails;
+  final List<SubscriptionUsageDetailView> usageDetails;
 }
 
-class ZhipuToolUsageDetailView {
-  const ZhipuToolUsageDetailView({
+class SubscriptionUsageDetailView {
+  const SubscriptionUsageDetailView({
     required this.name,
     this.currentValue,
     this.total,

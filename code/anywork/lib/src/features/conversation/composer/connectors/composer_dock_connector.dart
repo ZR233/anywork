@@ -858,9 +858,7 @@ Future<void> _dropAttachmentsFromConnector(
   required bool Function() isCurrent,
 }) async {
   try {
-    await admitDroppedAttachments(files, (
-      paths,
-    ) {
+    await admitDroppedAttachments(files, (paths) {
       if (!isCurrent()) return Future<void>.value();
       return admit(paths);
     });

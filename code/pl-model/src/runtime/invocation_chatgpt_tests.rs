@@ -31,6 +31,7 @@ fn fixture() -> (tempfile::TempDir, InvocationRunner) {
             client_id: "issued-wire-client".into(),
             email: None,
             plan_usage_enabled: true,
+            codex: None,
         },
         ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
         access_token: "synthetic-access".into(),

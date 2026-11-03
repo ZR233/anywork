@@ -119,15 +119,8 @@ pub(super) fn run(
             let phase_output = context.output.join(phase);
             fs::create_dir(&phase_output)?;
             let gui_log_path = context.working.join(format!("delegation-gui-{phase}.log"));
-            let phase_result = run_phase(
-                context,
-                &project,
-                &phase_output,
-                &gui_log_path,
-                phase,
-                host,
-                &mut fixture,
-            );
+            let phase_result =
+                run_phase(context, &phase_output, &gui_log_path, phase, &mut fixture);
             let log_result = write_sanitized_log(&gui_log_path, &phase_output.join("gui.log"));
             bots_fixture::with_cleanup(phase_result, log_result)?;
             let state = read_state(host)?;
@@ -265,11 +258,9 @@ fn run_fixture_git(project: &Path, args: &[&str]) -> Result<std::process::Output
 
 fn run_phase(
     context: &ScenarioContext<'_>,
-    project: &Path,
     output: &Path,
     gui_log_path: &Path,
     phase: &str,
-    host: &str,
     fixture: &mut OwnedProcess,
 ) -> Result<()> {
     let log = File::create(gui_log_path)?;

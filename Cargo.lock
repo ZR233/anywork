@@ -4173,6 +4173,7 @@ dependencies = [
  "uuid",
  "version-migrate",
  "windows-sys 0.61.2",
+ "zeroize",
  "zstd 0.14.3",
 ]
 

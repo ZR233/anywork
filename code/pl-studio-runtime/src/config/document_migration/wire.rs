@@ -23,6 +23,39 @@ pub struct ChatGptAccountInfo {
     pub plan_usage_enabled: bool,
 }
 
+/// Frozen authentication metadata introduced by main schema 30.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatGptAccountInfo30 {
+    pub issuer: String,
+    pub subject: String,
+    pub client_id: String,
+    pub email: Option<String>,
+    pub plan_usage_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexAccountInfo30>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodexAccountInfo30 {
+    pub account_id: String,
+    pub plan_type: Option<String>,
+}
+
+impl From<ChatGptAccountInfo> for ChatGptAccountInfo30 {
+    fn from(value: ChatGptAccountInfo) -> Self {
+        Self {
+            issuer: value.issuer,
+            subject: value.subject,
+            client_id: value.client_id,
+            email: value.email,
+            plan_usage_enabled: value.plan_usage_enabled,
+            codex: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInfo {

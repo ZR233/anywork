@@ -272,6 +272,7 @@ class BridgeAccountSummary {
   final String name;
   final String? brandKey;
   final String? displayEndpoint;
+  final BridgeChatGptAccountInfo? chatgptAccount;
   final bool isDefault;
   final BridgeBillingKind? billingKind;
   final BridgeBillingKind? billingKindOverride;
@@ -287,6 +288,7 @@ class BridgeAccountSummary {
     required this.name,
     this.brandKey,
     this.displayEndpoint,
+    this.chatgptAccount,
     required this.isDefault,
     this.billingKind,
     this.billingKindOverride,
@@ -302,6 +304,7 @@ class BridgeAccountSummary {
       name.hashCode ^
       brandKey.hashCode ^
       displayEndpoint.hashCode ^
+      chatgptAccount.hashCode ^
       isDefault.hashCode ^
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
@@ -319,6 +322,7 @@ class BridgeAccountSummary {
           name == other.name &&
           brandKey == other.brandKey &&
           displayEndpoint == other.displayEndpoint &&
+          chatgptAccount == other.chatgptAccount &&
           isDefault == other.isDefault &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&

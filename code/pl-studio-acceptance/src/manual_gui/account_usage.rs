@@ -299,12 +299,12 @@ cargo xtask run-gui --capture
                 )?;
                 Ok(())
             })();
-            for (source, name) in [
-                (&gui_log, format!("gui-{phase}.log")),
-            ] {
-                if source.is_file() {
-                    write_scenario_log(source, &context.output.join(name), context)?;
-                }
+            if gui_log.is_file() {
+                write_scenario_log(
+                    &gui_log,
+                    &context.output.join(format!("gui-{phase}.log")),
+                    context,
+                )?;
             }
             if gui_log.is_file() {
                 gui_errors += count_gui_errors(&gui_log)?;

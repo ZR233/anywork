@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/widgets.dart';
 
 import '../app/studio_host_lifecycle.dart';
 import 'flutter_content_capture.dart';
@@ -35,7 +34,7 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
   try {
     if (_inFlight != null) {
       return developer.ServiceExtensionResponse.error(
-        developer.ServiceExtensionResponse.kInvalidParams,
+        developer.ServiceExtensionResponse.invalidParams,
         'A capture is already in progress for this view',
       );
     }
@@ -54,7 +53,7 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
       );
     } on TimeoutException {
       return developer.ServiceExtensionResponse.error(
-        developer.ServiceExtensionResponse.kExtensionError,
+        developer.ServiceExtensionResponse.extensionError,
         'Capture timed out',
       );
     } finally {
@@ -67,7 +66,7 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
     }
   } catch (error) {
     return developer.ServiceExtensionResponse.error(
-      developer.ServiceExtensionResponse.kExtensionError,
+      developer.ServiceExtensionResponse.extensionError,
       error.toString(),
     );
   }
@@ -75,7 +74,7 @@ Future<developer.ServiceExtensionResponse> _handleCapture(
 
 Future<developer.ServiceExtensionResponse> _handleRequestExit(
   String _,
-  Map<String, String> __,
+  Map<String, String> _,
 ) async {
   unawaited(StudioExitCoordinator.requestExit());
   return developer.ServiceExtensionResponse.result(

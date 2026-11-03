@@ -1,6 +1,6 @@
 use super::{
-    CHATGPT_ISSUER, CHATGPT_RESOURCE, ChatGptAuthError, DIRECT_SCOPE, TokenResponse, exchange, now,
-    oauth_client,
+    CHATGPT_ISSUER, CHATGPT_RESOURCE, CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError,
+    DIRECT_SCOPE, TokenResponse, exchange, now, oauth_client,
 };
 use oauth2::TokenResponse as _;
 use pl_protocol::studio::ChatGptAccountInfo;
@@ -48,11 +48,11 @@ impl ChatGptCredentialRecord {
         }
         let scopes: Vec<_> = response
             .scopes()
-            .ok_or(ChatGptAuthError::MissingPlanPermission)?
-            .iter()
+            .into_iter()
+            .flatten()
             .map(|scope| scope.as_str().to_owned())
             .collect();
-        if !scopes.iter().any(|scope| scope == DIRECT_SCOPE) {
+        if account.codex.is_none() && !scopes.iter().any(|scope| scope == DIRECT_SCOPE) {
             return Err(ChatGptAuthError::MissingPlanPermission);
         }
         let expires = response
@@ -99,8 +99,15 @@ impl ChatGptCredentialRecord {
         {
             return Err(ChatGptAuthError::InvalidIdentity);
         }
+        if self.account.codex.as_ref().is_some_and(|codex| {
+            self.account.client_id != CODEX_CLIENT_ID || codex.account_id.is_empty()
+        }) || (self.account.codex.is_none() && self.account.client_id == CODEX_CLIENT_ID)
+        {
+            return Err(ChatGptAuthError::InvalidIdentity);
+        }
         if !self.account.plan_usage_enabled
-            || !self.scopes.iter().any(|scope| scope == DIRECT_SCOPE)
+            || (self.account.codex.is_none()
+                && !self.scopes.iter().any(|scope| scope == DIRECT_SCOPE))
         {
             return Err(ChatGptAuthError::MissingPlanPermission);
         }
@@ -176,11 +183,27 @@ impl ChatGptSession {
         self.inner.revoked.store(true, Ordering::Release);
     }
 
-    pub fn validate_resource(base_url: &str) -> Result<(), ChatGptAuthError> {
-        if base_url != CHATGPT_RESOURCE {
+    pub fn validate_account_resource(
+        account: &ChatGptAccountInfo,
+        base_url: &str,
+    ) -> Result<(), ChatGptAuthError> {
+        let resource = if account.codex.is_some() {
+            CODEX_RESOURCE
+        } else {
+            CHATGPT_RESOURCE
+        };
+        if base_url != resource {
             return Err(ChatGptAuthError::UnsupportedResource);
         }
         Ok(())
+    }
+
+    pub fn validate_resource(&self, base_url: &str) -> Result<(), ChatGptAuthError> {
+        Self::validate_account_resource(&self.inner.identity, base_url)
+    }
+
+    pub fn codex_account(&self) -> Option<&pl_protocol::studio::CodexAccountInfo> {
+        self.inner.identity.codex.as_ref()
     }
 
     /// Route clones share this owner. Interprocess locking precedes strict re-read, so no
@@ -273,9 +296,12 @@ impl ChatGptSession {
         self.inner.failed.store(true, Ordering::Release);
         let mut next = super::within_operation_limit(async {
             let client = oauth_client(&record.account.client_id);
-            let response = client
-                .exchange_refresh_token(&oauth2::RefreshToken::new(record.refresh_token.clone()))
-                .add_extra_param("resource", CHATGPT_RESOURCE)
+            let refresh_token = oauth2::RefreshToken::new(record.refresh_token.clone());
+            let mut grant = client.exchange_refresh_token(&refresh_token);
+            if record.account.codex.is_none() {
+                grant = grant.add_extra_param("resource", CHATGPT_RESOURCE);
+            }
+            let response = grant
                 .request_async(http)
                 .await
                 .map_err(|_| ChatGptAuthError::ReauthorizationRequired)?;
@@ -300,6 +326,16 @@ impl ChatGptSession {
                     .claims(&verifier, |_: Option<&openidconnect::Nonce>| Ok(()))
                     .map_err(|_| ChatGptAuthError::InvalidIdentity)?;
                 if claims.subject().as_str() != record.account.subject {
+                    return Err(ChatGptAuthError::InvalidIdentity);
+                }
+                if let Some(codex) = &record.account.codex
+                    && claims
+                        .additional_claims()
+                        .auth
+                        .as_ref()
+                        .and_then(|auth| auth.chatgpt_account_id.as_ref())
+                        != Some(&codex.account_id)
+                {
                     return Err(ChatGptAuthError::InvalidIdentity);
                 }
                 if let Some(expected) = claims.access_token_hash() {
@@ -386,6 +422,7 @@ mod tests {
                 client_id: "fixture-client".into(),
                 email: None,
                 plan_usage_enabled: true,
+                codex: None,
             },
             ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
             access_token: "old-access".into(),

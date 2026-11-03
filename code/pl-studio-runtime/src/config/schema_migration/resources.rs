@@ -232,7 +232,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV29::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV30::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),

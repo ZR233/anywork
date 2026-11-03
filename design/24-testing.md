@@ -150,6 +150,12 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 - ACP 安装和认证观察见 [28](./28-acp.md#2810-登录验收)。固定发行的发布摘要不可用合成 ZIP 替代；协议/Client 受控回归和真实官方准备、浏览器授权、额度及重启验证分别报告。受控网络对端不授权关闭 TLS、摘要校验或扩大生产下载来源。
 - 工作树关闭、存储迁移、上下文恢复及账号隔离的行为分别由对应产品设计定义。本地样例、旧接口结果和未完成采集不构成这些行为已经验证的证据。
 
+### ChatGPT 登录与额度
+
+账户认证和额度界面的回归使用官方 `integration_test/chatgpt_auth_test.dart`：真实 AppGraph、Client、路由、Riverpod 和生产组件，只控制外部认证／额度回复，覆盖取消与迟到事件、重复点击、认证切换、保存身份、额度刷新、页面返回、删除后新建不复用身份。原预览组件认证测试和草稿认证测试的有效覆盖迁入该旅程，删除旧测例；协议签名、凭据轮换和网络归属仍在 Rust／纯 Client 所有者边界验证。Windows 凭据协调器另以唯一测试别名验证跨配置同名冲突不覆盖、大体积 OAuth 保存与重新打开、事务清理，不触碰用户已有别名。该旅程纳入 desktop smoke 和 full，也可通过 `cargo xtask test-project --suite desktop --case chatgpt_auth` 单独运行；真实账号授权仅在下述显式人工验收中进行。
+
+真实人工验收也由 `cargo xtask test-project --suite desktop --case chatgpt_real_login` 启动，使用隔离的应用数据根和系统凭据关联。`ANYWORK_CHATGPT_ACCEPTANCE=login` 完成官方浏览器授权、真实保存、额度和在线模型查询；同一数据根的 `restart` 阶段重新加载凭据并查询。该场景须显式选择并提供阶段变量，不进入默认 CI 套件。WidgetTester 操作生产控件，人只操作官方浏览器的账户、验证码和同意授权，不依赖 Driver、requestData 脚本或固定人工等待期限。`ANYWORK_CHATGPT_EVIDENCE` 指定工具产物目录，截图在编码前遮蔽 email／workspace；列表通过生产搜索框筛选验收账户，不采集其他账户的余额。两次运行分别检查生产关闭报告的 completed、clean、drained；实际平台、授权、额度与推理覆盖独立报告。
+
 ## 24.7 流式输出的现实规模基准
 
 以下为 Issue #220 的既有容量研究与旧 Activity Begin 协议观察，保留来源和证据适用版本，不将其帧形状或数值当作 #243 当前协议的固定合同。单次输出范围采用 2026-10-30 查证的常用模型上限，不以累计历史条数代替：

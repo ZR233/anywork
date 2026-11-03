@@ -447,7 +447,7 @@ impl ProtocolEndpoint {
     ) -> crate::Result<reqwest::header::HeaderMap> {
         let mut headers =
             crate::runtime::transport::headers(token, self.http_headers.as_ref(), model_headers)?;
-        if self.chatgpt_session.is_some() {
+        if let Some(session) = &self.chatgpt_session {
             // Legacy/custom header layers must not replace the selected OAuth owner's token.
             let canonical = crate::runtime::transport::headers(
                 Some(token.ok_or_else(|| {
@@ -457,13 +457,26 @@ impl ProtocolEndpoint {
                 &HashMap::new(),
             )?;
             headers.extend(canonical);
+            if let Some(codex) = session.codex_account() {
+                let mut account = reqwest::header::HeaderValue::from_str(&codex.account_id)
+                    .map_err(|_| {
+                        crate::PureError::ConfigError("Invalid ChatGPT account identity".into())
+                    })?;
+                account.set_sensitive(true);
+                headers.insert("chatgpt-account-id", account);
+                headers.insert(
+                    "originator",
+                    reqwest::header::HeaderValue::from_static("anywork"),
+                );
+            }
         }
         Ok(headers)
     }
     /// Resolve a live token immediately before a supported request, not at route freeze time.
     pub async fn resolve_bearer_token(&self) -> crate::Result<Option<String>> {
         if let Some(session) = &self.chatgpt_session {
-            chatgpt::ChatGptSession::validate_resource(&self.base_url)
+            session
+                .validate_resource(&self.base_url)
                 .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
             return session
                 .access_token()

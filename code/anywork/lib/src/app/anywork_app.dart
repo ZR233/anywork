@@ -102,7 +102,6 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
   }
 }
 
-
 class AnyworkAppBody extends StatelessWidget {
   const AnyworkAppBody({
     required this.router,
@@ -139,10 +138,7 @@ class AnyworkAppBody extends StatelessWidget {
           child: wrapOverlay(child ?? const SizedBox()),
         );
         if (!enableContentCapture) return themed;
-        return RepaintBoundary(
-          key: flutterContentCaptureKey,
-          child: themed,
-        );
+        return RepaintBoundary(key: flutterContentCaptureKey, child: themed);
       },
     );
   }

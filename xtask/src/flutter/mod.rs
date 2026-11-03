@@ -183,7 +183,16 @@ pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
     let resolved = resolve_integration_test_path(&app_dir, test_path)?;
     let app_version = studio_version::read(&app_dir)?;
     let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
-    let test_arg = resolved.to_string_lossy().into_owned();
+    let app_root = app_dir
+        .canonicalize()
+        .context("resolve Flutter application directory")?;
+    // Flutter interprets the CLI argument; keep canonical/device paths inside
+    // the filesystem boundary and pass a verified app-relative test path.
+    let test_arg = resolved
+        .strip_prefix(&app_root)
+        .context("desktop integration test is outside the Flutter application")?
+        .to_string_lossy()
+        .into_owned();
     print_context(&workspace_root, &app_dir);
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies(&workspace_root, &app_dir)?;
@@ -566,7 +575,7 @@ fn run_native_launch_args<'a>(
     args
 }
 
-fn run_gui_args<'a>(target: DesktopTarget, version_define: &'a str, capture: bool) -> Vec<&'a str> {
+fn run_gui_args(target: DesktopTarget, version_define: &str, capture: bool) -> Vec<&str> {
     let mut args = vec![
         "run",
         "-d",

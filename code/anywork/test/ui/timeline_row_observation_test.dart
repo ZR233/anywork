@@ -133,10 +133,10 @@ void main() {
       await adapter.applyBatch(
         chatBatch([
           chatEnvelope(
-            'thinking',
-            type: 'thinking',
-            data: const {},
-            bodies: [inlineBody('part.reasoningText.0', 'completed reasoning')],
+            'plan',
+            type: 'plan',
+            data: const {'decision': 'approved'},
+            bodies: [inlineBody('plan.body', 'approved plan')],
           ),
         ]),
       );
@@ -154,10 +154,10 @@ void main() {
         ),
       );
       await tester.pumpWidget(build());
-      expect(find.text('completed reasoning'), findsNothing);
+      expect(find.text('approved plan'), findsNothing);
       await tester.tap(find.byType(ExpansionTile).first);
       await tester.pumpAndSettle();
-      expect(find.text('completed reasoning'), findsOneWidget);
+      expect(find.text('approved plan'), findsOneWidget);
       final old = controller.messages.single;
       final card = old.metadata![chatItemPresentationKey];
       await adapter.applyBatch(
@@ -169,7 +169,7 @@ void main() {
         controller.messages.first.metadata![chatItemPresentationKey],
         same(card),
       );
-      expect(find.text('completed reasoning'), findsOneWidget);
+      expect(find.text('approved plan'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );

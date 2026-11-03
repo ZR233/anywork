@@ -95,12 +95,13 @@ final class NativeAccountDraft {
   NativeAccountDraft withAuthentication(
     account_domain.AccountAuthenticationMethod value, {
     String? loginId,
+    String? defaultApiEndpoint,
   }) => NativeAccountDraft(
     name: name,
     endpoint: value == account_domain.AccountAuthenticationMethod.chatGpt
-        ? 'https://api.openai.com/v1'
+        ? 'https://chatgpt.com/backend-api/codex'
         : authentication == account_domain.AccountAuthenticationMethod.chatGpt
-        ? apiEndpoint ?? endpoint
+        ? apiEndpoint ?? defaultApiEndpoint ?? ''
         : endpoint,
     credential:
         value == account_domain.AccountAuthenticationMethod.chatGpt ||

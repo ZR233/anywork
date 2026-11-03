@@ -114,6 +114,9 @@ AccountDomainFrame _accountFrameFromFrb(
           name: account.name,
           brandKey: account.brandKey,
           displayEndpoint: account.displayEndpoint,
+          chatgptAccount: account.chatgptAccount == null
+              ? null
+              : _chatGptAccountInfoFromFrb(account.chatgptAccount!),
           isDefault: account.isDefault,
           billingKind: account.billingKind == null
               ? null
@@ -226,6 +229,12 @@ ChatGptAccountInfo _chatGptAccountInfoFromFrb(
   clientId: value.clientId,
   email: value.email,
   planUsageEnabled: value.planUsageEnabled,
+  codex: value.codex == null
+      ? null
+      : CodexAccountInfo(
+          accountId: value.codex!.accountId,
+          planType: value.codex!.planType,
+        ),
 );
 
 ChatGptLoginSnapshot _chatGptLoginSnapshotFromFrb(

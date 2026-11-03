@@ -624,7 +624,7 @@ jobs:
           cargo xtask release-gui verify --version "$version"
 
       - name: Test macOS terminal command quoting
-        run: cargo flutter test --no-pub test/platform/macos_terminal_test.dart
+        run: cargo flutter test --no-pub test/unit/macos_terminal_test.dart
 
       - name: Run desktop smoke
         run: cargo xtask test-project --suite desktop --set smoke --output target/ci-desktop-macos

@@ -349,10 +349,16 @@ class _NativeDetails extends StatelessWidget {
                               ? l10n.settingsConfigured
                               : l10n.settingsMissing,
                         ),
+                        if (value.identityLabel case final identity?)
+                          AccountDisplayFact(
+                            label: l10n.accountsAuthChatGpt,
+                            value: identity,
+                          ),
                       ],
                     ),
                   ),
                   IconButton(
+                    key: const ValueKey('account-details-edit'),
                     tooltip: l10n.settingsEditAccount,
                     onPressed: onEdit,
                     icon: const Icon(Icons.edit_outlined),

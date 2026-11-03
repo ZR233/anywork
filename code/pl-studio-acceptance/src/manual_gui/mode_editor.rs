@@ -248,11 +248,7 @@ fn run_phase(
                     context.interrupt,
                     Duration::from_secs(3_600),
                 )?;
-                let original = observe_mode_stage(
-                    "first-updated-during-turn",
-                    context,
-                    evidence,
-                )?;
+                let original = observe_mode_stage("first-updated-during-turn", context, evidence)?;
                 ensure!(
                     definition_prompt(&original).contains("mode-editor-original"),
                     "first Turn did not freeze the original Mode prompt"

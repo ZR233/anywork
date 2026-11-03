@@ -466,7 +466,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV29::from_config(&persisted)
+    super::document_migration::MainV30::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -555,7 +555,7 @@ mod tests {
             Some("migration-api-secret")
         );
         let saved = std::fs::read_to_string(store.paths.config_file()).unwrap();
-        assert!(saved.contains("schema_version = 29"));
+        assert!(saved.contains("schema_version = 30"));
         assert!(!saved.contains("migration-api-secret"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert!(
@@ -595,6 +595,7 @@ mod tests {
                 client_id: "fixture-client".into(),
                 email: None,
                 plan_usage_enabled: true,
+                codex: None,
             },
             ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
             access_token: "transaction-access".into(),

@@ -39,24 +39,24 @@ pub struct DeepSeekBalanceInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ZhipuCodingPlanUsage {
+pub struct SubscriptionUsage {
     pub level: Option<String>,
-    pub limits: Vec<ZhipuQuotaLimit>,
+    pub limits: Vec<SubscriptionQuotaLimit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ZhipuQuotaLimit {
-    pub window: ZhipuQuotaWindow,
+pub struct SubscriptionQuotaLimit {
+    pub window: SubscriptionQuotaWindow,
     pub percentage: f64,
     pub current_value: Option<f64>,
     pub total: Option<f64>,
     pub remaining: Option<f64>,
     pub next_reset_at: Option<i64>,
-    pub usage_details: Vec<ZhipuToolUsageDetail>,
+    pub usage_details: Vec<SubscriptionUsageDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ZhipuQuotaWindow {
+pub enum SubscriptionQuotaWindow {
     FiveHour,
     Weekly,
     McpMonthly,
@@ -64,7 +64,7 @@ pub enum ZhipuQuotaWindow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ZhipuToolUsageDetail {
+pub struct SubscriptionUsageDetail {
     pub name: String,
     pub current_value: Option<f64>,
     pub total: Option<f64>,
@@ -148,7 +148,7 @@ async fn query_deepseek_balance(info: &ProtocolEndpoint) -> crate::Result<DeepSe
 
 async fn query_zhipu_coding_plan_usage(
     info: &ProtocolEndpoint,
-) -> crate::Result<ZhipuCodingPlanUsage> {
+) -> crate::Result<SubscriptionUsage> {
     let token = required_token(info)?;
     let url = endpoint_url(&info.base_url, "/api/monitor/usage/quota/limit")?;
     let mut headers = HeaderMap::new();
@@ -191,7 +191,7 @@ fn parse_deepseek_balance(body: &str) -> crate::Result<DeepSeekBalanceUsage> {
     })
 }
 
-fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<ZhipuCodingPlanUsage> {
+fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<SubscriptionUsage> {
     let envelope: ZhipuEnvelope = serde_json::from_str(body)?;
     if matches!(envelope.success, Some(false)) {
         let message = envelope
@@ -210,16 +210,16 @@ fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<ZhipuCodingPlanUsa
     let data = envelope.data.ok_or_else(|| {
         PureError::HttpError("Zhipu Coding Plan quota response missing data".into())
     })?;
-    Ok(ZhipuCodingPlanUsage {
+    Ok(SubscriptionUsage {
         level: data.level,
         limits: data.limits.into_iter().map(zhipu_quota_limit).collect(),
     })
 }
 
-fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> ZhipuQuotaLimit {
+fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> SubscriptionQuotaLimit {
     let total = limit.usage;
     let current_value = limit.current_value;
-    ZhipuQuotaLimit {
+    SubscriptionQuotaLimit {
         window: zhipu_quota_window(&limit),
         percentage: limit.percentage.unwrap_or(0.0),
         current_value,
@@ -237,22 +237,22 @@ fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> ZhipuQuotaLimit {
     }
 }
 
-fn zhipu_quota_window(limit: &ZhipuQuotaLimitResponse) -> ZhipuQuotaWindow {
+fn zhipu_quota_window(limit: &ZhipuQuotaLimitResponse) -> SubscriptionQuotaWindow {
     match (limit.limit_type.as_str(), limit.unit, limit.number) {
-        (ZHIPU_TOKEN_LIMIT_TYPE, Some(3), Some(5)) => ZhipuQuotaWindow::FiveHour,
-        (ZHIPU_TOKEN_LIMIT_TYPE, Some(6), Some(1)) => ZhipuQuotaWindow::Weekly,
-        (ZHIPU_TIME_LIMIT_TYPE, _, _) => ZhipuQuotaWindow::McpMonthly,
-        _ => ZhipuQuotaWindow::Other(limit.limit_type.clone()),
+        (ZHIPU_TOKEN_LIMIT_TYPE, Some(3), Some(5)) => SubscriptionQuotaWindow::FiveHour,
+        (ZHIPU_TOKEN_LIMIT_TYPE, Some(6), Some(1)) => SubscriptionQuotaWindow::Weekly,
+        (ZHIPU_TIME_LIMIT_TYPE, _, _) => SubscriptionQuotaWindow::McpMonthly,
+        _ => SubscriptionQuotaWindow::Other(limit.limit_type.clone()),
     }
 }
 
-fn zhipu_tool_usage_details(value: &Value) -> Vec<ZhipuToolUsageDetail> {
+fn zhipu_tool_usage_details(value: &Value) -> Vec<SubscriptionUsageDetail> {
     match value {
         Value::Array(items) => items.iter().filter_map(zhipu_tool_usage_detail).collect(),
         Value::Object(map) => map
             .iter()
             .map(|(name, value)| {
-                zhipu_tool_usage_detail(value).unwrap_or_else(|| ZhipuToolUsageDetail {
+                zhipu_tool_usage_detail(value).unwrap_or_else(|| SubscriptionUsageDetail {
                     name: humanize_tool_name(name),
                     current_value: value.as_f64(),
                     total: None,
@@ -264,7 +264,7 @@ fn zhipu_tool_usage_details(value: &Value) -> Vec<ZhipuToolUsageDetail> {
     }
 }
 
-fn zhipu_tool_usage_detail(value: &Value) -> Option<ZhipuToolUsageDetail> {
+fn zhipu_tool_usage_detail(value: &Value) -> Option<SubscriptionUsageDetail> {
     let object = value.as_object()?;
     let name = first_string(
         object,
@@ -278,7 +278,7 @@ fn zhipu_tool_usage_detail(value: &Value) -> Option<ZhipuToolUsageDetail> {
             "serviceName",
         ],
     )?;
-    Some(ZhipuToolUsageDetail {
+    Some(SubscriptionUsageDetail {
         name: humanize_tool_name(&name),
         current_value: first_number(object, &["currentValue", "current", "count", "used"]),
         total: first_number(object, &["total", "limit", "quota", "usage"]),
@@ -364,16 +364,16 @@ fn http_error(error: reqwest::Error) -> PureError {
 }
 
 pub fn zhipu_limit_by_window(
-    limits: &[ZhipuQuotaLimit],
-) -> BTreeMap<&'static str, &ZhipuQuotaLimit> {
+    limits: &[SubscriptionQuotaLimit],
+) -> BTreeMap<&'static str, &SubscriptionQuotaLimit> {
     limits
         .iter()
         .filter_map(|limit| {
             let key = match limit.window {
-                ZhipuQuotaWindow::FiveHour => "five_hour",
-                ZhipuQuotaWindow::Weekly => "weekly",
-                ZhipuQuotaWindow::McpMonthly => "mcp_monthly",
-                ZhipuQuotaWindow::Other(_) => return None,
+                SubscriptionQuotaWindow::FiveHour => "five_hour",
+                SubscriptionQuotaWindow::Weekly => "weekly",
+                SubscriptionQuotaWindow::McpMonthly => "mcp_monthly",
+                SubscriptionQuotaWindow::Other(_) => return None,
             };
             Some((key, limit))
         })
@@ -511,13 +511,13 @@ pub enum AccountUsageTransitionError {
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum AccountUsageData {
     DeepSeekBalance(DeepSeekBalanceUsage),
-    ZhipuCodingPlan(ZhipuCodingPlanUsage),
+    Subscription(SubscriptionUsage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccountUsageQueryKind {
     DeepSeek,
-    ZhipuCodingPlan,
+    Subscription,
 }
 
 pub(crate) fn account_usage_query_kind(
@@ -525,7 +525,7 @@ pub(crate) fn account_usage_query_kind(
 ) -> Option<AccountUsageQueryKind> {
     match template.as_ref().map(AccountTemplateKind::key) {
         Some("deepseek") => Some(AccountUsageQueryKind::DeepSeek),
-        Some("zhipu-coding-plan") => Some(AccountUsageQueryKind::ZhipuCodingPlan),
+        Some("zhipu-coding-plan") => Some(AccountUsageQueryKind::Subscription),
         Some(_) | None => None,
     }
 }
@@ -535,20 +535,25 @@ pub(crate) async fn query_account_usage(
     provider: AccountConfig,
     operation_id: String,
 ) -> Result<AccountUsageRecord, AccountUsageTransitionError> {
-    let state = match account_template_kind(&provider).map(account_usage_query_kind) {
-        Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
-            account_usage_data(provider, query_deepseek).await
-        }
-        Ok(Some(AccountUsageQueryKind::ZhipuCodingPlan)) => {
-            account_usage_data(provider, query_zhipu).await
-        }
-        Ok(None) => AccountUsageState::unsupported(),
-        Err(error) => AccountUsageState::failed(StateError {
-            code: "accountUsageConfigurationFailed".to_string(),
-            message: error.to_string(),
-            retryable: false,
-        }),
-    };
+    let state =
+        if provider.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            query_chatgpt_usage(&provider).await
+        } else {
+            match account_template_kind(&provider).map(account_usage_query_kind) {
+                Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
+                    account_usage_data(provider, query_deepseek).await
+                }
+                Ok(Some(AccountUsageQueryKind::Subscription)) => {
+                    account_usage_data(provider, query_zhipu).await
+                }
+                Ok(None) => AccountUsageState::unsupported(),
+                Err(error) => AccountUsageState::failed(StateError {
+                    code: "accountUsageConfigurationFailed".to_string(),
+                    message: error.to_string(),
+                    retryable: false,
+                }),
+            }
+        };
     record
         .decide(AccountUsageCommand::Observe {
             expected_revision: record.revision(),
@@ -557,6 +562,57 @@ pub(crate) async fn query_account_usage(
             state,
         })
         .map(|decision| decision.next_state)
+}
+
+async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageState {
+    use pl_model::protocol::chatgpt::CodexUsageError;
+    let Some(session) = &provider.chatgpt_session else {
+        return AccountUsageState::missing_credential("ChatGPT sign-in is required");
+    };
+    let result = match session.query_usage().await {
+        Ok(usage) => usage,
+        Err(CodexUsageError::Unsupported) => return AccountUsageState::unsupported(),
+        Err(error) => {
+            return AccountUsageState::failed(StateError {
+                code: "accountUsageQueryFailed".into(),
+                message: error.to_string(),
+                retryable: matches!(
+                    error,
+                    CodexUsageError::Network
+                        | CodexUsageError::Http {
+                            status: 429 | 500..=599
+                        }
+                ),
+            });
+        }
+    };
+    AccountUsageState::ready(AccountUsageData::Subscription(SubscriptionUsage {
+        level: result.plan_type,
+        limits: result
+            .windows
+            .into_iter()
+            .map(|window| SubscriptionQuotaLimit {
+                window: if window.name == "Codex" {
+                    match window.duration_seconds {
+                        18_000 => SubscriptionQuotaWindow::FiveHour,
+                        604_800 => SubscriptionQuotaWindow::Weekly,
+                        seconds => SubscriptionQuotaWindow::Other(format!("Codex · {seconds}s")),
+                    }
+                } else {
+                    SubscriptionQuotaWindow::Other(format!(
+                        "{} · {}s",
+                        window.name, window.duration_seconds
+                    ))
+                },
+                percentage: window.used_percent,
+                current_value: None,
+                total: None,
+                remaining: None,
+                next_reset_at: window.reset_at,
+                usage_details: Vec::new(),
+            })
+            .collect(),
+    }))
 }
 
 type AccountUsageQueryFuture = BoxFuture<'static, crate::Result<AccountUsageData>>;
@@ -605,7 +661,7 @@ fn query_zhipu(info: pl_model::protocol::ProtocolEndpoint) -> AccountUsageQueryF
     async move {
         query_zhipu_coding_plan_usage(&info)
             .await
-            .map(AccountUsageData::ZhipuCodingPlan)
+            .map(AccountUsageData::Subscription)
     }
     .boxed()
 }

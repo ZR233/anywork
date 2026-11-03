@@ -150,7 +150,8 @@ class PromptComposerView extends StatefulWidget {
   final String? pasteTargetId;
   final Future<void> Function(List<ModelInputCapabilityView>, bool Function())
   onPickLocalAttachments;
-  final Future<void> Function(List<DroppedFileTransfer>, bool Function()) onDropAttachments;
+  final Future<void> Function(List<DroppedFileTransfer>, bool Function())
+  onDropAttachments;
   final VoidCallback? onStop;
   final VoidCallback? onContinue;
   final Widget? selectorBar;
