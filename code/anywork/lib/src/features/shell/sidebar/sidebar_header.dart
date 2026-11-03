@@ -226,7 +226,7 @@ class SidebarSectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(left: 8, top: 2, bottom: 2),
+    padding: const EdgeInsets.only(left: 6, top: 2, bottom: 2),
     child: Row(
       children: [
         Expanded(
@@ -270,7 +270,7 @@ class SidebarPageStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(10, 2, 8, 4),
+    padding: const EdgeInsets.fromLTRB(8, 2, 4, 4),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -280,15 +280,26 @@ class SidebarPageStatus extends StatelessWidget {
             minHeight: 2,
           ),
         if (window.error case final error?) ...[
-          Text(error, style: TextStyle(color: context.colors.error)),
-          TextButton(
-            key: ValueKey('$keyPrefix-retry-$workspaceId'),
-            onPressed: window.loading ? null : onRetry,
-            child: Text(context.l10n.sidebarRetry),
+          Padding(
+            padding: const EdgeInsets.only(left: 22),
+            child: Text(error, style: TextStyle(color: context.colors.error)),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 22),
+            child: TextButton(
+              key: ValueKey('$keyPrefix-retry-$workspaceId'),
+              onPressed: window.loading ? null : onRetry,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 28),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(context.l10n.sidebarRetry),
+            ),
           ),
         ] else if (showEmpty && !window.loading && window.threads.isEmpty)
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
+            padding: const EdgeInsets.only(left: 22, top: 6, bottom: 6),
             child: Text(
               filtered
                   ? context.l10n.sidebarNoResults
@@ -299,17 +310,42 @@ class SidebarPageStatus extends StatelessWidget {
             ),
           ),
         if (window.hasPrevious && onFirst != null)
-          TextButton(
-            key: ValueKey('$keyPrefix-first-$workspaceId'),
-            onPressed: window.loading ? null : onFirst,
-            child: Text(context.l10n.sidebarBack),
+          Padding(
+            padding: const EdgeInsets.only(left: 22),
+            child: TextButton(
+              key: ValueKey('$keyPrefix-first-$workspaceId'),
+              onPressed: window.loading ? null : onFirst,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 28),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(context.l10n.sidebarBack),
+            ),
           ),
         if (window.hasMore && onMore != null)
-          TextButton.icon(
+          TextButton(
             key: ValueKey('$keyPrefix-more-$workspaceId'),
             onPressed: window.loading ? null : onMore,
-            icon: const Icon(Icons.history, size: 16),
-            label: Text(context.l10n.sidebarEarlier),
+            style: TextButton.styleFrom(
+              foregroundColor: context.colors.onSurfaceVariant,
+              minimumSize: const Size(0, 28),
+              padding: const EdgeInsets.only(right: 8),
+              visualDensity: VisualDensity.standard,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              textStyle: context.text.labelMedium,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox.square(
+                  dimension: 16,
+                  child: Center(child: Icon(Icons.history, size: 15)),
+                ),
+                const SizedBox(width: 6),
+                Text(context.l10n.sidebarEarlier),
+              ],
+            ),
           ),
       ],
     ),

@@ -498,7 +498,7 @@
   background: transparent;
   display: flex;
   align-items: center;
-  gap: 5.5px;
+  gap: 6px;
   text-align: left;
   cursor: pointer;
   border-radius: 6px;
@@ -648,9 +648,13 @@
 
 /* ==========================================================================
    4. Nested Thread List & Selected Left Eye-Blue Bar Marker
+   Left-Axis Grid Alignment:
+   - Col 1 (x = 6..22px, center 14px): Project chevron & nested vertical guide line
+   - Col 2 (x = 28..44px, center 36px): Project folder icon & Session leading status icon
+   - Col 3 (x = 50px): Project name text & Session title text
    ========================================================================== */
 .sb-thread-list {
-  margin-left: 11px;
+  margin-left: 13px;
   padding-left: 6px;
   border-left: 1px solid var(--sb-guide);
   display: flex;
@@ -661,6 +665,7 @@
 }
 
 .sb-standalone-list {
+  padding-left: 20px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -706,7 +711,7 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 31px;
-  padding: 5px 4px 5px 10px;
+  padding: 5px 4px 5px 8px;
   border: 0;
   background: transparent;
   display: flex;
@@ -718,6 +723,44 @@
 
 .sb-thread-row.is-archived .sb-thread-select {
   cursor: default;
+}
+
+/* Leading Session Status Slot (16x16px at x = 28..44px, aligned with .sb-proj-folder!) */
+.sb-thread-status {
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--sb-muted);
+  flex-shrink: 0;
+}
+
+.sb-thread-status.is-empty {
+  pointer-events: none;
+}
+
+.sb-thread-status.is-idle svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.72;
+}
+
+.sb-thread-status.is-attention {
+  color: var(--sb-warning);
+}
+
+.sb-thread-status.is-attention svg {
+  width: 14.5px;
+  height: 14.5px;
+}
+
+.sb-thread-status.is-failed {
+  color: var(--sb-danger);
+}
+
+.sb-thread-status.is-failed svg {
+  width: 14.5px;
+  height: 14.5px;
 }
 
 .sb-thread-title {
@@ -741,8 +784,8 @@
   font-weight: 600;
 }
 
-/* Fixed 4-Axis Trailing Icon Slots: [Col 1: pin 18px] [Col 2: worktree 18px] [Col 3: status 18px] [Col 4: more 22px]
-   Guarantees ZERO icon horizontal shift across idle / running / attention / failed / hover / active / pin states! */
+/* Fixed Trailing Meta Slots: [Col 1: pin 18px] [Col 2: worktree 22px] [Col 3: more 22px]
+   Aligned on identical right axis with project [+] and [...] actions! */
 .sb-thread-meta {
   display: inline-flex;
   align-items: center;
@@ -763,6 +806,10 @@
   pointer-events: none;
 }
 
+.sb-worktree-slot {
+  width: 22px;
+}
+
 .sb-worktree-slot.is-worktree {
   color: var(--sb-blue);
   opacity: 0.9;
@@ -771,24 +818,6 @@
 .sb-worktree-slot.is-worktree svg {
   width: 13.5px;
   height: 13.5px;
-}
-
-.sb-status-slot.is-attention {
-  color: var(--sb-warning);
-}
-
-.sb-status-slot.is-attention svg {
-  width: 14px;
-  height: 14px;
-}
-
-.sb-status-slot.is-failed {
-  color: var(--sb-danger);
-}
-
-.sb-status-slot.is-failed svg {
-  width: 14px;
-  height: 14px;
 }
 
 /* Eye-Blue Activity Ring (14px) */
@@ -916,11 +945,11 @@
   border-color: var(--sb-primary);
 }
 
-/* Pagination "View Earlier Sessions" & Empty Hint */
+/* Pagination "View Earlier Sessions" & Empty Hint (Aligned on Col 2 = 28px, Col 3 = 50px) */
 .sb-earlier-btn {
   align-self: flex-start;
   height: 26px;
-  margin: 1px 0 2px 6px;
+  margin: 1px 0 2px 0;
   padding: 0 8px;
   border: 0;
   border-radius: 6px;
@@ -930,14 +959,14 @@
   font-weight: 500;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 
 .sb-earlier-btn svg {
-  width: 12.5px;
-  height: 12.5px;
+  width: 16px;
+  height: 13.5px;
 }
 
 .sb-earlier-btn:hover {
@@ -946,7 +975,7 @@
 }
 
 .sb-empty-note {
-  padding: 6px 10px 8px;
+  padding: 6px 10px 8px 30px;
   font-size: 11.5px;
   color: var(--sb-muted);
   line-height: 1.5;

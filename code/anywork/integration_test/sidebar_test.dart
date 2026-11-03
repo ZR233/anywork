@@ -112,6 +112,41 @@ void main() {
       find.byKey(StudioDriverKeys.threadWorkspaceMode(fixture.thread.id)),
       findsOneWidget,
     );
+    final projectIconRect = tester.getRect(
+      find.descendant(
+        of: projectRow,
+        matching: find.byIcon(Icons.folder_outlined),
+      ),
+    );
+    final projectTitleRect = tester.getRect(
+      find.descendant(of: projectRow, matching: find.text(project.name)),
+    );
+    for (final candidate in [
+      fixture.thread,
+      fixture.runningThread,
+      fixture.attentionThread,
+    ]) {
+      final slotRect = tester.getRect(
+        find.byKey(ValueKey('thread-status-slot-${candidate.id}')),
+      );
+      final titleRect = tester.getRect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.threadRow(candidate.id)),
+          matching: find.text(candidate.title),
+        ),
+      );
+      expect(
+        slotRect.left,
+        closeTo(projectIconRect.left, 0.5),
+        reason:
+            'session leading status slot aligns vertically with project icon',
+      );
+      expect(
+        titleRect.left,
+        closeTo(projectTitleRect.left, 0.5),
+        reason: 'session title aligns vertically with project name',
+      );
+    }
     await scene.capture('sidebar-wide');
 
     final search = find.byKey(const ValueKey<String>('sidebar-search'));
@@ -267,7 +302,7 @@ void main() {
       'Escape closes the Material thread menu',
     );
 
-    await tester.tap(menuTrigger());
+    await tester.tap(menuTrigger(), kind: ui.PointerDeviceKind.mouse);
     await scene.until(
       () =>
           find
@@ -279,6 +314,7 @@ void main() {
     );
     await tester.tap(
       find.byKey(StudioDriverKeys.openThreadWorkspace(fixture.thread.id)),
+      kind: ui.PointerDeviceKind.mouse,
     );
     await scene.until(
       () =>
@@ -371,7 +407,10 @@ void main() {
       contains(fixture.thread.id),
     );
 
-    await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('sidebar-archived')),
+      kind: ui.PointerDeviceKind.mouse,
+    );
     await scene.until(
       () =>
           threadRow.evaluate().length == 1 &&
@@ -384,9 +423,9 @@ void main() {
               1,
       'archived view loads the canonical archived thread and workspace',
     );
-    await scene.capture('sidebar-archived');
     await pointer.moveTo(tester.getCenter(threadRow));
     await tester.pump();
+    await scene.capture('sidebar-archived');
     await tester.tap(
       find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
     );
@@ -564,7 +603,7 @@ void main() {
             flush: true,
           );
       await scene.until(() {
-        final view = ui.PlatformDispatcher.instance.views.single;
+        final view = tester.view;
         return view.physicalSize.width / view.devicePixelRatio < 960;
       }, 'Flutter adopts the compact test surface geometry');
 
@@ -579,7 +618,8 @@ void main() {
       await scene.until(
         () =>
             scaffoldState.isDrawerOpen &&
-            find.byKey(StudioDriverKeys.sidebar).evaluate().length == 1,
+            find.byKey(StudioDriverKeys.sidebar).evaluate().length == 1 &&
+            tester.getTopLeft(find.byKey(StudioDriverKeys.sidebar)).dx >= 0,
         'compact shell opens the production navigation drawer',
       );
 
