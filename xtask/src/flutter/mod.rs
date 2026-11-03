@@ -14,12 +14,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod codegen;
+mod integration;
 mod preview;
+pub(crate) use integration::DesktopTestPreparation;
 pub(crate) use preview::run as preview_gui;
 #[cfg(target_os = "linux")]
 mod linux;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum DesktopTarget {
     Windows,
     Macos,
@@ -178,9 +180,13 @@ pub(crate) fn verify_gui() -> Result<()> {
 
 /// Runs one official desktop `integration_test` with the same bridge, helper,
 /// and resident process ownership as a debug GUI run.
-pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
-    let workspace_root = paths::workspace_root()?;
-    let app_dir = paths::studio_app_dir(&workspace_root);
+pub(crate) fn run_desktop_integration_test(
+    preparation: &DesktopTestPreparation,
+    test_path: &Path,
+) -> Result<()> {
+    preparation.validate()?;
+    let workspace_root = preparation.workspace();
+    let app_dir = paths::studio_app_dir(workspace_root);
     let target = DesktopTarget::current()?;
     let resolved = resolve_integration_test_path(&app_dir, test_path)?;
     let app_version = studio_version::read(&app_dir)?;
@@ -195,10 +201,7 @@ pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
         .context("desktop integration test is outside the Flutter application")?
         .to_string_lossy()
         .into_owned();
-    print_context(&workspace_root, &app_dir);
-    ensure_desktop_build_environment(target)?;
-    ensure_flutter_dependencies(&workspace_root, &app_dir)?;
-    let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, DemoMode::Native)?;
+    print_context(workspace_root, &app_dir);
     let run_args = [
         "test",
         test_arg.as_str(),
@@ -208,20 +211,15 @@ pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
         "--reporter=expanded",
         version_define.as_str(),
     ];
-    let bridge_artifacts = prepare_bridge_artifacts(
-        &workspace_root,
-        DemoMode::Native,
-        BridgeConfiguration::Debug,
-    )?;
     run_flutter_with_process_mode(
-        &workspace_root,
+        workspace_root,
         &app_dir,
         &run_args,
         FlutterInvocation {
             demo_mode: DemoMode::Native,
             process_mode: FlutterProcessMode::Resident,
-            bridge_artifacts: bridge_artifacts.as_ref(),
-            remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            bridge_artifacts: Some(preparation.bridge()),
+            remote_helper_bundle_dir: Some(preparation.helpers()),
             log_level: None,
         },
     )

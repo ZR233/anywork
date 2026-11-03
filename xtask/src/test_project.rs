@@ -123,6 +123,10 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
     } else {
         None
     };
+    let desktop_preparation = match options.suite {
+        ProjectSuite::Desktop => Some(flutter::DesktopTestPreparation::prepare(&workspace_root)?),
+        ProjectSuite::Native => None,
+    };
     let mut records = Vec::new();
     let mut artifacts = Vec::new();
     let mut failed = false;
@@ -135,6 +139,7 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
             case,
             case_output.as_deref(),
             acceptance_executable.as_deref(),
+            desktop_preparation.as_ref(),
         ) {
             Ok(()) => records.push(CaseRecord {
                 id: case.id.clone(),
@@ -185,26 +190,29 @@ fn run_case(
     case: &DiscoveredCase,
     output: Option<&Path>,
     acceptance_executable: Option<&Path>,
+    desktop_preparation: Option<&flutter::DesktopTestPreparation>,
 ) -> Result<()> {
     match case.target {
         CaseTarget::Desktop { ref relative_path } => {
+            let prepared = desktop_preparation.context("desktop preparation is missing")?;
             if !desktop_env_ready(&case.id) {
                 if let Some(preset) = desktop_harness_preset(&case.id) {
                     let executable =
                         acceptance_executable.context("acceptance executable is missing")?;
-                    return wait_acceptance_preset(executable, preset, output);
+                    prepared.validate()?;
+                    return wait_acceptance_preset(executable, preset, output, Some(prepared));
                 }
                 bail!(
                     "desktop case `{}` needs an isolated environment; no acceptance preset owns it",
                     case.id
                 );
             }
-            flutter::run_desktop_integration_test(Path::new(relative_path))
+            flutter::run_desktop_integration_test(prepared, Path::new(relative_path))
         }
         CaseTarget::Native { preset } => {
             let executable =
                 acceptance_executable.context("native acceptance executable is missing")?;
-            wait_acceptance_preset(executable, preset, output)
+            wait_acceptance_preset(executable, preset, output, None)
         }
     }
 }
@@ -273,13 +281,18 @@ fn desktop_opt_in(id: &str) -> bool {
     matches!(id, "acp_real_login" | "chatgpt_real_login")
 }
 
-fn wait_acceptance_preset(executable: &Path, preset: &str, output: Option<&Path>) -> Result<()> {
+fn wait_acceptance_preset(
+    executable: &Path,
+    preset: &str,
+    output: Option<&Path>,
+    prepared: Option<&flutter::DesktopTestPreparation>,
+) -> Result<()> {
     let mut args = vec![OsString::from("--preset"), OsString::from(preset)];
     if let Some(output) = output {
         args.push(OsString::from("--output"));
         args.push(output.as_os_str().to_os_string());
     }
-    studio_acceptance::wait_acceptance_tool(executable, &args)
+    studio_acceptance::wait_acceptance_tool(executable, &args, prepared.map(|p| p.environment()))
 }
 
 fn discover_desktop_cases(app_dir: &Path) -> Result<Vec<DiscoveredCase>> {

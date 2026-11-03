@@ -23,6 +23,8 @@ OUTPUT_FLAGS = (
     "linux_native",
     "windows_build",
     "macos_build",
+    "windows_gui_build",
+    "macos_gui_build",
 )
 
 _ZERO_SHA = "0" * 40
@@ -116,6 +118,8 @@ _FULL_PREFIXES = (
     "xtask/",
 )
 
+_SHARED_TEST_DIRS = frozenset({"common", "fixture", "fixtures", "helper", "helpers", "support"})
+
 _NATIVE_EXACT = frozenset(
     {
         "code/anywork/lib/src/app/studio_host_lifecycle.dart",
@@ -135,6 +139,38 @@ def _has_prefix(path: str, prefixes: Iterable[str]) -> bool:
     return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in prefixes)
 
 
+def _is_pure_test_path(path: str) -> bool:
+    parts = path.split("/")
+    if (
+        len(parts) < 4
+        or parts[0] != "code"
+        or not parts[1].startswith("pl-")
+        or parts[2] != "tests"
+        or not path.endswith(".rs")
+    ):
+        return False
+    if parts[1] in {"pl-dev-support", "pl-provider-fixture", "pl-studio-acceptance"}:
+        return False
+    return not _is_shared_test_path(path)
+
+
+def _is_shared_test_path(path: str) -> bool:
+    parts = path.split("/")
+    return (
+        len(parts) >= 4
+        and parts[0] == "code"
+        and parts[1].startswith("pl-")
+        and parts[2] == "tests"
+        and (
+            any(part in _SHARED_TEST_DIRS for part in parts[3:-1])
+            or (
+                parts[-1].endswith(".rs")
+                and parts[-1][:-3] in _SHARED_TEST_DIRS
+            )
+        )
+    )
+
+
 def classify_path(path: str) -> frozenset[str]:
     """Return category tags for one repository-relative path."""
     path = _posix(path)
@@ -147,6 +183,10 @@ def classify_path(path: str) -> frozenset[str]:
         tags.add("policy")
     if path in _RUST_EXACT or _has_prefix(path, _RUST_PREFIXES):
         tags.add("rust")
+        if _is_pure_test_path(path):
+            tags.add("pure_test")
+        else:
+            tags.add("rust_production")
     if path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES):
         tags.add("bridge")
     if _has_prefix(path, ("code/anywork/", "code/anywork_client/")):
@@ -166,6 +206,8 @@ def classify_path(path: str) -> frozenset[str]:
     if path.startswith("code/anywork/tool/") and path not in _NATIVE_EXACT:
         tags.add("tool")
     if _has_prefix(path, _FULL_PREFIXES):
+        tags.add("full")
+    if _is_shared_test_path(path):
         tags.add("full")
     if not tags:
         tags.add("unknown")
@@ -218,6 +260,9 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["rust_checks"] = True
         flags["windows_build"] = True
         flags["macos_build"] = True
+        if "rust_production" in tags:
+            flags["windows_gui_build"] = True
+            flags["macos_gui_build"] = True
     if "flutter" in tags:
         flags["flutter_checks"] = True
     if "bridge" in tags:
@@ -227,11 +272,15 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["linux_native"] = True
         flags["windows_build"] = True
         flags["macos_build"] = True
+        flags["windows_gui_build"] = True
+        flags["macos_gui_build"] = True
     if "native_exact" in tags:
         flags["flutter_checks"] = True
         flags["linux_native"] = True
         flags["windows_build"] = True
         flags["macos_build"] = True
+        flags["windows_gui_build"] = True
+        flags["macos_gui_build"] = True
     if "linux" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
@@ -239,15 +288,19 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
     if "windows" in tags:
         flags["flutter_checks"] = True
         flags["windows_build"] = True
+        flags["windows_gui_build"] = True
     if "macos" in tags:
         flags["flutter_checks"] = True
         flags["macos_build"] = True
+        flags["macos_gui_build"] = True
     if "runner_common" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
         flags["linux_native"] = True
         flags["windows_build"] = True
         flags["macos_build"] = True
+        flags["windows_gui_build"] = True
+        flags["macos_gui_build"] = True
     if "integration" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
