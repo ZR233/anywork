@@ -196,7 +196,7 @@ sequenceDiagram
 
 - **用户配置**：默认位于 `~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库；可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据目录。
 - **会话与统计**：位于 `<studio-home>/data/workspaces/<workspace-key>/sessions/<thread-key>/`，历史与可靠资源随会话保存。
-- **AI 临时文件**：归入实际工作区的 `.anywork/sessions/<thread-key>/temp/`，待交付产物放在同级 `artifacts/`；SSH 会话使用远端路径。归档在确认保存后清理专用临时目录，不删除历史、工作文件或产物。
+- **会话清理**：临时文件归入实际工作区的 `.anywork/sessions/<thread-key>/temp/`，待交付产物放在同级 `artifacts/`；SSH 会话使用远端路径。归档在停止并确认保存后清理临时目录与专属工作树，保留宿主历史及可靠附件；工作树内文件随工作树删除。会话删除经独立确认永久清除整棵会话树的数据，不删除普通项目目录或 Git 分支；不设定时清理。完整边界见 [存储契约](design/17-studio-storage.md#1716-会话归档与临时数据清理)。
 - **用户技能**：直接只读标准用户主目录 `.agents/skills/`；项目技能和内置技能各自独立。
 
 升级时，受支持版本的账号配置、凭据关联、v2 会话与统计会自动迁入当前布局，原件和迁移备份保留；更早的数据不导入也不删除。目录职责与迁移边界详见 [存储契约](design/17-studio-storage.md) 与 [配置契约](design/20-config.md)。

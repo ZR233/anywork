@@ -78,6 +78,7 @@ impl std::fmt::Debug for HistoryStoreShare {
 }
 
 struct HistoryStoreState {
+    closed: std::sync::atomic::AtomicBool,
     path: PathBuf,
     thread_id: String,
     /// The single writer connection, opened on the first write.
@@ -256,6 +257,7 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
+                closed: std::sync::atomic::AtomicBool::new(false),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
                 writer: tokio::sync::OnceCell::new(),
@@ -278,6 +280,21 @@ impl HistoryStore {
 
     pub(crate) fn thread_id(&self) -> &str {
         &self.state.thread_id
+    }
+
+    /// The lifecycle owner first drains producers, then revokes both original pools.
+    pub(in crate::studio) async fn close_for_deletion(&self) -> Result<()> {
+        let _initializing = self.state.init.write().await;
+        self.state
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(reader) = self.state.reader.get() {
+            reader.db.close_by_ref().await?;
+        }
+        if let Some(writer) = self.state.writer.get() {
+            writer.db.close_by_ref().await?;
+        }
+        Ok(())
     }
 
     /// The existing database identity after the shared initialization/reader barrier. This never
@@ -412,6 +429,10 @@ impl HistoryStore {
     /// Caller holds the initialization read guard. Never returns the writer, even when another
     /// observer keeps it alive; a missing file remains missing instead of reading an unlinked DB.
     async fn read_only_connection(&self) -> Result<Option<&HistoryConnection>> {
+        ensure!(
+            !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
+            "history is permanently closed"
+        );
         if !tokio::fs::try_exists(&self.state.path).await? {
             return Ok(None);
         }
@@ -455,10 +476,18 @@ impl HistoryStore {
         &self,
         mode: crate::studio::paths::SqliteFileMode,
     ) -> Result<Option<&HistoryConnection>> {
+        ensure!(
+            !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
+            "history is permanently closed"
+        );
         if let Some(writer) = self.state.writer.get() {
             return Ok(Some(writer));
         }
         let _initializing = self.state.init.write().await;
+        ensure!(
+            !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
+            "history is permanently closed"
+        );
         if matches!(mode, crate::studio::paths::SqliteFileMode::ReadWrite)
             && !tokio::fs::try_exists(&self.state.path).await?
         {

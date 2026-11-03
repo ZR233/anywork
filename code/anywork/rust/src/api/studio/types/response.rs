@@ -617,6 +617,14 @@ pub struct ArchiveThreadResult {
     pub next_root: Option<BridgeThread>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteThreadResult {
+    pub deleted_root_id: String,
+    pub deleted_thread_ids: Vec<String>,
+    pub next_root: Option<BridgeThread>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsagesResponse {

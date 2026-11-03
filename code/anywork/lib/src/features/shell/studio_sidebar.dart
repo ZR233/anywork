@@ -298,6 +298,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
               await _renameThreadFromSidebar(context, client, thread);
             case SidebarThreadAction.archive:
               await _archiveThreadFromSidebar(context, client, thread.id);
+            case SidebarThreadAction.delete:
+              await _deleteThreadFromSidebar(context, client, thread);
             case SidebarThreadAction.copyWorkspace:
               await Clipboard.setData(
                 ClipboardData(text: thread.workspacePath),

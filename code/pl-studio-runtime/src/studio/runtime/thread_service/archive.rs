@@ -52,7 +52,6 @@ impl StudioRuntime {
             };
             if in_scope
                 && !record.published
-                && record.disposition != PreparationDisposition::TempCleaned
                 && !(record.disposition == PreparationDisposition::Remove && record.retired)
                 && !admitted
                     .iter()
@@ -327,21 +326,78 @@ impl StudioRuntime {
                 });
             }
         }
-        let phase = previous
+        let mut phase = previous
             .as_ref()
             .filter(|operation| operation.phase != ArchivePhase::Published)
             .map_or(ArchivePhase::Sealed, |operation| operation.phase);
-        let revision = previous.map_or(Ok(1), |previous| {
+        let revision = previous.as_ref().map_or(Ok(1), |previous| {
             previous
                 .revision
                 .checked_add(1)
                 .context("archive revision exhausted")
         })?;
+        let mut worktrees = previous
+            .filter(|operation| operation.phase != ArchivePhase::Published)
+            .map(|operation| operation.worktrees)
+            .unwrap_or_default();
+        let ids = members
+            .iter()
+            .map(|member| member.thread_id.as_str())
+            .chain(
+                private_members
+                    .iter()
+                    .map(|member| member.identity.thread_id.as_str()),
+            );
+        for id in ids {
+            if worktrees
+                .iter()
+                .any(|entry| entry.lease.owner_thread_id == id)
+            {
+                continue;
+            }
+            if let Some(lease) = self.agent_facility.worktrees.get(id) {
+                let identity = crate::studio::agent_host::workspace_preparation::cleanup_identity(
+                    &self.store,
+                    &lease,
+                )
+                .await?;
+                let original = members
+                    .iter()
+                    .find(|member| member.thread_id == id)
+                    .map(|member| &member.execution)
+                    .or_else(|| {
+                        private_members
+                            .iter()
+                            .find(|member| member.identity.thread_id == id)
+                            .and_then(|member| match &member.binding {
+                                PreparationBinding::Bound { identity } => Some(identity),
+                                PreparationBinding::Unbound => None,
+                            })
+                    });
+                ensure!(
+                    original == Some(&identity),
+                    "archive worktree differs from its original member binding"
+                );
+                worktrees.push(crate::studio::store::thread_archive::ArchiveWorktree {
+                    lease,
+                    identity,
+                    common_dir: None,
+                    removal_started: false,
+                    cleaned: false,
+                });
+            }
+        }
+        // Before worktree cleanup was part of this operation, Cleaned acknowledged temp only.
+        // Keep its original save ACK while completing the newly recorded lease responsibility.
+        if phase == ArchivePhase::Cleaned && worktrees.iter().any(|worktree| !worktree.cleaned) {
+            phase = ArchivePhase::Saved;
+        }
         let operation = ThreadArchiveOperation {
             scope,
             revision,
             members,
             private_members,
+            worktrees,
             phase,
         };
         self.store.save_thread_archive(&operation).await?;
@@ -439,7 +495,9 @@ impl StudioRuntime {
         for index in 0..operation.members.len() {
             let member = operation.members[index].clone();
             if !member.execution_cleaned {
-                clean_execution_temp(&self.ssh_manager, &member).await?;
+                if !execution_removed_with_worktree(operation, &member.execution) {
+                    clean_execution_temp(&self.ssh_manager, &member).await?;
+                }
                 operation.members[index].execution_cleaned = true;
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
@@ -468,7 +526,9 @@ impl StudioRuntime {
                 "private producer/save ACK is pending"
             );
             if !member.execution_cleaned {
-                if let PreparationBinding::Bound { identity } = &member.binding {
+                if let PreparationBinding::Bound { identity } = &member.binding
+                    && !execution_removed_with_worktree(operation, identity)
+                {
                     clean_execution_temp(
                         &self.ssh_manager,
                         &ArchiveMember {
@@ -506,6 +566,7 @@ impl StudioRuntime {
                 .confirm_preparation_temp_cleanup(&member.identity, &member.binding)
                 .await?;
         }
+        self.clean_archive_worktrees(operation).await?;
         operation.phase = ArchivePhase::Cleaned;
         operation.changed()?;
         self.store.save_thread_archive(operation).await
@@ -519,6 +580,20 @@ impl StudioRuntime {
         operation.changed()?;
         self.store.save_thread_archive(operation).await
     }
+}
+
+fn execution_removed_with_worktree(
+    operation: &ThreadArchiveOperation,
+    identity: &WorkspaceIdentity,
+) -> bool {
+    // A new archive/delete can revisit a previously archived SSH worktree. Opening that removed
+    // directory would fail before reaching the existing Git absence verification below.
+    operation.worktrees.iter().any(|worktree| {
+        (worktree.cleaned
+            || worktree.lease.state
+                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned)
+            && identity.within(&worktree.identity)
+    })
 }
 
 async fn clean_host_temp(session: &Path, temp: &Path) -> Result<()> {

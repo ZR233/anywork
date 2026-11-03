@@ -323,7 +323,9 @@ impl StudioThreadFactory {
 
 /// Only a confirmed refusal before removal can release the persisted started fence. In
 /// particular a transport spawn error is not proof that the helper never spawned Git.
-fn removal_definitely_refused(error: &crate::agent::worktree::WorktreeError) -> bool {
+pub(in crate::studio) fn removal_definitely_refused(
+    error: &crate::agent::worktree::WorktreeError,
+) -> bool {
     use crate::agent::worktree::{RemoteExecutionError, WorktreeError};
     match error {
         WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {

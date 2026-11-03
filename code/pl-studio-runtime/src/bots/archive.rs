@@ -233,7 +233,87 @@ impl Drop for BotArchiveGuard {
     }
 }
 
+#[cfg(test)]
+type InboundDeletionPause = (
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct DeletionTestHooks {
+    pub inbound: std::sync::Mutex<Option<InboundDeletionPause>>,
+    pub admission_attempt: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub ledger_clear: std::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+}
+
 impl BotRuntime {
+    pub(crate) async fn delete_threads(&self, ids: &[String]) -> Result<(), FeishuError> {
+        let bots = self
+            .inner
+            .bots
+            .lock()
+            .await
+            .iter()
+            .map(|(id, record)| (id.clone(), record.published.clone()))
+            .collect::<Vec<_>>();
+        for (id, bot) in bots {
+            if let Some(bot) = bot {
+                #[cfg(test)]
+                if let Some(attempt) = self
+                    .inner
+                    .deletion_tests
+                    .admission_attempt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = attempt.send(());
+                }
+                // Inbound binding claims, frozen-body admission and ledger deletion share this
+                // same boundary. Reply join alone cannot observe an unregistered inbound writer.
+                let _admission = bot.admission.lock().await;
+                #[cfg(test)]
+                {
+                    let pause = self
+                        .inner
+                        .deletion_tests
+                        .ledger_clear
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    if let Some((entered, release)) = pause {
+                        let _ = entered.send(());
+                        let _ = release.await;
+                    }
+                }
+                bot.store.delete_threads(ids).await?;
+            } else {
+                let path = self.inner.paths.bot_dir(&id).join("state.sqlite");
+                pl_tool::workspace::path_safety::validate_path_for_write_async(
+                    self.inner.paths.home(),
+                    &path,
+                )
+                .await
+                .map_err(|error| archive_error(&format!("unsafe bot state: {error}")))?;
+                if tokio::fs::try_exists(&path)
+                    .await
+                    .map_err(|error| archive_error(&format!("bot state access failed: {error}")))?
+                {
+                    super::storage::BotStateStore::new(path)
+                        .delete_threads(ids)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// Call after the archive scope is durable, and retain the guard until publication.
     pub(crate) async fn quiesce_archive_threads(
         &self,

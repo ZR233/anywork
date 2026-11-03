@@ -815,3 +815,5 @@ async fn standalone_start_directory_creation_failure_is_not_published() -> Resul
 
 #[path = "archive_responsibility_tests.rs"]
 mod archive_responsibility;
+#[path = "delete_tests.rs"]
+mod deletion;

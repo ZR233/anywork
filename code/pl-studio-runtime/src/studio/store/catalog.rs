@@ -23,6 +23,17 @@ impl StudioStore {
         &self,
         delta: &DirectoryDelta,
     ) -> Result<()> {
+        self.persist_directory_summaries_on(delta, self.database())
+            .await
+    }
+
+    /// Write-behind already owns the single product connection. Read its deletion fences on that
+    /// same transaction, rather than waiting for a second pool connection while holding the first.
+    pub(in crate::studio) async fn persist_directory_summaries_on(
+        &self,
+        delta: &DirectoryDelta,
+        db: &impl sea_orm::ConnectionTrait,
+    ) -> Result<()> {
         // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
         // write-behind mirrors for migration and diagnostics only.
         for project in &delta.project_upserts {
@@ -38,7 +49,14 @@ impl StudioStore {
         }
         self.workspaces().apply_delta(delta).await?;
         let catalog = self.catalog();
+        let deletions = Self::thread_deletes_on(db).await?;
         for thread in &delta.thread_upserts {
+            if deletions.iter().any(|operation| {
+                operation.phase != super::thread_delete::DeletePhase::Sealed
+                    && operation.thread_ids.contains(&thread.id)
+            }) {
+                continue;
+            }
             self.prepare_session_manifest(thread).await?;
             catalog.upsert(CatalogEntry::from_thread(thread)).await?;
         }
@@ -70,6 +88,7 @@ impl StudioStore {
         if !delta.session_activity.is_empty() {
             catalog.touch(&delta.session_activity).await?;
         }
+        catalog.delete(&delta.thread_deletions).await?;
         for fault in &delta.unregistered_faults {
             let mut entry = catalog.get(&fault.thread_id).ok_or_else(|| {
                 anyhow::anyhow!("spawn compensation Thread not found: {}", fault.thread_id)

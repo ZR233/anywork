@@ -16,6 +16,7 @@ pub(in crate::studio::runtime) struct SourcePosition {
 pub(in crate::studio::runtime) struct ObservationSlot {
     state: Mutex<SourcePosition>,
     changed: watch::Sender<u64>,
+    readers: Mutex<Option<Vec<std::sync::Weak<super::super::conversation_reader::ReadLease>>>>,
 }
 
 impl Default for ObservationSlot {
@@ -26,11 +27,48 @@ impl Default for ObservationSlot {
                 source: None,
             }),
             changed: watch::channel(0).0,
+            readers: Mutex::new(Some(Vec::new())),
         }
     }
 }
 
 impl ObservationSlot {
+    pub(in crate::studio::runtime) fn register_reader(
+        &self,
+        reader: &super::super::ConversationReader,
+    ) {
+        let mut readers = self
+            .readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(readers) = readers.as_mut() {
+            readers.retain(|reader| reader.strong_count() > 0);
+            readers.push(Arc::downgrade(&reader.inner));
+        } else {
+            reader.request_close();
+        }
+    }
+
+    pub(in crate::studio::runtime) async fn close_readers(&self) -> anyhow::Result<()> {
+        let readers = self
+            .readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|reader| reader.upgrade())
+            .map(|inner| super::super::ConversationReader { inner })
+            .collect::<Vec<_>>();
+        for reader in &readers {
+            reader.request_close();
+        }
+        for reader in readers {
+            reader.close().await?;
+        }
+        Ok(())
+    }
+
     pub(in crate::studio::runtime) fn capture(&self) -> (SourcePosition, watch::Receiver<u64>) {
         let state = self
             .state

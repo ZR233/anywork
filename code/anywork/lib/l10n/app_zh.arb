@@ -158,8 +158,19 @@
     }
   },
   "sidebarArchiveSessionConfirmTitle": "归档会话",
-  "sidebarArchiveSessionConfirmBody": "归档会停止该会话及其子会话的活动工作，并将它们移入已归档列表。会话历史、工作区、分支和未提交内容都会保留。是否继续？",
+  "sidebarArchiveSessionConfirmBody": "归档将停止该会话及其子会话，删除专属工作树及其中的未提交内容，并清理临时文件。会话历史与附件将保留。",
   "sidebarArchiveSessionConfirmAction": "归档",
+  "sidebarDeleteSession": "删除会话",
+  "sidebarDeleteSessionConfirmTitle": "永久删除“{title}”及其全部子会话？",
+  "@sidebarDeleteSessionConfirmTitle": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "sidebarDeleteSessionConfirmBody": "这将永久删除该会话树的聊天记录、附件与资源、笔记与计划、报告与评价、调用统计、临时文件、产物及专属工作树，且无法恢复。普通项目目录不受影响。",
+  "sidebarDeleteSessionConfirmAction": "永久删除",
   "sidebarRenameSession": "重命名会话",
   "sidebarRenameSessionTitle": "重命名会话",
   "sidebarRenameSessionInput": "会话标题",

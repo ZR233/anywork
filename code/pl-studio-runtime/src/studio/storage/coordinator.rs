@@ -247,6 +247,43 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    pub(in crate::studio) fn forget_deleted(&self, thread_id: &str) -> anyhow::Result<()> {
+        {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                threads.get(thread_id).is_none_or(|status| status
+                    .incarnations
+                    .values()
+                    .all(|incarnation| !incarnation.is_live() && incarnation.settled())
+                    && status.channel.is_clean()
+                    && !status.channel.has_delivery_bytes()),
+                "deleted Thread still has a live writer or reliable delivery responsibility"
+            );
+            threads.remove(thread_id);
+        }
+        self.0
+            .usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(thread_id);
+        self.0
+            .chats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(thread_id);
+        self.0
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(thread_id);
+        self.refresh();
+        Ok(())
+    }
+
     pub(crate) fn delivery_process_bytes(&self) -> u64 {
         self.0.queued_bytes.load(Ordering::Acquire)
     }

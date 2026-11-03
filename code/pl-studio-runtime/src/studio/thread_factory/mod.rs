@@ -9,6 +9,7 @@ pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
 pub(crate) use execution_admission::ExecutionWorkspaceCheck;
+pub(in crate::studio) use worktree_close::removal_definitely_refused as worktree_removal_definitely_refused;
 #[cfg(test)]
 mod review_archive_tests;
 mod root_resources;

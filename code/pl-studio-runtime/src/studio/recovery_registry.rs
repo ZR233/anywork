@@ -55,6 +55,7 @@ struct State {
     issues: Vec<StudioRecoveryIssue>,
     removed: Vec<RemovedIssue>,
     retired_threads: BTreeSet<String>,
+    deleted_threads: BTreeSet<String>,
     scan: ScanState,
     revision: u64,
     updated_at: i64,
@@ -232,6 +233,7 @@ impl StudioRecoveryRegistry {
                 issues: Vec::new(),
                 removed: Vec::new(),
                 retired_threads: BTreeSet::new(),
+                deleted_threads: BTreeSet::new(),
                 scan: ScanState::Idle,
                 revision: 0,
                 updated_at: unix_seconds(),
@@ -278,7 +280,8 @@ impl StudioRecoveryRegistry {
         for issue in issues {
             if !inner.removed.iter().any(|removed| removed.matches(&issue))
                 && !issue.thread_id.as_ref().is_some_and(|id| {
-                    inner.retired_threads.contains(id) && !is_worktree_issue(&issue)
+                    inner.deleted_threads.contains(id)
+                        || (inner.retired_threads.contains(id) && !is_worktree_issue(&issue))
                 })
             {
                 inner.issues.push(issue);
@@ -295,7 +298,12 @@ impl StudioRecoveryRegistry {
         publish: impl FnOnce(ObservedResource<Vec<StudioRecoveryIssue>>),
     ) {
         let mut inner = self.inner.lock().expect("recovery lock poisoned");
-        if !is_current() {
+        if !is_current()
+            || issue
+                .as_ref()
+                .and_then(|issue| issue.thread_id.as_ref())
+                .is_some_and(|id| inner.deleted_threads.contains(id))
+        {
             return;
         }
         if issue.is_none() && !inner.issues.iter().any(|current| current.id == issue_id) {
@@ -355,6 +363,20 @@ impl StudioRecoveryRegistry {
         inner.issues.retain(|current| current.id != issue_id);
         inner.touch();
         inner.snapshot()
+    }
+
+    pub(crate) fn delete_thread(&self, thread_id: &str) {
+        let mut inner = self.inner.lock().expect("recovery lock poisoned");
+        inner.retired_threads.insert(thread_id.to_owned());
+        inner.deleted_threads.insert(thread_id.to_owned());
+        inner
+            .issues
+            .retain(|issue| issue.thread_id.as_deref() != Some(thread_id));
+        inner.removed.retain(|removed| {
+            !matches!(removed,
+            RemovedIssue::Worktree(lease) if lease.owner_thread_id == thread_id)
+        });
+        inner.touch();
     }
 }
 
