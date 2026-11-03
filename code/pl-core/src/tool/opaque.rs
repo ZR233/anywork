@@ -153,7 +153,7 @@ pub struct RejectedTools {
     rejection: Option<Box<crate::thread::ThreadError>>,
     #[source]
     source: Arc<ToolError>,
-    resources: ToolManager,
+    resources: Box<ToolManager>,
 }
 impl RejectedTools {
     /// Original registration refusal, preserved independently of the cleanup failure.
@@ -184,7 +184,7 @@ pub(crate) async fn close_rejected(tools: Vec<Registration>) -> Result<(), Rejec
     resources.close().await.map_err(|source| RejectedTools {
         rejection: None,
         source: Arc::new(source),
-        resources,
+        resources: Box::new(resources),
     })
 }
 

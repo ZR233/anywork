@@ -101,6 +101,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 从仓库根目录执行 Flutter/Dart 命令时，优先使用 `cargo flutter <args...>` 和 `cargo dart <args...>`；参数原样透传，包装命令会自动切换到 `code/anywork`。
 - 只有包装命令无法满足需求时，才可直接运行 `flutter` 或 `dart`，且必须先把工作目录切换到 `code/anywork`；不得把 SDK 目录当作项目目录。
 - CI 的 Linux 前端作业为避免引入 Cargo/FRB，可在 `code/anywork` 直接运行官方 Flutter/Dart 静态检查和无 bridge 测试，在 `code/anywork_client` 执行 SDK-only Client 检查；依赖安装使用 `--enforce-lockfile`，不绕过 Client/UI 边界或另行生成源码。该例外不放宽原生 GUI 构建入口。
+- Linux CI（包括前端）统一消费同次解析、校验的项目 Docker 构建镜像。系统开发依赖在 `docker/linux/Dockerfile` 维护并由镜像 smoke 验证，消费作业不执行 `apt-get` 补装；与本次源码绑定的 helper 仍在作业内构建。
 - 常用命令：
 
   ```powershell
@@ -108,12 +109,22 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   cargo dart format lib test tool integration_test
   ```
 
+### 官方 Flutter / Dart 技能与快速迭代
+
+- 通用 Flutter / Dart 技能从用户级 `~/.agents/skills/` 发现，官方来源为 `flutter/agent-plugins` 和 `dart-lang/skills`；项目不复制或维护这些技能。缺少时读取对应官方文档，安装或更新按用户授权进行。本仓库技能只补充项目架构、构建和验收约定。
+- 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束，测试必要性由 `test-quality` 判断。
+- 上游技能中的 CLI 示例映射到本项目入口：应用命令使用 `cargo flutter` / `cargo dart`，纯 Client 使用 `verify-client`，生成使用 `generate-gui`，原生启动使用 `run-gui`，桌面测试使用 `test-project`。保留 Riverpod、typed GoRouter、Client/FRB 和既有生成模型；通用示例不要求换状态库、手改锁文件或绑定、增加依赖、开启实验语法或全仓应用自动修复。
+- 界面对照按场景选择最小充分入口：纯组件先用 `cargo xtask preview-gui --headless --no-devtools`；实际页面与业务使用隔离原生应用及官方 MCP；可重复断言使用 `test/ui` 或 `integration_test`。先固定场景、实际视口、主题和字号，再检查组件树、交互与截图，复用同次运行的热更新，不为每次布局修改重跑完整构建和业务套件。
+- `preview-gui` 透传官方 `widget-preview start` 参数，先按锁文件准备应用依赖，再从应用 Pub overrides 生成官方缓存中的覆盖配置；Flutter 负责发现、编译、缓存和热更新。恢复不完整缓存用官方 `cargo flutter widget-preview clean`，下次启动自动准备；不手改 SDK 或缓存 manifest。
+- Dart MCP 使用官方 `dart mcp-server`，项目 roots 按当前工作区注册。MCP 的 stdio 启动直接使用实际 Dart SDK 可执行文件，不能套用会向 stdout 打印日志的 Cargo 包装；项目工作命令仍遵循上面的入口。先读取实际工具 schema，再连接 xtask 启动的应用，不用 MCP `launch_app` 绕过 bridge/helper 准备。
+- Dart 界面修改后使用 MCP 热重载/重启并检查真实界面及运行时错误；普通 `run-gui --inspect` 保持 Flutter 工具常驻，`--native-launch` / release 不作为热重载入口。Rust、FRB 或原生代码变化须经 xtask 构建并完整重开。宿主与容器不要同时改写同一 checkout 的 Pub/生成缓存，切换环境前结束原运行或使用独立 checkout。
+
 ### 桌面 GUI
 
 - GUI 构建和运行必须从仓库根目录通过 xtask（按当前 OS 选择目标平台：Windows / Linux / macOS）：
 
   ```powershell
-  cargo xtask run-gui [--demo] [--capture]
+  cargo xtask run-gui [--demo] [--capture] [--inspect]
   cargo xtask run-gui --release
   cargo xtask build-gui [--demo] [--no-clean] [--check-generated]
   cargo xtask test-project --suite desktop|native [--set smoke|full]
@@ -124,20 +135,22 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
 
 - 不支持直接执行 `flutter build windows|linux|macos` 或 `flutter run -d windows|linux|macos`，也不新增 PowerShell GUI wrapper。
-- `run-gui --release` 直接启动已有 `dist/anywork-release` 原生程序，不执行构建或依赖解析；缺失时提示先执行 `build-gui`。它与 `--demo`、`--capture`、`--profile` 互斥，并沿用平台进程树管理。
+- `run-gui --release` 直接启动已有 `dist/anywork-release` 原生程序，不执行构建或依赖解析；缺失时提示先执行 `build-gui`。它与 `--demo`、`--capture`、`--inspect`、`--profile` 互斥，并沿用平台进程树管理。
 - macOS 使用完整 Xcode 与 Flutter 官方 Swift Package Manager 集成，构建当前宿主架构的 `.app`；Rust bridge 由 xtask 预构建后放入 `Contents/Frameworks/`，SSH helper 放入 `Contents/Resources/data/remote-helper/`。构建收集保留 framework 符号链接，`run-gui --release` 启动 `dist/anywork-release/anywork.app/Contents/MacOS/anywork`。本地使用 ad-hoc 签名，不包含 Developer ID、公证或稳定发布授权。
-- Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件；Debian/Ubuntu 示例为 `sudo apt-get install -y clang cmake ninja-build pkg-config build-essential libgtk-3-dev`。xtask 必须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
+- Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件，由项目 Docker 镜像提供。宿主原生运行时，xtask 仍须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask test-project --suite desktop` 复用 bridge/helper 构建与进程树管理，运行官方桌面 `integration_test`；与 demo、capture、profile/native-launch 和 release 模式互斥。测试用 `WidgetTester` 操作真实生产组件。`wait_events` 的隔离 provider 由 `manual-gui --preset wait-events` 持有；`conversation_read_work` 的关闭 SQLite 预置由 `--preset conversation-read-work` 持有。`test-project` 在对应环境变量未齐时调用这些 preset。
 - `cargo xtask test-project --suite native` 在进程外裁判真实退出码、重开和第二实例；薄故障装配是 `tool/native_fault_main.dart`。
 - `cargo xtask run-gui --capture` 在正常 debug 应用上开启只读 Flutter 内容捕获（`ext.anywork.capture`）；发布构建不注册该 extension。宿主落盘使用 `code/anywork/tool/capture_ui.dart`。
+- `cargo xtask run-gui --inspect` 使用独立 debug 入口注册官方 Flutter Driver extension，供 Dart MCP 的 `widget_inspector` 和 `flutter_driver_command` 读取布局、点击、输入、滚动及截图；与 release/profile 和自定义 native target 互斥，不改变正式应用入口或 `integration_test` binding。隔离人工观察用 `cargo xtask manual-gui --preset gui --inspect`；截图成功仍需检查真实画面和资源退出。
 - UI 自动化在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，不准备 Rust/bridge。
+- 无显示环境的 widget 测试仍会运行依赖包的官方 native-assets hooks。当前 `cnativeapi` 在 Linux 需要 C++ 编译器、pkg-config 以及 GTK 3 / X11 / Xi 开发文件；缺少时按 hook 原始错误补齐宿主依赖，不禁用 hooks 或用额外 UI 实现代替。
 - `cargo xtask manual-gui` 启动隔离的原生 Studio 和本地模拟供应商，记录截图、快照、请求与日志供人工判定；场景参数是 `--preset`。真实供应商人工验收用 `cargo xtask run-gui` 直接读取用户已有配置，不修改其凭据。
   此命令仅按需编译并调用独立的 `pl-studio-acceptance`，参数由验收工具解析；普通 xtask、
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
 - GUI 人工验收使用 `cargo xtask manual-gui --preset`；`cargo xtask run-gui --demo` 仍可供独立的界面预览，不能证明真实 bridge、持久化或 provider 行为。人工结论独立记录，默认为待评审。
 - `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
-- 调试和验收 Flutter GUI 时，能用官方 `WidgetTester`、`integration_test` 或人工键盘/指针覆盖的交互优先走这些入口。手工布局诊断优先使用 DevTools Inspector，AI 运行时检查可使用官方 Dart/Flutter MCP，按当前 SDK 与平台核实能力。只有它们无法覆盖且确有必要时，才可使用 Computer Use，以减少对用户鼠标、键盘、窗口焦点和桌面状态的影响。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
+- AI 运行时观察优先通过官方 Dart/Flutter MCP / Inspector 操作 Flutter 层，重复功能验证使用 `WidgetTester` / `integration_test`。Windows、Linux 共用这些接口；Linux 没有显示服务时用 Xvfb 提供原生启动环境，Windows 原生验证仍需可运行桌面应用的会话。平台窗口、IME、托盘等边界按需使用真实键盘/指针或系统工具；不把 Flutter 层截图外推为系统行为验证。专用工具可覆盖时不使用 Computer Use。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
 
 ### GUI 生成文件
 

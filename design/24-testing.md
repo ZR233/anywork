@@ -2,11 +2,11 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。轻量路径分类决定适用职责：说明文档只需文档策略；普通 Flutter/Dart 界面、资源及测试只需 Linux 前端验证；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。混合变更取职责并集，未知路径、无法分类的差异、协作规则、CI、工具链、fixture、依赖锁文件及高影响配置保守选择完整适用检查。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。轻量路径分类决定适用职责：说明文档只需文档策略；普通 Flutter/Dart 界面、资源及测试只选择 Linux 前端验证及其镜像解析；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。混合变更取职责并集，未知路径、无法分类的差异、协作规则、CI、工具链、fixture、依赖锁文件及高影响配置保守选择完整适用检查。
 
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
-| Flutter 静态、Client 和组件集成 | 只在 Linux 安装锁定依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
+| Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 桌面与原生集成 | 在相同工作区复用工程工具、helper、acceptance 与对应配置的 bridge；desktop full 与所需 native full 分别提供功能和生命周期信号，不因共用 harness 删除独特断言 |
@@ -14,6 +14,11 @@
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
 Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
+
+无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业消费
+同次解析并校验的项目 Docker 镜像；`cnativeapi` 所需 C++、pkg-config、GTK 3 / X11 / Xi
+开发依赖在镜像制作时预装和验证，不在消费作业中补装。这不引入 Rust bridge 或原生 GUI
+测试；纯 UI 变更只增加环境解析依赖，不选择 Rust、helper 或桌面构建作业。
 
 始终运行的 `ci-gate`（`if: always()`）只接受分类计划明确允许的 skipped；必需作业因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动配置 required check。
 
@@ -57,6 +62,14 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
 ### 24.1.3 时间线呈现与官方集成测试
+
+日常设计对照按证据需要选择入口：纯布局使用官方 Widget Previewer（项目入口为
+`cargo xtask preview-gui --headless --no-devtools`），组件行为使用无显示依赖的 `test/ui`，
+真实页面检查使用 `run-gui --inspect` 或隔离 `manual-gui --preset gui --inspect`。
+官方 MCP 负责 widget tree、布局诊断、交互与 Flutter 内容截图，重复功能旅程仍用
+`integration_test`。固定场景、视口、主题及文字缩放后复用热更新；各层不构成必跑流水线。
+用户级官方技能维护通用写法，项目技能只维护构建与业务边界。
+
 
 时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
 
@@ -131,6 +144,8 @@ native launcher 与退出报告关联运行器 PID、实际 GUI PID 和 `anywork
 
 ## 24.3 原生 GUI 观察与隔离
 
+原生 AI 观察通过专用 debug `--inspect` 入口启用官方 Flutter Driver extension，MCP 连接已运行的应用；正式入口和 `integration_test` binding 不注册该交互扩展。Inspector 与 MCP 不提供操作系统显示服务：Linux 无显示环境使用 Xvfb，Windows 使用可运行桌面应用的会话；Flutter 层操作和截图不证明原生输入法或系统菜单。
+
 本地模拟 GUI 人工验收由独立工程工具 `pl-studio-acceptance` 编排（通过 `cargo xtask manual-gui --preset` 按需编译并透传参数，复用 `pl-dev-support` 的路径与进程树管理，并在服务就绪计时前完成固件编译）。真实厂商与模型的原生人工观察使用 `cargo xtask run-gui` 读取用户已有配置，不能把模拟供应商结果外推为真实模型行为。按实际入口核对真实窗口截图、界面组件树（widget tree）、权威快照、必要请求/诊断和所属进程真实回收；没有模拟服务的观察不虚构模拟请求记录。脚本退出码仅表示采集流程完成，最终视觉与交互结论由人工核查截图后独立判定（默认标记为“待评审”）。
 
 多阶段原生旅程的诊断归档与阶段成功判定独立：已经产生的 GUI 日志在阶段失败时仍须脱敏保留，不能因该阶段未进入成功清单而随隔离环境删除。日志归档不补造未观察到的退出状态，不改变原始失败退出或后续阶段的准入条件。
@@ -143,7 +158,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役，人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
+PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 

@@ -18,6 +18,11 @@ bash docker/linux/scripts/run.sh anywork-linux-build:local cargo xtask build-gui
 Zig/cargo-zigbuild、GTK/C++ 原生构建和 Debian 打包工具。容器内仍使用仓库正式入口；
 不要绕过 xtask 直接构建 Flutter Linux 工程。
 
+Linux 前端 CI 也使用同次解析并校验的完整镜像，直接运行官方 Flutter/Dart 检查与
+无显示的 widget 测试，不因此运行 Rust/FRB 或桌面测试。`cnativeapi` 的 native-assets
+hook 所需 GTK 3、X11、Xi 头文件与 C++ 工具统一预装在镜像中；消费者作业不执行 `apt-get`
+补装。镜像 smoke 使用真实 GTK/X11/Xi C++ 工程验证这些依赖。
+
 运行脚本挂载当前 checkout，并保留其绝对路径和工作目录，便于预构建工具的工作区
 身份核验。它不挂载真实 HOME、Docker socket 或个人凭据，也不需要 GitHub 环境变量。
 工程产物仍写到仓库既有 `target/`、`dist/` 等位置；按运行脚本的用户映射处理宿主

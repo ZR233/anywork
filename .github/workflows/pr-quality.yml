@@ -174,7 +174,7 @@ jobs:
   # Frontend-only changes never depend on the Rust image or native tools.
   flutter-checks:
     name: Flutter and Client (Linux, no bridge)
-    needs: changes
+    needs: [changes, linux-environment]
     if: needs.changes.outputs.flutter_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -185,14 +185,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
         with:
-          flutter-version: 3.47.7
-          channel: stable
-          cache: true
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Check frontend contracts and production UI components
-        run: bash .github/scripts/pr-quality-flutter.sh
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash .github/scripts/pr-quality-flutter.sh
 
   linux-environment:
     name: Prepare exact Linux build environment
@@ -232,6 +233,10 @@ jobs:
             cargo fmt --all --check
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
+            # Library tests run outside the Flutter bundle and need the
+            # current-source stdio supervisor on the container PATH.
+            cargo install --locked --path code/pl-remote-helper --root "$HOME/.quality-tools" --force
+            export PATH="$HOME/.quality-tools/bin:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
             cargo build --locked -p pl-studio-server
           '
@@ -475,6 +480,25 @@ jobs:
           set -euo pipefail
           cargo xtask build-gui
           test -f dist/anywork-release/anywork.exe
+
+      # Explicit platform observation; the normal Windows job remains a build
+      # and Rust check. The current desktop runner owns the isolated fixture.
+      - name: Observe Windows Flutter presentation when requested
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        env:
+          ANYWORK_CAPTURE_PRESENTATION: '1'
+        run: cargo xtask test-project --suite desktop --case question_history --output target/ci-inspection-windows
+
+      - name: Preserve Windows presentation evidence
+        if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-flutter-presentation-${{ github.sha }}
+          path: |
+            target/ci-inspection-windows/report.json
+            target/ci-inspection-windows/**/*.png
+            target/ci-inspection-windows/**/*.meta.json
+          if-no-files-found: error
 
   macos-build:
     name: Native Rust and application checks (macos)

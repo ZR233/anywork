@@ -473,20 +473,20 @@
           <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
           <h2>SSH 远程开发与服务器专属配置（Material 3）</h2>
         </div>
-        <span class="sec-cnt">共享 ssh-shared · 18 个服务器与远端 MCP 场景</span>
+        <span class="sec-cnt">共享 ssh-shared · 15 个服务器与远端 MCP 场景</span>
       </div>
       <div class="grid-2">
         <mdui-card variant="outlined" clickable href="ssh-servers/index.html" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>SSH 服务器列表与实时状态<span class="card-zh">~/.ssh/config 同步</span></h3>
+              <h3>SSH 服务器列表<span class="card-zh">~/.ssh/config 同步</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>汇总展示 ~/.ssh/config 中的受管块与手写只读主机、remote-helper v10 租约状态、免密探测与 SSH 密码按需弹窗，并在列表直显各服务器的远端 MCP、环境变量、LSP 与关联项目概览。</p>
+            <p>精简列表呈现受管与手写只读主机、连接状态及已启用配置摘要；单机各类扩展配置与连接维护统一收敛至行尾菜单。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">受管块与只读区分</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">五态连接状态机</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">三列紧凑列表</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">行尾配置菜单</mdui-chip>
             <mdui-chip class="chip-tag" tabindex="-1">远端 POSIX 目录浏览</mdui-chip>
           </div>
         </mdui-card>
@@ -494,45 +494,44 @@
         <mdui-card variant="outlined" clickable href="ssh-server-mcp/index.html" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>服务器专属 MCP 服务专页<span class="card-zh">创建 / 删除 / 维护</span></h3>
+              <h3>服务器专属 MCP 服务<span class="card-zh">创建 / 删除 / 维护</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>专门针对单台远程服务器的 MCP 服务管理页面：支持模板化创建远端 stdio / Streamable HTTP 服务、启停与重连、展开检视归一化工具清单（mcp__{id}__{tool}）及全局 MCP 的按机路径重映射与屏蔽。</p>
+            <p>专门管理单台远程服务器的 MCP 服务：支持从预设模板菜单弹窗创建 stdio / HTTP 服务，通过行内工具菜单检视已注册工具（mcp__{id}__{tool}），并用下拉菜单配置全局 MCP 继承策略。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">远端 MCP 创建与删除</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">已注册工具与代次检视</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">全局 MCP 按机覆盖</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">预设模板下拉菜单</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">工具清单弹出菜单</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">全局 MCP 继承菜单</mdui-chip>
           </div>
         </mdui-card>
 
         <mdui-card variant="outlined" clickable href="ssh-server-details/index.html" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>服务器配置中心与扩展模块<span class="card-zh">5 大配置分页</span></h3>
+              <h3>服务器扩展配置菜单<span class="card-zh">按模块切换</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>面向单台服务器的模块化配置中心：涵盖「概览与连接认证」「远端 MCP 服务」「环境与工具链 (Shell / Env / 路径覆盖)」「语言服务与混合技能 (LSP / Skills)」及「工作区、端口转发与 ResourcePolicy 预算」。</p>
+            <p>顶部提供目标主机切换菜单与可扩展「配置项菜单」，按需切换「连接与凭据」「环境变量与工具链」「端口转发规则」「语言服务与技能源」「远程项目与资源预算」，避免多模块平铺堆叠。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">环境变量与工具链</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">远端 LSP 与共享技能</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">端口转发与资源预算</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">可扩展配置项菜单</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">环境变量与端口转发</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">远端 LSP 与技能源</mdui-chip>
           </div>
         </mdui-card>
 
         <mdui-card variant="outlined" clickable href="ssh-servers/index.html?page=add" class="proto-card">
           <div>
             <div class="card-top">
-              <h3>添加 SSH 服务器与标记块预览<span class="card-zh">场景预设</span></h3>
+              <h3>添加 SSH 服务器<span class="card-zh">受管块折叠预览</span></h3>
               <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
             </div>
-            <p>提供 GPU 节点、标准 Linux 开发机与内网跳板机预设，实时预览将写入 ~/.ssh/config 的 # BEGIN / END anywork server 受管块，并支持创建后一键初始化常用远端 MCP 服务。</p>
+            <p>单卡紧凑表单录入 Host 别名、地址、端口、私钥与可选密码，支持按需折叠预览将写入 ~/.ssh/config 的受管标记块。</p>
           </div>
           <div class="tags">
-            <mdui-chip class="chip-tag" tabindex="-1">~/.ssh/config 实时预览</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">单卡精简表单</mdui-chip>
             <mdui-chip class="chip-tag" tabindex="-1">系统凭据库密码</mdui-chip>
-            <mdui-chip class="chip-tag" tabindex="-1">初始化远端 MCP</mdui-chip>
           </div>
         </mdui-card>
       </div>

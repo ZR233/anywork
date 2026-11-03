@@ -207,9 +207,9 @@ final class _PresentationReadinessAndDiagnosticFailure implements Exception {
 Future<void> capturePresentation(WidgetTester tester, String fileName) async {
   final directory = Platform.environment[_environment];
   if (directory == null || directory.isEmpty) return;
-  if (!Platform.isLinux) {
+  if (!Platform.isLinux && !Platform.isWindows) {
     throw UnsupportedError(
-      '$_environment presentation capture is supported only on Linux',
+      '$_environment presentation capture requires Linux or Windows',
     );
   }
   if (!_safeFileName.hasMatch(fileName)) {
