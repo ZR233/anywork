@@ -335,6 +335,7 @@ void main() {
             .phase,
         AccountQueryPhase.ready,
       );
+      await tester.ensureVisible(find.byKey(const ValueKey('account-back')));
       await screenshot('quota-$phase');
       await tapKey('account-model-sync');
       await untilObserved(graph.models.state, (state) {
@@ -356,6 +357,13 @@ void main() {
       );
       router.go(const SettingsRoute().location);
       await tester.pumpAndSettle();
+      final search = find.descendant(
+        of: find.byKey(const ValueKey('accounts-search')),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(search, saved.name);
+      await tester.pumpAndSettle();
+      expect(find.text(saved.name), findsOneWidget);
       await screenshot('accounts-$phase');
       debugPrint(
         'CHATGPT_USAGE_VERIFIED windows=${quota.quotas.length} phase=$phase',
