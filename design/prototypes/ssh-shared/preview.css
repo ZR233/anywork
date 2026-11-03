@@ -66,15 +66,6 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   --mdui-typescale-title-medium-size: 16px;
   --mdui-typescale-label-large-tracking: 0;
   --mdui-typescale-body-large-tracking: 0;
-  --mdui-typescale-label-small-line-height: 1rem;
-  --mdui-typescale-label-medium-line-height: 1rem;
-  --mdui-typescale-label-large-line-height: 1.25rem;
-  --mdui-typescale-body-small-line-height: 1.1rem;
-  --mdui-typescale-body-medium-line-height: 1.25rem;
-  --mdui-typescale-body-large-line-height: 1.5rem;
-  --mdui-typescale-title-small-line-height: 1.25rem;
-  --mdui-typescale-title-medium-line-height: 1.5rem;
-  --mdui-typescale-title-large-line-height: 1.75rem;
 
   color-scheme: light;
   color: rgb(var(--mdui-color-on-surface));
@@ -91,12 +82,12 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh button { cursor: pointer; }
 #aw-ssh svg { width: 18px; height: 18px; display: block; flex-shrink: 0; }
 #aw-ssh h1, #aw-ssh h2, #aw-ssh h3, #aw-ssh h4, #aw-ssh p { color: inherit; margin: 0; }
-#aw-ssh h1 { font-size: 25px; font-weight: 600; line-height: 1.28; letter-spacing: -0.5px; }
-#aw-ssh h2 { font-size: 16px; line-height: 1.45; font-weight: 600; letter-spacing: -0.2px; }
-#aw-ssh h3 { font-size: 14px; font-weight: 600; line-height: 1.45; }
-#aw-ssh small { font-size: 11.5px; line-height: 1.5; color: rgb(var(--mdui-color-on-surface-variant)); }
+#aw-ssh h1 { font-size: 23px; font-weight: 600; line-height: 1.28; letter-spacing: -0.4px; }
+#aw-ssh h2 { font-size: 15px; line-height: 1.4; font-weight: 600; letter-spacing: -0.2px; }
+#aw-ssh h3 { font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+#aw-ssh small { font-size: 11.5px; line-height: 1.45; color: rgb(var(--mdui-color-on-surface-variant)); }
 #aw-ssh code, #aw-ssh .aw-mono {
-  font: 12px/1.5 var(--aw-mono);
+  font: 12px/1.45 var(--aw-mono);
   overflow-wrap: anywhere;
   color: inherit;
 }
@@ -108,8 +99,8 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh mdui-button-icon { width: 34px; height: 34px; flex-shrink: 0; }
 #aw-ssh mdui-button-icon svg { width: 17px; height: 17px; }
 #aw-ssh mdui-divider { --color: rgb(var(--mdui-color-outline-variant)); margin: 0; }
-#aw-ssh mdui-menu { min-width: 180px; }
-#aw-ssh mdui-menu-item { font-size: 13px; line-height: 1.5; }
+#aw-ssh mdui-menu { min-width: 210px; max-height: 360px; overflow-y: auto; }
+#aw-ssh mdui-menu-item { font-size: 13px; line-height: 1.45; }
 #aw-ssh mdui-menu-item span[slot=icon] svg { width: 16px; height: 16px; }
 #aw-ssh mdui-linear-progress { --height: 5px; --shape-corner: 999px; }
 #aw-ssh mdui-list { padding: 0; }
@@ -117,14 +108,14 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  line-height: 32px;
-  height: 32px;
+  line-height: 30px;
+  height: 30px;
   padding-left: 14px;
   color: rgb(var(--mdui-color-on-surface-variant));
 }
 
 #aw-ssh .aw-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#aw-ssh .aw-between { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+#aw-ssh .aw-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 #aw-ssh .aw-muted { color: rgb(var(--mdui-color-on-surface-variant)); }
 
 /* Preview Control Bar */
@@ -168,7 +159,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   border-radius: 16px;
   overflow: clip;
   background: rgb(var(--mdui-color-surface));
-  min-height: 820px;
+  min-height: 740px;
   position: relative;
 }
 #aw-ssh .aw-sidebar {
@@ -235,10 +226,10 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 
 /* Main Content Area */
 #aw-ssh .aw-main {
-  padding: 28px 34px 40px;
+  padding: 26px 32px 36px;
   min-width: 0;
   width: 100%;
-  max-width: 980px;
+  max-width: 960px;
   margin: 0 auto;
 }
 #aw-ssh .aw-topbar {
@@ -246,42 +237,42 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 #aw-ssh .aw-back { margin-left: -10px; }
 #aw-ssh .aw-page-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 #aw-ssh .aw-page-subtitle {
   font-size: 12.5px;
   color: rgb(var(--mdui-color-on-surface-variant));
-  margin-top: 4px;
-  line-height: 1.55;
+  margin-top: 3px;
+  line-height: 1.5;
 }
 #aw-ssh .aw-tools {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   flex-wrap: wrap;
 }
-#aw-ssh .aw-search { max-width: 310px; flex: 1; min-width: 220px; --shape-corner: 12px; }
+#aw-ssh .aw-search { max-width: 280px; flex: 1; min-width: 200px; --shape-corner: 10px; }
 #aw-ssh .aw-tools-meta {
-  font-size: 11.5px;
+  font-size: 12px;
   color: rgb(var(--mdui-color-on-surface-variant));
   white-space: nowrap;
 }
 
 /* Status & Chips */
 #aw-ssh mdui-chip.aw-chip-sm {
-  height: 24px;
+  height: 22px;
   font-size: 11px;
   --shape-corner: 6px;
   pointer-events: none;
@@ -291,16 +282,15 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.35;
   white-space: nowrap;
   border-radius: 999px;
-  padding: 3px 10px;
-  min-height: 24px;
+  padding: 2px 9px;
+  min-height: 22px;
   background: rgb(var(--mdui-color-secondary-container));
   color: rgb(var(--mdui-color-on-secondary-container));
   font-weight: 500;
   width: max-content;
-  max-width: 100%;
 }
 #aw-ssh .aw-status svg { width: 12px; height: 12px; }
 #aw-ssh .aw-status.success { background: var(--aw-success-bg); color: var(--aw-success); }
@@ -309,34 +299,14 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh .aw-status.info { background: var(--aw-blue-bg); color: #2b424f; }
 #aw-ssh .aw-status.neutral { background: rgb(var(--mdui-color-surface-container)); color: rgb(var(--mdui-color-on-surface-variant)); }
 
-/* Notices */
-#aw-ssh .aw-notice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
-  border-radius: 10px;
-  font-size: 12px;
-  line-height: 1.55;
-  background: var(--aw-warning-bg);
-  color: var(--aw-warning);
-}
-#aw-ssh .aw-notice.error { background: rgb(var(--mdui-color-error-container)); color: rgb(var(--mdui-color-error)); }
-#aw-ssh .aw-notice.neutral { background: rgb(var(--mdui-color-surface-container)); color: rgb(var(--mdui-color-on-surface-variant)); }
-#aw-ssh .aw-notice.success { background: var(--aw-success-bg); color: var(--aw-success); }
-#aw-ssh .aw-notice.info { background: var(--aw-blue-bg); color: #2b424f; }
-#aw-ssh .aw-notice > span > svg, #aw-ssh .aw-notice > svg { width: 16px; height: 16px; flex-shrink: 0; }
-#aw-ssh .aw-notice .aw-notice-text { flex: 1; min-width: 0; }
-
-/* Server List Table & Rows */
+/* Server List Table & Rows (Zero Surface Button Duplication) */
 #aw-ssh .aw-server-card {
   overflow: visible;
   background: rgb(var(--mdui-color-surface-container-lowest));
   --shape-corner: 12px;
 }
 #aw-ssh .aw-table-head {
-  padding: 12px 20px;
+  padding: 10px 18px;
   font-size: 11px;
   font-weight: 600;
   color: rgb(var(--mdui-color-on-surface-variant));
@@ -345,8 +315,8 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 }
 #aw-ssh .aw-server-grid {
   display: grid;
-  grid-template-columns: minmax(210px, 1.25fr) minmax(160px, 0.95fr) minmax(240px, 1.45fr) auto;
-  gap: 16px;
+  grid-template-columns: minmax(220px, 1.35fr) minmax(130px, 0.85fr) minmax(200px, 1.3fr) 36px;
+  gap: 14px;
   align-items: center;
 }
 #aw-ssh .aw-server-row {
@@ -358,7 +328,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh .aw-server-row:last-of-type { border-radius: 0 0 12px 12px; }
 #aw-ssh .aw-server-row:hover { background: rgba(var(--mdui-color-on-surface), 0.02); }
 #aw-ssh .aw-server-row-main {
-  padding: 16px 16px 16px 20px;
+  padding: 12px 14px 12px 18px;
   width: 100%;
 }
 #aw-ssh .aw-server-open {
@@ -369,7 +339,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   padding: 0;
   display: flex;
   gap: 12px;
-  align-items: flex-start;
+  align-items: center;
   min-width: 0;
 }
 #aw-ssh .aw-server-open:hover .aw-server-alias {
@@ -378,24 +348,24 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   text-underline-offset: 3px;
 }
 #aw-ssh .aw-logo {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
   background: rgb(var(--mdui-color-surface));
   border: 1px solid rgb(var(--mdui-color-outline-variant));
-  border-radius: 10px;
+  border-radius: 9px;
   color: rgb(var(--mdui-color-primary));
   position: relative;
 }
-#aw-ssh .aw-logo.large { width: 48px; height: 48px; border-radius: 14px; }
+#aw-ssh .aw-logo.large { width: 40px; height: 40px; border-radius: 10px; }
 #aw-ssh .aw-logo-dot {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
-  width: 11px;
-  height: 11px;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   border: 2px solid rgb(var(--mdui-color-surface-container-lowest));
   background: rgb(var(--mdui-color-outline));
@@ -406,78 +376,41 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh .aw-logo-dot.connecting { background: var(--aw-blue); }
 
 #aw-ssh .aw-server-alias {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 600;
   font-family: var(--aw-mono);
-  line-height: 1.35;
+  line-height: 1.3;
 }
 #aw-ssh .aw-server-target {
   font-size: 11.5px;
   font-family: var(--aw-mono);
   color: rgb(var(--mdui-color-on-surface-variant));
-  margin-top: 2px;
-}
-#aw-ssh .aw-server-auth-meta {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 6px;
+  margin-top: 1px;
 }
 #aw-ssh .aw-mini-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
   background: rgb(var(--mdui-color-surface-container-low));
   border: 1px solid rgba(var(--mdui-color-outline-variant), 0.85);
   color: rgb(var(--mdui-color-on-surface-variant));
   white-space: nowrap;
 }
-#aw-ssh .aw-mini-pill svg { width: 12px; height: 12px; }
-#aw-ssh .aw-mini-pill.interactive {
-  cursor: pointer;
-  transition: background-color 0.14s, border-color 0.14s, color 0.14s;
-}
-#aw-ssh .aw-mini-pill.interactive:hover {
-  background: var(--aw-blue-bg);
-  border-color: var(--aw-blue-soft);
-  color: #2b424f;
-}
+#aw-ssh .aw-mini-pill svg { width: 11px; height: 11px; }
 
-#aw-ssh .aw-conn-col {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-#aw-ssh .aw-conn-sub {
-  font-size: 11px;
+#aw-ssh .aw-summary-text {
+  font-size: 12px;
   color: rgb(var(--mdui-color-on-surface-variant));
-  line-height: 1.4;
-}
-
-#aw-ssh .aw-cap-col {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-#aw-ssh .aw-cap-badges {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-#aw-ssh .aw-row-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  justify-content: flex-end;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #aw-ssh .aw-server-row-banner {
-  margin: 0 16px 14px 72px;
-  padding: 10px 14px;
+  margin: 0 14px 12px 66px;
+  padding: 8px 12px;
   border-radius: 8px;
   font-size: 12px;
   display: flex;
@@ -486,312 +419,185 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   gap: 12px;
   flex-wrap: wrap;
 }
-#aw-ssh .aw-server-row-banner.error {
-  background: rgb(var(--mdui-color-error-container));
-  color: rgb(var(--mdui-color-error));
-}
-#aw-ssh .aw-server-row-banner.warning {
-  background: var(--aw-warning-bg);
-  color: var(--aw-warning);
-}
-#aw-ssh .aw-server-row-banner.info {
-  background: var(--aw-blue-bg);
-  color: #2b424f;
-}
+#aw-ssh .aw-server-row-banner.error { background: rgb(var(--mdui-color-error-container)); color: rgb(var(--mdui-color-error)); }
+#aw-ssh .aw-server-row-banner.warning { background: var(--aw-warning-bg); color: var(--aw-warning); }
+#aw-ssh .aw-server-row-banner.info { background: var(--aw-blue-bg); color: #2b424f; }
 
-/* Telemetry & Summary Cards */
-#aw-ssh .aw-telemetry-card {
-  --shape-corner: 16px;
-  padding: 18px 22px;
-  margin-bottom: 20px;
-  background: rgb(var(--mdui-color-surface-container-low));
-}
-#aw-ssh .aw-telemetry-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
-}
-#aw-ssh .aw-telemetry-item {
-  min-width: 0;
-}
-#aw-ssh .aw-telemetry-item + .aw-telemetry-item {
-  border-left: 1px solid rgba(var(--mdui-color-on-surface), 0.12);
-  padding-left: 18px;
-}
-#aw-ssh .aw-telemetry-label {
-  font-size: 11px;
-  color: rgb(var(--mdui-color-on-surface-variant));
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 4px;
-}
-#aw-ssh .aw-telemetry-label svg { width: 13px; height: 13px; }
-#aw-ssh .aw-telemetry-val {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.3px;
-  font-variant-numeric: tabular-nums;
-}
-#aw-ssh .aw-telemetry-sub {
-  font-size: 11px;
-  color: rgb(var(--mdui-color-on-surface-variant));
-  margin-top: 3px;
-  display: block;
-}
-
-/* Detail Identity & Tabs */
+/* Server Detail Identity (Title itself is the Server Switcher Menu Trigger) */
 #aw-ssh .aw-detail-identity {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
 }
-#aw-ssh .aw-detail-title-row {
-  display: flex;
+#aw-ssh .aw-server-title-trigger {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  padding: 3px 8px 3px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 600 20px/1.25 var(--aw-mono);
+  border-radius: 8px;
 }
-#aw-ssh .aw-detail-identity h1 {
-  font-size: 22px;
-  font-family: var(--aw-mono);
+#aw-ssh .aw-server-title-trigger:hover {
+  color: var(--aw-blue);
+}
+#aw-ssh .aw-server-title-trigger svg {
+  width: 16px;
+  height: 16px;
+  color: rgb(var(--mdui-color-on-surface-variant));
 }
 #aw-ssh .aw-endpoint-line {
   font-size: 12px;
   color: rgb(var(--mdui-color-on-surface-variant));
-  margin-top: 3px;
+  margin-top: 2px;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-#aw-ssh .aw-server-tabs {
-  display: block;
-  --mdui-typescale-title-small-size: 13px;
-  margin-top: 6px;
-}
-#aw-ssh .aw-server-tabs mdui-tab-panel {
-  padding-top: 20px;
-}
 
-/* Sections & Cards */
-#aw-ssh .aw-section { margin-top: 22px; }
-#aw-ssh .aw-section:first-child { margin-top: 0; }
-#aw-ssh .aw-section-heading {
+/* Unified Section Toolbar (Config Menu Trigger on Left + Context Action on Right) */
+#aw-ssh .aw-module-toolbar {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 14px;
-  margin-bottom: 10px;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: rgb(var(--mdui-color-surface-container-low));
+  border: 1px solid rgb(var(--mdui-color-outline-variant));
   flex-wrap: wrap;
 }
-#aw-ssh .aw-section-caption {
-  font-size: 12px;
-  color: rgb(var(--mdui-color-on-surface-variant));
-  margin-top: 2px;
+#aw-ssh .aw-menu-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--mdui-color-outline-variant));
+  background: rgb(var(--mdui-color-surface-container-lowest));
+  color: rgb(var(--mdui-color-on-surface));
+  font-size: 13px;
+  font-weight: 600;
+  transition: border-color 0.14s, background-color 0.14s;
 }
+#aw-ssh .aw-menu-trigger-btn:hover {
+  border-color: rgb(var(--mdui-color-primary));
+  background: rgb(var(--mdui-color-surface-bright));
+}
+#aw-ssh .aw-menu-trigger-btn svg { width: 15px; height: 15px; }
+#aw-ssh .aw-menu-badge {
+  font: 500 11px/1.2 var(--aw-mono);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgb(var(--mdui-color-secondary-container));
+  color: rgb(var(--mdui-color-on-secondary-container));
+}
+
+/* Tool Inspection Menu inside MCP Rows */
+#aw-ssh .aw-tools-menu-panel {
+  min-width: 310px;
+  max-width: 390px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+#aw-ssh .aw-tool-menu-row {
+  padding: 7px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(var(--mdui-color-outline-variant), 0.45);
+}
+#aw-ssh .aw-tool-menu-row:last-child { border-bottom: 0; }
+#aw-ssh .aw-tool-menu-row:hover { background: rgb(var(--mdui-color-surface-container-low)); }
+#aw-ssh .aw-tool-menu-row code {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--mdui-color-primary));
+}
+
+/* Cards & MCP Rows */
 #aw-ssh .aw-setting-card {
   background: rgb(var(--mdui-color-surface-container-lowest));
   --mdui-color-surface: var(--mdui-color-surface-container-lowest);
   overflow: visible;
   --shape-corner: 12px;
 }
-
-/* MCP Management Dedicated Components */
-#aw-ssh .aw-mcp-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
-}
-#aw-ssh .aw-mcp-stat-card {
-  padding: 15px 18px;
-  background: rgb(var(--mdui-color-surface-container-lowest));
-  --shape-corner: 12px;
-}
-#aw-ssh .aw-mcp-stat-card strong {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
-  display: block;
-  margin: 4px 0 2px;
-  font-variant-numeric: tabular-nums;
-}
-#aw-ssh .aw-mcp-card {
-  background: rgb(var(--mdui-color-surface-container-lowest));
-  --shape-corner: 12px;
-  overflow: hidden;
-}
-#aw-ssh .aw-mcp-header {
-  --min-height: 68px;
-}
-#aw-ssh .aw-mcp-header > [slot=icon] svg {
-  width: 18px;
-  height: 18px;
-  transition: transform 0.18s ease;
-}
-#aw-ssh mdui-collapse-item[data-expanded] .aw-mcp-header > [slot=icon] svg {
-  transform: rotate(90deg);
-}
-#aw-ssh .aw-mcp-end-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-#aw-ssh .aw-mcp-body {
-  margin: 0 20px 0 52px;
-  border-top: 1px solid rgb(var(--mdui-color-outline-variant));
-  padding: 16px 0 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-#aw-ssh .aw-mcp-config-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr);
-  gap: 14px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: rgb(var(--mdui-color-surface-container-low));
-  --mdui-color-surface: var(--mdui-color-surface-container-low);
-}
-#aw-ssh .aw-kv-list {
-  display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  gap: 6px 12px;
-  font-size: 12px;
-  align-items: baseline;
-}
-#aw-ssh .aw-kv-list span.aw-kv-key {
-  color: rgb(var(--mdui-color-on-surface-variant));
-  font-weight: 500;
-}
-#aw-ssh .aw-tools-drawer {
-  border: 1px solid rgb(var(--mdui-color-outline-variant));
-  border-radius: 10px;
-  background: rgb(var(--mdui-color-surface));
-  padding: 12px 14px;
-}
-#aw-ssh .aw-tools-drawer-head {
+#aw-ssh .aw-mcp-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-  font-size: 12px;
+  gap: 14px;
+  padding: 12px 18px;
+  border-top: 1px solid rgb(var(--mdui-color-outline-variant));
 }
-#aw-ssh .aw-tool-chips {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+#aw-ssh .aw-mcp-row:first-child { border-top: 0; }
+#aw-ssh .aw-mcp-row-info { min-width: 0; flex: 1; }
+#aw-ssh .aw-mcp-row-title {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  font-family: var(--aw-mono);
 }
-#aw-ssh .aw-tool-item {
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgb(var(--mdui-color-surface-container-lowest));
-  border: 1px solid rgba(var(--mdui-color-outline-variant), 0.8);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-#aw-ssh .aw-tool-item code {
+#aw-ssh .aw-mcp-row-sub {
   font-size: 11.5px;
-  font-weight: 600;
-  color: rgb(var(--mdui-color-primary));
-}
-#aw-ssh .aw-tool-item small {
-  font-size: 11px;
+  font-family: var(--aw-mono);
   color: rgb(var(--mdui-color-on-surface-variant));
-}
-
-/* Inline Editor / Create Card */
-#aw-ssh .aw-editor-card {
-  padding: 20px 22px;
-  margin-bottom: 18px;
-  border-radius: 14px;
-  background: rgb(var(--mdui-color-surface-container-lowest));
-  --mdui-color-surface: var(--mdui-color-surface-container-lowest);
-  border: 1px solid rgb(var(--mdui-color-primary));
-  box-shadow: 0 6px 20px rgba(64, 54, 47, 0.08);
-}
-#aw-ssh .aw-preset-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 12px 0 16px;
-}
-#aw-ssh .aw-preset-btn {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgb(var(--mdui-color-outline-variant));
-  background: rgb(var(--mdui-color-surface-container-low));
-  color: inherit;
-  text-align: left;
-  transition: border-color 0.14s, background-color 0.14s;
-}
-#aw-ssh .aw-preset-btn:hover {
-  border-color: rgb(var(--mdui-color-outline));
-  background: rgb(var(--mdui-color-surface-container));
-}
-#aw-ssh .aw-preset-btn.selected {
-  background: rgba(var(--mdui-color-secondary-container), 0.7);
-  border-color: rgb(var(--mdui-color-primary));
-}
-#aw-ssh .aw-preset-btn strong {
-  display: block;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-#aw-ssh .aw-preset-btn small {
-  display: block;
-  font-size: 11px;
   margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#aw-ssh .aw-mcp-row-sub.warn { color: var(--aw-warning); font-family: var(--aw-font); }
+#aw-ssh .aw-mcp-row-sub.err { color: rgb(var(--mdui-color-error)); font-family: var(--aw-font); }
+#aw-ssh .aw-mcp-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
+/* Forms & Tables */
 #aw-ssh .aw-form-grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
   align-items: start;
 }
 #aw-ssh .aw-form-grid-3 {
   display: grid;
   grid-template-columns: 1.2fr 1.2fr 0.7fr;
-  gap: 14px;
+  gap: 12px;
   align-items: start;
 }
 #aw-ssh .aw-form-stack {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 #aw-ssh .aw-form-stack mdui-text-field,
-#aw-ssh .aw-form-stack mdui-select {
-  width: 100%;
-}
+#aw-ssh .aw-form-stack mdui-select { width: 100%; }
 
-/* Code / SSH Config Block Preview */
 #aw-ssh .aw-code-preview {
-  font: 12px/1.6 var(--aw-mono);
+  font: 12px/1.55 var(--aw-mono);
   background: rgb(var(--mdui-color-surface-container-low));
   border: 1px solid rgb(var(--mdui-color-outline-variant));
   border-radius: 10px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   white-space: pre-wrap;
   overflow-x: auto;
   color: rgb(var(--mdui-color-on-surface));
 }
-#aw-ssh .aw-code-preview .aw-comment {
-  color: var(--aw-blue);
-}
+#aw-ssh .aw-code-preview .aw-comment { color: var(--aw-blue); }
 
-/* Env Table & Toolchain Overrides */
 #aw-ssh .aw-env-table {
   width: 100%;
   border-collapse: collapse;
@@ -799,7 +605,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 }
 #aw-ssh .aw-env-table th,
 #aw-ssh .aw-env-table td {
-  padding: 10px 16px;
+  padding: 9px 16px;
   text-align: left;
   border-bottom: 1px solid rgb(var(--mdui-color-outline-variant));
 }
@@ -809,32 +615,23 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   color: rgb(var(--mdui-color-on-surface-variant));
   background: rgb(var(--mdui-color-surface-container-low));
 }
-#aw-ssh .aw-env-table tr:last-child td {
-  border-bottom: 0;
-}
+#aw-ssh .aw-env-table tr:last-child td { border-bottom: 0; }
 
 /* Directory Browser Dialog */
-#aw-ssh .aw-dir-path-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-#aw-ssh .aw-dir-path-bar mdui-text-field {
-  flex: 1;
-}
+#aw-ssh .aw-dir-path-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#aw-ssh .aw-dir-path-bar mdui-text-field { flex: 1; }
 #aw-ssh .aw-dir-current {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 8px;
   background: rgb(var(--mdui-color-surface-container-low));
   font: 12px/1.4 var(--aw-mono);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 #aw-ssh .aw-dir-list {
-  max-height: 260px;
+  max-height: 240px;
   overflow-y: auto;
   border: 1px solid rgb(var(--mdui-color-outline-variant));
   border-radius: 10px;
@@ -846,7 +643,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 9px 14px;
+  padding: 8px 14px;
   border: 0;
   border-bottom: 1px solid rgba(var(--mdui-color-outline-variant), 0.6);
   background: transparent;
@@ -855,29 +652,27 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   font-size: 13px;
 }
 #aw-ssh .aw-dir-entry:last-child { border-bottom: 0; }
-#aw-ssh .aw-dir-entry:hover {
-  background: rgb(var(--mdui-color-surface-container-low));
-}
+#aw-ssh .aw-dir-entry:hover { background: rgb(var(--mdui-color-surface-container-low)); }
 
 /* Empty State & Footer */
 #aw-ssh .aw-empty {
-  padding: 48px 20px;
+  padding: 36px 20px;
   text-align: center;
   --shape-corner: 12px;
   background: rgb(var(--mdui-color-surface-container-lowest));
 }
 #aw-ssh .aw-empty > span > svg, #aw-ssh .aw-empty > svg {
-  width: 32px;
-  height: 32px;
-  margin: 0 auto 12px;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 8px;
   color: rgb(var(--mdui-color-on-surface-variant));
 }
-#aw-ssh .aw-empty h2 { font-size: 17px; }
+#aw-ssh .aw-empty h2 { font-size: 15.5px; }
 #aw-ssh .aw-empty p {
-  margin: 6px auto 18px;
-  max-width: 480px;
+  margin: 4px auto 14px;
+  max-width: 420px;
   color: rgb(var(--mdui-color-on-surface-variant));
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 #aw-ssh .aw-preview-foot {
@@ -893,35 +688,19 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-ssh .aw-preview-foot span { display: inline-flex; gap: 6px; align-items: center; }
 #aw-ssh .aw-preview-foot svg { width: 13px; height: 13px; }
 #aw-ssh .aw-menu-mobile { display: none; }
-#aw-ssh mdui-dialog { --max-width: 600px; }
+#aw-ssh mdui-dialog { --max-width: 560px; }
 
-/* Responsive Breakpoints */
-@media (max-width: 1020px) {
-  body { padding: 14px 16px 24px; }
+@media (max-width: 860px) {
+  body { padding: 12px; }
   #aw-ssh .aw-shell { grid-template-columns: 168px minmax(0, 1fr); }
-  #aw-ssh .aw-main { padding: 24px 22px 28px; }
-  #aw-ssh .aw-server-grid {
-    grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 1fr) minmax(200px, 1.3fr) auto;
-    gap: 12px;
-  }
-  #aw-ssh .aw-telemetry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #aw-ssh .aw-telemetry-item:nth-child(3) { border-left: 0; padding-left: 0; }
-}
-
-@media (max-width: 820px) {
-  #aw-ssh .aw-server-grid { grid-template-columns: 1fr auto; }
+  #aw-ssh .aw-main { padding: 20px 18px 26px; }
+  #aw-ssh .aw-server-grid { grid-template-columns: 1fr 36px; }
   #aw-ssh .aw-table-head { display: none; }
-  #aw-ssh .aw-conn-col, #aw-ssh .aw-cap-col { grid-column: 1 / -1; padding-left: 52px; }
-  #aw-ssh .aw-mcp-summary-grid,
-  #aw-ssh .aw-preset-grid,
-  #aw-ssh .aw-mcp-config-grid,
   #aw-ssh .aw-form-grid-2,
   #aw-ssh .aw-form-grid-3 { grid-template-columns: 1fr; }
-  #aw-ssh .aw-mcp-body { margin: 0 14px; }
 }
 
 @media (max-width: 620px) {
-  body { padding: 10px; }
   #aw-ssh .aw-shell { grid-template-columns: 1fr; border-radius: 12px; }
   #aw-ssh .aw-sidebar { display: none; }
   #aw-ssh .aw-shell.aw-nav-open .aw-sidebar {
@@ -931,12 +710,4 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
     border-right: 0;
   }
   #aw-ssh .aw-menu-mobile { display: inline-flex; }
-  #aw-ssh .aw-main { padding: 18px 14px; }
-  #aw-ssh .aw-telemetry-grid { grid-template-columns: 1fr; }
-  #aw-ssh .aw-telemetry-item + .aw-telemetry-item {
-    border-left: 0;
-    padding-left: 0;
-    border-top: 1px solid rgba(var(--mdui-color-on-surface), 0.12);
-    padding-top: 12px;
-  }
 }
