@@ -44,9 +44,13 @@ cargo xtask check-gui-generated
 cargo xtask build-gui --check-generated # CI/release: regenerate and reject unstable output
 
 # Isolated native app with local scripted provider and evidence. Scene flag is --preset.
-cargo xtask manual-gui --preset gui
+cargo xtask manual-gui --preset gui --inspect
 # Optional Flutter content capture on a normal debug run (ext.anywork.capture).
 cargo xtask run-gui --capture
+# Official Flutter MCP/Driver widget inspection, interaction and screenshots.
+cargo xtask run-gui --inspect
+# Official browser preview, with project dependency overrides prepared automatically.
+cargo xtask preview-gui --headless --no-devtools
 # Official desktop / native project suites.
 cargo xtask test-project --suite desktop --set smoke
 cargo xtask test-project --suite native --set smoke
@@ -78,6 +82,29 @@ GUI 交互通过 `cargo xtask manual-gui --preset` 的隔离模拟服务人工�
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
 
+## 官方技能与原生 MCP 观察
+
+Flutter / Dart 官方技能安装在用户主目录 `.agents/skills/`，不放入本项目。
+来源为 [flutter/agent-plugins](https://github.com/flutter/agent-plugins) 和
+[dart-lang/skills](https://github.com/dart-lang/skills)；通用教程按任务读取，项目适配见根 `AGENTS.md`。
+
+原生应用从根目录使用 `cargo xtask run-gui --inspect`，隔离模拟观察使用
+`cargo xtask manual-gui --preset gui --inspect`。两者通过专用 debug 入口启用官方 Driver extension，
+不改变正式入口或集成测试 binding。Dart MCP 使用实际 SDK 的 `dart mcp-server` 直接提供 stdio，
+项目通过 roots 指定；不要使用向 stdout 打印日志的 Cargo 包装启动 MCP，也不要让 MCP
+`launch_app` 绕过项目的 bridge/helper 准备。
+
+先读取已安装 MCP 的 schema，通过 `dtd` 连接本次日志中的 DTD/VM Service；使用
+`widget_inspector` 的 `get_widget_tree` 发现控件，再用 `flutter_driver_command` 获取布局诊断、
+点击、输入、滚动和 `screenshot`。多应用显式指定 `appUri`。截图返回后实际查看画面，结合
+运行时错误和 canonical 状态判断；复用热更新缩短迭代，不把工具调用成功当作行为断言通过。
+
+这些 Flutter 接口在 Windows 和 Linux 共用。Linux SSH 没有显示服务时，使用
+`GDK_BACKEND=x11 xvfb-run -a` 包装原生入口；人工 preset 还需要可写 TTY。
+Xvfb 只提供显示环境，Windows 原生应用仍需要桌面会话。Flutter 截图不覆盖窗口装饰、系统菜单
+或真实 IME；这些边界按需专项验证。已有 `--capture` 保留带来源元数据的 PNG 落盘，退出仍由
+生产关闭协调器和工程进程所有者共同确认。截图、日志及一次性探针不提交。
+
 ## 账号组件预览
 
 账号组件的官方预览分为三组入口：
@@ -104,49 +131,31 @@ ProviderScope、Client 或 FRB 建立业务运行时，预览动作仅改变本�
 完整工作区和时间线仍使用原生 demo 或 `manual-gui --preset` 观察。纯组件与组合时间线直接使用生产 View，完整业务链路使用隔离原生集成测试。Native 模型声明使用同一套结构化手动模型
 字段，不另设自由文本解析器或第二份文本草稿。
 
-从仓库根目录操作，生成输入变化后先同步生成物：
+预览编写方法使用用户级官方 `flutter-add-widget-preview` 技能；项目的启动与恢复入口为：
 
-```text
-cargo xtask generate-gui
-cargo dart analyze lib/src/features/settings/accounts
-cargo flutter widget-preview start
+```bash
+cargo xtask preview-gui --headless --no-devtools
+cargo xtask preview-gui --help -v
+# 不完整缓存恢复前，先结束所属预览进程：
+cargo flutter widget-preview clean
 ```
 
-SSH 或需要手动选择浏览器时使用 `cargo flutter widget-preview start --web-server --no-devtools`，
-打开命令输出的实际服务地址；不要占用项目保留端口 `1420`。首次仍需 Flutter Web 编译，
-后续由官方工具使用 `.widget_preview/` 缓存并响应源文件修改，不构建桌面程序或启动业务运行时。
-在预览底部搜索框按场景名称筛选，可直接操作生产组件的搜索、展开与编辑回调。
+入口先按应用锁文件准备依赖，再从应用 `pubspec.yaml` 与可选的 `pubspec_overrides.yaml`
+派生 `.widget_preview/pubspec_overrides.yaml`，相对本地包路径转换为绝对路径。
+该缓存文件由入口维护，无需手工准备；应用覆盖字段按 Dart Pub 契约替换，不维护第二份包名或版本清单。
+应用 lockfile 不随预览升级，官方 scaffold 仍拥有自己的依赖解析和缓存。
 
-验证热更新时优先让官方工具启动并连接 Chrome；Linux 无桌面环境可使用
-`cargo flutter widget-preview start --headless --no-devtools`，必要时将 `CHROME_EXECUTABLE`
-指向实际安装的 Chrome/Chromium。`--web-server` 的完整调试依赖 Dart Debug Chrome 扩展，
-不能将不带扩展的浏览器布局截图等同于热更新成功；反复关闭页面后若出现热重载客户端超时，
-应退出该服务并切换到官方浏览器模式，不修改预览工具源码或把失败吞掉。关闭预览使用 `Ctrl-C`，
-等待命令及所属分析服务、DTD 和浏览器进程退出；临时目录和截图仍遵循会话文件约定。
-
-### 当前依赖覆盖的准备
-
-Flutter 3.47 的预览工程是单独的依赖解析根，不继承应用的 `dependency_overrides`。
-当前 `flutter_chat_ui` 依赖的官方 `cross_cache 1.1.1` 尚未适配项目使用的 `cross_file 0.4`，
-因此预览必须引用应用已有的同一个兼容包，而非再复制一份实现。
-首次启动前，创建 `code/anywork/.widget_preview/pubspec_overrides.yaml`：
-
-```yaml
-dependency_overrides:
-  cross_cache:
-    path: ../packages/cross_cache
-```
-
-这是 Dart 官方支持的本地依赖覆盖配置，放在已忽略的预览缓存内，不提交该目录，也不修改 Flutter SDK。
-若首次启动曾因版本冲突中断，先执行 `cargo flutter widget-preview clean`，再重新创建上述文件后启动，
-避免复用不完整的预览依赖缓存；清理或 SDK 升级后应检查该配置是否仍存在。
-应用的 `pubspec.yaml` 和 `pubspec.lock` 不因这一步改变。
+预览器负责源码发现、Web 编译与热更新。默认让官方工具启动并连接浏览器；无头模式可用
+`CHROME_EXECUTABLE` 指定实际 Chrome/Chromium。需要服务模式时透传 `--web-server`，但
+完整热更新调试依赖 Dart Debug Chrome 扩展；仅刷新页面不证明热重载成功。先固定场景、视口、
+主题和字号，再对照设计检查画面；退出后等待 Flutter、DTD、分析服务和浏览器回收，不占用 `1420`。
+生成输入变化仍先执行 `cargo xtask generate-gui`。
 
 当前依赖策略是短期保留 `packages/cross_cache` 兼容补丁，不为去掉该目录而降级
 `cross_file` / `desktop_drop`，也不另加缓存库。相对官方 `cross_cache 1.1.1`，本地代码
 只适配 `XFile.fileSystem(path: ...)`，并等待图片解码 Future，使异步解码失败进入既有错误处理；
 包约束同步适配 `cross_file 0.4`。当上游发布兼容版本后，先核对这两处行为和桌面/Web 依赖解析，
-再统一移除本地包、应用及预览 override，更新应用 lockfile 并完成相关图片与预览回归。
+再统一移除本地包和应用 override；预览入口会更新派生配置，随后更新应用 lockfile 并完成相关图片与预览回归。
 
 预览证明的是组件解耦、Web 渲染和布局，不证明原生插件、FRB、凭据、持久化或进程关闭行为；
 这些仍需通过 `cargo xtask manual-gui --preset` 和真实 `run-gui` 验收，PR 产品截图也应来自原生程序。
@@ -169,8 +178,8 @@ PR 产品集成截图应来自同次真实应用运行，并区分官方集成�
 - `plan_detail_previews.dart` 以固定不可变场景展示计划详情、全宽模式和窄窗文字缩放，
   不在 Preview 外壳模拟生产工作区的关闭或布局切换。
 
-先按前文准备官方预览缓存的依赖覆盖，再从根目录启动
-`cargo flutter widget-preview start`；搜索 `Timeline` 可找到这些入口。预览不创建
+从根目录启动
+`cargo xtask preview-gui --headless --no-devtools`；搜索 `Timeline` 可找到这些入口。预览不创建
 `ProviderScope`、`AppGraph`、Client 或 FRB，不复制另一份时间线或 current 状态。
 截图须标明合成预览与原生运行的区别，不能用概念稿截图冒充生产组件。
 
@@ -181,7 +190,7 @@ PR 产品集成截图应来自同次真实应用运行，并区分官方集成�
 测试使用 `WidgetTester` 和真实 `AppGraph`，不依赖 `driver_main` 或 `requestData` 协议。
 业务就绪与帧推进分别等待，持续旋转或流式输出期间不以 `pumpAndSettle` 等待业务结束。
 
-三个普通呈现场景默认不截图，不依赖平台截图命令。需要 Linux 集成截图时显式设置
+三个普通呈现场景默认不截图，不依赖平台截图命令。需要 Linux/Windows 集成截图时显式设置
 `ANYWORK_CAPTURE_PRESENTATION=1`；未知值在业务环境启动前报错，未启用时清除继承的内部
 `ANYWORK_PRESENTATION_SCREENSHOTS` 目录变量。截图保存在该次 `target/manual-gui/` 输出中，
 使用官方 `RepaintBoundary.toImage` 捕获同一真实 AppGraph/FRB/SQLite 应用已经绘制的离屏

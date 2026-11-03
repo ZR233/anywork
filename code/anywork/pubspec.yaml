@@ -57,6 +57,8 @@ dev_dependencies:
   riverpod_lint: ^3.1.9
   go_router_builder: ^4.5.2
   vm_service: 15.4.0
+  flutter_driver:
+    sdk: flutter
 
 flutter:
   generate: true
