@@ -58,6 +58,14 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 ### 24.1.3 时间线呈现与官方集成测试
 
+日常设计对照按证据需要选择入口：纯布局使用官方 Widget Previewer（项目入口为
+`cargo xtask preview-gui --headless --no-devtools`），组件行为使用无显示依赖的 `test/ui`，
+真实页面检查使用 `run-gui --inspect` 或隔离 `manual-gui --preset gui --inspect`。
+官方 MCP 负责 widget tree、布局诊断、交互与 Flutter 内容截图，重复功能旅程仍用
+`integration_test`。固定场景、视口、主题及文字缩放后复用热更新；各层不构成必跑流水线。
+用户级官方技能维护通用写法，项目技能只维护构建与业务边界。
+
+
 时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
 
 迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除独立的人工诊断入口。
@@ -90,6 +98,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 ## 24.3 原生 GUI 观察与隔离
 
+原生 AI 观察通过专用 debug `--inspect` 入口启用官方 Flutter Driver extension，MCP 连接已运行的应用；正式入口和 `integration_test` binding 不注册该交互扩展。Inspector 与 MCP 不提供操作系统显示服务：Linux 无显示环境使用 Xvfb，Windows 使用可运行桌面应用的会话；Flutter 层操作和截图不证明原生输入法或系统菜单。
+
 本地模拟 GUI 人工验收由独立工程工具 `pl-studio-acceptance` 编排（通过 `cargo xtask manual-gui --preset` 按需编译并透传参数，复用 `pl-dev-support` 的路径与进程树管理，并在服务就绪计时前完成固件编译）。真实厂商与模型的原生人工观察使用 `cargo xtask run-gui` 读取用户已有配置，不能把模拟供应商结果外推为真实模型行为。按实际入口核对真实窗口截图、界面组件树（widget tree）、权威快照、必要请求/诊断和所属进程真实回收；没有模拟服务的观察不虚构模拟请求记录。脚本退出码仅表示采集流程完成，最终视觉与交互结论由人工核查截图后独立判定（默认标记为“待评审”）。
 
 多阶段原生旅程的诊断归档与阶段成功判定独立：已经产生的 GUI 日志在阶段失败时仍须脱敏保留，不能因该阶段未进入成功清单而随隔离环境删除。日志归档不补造未观察到的退出状态，不改变原始失败退出或后续阶段的准入条件。
@@ -102,7 +112,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役，人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
+PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 

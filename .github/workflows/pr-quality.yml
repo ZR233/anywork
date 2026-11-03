@@ -476,6 +476,25 @@ jobs:
           cargo xtask build-gui
           test -f dist/anywork-release/anywork.exe
 
+      # Explicit platform observation; the normal Windows job remains a build
+      # and Rust check. The current desktop runner owns the isolated fixture.
+      - name: Observe Windows Flutter presentation when requested
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        env:
+          ANYWORK_CAPTURE_PRESENTATION: '1'
+        run: cargo xtask test-project --suite desktop --case question_history --output target/ci-inspection-windows
+
+      - name: Preserve Windows presentation evidence
+        if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-flutter-presentation-${{ github.sha }}
+          path: |
+            target/ci-inspection-windows/report.json
+            target/ci-inspection-windows/**/*.png
+            target/ci-inspection-windows/**/*.meta.json
+          if-no-files-found: error
+
   macos-build:
     name: Native Rust and application checks (macos)
     needs: [changes, remote-helpers]
