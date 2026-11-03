@@ -11,6 +11,7 @@ import '../types/runtime.dart';
 import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';
 import '../types/thread_stream/item.dart';
+import '../types/timeline.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -72,21 +73,6 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   Future<BridgeCurrentCollectionPage> pageCurrent({
     required BridgeCurrentCollectionRef reference,
     String? continuation,
-    required BridgeReadDemand demand,
-  });
-
-  /// Reads the same bounded ordinary window including its observed completion anchor.
-  Future<BridgeChatBatch> readAt({
-    required BigInt completionSeq,
-    String? before,
-    required BridgeReadDemand demand,
-  });
-
-  /// Reads a bounded ordinary page before an observed completion position.
-  /// This continuation is independent of the original H0 history cursor and feed credit.
-  Future<BridgeChatBatch> readBefore({
-    required BigInt completionSeq,
-    String? before,
     required BridgeReadDemand demand,
   });
 

@@ -44,7 +44,8 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ConversationContent content;
   final int? selectionId;
   final int? selectionStartedMicros;
-  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand) openMembers;
+  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)
+  openMembers;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(

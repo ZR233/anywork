@@ -169,12 +169,15 @@ void main() {
 
       await scene.submit('Realtime reasoning then answer');
       await scene.until(
-        () =>
-            [...scene.observed.main, ...scene.observed.live].any(
-              (unit) => unit.item.summary?.categories.any(
-                (count) => count.category == TimelineCategory.thinking && count.count > 0,
-              ) == true,
-            ),
+        () => [...scene.observed.main, ...scene.observed.live].any(
+          (unit) =>
+              unit.item.summary?.categories.any(
+                (count) =>
+                    count.category == TimelineCategory.thinking &&
+                    count.count > 0,
+              ) ==
+              true,
+        ),
         'production work summary admits real reasoning',
       );
       await scene.completed(answer: 'realtime reasoning answer');
@@ -335,7 +338,10 @@ final class _RealtimeScene {
     expect(groups, isNotEmpty);
     await observed.openSourceGroups(source);
     final reasoning = observed.mountedMembers
-        .where((atom) => atom.source == source && atom.kind == ChatAtomKind.reasoning)
+        .where(
+          (atom) =>
+              atom.source == source && atom.kind == ChatAtomKind.reasoning,
+        )
         .toList();
     expect(reasoning, isNotEmpty);
     for (final atom in reasoning) {
@@ -468,29 +474,52 @@ final class _RealtimeScene {
           expected.containsKey(reading.value.toolCallId) &&
           reading.value.statusString == 'succeeded';
     }
+
     // Main Status and explicit group members are different domains. These
     // short-lived observations never fabricate an Atom for a Main item.
-    List<({ChatAtom? member, TimelineMembersRef? reference, TimelineItem? main, ChatItemPresentation value})>
-        targets() => [
+    List<
+      ({
+        ChatAtom? member,
+        TimelineMembersRef? reference,
+        TimelineItem? main,
+        ChatItemPresentation value,
+      })
+    >
+    targets() => [
       for (final unit in observed.main)
         if (!priorItemIds.contains(unit.id) &&
             unit.item.kind == TimelineItemKind.status &&
             unit.item.payload != null &&
             requestedResult(ChatItemPresentation.forUnit(unit)))
-          (member: null, reference: null, main: unit.item, value: ChatItemPresentation.forUnit(unit)),
+          (
+            member: null,
+            reference: null,
+            main: unit.item,
+            value: ChatItemPresentation.forUnit(unit),
+          ),
       for (final atom in observed.mountedMembers)
-        if (atom.source == source && atom.payload != null &&
+        if (atom.source == source &&
+            atom.payload != null &&
             requestedResult(ChatItemPresentation.decode(atom)))
-          (member: atom, reference: observed.unitForMember(atom.id).item.members,
-            main: null, value: ChatItemPresentation.decode(atom)),
+          (
+            member: atom,
+            reference: observed.unitForMember(atom.id).item.members,
+            main: null,
+            value: ChatItemPresentation.decode(atom),
+          ),
     ];
 
     await until(
       () => expected.keys.every(
         (call) =>
             targets()
-                .where((target) =>
-                    (target.value.toolCard as DecodedToolCard).value.toolCallId == call)
+                .where(
+                  (target) =>
+                      (target.value.toolCard as DecodedToolCard)
+                          .value
+                          .toolCallId ==
+                      call,
+                )
                 .length ==
             1,
       ),
@@ -498,7 +527,12 @@ final class _RealtimeScene {
     );
     final receipts = targets();
     expect(
-      receipts.map((target) => (target.value.toolCard as DecodedToolCard).value.toolCallId).toSet(),
+      receipts
+          .map(
+            (target) =>
+                (target.value.toolCard as DecodedToolCard).value.toolCallId,
+          )
+          .toSet(),
       expected.keys.toSet(),
     );
     expect(receipts, hasLength(expected.length));
@@ -510,7 +544,10 @@ final class _RealtimeScene {
         final atom = target.member;
         TimelineGroupDisplay? group;
         if (atom != null) {
-          group = await observed.revealMember(atom, reference: target.reference!);
+          group = await observed.revealMember(
+            atom,
+            reference: target.reference!,
+          );
         } else {
           await observed.revealItem(target.main!);
         }
@@ -527,7 +564,9 @@ final class _RealtimeScene {
         expect(tool.exitCode, 0);
         expect(tool.output, contains(lastLine));
         final details = find.descendant(
-          of: atom == null ? observed.itemRow(rowId) : observed.memberRow(rowId),
+          of: atom == null
+              ? observed.itemRow(rowId)
+              : observed.memberRow(rowId),
           matching: find.byType(TimelineToolDetails),
         );
         expect(details, findsOneWidget);
@@ -760,7 +799,9 @@ final class _RealtimeScene {
     );
   }
 
-  Future<TimelineItem> untilReadableCurrentText({required Duration timeout}) async {
+  Future<TimelineItem> untilReadableCurrentText({
+    required Duration timeout,
+  }) async {
     TimelineItem? accepted;
     await until(
       () {
@@ -816,8 +857,7 @@ final class _RealtimeScene {
 
   // Live atoms without a completion payload use the real tool disclosure,
   // including wait. Only a completed wait payload has a TimelineWaitPanel.
-  Finder currentToolCard(ChatAtom atom) =>
-      atom.wait != null
+  Finder currentToolCard(ChatAtom atom) => atom.wait != null
       ? find.byWidgetPredicate(
           (widget) => widget is TimelineWaitPanel && widget.identity == atom.id,
         )
@@ -840,9 +880,7 @@ final class _RealtimeScene {
     try {
       while (true) {
         final units = observed.live
-            .where(
-              (unit) => unit.item.kind == TimelineItemKind.workGroup,
-            )
+            .where((unit) => unit.item.kind == TimelineItemKind.workGroup)
             .toList();
         for (final unit in units) {
           await observed.openGroup(unit.id);

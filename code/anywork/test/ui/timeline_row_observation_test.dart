@@ -123,10 +123,7 @@ void main() {
       (tester) async {
         final controller = InMemoryChatController();
         final resources = TimelineImageResources(threadId: 'thread');
-        final adapter = TimelineMessageController(
-          controller,
-          generation: 1,
-            );
+        final adapter = TimelineMessageController(controller, generation: 1);
         addTearDown(() {
           adapter.dispose();
           resources.release();
@@ -134,17 +131,19 @@ void main() {
         });
         await adapter.applyBatch(
           chatBatch([
-            statusItem(chatEnvelope(
-              type,
-              type: type,
-              data: reasoning ? const {} : const {'decision': 'approved'},
-              bodies: [
-                inlineBody(
-                  reasoning ? 'part.reasoningText.0' : 'plan.body',
-                  body,
-                ),
-              ],
-            )),
+            statusItem(
+              chatEnvelope(
+                type,
+                type: type,
+                data: reasoning ? const {} : const {'decision': 'approved'},
+                bodies: [
+                  inlineBody(
+                    reasoning ? 'part.reasoningText.0' : 'plan.body',
+                    body,
+                  ),
+                ],
+              ),
+            ),
           ]),
         );
         Widget build() => rowApp(

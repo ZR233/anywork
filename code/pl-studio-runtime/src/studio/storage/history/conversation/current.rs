@@ -48,7 +48,8 @@ pub(crate) struct PreparedTimelineItem {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedCurrent {
-    pub timeline_update: Arc<crate::studio::thread_projection::timeline::TimelineUpdate>,
+    pub(in crate::studio) timeline_update:
+        Arc<crate::studio::thread_projection::timeline::TimelineUpdate>,
     pub projection: CurrentProjection,
     pub changes: Arc<[CurrentEntryChange]>,
     pub contents: Arc<[CurrentContentWrite]>,

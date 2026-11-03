@@ -521,7 +521,8 @@ class _TimelineViewState extends State<TimelineView> {
                                         monotonicMicros: widget.monotonicMicros,
                                         onContentLayout: widget.onContentLayout,
                                         isDisplayActive: widget.isDisplayActive,
-                                        groupMembersBuilder: widget.groupMembersBuilder,
+                                        groupMembersBuilder:
+                                            widget.groupMembersBuilder,
                                       ),
                                 ),
                               ),

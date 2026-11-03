@@ -234,9 +234,13 @@ void main() {
 
     // Positive control: an explicit producer item traverses the same SDK/ACK path.
     final acksBeforeSeed = feed.acknowledgements.length;
-    await feed.emitAndWait(ConversationChatEvent(batch: chatBatch(
-      [chatMessage('isolation-completed')], placement: ChatPlacement.append,
-    )));
+    await feed.emitAndWait(
+      ConversationChatEvent(
+        batch: chatBatch([
+          chatMessage('isolation-completed'),
+        ], placement: ChatPlacement.append),
+      ),
+    );
     await operationSeen.future.timeout(const Duration(seconds: 5));
     await feed
         .waitForAcknowledgements(acksBeforeSeed + 1)
@@ -421,35 +425,7 @@ final class _CountingReader implements ConversationReader {
   final ConversationReader inner;
   int queries = 0;
   @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) {
-    queries++;
-    return inner.readAt(
-      completionSeq: completionSeq,
-      before: before,
-      demand: demand,
-    );
-  }
-
-  @override
   String get threadId => inner.threadId;
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) {
-    queries++;
-    return inner.readBefore(
-      completionSeq: completionSeq,
-      before: before,
-      demand: demand,
-    );
-  }
-
   @override
   Future<ChatBatch> loadOlder({
     required String before,

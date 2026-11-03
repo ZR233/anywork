@@ -38,7 +38,8 @@ class TimelineChildrenConnector extends StatefulWidget {
   final String threadId;
   final String parentId;
   final TimelineMembersRef? membersRef;
-  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)? openMembers;
+  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)?
+  openMembers;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
   final Future<Uint8List> Function(String id)? readAttachment;
@@ -351,8 +352,12 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
           scope = _scope(content, controller, attempt, generation);
           await scope.loadOlder(before: before, demand: _demand);
           if (_eligibleDisplay(content, controller, attempt, generation) &&
-              scope.isActive && identical(scope, _queries) && _before == before) {
-            throw const ConversationContinuityError('Member page did not advance');
+              scope.isActive &&
+              identical(scope, _queries) &&
+              _before == before) {
+            throw const ConversationContinuityError(
+              'Member page did not advance',
+            );
           }
         } catch (error) {
           if (_eligibleDisplay(content, controller, attempt, generation) &&
@@ -444,7 +449,9 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       Text(_error.toString()),
       TextButton(
         key: const ValueKey('timeline-members-retry'),
-        onPressed: _retired || !_parentActive || _retrying != null ? null : _retry,
+        onPressed: _retired || !_parentActive || _retrying != null
+            ? null
+            : _retry,
         child: const Text('重试读取'),
       ),
     ],
@@ -462,10 +469,12 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     } else {
       final request = _open();
       _retrying = request;
-      unawaited(request.whenComplete(() {
-        if (identical(_retrying, request)) _retrying = null;
-        if (mounted && !_retired) setState(() {});
-      }));
+      unawaited(
+        request.whenComplete(() {
+          if (identical(_retrying, request)) _retrying = null;
+          if (mounted && !_retired) setState(() {});
+        }),
+      );
     }
   }
 
@@ -481,7 +490,8 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     super.dispose();
   }
 
-  Future<void> _closeOwned() => _closing ??= _close().catchError((Object error, StackTrace stack) {
+  Future<void> _closeOwned() =>
+      _closing ??= _close().catchError((Object error, StackTrace stack) {
         FlutterError.reportError(
           FlutterErrorDetails(
             exception: error,

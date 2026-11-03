@@ -124,8 +124,12 @@ void main() {
         reason: 'Settings navigation does not create a Thread',
       );
 
+      // Demo's _rootWorkspace installs turn-demo user/reasoning/tool/final
+      // at positions 1..4. seedTimelineItems appends after that explicit fixture.
+      const firstPosition = 5;
       transport.seedTimelineItems('thread-main', [
-        for (var i = 0; i < 40; i++) chatMessage('route-item-$i'),
+        for (var i = 0; i < 40; i++)
+          chatMessage('route-item-$i', completionSeq: firstPosition + i),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
@@ -860,26 +864,6 @@ final class _RouteReader implements ConversationReader {
   final _RouteTurnTransport transport;
   @override
   String get threadId => inner.threadId;
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) => inner.readAt(
-    completionSeq: completionSeq,
-    before: before,
-    demand: demand,
-  );
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) => inner.readBefore(
-    completionSeq: completionSeq,
-    before: before,
-    demand: demand,
-  );
   @override
   Future<ChatBatch> loadOlder({
     required String before,

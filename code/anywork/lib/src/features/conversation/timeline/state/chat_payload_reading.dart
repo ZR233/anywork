@@ -89,7 +89,9 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
   final marker = item.presentationContract;
   if (marker != 'generic@1' && !specializedToolContracts.contains(marker)) {
     return UnavailableToolCard(
-      marker == null ? '未知展示格式：未提供 presentationContract' : '未知展示格式：$marker',
+      marker == null
+          ? '未提供 presentationContract'
+          : '不支持的 presentationContract：$marker',
     );
   }
   try {

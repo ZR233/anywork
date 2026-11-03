@@ -162,7 +162,7 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。展示 item、成员原子与真实生命周期 ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 薄呈现 owner 在原 applyBatch 内接纳：Studio 已确定 item 类别、顺序与成员归属，一条 item 对应一条 `Message.custom`，Flutter 不分类、不合组、不重排、不计算成员归属；成员窗口只在展开后按 `GroupMembers { item_id }` 有界读取。已提交呈现只由 controller 的 Message.metadata 持有，当前仅留需求内 item 片段、内容引用和普通读取位置，不保存 rawAtoms/items/groups 三份完整历史或无界 ID/member map。SDK 不分组、不保存历史尾部，只保原有界传输及串行接纳。必要状态含 item/成员 before、请求/选择代次、single-flight、错误和展开/滚动意图，不引入全局完成 cursor、展示 page proof 或通用重排账本，见 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。展示 item、成员原子与真实生命周期 ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 薄呈现 owner 在原 applyBatch 内接纳：Studio 已确定 item 类别、顺序与成员归属，一条 item 对应一条 `Message.custom`，Flutter 不分类、不合组、不重排、不计算成员归属；成员窗口只在展开后按 `GroupMembers { reference }` 有界读取。已提交呈现只由 controller 的 Message.metadata 持有，当前仅留需求内 item 片段、内容引用和普通读取位置，不保存 rawAtoms/items/groups 三份完整历史或无界 ID/member map。SDK 不分组、不保存历史尾部，只保原有界传输及串行接纳。必要状态含 item/成员 before、请求/选择代次、single-flight、错误和展开/滚动意图，不引入全局完成 cursor、展示 page proof 或通用重排账本，见 [26](./26-timeline-content.md)。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -398,7 +398,7 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权和恢复边界，不要求五个 Session/连接。Main Chat.current 是活动展示的唯一写入口，State 保留其他现役领域，Children 不写全局 current。共享 owner 不另存可写全量镜像；loadOlder 和内容查询用独立 read lease，在应用队列外执行，不竞争 recv/credit 锁。transport/ACK 仍只归 feed owner，见 [07](./07-streaming.md)。
 
-Main 只读取统一展示 item，工作组详情通过原库、投影版本和 item 身份绑定的 `GroupMembers` 引用打开独立成员 scope；真实业务 Children 保留真实 parent。删除为客户端分组恢复加入的公开 `readBefore`／`readAt` 原子扫描路径。成员窗口自身的 cursor、接纳和真实活动成员更新不覆盖 Main cursor/current，也不经临时选择或另一个 owner 接纳旧结果；引用与窗口资格见 [26](./26-timeline-content.md)。
+Main 只读取统一展示 item，工作组详情通过原库、算法版本、重建代际和 item 身份绑定的 `GroupMembers` 引用打开独立成员 scope；真实业务 Children 保留真实 parent。删除为客户端分组恢复加入的公开 `readBefore`／`readAt` 原子扫描路径。成员窗口自身的 cursor、接纳和真实活动成员更新不覆盖 Main cursor/current，也不经临时选择或另一个 owner 接纳旧结果；引用与窗口资格见 [26](./26-timeline-content.md)。
 
 未提交展示片段是 Studio 投影的有界 current，不是客户端可增长的工作集：Flutter 只接纳 `CurrentProjection.items` 与成员 atoms，不计算成员归属、不另设每段展示预算，也不为显示条数丢弃未终态 part。已完成但尚未满足提交条件的片段仍属 current；成员正文与媒体只在展开时按 `GroupMembers` 或原 lease 逐页读取，未物化内容不保留每成员/每段的永久骨架。真实未终态事实和已交给 controller 的 item 分别沿各自原 owner 管理，ACK 不等待物化；细节及局部 UI 资格见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
 

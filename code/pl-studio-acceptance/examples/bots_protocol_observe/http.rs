@@ -370,6 +370,10 @@ impl StudioHttp {
                             "membersProjectionVersion",
                             &reference.projection_version.to_string(),
                         )
+                        .append_pair(
+                            "membersProjectionGeneration",
+                            &reference.projection_generation,
+                        )
                         .append_pair("membersItemId", &reference.item_id);
                 }
             }

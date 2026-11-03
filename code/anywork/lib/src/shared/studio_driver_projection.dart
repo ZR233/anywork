@@ -291,6 +291,7 @@ TimelineDisplayFacts? _timelineFacts(
             final reference? => {
               'databaseId': reference.databaseId,
               'projectionVersion': reference.projectionVersion,
+              'projectionGeneration': reference.projectionGeneration,
               'itemId': reference.itemId,
             },
             null => null,
@@ -471,6 +472,7 @@ Map<String, Object?> _timelineEnvelopeFacts(TimelineItem item) => {
     final reference? => {
       'databaseId': reference.databaseId,
       'projectionVersion': reference.projectionVersion,
+      'projectionGeneration': reference.projectionGeneration,
       'itemId': reference.itemId,
     },
     null => null,

@@ -485,6 +485,7 @@ mod tests {
                     reference: TimelineMembersRef {
                         database_id: "database".into(),
                         projection_version: TIMELINE_PROJECTION_VERSION,
+                        projection_generation: "generation".into(),
                         item_id: "opaque-group".into(),
                     },
                 })
@@ -501,6 +502,7 @@ mod tests {
         let members = TimelineMembersRef {
             database_id: "database".into(),
             projection_version: TIMELINE_PROJECTION_VERSION,
+            projection_generation: "generation".into(),
             item_id: "opaque-group".into(),
         };
         let item = TimelineItem {

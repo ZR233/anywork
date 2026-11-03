@@ -389,9 +389,10 @@ final class _TimelineScene {
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
 
-  List<String> ids(TimelineDisplayLease display) =>
-      TimelineObservation(tester, () => display).main
-          .map((unit) => unit.item.id).toList();
+  List<String> ids(TimelineDisplayLease display) => TimelineObservation(
+    tester,
+    () => display,
+  ).main.map((unit) => unit.item.id).toList();
 
   Future<void> until(
     bool Function() ready,

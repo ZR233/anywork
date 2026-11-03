@@ -72,11 +72,11 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
                 return widget.atomBuilder!(atom);
               }
               return ChatItemView(
-              key: ValueKey((widget.generation, message.id)),
-              item: chatItemPresentationOf(message)!,
-              isDisplayActive: widget.isDisplayActive,
-              contentRangeBuilder: widget.contentRangeBuilder,
-              attachmentBuilder: widget.attachmentBuilder,
+                key: ValueKey((widget.generation, message.id)),
+                item: chatItemPresentationOf(message)!,
+                isDisplayActive: widget.isDisplayActive,
+                contentRangeBuilder: widget.contentRangeBuilder,
+                attachmentBuilder: widget.attachmentBuilder,
               );
             },
         chatAnimatedListBuilder: (context, itemBuilder) =>

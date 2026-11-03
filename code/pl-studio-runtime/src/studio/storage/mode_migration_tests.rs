@@ -2748,7 +2748,9 @@ async fn restore_pre_timeline_history_fixture(
             DatabaseBackend::Sqlite,
             "SELECT (SELECT COUNT(*) FROM timeline_records)
                   + (SELECT COUNT(*) FROM conversation_items)
-                  + (SELECT COUNT(*) FROM conversation_contents) AS count",
+                  + (SELECT COUNT(*) FROM conversation_contents)
+                  + (SELECT COUNT(*) FROM conversation_sources)
+                  + (SELECT COUNT(*) FROM conversation_atom_facts) AS count",
         ))
         .await?
         .context("fixture timeline output")?;
@@ -2761,6 +2763,7 @@ async fn restore_pre_timeline_history_fixture(
         "DROP TABLE IF EXISTS timeline_item_members;
          DROP TABLE IF EXISTS timeline_items;
          DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
@@ -2784,7 +2787,7 @@ async fn restore_pre_timeline_history_fixture(
 
 /// Recreate the published schema12 boundary without asking the current writer to accept v1.
 /// Only the ordinary checkpoint/context facts are seeded through that writer; the frozen old
-/// extension payloads are installed after removing the schema13/14 outputs and completion records.
+/// extension payloads are installed after removing the schema13/14/15 outputs and completion records.
 async fn persist_schema12_fixture(
     path: &std::path::Path,
     thread_id: &str,
@@ -2805,10 +2808,24 @@ async fn persist_schema12_fixture(
 
     let db = raw_database(path).await?;
     let tx = db.begin().await?;
+    let facts = tx
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT (SELECT COUNT(*) FROM conversation_atom_facts)
+                  + (SELECT COUNT(*) FROM conversation_sources) AS count",
+        ))
+        .await?
+        .context("fixture canonical metadata output")?;
+    assert_eq!(
+        facts.try_get::<i64>("", "count")?,
+        0,
+        "schema12 fixture must not discard canonical lifecycle facts"
+    );
     tx.execute_unprepared(
         "DROP TABLE IF EXISTS timeline_item_members;
          DROP TABLE IF EXISTS timeline_items;
          DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_sources;
          ALTER TABLE conversation_items DROP COLUMN metadata;
          ALTER TABLE history_meta DROP COLUMN model_route_json;

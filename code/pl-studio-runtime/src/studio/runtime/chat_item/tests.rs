@@ -285,3 +285,54 @@ fn tool_contract_is_frozen_from_the_real_invocation_not_its_name() -> Result<()>
     }
     Ok(())
 }
+
+#[test]
+fn frozen_text_presence_uses_owned_blocks_not_the_static_shell_or_payload_json() -> Result<()> {
+    use anyhow::Context;
+    use pl_protocol::{AttachmentModality, ChatAtom, ThreadAttachment};
+    for (body, expected) in [("accepted", true), ("", false), (" \n\t", true)] {
+        let original = text("presence", body.into());
+        let shell = original.clone().with_state(static_state(original.state()));
+        assert!(shell.text().context("text")?.text().is_empty());
+        assert_eq!(
+            atom(&shell).content_present,
+            None,
+            "a stripped shell claimed emptiness"
+        );
+        let mut blocks = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(body))]);
+        let draft = freeze(
+            &shell,
+            CompletionStamp {
+                id: &shell.id,
+                source_effect_seq: 1,
+                sealed_at: 11,
+            },
+            "database",
+            serde_json::to_value(descriptor::item_descriptor(&shell)?)?,
+            &mut blocks,
+            &ChatContents::new(),
+        )?;
+        let metadata: ChatAtom = serde_json::from_slice(&draft.metadata)?;
+        assert_eq!(metadata.content_present, Some(expected));
+    }
+    let image = ThreadAttachment {
+        id: "image".into(),
+        modality: AttachmentModality::Image,
+        media_type: "image/png".into(),
+        filename: None,
+        width: None,
+        height: None,
+        byte_size: 1,
+    };
+    let item =
+        text("image-only", String::new()).with_state(ThreadItemState::Text(ThreadTextItem::new(
+            ThreadTextChannel::Final,
+            String::new(),
+            vec![image],
+            ThreadContentLifecycle::completed(11),
+        )));
+    let metadata: ChatAtom =
+        serde_json::from_slice(&completion_draft(&item, 1, "database")?.metadata)?;
+    assert_eq!(metadata.content_present, Some(true));
+    Ok(())
+}

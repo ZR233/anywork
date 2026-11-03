@@ -404,7 +404,10 @@ final class _ScopedTransport extends Fake implements StudioTransport {
     threadId: 'thread',
     subscriptionId: 'child',
     reader: childReader,
-    initial: () => ChatBatch(placement: ChatPlacement.set, entries: [ChatAtomEntry(chatAtomMessage('child'))]),
+    initial: () => ChatBatch(
+      placement: ChatPlacement.set,
+      entries: [ChatAtomEntry(chatAtomMessage('child'))],
+    ),
   );
   final scopes = <ChatScope>[];
   @override

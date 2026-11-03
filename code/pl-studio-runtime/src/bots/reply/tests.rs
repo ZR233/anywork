@@ -258,6 +258,7 @@ fn opaque_cursor_and_coverage_budgets_do_not_infer_eof_from_short_pages() {
 #[tokio::test]
 async fn typed_atoms_preserve_payload_owner_final_qualification_and_unrelated_work_budget()
 -> anyhow::Result<()> {
+    use anyhow::Context;
     let fixture = Fixture::new().await?;
     let inbound = fixture.inbound("reply-typed-atoms", true).await?;
     let runtime = &fixture.host.runtime;
@@ -373,6 +374,33 @@ async fn typed_atoms_preserve_payload_owner_final_qualification_and_unrelated_wo
     let item = decode_entry(&reader, &completed, "target").await?.unwrap();
     assert_eq!(item.id, "frozen-owner");
     assert_eq!(item.member_id, "stable-member");
+    let ChatEntry::Atom(atom) = completed.clone() else {
+        unreachable!()
+    };
+    let display = ChatEntry::Item(Box::new(pl_protocol::TimelineItem {
+        id: "display-identity-is-not-the-content-owner".into(),
+        kind: pl_protocol::TimelineItemKind::Text,
+        source: atom.source,
+        atom_kind: Some(atom.kind),
+        delivery: atom.delivery,
+        text_channel: atom.text_channel,
+        turn_id: atom.turn_id,
+        started_at: None,
+        finished_at: None,
+        outcome: Some(ChatTerminalOutcome::Completed),
+        summary: None,
+        members: None,
+        contents: atom.contents,
+        payload: atom.payload,
+        content_item_id: atom.completion_item_id,
+        position: Some(7),
+        admission_closed: true,
+    }));
+    let display_reply = decode_entry(&reader, &display, "target")
+        .await?
+        .context("Main Item final")?;
+    assert_eq!(display_reply.id, "frozen-owner");
+    assert_eq!(display_reply.member_id, "frozen-owner");
     watch.stage(ChatBatch {
         placement: ChatPlacement::Append,
         entries: vec![active, ended_source(), completed],

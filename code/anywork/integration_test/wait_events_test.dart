@@ -204,7 +204,10 @@ void main() {
       after: prepareTurn,
       outcome: 'cancelled',
     );
-    expect(scene.observed.unit(stopped.id).item.atomKind, ChatAtomKind.turnReceipt);
+    expect(
+      scene.observed.unit(stopped.id).item.atomKind,
+      ChatAtomKind.turnReceipt,
+    );
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -335,8 +338,11 @@ final class _Scene {
     expect(groups, isNotEmpty);
     await observed.openSourceGroups(source);
     final matches = observed.mountedMembers
-        .where((atom) => atom.source == source &&
-            atom.tool?.callId.startsWith(prefix) == true)
+        .where(
+          (atom) =>
+              atom.source == source &&
+              atom.tool?.callId.startsWith(prefix) == true,
+        )
         .map(ChatItemPresentation.decode)
         .where((item) {
           final reading = item.toolCard;
@@ -348,7 +354,10 @@ final class _Scene {
     expect(matches, hasLength(1), reason: '$prefix / $status');
     final item = matches.single;
     final reference = observed.unitForMember(item.atom!.id).item.members!;
-    final display = await observed.revealMember(item.atom!, reference: reference);
+    final display = await observed.revealMember(
+      item.atom!,
+      reference: reference,
+    );
     expect(display.expanded, isTrue);
     expect(
       display.atoms.where(
@@ -372,7 +381,9 @@ final class _Scene {
 
   Future<void> currentWaiting(String prefix) async {
     await until(
-      () => observed.live.any((unit) => unit.item.kind == TimelineItemKind.workGroup),
+      () => observed.live.any(
+        (unit) => unit.item.kind == TimelineItemKind.workGroup,
+      ),
       'live work item with explicit member reference',
     );
     await observed.openLiveGroups();

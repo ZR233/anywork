@@ -218,6 +218,7 @@ pub(crate) struct ConversationQuery {
     parent_id: Option<String>,
     members_database_id: Option<String>,
     members_projection_version: Option<u32>,
+    members_projection_generation: Option<String>,
     members_item_id: Option<String>,
 }
 
@@ -227,24 +228,34 @@ impl ConversationQuery {
             self.parent_id,
             self.members_database_id,
             self.members_projection_version,
+            self.members_projection_generation,
             self.members_item_id,
         ) {
-            (None, None, None, None) => pl_protocol::ChatScope::Main,
-            (Some(parent_id), None, None, None) => pl_protocol::ChatScope::Children { parent_id },
-            (None, Some(database_id), Some(projection_version), Some(item_id)) => {
-                pl_protocol::ChatScope::GroupMembers {
-                    reference: pl_protocol::TimelineMembersRef {
-                        database_id,
-                        projection_version,
-                        item_id,
-                    },
-                }
+            (None, None, None, None, None) => pl_protocol::ChatScope::Main,
+            (Some(parent_id), None, None, None, None) => {
+                pl_protocol::ChatScope::Children { parent_id }
             }
-            _ => return Err(ApiError(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                "Use Main, a real parentId, or a complete Timeline members reference, never mixed scopes",
-                false,
-            ))),
+            (
+                None,
+                Some(database_id),
+                Some(projection_version),
+                Some(projection_generation),
+                Some(item_id),
+            ) if !projection_generation.trim().is_empty() => pl_protocol::ChatScope::GroupMembers {
+                reference: pl_protocol::TimelineMembersRef {
+                    database_id,
+                    projection_version,
+                    projection_generation,
+                    item_id,
+                },
+            },
+            _ => {
+                return Err(ApiError(pl_protocol::studio::StudioError::new(
+                    pl_protocol::studio::StudioErrorCode::InvalidArgument,
+                    "Use Main, a real parentId, or a complete Timeline members reference, never mixed scopes",
+                    false,
+                )));
+            }
         };
         let demand = pl_protocol::ReadDemand {
             max_items: self.max_items,
@@ -264,8 +275,9 @@ impl ConversationQuery {
         ("maxItems" = u32, Query, description = "Requested bounded item count"),
         ("maxBytes" = u32, Query, description = "Requested encoded byte budget"),
         ("parentId" = Option<String>, Query, description = "Real business Children parent; cannot be combined with members fields"),
-        ("membersDatabaseId" = Option<String>, Query, description = "GroupMembers reference databaseId; all three members fields are required together"),
+        ("membersDatabaseId" = Option<String>, Query, description = "GroupMembers reference databaseId; all four members fields are required together"),
         ("membersProjectionVersion" = Option<u32>, Query, description = "GroupMembers reference projectionVersion"),
+        ("membersProjectionGeneration" = Option<String>, Query, description = "GroupMembers opaque nonempty projectionGeneration; never defaulted or parsed"),
         ("membersItemId" = Option<String>, Query, description = "GroupMembers reference itemId; omit all scope fields for Main display items")
     ),
     responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream",

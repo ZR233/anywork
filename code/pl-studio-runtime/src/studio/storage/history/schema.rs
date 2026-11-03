@@ -593,11 +593,8 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
     demand_conversation::validate_tables(db).await?;
     model_route_head::validate_tables(db).await?;
     atom_metadata::validate_tables(db).await?;
-    super::conversation::timeline::validate_tables(db).await?;
-    ensure!(
-        super::conversation::timeline::state(db).await?.is_some(),
-        "timeline projection state is missing; existing data preserved"
-    );
+    // Rebuildable display state is admitted by its original read/writer owner.
+    // Missing derived tables must not invalidate the canonical source database.
     checkpoint::read_model_route_head(db).await?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),

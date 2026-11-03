@@ -32,13 +32,18 @@ class _MembersState extends State<TimelineGroupMembersConnector>
     implements TimelineGroupDisplay {
   TimelineChildrenDisplay? _display;
   VoidCallback? _unregister;
+  late final Object _bodyGeneration;
   TimelineExpansionIntent get _intent => widget.unit.expansion;
   @override
   String get unitId => widget.unit.id;
   @override
   TimelineMembersRef? get membersRef => widget.unit.item.members;
   @override
-  bool get isCurrent => mounted && !_intent.isRetired && _intent.bodyActive &&
+  bool get isCurrent =>
+      mounted &&
+      !_intent.isRetired &&
+      _intent.bodyActive &&
+      identical(_bodyGeneration, _intent.bodyGeneration) &&
       (_intent.isDisplayActive?.call() ?? true);
   @override
   bool get expanded => isCurrent;
@@ -57,6 +62,7 @@ class _MembersState extends State<TimelineGroupMembersConnector>
       if (atom != null) yield atom;
     }
   }
+
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows =>
       isCurrent ? _display?.windows ?? const [] : const [];
@@ -64,6 +70,7 @@ class _MembersState extends State<TimelineGroupMembersConnector>
   @override
   void initState() {
     super.initState();
+    _bodyGeneration = _intent.bodyGeneration;
     _unregister = _intent.registerDisplay?.call(this);
   }
 
@@ -91,7 +98,8 @@ class _MembersState extends State<TimelineGroupMembersConnector>
         isParentActive: () => isCurrent,
         readAttachment: widget.readAttachment,
         monotonicMicros: widget.monotonicMicros,
-        onContentLayout: (_, micros) => widget.onContentLayout?.call(unitId, micros),
+        onContentLayout: (_, micros) =>
+            widget.onContentLayout?.call(unitId, micros),
         registerDisplay: (display) {
           _display = display;
           return () {

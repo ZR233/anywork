@@ -178,12 +178,6 @@ final class _RealScopeContent implements ConversationContent {
 }
 
 final class _RealScopeReader implements ConversationReader {
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) => throw UnimplementedError();
   final watch = _RealScopeWatch();
   final requests = <Completer<CurrentCollectionPage>>[];
 
@@ -273,12 +267,6 @@ final class _Content implements ConversationContent {
 }
 
 final class _Scope implements ConversationQueryScope {
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) => throw UnimplementedError();
   _Scope(this.generation, {this.onPage, this.onRead});
   final Future<CurrentCollectionPage> Function(
     CurrentCollectionRef,
@@ -349,12 +337,6 @@ final class _Scope implements ConversationQueryScope {
   @override
   Future<ChatBatch> loadOlder({
     required String before,
-    required ReadDemand demand,
-  }) => throw UnimplementedError();
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
     required ReadDemand demand,
   }) => throw UnimplementedError();
   @override

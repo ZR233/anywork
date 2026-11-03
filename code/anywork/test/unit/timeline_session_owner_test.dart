@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,40 +15,75 @@ import '../support/chat_fixtures.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   for (final failClose in [false, true]) {
-    test('group body fold revokes synchronously and retains original IO/close responsibility (failure: $failClose)', () async {
-      final h = _Harness();
-      await h.openA([workItem('group')], hasOlder: true);
-      final lease = h.owner.lease('a')!;
-      final unit = lease.controller.messages.single.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
-      final token = Object();
-      unit.expansion.setBodyVisible(token, true);
-      final generation = unit.expansion.bodyGeneration;
-      const reference = ContentRef(databaseId: 'database', target: ItemPayloadTarget(itemId: 'member-body'));
-      final original = unit.expansion.readBody!(generation, reference, const ContentRange(offset: 0, maxBytes: 100));
-      final rejected = expectLater(original, throwsA(isA<StaleConversationScope>()));
-      final scope = h.a.scopes.single..failClose = failClose;
-      unit.expansion.setBodyVisible(token, false);
-      expect(scope.isActive, isFalse);
-      expect(scope.closed, isFalse);
-      expect(lease.olderCursor, 'before-3');
-      scope.bodyRequests.single.complete(ContentWindow(bytes: const [65], offset: 0, generation: 'g', availableThrough: 1, sealed: true));
-      await rejected;
-      await Future<void>.delayed(Duration.zero);
-      if (failClose) {
-        expect(lease.queryCleanupError, isNotNull);
-        scope.failClose = false;
-        await lease.closeDetailQueries(scope);
-      }
-      expect(scope.closed, isTrue);
-      unit.expansion.setBodyVisible(token, true);
-      final freshRead = unit.expansion.readBody!(unit.expansion.bodyGeneration, reference, const ContentRange(offset: 0, maxBytes: 100));
-      final fresh = h.a.scopes.last;
-      expect(fresh, isNot(same(scope)));
-      fresh.bodyRequests.single.complete(ContentWindow(bytes: const [66], offset: 0, generation: 'fresh', availableThrough: 1, sealed: true));
-      expect((await freshRead).bytes, [66]);
-      unit.expansion.setBodyVisible(token, false);
-      expect((await h.owner.close()).complete, isTrue);
-    });
+    test(
+      'group body fold revokes synchronously and retains original IO/close responsibility (failure: $failClose)',
+      () async {
+        final h = _Harness();
+        await h.openA([workItem('group')], hasOlder: true);
+        final lease = h.owner.lease('a')!;
+        final unit =
+            lease.controller.messages.single.metadata![timelineDisplayUnitKey]
+                as TimelineDisplayUnit;
+        final token = Object();
+        unit.expansion.setBodyVisible(token, true);
+        final generation = unit.expansion.bodyGeneration;
+        const reference = ContentRef(
+          databaseId: 'database',
+          target: ItemPayloadTarget(itemId: 'member-body'),
+        );
+        final original = unit.expansion.readBody!(
+          generation,
+          reference,
+          const ContentRange(offset: 0, maxBytes: 100),
+        );
+        final rejected = expectLater(
+          original,
+          throwsA(isA<StaleConversationScope>()),
+        );
+        final scope = h.a.scopes.single..failClose = failClose;
+        unit.expansion.setBodyVisible(token, false);
+        expect(scope.isActive, isFalse);
+        expect(scope.closed, isFalse);
+        expect(lease.olderCursor, 'before-3');
+        scope.bodyRequests.single.complete(
+          ContentWindow(
+            bytes: const [65],
+            offset: 0,
+            generation: 'g',
+            availableThrough: 1,
+            sealed: true,
+          ),
+        );
+        await rejected;
+        await Future<void>.delayed(Duration.zero);
+        if (failClose) {
+          expect(lease.queryCleanupError, isNotNull);
+          scope.failClose = false;
+          await lease.closeDetailQueries(scope);
+        }
+        expect(scope.closed, isTrue);
+        unit.expansion.setBodyVisible(token, true);
+        final freshRead = unit.expansion.readBody!(
+          unit.expansion.bodyGeneration,
+          reference,
+          const ContentRange(offset: 0, maxBytes: 100),
+        );
+        final fresh = h.a.scopes.last;
+        expect(fresh, isNot(same(scope)));
+        fresh.bodyRequests.single.complete(
+          ContentWindow(
+            bytes: const [66],
+            offset: 0,
+            generation: 'fresh',
+            availableThrough: 1,
+            sealed: true,
+          ),
+        );
+        expect((await freshRead).bytes, [66]);
+        unit.expansion.setBodyVisible(token, false);
+        expect((await h.owner.close()).complete, isTrue);
+      },
+    );
   }
   test('selection alone does not attach; first viewport demand attaches only the latest selection', () async {
     final h = _Harness(viewport: false);

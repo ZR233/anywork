@@ -45,6 +45,7 @@ pub struct BridgeTimelineGroupSummary {
 pub struct BridgeTimelineMembersRef {
     pub database_id: String,
     pub projection_version: u32,
+    pub projection_generation: String,
     pub item_id: String,
 }
 

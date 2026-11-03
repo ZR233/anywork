@@ -295,6 +295,10 @@ fn freeze(
         envelope["turnId"] = item.turn_id.clone().into();
     }
     let mut atom = atom(item);
+    if let ThreadItemState::Text(text) = item.state() {
+        atom.content_present =
+            Some(bodies.values().any(|block| !block.is_empty()) || !text.attachments().is_empty());
+    }
     // Frozen completions (including background handoff receipts) carry the original
     // typed tool payload, never a duplicate of the active wait presentation.
     atom.wait = None;

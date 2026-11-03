@@ -37,6 +37,7 @@ pub struct ConversationFeed {
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
+    generation_changed: watch::Receiver<String>,
     cut: Option<Arc<ConversationCut>>,
     cut_entry: usize,
     cut_entries: Option<Vec<ChatEntry>>,
@@ -95,6 +96,7 @@ impl StudioRuntime {
         let main = matches!(scope, ChatScope::Main);
         let derived = !matches!(scope, ChatScope::Children { .. });
         let mut display_page = None;
+        let mut captured_generation = None;
         let mut cuts = None;
         let mut progress = None;
         let mut state = None;
@@ -154,6 +156,9 @@ impl StudioRuntime {
             }
             let source = source.ok_or_else(resync)?;
             initial_serial = source.serial;
+            if !source.projection_generation.is_empty() {
+                captured_generation = Some(source.projection_generation.clone());
+            }
             state_effect_floor = source.current.projection.source_effect_seq;
             initial_turn = source.current.active_turn.clone();
             initial_interactions = source.current.interactions.to_vec();
@@ -169,21 +174,38 @@ impl StudioRuntime {
                 continuation_reserve(&id, &scope, &database_id, source.session.epoch().as_str()),
             );
             let page = if derived {
-                display_page = Some(history.timeline_page(&scope, None, i64::MAX as u64,
-                    state_effect_floor, demand, core::ChatBudget::fixed_bytes(&budget)).await?);
-                core::ChatPage { epoch: source.session.epoch(), ceiling: source.head, items: Vec::new(), before: None }
-            } else { source
-                .session
-                .page(
-                    core::ChatPageRequest {
-                        query: scope_query,
-                        demand: core_demand(demand)?,
-                        before: None,
-                        ceiling: Some(source.head),
-                    },
-                    &budget,
-                )
-                .await? };
+                display_page = Some(
+                    history
+                        .timeline_page(
+                            &scope,
+                            None,
+                            i64::MAX as u64,
+                            state_effect_floor,
+                            demand,
+                            core::ChatBudget::fixed_bytes(&budget),
+                        )
+                        .await?,
+                );
+                core::ChatPage {
+                    epoch: source.session.epoch(),
+                    ceiling: source.head,
+                    items: Vec::new(),
+                    before: None,
+                }
+            } else {
+                source
+                    .session
+                    .page(
+                        core::ChatPageRequest {
+                            query: scope_query,
+                            demand: core_demand(demand)?,
+                            before: None,
+                            ceiling: Some(source.head),
+                        },
+                        &budget,
+                    )
+                    .await?
+            };
             cuts = Some(cut_rx);
             progress = Some(progress_rx);
             state = Some(state_rx);
@@ -220,13 +242,17 @@ impl StudioRuntime {
                 ),
             );
             let cold = if derived {
-                history.cold_timeline(&scope, core_demand(demand)?, &budget).await?
+                history
+                    .cold_timeline(&scope, core_demand(demand)?, &budget)
+                    .await?
             } else {
-                history.cold_conversation(scope_query, core_demand(demand)?, &budget).await?
+                history
+                    .cold_conversation(scope_query, core_demand(demand)?, &budget)
+                    .await?
             };
-            match cold
-            {
+            match cold {
                 Some(cold) => {
+                    captured_generation = Some(cold.projection_generation);
                     display_page = cold.timeline;
                     ensure!(
                         database_id.as_deref() == Some(cold.database_id.as_str()),
@@ -267,11 +293,24 @@ impl StudioRuntime {
         if !slot.is_current(position.epoch) {
             return Err(resync());
         }
-        let (mut initial_entries, boundary, read_ceiling) = if let Some(page) = display_page {
-            (page.entries, page.before, page.ceiling)
-        } else {
-            (entries(items, database_id.as_deref().unwrap_or_default())?, boundary, head)
-        };
+        let (mut initial_entries, boundary, read_ceiling, projection_generation) =
+            if let Some(page) = display_page {
+                (page.entries, page.before, page.ceiling, page.generation)
+            } else {
+                (
+                    entries(items, database_id.as_deref().unwrap_or_default())?,
+                    boundary,
+                    head,
+                    history.timeline_generation().await?,
+                )
+            };
+        ensure!(
+            captured_generation
+                .as_ref()
+                .is_none_or(|generation| generation == &projection_generation),
+            resync()
+        );
+        let generation_changed = history.timeline_generation_changes();
         if let Some(sources) = cold_sources {
             annotate_atoms(&mut initial_entries, &sources)?;
         } else {
@@ -291,6 +330,7 @@ impl StudioRuntime {
             slot,
             position.epoch,
             ReadResources {
+                projection_generation,
                 history,
                 session,
                 database_id: database_id.clone(),
@@ -305,6 +345,10 @@ impl StudioRuntime {
             before: reader.before(boundary).await?,
             current: current.clone(),
         };
+        let mut initial = initial;
+        reader
+            .inline_timeline_payloads(&mut initial, demand)
+            .await?;
         let initial = reader.finish_batch(initial, demand)?;
         reader.select_member_window(&initial.entries);
         tracing::debug!(
@@ -359,6 +403,7 @@ impl StudioRuntime {
             storage,
             last_turn,
             slot_changed,
+            generation_changed,
             cut: None,
             cut_entry: 0,
             cut_entries: None,
@@ -383,7 +428,7 @@ impl StudioRuntime {
     }
 }
 fn continuation_reserve(lease: &str, scope: &ChatScope, database: &str, epoch: &str) -> String {
-    serde_json::json!({"projection_version":TIMELINE_PROJECTION_VERSION,"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
+    serde_json::json!({"projection_generation":"00000000-0000-0000-0000-000000000000","projection_version":TIMELINE_PROJECTION_VERSION,"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
 }
 impl ConversationFeed {
     pub fn thread_id(&self) -> &str {
@@ -605,37 +650,81 @@ impl ConversationFeed {
                 if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
                     if self.cut_entries.is_none() {
                         let candidates = if main {
-                        cut.handoff.entries.to_vec()
-                    } else {
-                        let ChatScope::GroupMembers { reference } = &self.reader.inner.scope else { unreachable!() };
-                        cut.handoff.members.iter().filter(|member| member.item_id == reference.item_id && self.reader.observes_member(&member.atom.id))
-                            .map(|member| {
-                                let mut atom = member.atom.clone();
-                                if let (Some(id), Some(bytes)) = (&atom.completion_item_id, member.payload_bytes) {
-                                    atom.payload = Some(PayloadData::Deferred {
-                                        reference: ContentRef { database_id: reference.database_id.clone(), target: ContentTarget::ItemPayload { item_id: id.clone() } },
-                                        byte_length: bytes,
-                                    });
-                                }
-                                ChatEntry::Atom(Box::new(atom))
-                            }).chain(cut.handoff.sources.iter().filter(|state| self.reader.observes_source(&state.source)).cloned().map(ChatEntry::Source)).collect()
+                            cut.handoff.entries.to_vec()
+                        } else {
+                            let ChatScope::GroupMembers { reference } = &self.reader.inner.scope
+                            else {
+                                unreachable!()
+                            };
+                            cut.handoff
+                                .members
+                                .iter()
+                                .filter(|member| {
+                                    member.item_id == reference.item_id
+                                        && self.reader.observes_member(&member.atom.id)
+                                })
+                                .map(|member| {
+                                    let mut atom = member.atom.clone();
+                                    if let (Some(id), Some(bytes)) =
+                                        (&atom.completion_item_id, member.payload_bytes)
+                                    {
+                                        atom.payload = Some(PayloadData::Deferred {
+                                            reference: ContentRef {
+                                                database_id: reference.database_id.clone(),
+                                                target: ContentTarget::ItemPayload {
+                                                    item_id: id.clone(),
+                                                },
+                                            },
+                                            byte_length: bytes,
+                                        });
+                                    }
+                                    ChatEntry::Atom(Box::new(atom))
+                                })
+                                .chain(
+                                    cut.handoff
+                                        .sources
+                                        .iter()
+                                        .filter(|state| self.reader.observes_source(&state.source))
+                                        .cloned()
+                                        .map(ChatEntry::Source),
+                                )
+                                .collect()
                         };
                         self.cut_entries = Some(candidates);
                     }
-                    let candidates = self.cut_entries.as_ref().expect("captured member/item frame");
+                    let candidates = self
+                        .cut_entries
+                        .as_ref()
+                        .expect("captured member/item frame");
                     let total = candidates.len();
                     let mut product = ChatBatch {
-                        placement: ChatPlacement::Append, entries: Vec::new(), before: None,
+                        placement: ChatPlacement::Append,
+                        entries: Vec::new(),
+                        before: None,
                         current: main.then(|| cut.handoff.projection_after_items(self.cut_entry)),
                     };
                     let mut next = self.cut_entry;
-                    for entry in candidates.iter().skip(next).take(self.demand.max_items as usize) {
+                    for entry in candidates
+                        .iter()
+                        .skip(next)
+                        .take(self.demand.max_items as usize)
+                    {
                         product.entries.push(entry.clone());
-                        product.current = main.then(|| cut.handoff.projection_after_items(next + 1));
+                        product.current =
+                            main.then(|| cut.handoff.projection_after_items(next + 1));
+                        self.reader
+                            .inline_timeline_payloads(&mut product, self.demand)
+                            .await?;
                         if product.encoded_len()? > self.demand.max_bytes as usize {
                             product.entries.pop();
-                            product.current = main.then(|| cut.handoff.projection_after_items(next));
-                            ensure!(!product.entries.is_empty(), core::ChatError::InvalidDemand("display handoff cannot fit demand".into()));
+                            product.current =
+                                main.then(|| cut.handoff.projection_after_items(next));
+                            ensure!(
+                                !product.entries.is_empty(),
+                                core::ChatError::InvalidDemand(
+                                    "display handoff cannot fit demand".into()
+                                )
+                            );
                             break;
                         }
                         next += 1;
@@ -649,31 +738,57 @@ impl ConversationFeed {
                         self.cut_entries = None;
                     }
                     if !product.entries.is_empty() || product.current != self.current {
-                        self.reader.annotate_source_states(&mut product.entries, &cut.handoff.after.sources, cut.handoff.after.source_effect_seq).await?;
+                        self.reader
+                            .annotate_source_states(
+                                &mut product.entries,
+                                &cut.handoff.after.sources,
+                                cut.handoff.after.source_effect_seq,
+                            )
+                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
+                        self.reader.select_member_window(&product.entries);
                         self.current = product.current.clone();
                         self.state_turn = true;
-                        return Ok(Some(ConversationEvent::Chat { batch: Box::new(product) }));
+                        return Ok(Some(ConversationEvent::Chat {
+                            batch: Box::new(product),
+                        }));
                     }
                     continue;
                 }
                 if cut.head > self.delivered {
                     let budget = self.reader.budget(None).await?;
-                    let batch = cut.session.completed_after(
-                        core::ChatCompletionCursor::new(cut.session.epoch(), self.delivered),
-                        Some(query(&self.reader.inner.scope)?), Some(cut.head), core_demand(self.demand)?, &budget,
-                    ).await?;
+                    let batch = cut
+                        .session
+                        .completed_after(
+                            core::ChatCompletionCursor::new(cut.session.epoch(), self.delivered),
+                            Some(query(&self.reader.inner.scope)?),
+                            Some(cut.head),
+                            core_demand(self.demand)?,
+                            &budget,
+                        )
+                        .await?;
                     self.reader.ensure()?;
                     ensure!(batch.through_seq > self.delivered, resync());
                     self.delivered = batch.through_seq;
                     if !batch.items.is_empty() {
-                        let mut product = ChatBatch { placement: ChatPlacement::Append,
-                            entries: entries(batch.items, &budget.database_id)?, before: None, current: None };
-                        self.reader.annotate_source_states(&mut product.entries, &cut.handoff.after.sources,
-                            cut.handoff.after.source_effect_seq).await?;
+                        let mut product = ChatBatch {
+                            placement: ChatPlacement::Append,
+                            entries: entries(batch.items, &budget.database_id)?,
+                            before: None,
+                            current: None,
+                        };
+                        self.reader
+                            .annotate_source_states(
+                                &mut product.entries,
+                                &cut.handoff.after.sources,
+                                cut.handoff.after.source_effect_seq,
+                            )
+                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
                         self.state_turn = true;
-                        return Ok(Some(ConversationEvent::Chat { batch: Box::new(product) }));
+                        return Ok(Some(ConversationEvent::Chat {
+                            batch: Box::new(product),
+                        }));
                     }
                     continue;
                 }
@@ -720,6 +835,7 @@ impl ConversationFeed {
                 biased;
                 _=self.cancel.cancelled()=>return Err(core::ChatError::Cancelled.into()),
                 _=self.slot_changed.changed()=>Wake::Slot,
+                _=self.generation_changed.changed()=>Wake::Slot,
                 cut=async { match self.cuts.as_mut() { Some(cuts)=>cuts.recv().await,None=>std::future::pending().await } }=>Wake::Cut(cut),
                 _=async { match self.progress.as_mut() { Some(progress)=>{ let _=progress.changed().await; },None=>std::future::pending().await } }=>Wake::Progress,
                 event=async { match self.state.as_mut() { Some(state)=>state.recv().await,None=>std::future::pending().await } }=>Wake::State(event),
@@ -727,7 +843,10 @@ impl ConversationFeed {
                 open=async { match self.last_turn.as_mut() { Some(turn)=>turn.changed().await.is_ok(),None=>std::future::pending().await } }=>Wake::Terminal(open),
             };
             match wake {
-                Wake::Slot => return Err(resync()),
+                Wake::Slot => {
+                    self.reader.invalidate();
+                    return Err(resync());
+                }
                 Wake::Cut(Ok(cut)) => self.cut = Some(cut),
                 Wake::Cut(Err(_)) => return Err(resync()),
                 Wake::State(Ok(event)) => self.state_event(event)?,

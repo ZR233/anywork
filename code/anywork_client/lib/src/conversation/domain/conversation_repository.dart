@@ -17,6 +17,7 @@ abstract interface class ConversationRepository {
     required String parentId,
     required ReadDemand demand,
   });
+
   /// Opens an independently owned member window for [reference].
   ///
   /// Its consumer, continuation and close lifecycle never replace Main state.

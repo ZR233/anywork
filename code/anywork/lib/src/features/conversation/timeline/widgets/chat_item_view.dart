@@ -122,12 +122,13 @@ class _ChatItemViewState extends State<ChatItemView> {
             if (unit.item.contents.isEmpty) const Text('内容状态未知'),
             for (var index = 0; index < unit.item.contents.length; index++)
               widget.contentRangeBuilder?.call(
-                unit.id,
-                'content-$index',
-                '查看内容',
-                unit.item.contents[index].reference,
-                _contentWitness,
-              ) ?? const Text('内容读取尚未就绪'),
+                    unit.id,
+                    'content-$index',
+                    '查看内容',
+                    unit.item.contents[index].reference,
+                    _contentWitness,
+                  ) ??
+                  const Text('内容读取尚未就绪'),
           ],
         );
       }
@@ -136,8 +137,9 @@ class _ChatItemViewState extends State<ChatItemView> {
         child: TimelineDisplayUnitView(
           key: ValueKey(unit.id),
           unit: unit,
-          childBuilder: (_) => widget.groupMembersBuilder?.call(unit) ??
-              const Text('成员读取尚未就绪'),
+          executionPresent: false,
+          childBuilder: (_) =>
+              widget.groupMembersBuilder?.call(unit) ?? const Text('成员读取尚未就绪'),
         ),
       );
     }
@@ -289,21 +291,26 @@ class _ChatItemViewState extends State<ChatItemView> {
         item: tool,
         inline: wait != null,
         onExpansionChanged: widget.onToolExpansionChanged,
-        additionalContentBuilder: item.attachments.isEmpty ? null : (_) => _media(),
+        additionalContentBuilder: item.attachments.isEmpty
+            ? null
+            : (_) => _media(),
         declaredContents: contents == null || contents.isEmpty
             ? null
             : [
                 for (final content in contents)
-                  TimelineBodyReadIntent(child: widget.contentRangeBuilder?.call(
-                        item.id,
-                        content.role.name,
-                        content.role == ChatContentRole.toolArguments
-                            ? '工具参数'
-                            : '工具输出',
-                        content.reference,
-                        _contentWitness,
-                      ) ??
-                      const Text('内容读取尚未就绪')),
+                  TimelineBodyReadIntent(
+                    child:
+                        widget.contentRangeBuilder?.call(
+                          item.id,
+                          content.role.name,
+                          content.role == ChatContentRole.toolArguments
+                              ? '工具参数'
+                              : '工具输出',
+                          content.reference,
+                          _contentWitness,
+                        ) ??
+                        const Text('内容读取尚未就绪'),
+                  ),
                 if (tool.error != null) Text(tool.error!),
               ],
       );
@@ -318,7 +325,10 @@ class _ChatItemViewState extends State<ChatItemView> {
             : timelineIsWebSearch(tool) &&
                   item.attachments.isEmpty &&
                   (contents == null || contents.isEmpty)
-            ? TimelineWebSearchToolCard(item: tool, onExpansionChanged: widget.onToolExpansionChanged)
+            ? TimelineWebSearchToolCard(
+                item: tool,
+                onExpansionChanged: widget.onToolExpansionChanged,
+              )
             : details,
       );
     } else {
@@ -603,7 +613,9 @@ class _ChatItemViewState extends State<ChatItemView> {
   }) => TimelineActivityTileTheme(
     child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
-      onExpansionChanged: item.type == 'tool' ? widget.onToolExpansionChanged : null,
+      onExpansionChanged: item.type == 'tool'
+          ? widget.onToolExpansionChanged
+          : null,
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: icon,
         label: title,

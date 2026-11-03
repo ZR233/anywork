@@ -11,7 +11,8 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)? openMembers;
+  Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)?
+  openMembers;
   final Set<Object> _bodyDisplays = {};
   bool _retired = false;
   Object bodyGeneration = Object();
@@ -19,6 +20,17 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   bool get bodyActive => !_retired && _bodyDisplays.isNotEmpty;
   Future<ContentWindow> Function(Object, ContentRef, ContentRange)? readBody;
   VoidCallback? retireBody;
+
+  /// A new opaque member capability revokes the old scope without changing
+  /// this item's local expansion intent or interpreting its generation value.
+  void replaceBody() {
+    if (_retired) return;
+    bodyGeneration = Object();
+    retirement.value = true;
+    retireBody?.call();
+    notifyListeners();
+    retirement.value = !bodyActive;
+  }
 
   void retire() {
     if (_retired) return;

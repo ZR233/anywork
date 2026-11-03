@@ -24,6 +24,8 @@ impl MigrationTrait for TimelineItems {
             );
             validate_source(db).await?;
             db.execute_unprepared(timeline::CREATE_SCHEMA).await?;
+            db.execute_unprepared(timeline::CREATE_DERIVED_SCHEMA)
+                .await?;
             let identity = db
                 .query_one_raw(statement(
                     "SELECT database_id FROM history_meta WHERE id=1",

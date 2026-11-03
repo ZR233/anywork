@@ -17,6 +17,7 @@ pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
             reference: protocol::TimelineMembersRef {
                 database_id: reference.database_id,
                 projection_version: reference.projection_version,
+                projection_generation: reference.projection_generation,
                 item_id: reference.item_id,
             },
         },
@@ -201,25 +202,30 @@ fn timeline_item(value: protocol::TimelineItem) -> BridgeTimelineItem {
             active_count: summary.active_count,
             failed_count: summary.failed_count,
             cancelled_count: summary.cancelled_count,
-            categories: summary.categories.into_iter().map(|count| BridgeTimelineCategoryCount {
-                category: match count.category {
-                    protocol::TimelineCategory::Thinking => BridgeTimelineCategory::Thinking,
-                    protocol::TimelineCategory::Read => BridgeTimelineCategory::Read,
-                    protocol::TimelineCategory::Image => BridgeTimelineCategory::Image,
-                    protocol::TimelineCategory::Command => BridgeTimelineCategory::Command,
-                    protocol::TimelineCategory::Search => BridgeTimelineCategory::Search,
-                    protocol::TimelineCategory::Edit => BridgeTimelineCategory::Edit,
-                    protocol::TimelineCategory::Wait => BridgeTimelineCategory::Wait,
-                    protocol::TimelineCategory::Other => BridgeTimelineCategory::Other,
-                },
-                count: count.count,
-            }).collect(),
+            categories: summary
+                .categories
+                .into_iter()
+                .map(|count| BridgeTimelineCategoryCount {
+                    category: match count.category {
+                        protocol::TimelineCategory::Thinking => BridgeTimelineCategory::Thinking,
+                        protocol::TimelineCategory::Read => BridgeTimelineCategory::Read,
+                        protocol::TimelineCategory::Image => BridgeTimelineCategory::Image,
+                        protocol::TimelineCategory::Command => BridgeTimelineCategory::Command,
+                        protocol::TimelineCategory::Search => BridgeTimelineCategory::Search,
+                        protocol::TimelineCategory::Edit => BridgeTimelineCategory::Edit,
+                        protocol::TimelineCategory::Wait => BridgeTimelineCategory::Wait,
+                        protocol::TimelineCategory::Other => BridgeTimelineCategory::Other,
+                    },
+                    count: count.count,
+                })
+                .collect(),
             started_at: summary.started_at,
             finished_at: summary.finished_at,
         }),
         members: value.members.map(|reference| BridgeTimelineMembersRef {
             database_id: reference.database_id,
             projection_version: reference.projection_version,
+            projection_generation: reference.projection_generation,
             item_id: reference.item_id,
         }),
         contents: value.contents.into_iter().map(atom_content).collect(),
@@ -455,12 +461,15 @@ mod tests {
         let reference = protocol::TimelineMembersRef {
             database_id: "original-db".into(),
             projection_version: 7,
+            projection_generation: "projection-incarnation:α".into(),
             item_id: "stable-item".into(),
         };
         let group = protocol::TimelineItem {
             id: reference.item_id.clone(),
             kind: protocol::TimelineItemKind::WorkGroup,
-            source: protocol::ChatSourceId::ForegroundTurn { turn_id: "turn".into() },
+            source: protocol::ChatSourceId::ForegroundTurn {
+                turn_id: "turn".into(),
+            },
             atom_kind: None,
             delivery: protocol::ChatDeliveryKind::Foreground,
             outcome: None,
@@ -474,7 +483,8 @@ mod tests {
                 failed_count: 1,
                 cancelled_count: 3,
                 categories: vec![protocol::TimelineCategoryCount {
-                    category: protocol::TimelineCategory::Wait, count: 11,
+                    category: protocol::TimelineCategory::Wait,
+                    count: 11,
                 }],
                 started_at: Some(100),
                 finished_at: None,
@@ -486,7 +496,8 @@ mod tests {
             position: Some(23),
             admission_closed: true,
         };
-        let mut projection = protocol::CurrentProjection::empty(41, protocol::ThreadStatus::Running);
+        let mut projection =
+            protocol::CurrentProjection::empty(41, protocol::ThreadStatus::Running);
         let mut live = group.clone();
         live.position = None;
         projection.items.push(live);
@@ -496,23 +507,38 @@ mod tests {
             before: Some("opaque-item-cursor".into()),
             current: Some(projection),
         });
-        let BridgeChatEntry::Item(item) = &mapped.entries[0] else { panic!("not an item"); };
+        let BridgeChatEntry::Item(item) = &mapped.entries[0] else {
+            panic!("not an item");
+        };
         assert_eq!(item.kind, BridgeTimelineItemKind::WorkGroup);
         assert_eq!(item.position, Some(23));
         assert!(item.payload.is_none() && item.contents.is_empty());
         assert!(item.outcome.is_none());
         let summary = item.summary.as_ref().unwrap();
-        assert_eq!((summary.member_count, summary.active_count, summary.failed_count, summary.cancelled_count),
-            (11, 2, 1, 3));
+        assert_eq!(
+            (
+                summary.member_count,
+                summary.active_count,
+                summary.failed_count,
+                summary.cancelled_count
+            ),
+            (11, 2, 1, 3)
+        );
         assert_eq!(summary.categories[0].category, BridgeTimelineCategory::Wait);
         let members = item.members.clone().unwrap();
-        assert_eq!(scope(BridgeChatScope::GroupMembers { reference: members }),
-            protocol::ChatScope::GroupMembers { reference });
+        assert_eq!(members.projection_generation, "projection-incarnation:α");
+        assert_eq!(
+            scope(BridgeChatScope::GroupMembers { reference: members }),
+            protocol::ChatScope::GroupMembers { reference }
+        );
         let current = mapped.current.unwrap();
         assert_eq!(current.items[0].id, "stable-item");
         assert_eq!(current.items[0].position, None);
         assert!(current.atoms.is_empty());
-        for kind in [protocol::TimelineItemKind::Text, protocol::TimelineItemKind::Status] {
+        for kind in [
+            protocol::TimelineItemKind::Text,
+            protocol::TimelineItemKind::Status,
+        ] {
             let mapped = timeline_item(protocol::TimelineItem {
                 kind,
                 atom_kind: Some(protocol::ChatAtomKind::Text),
@@ -520,14 +546,21 @@ mod tests {
                 text_channel: Some(protocol::ThreadTextChannel::Commentary),
                 summary: None,
                 members: None,
-                payload: Some(protocol::PayloadData::Inline { bytes: vec![0, 255, b' '] }),
+                payload: Some(protocol::PayloadData::Inline {
+                    bytes: vec![0, 255, b' '],
+                }),
                 content_item_id: Some("original-content".into()),
                 ..group.clone()
             });
             assert_eq!(mapped.outcome, Some(BridgeChatTerminalOutcome::Cancelled));
-            assert_eq!(mapped.text_channel, Some(BridgeThreadTextChannel::Commentary));
+            assert_eq!(
+                mapped.text_channel,
+                Some(BridgeThreadTextChannel::Commentary)
+            );
             assert_eq!(mapped.content_item_id.as_deref(), Some("original-content"));
-            assert!(matches!(mapped.payload, Some(BridgePayloadData::Inline { bytes }) if bytes == [0, 255, b' ']));
+            assert!(
+                matches!(mapped.payload, Some(BridgePayloadData::Inline { bytes }) if bytes == [0, 255, b' '])
+            );
         }
     }
 

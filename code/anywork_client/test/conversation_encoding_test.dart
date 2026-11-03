@@ -41,10 +41,73 @@ Map<String, Object?> _expectedAtom(Object? wait) => {
 };
 
 void main() {
+  test('current preview channels use canonical names, omit unknown and count UTF-8 bytes', () {
+    const reference = ContentRef(
+      databaseId: 'db',
+      target: ItemPayloadTarget(itemId: 'content'),
+    );
+    const finalPreview = CurrentContentPreview(
+      id: 'preview',
+      role: CurrentContentRole.response,
+      textChannel: ThreadTextChannel.finalAnswer,
+      text: '汉🦀',
+      reference: reference,
+    );
+    const unknownPreview = CurrentContentPreview(
+      id: 'preview',
+      role: CurrentContentRole.response,
+      text: '汉🦀',
+      reference: reference,
+    );
+    final encodedFinal = currentContentPreviewToJson(finalPreview);
+    final encodedUnknown = currentContentPreviewToJson(unknownPreview);
+    expect(encodedFinal, {
+      'id': 'preview',
+      'role': 'response',
+      'textChannel': 'final',
+      'text': '汉🦀',
+      'reference': {
+        'databaseId': 'db',
+        'target': {'kind': 'itemPayload', 'itemId': 'content'},
+      },
+    });
+    expect(encodedUnknown, {
+      'id': 'preview',
+      'role': 'response',
+      'text': '汉🦀',
+      'reference': {
+        'databaseId': 'db',
+        'target': {'kind': 'itemPayload', 'itemId': 'content'},
+      },
+    });
+    const expectedFinal =
+        '{"id":"preview","role":"response","textChannel":"final","text":"汉🦀","reference":{"databaseId":"db","target":{"kind":"itemPayload","itemId":"content"}}}';
+    const expectedUnknown =
+        '{"id":"preview","role":"response","text":"汉🦀","reference":{"databaseId":"db","target":{"kind":"itemPayload","itemId":"content"}}}';
+    expect(
+      utf8.encode(jsonEncode(encodedFinal)).length,
+      utf8.encode(expectedFinal).length,
+    );
+    expect(
+      utf8.encode(jsonEncode(encodedUnknown)).length,
+      utf8.encode(expectedUnknown).length,
+    );
+    expect(
+      utf8.encode(jsonEncode(encodedFinal)).length,
+      greaterThan(jsonEncode(encodedFinal).length),
+    );
+    expect(
+      utf8.encode(jsonEncode(encodedFinal)).length -
+          utf8.encode(jsonEncode(encodedUnknown)).length,
+      utf8.encode(',"textChannel":"final"').length,
+    );
+  });
+
   test('Main item encoding preserves summary, typed ref, order and optional ownership', () {
     const reference = TimelineMembersRef(
       databaseId: 'database',
       projectionVersion: 3,
+      projectionGeneration: 'generation:汉🦀',
       itemId: 'work',
     );
     final item = TimelineItem(
@@ -95,67 +158,105 @@ void main() {
         'members': {
           'databaseId': 'database',
           'projectionVersion': 3,
+          'projectionGeneration': 'generation:汉🦀',
           'itemId': 'work',
         },
         'position': 9,
         'admissionClosed': true,
       },
     });
-    final batch = ChatBatch(placement: ChatPlacement.append, entries: [ItemChatEntry(item)]);
+    final batch = ChatBatch(
+      placement: ChatPlacement.append,
+      entries: [ItemChatEntry(item)],
+    );
     expect(batch.items.single, same(item));
     expect(batch.atoms, isEmpty);
-    expect(reference, const TimelineMembersRef(
-      databaseId: 'database', projectionVersion: 3, itemId: 'work',
-    ));
-    expect(reference, isNot(const TimelineMembersRef(
-      databaseId: 'database', projectionVersion: 4, itemId: 'work',
-    )));
-  });
-
-  test('content presence preserves explicit false separately from legacy unknown', () {
-    final atom = ChatAtom(
-      id: 'empty',
-      source: const InputChatSource(inputId: 'input'),
-      sourceOrder: null,
-      kind: ChatAtomKind.input,
-      delivery: ChatDeliveryKind.independent,
-      lifecycle: const ActiveChatAtom(started: null, status: ChatActiveStatus.running),
-      contentPresent: false,
-      contents: const [],
+    expect(
+      reference,
+      const TimelineMembersRef(
+        databaseId: 'database',
+        projectionVersion: 3,
+        itemId: 'work',
+        projectionGeneration: 'generation:汉🦀',
+      ),
     );
-    expect(chatAtomToJson(atom)['contentPresent'], isFalse);
-    expect(chatAtomToJson(_activeWait(null)), isNot(contains('contentPresent')));
+    expect(
+      reference,
+      isNot(
+        const TimelineMembersRef(
+          databaseId: 'database',
+          projectionVersion: 4,
+          itemId: 'work',
+          projectionGeneration: 'generation:汉🦀',
+        ),
+      ),
+    );
+    const rebuilt = TimelineMembersRef(
+      databaseId: 'database',
+      projectionVersion: 3,
+      itemId: 'work',
+      projectionGeneration: 'generation:rebuilt',
+    );
+    expect(reference, isNot(rebuilt));
+    expect({reference, rebuilt}, hasLength(2));
   });
 
-  test('text/status outcome is lightweight and does not require payload decoding', () {
-    for (final kind in [TimelineItemKind.text, TimelineItemKind.status]) {
-      final item = TimelineItem(
-        id: 'interrupted',
-        kind: kind,
-        source: const ForegroundTurnChatSource(turnId: 'turn'),
-        atomKind: ChatAtomKind.text,
-        delivery: ChatDeliveryKind.foreground,
-        outcome: ChatTerminalOutcome.cancelled,
-        textChannel: ThreadTextChannel.finalAnswer,
-        contents: const [],
-        contentItemId: 'original-content',
-        payload: DeferredPayload(
-          reference: const ContentRef(
-            databaseId: 'database',
-            target: ItemPayloadTarget(itemId: 'original-content'),
-          ),
-          byteLength: 1000000,
+  test(
+    'content presence preserves explicit false separately from legacy unknown',
+    () {
+      final atom = ChatAtom(
+        id: 'empty',
+        source: const InputChatSource(inputId: 'input'),
+        sourceOrder: null,
+        kind: ChatAtomKind.input,
+        delivery: ChatDeliveryKind.independent,
+        lifecycle: const ActiveChatAtom(
+          started: null,
+          status: ChatActiveStatus.running,
         ),
-        admissionClosed: true,
+        contentPresent: false,
+        contents: const [],
       );
-      final encoded = timelineItemToJson(item);
-      expect(encoded['outcome'], 'cancelled');
-      expect(encoded['textChannel'], 'final');
-      expect(encoded['contentItemId'], 'original-content');
-      expect((encoded['payload'] as Map)['kind'], 'deferred');
-      expect(encoded, isNot(contains('members')));
-    }
-  });
+      expect(chatAtomToJson(atom)['contentPresent'], isFalse);
+      expect(
+        chatAtomToJson(_activeWait(null)),
+        isNot(contains('contentPresent')),
+      );
+    },
+  );
+
+  test(
+    'text/status outcome is lightweight and does not require payload decoding',
+    () {
+      for (final kind in [TimelineItemKind.text, TimelineItemKind.status]) {
+        final item = TimelineItem(
+          id: 'interrupted',
+          kind: kind,
+          source: const ForegroundTurnChatSource(turnId: 'turn'),
+          atomKind: ChatAtomKind.text,
+          delivery: ChatDeliveryKind.foreground,
+          outcome: ChatTerminalOutcome.cancelled,
+          textChannel: ThreadTextChannel.finalAnswer,
+          contents: const [],
+          contentItemId: 'original-content',
+          payload: DeferredPayload(
+            reference: const ContentRef(
+              databaseId: 'database',
+              target: ItemPayloadTarget(itemId: 'original-content'),
+            ),
+            byteLength: 1000000,
+          ),
+          admissionClosed: true,
+        );
+        final encoded = timelineItemToJson(item);
+        expect(encoded['outcome'], 'cancelled');
+        expect(encoded['textChannel'], 'final');
+        expect(encoded['contentItemId'], 'original-content');
+        expect((encoded['payload'] as Map)['kind'], 'deferred');
+        expect(encoded, isNot(contains('members')));
+      }
+    },
+  );
 
   test('event wait uses canonical Rust serde shape and counts target facts', () {
     final wait = ThreadWaitPresentationView(

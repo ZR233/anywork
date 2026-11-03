@@ -503,9 +503,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          entries: ([_unknown('placeholder')])
-              .map(_mainEntry)
-              .toList(),
+          entries: ([_unknown('placeholder')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpWidget(
@@ -911,7 +909,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 3),
       );
-      expect(find.text('未知展示格式：builtin.exec@1'), findsOneWidget);
+      expect(
+        find.text('不支持的 presentationContract：builtin.exec@1'),
+        findsOneWidget,
+      );
       expect(requests, isEmpty);
       await tester.tap(find.text('按需查看原文 · 900000 字节'));
       await tester.pumpAndSettle(
@@ -1127,10 +1128,7 @@ final class _Controls implements TimelineUiControllers {
   @override
   final scrollController = ScrollController();
   final images = TimelineImageResources(threadId: 'thread');
-  late final adapter = TimelineMessageController(
-    controller,
-    generation: 1,
-  );
+  late final adapter = TimelineMessageController(controller, generation: 1);
   @override
   Key get chatKey => const ValueKey('chat');
   @override
@@ -1152,8 +1150,15 @@ final class _Controls implements TimelineUiControllers {
 
 // Every envelope in these component stories is an explicitly independent Main
 // status/text item. This helper does not classify, join or reorder atoms.
-sdk.ItemChatEntry _mainEntry(sdk.ChatAtom atom) => sdk.ItemChatEntry(sdk.TimelineItem(
-  id: atom.id, kind: sdk.TimelineItemKind.status, source: atom.source,
-  atomKind: atom.kind, delivery: sdk.ChatDeliveryKind.independent,
-  contents: atom.contents, payload: atom.payload, admissionClosed: true,
-));
+sdk.ItemChatEntry _mainEntry(sdk.ChatAtom atom) => sdk.ItemChatEntry(
+  sdk.TimelineItem(
+    id: atom.id,
+    kind: sdk.TimelineItemKind.status,
+    source: atom.source,
+    atomKind: atom.kind,
+    delivery: sdk.ChatDeliveryKind.independent,
+    contents: atom.contents,
+    payload: atom.payload,
+    admissionClosed: true,
+  ),
+);

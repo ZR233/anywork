@@ -72,8 +72,12 @@ final class ChatBatch {
   final String? before;
   final CurrentProjection? current;
 
-  Iterable<TimelineItem> get items =>
-      entries.whereType<ItemChatEntry>().map((entry) => entry.item);
+  Iterable<TimelineItem> get items {
+    if (entries.any((entry) => entry is! ItemChatEntry)) {
+      throw StateError('Display item access requires an Item-only chat batch');
+    }
+    return entries.cast<ItemChatEntry>().map((entry) => entry.item);
+  }
 
   /// Only member/Children windows carry atoms; Main carries display items.
   Iterable<ChatAtom> get atoms =>

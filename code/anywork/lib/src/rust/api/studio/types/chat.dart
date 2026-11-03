@@ -14,6 +14,7 @@ import 'runtime.dart';
 import 'thread_activity.dart';
 import 'thread_stream.dart';
 import 'thread_stream/item.dart';
+import 'timeline.dart';
 part 'chat.freezed.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
@@ -35,6 +36,7 @@ class BridgeChatAtom {
   final BridgeChatToolIdentity? tool;
   final BridgeThreadWaitPresentation? wait;
   final BridgeThreadTextChannel? textChannel;
+  final bool? contentPresent;
   final PlatformInt64? startedAt;
   final PlatformInt64? finishedAt;
   final List<BridgeChatAtomContent> contents;
@@ -55,6 +57,7 @@ class BridgeChatAtom {
     this.tool,
     this.wait,
     this.textChannel,
+    this.contentPresent,
     this.startedAt,
     this.finishedAt,
     required this.contents,
@@ -77,6 +80,7 @@ class BridgeChatAtom {
       tool.hashCode ^
       wait.hashCode ^
       textChannel.hashCode ^
+      contentPresent.hashCode ^
       startedAt.hashCode ^
       finishedAt.hashCode ^
       contents.hashCode ^
@@ -101,6 +105,7 @@ class BridgeChatAtom {
           tool == other.tool &&
           wait == other.wait &&
           textChannel == other.textChannel &&
+          contentPresent == other.contentPresent &&
           startedAt == other.startedAt &&
           finishedAt == other.finishedAt &&
           contents == other.contents &&
@@ -195,6 +200,8 @@ enum BridgeChatDeliveryKind { foreground, backgroundHandoff, independent }
 sealed class BridgeChatEntry with _$BridgeChatEntry {
   const BridgeChatEntry._();
 
+  const factory BridgeChatEntry.item(BridgeTimelineItem field0) =
+      BridgeChatEntry_Item;
   const factory BridgeChatEntry.atom(BridgeChatAtom field0) =
       BridgeChatEntry_Atom;
   const factory BridgeChatEntry.source(BridgeChatSourceState field0) =
@@ -229,6 +236,9 @@ sealed class BridgeChatScope with _$BridgeChatScope {
   const BridgeChatScope._();
 
   const factory BridgeChatScope.main() = BridgeChatScope_Main;
+  const factory BridgeChatScope.groupMembers({
+    required BridgeTimelineMembersRef reference,
+  }) = BridgeChatScope_GroupMembers;
   const factory BridgeChatScope.children({required String parentId}) =
       BridgeChatScope_Children;
 }
@@ -684,6 +694,7 @@ class BridgeCurrentProjection {
   final BridgeCurrentActivityHead? active;
   final BridgeCurrentTurnHead? activeTurn;
   final List<BridgeChatSourceState> sources;
+  final List<BridgeTimelineItem> items;
   final List<BridgeChatAtom> atoms;
   final BridgeCurrentPlanHead? plan;
   final BridgeCurrentCollectionRef? interactions;
@@ -697,6 +708,7 @@ class BridgeCurrentProjection {
     this.active,
     this.activeTurn,
     required this.sources,
+    required this.items,
     required this.atoms,
     this.plan,
     this.interactions,
@@ -712,6 +724,7 @@ class BridgeCurrentProjection {
       active.hashCode ^
       activeTurn.hashCode ^
       sources.hashCode ^
+      items.hashCode ^
       atoms.hashCode ^
       plan.hashCode ^
       interactions.hashCode ^
@@ -729,6 +742,7 @@ class BridgeCurrentProjection {
           active == other.active &&
           activeTurn == other.activeTurn &&
           sources == other.sources &&
+          items == other.items &&
           atoms == other.atoms &&
           plan == other.plan &&
           interactions == other.interactions &&

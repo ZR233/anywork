@@ -106,12 +106,15 @@ final class ChatItemPresentation {
     final author = switch (item.textChannel) {
       ThreadTextChannel.user => 'user',
       ThreadTextChannel.parentAgent => 'parentAgent',
-      ThreadTextChannel.commentary || ThreadTextChannel.finalAnswer => 'assistant',
+      ThreadTextChannel.commentary ||
+      ThreadTextChannel.finalAnswer => 'assistant',
       null => null,
     };
     final finishedAt = item.finishedAt;
-    final time = finishedAt != null &&
-        finishedAt >= -8640000000000 && finishedAt <= 8640000000000
+    final time =
+        finishedAt != null &&
+            finishedAt >= -8640000000000 &&
+            finishedAt <= 8640000000000
         ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
         : null;
     if (item.kind == TimelineItemKind.workGroup || item.payload == null) {

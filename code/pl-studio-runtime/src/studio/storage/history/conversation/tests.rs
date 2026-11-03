@@ -214,211 +214,118 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
 }
 
 #[tokio::test]
-async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Result<()> {
-    use pl_protocol::{
-        ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentTarget,
-        CurrentCollectionRef, CurrentProjection, PayloadData as WirePayload,
-    };
-
-    struct ColdBudget {
-        database_id: String,
-        fixed: usize,
-    }
-    impl ChatBudget for ColdBudget {
-        fn fixed_bytes(&self) -> usize {
-            self.fixed
-        }
-        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
-            let payload = match mode {
-                PayloadMode::Inline => WirePayload::Inline { bytes: Vec::new() },
-                PayloadMode::Deferred => WirePayload::Deferred {
-                    reference: pl_protocol::ContentRef {
-                        database_id: self.database_id.clone(),
-                        target: ContentTarget::ItemPayload {
-                            item_id: header.item_id.clone(),
-                        },
-                    },
-                    byte_length: header.byte_length,
-                },
-            };
-            let mut atom: ChatAtom = serde_json::from_slice(&header.metadata).unwrap();
-            atom.completion_seq = Some(header.append_seq);
-            atom.source_state = Some(pl_protocol::ChatSourceState {
-                source: atom.source.clone(),
-                lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
-                started: None,
-                ended: None,
-            });
-            atom.payload = Some(payload);
-            let base = serde_json::to_vec(&ChatEntry::Atom(Box::new(atom)))
-                .unwrap()
-                .len();
-            if mode == PayloadMode::Inline && header.byte_length != 0 {
-                // Each JSON byte uses at most three digits, plus inter-byte commas.
-                base + header.byte_length as usize * 4 - 1
-            } else {
-                base
-            }
-        }
-        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
-            unreachable!("cold pages do not read manifests")
-        }
-    }
-    fn wire_batch(
-        database_id: &str,
-        current: Option<CurrentProjection>,
-        items: &[ChatPageItem],
-    ) -> ChatBatch {
-        ChatBatch {
-            placement: ChatPlacement::Set,
-            before: None,
-            current,
-            entries: items
-                .iter()
-                .map(|item| {
-                    let mut atom: ChatAtom = serde_json::from_slice(&item.header.metadata).unwrap();
-                    atom.completion_seq = Some(item.header.append_seq);
-                    atom.source_state = Some(pl_protocol::ChatSourceState {
-                        source: atom.source.clone(),
-                        lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
-                        started: None,
-                        ended: None,
-                    });
-                    atom.payload = Some(match &item.payload {
-                        PayloadData::Inline(bytes) => WirePayload::Inline {
-                            bytes: bytes.to_vec(),
-                        },
-                        PayloadData::Deferred {
-                            item_id,
-                            byte_length,
-                        } => WirePayload::Deferred {
-                            reference: pl_protocol::ContentRef {
-                                database_id: database_id.into(),
-                                target: ContentTarget::ItemPayload {
-                                    item_id: item_id.clone(),
-                                },
-                            },
-                            byte_length: *byte_length,
-                        },
-                    });
-                    ChatEntry::Atom(Box::new(atom))
-                })
-                .collect(),
-        }
-    }
-
+async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_payload()
+-> Result<()> {
+    use pl_protocol::ChatScope;
     let dir = tempfile::tempdir()?;
     let store =
         super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget").await?;
     store.prepare_write().await?;
-    let database_id = store.conversation_database_id().await?.unwrap();
-    let parent = ChatKey::new("turn", "target:parent")?;
-    let mut main_item = item(1, "conversation", &[255; 2048]);
-    let mut child_item = item(2, "conversation", &[255; 2048]);
-    child_item.header.parent_id = Some(parent.clone());
-    let mut other_child = item(3, "conversation", &[255; 2048]);
-    other_child.header.parent_id = Some(ChatKey::new("turn", "other:parent")?);
-    for item in [&mut main_item, &mut child_item, &mut other_child] {
-        item.header.metadata = metadata(&item.header.item_id);
-    }
-    let mut projection = CurrentProjection::empty(0, pl_protocol::ThreadStatus::Idle);
-    projection.collections.push(CurrentCollectionRef {
-        database_id: database_id.clone(),
-        collection: "无关集合".repeat(1024),
-        revision: 1,
-    });
-    let writer = store.writer().await?;
-    let tx = writer.db.begin().await?;
-    append_records(&tx, [&main_item, &child_item, &other_child], true).await?;
-    tx.execute_raw(statement(
-        "UPDATE conversation_view_state SET payload=? WHERE singleton_id=1",
-        vec![serde_json::to_vec(&projection)?.into()],
-    ))
-    .await?;
-    tx.commit().await?;
-    let budget = ColdBudget {
-        fixed: wire_batch(&database_id, None, &[]).encoded_len()?,
-        database_id: database_id.clone(),
-    };
-    for (scope, target) in [
-        (
-            ChatScope::Children {
-                parent_id: parent.as_str().into(),
-            },
-            &child_item,
-        ),
-        (ChatScope::Main, &other_child),
-    ] {
-        let main = scope == ChatScope::Main;
-        let expected = ChatPageItem {
-            header: target.header.clone(),
-            payload: PayloadData::Deferred {
-                item_id: target.header.item_id.clone(),
-                byte_length: target.header.byte_length,
-            },
-        };
-        let minimum = wire_batch(
-            &database_id,
-            main.then(|| projection.clone()),
-            std::slice::from_ref(&expected),
-        )
-        .encoded_len()?;
-        if !main {
-            assert!(
-                serde_json::to_vec(&projection)?.len() > minimum,
-                "the unrelated Main current must exceed the entire Children demand"
-            );
+    let parent = ChatKey::new("turn", "actual-parent")?;
+    let mut records = Vec::new();
+    for seq in 1..=3 {
+        let mut record = item(seq, "conversation", &[255; 2048]);
+        record.header.metadata = metadata(&record.header.item_id);
+        if seq == 2 {
+            record.header.parent_id = Some(parent.clone());
         }
-        let query = ChatQuery::new(
-            scope.query_class(),
-            scope
-                .parent_id()
-                .map(|parent| ChatKey::from_encoded(parent.to_owned()))
-                .transpose()?,
-        );
-        let cold = store
-            .cold_conversation(query.clone(), ReadDemand::new(2, minimum), &budget)
-            .await?
-            .context("existing cold database")?;
-        assert_eq!(cold.database_id, database_id);
-        assert_eq!(cold.head, 3);
-        assert_eq!(cold.current, projection);
-        assert_eq!(cold.page.exhausted, !main);
-        assert_eq!(cold.page.items, [expected]);
-        let actual = wire_batch(
-            &cold.database_id,
-            main.then_some(cold.current),
-            &cold.page.items,
-        );
-        actual.validate_for(&scope)?;
-        assert_eq!(
-            actual.entries.len(),
-            1,
-            "page source annotation must not create a second entry"
-        );
-        assert!(matches!(&actual.entries[0], ChatEntry::Atom(atom) if atom.source_state.is_some()));
-        assert_eq!(actual.encoded_len()?, minimum);
-        assert!(
-            actual.encoded_len()? <= minimum,
-            "actual scope delivery must stay within demand"
-        );
-        let error = store
-            .cold_conversation(query, ReadDemand::new(2, minimum - 1), &budget)
-            .await
-            .err()
-            .context("one byte less must reject the target envelope")?;
-        assert!(
-            matches!(
-                error.downcast_ref::<ChatError>(),
-                Some(ChatError::InvalidDemand(_))
-            ),
-            "{scope:?}: {error:#}"
-        );
-        eprintln!(
-            "cold budget {scope:?}: exact={minimum}, actual={}, one-byte-less=InvalidDemand",
-            actual.encoded_len()?
-        );
+        records.push(Arc::new(record));
     }
+    let current = super::super::test_current(1);
+    store
+        .commit_effect(
+            1,
+            super::super::EffectCommit {
+                items: &[],
+                completions: &records,
+                current: &current,
+                rolled_back_turns: &Default::default(),
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            },
+        )
+        .await?;
+    // The synthetic fixture represents frozen legacy facts, prepared once at
+    // their formal normalization boundary, not a second normal Main algorithm.
+    let connection = store.writer().await?;
+    let tx = connection.db.begin().await?;
+    timeline::normalize_legacy(&tx).await?;
+    tx.commit().await?;
+    store.maintain_timeline().await?;
+    let budget = Budget;
+    let cold = store
+        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, 256 * 1024), &budget)
+        .await?
+        .unwrap();
+    let page = cold.timeline.context("derived page")?;
+    assert!(cold.page.items.is_empty(), "Main selected atomic records");
+    let [pl_protocol::ChatEntry::Item(latest)] = page.entries.as_slice() else {
+        panic!("Main returned Atom");
+    };
+    assert_eq!(latest.position, Some(2));
+    assert_eq!(latest.content_item_id.as_deref(), Some("item:3"));
+    assert!(matches!(
+        latest.payload,
+        Some(pl_protocol::PayloadData::Deferred { .. })
+    ));
+    let minimum = budget.fixed_bytes() + serde_json::to_vec(&cold.current)?.len() - b"null".len()
+        + timeline::entry_bytes(&page.entries[0])?;
+    let exact = store
+        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(exact.timeline.unwrap().entries, page.entries);
+    assert!(
+        store
+            .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum - 1), &budget)
+            .await
+            .is_err()
+    );
+    let child_minimum =
+        budget.fixed_bytes() + budget.item_bytes(&records[1].header, PayloadMode::Deferred);
+    let query = ChatQuery::new("conversation", Some(parent));
+    let child = store
+        .cold_conversation(query.clone(), ReadDemand::new(1, child_minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(child.page.items.len(), 1);
+    assert_eq!(child.page.items[0].header, records[1].header);
+    assert!(
+        !child.page.exhausted,
+        "a full scoped page conservatively continues without an existence probe"
+    );
+    let short = store
+        .cold_conversation(query.clone(), ReadDemand::new(2, child_minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(short.page.items, child.page.items);
+    assert!(short.page.exhausted, "a short scoped page proves EOF");
+    let end = super::page(
+        &connection.db,
+        &ChatHistoryRequest {
+            query: Some(query.clone()),
+            after: records[1].header.append_seq,
+            before: None,
+            ceiling: records[2].header.append_seq,
+            demand: ReadDemand::new(1, child_minimum),
+        },
+        &budget,
+        true,
+    )
+    .await?;
+    assert!(end.items.is_empty());
+    assert!(end.exhausted, "an empty scoped continuation proves EOF");
+    assert!(
+        store
+            .cold_conversation(query, ReadDemand::new(1, child_minimum - 1), &budget)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

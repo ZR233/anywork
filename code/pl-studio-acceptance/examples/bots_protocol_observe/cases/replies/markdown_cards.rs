@@ -30,10 +30,11 @@ use super::{
 };
 use crate::http;
 use crate::report::{self, CaseResult};
+use crate::support::{CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload};
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::{ChatBatch, ChatEntry, ChatScope, ContentRange, ContentRef, ReadDemand, TimelineItem};
-use crate::support::{
-    CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload,
+use pl_protocol::{
+    ChatBatch, ChatEntry, ChatScope, ContentRange, ContentRef, ReadDemand, TimelineItem,
+    TimelineItemKind,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -1708,13 +1709,8 @@ async fn inbound_target_timeline(
     let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
     let mut envelopes = Vec::new();
     for item in terminal_items(&batch) {
-        if let Some(payload) = completed_timeline_payload(
-            &read,
-            item,
-            &mut remaining,
-            deadline,
-        )
-        .await?
+        if let Some(payload) =
+            completed_timeline_payload(&read, item, &mut remaining, deadline).await?
         {
             envelopes.push(payload);
         }
@@ -1829,20 +1825,16 @@ async fn assert_canonical_final_blank(
     bot_id: &str,
     message_id: &str,
 ) -> Result<()> {
-    let target = target_timeline(session, bot_id, message_id).await?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
     let turn_id = &target.turn_id;
     ensure!(
         target.batch.before.is_none(),
         "cannot prove blank Final on a truncated timeline page for Turn {turn_id}"
     );
     for item in terminal_items(&target.batch) {
-        let Some(payload) = completed_timeline_payload(
-            &target.read,
-            item,
-            &mut target.remaining,
-            target.deadline,
-        )
-        .await?
+        let Some(payload) =
+            completed_timeline_payload(&target.read, item, &mut target.remaining, target.deadline)
+                .await?
         else {
             continue;
         };
@@ -1865,7 +1857,7 @@ async fn assert_commentary_channel_local(
     bot_id: &str,
     message_id: &str,
 ) -> Result<()> {
-    let target = target_timeline(session, bot_id, message_id).await?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
     let payload = unique_channel_item(&mut target, "commentary").await?;
     let text = body_text(&target.read, text_field(&payload)?).await?;
     ensure!(
@@ -1878,7 +1870,7 @@ async fn assert_commentary_channel_local(
 
 /// Reads the exact UTF-8 size of the newest Final content field.
 async fn canonical_total_bytes(session: &Session, bot_id: &str, message_id: &str) -> Result<u64> {
-    let target = target_timeline(session, bot_id, message_id).await?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
     final_total_bytes(&mut target).await
 }
 
@@ -1895,10 +1887,7 @@ fn is_channel(payload: &serde_json::Value, turn_id: &str, channel: &str) -> bool
         && payload["data"]["channel"] == channel
 }
 
-async fn unique_channel_item(
-    target: &mut TargetChat,
-    channel: &str,
-) -> Result<serde_json::Value> {
+async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<serde_json::Value> {
     let turn_id = &target.turn_id;
     ensure!(
         target.batch.before.is_none(),
@@ -1942,7 +1931,10 @@ fn terminal_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
                             | pl_protocol::ChatAtomKind::TurnReceipt
                             | pl_protocol::ChatAtomKind::Unknown
                     )
-                ) => Some(item.as_ref()),
+                ) =>
+        {
+            Some(item.as_ref())
+        }
         _ => None,
     })
 }

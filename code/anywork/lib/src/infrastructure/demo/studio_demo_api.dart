@@ -4364,6 +4364,10 @@ class DemoStudioTransport extends StudioTransport
   @visibleForTesting
   String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
 
+  @visibleForTesting
+  String conversationProjectionGeneration(String threadId) =>
+      _historyOf(threadId).projectionGeneration;
+
   /// Explicit display fixtures and their already chosen member scopes. No atom
   /// grouping or payload-based membership inference is performed by Demo.
   @visibleForTesting

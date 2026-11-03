@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
+import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 
 /// Main's mechanical admission adapter. Loaded history belongs exclusively to
@@ -32,20 +33,43 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     }
   }
 
-  TimelineDisplayUnit _unit(TimelineItem item, {required bool current}) {
+  TimelineDisplayUnit _unit(
+    TimelineItem item, {
+    required bool current,
+    bool borrowCurrentIntent = true,
+  }) {
     // Borrow intent only from the bounded current fragment at handoff. There
     // is deliberately no permanent history-ID or member-ID map.
-    final previous = live.value.where((unit) =>
-        unit.id == item.id && !unit.expansion.isRetired).firstOrNull;
+    final previous = borrowCurrentIntent
+        ? live.value
+              .where((unit) => unit.id == item.id && !unit.expansion.isRetired)
+              .firstOrNull
+        : null;
     final unit = TimelineDisplayUnit(
       item: item,
       live: current,
       expansion: previous?.expansion,
     );
     unit.expansion.current = unit;
+    if (previous != null &&
+        (previous.item.members != item.members ||
+            !listEquals(
+              _bodyCapabilities(previous.item),
+              _bodyCapabilities(item),
+            ))) {
+      unit.expansion.replaceBody();
+    }
     if (previous == null) onUnitCreated?.call(unit);
     return unit;
   }
+
+  List<Object> _bodyCapabilities(TimelineItem item) => [
+    item.payload != null,
+    for (final content in item.contents)
+      (content.role, contentReferenceIdentity(content.reference)),
+    if (item.payload case DeferredPayload(:final reference))
+      contentReferenceIdentity(reference),
+  ];
 
   Message _message(TimelineDisplayUnit unit) {
     final presentation = ChatItemPresentation.forUnit(unit);
@@ -64,7 +88,9 @@ final class TimelineMessageController implements ConversationBatchConsumer {
   Future<void> applyBatch(ChatBatch batch) async {
     _checkActive();
     if (batch.entries.any((entry) => entry is! ItemChatEntry)) {
-      throw const ConversationContinuityError('Main accepts only TimelineItem entries');
+      throw const ConversationContinuityError(
+        'Main accepts only TimelineItem entries',
+      );
     }
     final items = batch.items.toList();
     final ids = items.map((item) => item.id).toSet();
@@ -78,36 +104,66 @@ final class TimelineMessageController implements ConversationBatchConsumer {
       ]) {
         _retire(unit);
       }
-    } else if (items.any((item) => controller.messages.any((message) => message.id == item.id))) {
-      throw const ConversationContinuityError('Main item was already committed');
+    } else if (items.any(
+      (item) => controller.messages.any((message) => message.id == item.id),
+    )) {
+      throw const ConversationContinuityError(
+        'Main item was already committed',
+      );
     }
-    final messages = [for (final item in items) _message(_unit(item, current: false))];
+    final messages = [
+      for (final item in items)
+        _message(
+          _unit(
+            item,
+            current: false,
+            borrowCurrentIntent: batch.current != null,
+          ),
+        ),
+    ];
     switch (batch.placement) {
       case ChatPlacement.set:
         await controller.setMessages(messages, animated: false);
       case ChatPlacement.prepend:
-        if (messages.isNotEmpty) await controller.insertAllMessages(messages, index: 0, animated: false);
+        if (messages.isNotEmpty) {
+          await controller.insertAllMessages(
+            messages,
+            index: 0,
+            animated: false,
+          );
+        }
       case ChatPlacement.append:
-        if (messages.isNotEmpty) await controller.insertAllMessages(messages, index: controller.messages.length);
+        if (messages.isNotEmpty) {
+          await controller.insertAllMessages(
+            messages,
+            index: controller.messages.length,
+          );
+        }
     }
-    _checkActive();
+    // The public component operation may synchronously trigger selection
+    // retirement. Its successful completion must join the old admission, not
+    // reactivate that display or publish current after losing qualification.
+    if (_retired) return;
     if (batch.current case final current?) {
-      final next = [for (final item in current.items) _unit(item, current: true)];
+      final next = [
+        for (final item in current.items) _unit(item, current: true),
+      ];
       final retained = {...ids, ...next.map((unit) => unit.id)};
       for (final unit in live.value) {
         if (!retained.contains(unit.id)) _retire(unit);
       }
       live.value = List.unmodifiable(next);
-    } else if (ids.isNotEmpty) {
-      live.value = List.unmodifiable(live.value.where((unit) => !ids.contains(unit.id)));
     }
-    developer.Timeline.instantSync('conversation.applied', arguments: {
-      'generation': generation,
-      'placement': batch.placement.name,
-      'acceptedEntries': items.length,
-      'controllerMessages': length,
-      'liveUnits': live.value.length,
-    });
+    developer.Timeline.instantSync(
+      'conversation.applied',
+      arguments: {
+        'generation': generation,
+        'placement': batch.placement.name,
+        'acceptedEntries': items.length,
+        'controllerMessages': length,
+        'liveUnits': live.value.length,
+      },
+    );
   }
 
   void _retire(TimelineDisplayUnit unit) {
@@ -116,7 +172,9 @@ final class TimelineMessageController implements ConversationBatchConsumer {
   }
 
   void _checkActive() {
-    if (_disposed || _retired) throw StateError('Timeline message controller is retired');
+    if (_disposed || _retired) {
+      throw StateError('Timeline message controller is retired');
+    }
   }
 
   /// Revoke group/body/media qualification before the old widget tree detaches.

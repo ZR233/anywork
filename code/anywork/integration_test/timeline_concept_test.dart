@@ -465,9 +465,7 @@ final class _ConceptScene {
         state.connection != TimelineConnectionPhase.ready ||
         state.isLoadingOlder;
     final error =
-        state?.connectionError ??
-        state?.olderError ??
-        target.queryCleanupError;
+        state?.connectionError ?? state?.olderError ?? target.queryCleanupError;
     final selected =
         graph.client.selection.state.selectedThreadId == target.threadId &&
         identical(graph.timeline.lease(target.threadId), target);
@@ -525,7 +523,8 @@ final class _ConceptScene {
       'residentMainMessages': target.controller.messages.length,
       'residentLiveItems': target.liveUnits.value.length,
       'residentMountedMembers': target.groupDisplays.fold<int>(
-        0, (count, display) => count + display.atoms.length,
+        0,
+        (count, display) => count + display.atoms.length,
       ),
       'residentMeaning': 'Main/current items and explicit mounted member windows; not cumulative delivery',
     };
@@ -772,7 +771,10 @@ final class _ConceptScene {
     expect(resumed.contents.map(memberBody), orderedEquals(bodyIdentities));
     expect(items.map((item) => item.id), orderedEquals(historyIds));
     expect(items.where((item) => item.contentItemId == member.id), isEmpty);
-    expect(main.where((unit) => unit.item.kind == TimelineItemKind.workGroup), isEmpty);
+    expect(
+      main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
+      isEmpty,
+    );
     expect(unitFinder(reopened.id), findsOneWidget);
     report['midstreamReopen'] = {
       'gate': 'workgroup',
@@ -840,11 +842,14 @@ final class _ConceptScene {
           : main.indexWhere((unit) => unit.id == unitId);
       final mounted =
           tester.allWidgets
-              .map((widget) => switch (widget) {
-                TimelineDisplayUnitView(:final unit) when !unit.live => unit.id,
-                ChatItemView(:final item) => item.id,
-                _ => null,
-              })
+              .map(
+                (widget) => switch (widget) {
+                  TimelineDisplayUnitView(:final unit) when !unit.live =>
+                    unit.id,
+                  ChatItemView(:final item) => item.id,
+                  _ => null,
+                },
+              )
               .map((id) => main.indexWhere((unit) => unit.id == id))
               .where((index) => index >= 0)
               .toList()
@@ -873,7 +878,8 @@ final class _ConceptScene {
       return [unit.item.contentItemId!];
     }
     final reusedWindow = lease.groupDisplays.any(
-      (display) => display.unitId == id && display.isCurrent && display.expanded,
+      (display) =>
+          display.unitId == id && display.isCurrent && display.expanded,
     );
     final display = await observed.openGroup(id);
     final ids = <String>{};
@@ -894,15 +900,17 @@ final class _ConceptScene {
       }, 'explicit group member page advanced');
     }
     expect(ids, hasLength(unit.item.summary!.memberCount));
-    final observations = (report['memberPageObservations'] ??=
-        <Map<String, Object?>>[]) as List<Map<String, Object?>>;
+    final observations =
+        (report['memberPageObservations'] ??= <Map<String, Object?>>[])
+            as List<Map<String, Object?>>;
     observations.add({
       'itemId': id,
       'reusedMountedWindow': reusedWindow,
       'memberScopeOpenCommands': reusedWindow ? 0 : 1,
       'olderPageCommands': olderPageCommands,
       'costMeaning': 'explicit UI demands; not physical/native IO page counts',
-      'distinctObservedMembers': ids.length, 'eof': true,
+      'distinctObservedMembers': ids.length,
+      'eof': true,
     });
     return ids.toList();
   }
@@ -993,7 +1001,10 @@ final class _ConceptScene {
               .evaluate()
               .isNotEmpty,
     );
-    expect(main.where((unit) => unit.item.kind == TimelineItemKind.workGroup), isEmpty);
+    expect(
+      main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
+      isEmpty,
+    );
     expect(find.byType(TimelineDisplayUnitView), findsNothing);
     await capture('thinking');
     await release('thinking');
@@ -1003,7 +1014,8 @@ final class _ConceptScene {
       () =>
           live.length == 1 &&
           live.single.item.summary!.memberCount == 1 &&
-          live.single.item.summary!.categories.single.category == TimelineCategory.thinking,
+          live.single.item.summary!.categories.single.category ==
+              TimelineCategory.thinking,
     );
     var g1 = live.single.id;
     final source = live.single.item.source;
@@ -1030,14 +1042,20 @@ final class _ConceptScene {
       'group-idle',
       () => live.any(
         (unit) =>
-            unit.id == g1 && unit.item.summary!.memberCount == 4 && unit.item.summary!.activeCount == 0,
+            unit.id == g1 &&
+            unit.item.summary!.memberCount == 4 &&
+            unit.item.summary!.activeCount == 0,
       ),
     );
     final quiet = live.single;
-    await _until(tester, () =>
-        membersOf(quiet.id).length == quiet.item.summary!.memberCount &&
-        membersOf(quiet.id).every((atom) => atom.lifecycle is TerminalChatAtom),
-        'same explicitly opened live member window reaches terminal state');
+    await _until(
+      tester,
+      () =>
+          membersOf(quiet.id).length == quiet.item.summary!.memberCount &&
+          membersOf(quiet.id)
+              .every((atom) => atom.lifecycle is TerminalChatAtom),
+      'same explicitly opened live member window reaches terminal state',
+    );
     expect(quiet.item.admissionClosed, isFalse);
     expect(quiet.live, isTrue);
     expect(
@@ -1076,7 +1094,9 @@ final class _ConceptScene {
     expect(main.where((unit) => unit.id == g1), hasLength(1));
     expect(
       main.where(
-        (unit) => unit.item.source == source && unit.item.kind == TimelineItemKind.text,
+        (unit) =>
+            unit.item.source == source &&
+            unit.item.kind == TimelineItemKind.text,
       ),
       isEmpty,
     );
@@ -1105,7 +1125,9 @@ final class _ConceptScene {
 
     await reach(
       'next-group',
-      () => live.length == 1 && live.single.item.kind == TimelineItemKind.workGroup,
+      () =>
+          live.length == 1 &&
+          live.single.item.kind == TimelineItemKind.workGroup,
     );
     final g2 = live.single.id;
     expect(g2, isNot(g1));
@@ -1146,9 +1168,7 @@ final class _ConceptScene {
     );
     await release('before-turn-end');
     await idle();
-    final completedTextB = main
-        .singleWhere((unit) => unit.id == b)
-        .item;
+    final completedTextB = main.singleWhere((unit) => unit.id == b).item;
     await _creditAsync(() async {
       await credit.queryCompletedText(completedTextB);
       await credit.observeSuccessors();
@@ -1225,8 +1245,7 @@ final class _ConceptScene {
     report['coreOrder'] = [g1, a, g2, b];
     // Save production item IDs, never infer a parent from member contents.
     report['coreContentIdentities'] = [
-      for (final id in [g1, a, g2, b])
-        await contentIdentitiesForItem(id),
+      for (final id in [g1, a, g2, b]) await contentIdentitiesForItem(id),
     ];
     await capture('core-main');
     await compact();
@@ -1241,20 +1260,30 @@ final class _ConceptScene {
     await reach(
       'images-ready',
       () =>
-          live.where((unit) => unit.item.kind == TimelineItemKind.workGroup &&
-              unit.item.summary!.memberCount == 4 &&
-              unit.item.summary!.activeCount == 0).length == 1,
+          live
+              .where(
+                (unit) =>
+                    unit.item.kind == TimelineItemKind.workGroup &&
+                    unit.item.summary!.memberCount == 4 &&
+                    unit.item.summary!.activeCount == 0,
+              )
+              .length ==
+          1,
     );
     final imageWork = live.singleWhere(
       (unit) => unit.item.kind == TimelineItemKind.workGroup,
     );
     report['imageWorkItemId'] = imageWork.id;
     await expand(imageWork);
-    expect(membersOf(imageWork.id).map((atom) => atom.tool?.callId).toSet(),
-        {..._imageCalls, 'concept-image-failed'});
-    expect(membersOf(imageWork.id).every(
-      (atom) => atom.lifecycle is TerminalChatAtom,
-    ), isTrue);
+    expect(membersOf(imageWork.id).map((atom) => atom.tool?.callId).toSet(), {
+      ..._imageCalls,
+      'concept-image-failed',
+    });
+    expect(
+      membersOf(imageWork.id)
+          .every((atom) => atom.lifecycle is TerminalChatAtom),
+      isTrue,
+    );
     await capture('images-live');
     await release('images-ready');
     await idle();
@@ -1279,7 +1308,10 @@ final class _ConceptScene {
     await _until(
       tester,
       () => items.any(
-        (item) => item.id == partialItem && item.position != null && item.outcome != null,
+        (item) =>
+            item.id == partialItem &&
+            item.position != null &&
+            item.outcome != null,
       ),
       'failed partial retained',
     );
@@ -1290,17 +1322,14 @@ final class _ConceptScene {
             item.kind == TimelineItemKind.status &&
             item.atomKind == ChatAtomKind.turnReceipt &&
             item.payload != null &&
-            (presentation(item).data['outcome']
-                    as Map)['kind'] ==
-                'failed',
+            (presentation(item).data['outcome'] as Map)['kind'] == 'failed',
       ),
       'independent reliable failed Turn receipt',
     );
     final failure = items.lastWhere(
       (item) =>
           item.atomKind == ChatAtomKind.turnReceipt &&
-          (presentation(item).data['outcome'] as Map)['kind'] ==
-              'failed',
+          (presentation(item).data['outcome'] as Map)['kind'] == 'failed',
     );
     final failureItem = presentation(failure);
     expect((failureItem.data['outcome'] as Map)['kind'], 'failed');
@@ -1405,7 +1434,8 @@ final class _ConceptScene {
         'currentConnectorCount': currentConnector.evaluate().length,
         'activeHead': owner.content.current.value?.active?.kind.name,
         'currentItems': [
-          for (final item in owner.content.current.value?.items ?? <TimelineItem>[])
+          for (final item
+              in owner.content.current.value?.items ?? <TimelineItem>[])
             itemObservation(item),
         ],
         'liveUnits': [
@@ -1509,14 +1539,13 @@ final class _ConceptScene {
     final receipt = items
         .where(
           (item) =>
-              item.atomKind == ChatAtomKind.compaction && !prior.contains(item.id),
+              item.atomKind == ChatAtomKind.compaction &&
+              !prior.contains(item.id),
         )
         .single;
     expect(receipt.outcome, ChatTerminalOutcome.completed);
     report['compactionItemId'] = receipt.id;
-    final completedUnit = main.singleWhere(
-      (unit) => unit.id == receipt.id,
-    );
+    final completedUnit = main.singleWhere((unit) => unit.id == receipt.id);
     expect(completedUnit.item.kind, TimelineItemKind.status);
     expect(completedUnit.live, isFalse);
     expect(completedUnit.item.contentItemId, receipt.contentItemId);
@@ -1551,7 +1580,9 @@ final class _ConceptScene {
     await submit(_overlapPrompt);
     await reach(
       'a07-reasoning-start',
-      () => live.length == 1 && live.single.item.kind == TimelineItemKind.workGroup,
+      () =>
+          live.length == 1 &&
+          live.single.item.kind == TimelineItemKind.workGroup,
     );
     final work = live.single.id;
     await expand(live.single);
@@ -1567,10 +1598,7 @@ final class _ConceptScene {
     final text = live
         .singleWhere((unit) => unit.item.kind == TimelineItemKind.text)
         .id;
-    expect(
-      membersOf(work).single.lifecycle,
-      isA<ActiveChatAtom>(),
-    );
+    expect(membersOf(work).single.lifecycle, isA<ActiveChatAtom>());
     expect(main.where((unit) => unit.id == work || unit.id == text), isEmpty);
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
@@ -1578,17 +1606,13 @@ final class _ConceptScene {
     await release('a07-text-readable');
     await reach(
       'a07-text-terminal',
-      () => live.any(
-        (unit) =>
-            unit.id == text &&
-            unit.item.outcome != null,
-      ),
+      () => live.any((unit) => unit.id == text && unit.item.outcome != null),
     );
+    expect(membersOf(work).single.id, reason);
     expect(
-      membersOf(work).single.id,
-      reason,
+      live.singleWhere((unit) => unit.id == work).item.summary!.activeCount,
+      1,
     );
-    expect(live.singleWhere((unit) => unit.id == work).item.summary!.activeCount, 1);
     expect(main.where((unit) => unit.id == text), isEmpty);
     await release('a07-text-terminal');
     await reach(
@@ -1627,9 +1651,11 @@ final class _ConceptScene {
     await release('a14-empty-start');
     await reach(
       'a14-empty-terminal',
-      () => live.every((unit) => unit.item.kind == TimelineItemKind.workGroup
-          ? unit.item.summary!.activeCount == 0
-          : unit.item.outcome != null),
+      () => live.every(
+        (unit) => unit.item.kind == TimelineItemKind.workGroup
+            ? unit.item.summary!.activeCount == 0
+            : unit.item.outcome != null,
+      ),
     );
     await release('a14-empty-terminal');
     await reach(
@@ -1677,9 +1703,9 @@ final class _ConceptScene {
     expect(imageGroup.item.members, isNotNull);
     final summary = imageGroup.item.summary!;
     // A folded item carries summary/ref only, not hidden member/media widgets.
-    final mountedBefore = lease.groupDisplays.where(
-      (display) => display.unitId == imageWorkItemId,
-    ).singleOrNull;
+    final mountedBefore = lease.groupDisplays
+        .where((display) => display.unitId == imageWorkItemId)
+        .singleOrNull;
     if (mountedBefore == null) {
       expect(membersOf(imageWorkItemId), isEmpty);
     }
@@ -1702,7 +1728,9 @@ final class _ConceptScene {
         ).attachments.single.id,
     ];
     for (final call in _imageCalls) {
-      final atom = display.atoms.singleWhere((atom) => atom.tool?.callId == call);
+      final atom = display.atoms.singleWhere(
+        (atom) => atom.tool?.callId == call,
+      );
       final item = ChatItemPresentation.decode(atom);
       expect(item.attachments, hasLength(1));
       final card = itemFinder(atom.id);
@@ -1782,16 +1810,24 @@ final class _ConceptScene {
     expect(display.atoms, isEmpty);
     expect(display.before, isNull);
     expect(imageGroup.expansion.bodyActive, isFalse);
-    await _until(tester, () =>
-        graph.client.budget.used(ResourceKind.chatHandle) < openHandles,
-        'collapsed image member scope and media/body owners joined');
+    await _until(
+      tester,
+      () => graph.client.budget.used(ResourceKind.chatHandle) < openHandles,
+      'collapsed image member scope and media/body owners joined',
+    );
     expect(
-      find.descendant(of: observed.groupRow(imageGroup.id),
-        matching: find.byType(TimelineImageView)),
+      find.descendant(
+        of: observed.groupRow(imageGroup.id),
+        matching: find.byType(TimelineImageView),
+      ),
       findsNothing,
     );
     await tester.pump();
-    expect(display.atoms, isEmpty, reason: 'late member delivery cannot restore folded body');
+    expect(
+      display.atoms,
+      isEmpty,
+      reason: 'late member delivery cannot restore folded body',
+    );
     if (input != null) {
       final itemValue = items.singleWhere(
         (item) => item.source == InputChatSource(inputId: input.inputId),
@@ -1848,9 +1884,7 @@ final class _ConceptScene {
     // Production projection IDs survive reopen. Reveal exactly the saved Main
     // item, never search folded groups by member contents or ID prefixes.
     final target = find.byWidgetPredicate(
-      (widget) =>
-          widget is ChatItemView &&
-          widget.item.id == input['itemId'],
+      (widget) => widget is ChatItemView && widget.item.id == input['itemId'],
     );
     await reveal(target);
     final item = items.singleWhere(

@@ -4,10 +4,7 @@ use std::collections::HashSet;
 use super::*;
 use crate::api::studio::{
     handlers::chat::tests::MODEL,
-    types::{
-        BridgeChatBatch, BridgeChatPlacement,
-        BridgeContentRange, BridgeCurrentContentRole,
-    },
+    types::{BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeCurrentContentRole},
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
 

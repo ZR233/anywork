@@ -21,7 +21,11 @@ final class TimelineObservation {
       final unit = message.metadata?[timelineDisplayUnitKey];
       expect(unit, isA<TimelineDisplayUnit>());
       final value = unit as TimelineDisplayUnit;
-      expect(message.id, value.item.id, reason: 'one Main item owns one Message');
+      expect(
+        message.id,
+        value.item.id,
+        reason: 'one Main item owns one Message',
+      );
       expect(value.live, isFalse);
       expect(value.item.position, isNotNull);
       if (value.item.kind == TimelineItemKind.workGroup) {
@@ -44,14 +48,17 @@ final class TimelineObservation {
   Iterable<ChatAtom> get mountedMembers =>
       lease.groupDisplays.expand((display) => display.atoms);
   Iterable<TimelineDisplayUnit> get live => lease.liveUnits.value;
-  Iterable<TimelineDisplayUnit> workFor(ChatSourceId source) => [...main, ...live].where(
-    (unit) => unit.item.source == source && unit.item.kind == TimelineItemKind.workGroup,
-  );
+  Iterable<TimelineDisplayUnit> workFor(ChatSourceId source) =>
+      [...main, ...live].where(
+        (unit) =>
+            unit.item.source == source &&
+            unit.item.kind == TimelineItemKind.workGroup,
+      );
 
   TimelineDisplayUnit unitForMember(String id) => unit(
-      lease.groupDisplays.singleWhere(
-        (display) => display.atoms.any((atom) => atom.id == id),
-      ).unitId,
+    lease.groupDisplays
+        .singleWhere((display) => display.atoms.any((atom) => atom.id == id))
+        .unitId,
   );
 
   Future<void> openSourceGroups(ChatSourceId source) async {
@@ -61,9 +68,10 @@ final class TimelineObservation {
   }
 
   Future<void> openLiveGroups() async {
-    for (final group in live.where(
-      (unit) => unit.item.kind == TimelineItemKind.workGroup,
-    ).toList()) {
+    for (final group
+        in live
+            .where((unit) => unit.item.kind == TimelineItemKind.workGroup)
+            .toList()) {
       await openGroup(group.id);
     }
   }
@@ -139,13 +147,15 @@ final class TimelineObservation {
       final ordered = main.toList();
       final wanted = ordered.indexWhere((unit) => unit.id == unitId);
       final mounted =
-          tester
-              .allWidgets
-              .map((widget) => switch (widget) {
-                TimelineDisplayUnitView(:final unit) when !unit.live => unit.id,
-                ChatItemView(:final item) => item.id,
-                _ => null,
-              })
+          tester.allWidgets
+              .map(
+                (widget) => switch (widget) {
+                  TimelineDisplayUnitView(:final unit) when !unit.live =>
+                    unit.id,
+                  ChatItemView(:final item) => item.id,
+                  _ => null,
+                },
+              )
               .map((id) => ordered.indexWhere((unit) => unit.id == id))
               .where((index) => index >= 0)
               .toList()
@@ -183,13 +193,19 @@ final class TimelineObservation {
           .where((display) => display.unitId == id)
           .singleOrNull;
       if (display?.error case final error?) throw StateError('$error');
-      return display?.isCurrent == true && display?.expanded == true &&
+      return display?.isCurrent == true &&
+          display?.expanded == true &&
           display!.atoms.isNotEmpty;
     }, 'mounted original ordinary group $id');
     expect(display!.atoms, isNotEmpty);
     expect(display!.membersRef, value.item.members);
-    expect(display!.atoms.map((atom) => atom.source).toSet(), {value.item.source});
-    expect(display!.atoms.length, lessThanOrEqualTo(unit(id).item.summary!.memberCount));
+    expect(display!.atoms.map((atom) => atom.source).toSet(), {
+      value.item.source,
+    });
+    expect(
+      display!.atoms.length,
+      lessThanOrEqualTo(unit(id).item.summary!.memberCount),
+    );
     expect(lease, same(originalLease));
     expect(lease.controller, same(originalController));
     expect(lease.generation, originalGeneration);
@@ -207,8 +223,9 @@ final class TimelineObservation {
   }
 
   Future<TimelineGroupDisplay> revealMember(
-    ChatAtom atom, {required TimelineMembersRef reference}
-  ) async {
+    ChatAtom atom, {
+    required TimelineMembersRef reference,
+  }) async {
     final value = unit(reference.itemId);
     expect(value.item.members, reference);
     final display = await openGroup(value.id);

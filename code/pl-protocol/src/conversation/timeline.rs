@@ -82,6 +82,9 @@ pub struct TimelineGroupSummary {
 pub struct TimelineMembersRef {
     pub database_id: String,
     pub projection_version: u32,
+    /// Opaque persisted incarnation of the derived projection. A successful
+    /// rebuild changes it even when the algorithm version and item ID stay equal.
+    pub projection_generation: String,
     pub item_id: String,
 }
 

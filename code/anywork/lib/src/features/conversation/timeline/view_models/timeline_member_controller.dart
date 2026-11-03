@@ -32,8 +32,15 @@ final class TimelineMemberController implements ConversationBatchConsumer {
   @override
   Future<void> applyBatch(ChatBatch batch) async {
     if (_disposed) throw const StaleConversationScope();
+    if (batch.current != null) {
+      throw const ConversationContinuityError(
+        'Member windows cannot contain current projections',
+      );
+    }
     if (batch.entries.any((entry) => entry is ItemChatEntry)) {
-      throw const ConversationContinuityError('Member windows cannot contain Main items');
+      throw const ConversationContinuityError(
+        'Member windows cannot contain Main items',
+      );
     }
     final atoms = batch.atoms.toList();
     final messages = [for (final atom in atoms) _message(atom)];
@@ -42,7 +49,9 @@ final class TimelineMemberController implements ConversationBatchConsumer {
     } else {
       final inserted = <Message>[];
       for (final message in messages) {
-        final previous = controller.messages.where((value) => value.id == message.id).firstOrNull;
+        final previous = controller.messages
+            .where((value) => value.id == message.id)
+            .firstOrNull;
         if (previous == null) {
           inserted.add(message);
         } else {
@@ -52,19 +61,11 @@ final class TimelineMemberController implements ConversationBatchConsumer {
       if (inserted.isNotEmpty) {
         await controller.insertAllMessages(
           inserted,
-          index: batch.placement == ChatPlacement.prepend ? 0 : controller.messages.length,
+          index: batch.placement == ChatPlacement.prepend
+              ? 0
+              : controller.messages.length,
           animated: false,
         );
-      }
-    }
-    for (final atom in batch.current?.atoms ?? const <ChatAtom>[]) {
-      if (_disposed) throw const StaleConversationScope();
-      final message = _message(atom);
-      final previous = controller.messages.where((value) => value.id == atom.id).firstOrNull;
-      if (previous == null) {
-        await controller.insertMessage(message, index: controller.messages.length, animated: false);
-      } else {
-        await controller.updateMessage(previous, message);
       }
     }
   }

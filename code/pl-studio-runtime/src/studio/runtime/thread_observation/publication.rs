@@ -9,6 +9,7 @@ const CUT_FRAMES: usize = 16;
 
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct ConversationSource {
+    pub projection_generation: String,
     pub serial: u64,
     pub session: Session,
     pub head: u64,
@@ -87,6 +88,23 @@ impl ConversationPublication {
         current: Arc<CurrentState>,
         handoff: Option<Arc<CurrentHandoff>>,
     ) -> anyhow::Result<()> {
+        self.publish_in(session, current, handoff, None)
+    }
+    pub(super) fn publish_generation(
+        &self,
+        session: &Session,
+        current: Arc<CurrentState>,
+        generation: &str,
+    ) -> anyhow::Result<()> {
+        self.publish_in(session, current, None, Some(generation))
+    }
+    fn publish_in(
+        &self,
+        session: &Session,
+        current: Arc<CurrentState>,
+        handoff: Option<Arc<CurrentHandoff>>,
+        generation: Option<&str>,
+    ) -> anyhow::Result<()> {
         let reliable = handoff.is_some();
         let mut latest = self
             .latest
@@ -101,6 +119,11 @@ impl ConversationPublication {
         let handoff = handoff.unwrap_or_else(|| {
             let projection = Arc::new(current.projection.clone());
             Arc::new(CurrentHandoff {
+                projection_generation: generation.map(str::to_owned).unwrap_or_else(|| {
+                    latest
+                        .as_ref()
+                        .map_or_else(String::new, |source| source.projection_generation.clone())
+                }),
                 sources: std::sync::Arc::from([]),
                 members: std::sync::Arc::from([]),
                 main_through: latest
@@ -113,6 +136,7 @@ impl ConversationPublication {
             })
         });
         let source = Arc::new(ConversationSource {
+            projection_generation: handoff.projection_generation.clone(),
             serial,
             session: session.clone(),
             head: session.head_seq(),
@@ -126,7 +150,8 @@ impl ConversationPublication {
         );
         if !reliable
             && latest.as_ref().is_some_and(|old| {
-                old.head == source.head
+                old.projection_generation == source.projection_generation
+                    && old.head == source.head
                     && old.current.projection == source.current.projection
                     && old.current.contents.len() == source.current.contents.len()
                     && old.current.contents.iter().all(|(key, content)| {

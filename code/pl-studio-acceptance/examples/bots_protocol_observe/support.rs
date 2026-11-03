@@ -1,8 +1,8 @@
 //! Shared bounded Chat observation and terminal-atom validation.
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatSourceId, ContentRange, ContentRef,
-    ContentTarget, PayloadData, ReadDemand, TimelineItem, TimelineItemKind, TurnState,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatScope, ChatSourceId, ContentRange,
+    ContentRef, ContentTarget, PayloadData, ReadDemand, TimelineItem, TimelineItemKind, TurnState,
 };
 use std::time::Instant;
 
@@ -261,40 +261,31 @@ pub(crate) async fn group_member_atoms(
     let mut atoms = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for page_index in 0..256 {
-        let has_more = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            async {
-                charge_chat_batch(&page, remaining)?;
+        let has_more = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+            charge_chat_batch(&page, remaining)?;
+            page.validate_for(&ChatScope::GroupMembers {
+                reference: reference.clone(),
+            })?;
+            for entry in &page.entries {
+                if let pl_protocol::ChatEntry::Atom(atom) = entry {
+                    atoms.push((**atom).clone());
+                }
+            }
+            if let Some(before) = page.before.take() {
                 ensure!(
-                    page.entries.iter().all(|entry| {
-                        matches!(
-                            entry,
-                            pl_protocol::ChatEntry::Atom(_) | pl_protocol::ChatEntry::Source(_)
-                        )
-                    }),
-                    "GroupMembers scope returned a display item"
+                    page_index + 1 < 256,
+                    "GroupMembers scope exceeded bounded page budget"
                 );
-                for entry in &page.entries {
-                    if let pl_protocol::ChatEntry::Atom(atom) = entry {
-                        atoms.push((**atom).clone());
-                    }
-                }
-                if let Some(before) = page.before.take() {
-                    ensure!(
-                        page_index + 1 < 256,
-                        "GroupMembers scope exceeded bounded page budget"
-                    );
-                    ensure!(
-                        seen.insert(before.clone()),
-                        "GroupMembers continuation did not advance"
-                    );
-                    page = members_read.load_older(&before, CHAT_DEMAND).await?;
-                } else {
-                    return Ok::<bool, anyhow::Error>(false);
-                }
-                Ok(true)
-            },
-        )
+                ensure!(
+                    seen.insert(before.clone()),
+                    "GroupMembers continuation did not advance"
+                );
+                page = members_read.load_older(&before, CHAT_DEMAND).await?;
+            } else {
+                return Ok::<bool, anyhow::Error>(false);
+            }
+            Ok(true)
+        })
         .await
         .context("GroupMembers read exceeded observation deadline")??;
         if !has_more {

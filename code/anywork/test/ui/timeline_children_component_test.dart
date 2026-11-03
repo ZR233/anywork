@@ -20,8 +20,11 @@ import 'package:flutter_chat_core/flutter_chat_core.dart'
 import 'package:flutter_chat_ui/flutter_chat_ui.dart' show Chat;
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart' hide chatMessage, chatSet;
-import '../../../anywork_client/test/support/timeline_transport.dart' as main_fixtures show chatMessage;
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    hide chatMessage, chatSet;
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    as main_fixtures
+    show chatMessage;
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
@@ -801,12 +804,27 @@ final class _Transport implements ConversationTransport {
 
 // Real business Children carry raw atoms, not Main TimelineItems.
 ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
-  id: id, completionItemId: id, source: ReceiptChatSource(receiptId: id),
-  sourceOrder: null, kind: ChatAtomKind.text, delivery: ChatDeliveryKind.independent,
-  lifecycle: const TerminalChatAtom(started: null, ended: null, outcome: ChatTerminalOutcome.completed),
-  contents: const [], payload: main_fixtures.chatMessage(id: id, body: body).payload,
+  id: id,
+  completionItemId: id,
+  source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: main_fixtures.chatMessage(id: id, body: body).payload,
 );
-ChatBatch memberSet({List<ChatAtom>? messages, String? before, CurrentProjection? current}) => ChatBatch(
-  placement: ChatPlacement.set, entries: (messages ?? [memberMessage()]).map(ChatAtomEntry.new).toList(),
-  before: before, current: current,
+ChatBatch memberSet({
+  List<ChatAtom>? messages,
+  String? before,
+  CurrentProjection? current,
+}) => ChatBatch(
+  placement: ChatPlacement.set,
+  entries: (messages ?? [memberMessage()]).map(ChatAtomEntry.new).toList(),
+  before: before,
+  current: current,
 );

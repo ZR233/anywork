@@ -5,6 +5,7 @@ frb_timeline_types.BridgeTimelineMembersRef _timelineMembersToFrb(
 ) => frb_timeline_types.BridgeTimelineMembersRef(
   databaseId: value.databaseId,
   projectionVersion: value.projectionVersion,
+  projectionGeneration: value.projectionGeneration,
   itemId: value.itemId,
 );
 
@@ -57,6 +58,7 @@ TimelineItem _timelineItemFromFrb(
       : TimelineMembersRef(
           databaseId: value.members!.databaseId,
           projectionVersion: value.members!.projectionVersion,
+          projectionGeneration: value.members!.projectionGeneration,
           itemId: value.members!.itemId,
         ),
   contents: [
@@ -112,8 +114,9 @@ ChatFactPosition _chatPositionFromFrb(
 );
 ChatEntry _chatEntryFromFrb(frb_chat_types.BridgeChatEntry value) =>
     switch (value) {
-      frb_chat_types.BridgeChatEntry_Item(:final field0) =>
-        ItemChatEntry(_timelineItemFromFrb(field0)),
+      frb_chat_types.BridgeChatEntry_Item(:final field0) => ItemChatEntry(
+        _timelineItemFromFrb(field0),
+      ),
       frb_chat_types.BridgeChatEntry_Atom(:final field0) => ChatAtomEntry(
         _chatAtomFromFrb(field0),
       ),

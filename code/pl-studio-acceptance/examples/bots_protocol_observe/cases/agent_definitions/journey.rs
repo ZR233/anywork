@@ -1,8 +1,8 @@
 use super::{Observation, config, http, saved, sqlite, wire};
 use crate::cases::replies::chat_turn_outcome;
 use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload,
-    completed_atom_payload, group_member_atoms, content_bytes,
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_atom_payload,
+    completed_timeline_payload, content_bytes, group_member_atoms,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
@@ -997,9 +997,7 @@ impl Observation<'_> {
                         target_segment_complete = true;
                         break 'main;
                     }
-                    if target_turn.is_some()
-                        && item.atom_kind == Some(ChatAtomKind::TurnReceipt)
-                    {
+                    if target_turn.is_some() && item.atom_kind == Some(ChatAtomKind::TurnReceipt) {
                         continue;
                     }
                     let Some(payload) =
@@ -1137,9 +1135,7 @@ async fn cold_main_chat(
                     ChatEntry::Item(item)
                         if item.kind == pl_protocol::TimelineItemKind::WorkGroup =>
                     {
-                        for atom in
-                            group_member_atoms(&read, item, remaining, deadline).await?
-                        {
+                        for atom in group_member_atoms(&read, item, remaining, deadline).await? {
                             if let Some(payload) =
                                 completed_atom_payload(&read, &atom, remaining, deadline).await?
                             {

@@ -22,47 +22,51 @@ ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
       payload: payload,
     );
 
-ChatAtom chatAtomMessage(String id, {String body = '中文 🐱', int? completionSeq, bool? contentPresent}) =>
-    ChatAtom(
-      id: id,
-      source: ReceiptChatSource(receiptId: id),
-      sourceOrder: null,
-      completionSeq: completionSeq,
-      contentPresent: contentPresent,
-      completionItemId: id,
-      kind: ChatAtomKind.text,
-      delivery: ChatDeliveryKind.independent,
-      lifecycle: const TerminalChatAtom(
-        started: null,
-        ended: null,
-        outcome: ChatTerminalOutcome.completed,
-      ),
-      contents: const [],
-      payload: InlinePayload(
-        bytes: utf8.encode(
-          jsonEncode({
-            'contract': 'anywork.chat/1',
-            'type': 'text',
-            'turnId': 'turn',
-            'data': {
-              'channel': 'final',
-              'attachments': <Object?>[],
-              'outcome': {
-                'kind': 'completed',
-                'data': {'completedAt': 0},
-              },
-            },
-            'bodies': [
-              {
-                'key': 'body',
-                'byteLength': utf8.encode(body).length,
-                'inline': utf8.encode(body),
-              },
-            ],
-          }),
-        ),
-      ),
-    );
+ChatAtom chatAtomMessage(
+  String id, {
+  String body = '中文 🐱',
+  int? completionSeq,
+  bool? contentPresent,
+}) => ChatAtom(
+  id: id,
+  source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  completionSeq: completionSeq,
+  contentPresent: contentPresent,
+  completionItemId: id,
+  kind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: InlinePayload(
+    bytes: utf8.encode(
+      jsonEncode({
+        'contract': 'anywork.chat/1',
+        'type': 'text',
+        'turnId': 'turn',
+        'data': {
+          'channel': 'final',
+          'attachments': <Object?>[],
+          'outcome': {
+            'kind': 'completed',
+            'data': {'completedAt': 0},
+          },
+        },
+        'bodies': [
+          {
+            'key': 'body',
+            'byteLength': utf8.encode(body).length,
+            'inline': utf8.encode(body),
+          },
+        ],
+      }),
+    ),
+  ),
+);
 
 CurrentProjection chatCurrent({int sequence = 0}) => CurrentProjection(
   sourceEffectSeq: sequence,
@@ -127,13 +131,19 @@ ChatBatch chatBatch(
 );
 
 /// Explicit text Main item. Atomic member fixtures use chatAtomMessage instead.
-TimelineItem chatMessage(String id, {String body = '中文 🐱', int? completionSeq}) => TimelineItem(
+TimelineItem chatMessage(
+  String id, {
+  String body = '中文 🐱',
+  int? completionSeq,
+}) => TimelineItem(
   id: id,
   kind: TimelineItemKind.text,
   source: ReceiptChatSource(receiptId: id),
   atomKind: ChatAtomKind.text,
   delivery: ChatDeliveryKind.independent,
   textChannel: ThreadTextChannel.finalAnswer,
+  outcome: ChatTerminalOutcome.completed,
+  contentItemId: id,
   contents: const [],
   payload: chatAtomMessage(id, body: body).payload,
   position: completionSeq,
@@ -152,18 +162,40 @@ TimelineItem statusItem(ChatAtom atom) => TimelineItem(
   admissionClosed: true,
 );
 
-TimelineItem workItem(String id, {bool closed = true, int active = 0,
-  int count = 3, int failed = 0, int cancelled = 0, int? start, int? end}) => TimelineItem(
+/// Explicit synthetic producer capability; rebuild stories supply a different
+/// opaque generation. Production code never manufactures either value.
+TimelineItem workItem(
+  String id, {
+  bool closed = true,
+  int active = 0,
+  int count = 3,
+  int failed = 0,
+  int cancelled = 0,
+  int? start,
+  int? end,
+  String projectionGeneration = 'fixture-projection-generation',
+}) => TimelineItem(
   id: id,
   kind: TimelineItemKind.workGroup,
   source: const ForegroundTurnChatSource(turnId: 'T'),
   delivery: ChatDeliveryKind.foreground,
   admissionClosed: closed,
   contents: const [],
-  members: TimelineMembersRef(databaseId: 'database', projectionVersion: 1, itemId: id),
+  members: TimelineMembersRef(
+    databaseId: 'database',
+    projectionVersion: 1,
+    projectionGeneration: projectionGeneration,
+    itemId: id,
+  ),
   summary: TimelineGroupSummary(
-    memberCount: count, activeCount: active, failedCount: failed,
-    cancelledCount: cancelled, startedAt: start, finishedAt: end,
-    categories: const [TimelineCategoryCount(category: TimelineCategory.thinking, count: 1)],
+    memberCount: count,
+    activeCount: active,
+    failedCount: failed,
+    cancelledCount: cancelled,
+    startedAt: start,
+    finishedAt: end,
+    categories: const [
+      TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
+    ],
   ),
 );

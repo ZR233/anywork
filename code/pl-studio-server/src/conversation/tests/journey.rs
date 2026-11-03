@@ -7,9 +7,9 @@ use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentManifestPage,
-    ContentOwner, ContentTarget, ContentWindow, CurrentContentRole,
-    CurrentProjection, PayloadData, ReadDemand, ThreadItemKind, ThreadNotification,
-    ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ContentOwner, ContentTarget, ContentWindow, CurrentContentRole, CurrentProjection, PayloadData,
+    ReadDemand, ThreadItemKind, ThreadNotification, ThreadSubscriptionRequest,
+    ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
     studio::{
         CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
         SubmitPromptRequest,
@@ -195,7 +195,9 @@ impl Environment {
         items: u32,
     ) -> Result<(String, SseBody)> {
         let scope = match parent {
-            Some(parent_id) => ChatScope::Children { parent_id: parent_id.to_owned() },
+            Some(parent_id) => ChatScope::Children {
+                parent_id: parent_id.to_owned(),
+            },
             None => ChatScope::Main,
         };
         self.open_scope(thread, scope, items).await
@@ -207,7 +209,14 @@ impl Environment {
         reference: &pl_protocol::TimelineMembersRef,
         items: u32,
     ) -> Result<(String, SseBody)> {
-        self.open_scope(thread, ChatScope::GroupMembers { reference: reference.clone() }, items).await
+        self.open_scope(
+            thread,
+            ChatScope::GroupMembers {
+                reference: reference.clone(),
+            },
+            items,
+        )
+        .await
     }
 
     async fn open_scope(
@@ -222,11 +231,20 @@ impl Environment {
             query.append_pair("maxItems", &items.to_string());
             query.append_pair("maxBytes", &demand(items).max_bytes.to_string());
             match scope {
-                ChatScope::Main => {},
-                ChatScope::Children { parent_id } => { query.append_pair("parentId", &parent_id); },
+                ChatScope::Main => {}
+                ChatScope::Children { parent_id } => {
+                    query.append_pair("parentId", &parent_id);
+                }
                 ChatScope::GroupMembers { reference } => {
                     query.append_pair("membersDatabaseId", &reference.database_id);
-                    query.append_pair("membersProjectionVersion", &reference.projection_version.to_string());
+                    query.append_pair(
+                        "membersProjectionVersion",
+                        &reference.projection_version.to_string(),
+                    );
+                    query.append_pair(
+                        "membersProjectionGeneration",
+                        &reference.projection_generation,
+                    );
                     query.append_pair("membersItemId", &reference.item_id);
                 }
             }
@@ -397,7 +415,7 @@ async fn complete(
     thread: &str,
     stage: &ReplyStage,
     prompt: &str,
-) -> Result<()> {
+) -> Result<Turn> {
     let mut events = runtime
         .subscribe_thread(ThreadSubscriptionRequest {
             thread_id: thread.into(),
@@ -410,7 +428,14 @@ async fn complete(
                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
                 && turn.input_id.as_deref() == Some(&format!("input-{prompt}"))
             {
-                return Ok(());
+                ensure!(turn.thread_id == thread, "completion belongs to another Thread");
+                ensure!(!turn.id.is_empty(), "completion omitted the actual Turn identity");
+                ensure!(
+                    matches!(&turn.state, TurnState::Completed(_)),
+                    "fixture input did not complete successfully: {:?}",
+                    turn.state
+                );
+                return Ok(turn);
             }
         }
         bail!("Thread ended before completed fixture input")
@@ -437,8 +462,15 @@ async fn item_payload(
     capability: &str,
     item: &pl_protocol::TimelineItem,
 ) -> Result<Value> {
-    decode_payload(env, thread, capability,
-        item.payload.as_ref().context("text/status item omitted its original payload")?).await
+    decode_payload(
+        env,
+        thread,
+        capability,
+        item.payload
+            .as_ref()
+            .context("text/status item omitted its original payload")?,
+    )
+    .await
 }
 
 async fn decode_payload(
@@ -483,11 +515,22 @@ async fn all_entries(
     let mut entries = first.entries;
     let mut before = first.before;
     for _ in 0..32 {
-        let Some(cursor) = before else { return Ok(entries); };
-        let batch: ChatBatch = env.query(thread, capability, "chat/older",
-            &json!({"before": cursor, "demand": demand(3)})).await?;
+        let Some(cursor) = before else {
+            return Ok(entries);
+        };
+        let batch: ChatBatch = env
+            .query(
+                thread,
+                capability,
+                "chat/older",
+                &json!({"before": cursor, "demand": demand(3)}),
+            )
+            .await?;
         ensure!(batch.placement == ChatPlacement::Prepend && batch.current.is_none());
-        ensure!(batch.before.as_ref() != Some(&cursor), "nonadvancing cursor");
+        ensure!(
+            batch.before.as_ref() != Some(&cursor),
+            "nonadvancing cursor"
+        );
         entries.splice(0..0, batch.entries);
         before = batch.before;
     }
@@ -495,14 +538,17 @@ async fn all_entries(
 }
 
 async fn all_history(
-    env: &Environment, thread: &str, capability: &str, first: ChatBatch,
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    first: ChatBatch,
 ) -> Result<Vec<ChatAtom>> {
     let entries = all_entries(env, thread, capability, first).await?;
     let mut atoms = Vec::new();
     for entry in entries {
         match entry {
             ChatEntry::Atom(atom) => atoms.push(*atom),
-            ChatEntry::Source(_) => {},
+            ChatEntry::Source(_) => {}
             ChatEntry::Item(_) => bail!("member/Children scope returned a display item"),
         }
     }
@@ -512,17 +558,26 @@ async fn all_history(
 }
 
 async fn all_items(
-    env: &Environment, thread: &str, capability: &str, first: ChatBatch,
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    first: ChatBatch,
 ) -> Result<Vec<pl_protocol::TimelineItem>> {
     let entries = all_entries(env, thread, capability, first).await?;
     let mut items = Vec::new();
     for entry in entries {
-        let ChatEntry::Item(item) = entry else { bail!("Main returned an atom/source"); };
+        let ChatEntry::Item(item) = entry else {
+            bail!("Main returned an atom/source");
+        };
         items.push(*item);
     }
     let ids = items.iter().map(|item| &item.id).collect::<HashSet<_>>();
     ensure!(ids.len() == items.len(), "duplicate display item identity");
-    ensure!(items.windows(2).all(|pair| pair[0].position < pair[1].position));
+    ensure!(
+        items
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position)
+    );
     Ok(items)
 }
 
@@ -699,7 +754,9 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
     let result = async {
         let thread = env.create().await?;
         tokio::time::timeout(DEADLINE, first_stage.wait_reached()).await?;
-        complete(&env.runtime, &thread, &first_stage, FIRST).await?;
+        let first_turn = complete(&env.runtime, &thread, &first_stage, FIRST).await?;
+        let turn_id = first_turn.id.clone();
+        let parent = turn_parent_key(&turn_id);
         let (capability, mut main) = env.open(&thread, None, 1).await?;
         let first = main.chat().await?;
         let first_items = first
@@ -717,13 +774,16 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             history.len() > first_items,
             "older never returned real completed history"
         );
-        let mut parent = None;
         let mut completed_body = None;
         let mut group_member_ids = HashSet::new();
         let mut group_completion_ids = HashSet::new();
         let mut main_thinking = 0;
         let mut main_inference = 0;
         for message in &history {
+            ensure!(
+                message.atom_kind != Some(ChatAtomKind::TurnReceipt),
+                "successful Turn completion fabricated a Main receipt item"
+            );
             if message.kind == pl_protocol::TimelineItemKind::WorkGroup {
                 ensure!(message.payload.is_none() && message.contents.is_empty());
                 let reference = message.members.as_ref().context("group reference")?;
@@ -747,20 +807,13 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 Some("inference") => main_inference += 1,
                 _ => {}
             }
-            if value["type"] == "turn" {
+            if message.atom_kind == Some(ChatAtomKind::Text) {
                 ensure!(
-                    message.atom_kind == Some(ChatAtomKind::TurnReceipt),
-                    "Turn payload was not labeled as a TurnReceipt atom"
+                    value["type"] == "text"
+                        && message.turn_id.as_deref() == Some(turn_id.as_str())
+                        && value["turnId"].as_str() == Some(turn_id.as_str()),
+                    "Main text metadata/payload disagrees with the completed business Turn"
                 );
-                let turn_id = message
-                    .turn_id
-                    .as_deref()
-                    .context("TurnReceipt atom omitted its actual Turn identity")?;
-                ensure!(
-                    value["turnId"].as_str() == Some(turn_id),
-                    "TurnReceipt metadata and payload Turn identity disagree"
-                );
-                parent = Some((turn_parent_key(turn_id), turn_id.to_owned()));
             }
             let completion_item_id = message
                 .content_item_id
@@ -802,7 +855,6 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .await?;
         ensure!(window.sealed && window.offset == 3 && window.bytes == old_text.as_bytes()[3..34]);
         ensure!(window.available_through == old_text.len() as u64);
-        let (parent, turn_id) = parent.context("completed Turn parent and identity")?;
         assert_execution_history_members(&env.runtime, &thread, &turn_id).await?;
         let (child_cap, mut children) = env.open(&thread, Some(&parent), 1).await?;
         let child_set = children.chat().await?;
@@ -825,20 +877,23 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .collect::<HashSet<_>>();
         let mut thinking = 0;
         let mut inferences = 0;
+        let mut turn_receipts = 0;
         for message in &child_messages {
             let value = payload(&env, &thread, &child_cap, message).await?;
             ensure!(
                 message.turn_id.as_deref() == Some(turn_id.as_str()),
                 "Children returned an atom whose metadata belongs to another Turn"
             );
-            ensure!(
-                main_member_ids.contains(&message.id)
+            if message.kind != ChatAtomKind::TurnReceipt {
+                ensure!(
+                    main_member_ids.contains(&message.id)
                     || message
                         .completion_item_id
                         .as_ref()
                         .is_some_and(|id| main_completion_ids.contains(id)),
-                "Children atom was not a stable member/completion identity in Main"
-            );
+                    "Children content was not owned by a Main item or its explicit member scope"
+                );
+            }
             ensure!(
                 value["turnId"].as_str() == Some(turn_id.as_str()),
                 "Children payload belongs to another Turn: {}",
@@ -854,9 +909,12 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 }
                 Some("inference") => inferences += 1,
                 Some("turn") => {
+                    turn_receipts += 1;
                     ensure!(
-                        value["data"]["outcome"]["kind"] == "completed",
-                        "Children TurnReceipt is not terminally completed"
+                        message.kind == ChatAtomKind::TurnReceipt
+                            && value["data"]["inputId"].as_str() == first_turn.input_id.as_deref()
+                            && value["data"]["outcome"]["kind"] == "completed",
+                        "Children TurnReceipt disagrees with the successful typed completion"
                     );
                 }
                 Some(
@@ -867,9 +925,9 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             }
         }
         ensure!(
-            thinking == 1 && inferences == 0,
-            "Children must expose this Turn's thinking Main atom without an inference copy: \
-             thinking={thinking}, inference={inferences}"
+            thinking == 1 && inferences == 0 && turn_receipts == 1,
+            "Children must retain the real thinking member and business TurnReceipt, not an inference copy: \
+             thinking={thinking}, inference={inferences}, receipts={turn_receipts}"
         );
         env.submit(&thread, NEXT).await?;
         tokio::time::timeout(DEADLINE, growing.wait_reached()).await?;
@@ -897,6 +955,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             item.contents.iter().any(|content| content.reference == response_ref))
             .context("live text item with its original content reference")?;
         ensure!(paused_text.position.is_none() && paused_text.outcome.is_none());
+        let live_item_id = paused_text.id.clone();
         let older: ChatBatch = env
             .query(
                 &thread,
@@ -975,7 +1034,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .query(&thread, &paused_cap, "contents/read", &request)
             .await?;
         ensure!(still_independent == updated);
-        complete(&env.runtime, &thread, &sealing, NEXT).await?;
+        let next_completed_turn = complete(&env.runtime, &thread, &sealing, NEXT).await?;
         let mut sealed = watch.window().await?;
         for _ in 0..8 {
             if sealed.sealed {
@@ -1004,6 +1063,12 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                         ensure!(appended_completion_ids.insert(completion_item_id.clone()));
                     }
                     if atom.content_item_id.as_deref() == Some(active_id.as_str()) {
+                        ensure!(
+                            atom.id == live_item_id
+                                && atom.turn_id.as_deref() == Some(next_completed_turn.id.as_str())
+                                && atom.outcome == Some(pl_protocol::ChatTerminalOutcome::Completed),
+                            "completed text changed its live display/content/Turn ownership"
+                        );
                         response_seen = true;
                     }
                 }
@@ -1019,41 +1084,40 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             }
         }
         ensure!(retired && response_seen);
-        // Compare two real producer-encoded Turn parents after both completed.
-        // A made-up string is an invalid ChatKey, not an empty Children scope.
+        // Reopening Main preserves the actual display item and original body;
+        // successful Turn identity comes from the typed business completion,
+        // never from a fabricated Main TurnReceipt.
         let (latest_cap, mut latest) = env.open(&thread, None, 1).await?;
         let latest_set = latest.chat().await?;
         ensure!(latest_set.placement == ChatPlacement::Set);
-        let terminal_atom = latest_set
-            .entries
+        let latest_items = all_items(&env, &thread, &latest_cap, latest_set).await?;
+        ensure!(latest_items
             .iter()
-            .rev()
-            .find_map(|entry| match entry {
-                ChatEntry::Item(atom)
-                    if atom.atom_kind == Some(ChatAtomKind::TurnReceipt) && atom.payload.is_some() =>
-                {
-                    Some(atom)
-                }
-                ChatEntry::Item(_) | ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
-            })
-            .context("latest completed Turn")?;
-        let next_turn_identity = terminal_atom
-            .turn_id
-            .as_deref()
-            .context("latest TurnReceipt atom omitted its actual Turn identity")?
-            .to_owned();
+            .all(|item| item.atom_kind != Some(ChatAtomKind::TurnReceipt)),
+            "reopening fabricated a successful Main TurnReceipt");
+        let next_turn_identity = next_completed_turn.id.clone();
+        let next_turn = next_turn_identity.as_str();
         let next_parent = turn_parent_key(&next_turn_identity);
-        let terminal = item_payload(&env, &thread, &latest_cap, terminal_atom).await?;
+        let restored_text = latest_items
+            .iter()
+            .find(|item| item.id == live_item_id)
+            .context("reopened completed response display item")?;
         ensure!(
-            terminal["type"] == "turn" && terminal["data"]["inputId"] == format!("input-{NEXT}")
+            restored_text.kind == pl_protocol::TimelineItemKind::Text
+                && restored_text.atom_kind == Some(ChatAtomKind::Text)
+                && restored_text.content_item_id.as_deref() == Some(active_id.as_str())
+                && restored_text.turn_id.as_deref() == Some(next_turn)
+                && restored_text.position.is_some()
+                && restored_text.outcome == Some(pl_protocol::ChatTerminalOutcome::Completed)
+                && restored_text.contents.iter().any(|content| content.reference == response_ref),
+            "reopened response changed its display/content/Turn identity or completion"
         );
-        let next_turn = terminal["turnId"]
-            .as_str()
-            .context("second frozen Turn identity")?;
-        ensure!(
-            next_turn_identity == next_turn,
-            "TurnReceipt parent identity and frozen Turn payload disagree"
-        );
+        let terminal = item_payload(&env, &thread, &latest_cap, restored_text).await?;
+        ensure!(terminal["type"] == "text" && terminal["turnId"] == next_turn);
+        let reopened: ContentWindow = env
+            .query(&thread, &latest_cap, "contents/read", &request)
+            .await?;
+        ensure!(reopened == sealed, "reopening changed the sealed original response");
         ensure!(next_parent != parent && next_turn_identity != turn_id);
         let (next_cap, mut next_children) = env.open(&thread, Some(&next_parent), 1).await?;
         let next_set = next_children.chat().await?;
@@ -1061,8 +1125,12 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         let next_members = all_history(&env, &thread, &next_cap, next_set).await?;
         ensure!(
             !next_members.is_empty(),
-            "second Turn's Children omitted its ordinary Main subset"
+            "second Turn's Children omitted its real business members"
         );
+        let latest_completion_ids = latest_items
+            .iter()
+            .filter_map(|item| item.content_item_id.as_deref())
+            .collect::<HashSet<_>>();
         let mut next_turn_receipts = 0;
         let mut next_inferences = 0;
         for message in &next_members {
@@ -1075,13 +1143,22 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 value["turnId"] == next_turn,
                 "second Children payload belongs to another Turn"
             );
+            if message.kind != ChatAtomKind::TurnReceipt {
+                ensure!(
+                    message.completion_item_id.as_deref().is_some_and(|id|
+                        latest_completion_ids.contains(id) || appended_completion_ids.contains(id)),
+                    "second Children content lost its actual Main content ownership"
+                );
+            }
             match value["type"].as_str() {
                 Some("inference") => next_inferences += 1,
                 Some("turn") => {
                     next_turn_receipts += 1;
                     ensure!(
-                        value["data"]["outcome"]["kind"] == "completed",
-                        "second TurnReceipt is not terminally completed"
+                        message.kind == ChatAtomKind::TurnReceipt
+                            && value["data"]["inputId"].as_str() == next_completed_turn.input_id.as_deref()
+                            && value["data"]["outcome"]["kind"] == "completed",
+                        "second Children TurnReceipt disagrees with the successful typed completion"
                     );
                 }
                 Some("thinking") => ensure!(
@@ -1097,7 +1174,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         }
         ensure!(
             next_turn_receipts == 1 && next_inferences == 0,
-            "second Children must retain its Main TurnReceipt without copying inference: \
+            "second Children must retain its business TurnReceipt without copying inference: \
              receipts={next_turn_receipts}, inference={next_inferences}"
         );
         let next_lease = env.lease(&thread, &next_cap)?;
@@ -1106,18 +1183,27 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         drop(next_lease);
         drop(latest);
         // Typed stale content, rather than a fabricated empty window.
-        let mut stale = collection.clone();
-        stale.revision = stale.revision.saturating_add(1_000_000);
-        let error = env
-            .post(
-                &thread,
-                &capability,
-                "current/page",
-                &json!({
-                    "reference": stale, "continuation": null, "demand": demand(4),
-                }),
-            )
-            .await?;
+        let mut stale = history
+            .iter()
+            .find_map(|item| item.members.as_ref())
+            .context("original work-group members reference")?
+            .clone();
+        stale.projection_generation.push_str(":stale");
+        let mut stale_url =
+            url::Url::parse(&format!("{}/api/v1/threads/{thread}/events", env.base))?;
+        stale_url.query_pairs_mut().extend_pairs([
+            ("maxItems", "4".to_owned()),
+            ("maxBytes", demand(4).max_bytes.to_string()),
+            ("membersDatabaseId", stale.database_id),
+            ("membersProjectionVersion", stale.projection_version.to_string()),
+            ("membersProjectionGeneration", stale.projection_generation),
+            ("membersItemId", stale.item_id),
+        ]);
+        let error = tokio::time::timeout(
+            DEADLINE,
+            env.client.get(stale_url).send(),
+        )
+        .await??;
         ensure!(error.status() == reqwest::StatusCode::CONFLICT);
         ensure!(error.json::<StudioError>().await?.reason() == Some("staleContent"));
         let cross = env

@@ -81,7 +81,7 @@ Main 分页以 Studio 投影生成的展示 item 为单位：`max_items` 限制�
 
 Main 的 item 键集由 `timeline_items.position` 递增序确定。首个 Set 固定 item 位置上界与该切面的 current；Append 只交付切点后新提交的 item 与 currentAfter；Prepend 交付更早的 item 页并替换 continuation。`before` 是绑定原库身份、`ChatScope::Main`、item 排他位置与读取作用域的不透明字符串，Flutter 原样回传，不解析来源、seq 或 position。
 
-`GroupMembers { reference }` 是独立读取作用域：类型化引用含 `database_id`、`projection_version`、`item_id`，原 owner 校验后按成员关联索引的 `member_order` 有界读取。该 scope 自有 Set/Prepend/Append、continuation 和活动窗口更新，不复用 Main cursor。成员顺序与归属由投影决定，Flutter 不重排或发现成员；折叠不读取成员与媒体，引用不能跨库或投影版本使用。
+`GroupMembers { reference }` 是独立读取作用域：类型化引用含 `database_id`、`projection_version`、`projection_generation`、`item_id`，原 owner 校验后按成员关联索引的 `member_order` 有界读取。`projection_version` 只标识算法版本，`projection_generation` 是原 writer 在初次准备及每次成功重建时产生并持久保存的不透明字符串；普通增量与重开沿用同一代际，同算法重建也必须换代。该 scope 自有 Set/Prepend/Append、continuation 和活动窗口更新，不复用 Main cursor。成员顺序与归属由投影决定，Flutter 不重排或发现成员；折叠不读取成员与媒体，引用不能跨库、版本或代际使用。
 
 成员/Children 的原子页不将每个来源的读取证据再追加为独立 entry：`ChatAtom.source_state` 可携带该原子来源在读取切点的真实 `ChatSourceState`，身份必须与 `atom.source` 一致；其成本纳入原 entry 编码预算，不是工作组或范围证明。冻结完成 metadata 的 `source_state` 必须为 None 且不编码该字段，reader 才按同切面事实填入，不能把较晚来源结束永久写回旧完成项。仅 current 涉及的源直接由已计量的 `current.sources` 交付。真实 start/end 仍沿原可靠 handoff 以 `ChatEntry::Source` 发布并按条数、字节分批，不因存在读取注解而合并或吞掉可靠事实。
 
@@ -91,6 +91,8 @@ Main latest 捕获固定 item 位置上界与完成水位 H0；before 还要求 
 2. 按 `timeline_items.position`（或 `GroupMembers` 的 `member_order`）索引倒序取预算内候选；展示 item 只读轻量 metadata 与内容引用，不解码成员正文。内存已满足需求或任一预算耗尽，直接返回，数据库 page/existence 查询为零。
 3. 仅匹配候选不足且条数/字节仍有余量时，锁外建立捕获之后的新 SQLite 短读快照，只补持久化前缀的同 scope 数据；短读只碰派生表与必要的原完成项 payload 长度，不重新运行投影。
 4. SQL 先按索引选择头部和 payload 长度，再一次或有界批次读预算内 payload，不逐项完整解码工具；两个天然不重叠区间拼接为 position/原子 seq 升序结果。
+
+Text/Status 的小型原信封在本帧实际预算允许时沿原内容 owner 交付 Inline，实时发布、RAM 短读与 SQLite 前缀使用同一选择语义，使短正文、附件元信息和回执可直接进入原 typed renderer。派生表仍只保存引用，不持久化第二份正文；WorkGroup 不为此读取成员或媒体。不能将所有小载荷永久 Deferred 后仅展示 JSON 原文来代替正常消息；超预算信封继续 Deferred，正文大块仍保留原 range 引用与显式按需读取。
 
 不能跨 await 持 Session 锁、复用捕获前旧快照、查询触发 flush/执行恢复/完整性检查，或跳过较新的大 item 去库里凑旧小 item；超预算 payload 以 Deferred 表达。捕获后 writer 清 pending 时短读仍持 Arc；捕获前清理则后开的 DB 快照已能看到提交。
 
@@ -141,6 +143,8 @@ open 在 Rust 内完成观察登记、切点捕获和有界基线准备，events
 
 冷读在同一短快照中取得轻量完成水位、current 与初始页，不读/校验/解码完整 checkpoint/current_context，不激活模型、工具、SSH 或执行 owner。current 表示最后已提交的逻辑状态，是否真有执行 source 由 registry 判定，重启前 running 不冒充当前运行。
 
+呈现层以同一 current 快照的 `executionPresent` 限定活动动画及实时计时。current/live 只表示未交接位置，组摘要的 `activeCount` 只表示缺少可靠终态，两者均不能替代执行资格。无执行 owner 的保存片段、摘要及待决交互仍保持可读和可操作，不伪造终态、清空计数或隐藏片段。
+
 无执行 source 的目录状态投影可恢复性，不复用旧进程的资源关闭状态：root 与 child 的非显式 Closed/Closing 均沿既有目录规则投影为 Idle；显式关闭封口、旧 retirement、归档准入及热 owner 的真实关闭阻塞仍有效。输入所需原模型路由与扩展修订号是独立于运行资源的 State 事实，其轻量保存与交付分别见 [17](./17-studio-storage.md) 与 [18](./18-studio-state.md)，不得为补齐它们激活执行或伪造 runtime。
 
 复用 ThreadObservations 的稳定 observation slot 登记并捕获单调 epoch/位置；冷读后复核，覆盖 absent→live→absent 的 ABA。来源判断看 resident/pending，不只看业务 running；idle 也可有未落库尾段。源退役先安全交接 pending/writer。可连续接续由 Rust 完成握手，否则以现有 Failure 明确要求 ConversationResyncRequired，旧分页资格同时失效，不能返回空页或吞错。
@@ -171,11 +175,13 @@ ContentRef 区分 ItemPayload(itemId) 与 Body(owner,key)，绑定原库/读取�
 
 current 只推有界预览和引用；展开时订阅所需正文范围，Rust 组装窗口，Flutter 不归约原始文本 delta。折叠/未订阅正文不推全文。manifest 由 producer 明确提交，不解析未知 payload 查引用；完成内容随 item 保留，current 随 owner 退役且保障已接纳短读结束，不另建全局 GC。存储布局、内容发布屏障和缺失投影处理见 [17](./17-studio-storage.md)。
 
-`CurrentProjection.activeTurn` 保留真实 Turn 身份与阶段，不能作为工作组容器。`CurrentProjection.items` 是有界、有序的未交接片段（`text`／`workGroup`／`status`）。工作组只含摘要与 `TimelineMembersRef`，不在 item/current 中重复传输随组增长的全部成员 ID。该引用绑定原库、投影版本和稳定 item 身份；展开后在独立 `GroupMembers` 窗口读取实际成员。`atoms` 仅保留原 current 预算内确有需要的活动事实，不充当组成员索引。多个未终态 part 不限队首显示；正文在前一思考尚未终态时仍可读，空预览不是来源终态。
+`CurrentProjection.activeTurn` 保留真实 Turn 身份与阶段，不能作为工作组容器。`CurrentProjection.items` 是有界、有序的未交接片段（`text`／`workGroup`／`status`）。工作组只含摘要与 `TimelineMembersRef`，不在 item/current 中重复传输随组增长的全部成员 ID。该引用绑定原库、投影版本、代际和稳定 item 身份；展开后在独立 `GroupMembers` 窗口读取实际成员。`atoms` 仅保留原 current 预算内确有需要的活动事实，不充当组成员索引。多个未终态 part 不限队首显示；正文在前一思考尚未终态时仍可读，空预览不是来源终态。
 
 工作组展开按 `GroupMembers { reference }` 有界读取成员：Rust 依据成员关联索引选择组内稳定顺序，只返回属于该 item 的成员。current 与 history 使用同一引用和读取契约；活动成员的窗口变化由原有界观察机制交付，同一成员 ID 的真实进度/终态更新只替换该窗口的成员，不改变 Main item。历史成员顺序及归属冻结。Flutter 不发现成员、不找组头、不推断封口。折叠时不读成员与媒体，展开也不改变业务准入；先同步撤销窗口、正文与媒体资格，再 cancel/join。真实业务 Children 继续保留，不以整个 Turn 冒充组。工具参数、结果及附件按真实 call 和内容角色归在一个入口，诊断只借已挂载内容。
 
 Main 的旧页 cursor 固定打开时的 item 切面，不用于任意原子窗口。Flutter 不接收 completion seq 作为分组恢复锚点，不拼装 cursor，不通过旧 `readBefore`／`readAt` 原子扫描接口补组。工作组详情只按 typed `GroupMembers` 引用读取；真实业务 Children 和正文范围保持各自原资格，旧页及成员窗口均不覆盖 Main current。
+
+为旧分组恢复加入且没有生产消费者的 Runtime `read_before`／`read_at` 位置窗口一并退役，不将其参数重新解释成展示位置后继续公开。内部仅保留实际服务真实 Children 或原业务消费者的底层原子读取；Main 和成员分页通过各自的不透明 `loadOlder`，正文通过原 manifest/range/watch 契约读取。
 
 `CurrentContentPreview.role` 只是展示分类，不是文本频道或出站许可。预览以可空的 `textChannel` 保留原 canonical 文本条目的 `ThreadTextChannel`；非文本或无法证明频道时为未知，缺失也只表示未知，不能由 `Response`、正文、ID 或所属活动补成 `Final`。该事实沿原 current owner、存储与 FRB／HTTP／Client 映射交付，不新增旁路查询或状态镜像；同样计入原有编码和传输预算，不改变正文引用、generation 或完成边界。[机器人出站契约](./27-bots.md)的 Final 资格必须由明确频道及原目标 Turn 共同证明，未知与 Commentary 都不能授权创建或更新回复卡片。
 
@@ -257,6 +263,10 @@ AppGraph 在规范的可见选择目标成立、发出该目标读取 demand 之
 
 这些轻量来源元信息沿原可靠 effect 保存；只记录真实结构/生命周期，不记录 token，也不增加第二个 writer、事件总线或重建队列。最新 `history_items`、`last_write_seq` 与 current/checkpoint 都不是完整事件日志。旧数据在正式准备边界一次规范化：优先可证明来源顺序及消息/终态边界，确无顺序时保留完成顺序，无法证明归属时保留中性独立信息，未知不伪造；随后仍进入同一个投影算法。
 
+来源结束与 atom 开始/终态使用同一规范接纳顺序；已保存的 effect/suborder 不得在重建时改排为“本 effect 最后”。准备、发布或 SQL 页的切分不改变可提交点。尤其恢复收束可能在同一 effect 中断当前 Turn 并结算旧 Turn 的后台任务，仍须重建相同的工作组、独立结果和状态顺序。旧数据确实缺失位置时才采用明确的规范化顺序，不覆盖新事实中已知的位置。
+
 派生缺失、版本变化或明确损坏才触发维护重建。先在原产品 owner 的可靠处理边界暂停派生推进，提交已准备连续 writer 前缀取得 durable effect 切点 C；C 之后的输入仍由原队列、原预算与背压承担。按 C 的一致源快照逐批重建，正文/图片不载入内存，内存不攒全会话事件、payload 或全量成员 ID；派生行、版本及多个未交接片段的小恢复状态在同一事务完整替换，失败/取消回滚，原事实与旧完整版本保全。
 
-成功后唯一 owner 接管新状态，再接纳原队列 C 之后的输入。旧查询句柄、cursor 和成员引用按原代际退役，新句柄从 Set 开始，不混用投影版本。维护暂停和失败属于当前加载/连接状态，不插入业务历史，不取消模型/工具；不以失败回退客户端分组。正常命中只查小版本/恢复状态及 item 索引，不重复扫描原历史；重建耗时单独报告。
+成功后唯一 owner 接管新状态，再接纳原队列 C 之后的输入。重建事务一并提交新的 `projection_generation`；它只限定派生读取资格，不改变原库身份、来源事实、正文引用或确定性展示 item ID，也不充当排序值。旧查询句柄、cursor 和成员引用按原代际退役，新句柄从 Set 开始；新句柄接收旧成员引用也明确报 `StaleContent`。失败或取消保持完整旧代际，不得提前切换 owner 或将候选代际发给读者。维护暂停和失败属于当前加载/连接状态，不插入业务历史，不取消模型/工具；不以失败回退客户端分组。正常命中只查小版本/恢复状态及 item 索引，不重复扫描原历史；重建耗时单独报告。
+
+冷读发现维护需求与执行 owner 激活并发时，在原维护准入边界重新核实需求、代际及原 owner 资格。旧“没有执行 owner”的快照不能在新 owner 接管后继续静默换代；已被消解的维护需求不重复重建。任何成功替换都必须让当时实际的 owner 接管，即使此后没有新 effect；严格的代际拒绝保持不变，不靠放宽校验使旧 owner 继续发布。

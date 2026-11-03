@@ -616,6 +616,7 @@ CREATE TABLE conversation_atom_facts (
     suborder   INTEGER NOT NULL,
     atom_id    TEXT NOT NULL,
     phase      TEXT NOT NULL,
+    fact_order INTEGER NOT NULL,
     metadata   BLOB NOT NULL,
     PRIMARY KEY (effect_seq, suborder, atom_id, phase),
     UNIQUE (atom_id, phase)
@@ -641,6 +642,8 @@ CREATE TABLE timeline_item_members (
     member_order       INTEGER NOT NULL,
     member_id          TEXT NOT NULL,
     completion_item_id TEXT,
+    admitted_effect    INTEGER NOT NULL,
+    metadata           BLOB NOT NULL,
     PRIMARY KEY (item_id, member_order),
     UNIQUE (item_id, member_id)
 ) WITHOUT ROWID;
@@ -648,8 +651,11 @@ CREATE TABLE timeline_item_members (
 CREATE TABLE timeline_projection_state (
     singleton_id       INTEGER PRIMARY KEY CHECK (singleton_id = 1),
     projection_version INTEGER NOT NULL,
+    projection_generation TEXT NOT NULL,
     next_position      INTEGER NOT NULL,
-    source_effect_seq  INTEGER NOT NULL
+    source_effect_seq  INTEGER NOT NULL,
+    -- 多个未交接片段、活动成员与增量摘要；受原 current 预算限制，不含完成成员全文。
+    recovery           BLOB NOT NULL
 );
 ```
 
@@ -659,7 +665,9 @@ item 表保存普通查询/排序/身份、原始 UTF-8 JSON payload 及轻量�
 
 `timeline_items` 以稳定 item_id 为身份键；`location=current` 的 position/commit_seq 为空，关闭准入与进入历史分别表达，历史行按 position（item_order）键集读取。metadata 保存有界信封、摘要、引用及必要的未交接小状态，不保存全量成员 ID。成员关系在准入时增量写入 `timeline_item_members`，完成后同身份接纳原 completion 引用；member_order 来自真实来源顺序，不能按字符串 ID 或完成顺序排序。组交接只冻结摘要/顺序，不重写整个组成员列表。current 小状态、已提交 item 和未落盘增量仍归同一产品/read owner 及原可靠预算，不长期保留已保存成员正文。
 
-投影版本与 source_effect_seq 覆盖包括“无新完成 atom 的正文开始”在内的可靠输入，不能以完成 seq 代替派生处理位置。writer 在原事实/current 同一事务 apply 派生增量，重试核验实际冻结字节及身份，失败沿原保存故障/背压保留责任。完整重建遵循 [26.11](./26-timeline-content.md#2611-重建输入与维护暂停)：维护暂停、原 writer 连续 durable 切点、原输入队列、一致源快照、同算法有界重建、完整事务替换及原句柄换代；失败或取消回滚且不改原事实，不新增异步投影服务或补偿队列。
+投影版本与 source_effect_seq 覆盖包括“无新完成 atom 的正文开始”在内的可靠输入，不能以完成 seq 代替派生处理位置。`projection_generation` 是原 writer 初次准备和每次成功重建时分配的不透明字符串，与派生行和小恢复状态同事务提交；同算法重建仍换代，正常增量及重开沿用，失败或取消保留完整旧代际。它限定 cursor/成员引用的资格，不改原库或正文身份，不参与 item ID 与排序。writer 在原事实/current 同一事务 apply 派生增量，重试核验实际冻结字节及身份，失败沿原保存故障/背压保留责任。完整重建遵循 [26.11](./26-timeline-content.md#2611-重建输入与维护暂停)：维护暂停、原 writer 连续 durable 切点、原输入队列、一致源快照、同算法有界重建、完整事务替换及原句柄换代；失败或取消回滚且不改原事实，不新增异步投影服务或补偿队列。
+
+13→14→15 的正式准备保留原始事实与正文。旧冻结 metadata 缺少真实开始位置时，`legacyAdmission` 只表达确定的结构准入，不补造开始事件或时间；仅在位置确实缺失时，以已有来源 ordinal 及完成前缀规范化顺序，独立来源保留完成序。缺少真实来源结束位置时才允许 `legacySourceEnd` 结构边界，不覆盖已知的 effect/suborder。成员读取不把这些边界标记当成员。规范化只在准备边界执行，后续仍用同一投影；有界 SQL 元数据排序及逐项终态接纳不在内存积累整会话活动成员。
 
 contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 显式提交 manifest，不从未知业务 payload 猜引用。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文。active item 内容在 seal 时移交已有共享块与 manifest；目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留，current 内容归原 owner 退役且允许已接纳短读结束，不另建全局 GC。
 

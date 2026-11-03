@@ -13,9 +13,15 @@ import '../support/chat_fixtures.dart';
 // atom/seq/group ledger, deduplicate, or merge adjacent same-turn activities.
 void main() {
   test('only explicit contentPresent false proves emptiness; legacy unknown and whitespace are preserved', () {
-    final legacy = ChatItemPresentation.decode(chatAtomMessage('legacy', body: ''));
-    final empty = ChatItemPresentation.decode(chatAtomMessage('empty', body: '', contentPresent: false));
-    final whitespace = ChatItemPresentation.decode(chatAtomMessage('space', body: '  \n', contentPresent: true));
+    final legacy = ChatItemPresentation.decode(
+      chatAtomMessage('legacy', body: ''),
+    );
+    final empty = ChatItemPresentation.decode(
+      chatAtomMessage('empty', body: '', contentPresent: false),
+    );
+    final whitespace = ChatItemPresentation.decode(
+      chatAtomMessage('space', body: '  \n', contentPresent: true),
+    );
     expect(legacy.isKnownEmptyText, isFalse);
     expect(empty.isKnownEmptyText, isTrue);
     expect(whitespace.isKnownEmptyText, isFalse);
@@ -27,10 +33,7 @@ void main() {
   late StreamSubscription<ChatOperation> observed;
   setUp(() {
     stock = InMemoryChatController();
-    adapter = TimelineMessageController(
-      stock,
-      generation: 7,
-    );
+    adapter = TimelineMessageController(stock, generation: 7);
     operations = [];
     observed = stock.operationsStream.listen(operations.add);
   });
@@ -68,13 +71,18 @@ void main() {
     await adapter.applyBatch(
       chatBatch([
         statusItem(chatEnvelope('thinking', type: 'thinking', data: const {})),
-        statusItem(chatEnvelope(
-          'tool',
-          type: 'tool',
-          data: const {
-            'invocation': {'name': 'exec', 'presentationContract': 'generic@1'},
-          },
-        )),
+        statusItem(
+          chatEnvelope(
+            'tool',
+            type: 'tool',
+            data: const {
+              'invocation': {
+                'name': 'exec',
+                'presentationContract': 'generic@1',
+              },
+            },
+          ),
+        ),
         chatMessage('separator'),
       ], placement: ChatPlacement.append),
     );
@@ -135,29 +143,31 @@ void main() {
   test('attachments do not manufacture extra messages and only real sealedAt creates a date', () async {
     await adapter.applyBatch(
       chatBatch([
-        statusItem(chatEnvelope(
-          'media',
-          type: 'text',
-          sealedAt: 123,
-          data: const {
-            'channel': 'user',
-            'attachments': [
-              {
-                'id': 'image',
-                'modality': 'image',
-                'mediaType': 'image/png',
-                'byteSize': 10,
-              },
-              {
-                'id': 'file',
-                'modality': 'file',
-                'mediaType': 'text/plain',
-                'byteSize': 20,
-              },
-            ],
-          },
-          bodies: [inlineBody('body', 'caption')],
-        )),
+        statusItem(
+          chatEnvelope(
+            'media',
+            type: 'text',
+            sealedAt: 123,
+            data: const {
+              'channel': 'user',
+              'attachments': [
+                {
+                  'id': 'image',
+                  'modality': 'image',
+                  'mediaType': 'image/png',
+                  'byteSize': 10,
+                },
+                {
+                  'id': 'file',
+                  'modality': 'file',
+                  'mediaType': 'text/plain',
+                  'byteSize': 20,
+                },
+              ],
+            },
+            bodies: [inlineBody('body', 'caption')],
+          ),
+        ),
       ]),
     );
     expect(stock.messages, hasLength(1));
@@ -184,11 +194,13 @@ void main() {
       () async {
         await adapter.applyBatch(
           chatBatch([
-            statusItem(chatEnvelope(
-              'assistant-looking-id',
-              type: 'text',
-              data: {'channel': channel},
-            )),
+            statusItem(
+              chatEnvelope(
+                'assistant-looking-id',
+                type: 'text',
+                data: {'channel': channel},
+              ),
+            ),
           ]),
         );
         expect(stock.messages.single.authorId, author);
@@ -200,14 +212,18 @@ void main() {
     final raw = '{"contract":"future/2","type":"thinking","data":{}}';
     await adapter.applyBatch(
       chatBatch([
-        statusItem(fixtureAtom(
-          id: 'unknown',
-          payload: InlinePayload(bytes: utf8.encode(raw)),
-        )),
-        statusItem(fixtureAtom(
-          id: 'bad',
-          payload: InlinePayload(bytes: utf8.encode('{broken')),
-        )),
+        statusItem(
+          fixtureAtom(
+            id: 'unknown',
+            payload: InlinePayload(bytes: utf8.encode(raw)),
+          ),
+        ),
+        statusItem(
+          fixtureAtom(
+            id: 'bad',
+            payload: InlinePayload(bytes: utf8.encode('{broken')),
+          ),
+        ),
       ]),
     );
     expect(stock.messages.map((message) => message.id), ['unknown', 'bad']);
@@ -224,10 +240,12 @@ void main() {
     );
     await adapter.applyBatch(
       chatBatch([
-        statusItem(fixtureAtom(
-          id: 'large',
-          payload: DeferredPayload(reference: reference, byteLength: 123456),
-        )),
+        statusItem(
+          fixtureAtom(
+            id: 'large',
+            payload: DeferredPayload(reference: reference, byteLength: 123456),
+          ),
+        ),
       ]),
     );
     expect(stock.messages, hasLength(1));

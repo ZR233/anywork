@@ -69,11 +69,9 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
     ChatAtom {
         id: item.id.clone(),
         completion_item_id: None,
-        content_present: match item.state() {
-            ThreadItemState::Text(text) if item.is_terminal() =>
-                Some(!text.text().is_empty() || !text.attachments().is_empty()),
-            _ => None,
-        },
+        // This item may be a static_state shell. Only freeze(), which owns
+        // the actual content blocks, can prove that a terminal text is empty.
+        content_present: None,
         completion_seq: None,
         source,
         source_state: None,

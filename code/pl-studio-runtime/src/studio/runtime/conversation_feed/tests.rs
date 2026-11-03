@@ -5,11 +5,14 @@ use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 mod atoms;
-mod observed_position;
+mod payload;
+mod qualification;
 
-fn completed_atoms(batch: &ChatBatch) -> impl Iterator<Item = &ChatAtom> {
+fn completed_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
     batch.entries.iter().filter_map(|entry| match entry {
-        ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(atom.as_ref()),
+        ChatEntry::Item(item) if item.position.is_some() && item.payload.is_some() => {
+            Some(item.as_ref())
+        }
         _ => None,
     })
 }
@@ -19,9 +22,10 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
         loop {
             match feed.recv().await?.context("feed ended")? {
                 ConversationEvent::Chat { batch } => {
+                    batch.validate_for(&feed.reader.inner.scope)?;
                     assert!(
                         batch.entries.len() <= feed.demand.max_items as usize,
-                        "total Atom/Source entries exceeded the caller's item budget"
+                        "total scope entries exceeded the caller's item budget"
                     );
                     assert!(batch.encoded_len()? <= feed.demand.max_bytes as usize);
                     return Ok(*batch);
@@ -674,287 +678,6 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
 }
 
 #[tokio::test]
-async fn one_effect_main_prefix_retires_only_delivered_previews_and_includes_reasoning()
--> Result<()> {
-    use crate::studio::{
-        runtime::chat_item::BodyKey,
-        thread_projection::{LiveProjection, order::presentation_id},
-    };
-    use pl_core::{
-        context::OpaquePayload,
-        model::{ContentBlock, ModelCompletedMember},
-        thread::{ThreadEffectBatch, ThreadSnapshot},
-    };
-    use pl_model::{
-        completion::{
-            CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
-            CompletionPresentationPartKind,
-        },
-        runtime::{ModelMemberReceipt, ModelMemberState},
-    };
-    let env = support::Environment::new(vec![], vec![]).await?;
-    let result = async {
-        let thread = Thread::from(
-            env.runtime
-                .create_thread(&env.project.id, "prefix delivery")
-                .await?,
-        );
-        let history = env.runtime.store.history(&thread.id).await?;
-        history.prepare_write().await?;
-        let database = history
-            .conversation_database_id()
-            .await?
-            .context("database identity")?;
-        let session = env.runtime.store.chat_session(&thread.id).await?;
-        let channel = env
-            .runtime
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history.clone())?;
-        projection.bind_conversation_identity(database)?;
-        let turn = pl_core::thread::TurnRecord {
-            turn_id: "prefix-turn".into(),
-            input_id: None,
-            state: pl_core::thread::TurnState::Running,
-            elapsed_ms: None,
-            model_steps: 1,
-        };
-        let state = ThreadSnapshot {
-            turns: vec![turn.clone()].into(),
-            ..Default::default()
-        };
-        let starts = [("member-a", false), ("member-b", false), ("member-z", true)]
-            .into_iter()
-            .map(|(id, reasoning)| pl_core::model::ModelStartedMember {
-                turn_id: "prefix-turn".into(),
-                attempt_id: "prefix-attempt".into(),
-                ..atoms::start(id, reasoning)
-            })
-            .collect::<Vec<_>>();
-        let effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 1,
-            committed_at: 16,
-            turn: Some(turn),
-            model_member_starts: starts.into(),
-            ..Default::default()
-        };
-        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        projection.publish_prepared(&session, &mut prepared).await?;
-        assert_eq!(session.head_seq(), 0);
-        let ids = ["member-a", "member-b"].map(|id| {
-            presentation_id(
-                "prefix-attempt",
-                0,
-                id,
-                Some(core::PresentationPart::OutputText(0)),
-            )
-        });
-        projection.observe_test_current(
-            &thread,
-            ids.iter()
-                .enumerate()
-                .map(|(position, id)| {
-                    (
-                        id.clone(),
-                        BodyKey::Body,
-                        ContentBlock::from_text(if position == 0 { "first" } else { "second" }),
-                        position as u64 + 1,
-                        None,
-                    )
-                })
-                .collect(),
-        )?;
-        let (_owner, owner_progress) = tokio::sync::watch::channel(Default::default());
-        let source = Arc::new(super::super::thread_observation::ThreadLiveFeed::new(
-            None,
-            owner_progress,
-        ));
-        let slot = env.runtime.thread_observations.observation_slot(&thread.id);
-        slot.install(source.clone());
-        source.publish_test_conversation(
-            &session,
-            projection.current_state().context("before current")?,
-            None,
-        )?;
-        let one = ReadDemand {
-            max_items: 1,
-            ..demand()
-        };
-        let mut feed = env
-            .runtime
-            .open_conversation_feed(&thread.id, ChatScope::Main, one)
-            .await?;
-        let first = chat(&mut feed).await?;
-        assert_eq!(first.placement, ChatPlacement::Set);
-        let current = first.current.context("Set current")?;
-        assert_eq!(current.previews.len(), 2);
-        assert_eq!(current.atoms.len(), 3);
-
-        let members = [
-            ("member-a", "first", false),
-            ("member-b", "second", false),
-            ("member-z", "reasoning", true),
-        ]
-        .into_iter()
-        .map(|(id, text, reasoning)| -> Result<ModelCompletedMember> {
-            let receipt = ModelMemberReceipt {
-                item: CompletionPresentationItem {
-                    provider_item_id: id.into(),
-                    output_index: None,
-                    kind: if reasoning {
-                        CompletionPresentationItemKind::Reasoning
-                    } else {
-                        CompletionPresentationItemKind::Text(
-                            pl_protocol::trace::TraceTextChannel::Final,
-                        )
-                    },
-                    parts: vec![CompletionPresentationPart {
-                        content_index: 0,
-                        provider_part_id: None,
-                        kind: if reasoning {
-                            CompletionPresentationPartKind::ReasoningText
-                        } else {
-                            CompletionPresentationPartKind::OutputText
-                        },
-                        text: text.into(),
-                    }],
-                },
-                state: if reasoning {
-                    ModelMemberState::Interrupted
-                } else {
-                    ModelMemberState::Completed
-                },
-            };
-            Ok(ModelCompletedMember {
-                turn_id: "prefix-turn".into(),
-                attempt_id: "prefix-attempt".into(),
-                generation: 0,
-                member_id: id.into(),
-                payload: OpaquePayload::new(
-                    "pl.model.completed-member",
-                    1,
-                    serde_json::to_string(&receipt)?,
-                )?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-        let effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 2,
-            committed_at: 17,
-            model_members: members.into(),
-            // The same reliable handoff also contains a real source-only fact. At K=1
-            // it needs its own frame and must not retire either undelivered preview.
-            context_compactions: vec![pl_core::thread::ContextCompactionEvent::Started {
-                operation_id: "prefix-compaction".into(),
-                turn_id: None,
-                attempt_id: None,
-            }]
-            .into(),
-            ..Default::default()
-        };
-        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        projection.publish_prepared(&session, &mut prepared).await?;
-        assert_eq!(session.head_seq(), 3);
-        let handoff = prepared
-            .current_handoff
-            .as_ref()
-            .context("frozen handoff")?;
-        assert_eq!(handoff.main_through, 3);
-        assert_eq!(handoff.retirements.len(), 3);
-        source.publish_test_conversation(
-            &session,
-            prepared
-                .current_state
-                .as_ref()
-                .context("after current")?
-                .clone(),
-            Some(handoff.clone()),
-        )?;
-
-        let source_start = chat(&mut feed).await?;
-        assert!(matches!(
-            source_start.entries.as_slice(),
-            [ChatEntry::Source(state)]
-                if state.source == (ChatSourceId::Operation {
-                    operation_id: "prefix-compaction".into()
-                }) && state.lifecycle == ChatSourceLifecycle::Active
-        ));
-        let current = source_start.current.context("source-only current")?;
-        assert_eq!(current.previews.len(), 2);
-        assert_eq!(current.atoms.len(), 3);
-        assert_eq!(
-            feed.delivered, 0,
-            "source delivery advanced the completion prefix"
-        );
-        let first = chat(&mut feed).await?;
-        assert_eq!(completed_atoms(&first).count(), 1);
-        assert_eq!(
-            completed_atoms(&first).next().context("first atom")?.id,
-            ids[0]
-        );
-        let current = first.current.context("first prefix current")?;
-        assert_eq!(current.source_effect_seq, 2);
-        assert_eq!(current.previews.len(), 1);
-        assert_eq!(current.atoms.len(), 2);
-        assert!(current.atoms.iter().all(|atom| atom.id != ids[0]));
-        assert_eq!(
-            current.previews[0].id, ids[1],
-            "undelivered member retired early"
-        );
-        let second = chat(&mut feed).await?;
-        assert_eq!(completed_atoms(&second).count(), 1);
-        assert_eq!(
-            completed_atoms(&second).next().context("second atom")?.id,
-            ids[1]
-        );
-        let current = second.current.context("second prefix current")?;
-        assert!(current.previews.is_empty());
-        assert_eq!(current.atoms.len(), 1);
-        assert_eq!(current.atoms[0].kind, ChatAtomKind::Reasoning);
-        let third = chat(&mut feed).await?;
-        assert_eq!(
-            completed_atoms(&third)
-                .next()
-                .context("reasoning atom")?
-                .kind,
-            ChatAtomKind::Reasoning
-        );
-        assert!(
-            third
-                .current
-                .context("final Main current")?
-                .atoms
-                .is_empty()
-        );
-        assert_eq!(
-            feed.delivered,
-            session.head_seq(),
-            "ordinary Main did not deliver reasoning"
-        );
-        assert!(feed.cut.is_none());
-        let interrupted = prepared
-            .items
-            .iter()
-            .find_map(|item| item.thinking())
-            .context("reasoning member")?;
-        assert!(matches!(
-            interrupted.lifecycle(),
-            ThreadContentLifecycle::Cancelled(_)
-        ));
-        feed.close().await?;
-        feed.reader().close().await?;
-        slot.retire(&source);
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    env.finish(result).await
-}
-
-#[tokio::test]
 async fn live_set_watch_completion_current_and_independent_read_close() -> Result<()> {
     use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
 
@@ -1053,7 +776,7 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
             let batch = chat(&mut feed).await?;
             assert_eq!(batch.placement, ChatPlacement::Append);
             assert!(batch.before.is_none());
-            for message in completed_atoms(&batch) {
+            for message in completed_items(&batch) {
                 let payload = match message.payload.as_ref().context("completed payload")? {
                     PayloadData::Inline { bytes } => bytes.clone(),
                     PayloadData::Deferred {
@@ -1150,8 +873,8 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
             bail!("active response did not retain its Item owner");
         };
         assert!(
-            completed_atoms(&idle_set)
-                .any(|message| message.completion_item_id.as_ref() == Some(item_id)),
+            completed_items(&idle_set)
+                .any(|message| message.content_item_id.as_ref() == Some(item_id)),
             "idle open lost the pending response"
         );
         terminal_state_after_set(&mut idle, &completed).await?;
@@ -1233,7 +956,7 @@ async fn cold_open_is_passive_and_absent_live_absent_revokes_old_read_qualificat
             .await?;
         let first = chat(&mut feed).await?;
         assert_eq!(first.placement, ChatPlacement::Set);
-        assert!(completed_atoms(&first).next().is_some());
+        assert!(completed_items(&first).next().is_some());
         assert!(
             !first
                 .current
@@ -1307,4 +1030,267 @@ async fn cold_open_is_passive_and_absent_live_absent_revokes_old_read_qualificat
     result?;
     close?;
     Ok(())
+}
+
+#[tokio::test]
+async fn maintenance_owner_holds_real_inputs_after_durable_cut_and_resumes_without_reader_ack()
+-> Result<()> {
+    use sea_orm::{ConnectionTrait, Database};
+    let body = "maintenance response";
+    let frames = pl_provider_fixture::responses_text(body, "maintenance-part", support::MODEL);
+    let delta = frames
+        .iter()
+        .position(|frame| frame["type"] == "response.output_text.delta")
+        .context("delta")?;
+    let stage = ReplyStage::new();
+    let reply = stage.gated(frames[..=delta].to_vec(), frames[delta + 1..].to_vec());
+    let env =
+        support::Environment::new(vec![support::prompt_step("maintenance", 0, reply)], vec![])
+            .await?;
+    let result=async {
+        let thread=env.start(ThreadWorkspaceMode::Local,"maintenance").await?;
+        let id=&thread.thread.id;
+        support::reached(&stage).await?;
+        env.runtime.synchronize_thread_observation(id).await?;
+        let history=env.runtime.store.history(id).await?;
+        let database=history.conversation_database_id().await?.context("database")?;
+        let mut generation=history.timeline_generation_changes();
+        let old_generation=generation.borrow_and_update().clone();
+        let mut old=env.runtime.open_conversation_feed(id,ChatScope::Main,demand()).await?;
+        let _=chat(&mut old).await?;
+        let channel=env.runtime.store.thread_persistence().history_channel(id);
+        let mut admission=channel.subscribe();
+        let (entered,release)=history.arm_timeline_rebuild_gate().await;
+        let path=env.runtime.store.registered_session_paths(id)?.history_database();
+        let db=Database::connect(format!("sqlite://{}?mode=rw",path.display())).await?;
+        db.execute_unprepared("UPDATE timeline_projection_state SET projection_version=0 WHERE singleton_id=1").await?;
+        db.close().await?;
+        history.request_timeline_maintenance();
+        tokio::time::timeout(Duration::from_secs(20),entered).await??;
+        let cut=history.conversation_current().await?.context("durable current")?.source_effect_seq;
+        assert!(history.timeline_is_paused());
+        stage.release();
+        tokio::time::timeout(Duration::from_secs(20),async {
+            loop {
+                if let Some(write)=channel.next_unprojected() {
+                    assert!(write.effect.sequence>cut);
+                    break Ok::<_,anyhow::Error>(());
+                }
+                admission.changed().await?;
+            }
+        }).await??;
+        assert_eq!(history.timeline_generation().await?,old_generation,"candidate generation was published before commit");
+        assert_eq!(history.conversation_current().await?.context("paused cut")?.source_effect_seq,cut,"new input crossed the maintenance boundary");
+        release.send(()).map_err(|_|anyhow::anyhow!("maintenance owner disappeared"))?;
+        tokio::time::timeout(Duration::from_secs(20),generation.changed()).await??;
+        // Deliberately do not recv/ACK the old feed. The original input/writer
+        // channel must finish independently of any GUI/read qualification.
+        let _completed=support::completed_prompt(&env.runtime,id,"maintenance").await?;
+        env.runtime.synchronize_thread_observation(id).await?;
+        channel.await_handoff_durable(id,channel.handoff_ticket()).await?;
+        assert_ne!(*generation.borrow(),old_generation);
+        assert_eq!(history.conversation_database_id().await?.as_deref(),Some(database.as_str()));
+        assert!(history.conversation_current().await?.context("resumed cut")?.source_effect_seq>cut);
+        assert!(old.recv().await.is_err());
+        let mut fresh=env.runtime.open_conversation_feed(id,ChatScope::Main,demand()).await?;
+        let set=chat(&mut fresh).await?;
+        assert_eq!(set.placement,ChatPlacement::Set);
+        assert_eq!(set.entries.iter().filter(|entry|matches!(entry,ChatEntry::Item(item) if item.text_channel==Some(ThreadTextChannel::Final))).count(),1);
+        assert!(set.entries.iter().all(|entry|matches!(entry,ChatEntry::Item(_))));
+        old.close().await?;old.reader().close().await?;
+        fresh.close().await?;fresh.reader().close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn obsolete_cold_need_does_not_rebuild_above_new_idle_owner() -> Result<()> {
+    use sea_orm::{ConnectionTrait, Database};
+    let mut env = support::Environment::new(
+        vec![support::prompt_step(
+            "cold-maintenance",
+            0,
+            support::text_reply("saved before activation", "cold-maintenance-part"),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "cold-maintenance")
+            .await?;
+        let id = thread.thread.id.clone();
+        let _ = support::completed_prompt(&env.runtime, &id, "cold-maintenance").await?;
+        env.restart().await?;
+        assert!(env.runtime.threads.observed_thread(&id).is_none());
+        let history = env.runtime.store.history(&id).await?;
+        let old_generation = history.timeline_generation().await?;
+        let path = env
+            .runtime
+            .store
+            .registered_session_paths(&id)?
+            .history_database();
+        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        db.execute_unprepared(
+            "UPDATE timeline_projection_state SET projection_version=0 WHERE singleton_id=1",
+        )
+        .await?;
+        db.close().await?;
+        let (needed, release) = history.arm_timeline_read_need_gate().await;
+        let read = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand());
+        let activate = async {
+            tokio::time::timeout(Duration::from_secs(20), needed).await??;
+            let owner = env.runtime.ensure_thread_owner(&id).await?;
+            env.runtime.synchronize_thread_observation(&id).await?;
+            let generation = history.timeline_generation().await?;
+            assert_ne!(generation, old_generation);
+            let slot = env.runtime.thread_observations.observation_slot(&id);
+            let (position, _) = slot.capture();
+            assert_eq!(
+                position
+                    .source
+                    .as_ref()
+                    .context("actual W")?
+                    .current_conversation()
+                    .context("W current")?
+                    .projection_generation,
+                generation
+            );
+            let sequence = owner.snapshot().commit_sequence;
+            // R already computed old needed=true; keep it queued behind the
+            // same prepare read guard after W has installed/published g1.
+            let prepare = history.timeline_prepare_guard().await;
+            let queued = history.arm_timeline_maintenance_waiter().await;
+            release
+                .send(())
+                .map_err(|_| anyhow::anyhow!("R disappeared"))?;
+            tokio::time::timeout(Duration::from_secs(20), queued).await??;
+            assert_eq!(history.timeline_generation().await?, generation);
+            drop(prepare);
+            Ok::<_, anyhow::Error>((generation, sequence, owner))
+        };
+        let (read, activated) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(read, activate)
+        })
+        .await?;
+        let (generation, sequence, owner) = activated?;
+        let error = read
+            .err()
+            .context("obsolete source=None handle survived activation")?;
+        assert!(
+            error
+                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .is_some_and(|error| error.reason()
+                    == Some(
+                        pl_protocol::studio::StudioErrorReason::ConversationResyncRequired.label()
+                    ))
+        );
+        assert_eq!(
+            history.timeline_generation().await?,
+            generation,
+            "R rotated a resolved need"
+        );
+        // No Core operation/effect and no manual reload after R is released.
+        let mut fresh = tokio::time::timeout(
+            Duration::from_secs(20),
+            env.runtime
+                .open_conversation_feed(&id, ChatScope::Main, demand()),
+        )
+        .await??;
+        let set = chat(&mut fresh).await?;
+        assert_eq!(set.placement, ChatPlacement::Set);
+        assert_eq!(
+            set.entries
+                .iter()
+                .filter(|entry| matches!(entry,ChatEntry::Item(item)
+            if item.text_channel==Some(ThreadTextChannel::Final)))
+                .count(),
+            1
+        );
+        assert_eq!(owner.snapshot().commit_sequence, sequence);
+        assert_eq!(history.timeline_generation().await?, generation);
+        fresh.close().await?;
+        fresh.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn idle_owner_reloads_successful_generation_without_any_new_business_effect() -> Result<()> {
+    let env = support::Environment::new(
+        vec![support::prompt_step(
+            "idle-maintenance",
+            0,
+            support::text_reply("idle saved response", "idle-maintenance-part"),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "idle-maintenance")
+            .await?;
+        let id = &thread.thread.id;
+        let _ = support::completed_prompt(&env.runtime, id, "idle-maintenance").await?;
+        env.runtime.synchronize_thread_observation(id).await?;
+        let owner = env.runtime.ensure_thread_owner(id).await?;
+        let sequence = owner.snapshot().commit_sequence;
+        let history = env.runtime.store.history(id).await?;
+        let old_generation = history.timeline_generation().await?;
+        let slot = env.runtime.thread_observations.observation_slot(id);
+        let (position, _) = slot.capture();
+        let source = position.source.context("idle original owner")?;
+        let mut publication = source.conversation().progress;
+        let mut old = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        let _ = chat(&mut old).await?;
+        let (entered, release) = history.arm_timeline_rebuild_gate().await;
+        history.request_timeline_maintenance();
+        tokio::time::timeout(Duration::from_secs(20), entered).await??;
+        assert_eq!(history.timeline_generation().await?, old_generation);
+        release
+            .send(())
+            .map_err(|_| anyhow::anyhow!("idle owner disappeared"))?;
+        let generation = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(current) = publication.borrow_and_update().clone()
+                    && current.projection_generation != old_generation
+                {
+                    break Ok::<_, anyhow::Error>(current.projection_generation.clone());
+                }
+                publication.changed().await?;
+            }
+        })
+        .await??;
+        assert_eq!(history.timeline_generation().await?, generation);
+        assert_eq!(owner.snapshot().commit_sequence, sequence);
+        assert!(old.recv().await.is_err());
+        let mut fresh = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand())
+            .await?;
+        assert_eq!(chat(&mut fresh).await?.placement, ChatPlacement::Set);
+        assert_eq!(
+            source
+                .current_conversation()
+                .context("reloaded idle source")?
+                .projection_generation,
+            generation
+        );
+        assert_eq!(owner.snapshot().commit_sequence, sequence);
+        old.close().await?;
+        old.reader().close().await?;
+        fresh.close().await?;
+        fresh.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
 }

@@ -409,15 +409,11 @@ async fn tool_read_eof_keeps_qualification_until_explicit_or_tool_close_and_neve
             .entries
             .iter()
             .find_map(|entry| {
-                let pl_protocol::ChatEntry::Atom(message) = entry else {
+                let pl_protocol::ChatEntry::Item(message) = entry else {
                     return None;
                 };
-                let Some(pl_protocol::PayloadData::Inline { bytes }) = &message.payload else {
-                    return None;
-                };
-                let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-                (value["type"] == "text")
-                    .then(|| message.completion_item_id.clone())
+                (message.atom_kind == Some(pl_protocol::ChatAtomKind::Text))
+                    .then(|| message.content_item_id.clone())
                     .flatten()
             })
             .context("public text item")?;

@@ -192,7 +192,8 @@ class _TimelineConnectorBody extends ConsumerWidget {
       groupMembersBuilder: (unit) => TimelineGroupMembersConnector(
         unit: unit,
         threadId: threadId,
-        readAttachment: (id) => ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        readAttachment: (id) =>
+            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
         monotonicMicros: () => owner.monotonicMicros,
         onContentLayout: (itemId, micros) {
           if (active()) owner.recordContentLayout(lease, itemId, micros);

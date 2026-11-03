@@ -73,9 +73,7 @@ final class ConversationCreditObservation {
           throw StateError('Credit Main delivered a non-item entry');
         }
         final ids = [for (final item in items) item.id];
-        final contentIds = [
-          for (final item in items) ?item.contentItemId,
-        ];
+        final contentIds = [for (final item in items) ?item.contentItemId];
         if (sequence == 1) {
           if (batch.placement != ChatPlacement.set) {
             throw StateError('Credit first frame is not the original Set');

@@ -97,10 +97,11 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
     ));
     assert!(matches!(
-        conversation_query("/?maxItems=3&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a").await,
+        conversation_query("/?maxItems=3&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=%20opaque-generation%3A1%20&membersItemId=group-a").await,
         Ok((ChatScope::GroupMembers { reference }, _))
             if reference.database_id == "db"
                 && reference.projection_version == 1
+                && reference.projection_generation == " opaque-generation:1 "
                 && reference.item_id == "group-a"
     ));
     for uri in [
@@ -117,6 +118,14 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         "/?maxItems=7&maxBytes=4096&membersItemId=group-a",
         "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersItemId=group-a",
         "/?maxItems=7&maxBytes=4096&parentId=parent-a&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=%20%20&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&parentId=parent-a&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersProjectionGeneration=opaque-generation",
+        "/?maxItems=7&maxBytes=4096&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation",
     ] {
         let Err(error) = conversation_query(uri).await else {
             panic!("invalid conversation query admitted: {uri}");
@@ -253,14 +262,28 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
             .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
     );
     assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
-    for name in ["membersDatabaseId", "membersProjectionVersion", "membersItemId"] {
-        assert!(params.iter().any(|param| param["name"] == name && param["required"] == false));
+    for name in [
+        "membersDatabaseId",
+        "membersProjectionVersion",
+        "membersProjectionGeneration",
+        "membersItemId",
+    ] {
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == name && param["required"] == false)
+        );
     }
     let schemas = &document["components"]["schemas"];
     assert!(schemas["TimelineItem"]["properties"]["members"].is_object());
-    assert!(schemas["TimelineItem"]["properties"].get("currentMembers").is_none());
+    assert!(
+        schemas["TimelineItem"]["properties"]
+            .get("currentMembers")
+            .is_none()
+    );
     assert!(schemas["TimelineMembersRef"]["properties"]["databaseId"].is_object());
     assert!(schemas["TimelineMembersRef"]["properties"]["projectionVersion"].is_object());
+    assert!(schemas["TimelineMembersRef"]["properties"]["projectionGeneration"].is_object());
     assert!(schemas["TimelineMembersRef"]["properties"]["itemId"].is_object());
     for suffix in [
         "chat/older",
@@ -291,7 +314,8 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
 }
 
 #[tokio::test]
-async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member_payloads() -> Result<()> {
+async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member_payloads()
+-> Result<()> {
     let batch: ChatBatch = serde_json::from_value(serde_json::json!({
         "placement": "set",
         "entries": [
@@ -305,7 +329,7 @@ async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member
                     "categories": [{"category": "command", "count": 20}],
                     "startedAt": 100, "finishedAt": 110
                 },
-                "members": {"databaseId": "db", "projectionVersion": 1, "itemId": "group"},
+                "members": {"databaseId": "db", "projectionVersion": 1, "projectionGeneration": "generation:1", "itemId": "group"},
                 "position": 4, "admissionClosed": true
             }},
             {"kind": "item", "value": {
@@ -325,11 +349,16 @@ async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member
         "current": serde_json::to_value(pl_protocol::CurrentProjection::empty(43, pl_protocol::ThreadStatus::Idle))?
     }))?;
     batch.validate_for(&ChatScope::Main)?;
-    let event = encode_conversation_event(&ConversationEvent::Chat { batch: Box::new(batch.clone()) })?;
+    let event = encode_conversation_event(&ConversationEvent::Chat {
+        batch: Box::new(batch.clone()),
+    })?;
     let response = Sse::new(futures::stream::iter([Ok::<_, Infallible>(event)])).into_response();
     let bytes = to_bytes(response.into_body(), 8192).await?;
     let wire = std::str::from_utf8(&bytes)?;
-    let data = wire.lines().find_map(|line| line.strip_prefix("data: ")).context("missing Main chat")?;
+    let data = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .context("missing Main chat")?;
     let decoded: ChatBatch = serde_json::from_str(data)?;
     assert_eq!(decoded, batch);
     assert!(!wire.contains("currentMembers"));

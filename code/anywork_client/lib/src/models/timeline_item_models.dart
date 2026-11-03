@@ -3,7 +3,16 @@ part of 'chat_models.dart';
 /// Studio's display projection, not a client grouping instruction.
 enum TimelineItemKind { text, workGroup, status }
 
-enum TimelineCategory { thinking, read, image, command, search, edit, wait, other }
+enum TimelineCategory {
+  thinking,
+  read,
+  image,
+  command,
+  search,
+  edit,
+  wait,
+  other,
+}
 
 final class TimelineCategoryCount {
   const TimelineCategoryCount({required this.category, required this.count});
@@ -31,16 +40,18 @@ final class TimelineGroupSummary {
   final int? finishedAt;
 }
 
-/// The original reader validates all three fields before opening a member scope.
+/// The original reader validates all four fields before opening a member scope.
 final class TimelineMembersRef {
   const TimelineMembersRef({
     required this.databaseId,
     required this.projectionVersion,
+    required this.projectionGeneration,
     required this.itemId,
   });
 
   final String databaseId;
   final int projectionVersion;
+  final String projectionGeneration;
   final String itemId;
 
   @override
@@ -48,10 +59,12 @@ final class TimelineMembersRef {
       other is TimelineMembersRef &&
       databaseId == other.databaseId &&
       projectionVersion == other.projectionVersion &&
+      projectionGeneration == other.projectionGeneration &&
       itemId == other.itemId;
 
   @override
-  int get hashCode => Object.hash(databaseId, projectionVersion, itemId);
+  int get hashCode =>
+      Object.hash(databaseId, projectionVersion, projectionGeneration, itemId);
 }
 
 /// One Main message. A folded work group contains only a summary and member ref.

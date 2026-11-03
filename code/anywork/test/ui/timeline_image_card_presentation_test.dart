@@ -90,7 +90,9 @@ void main() {
       );
       expect(reads, 0);
       for (final item in items) {
-        await tester.tap(find.byKey(ValueKey('timeline-tool-details:${item.id}')));
+        await tester.tap(
+          find.byKey(ValueKey('timeline-tool-details:${item.id}')),
+        );
         await tester.pump(const Duration(milliseconds: 300));
       }
       await pumpClientUntil(
@@ -144,7 +146,9 @@ void main() {
           ),
         );
         expect(reads, 0);
-        await tester.tap(find.byKey(const ValueKey(('item-disclosure', 'unknown'))));
+        await tester.tap(
+          find.byKey(const ValueKey(('item-disclosure', 'unknown'))),
+        );
         await tester.pump(const Duration(milliseconds: 300));
         await pumpClientUntil(
           tester,
@@ -152,6 +156,14 @@ void main() {
           'unknown-tool attachment',
         );
         expect(find.textContaining('未知展示格式'), findsOneWidget);
+        expect(
+          find.text(
+            marker == null
+                ? '未提供 presentationContract'
+                : '不支持的 presentationContract：$marker',
+          ),
+          findsOneWidget,
+        );
         expect(reads, 1);
         expect(find.text('not a guessed card'), findsNothing);
         await tester.pumpWidget(const SizedBox.shrink());

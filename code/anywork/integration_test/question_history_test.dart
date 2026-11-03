@@ -507,10 +507,13 @@ Future<ChatItemPresentation> _questionReceipt(
   });
   TimelineItem? turn;
   await _until(tester, () {
-    turn = observed.items.where(
-      (item) => item.kind == TimelineItemKind.status &&
-          item.atomKind == ChatAtomKind.turnReceipt,
-    ).lastOrNull;
+    turn = observed.items
+        .where(
+          (item) =>
+              item.kind == TimelineItemKind.status &&
+              item.atomKind == ChatAtomKind.turnReceipt,
+        )
+        .lastOrNull;
     return turn != null;
   }, 'question Turn item and its real source');
   await observed.openSourceGroups(turn!.source);

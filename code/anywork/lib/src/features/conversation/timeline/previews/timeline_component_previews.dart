@@ -120,25 +120,42 @@ Widget timelineReceiptsPreview() => _timelinePreviewHost(
 
 @Preview(name: '工作组 / 实时等待下一步', group: 'Timeline · 原子工作组', size: Size(760, 360))
 Widget timelineAtomicLiveGroupPreview() => _timelinePreviewHost(
-  const _AtomicGroupPreview(key: ValueKey('atomic-live'), live: true),
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-live'),
+    live: true,
+    executionPresent: true,
+  ),
 );
 
 @Preview(name: '工作组 / 工作与正文交替', group: 'Timeline · 原子工作组', size: Size(760, 600))
 Widget timelineAtomicStoryPreview() => _timelinePreviewHost(
-  const _AtomicGroupPreview(key: ValueKey('atomic-story'), live: false),
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-story'),
+    live: false,
+    executionPresent: false,
+  ),
 );
 
 @Preview(name: '工作组 / 窄窗 160%', group: 'Timeline · 原子工作组', size: Size(390, 540))
 Widget timelineAtomicNarrowPreview() => _timelinePreviewHost(
-  const _AtomicGroupPreview(key: ValueKey('atomic-narrow'), live: false),
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-narrow'),
+    live: false,
+    executionPresent: false,
+  ),
   textScale: 1.6,
 );
 
 /// Static presentation inputs only. The real shared group/item widgets own
 /// disclosure; no preview reducer simulates admission or source completion.
 class _AtomicGroupPreview extends StatefulWidget {
-  const _AtomicGroupPreview({required this.live, super.key});
+  const _AtomicGroupPreview({
+    required this.live,
+    required this.executionPresent,
+    super.key,
+  });
   final bool live;
+  final bool executionPresent;
   @override
   State<_AtomicGroupPreview> createState() => _AtomicGroupPreviewState();
 }
@@ -156,15 +173,27 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
           delivery: ChatDeliveryKind.foreground,
           admissionClosed: !widget.live,
           contents: const [],
-          members: TimelineMembersRef(databaseId: 'preview', projectionVersion: 1, itemId: 'preview-group-$index'),
+          members: TimelineMembersRef(
+            databaseId: 'preview',
+            projectionVersion: 1,
+            projectionGeneration: 'preview-projection-generation',
+            itemId: 'preview-group-$index',
+          ),
           summary: TimelineGroupSummary(
             memberCount: index == 0 ? 2 : 1,
             activeCount: widget.live ? 1 : 0,
             failedCount: 0,
             cancelledCount: 0,
             categories: [
-              const TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
-              if (index == 0) const TimelineCategoryCount(category: TimelineCategory.command, count: 1),
+              const TimelineCategoryCount(
+                category: TimelineCategory.thinking,
+                count: 1,
+              ),
+              if (index == 0)
+                const TimelineCategoryCount(
+                  category: TimelineCategory.command,
+                  count: 1,
+                ),
             ],
           ),
         ),
@@ -188,11 +217,13 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
           TimelineDisplayUnitView(
             key: ValueKey(groups[index].id),
             unit: groups[index],
-            childBuilder: (_) => Column(children: [
-              _chatItem(TimelinePreviewFixtures.reasoning),
-              if (index == 0) _chatItem(TimelinePreviewFixtures.tool),
-            ]),
-          ),
+            executionPresent: widget.executionPresent,
+            childBuilder: (_) => Column(
+              children: [
+                _chatItem(TimelinePreviewFixtures.reasoning),
+                if (index == 0) _chatItem(TimelinePreviewFixtures.tool),
+              ],
+            ),
           ),
           if (!widget.live)
             _chatItem(

@@ -78,9 +78,37 @@ impl std::fmt::Debug for HistoryStoreShare {
 }
 
 struct HistoryStoreState {
+    #[cfg(test)]
+    timeline_rebuild_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    timeline_read_need_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    timeline_maintenance_waiter: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    timeline_owner_gate: tokio::sync::RwLock<()>,
+    timeline_owner: std::sync::Mutex<std::sync::Weak<()>>,
+    timeline_channel: std::sync::Mutex<
+        Option<std::sync::Weak<crate::studio::storage::thread_writer::HistoryChannel>>,
+    >,
+    timeline_generation: tokio::sync::watch::Sender<String>,
+    timeline_paused: std::sync::atomic::AtomicBool,
+    timeline_repair: std::sync::atomic::AtomicBool,
+    timeline_repair_wake: tokio::sync::Notify,
+    timeline_repair_failure: std::sync::Mutex<Option<String>>,
     /// Read-side index of the original reliable queue's prepared allocations.
     /// Removed only after that same writer transaction is durable.
-    timeline_pending: std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<conversation::current::PreparedCurrent>>>,
+    timeline_pending: std::sync::Mutex<
+        std::collections::BTreeMap<u64, std::sync::Arc<conversation::current::PreparedCurrent>>,
+    >,
     path: PathBuf,
     thread_id: String,
     /// The single writer connection, opened on the first write.
@@ -121,6 +149,8 @@ struct HistoryStoreState {
     >,
 }
 
+#[path = "history/timeline_maintenance.rs"]
+mod timeline_maintenance;
 #[path = "history/timeline_read.rs"]
 mod timeline_read;
 pub(in crate::studio) use timeline_read::TimelinePage;
@@ -232,6 +262,7 @@ pub(crate) struct CheckpointEffect<'a> {
 }
 
 pub(in crate::studio) struct ColdConversation {
+    pub projection_generation: String,
     pub timeline: Option<TimelinePage>,
     pub database_id: String,
     pub head: u64,
@@ -266,6 +297,20 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
+                #[cfg(test)]
+                timeline_rebuild_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                timeline_read_need_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                timeline_maintenance_waiter: tokio::sync::Mutex::new(None),
+                timeline_owner_gate: tokio::sync::RwLock::new(()),
+                timeline_owner: std::sync::Mutex::new(std::sync::Weak::new()),
+                timeline_channel: std::sync::Mutex::new(None),
+                timeline_generation: tokio::sync::watch::channel(String::new()).0,
+                timeline_paused: std::sync::atomic::AtomicBool::new(false),
+                timeline_repair: std::sync::atomic::AtomicBool::new(false),
+                timeline_repair_wake: tokio::sync::Notify::new(),
+                timeline_repair_failure: std::sync::Mutex::new(None),
                 timeline_pending: std::sync::Mutex::new(Default::default()),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
@@ -295,7 +340,10 @@ impl HistoryStore {
     /// creates a store, starts a writer, flushes execution or loads recovery state.
     pub(in crate::studio) async fn conversation_database_id(&self) -> Result<Option<String>> {
         if let Some(writer) = self.state.writer.get() {
-            ensure!(writer.schema_version == HISTORY_SCHEMA_VERSION, "history requires explicit storage preparation");
+            ensure!(
+                writer.schema_version == HISTORY_SCHEMA_VERSION,
+                "history requires explicit storage preparation"
+            );
             return Ok(Some(writer.database_id.clone()));
         }
         Ok(self
@@ -518,6 +566,36 @@ impl HistoryStore {
                     return Err(error);
                 }
             };
+        let prepared = async {
+            if Self::timeline_needs_in(&db, &database_id).await? {
+                // Opening the original writer is not maintenance admission.
+                // Leave repair to the gate-qualified owner; otherwise a cold
+                // repair would commit/publish a generation inside this open and
+                // then rebuild again in the outer durable-C transaction.
+                return Ok::<_, anyhow::Error>(None);
+            }
+            conversation::timeline::generation(&db).await.map(Some)
+        }
+        .await;
+        let generation = match prepared {
+            Ok(generation) => generation,
+            Err(error) => {
+                if let Err(cleanup) = db.close().await {
+                    return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
+                }
+                return Err(error);
+            }
+        };
+        if let Some(generation) = generation {
+            self.state.timeline_generation.send_if_modified(|value| {
+                if *value == generation {
+                    false
+                } else {
+                    *value = generation;
+                    true
+                }
+            });
+        }
         Ok(HistoryConnection {
             db,
             database_id,
@@ -573,6 +651,7 @@ impl HistoryStore {
         self.apply_effect(&tx, write_seq, commit, None, None)
             .await?;
         tx.commit().await?;
+        self.timeline_saved(write_seq);
         Ok(())
     }
 
@@ -686,7 +765,13 @@ impl HistoryStore {
                 )
                 .await?;
             }
-            conversation::timeline::verify(tx, &database_id, current_view).await?;
+            if !self
+                .state
+                .timeline_paused
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                conversation::timeline::verify(tx, &database_id, current_view).await?;
+            }
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
             }
@@ -710,7 +795,15 @@ impl HistoryStore {
         }
         conversation::append_records(tx, completions.iter().map(AsRef::as_ref), true).await?;
         conversation::current::apply(tx, u64::try_from(write_seq)?, current_view).await?;
-        conversation::timeline::apply(tx, &database_id, current_view).await?;
+        if self
+            .state
+            .timeline_paused
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            conversation::timeline::apply_facts(tx, current_view).await?;
+        } else {
+            conversation::timeline::apply(tx, &database_id, current_view).await?;
+        }
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
@@ -1011,6 +1104,13 @@ impl HistoryStore {
             self.prepare_history_access().await?;
         }
         self.reader().await?;
+        if self.timeline_maintenance_needed().await? {
+            #[cfg(test)]
+            self.wait_timeline_read_need_gate().await?;
+            // The source=None capture may already be obsolete. Admission must
+            // recheck both need and the actual product owner under its gate.
+            self.prepare_timeline_if_needed().await?;
+        }
         Ok(())
     }
 
@@ -1449,22 +1549,6 @@ impl HistoryStore {
         Ok(Some(current))
     }
 
-    /// Next free Timeline item order from the derived projection state.
-    pub(crate) async fn timeline_next_position(&self) -> Result<u64> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(0);
-        };
-        let tx = connection.db.begin().await?;
-        let next = conversation::timeline::next_position(&tx).await?;
-        tx.commit().await?;
-        Ok(next)
-    }
-
-    pub(crate) async fn timeline_recovery(&self) -> Result<Option<Vec<u8>>> {
-        let Some(connection) = self.reader().await? else { return Ok(None); };
-        Ok(Some(conversation::timeline::recovery(&connection.db).await?))
-    }
-
     /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
     pub(crate) async fn conversation_sources(
         &self,
@@ -1510,7 +1594,23 @@ impl HistoryStore {
         demand: pl_core::chat::ReadDemand,
         budget: &dyn ChatBudget,
     ) -> Result<Option<ColdConversation>> {
-        self.cold_conversation_in(pl_core::chat::ChatQuery::new(scope.query_class(), None), Some(scope), demand, budget).await
+        let result = self
+            .cold_conversation_in(
+                pl_core::chat::ChatQuery::new(scope.query_class(), None),
+                Some(scope),
+                demand,
+                budget,
+            )
+            .await;
+        if let Err(error) = &result
+            && (error.downcast_ref::<serde_json::Error>().is_some()
+                || error
+                    .downcast_ref::<conversation::timeline::ProjectionFault>()
+                    .is_some())
+        {
+            self.request_timeline_maintenance();
+        }
+        result
     }
 
     async fn cold_conversation_in(
@@ -1533,8 +1633,9 @@ impl HistoryStore {
         // Cold callers budget an envelope with current=None. Main replaces its JSON null with
         // this projection; Children delivers no current. page consumes item-only demand and
         // must receive the remaining bytes after this single fixed-envelope reservation.
-        let include_current = query.query_class == pl_protocol::ChatScope::Main.query_class()
-            && query.parent_id.is_none();
+        let include_current = query.parent_id.is_none()
+            && (matches!(scope, Some(pl_protocol::ChatScope::Main))
+                || (scope.is_none() && query.query_class == "conversation"));
         let current_bytes = if include_current {
             serde_json::to_vec(&current)?
                 .len()
@@ -1565,19 +1666,44 @@ impl HistoryStore {
         };
         let (page, timeline) = if let Some(scope) = scope {
             conversation::timeline::next_position(&tx).await?;
+            let generation = conversation::timeline::generation(&tx).await?;
             if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
-                conversation::timeline::validate_members_ref(&tx, &connection.database_id, reference).await?;
+                conversation::timeline::validate_members_ref(
+                    &tx,
+                    &connection.database_id,
+                    reference,
+                )
+                .await?;
             }
             let rows = conversation::timeline::page_rows(
-                &tx, scope, None, i64::MAX as u64, current.source_effect_seq, demand.max_items + 1,
-            ).await?;
+                &tx,
+                scope,
+                None,
+                i64::MAX as u64,
+                current.source_effect_seq,
+                demand.max_items + 1,
+            )
+            .await?;
             let mut entries = Vec::new();
             let mut size = fixed;
             let mut before = None;
             for (order, entry) in rows {
-                let length = conversation::timeline::entry_bytes(&entry)?;
+                if let pl_protocol::ChatEntry::Item(item) = &entry {
+                    conversation::timeline::validate_item(
+                        item,
+                        &connection.database_id,
+                        &generation,
+                    )?;
+                }
+                let length = conversation::timeline::delivery_entry_bytes(
+                    &entry,
+                    demand.max_bytes.saturating_sub(size),
+                )?;
                 if entries.len() == demand.max_items || size + length > demand.max_bytes {
-                    ensure!(!entries.is_empty(), ChatError::InvalidDemand("cold timeline envelope cannot fit demand".into()));
+                    ensure!(
+                        !entries.is_empty(),
+                        ChatError::InvalidDemand("cold timeline envelope cannot fit demand".into())
+                    );
                     before = entries.last().map(|(order, _)| *order);
                     break;
                 }
@@ -1586,11 +1712,23 @@ impl HistoryStore {
             }
             let ceiling = entries.first().map_or(0, |(order, _)| order + 1);
             entries.reverse();
-            (ChatHistoryPage { items: Vec::new(), exhausted: true }, Some(TimelinePage {
-                entries: entries.into_iter().map(|(_, entry)| entry).collect(), before, ceiling,
-            }))
+            (
+                ChatHistoryPage {
+                    items: Vec::new(),
+                    exhausted: true,
+                },
+                Some(TimelinePage {
+                    entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+                    before,
+                    ceiling,
+                    generation: conversation::timeline::generation(&tx).await?,
+                }),
+            )
         } else {
-            (conversation::page(&tx, &request, budget, false).await?, None)
+            (
+                conversation::page(&tx, &request, budget, false).await?,
+                None,
+            )
         };
         ensure!(
             page.exhausted || !page.items.is_empty(),
@@ -1599,13 +1737,24 @@ impl HistoryStore {
         let mut sources =
             conversation::sources::read_selected(&tx, &page, &current, include_current).await?;
         if let Some(page) = &timeline {
-            let ids = page.entries.iter().filter_map(|entry| {
-                if let pl_protocol::ChatEntry::Atom(atom) = entry { Some(atom.source.clone()) } else { None }
-            }).collect::<Vec<_>>();
-            sources.extend(conversation::sources::read(&tx, &ids, current.source_effect_seq).await?);
+            let ids = page
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    if let pl_protocol::ChatEntry::Atom(atom) = entry {
+                        Some(atom.source.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            sources
+                .extend(conversation::sources::read(&tx, &ids, current.source_effect_seq).await?);
         }
+        let projection_generation = conversation::timeline::generation(&tx).await?;
         tx.commit().await?;
         Ok(Some(ColdConversation {
+            projection_generation,
             timeline,
             database_id: connection.database_id.clone(),
             head,
@@ -2909,6 +3058,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         "conversation_contents",
         "conversation_view_entries",
         "conversation_sources",
+        "conversation_atom_facts",
     ] {
         let count: i64 = db
             .query_one_raw(statement(
@@ -2924,6 +3074,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         "DROP TABLE timeline_item_members;
          DROP TABLE timeline_items;
          DROP TABLE timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_sources;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;

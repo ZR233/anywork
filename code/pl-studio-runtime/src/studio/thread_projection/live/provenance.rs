@@ -262,20 +262,9 @@ impl LiveProjection {
         // in the original current owner now: completion freezing reads item_contents before the
         // next effect freezes current, and must see these exact generations and content owners.
         let active = self.current_texts();
-        let observed = self
-            .current
+        self.current
             .observe(thread, state, saved.source_effect_seq, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.ensure_timeline_owner();
-        if let Some(timeline) = self.timeline.as_mut() {
-            timeline.set_next_position(
-                history
-                    .timeline_next_position()
-                    .await
-                    .map_err(|error| ProjectionError::History(error.to_string()))?,
-            );
-            timeline.restore(&observed.projection.items, &observed.projection.atoms)?;
-        }
         Ok(())
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {

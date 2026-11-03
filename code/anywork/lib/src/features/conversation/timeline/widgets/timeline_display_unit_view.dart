@@ -12,15 +12,18 @@ import 'timeline_activity_row.dart';
 class TimelineDisplayUnitView extends StatefulWidget {
   const TimelineDisplayUnitView({
     required this.unit,
+    required this.executionPresent,
     required this.childBuilder,
     this.onExpandedChanged,
     super.key,
   });
   final TimelineDisplayUnit unit;
+  final bool executionPresent;
   final WidgetBuilder childBuilder;
   final ValueChanged<bool>? onExpandedChanged;
   @override
-  State<TimelineDisplayUnitView> createState() => _TimelineDisplayUnitViewState();
+  State<TimelineDisplayUnitView> createState() =>
+      _TimelineDisplayUnitViewState();
 }
 
 class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
@@ -38,7 +41,8 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
 
   void _changed() {
     if (!mounted || _rebuildScheduled) return;
-    if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
       _rebuildScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _rebuildScheduled = false;
@@ -49,9 +53,13 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
     }
   }
 
-  bool get _active => widget.unit.live && (widget.unit.item.summary?.activeCount ?? 0) > 0;
+  bool get _active =>
+      widget.unit.live &&
+      widget.executionPresent &&
+      (widget.unit.item.summary?.activeCount ?? 0) > 0;
   void _syncTicker() {
-    if (_active && widget.unit.item.summary?.startedAt != null &&
+    if (_active &&
+        widget.unit.item.summary?.startedAt != null &&
         widget.unit.item.summary?.finishedAt == null) {
       _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
@@ -84,13 +92,21 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
     final unit = widget.unit;
     final summary = unit.item.summary;
     final start = summary?.startedAt;
-    final end = summary?.finishedAt ?? (_active ? DateTime.now().millisecondsSinceEpoch ~/ 1000 : null);
-    final elapsed = start == null || end == null || end < start ? null : end - start;
+    final end =
+        summary?.finishedAt ??
+        (_active ? DateTime.now().millisecondsSinceEpoch ~/ 1000 : null);
+    final elapsed = start == null || end == null || end < start
+        ? null
+        : end - start;
     final label = _active
         ? '工作中'
+        : unit.live && (summary?.activeCount ?? 0) > 0
+        ? '工作未完成'
         : unit.live && !unit.item.admissionClosed
         ? '等待后继边界'
-        : elapsed == null ? '工作记录' : '工作了 $elapsed 秒';
+        : elapsed == null
+        ? '工作记录'
+        : '工作了 $elapsed 秒';
     final meta = [
       if (summary != null) '${summary.memberCount} 项',
       if ((summary?.failedCount ?? 0) > 0) '${summary!.failedCount} 项执行失败',
@@ -113,30 +129,43 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
         meta: meta,
         expanded: expanded,
         active: _active,
-        summaryWidget: summary == null || summary.categories.isEmpty ? null : Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [for (final category in summary.categories)
-            Padding(
-              padding: const EdgeInsetsDirectional.only(end: 6),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(switch (category.category) {
-                  TimelineCategory.thinking => Icons.psychology_alt_outlined,
-                  TimelineCategory.read => Icons.description_outlined,
-                  TimelineCategory.image => Icons.image_outlined,
-                  TimelineCategory.command => Icons.terminal,
-                  TimelineCategory.search => Icons.search,
-                  TimelineCategory.edit => Icons.edit_outlined,
-                  TimelineCategory.wait => Icons.hourglass_empty,
-                  TimelineCategory.other => Icons.more_horiz,
-                }, size: 13),
-                const SizedBox(width: 2),
-                Text('${category.count}'),
-              ]),
-            ),
-          ],
-        ),
+        summaryWidget: summary == null || summary.categories.isEmpty
+            ? null
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final category in summary.categories)
+                    Padding(
+                      padding: const EdgeInsetsDirectional.only(end: 6),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(switch (category.category) {
+                            TimelineCategory.thinking =>
+                              Icons.psychology_alt_outlined,
+                            TimelineCategory.read => Icons.description_outlined,
+                            TimelineCategory.image => Icons.image_outlined,
+                            TimelineCategory.command => Icons.terminal,
+                            TimelineCategory.search => Icons.search,
+                            TimelineCategory.edit => Icons.edit_outlined,
+                            TimelineCategory.wait => Icons.hourglass_empty,
+                            TimelineCategory.other => Icons.more_horiz,
+                          }, size: 13),
+                          const SizedBox(width: 2),
+                          Text('${category.count}'),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
       ),
-      children: [if (_expanded && !unit.expansion.isRetired) Builder(builder: widget.childBuilder)],
+      children: [
+        if (_expanded && !unit.expansion.isRetired)
+          KeyedSubtree(
+            key: ValueKey((unit.expansion, unit.expansion.bodyGeneration)),
+            child: Builder(builder: widget.childBuilder),
+          ),
+      ],
     );
   }
 }

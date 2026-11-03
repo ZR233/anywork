@@ -132,8 +132,11 @@ void main() {
           expect(display.hasOlder, isTrue);
           final ids = observed.main.map((unit) => unit.item.id).toList();
           expect(ids, hasLength(display.loadedCount));
-          expect(observed.mountedMembers, isEmpty,
-              reason: 'folded Main admission must not open member windows');
+          expect(
+            observed.mountedMembers,
+            isEmpty,
+            reason: 'folded Main admission must not open member windows',
+          );
           final beforeCursor = display.olderCursor;
           final view = tester.widget<TimelineView>(find.byType(TimelineView));
           await view.onLoadOlder();
@@ -141,8 +144,10 @@ void main() {
           expect(identical(display, lease()), isTrue);
           expect(display.loadedCount, greaterThan(initial));
           expect(display.olderCursor, isNot(beforeCursor));
-          expect(observed.main.map((unit) => unit.item.id).toSet(),
-              hasLength(display.loadedCount));
+          expect(
+            observed.main.map((unit) => unit.item.id).toSet(),
+            hasLength(display.loadedCount),
+          );
           expect(
             display.controller.messages
                 .skip(display.loadedCount - initial)

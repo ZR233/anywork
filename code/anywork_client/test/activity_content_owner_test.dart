@@ -29,7 +29,10 @@ CurrentProjection _active(int source) => CurrentProjection(
         ],
       ),
       members: const TimelineMembersRef(
-        databaseId: 'database', projectionVersion: 1, itemId: 'active-work',
+        databaseId: 'database',
+        projectionVersion: 1,
+        itemId: 'active-work',
+        projectionGeneration: 'projection-fixture:active',
       ),
       contents: const [],
       admissionClosed: false,
@@ -192,54 +195,52 @@ void main() {
     },
   );
 
-  test(
-    'GroupMembers forwards typed identity and owns a separate consumer and cursor',
-    () async {
-      final fixture = ConversationFixture();
-      final mainCurrent = _active(1);
-      final main = await fixture.open(
-        initial: chatSet(current: mainCurrent, before: 'main-cursor'),
-        demand: _demand,
-      );
-      const reference = TimelineMembersRef(
-        databaseId: 'database',
-        projectionVersion: 7,
-        itemId: 'stable-group',
-      );
-      final members = await fixture.repository.openGroupMembers(
-        threadId: 'thread',
-        reference: reference,
-        demand: _demand,
-      );
-      expect(fixture.transport.opens, hasLength(1));
-      final consumer = ControlledBatchConsumer();
-      members.attachConsumer(consumer, demand: _demand);
-      await fixture.transport.opened(1);
-      final open = fixture.transport.opens[1];
-      expect((open.scope as GroupMembersChatScope).reference, same(reference));
-      final feed = TestConversationFeed(subscriptionId: 'members');
-      open.result.complete(feed);
-      final set = ChatBatch(
-        placement: ChatPlacement.set,
-        entries: [ChatAtomEntry(fixtureMember('real-member'))],
-        before: 'member-cursor',
-      );
-      final gate = Completer<void>();
-      consumer.onApply = (_) => gate.future;
-      feed.send(ConversationChatEvent(batch: set));
-      await consumer.waitForCount(1);
-      expect(feed.acknowledgements, isEmpty);
-      gate.complete();
-      await feed.acknowledged(1);
-      expect(consumer.batches.single.atoms.single.id, 'real-member');
-      expect(consumer.batches.single.items, isEmpty);
-      expect(fixture.session().current.value, same(mainCurrent));
-      expect(fixture.consumers['thread']!.batches.single.before, 'main-cursor');
-      expect((await members.close()).complete, isTrue);
-      expect(main.requestCloseCalls, 0);
-      expect((await fixture.close()).complete, isTrue);
-    },
-  );
+  test('GroupMembers forwards typed identity and owns a separate consumer and cursor', () async {
+    final fixture = ConversationFixture();
+    final mainCurrent = _active(1);
+    final main = await fixture.open(
+      initial: chatSet(current: mainCurrent, before: 'main-cursor'),
+      demand: _demand,
+    );
+    const reference = TimelineMembersRef(
+      databaseId: 'database',
+      projectionVersion: 7,
+      projectionGeneration: 'projection-fixture:members',
+      itemId: 'stable-group',
+    );
+    final members = await fixture.repository.openGroupMembers(
+      threadId: 'thread',
+      reference: reference,
+      demand: _demand,
+    );
+    expect(fixture.transport.opens, hasLength(1));
+    final consumer = ControlledBatchConsumer();
+    members.attachConsumer(consumer, demand: _demand);
+    await fixture.transport.opened(1);
+    final open = fixture.transport.opens[1];
+    expect((open.scope as GroupMembersChatScope).reference, same(reference));
+    final feed = TestConversationFeed(subscriptionId: 'members');
+    open.result.complete(feed);
+    final set = ChatBatch(
+      placement: ChatPlacement.set,
+      entries: [ChatAtomEntry(fixtureMember('real-member'))],
+      before: 'member-cursor',
+    );
+    final gate = Completer<void>();
+    consumer.onApply = (_) => gate.future;
+    feed.send(ConversationChatEvent(batch: set));
+    await consumer.waitForCount(1);
+    expect(feed.acknowledgements, isEmpty);
+    gate.complete();
+    await feed.acknowledged(1);
+    expect(consumer.batches.single.atoms.single.id, 'real-member');
+    expect(consumer.batches.single.entries.single, isA<ChatAtomEntry>());
+    expect(fixture.session().current.value, same(mainCurrent));
+    expect(fixture.consumers['thread']!.batches.single.before, 'main-cursor');
+    expect((await members.close()).complete, isTrue);
+    expect(main.requestCloseCalls, 0);
+    expect((await fixture.close()).complete, isTrue);
+  });
 
   test(
     'refresh retains committed current until replacement Set is accepted',

@@ -47,7 +47,8 @@ class TimelineMemberAtom extends StatefulWidget {
   State<TimelineMemberAtom> createState() => _TimelineMemberAtomState();
 }
 
-class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements TimelineMemberDisplay {
+class _TimelineMemberAtomState extends State<TimelineMemberAtom>
+    implements TimelineMemberDisplay {
   ConversationCurrentOwner? _owner;
   ConversationQueryScope? _scope;
   Object _rangeQualification = Object();
@@ -59,6 +60,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements Time
     yield* _owner?.windows ?? const [];
     yield* _rangeDisplays;
   }
+
   VoidCallback _registerRange(TimelineCurrentWindowDisplay display) {
     _rangeDisplays.add(display);
     return () => _rangeDisplays.remove(display);
@@ -67,9 +69,12 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements Time
   bool _retired = false;
   bool _toolExpanded = false;
   bool get _active =>
-      mounted && !_retired && !(widget.retirement?.value ?? false) && widget.isActive();
-  bool get _bodyActive => _active &&
-      (widget.atom.kind != ChatAtomKind.toolCall || _toolExpanded);
+      mounted &&
+      !_retired &&
+      !(widget.retirement?.value ?? false) &&
+      widget.isActive();
+  bool get _bodyActive =>
+      _active && (widget.atom.kind != ChatAtomKind.toolCall || _toolExpanded);
   @override
   void initState() {
     super.initState();
@@ -175,24 +180,27 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements Time
               if (_owner!.cleanupError != null)
                 Text(_owner!.cleanupError.toString()),
               for (final observation in _owner!.windows)
-                _witness(observation, ConversationCurrentWindowView(
-                  id: observation.id,
-                  text: observation.window == null
-                      ? observation.source.text
-                      : utf8.decode(
-                          observation.window!.bytes,
-                          allowMalformed: true,
-                        ),
-                  error: observation.error,
-                  offset: observation.window?.offset,
-                  end: observation.window == null
-                      ? null
-                      : observation.window!.offset +
-                            observation.window!.bytes.length,
-                  availableThrough: observation.window?.availableThrough,
-                  onFirst: () => _owner!.firstWindow(observation),
-                  onNext: () => _owner!.nextWindow(observation),
-                )),
+                _witness(
+                  observation,
+                  ConversationCurrentWindowView(
+                    id: observation.id,
+                    text: observation.window == null
+                        ? observation.source.text
+                        : utf8.decode(
+                            observation.window!.bytes,
+                            allowMalformed: true,
+                          ),
+                    error: observation.error,
+                    offset: observation.window?.offset,
+                    end: observation.window == null
+                        ? null
+                        : observation.window!.offset +
+                              observation.window!.bytes.length,
+                    availableThrough: observation.window?.availableThrough,
+                    onFirst: () => _owner!.firstWindow(observation),
+                    onNext: () => _owner!.nextWindow(observation),
+                  ),
+                ),
             ],
           ),
         );
@@ -210,7 +218,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements Time
     }
     if (atom.payload != null) {
       final qualification = _rangeQualification;
-      bool qualified() => _bodyActive && identical(qualification, _rangeQualification);
+      bool qualified() =>
+          _bodyActive && identical(qualification, _rangeQualification);
       return ChatItemView(
         item: ChatItemPresentation.decode(atom),
         monotonicMicros: widget.monotonicMicros,
@@ -297,7 +306,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom> implements Time
   Widget _witness(TimelineCurrentWindowDisplay observation, Widget child) {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
-    if (clock == null || onLayout == null || observation.window?.bytes.isEmpty != false) return child;
+    if (clock == null ||
+        onLayout == null ||
+        observation.window?.bytes.isEmpty != false) {
+      return child;
+    }
     return ContentLayoutWitness(
       itemId: widget.atom.id,
       monotonicMicros: clock,
