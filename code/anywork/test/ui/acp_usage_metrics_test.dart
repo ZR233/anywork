@@ -18,8 +18,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../../integration_test/support/acp_scene_transport.dart';
-import '../../../client/support/pump_client_future.dart';
+import '../../integration_test/support/acp_scene_transport.dart';
+import '../support/pump_client_future.dart';
 
 void main() {
   testWidgets('renders all ACP quota groups without inventing unknown values', (
