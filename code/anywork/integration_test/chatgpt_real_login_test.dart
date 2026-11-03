@@ -248,17 +248,31 @@ void main() {
         );
         await screenshot('authorized');
         final saved = Completer<void>();
-        final editorWatch = container.listen(provider, (_, next) {
+        void observeSave() {
           if (saved.isCompleted) return;
-          final error = next.error ?? next.value?.native?.error;
-          if (error != null) saved.completeError(StateError('$error'));
-        });
-        final accountWatch = graph.accounts.state.watchLatest((value) {
-          if (!saved.isCompleted &&
-              value.account(identity)?.chatgptAccount?.codex != null) {
+          final editor = container.read(provider);
+          final error = editor.error ?? editor.value?.native?.error;
+          if (error != null) {
+            saved.completeError(StateError('$error'));
+            return;
+          }
+          final draft = editor.value?.native;
+          if (graph.accounts.state.value
+                      .account(identity)
+                      ?.chatgptAccount
+                      ?.codex !=
+                  null &&
+              draft != null &&
+              !draft.saving &&
+              !draft.dirty) {
             saved.complete();
           }
-        });
+        }
+
+        final editorWatch = container.listen(provider, (_, _) => observeSave());
+        final accountWatch = graph.accounts.state.watchLatest(
+          (_) => observeSave(),
+        );
         try {
           await tapKey('account-save');
           await saved.future;

@@ -136,24 +136,29 @@ void main() {
         }
       }
 
-      await tap('account-add');
-      debugPrint('CHATGPT_JOURNEY account editor opened');
-      await untilObserved(
-        graph.accounts.state,
-        (value) => value.templates.isUsable,
-      );
-      await tester.pumpAndSettle();
-      final selector = find.byKey(const ValueKey('account-template-selector'));
-      await tester.tap(
-        find.descendant(of: selector, matching: find.byType(IconButton)),
-      );
-      await tester.pumpAndSettle();
-      await tap(AccountViewKeyValues.template('native', 'openai'));
-      await tester.pumpAndSettle();
-      expect(find.text('放弃更改'), findsOneWidget);
-      await tester.tap(find.text('放弃更改'));
-      await tester.pumpAndSettle();
-      expect(editor().isOpenAiTemplate, isTrue);
+      Future<void> openOpenAi() async {
+        await tap('account-add');
+        await untilObserved(
+          graph.accounts.state,
+          (value) => value.templates.isUsable,
+        );
+        await tester.pumpAndSettle();
+        final selector = find.byKey(
+          const ValueKey('account-template-selector'),
+        );
+        await tester.tap(
+          find.descendant(of: selector, matching: find.byType(IconButton)),
+        );
+        await tester.pumpAndSettle();
+        await tap(AccountViewKeyValues.template('native', 'openai'));
+        await tester.pumpAndSettle();
+        expect(find.text('放弃更改'), findsOneWidget);
+        await tester.tap(find.text('放弃更改'));
+        await tester.pumpAndSettle();
+        expect(editor().isOpenAiTemplate, isTrue);
+      }
+
+      await openOpenAi();
       debugPrint('CHATGPT_JOURNEY OpenAI template selected');
       await field('name', '订阅账户');
       await field('endpoint', 'https://custom.example.test/v1');
@@ -166,6 +171,7 @@ void main() {
         find.byType(AccountEditorConnector),
       );
       final identity = domain.NativeAccountIdentity(connector.editor.target.id);
+      expect(identity.accountId, isNot('openai'));
 
       await tap('chatgpt-login-start', duplicate: true);
       await login(domain.ChatGptLoginPhase.awaitingBrowser);
@@ -368,6 +374,17 @@ void main() {
       expect(
         graph.accountUsage.state.value.value?.containsKey(identity),
         isFalse,
+      );
+      router.go(const SettingsRoute().location);
+      await tester.pumpAndSettle();
+      await openOpenAi();
+      final next = tester.widget<AccountEditorConnector>(
+        find.byType(AccountEditorConnector),
+      );
+      expect(
+        next.editor.target.id,
+        isNot(identity.accountId),
+        reason: 'A new account must not reuse a protected credential alias',
       );
     },
     timeout: const Timeout(Duration(minutes: 2)),

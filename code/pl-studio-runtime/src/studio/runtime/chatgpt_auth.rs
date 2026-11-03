@@ -748,7 +748,7 @@ mod tests {
             template_id: Some("openai".into()),
             protocol: pl_model::protocol::ProtocolKind::OpenAi.as_str().into(),
             name: "ChatGPT Fixture".into(),
-            base_url: "https://api.openai.com/v1".into(),
+            base_url: pl_model::protocol::chatgpt::CODEX_RESOURCE.into(),
             secret: AccountSecretUpdate::Preserve,
             initial_billing_kind: Some(pl_protocol::BillingKind::NoCharge),
             custom_models: Vec::new(),
