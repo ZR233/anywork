@@ -2,7 +2,7 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR 与 `main` 分支推送时使用 GitHub 原生路径过滤：仅修改 `design/**` 时跳过整个工作流，包括自动化测试与静态检查；包含目录外文件的变更仍执行原有门禁。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查；不再用顶层 `paths-ignore: design/**` 跳过整个 required workflow。cheap `changes` job 用 Git 路径和有限目录规则决定哪些重作业适用：纯 `design/` 等说明文档可只跑 `docs-policy`；`AGENTS.md`、技能、测试、fixture、xtask、工作流、锁文件、生成配置和平台 runner 走完整适用套件。始终运行的 `ci-gate`（`if: always()`）只接受该计划明确允许的 skipped；required job 因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动变成已配置的 required check。Linux `rust-deterministic` 对同一 `github.sha` 执行 `cargo test --locked --workspace --features pl-core/sqlite`，覆盖可发现的 workspace 测试；Windows `rust-quality` 保留 fmt/clippy、无 SQLite 的 `pl-core` check，以及 runtime `--lib` 的原子替换边界。`flutter-ui` 在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，也不准备 Rust/bridge。Linux desktop 在 Xvfb 上跑 `test-project --suite desktop --set full`；Windows/macOS 跑同一 desktop smoke。修改 host 生命周期、平台 runner、进程监督、bridge bootstrap 或其 fixture 时，受影响平台跑 `test-project --suite native --set full`。
 
 ## 24.1 现有测试基础设施
 
@@ -20,13 +20,13 @@
 
 ### 24.1.1 Client 证据边界
 
-纯 Client 和应用适配测试可以证明受控输入下的状态与所有权关系；它们不加载或不能完整覆盖真实 Rust 动态库、原生窗口、输入法与操作系统进程。Driver、截图和原生退出回执分别提供这些边界的观察信息，不能彼此替代，也不是要求每次修改都执行的五层流程。
+纯 Client 和应用适配测试可以证明受控输入下的状态与所有权关系；它们不加载或不能完整覆盖真实 Rust 动态库、原生窗口、输入法与操作系统进程。Flutter 内容捕获、截图和原生退出回执分别提供这些边界的观察信息，不能彼此替代，也不是要求每次修改都执行的五层流程。
 
 `verify-client` 当前组合依赖与导入边界检查、格式和静态分析、纯 Dart 测试以及应用侧 Client 套件。其组成由工程工具维护，本节不复制执行清单。
 
 ### 24.1.2 Waiting 的分层集成证据
 
-Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、展示资源与窗口布局。替换旧测试时保留业务覆盖，而不是保留脚本阶段数；专属观察镜像、状态机和仅测试这些辅助实现的用例随旧入口一起删除，共享 Driver 与独立性能入口不受此替换影响。
+Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integration_test` 分层证明。替换旧测试时保留业务覆盖，而不是保留脚本阶段数；专属观察镜像、状态机和仅测试这些辅助实现的用例随旧入口一起删除。
 
 | 行为 | 最小充分的观察边界 |
 | --- | --- |
@@ -37,17 +37,17 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 | 展开/收起、公开 JSON、滚动与窄窗口几何 | `WidgetTester` 操作真实控件并读取已布局子树；业务 ready 与帧推进分别等待，无限动画期间不调用 `pumpAndSettle` 等待业务结束 |
 | FRB、SDK、持久化到实际生产界面的关键路径 | Flutter 官方 `integration_test` 的独立场景；保留真实 `AppGraph`，不注入业务状态、不建立第二订阅或消息镜像 |
 
-原生测试通过 `cargo xtask run-gui --integration-test <应用内路径>` 复用现有 bridge/helper 准备和进程树所有权，再调用官方桌面 `flutter test -d <当前平台>`。它与 demo、旧 Driver、profile/native-launch 和已有 release 运行模式互斥；不是性能采样入口。隔离配置、模拟 provider、私有凭据环境与失败日志仍由 `manual-gui --scenario wait-events` 的既有 harness 持有。各场景独立发现、单独报告失败和收束，不因前一条断言失败而将后续场景全部当作已覆盖。
+桌面项目集成通过 `cargo xtask test-project --suite desktop` 复用现有 bridge/helper 准备和进程树所有权，再调用官方桌面 `flutter test -d <当前平台>`。它与 demo、capture、profile/native-launch 和已有 release 运行模式互斥；不是性能采样入口。`wait_events` 与 `conversation_read_work` 的隔离 home、fixture 与预置历史由 `pl-studio-acceptance` 的对应 `--preset` 持有：`test-project` 在环境变量未齐时子进程调用该 harness，harness 注入环境后再以内层 Flutter-only 路径跑同一 case。各场景独立发现、单独报告失败和收束，不因前一条断言失败而将后续场景全部当作已覆盖。
 
 测试 binding 唯一负责测试断言与异步错误，不能通过生产入口替换其错误处理器来吞掉失败；应用与原生资源仍经生产关闭所有者收束。场景输入使用官方 `TestTextInput` 的配对注册/注销，避免 `enterText` 注入与真实 IME 同时修改编辑状态；这不替换产品草稿或提交链路，也不构成原生输入法兼容性证据。必要的观察窗口由测试 provider 的下一响应屏障或受控工具提供，记录到达后才释放；不放慢生产路径、不延长超时制造成功。工具返回时的快照、UI 后来读取的不可变结果、保存完成是不同证据，后续 Turn 已结束不使已取得的早返回证据失效，也不能事后补造早返回事实。
 
-官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
+官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
 ### 24.1.3 时间线呈现与官方集成测试
 
 时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
 
-迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除共享 Driver 人工诊断能力。
+迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除独立的人工诊断入口。
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
@@ -77,27 +77,27 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 
 ## 24.3 原生 GUI 观察与隔离
 
-本地模拟 GUI 人工验收由独立工程工具 `pl-studio-acceptance` 编排（通过 `cargo xtask manual-gui` 按需编译并透传参数，复用 `pl-dev-support` 的路径与进程树管理，并在服务就绪计时前完成固件编译）。真实厂商与模型的原生人工观察使用 `cargo xtask run-gui --driver` 等现有真实入口，不能把模拟供应商结果外推为真实模型行为。按实际入口核对真实窗口截图、界面组件树（widget tree）、权威快照、必要请求/诊断和所属进程真实回收；没有模拟服务的观察不虚构模拟请求记录。脚本退出码仅表示采集流程完成，最终视觉与交互结论由人工核查截图后独立判定（默认标记为“待评审”）。
+本地模拟 GUI 人工验收由独立工程工具 `pl-studio-acceptance` 编排（通过 `cargo xtask manual-gui --preset` 按需编译并透传参数，复用 `pl-dev-support` 的路径与进程树管理，并在服务就绪计时前完成固件编译）。真实厂商与模型的原生人工观察使用 `cargo xtask run-gui` 读取用户已有配置，不能把模拟供应商结果外推为真实模型行为。按实际入口核对真实窗口截图、界面组件树（widget tree）、权威快照、必要请求/诊断和所属进程真实回收；没有模拟服务的观察不虚构模拟请求记录。脚本退出码仅表示采集流程完成，最终视觉与交互结论由人工核查截图后独立判定（默认标记为“待评审”）。
 
-多阶段原生旅程的诊断归档与阶段成功判定独立：已经产生的 GUI 与 Driver 日志在阶段失败时仍须脱敏保留，不能因该阶段未进入成功清单而随隔离环境删除。日志归档不补造未观察到的退出状态，不改变原始失败退出或后续阶段的准入条件。
+多阶段原生旅程的诊断归档与阶段成功判定独立：已经产生的 GUI 日志在阶段失败时仍须脱敏保留，不能因该阶段未进入成功清单而随隔离环境删除。日志归档不补造未观察到的退出状态，不改变原始失败退出或后续阶段的准入条件。
 
-FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等待：通知 future 被轮询为 `Pending` 时，还须核对该订阅仍占满两帧未确认窗口并保持开放，才记录这次等待。每次等待调用至多保留一条诊断，只含订阅身份与 sent/acknowledged 计数，不复制正文、不消费通知、不改变 ACK、取消或关闭语义。验收在隔离 GUI 进程中仅为该诊断目标启用日志，并在原有收尾内归档其有界元数据；缺失、截断或无法关联到同次 Driver 的两帧持有订阅都不能判为已进入等待。未出现第三次 Dart 回调、拒绝未来 ACK 或在 `await` 前记录意图仍保留为各自证据，不能单独替代真实等待信号。
+FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等待：通知 future 被轮询为 `Pending` 时，还须核对该订阅仍占满两帧未确认窗口并保持开放，才记录这次等待。每次等待调用至多保留一条诊断，只含订阅身份与 sent/acknowledged 计数，不复制正文、不消费通知、不改变 ACK、取消或关闭语义。验收在隔离 GUI 进程中仅为该诊断目标启用日志，并在原有收尾内归档其有界元数据；缺失、截断或无法关联到同次运行的两帧持有订阅都不能判为已进入等待。未出现第三次 Dart 回调、拒绝未来 ACK 或在 `await` 前记录意图仍保留为各自证据，不能单独替代真实等待信号。
 
-计划详情的正文呈现须由实际正文子树的渲染文字证明，不能仅回读计划快照或匹配面板标题。验收复用官方 Driver 渲染诊断，适应 Markdown 组件使用 `Text`、`RichText` 或其公开扩展的呈现方式；缺失、截断或不匹配的正文诊断仍为失败。
+计划详情的正文呈现须由实际正文子树的渲染文字证明，不能仅回读计划快照或匹配面板标题。验收读取已布局的 `Text`、`RichText` 或其公开扩展；缺失、截断或不匹配的正文仍为失败。
 
 活动成员的展开验收绑定真实条目身份和已挂载标题，读取其纯视图公开的展开属性；官方展开组件仍读取其公开控制器。未知或缺失的状态不得解释为收起，详情入口中复用的活动行不得替代成员标题。展开与收起通过真实指针触发，并结合正文尺寸、滚动几何及同一展示代次判定，不为验收创建领域所有者或额外生产状态。
 
-人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 Driver/debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
+人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-Windows 原生验收可通过独立的 `Native Acceptance` 工作流显式启用：PR 使用 `native-acceptance` 标签，合入后的独立调用使用 `workflow_dispatch`。它沿用根目录 `cargo xtask manual-gui`、同次源码构建并校验的双架构 remote-helper 资源及受管 Driver 生命周期，不属于默认 PR Quality Gate，也不以静态 Windows CI 代替真实原生执行。运行记录实际源码身份、Windows/显卡环境、场景报告、帧样本、截图和退出证据；托管 runner 的显示或渲染失败保留为环境事实，不降低正文规模或交互门槛。
+默认 functional 与 native 生命周期由 `PR Quality Gate` 的 `linux-desktop` / `windows-desktop` / `macos-desktop` 与 `linux-native` / `windows-native` 作业通过 `cargo xtask test-project` 执行。标签专属 `native-acceptance.yml` 路径已退役；人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
-实时场景先在 Windows 执行 Driver 的真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
+实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 
 CI 在场景启动前显式完成同次源码、相同 Cargo 配置的 Rust bridge 构建：profile 场景使用 `release`，debug 场景使用默认开发配置。独立构建步骤保留完整编译失败，不让首次冷编译占用原生 VM 就绪期限；场景仍由 xtask 校验并消费构件，原有就绪、交互及退出期限保持不变。预构建成功不证明原生程序已启动或任何验收通过。
 
 CI 采集的 profile 帧与截图只代表该 Windows runner、构建模式和场景，人工结论仍须独立核对，不能外推为用户硬件的稳态性能。工作流仅归档正式场景证据，排除隔离环境目录、home、数据库及保留环境清单；截图作为 PR 图片交付前仍须检查内容并按仓库附件规则上传回读。未产出的指标和未执行场景保持缺失，不由工作流退出成功补造。
 
-升级恢复验收可通过 `cargo xtask manual-gui --scenario gui --seed-home-copy <DIR>` 消费已关闭、经 SQLite backup API 制作的一致性 home 副本。工具只读复制该输入到自有隔离环境，拒绝带 WAL/SHM 或符号链接的输入；保留项目、会话及账本事实，将账号端点切换为本地模拟供应商，并在启动前禁用机器人外发、MCP、LSP 与 ACP。来源副本和真实数据根都不修改；截图、快照、迁移前后数据库核对及进程回收共同构成证据。副本模式通过原生启动器运行，Driver 收束后请求产品退出，并核对原生退出报告中的退出码和子进程回收结果。
+升级恢复验收可通过 `cargo xtask manual-gui --preset gui --seed-home-copy <DIR>` 消费已关闭、经 SQLite backup API 制作的一致性 home 副本。工具只读复制该输入到自有隔离环境，拒绝带 WAL/SHM 或符号链接的输入；保留项目、会话及账本事实，将账号端点切换为本地模拟供应商，并在启动前禁用机器人外发、MCP、LSP 与 ACP。来源副本和真实数据根都不修改；截图、快照、迁移前后数据库核对及进程回收共同构成证据。副本模式通过原生启动器运行，人工操作结束后请求产品退出，并核对原生退出报告中的退出码和子进程回收结果。
 
 ## 24.4 呈现诊断与受控账号对端
 
@@ -105,9 +105,9 @@ Widget Previewer 可以提供纯呈现证据，不装配 Client 或 Rust bridge 
 
 账号组件预览直接消费生产 View/Widget、不可变呈现值及生产主题与本地化，观察宽窄布局、错误与未知状态、局部草稿和菜单回调。源码变化、同页渲染变化及恢复状态可提供热更新证据；预览动作不等于 canonical 保存，真实 bridge、凭据和持久化仍由对应原生观察提供证据。
 
-账号 Driver 只读取已经装配的领域镜像和已存在的呈现实例：读取详情、编辑或模型资料前确认对应 ViewModel 已存在，不为诊断初始化 provider、创建详情槽、发起查询或声明可见需求。领域来源、具体目标、版本及过期状态分别表达，未观察的信息保持未知；已退役的整卡字段与兼容占位键随所有旅程消费者一起删除。验收专用呈现诊断只暴露选择、编辑身份、dirty、保存阶段、草稿修订及已有资料读取阶段，不序列化凭据、原始密钥输入或资源所有者。Driver 交互复用生产控件的带账号类型与模型复合身份的稳定 key，业务变化仍由真实界面动作触发；测试脚本不通过直接修改 provider 或调用仓储命令制造成功。
+账号只读诊断只读取已经装配的领域镜像和已存在的呈现实例：读取详情、编辑或模型资料前确认对应 ViewModel 已存在，不为诊断初始化 provider、创建详情槽、发起查询或声明可见需求。领域来源、具体目标、版本及过期状态分别表达，未观察的信息保持未知；已退役的整卡字段与兼容占位键随所有旅程消费者一起删除。验收专用呈现诊断只暴露选择、编辑身份、dirty、保存阶段、草稿修订及已有资料读取阶段，不序列化凭据、原始密钥输入或资源所有者。人工与测试交互复用生产控件的带账号类型与模型复合身份的稳定 key，业务变化仍由真实界面动作触发；测试脚本不通过直接修改 provider 或调用仓储命令制造成功。
 
-普通 Native 账号的人工旅程使用显式鼠标事件覆盖列表菜单与编辑入口，并验证菜单不会误触详情。文本复制分别经过标准快捷键与真实右键菜单的 Copy 动作，以不同的合成文本回读平台剪贴板，不能直接写入期望内容来制造通过。主键、修饰键的按下与释放仍复用已有 Driver 扩展；鼠标主键与次键由 Flutter 官方指针派发处理。旅程继续核对模型三标签往返保留草稿、显式保存、恢复自动及离页时继续编辑／放弃的 canonical 结果；进程中断、断言失败与未执行的 fixture 主步骤均单独记录，不合并成完整通过。
+普通 Native 账号的人工旅程使用显式鼠标事件覆盖列表菜单与编辑入口，并验证菜单不会误触详情。文本复制分别经过标准快捷键与真实右键菜单的 Copy 动作，以不同的合成文本回读平台剪贴板，不能直接写入期望内容来制造通过。主键、修饰键的按下与释放走真实键盘；鼠标主键与次键由 Flutter 官方指针派发处理。旅程继续核对模型三标签往返保留草稿、显式保存、恢复自动及离页时继续编辑／放弃的 canonical 结果；进程中断、断言失败与未执行的 fixture 主步骤均单独记录，不合并成完整通过。
 
 账号模拟对端允许在同一进程生命周期通过显式受控动作切换目录清单、单账号失败及请求闸门，用于证明无需重启的同步、重复请求合并与迟到结果隔离；不通过重启 GUI 或直接改产品状态制造成功。控制只作用于本次隔离环回对端，保留请求计数、命名状态和闸门释放证据，不记录真实凭据。控制文件仍是启动输入，修改文件不隐式改变运行中的对端；等待由明确请求/释放信号驱动，退出必须唤醒并回收所有闸门等待者。
 
@@ -152,9 +152,9 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 
 ### ChatGPT 登录与额度
 
-账户认证和额度界面的回归使用官方 `integration_test/chatgpt_auth_test.dart`：真实 AppGraph、Client、路由、Riverpod 和生产组件，只控制外部认证／额度回复，覆盖取消与迟到事件、重复点击、认证切换、保存身份、额度刷新、页面返回、删除后新建不复用身份。原预览组件认证测试和草稿认证测试的有效覆盖迁入该旅程，删除旧测例；协议签名、凭据轮换和网络归属仍在 Rust／纯 Client 所有者边界验证。Windows 凭据协调器另以唯一测试别名验证跨配置同名冲突不覆盖、大体积 OAuth 保存与重新打开、事务清理，不触碰用户已有别名。`Native Acceptance` 的 `chatgpt-auth` 场景或 `all` 通过同一官方集成入口运行；真实账号授权仅在下述显式人工验收中进行。
+账户认证和额度界面的回归使用官方 `integration_test/chatgpt_auth_test.dart`：真实 AppGraph、Client、路由、Riverpod 和生产组件，只控制外部认证／额度回复，覆盖取消与迟到事件、重复点击、认证切换、保存身份、额度刷新、页面返回、删除后新建不复用身份。原预览组件认证测试和草稿认证测试的有效覆盖迁入该旅程，删除旧测例；协议签名、凭据轮换和网络归属仍在 Rust／纯 Client 所有者边界验证。Windows 凭据协调器另以唯一测试别名验证跨配置同名冲突不覆盖、大体积 OAuth 保存与重新打开、事务清理，不触碰用户已有别名。该旅程纳入 desktop smoke 和 full，也可通过 `cargo xtask test-project --suite desktop --case chatgpt_auth` 单独运行；真实账号授权仅在下述显式人工验收中进行。
 
-真实人工验收也由 `cargo xtask run-gui --integration-test integration_test/chatgpt_real_login_test.dart` 启动，使用隔离的应用数据根和系统凭据关联。`ANYWORK_CHATGPT_ACCEPTANCE=login` 完成官方浏览器授权、真实保存、额度和在线模型查询；同一数据根的 `restart` 阶段重新加载凭据并查询。WidgetTester 操作生产控件，人只操作官方浏览器的账户、验证码和同意授权，不依赖 Driver、requestData 脚本或固定人工等待期限。`ANYWORK_CHATGPT_EVIDENCE` 指定工具产物目录，截图在编码前遮蔽 email／workspace；列表通过生产搜索框筛选验收账户，不采集其他账户的余额。两次运行分别检查生产关闭报告的 completed、clean、drained；实际平台、授权、额度与推理覆盖独立报告。
+真实人工验收也由 `cargo xtask test-project --suite desktop --case chatgpt_real_login` 启动，使用隔离的应用数据根和系统凭据关联。`ANYWORK_CHATGPT_ACCEPTANCE=login` 完成官方浏览器授权、真实保存、额度和在线模型查询；同一数据根的 `restart` 阶段重新加载凭据并查询。该场景须显式选择并提供阶段变量，不进入默认 CI 套件。WidgetTester 操作生产控件，人只操作官方浏览器的账户、验证码和同意授权，不依赖 Driver、requestData 脚本或固定人工等待期限。`ANYWORK_CHATGPT_EVIDENCE` 指定工具产物目录，截图在编码前遮蔽 email／workspace；列表通过生产搜索框筛选验收账户，不采集其他账户的余额。两次运行分别检查生产关闭报告的 completed、clean、drained；实际平台、授权、额度与推理覆盖独立报告。
 
 ## 24.7 流式输出的现实规模基准
 
@@ -178,9 +178,9 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 
 ## 24.8 Linux 累计两万历史与持续增长观测
 
-累计历史容量与单次模型输出是两种工况。Linux 的 `timeline-history-20k` 复用既有原生验收、模拟供应商、正常 writer、Flutter Driver 和帧记录入口：先在同一会话用十轮、每轮 2,000 个独立完成文本 item 累积历史并确认保存，再退出所属进程并以同一隔离 home 冷重开。每个合成文本正文固定为 32 个 UTF-8 字节；报告同时列出 20,000 个文本 item 与包含用户输入等事实的精确历史总数、正文总字节及数据库规模，不把事件、token、展示组或正文块数当成 item 数。该形态侧重历史条目与元数据容量，不替代大正文、Markdown 或图片工况。
+累计历史容量与单次模型输出是两种工况。Linux 的 `timeline-history-20k` 复用既有原生验收、模拟供应商、正常 writer、Flutter 内容捕获和帧记录入口：先在同一会话用十轮、每轮 2,000 个独立完成文本 item 累积历史并确认保存，再退出所属进程并以同一隔离 home 冷重开。每个合成文本正文固定为 32 个 UTF-8 字节；报告同时列出 20,000 个文本 item 与包含用户输入等事实的精确历史总数、正文总字节及数据库规模，不把事件、token、展示组或正文块数当成 item 数。该形态侧重历史条目与元数据容量，不替代大正文、Markdown 或图片工况。
 
-冷加载样本在同一已保存基线上运行独立 GUI 生命周期，构建时间不混入加载时间。分别记录进程启动、Driver 可观察、选择原会话、同代次首个实际内容布局及视口填充边界；轮次间核对数据库/会话身份。明确报告进程冷启动、样本量和未清除 Linux 页缓存，不称物理磁盘冷缓存。首屏/静置的 controller 消息数、before 和页请求数证明未载入全历史。旧页用真实滚轮/滚动条触发，记录每页延迟、加载增长、cursor 和顺序；显式 load-older 不单独替代滚动证据。旧版三生命周期观测只代表其实际版本，不充作新协议 p95 样本。
+冷加载样本在同一已保存基线上运行独立 GUI 生命周期，构建时间不混入加载时间。分别记录进程启动、内容捕获可观察、选择原会话、同代次首个实际内容布局及视口填充边界；轮次间核对数据库/会话身份。明确报告进程冷启动、样本量和未清除 Linux 页缓存，不称物理磁盘冷缓存。首屏/静置的 controller 消息数、before 和页请求数证明未载入全历史。旧页用真实滚轮/滚动条触发，记录每页延迟、加载增长、cursor 和顺序；显式 load-older 不单独替代滚动证据。旧版三生命周期观测只代表其实际版本，不充作新协议 p95 样本。
 
 冷打开比较按稳定顺序读取的完成记录、history item/turn 的身份、顺序和完整 payload，不只比较行数。applied_write_seq 是 effect 保存水位，不是条目数。被动只读打开不新增执行生命周期 effect，打开/滚动区间的 history admitted 水位应不变；已有保存允许追平，真正执行/显式关停产生的变化按事实单列。#222 旧激活链路的 Closed→Open 与退出水位 +1/+2 是历史版本观察，不再是 #243 冷打开的预期，不能为保留旧断言继续激活执行。
 

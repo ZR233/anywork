@@ -67,11 +67,8 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         status_file,
         interrupt,
     } = context;
-    let stage = working.join("skill-activity-stage");
     let first_log = working.join("skill-activity-first-gui.log");
     let reopen_log = working.join("skill-activity-reopen-gui.log");
-    let mut driver_exits: BTreeMap<&'static str, Option<std::process::ExitStatus>> =
-        BTreeMap::new();
     // Synthetic Skills never live inside the evidence directory: production
     // discovery walks every Skill root with a git-aware walker, and the
     // evidence directory sits in the repository's ignored `target/` tree, where
@@ -103,33 +100,26 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         );
 
         // 1. First lifecycle: real loads, one failing and one succeeding manual
-        // compaction, then the reload Turn. The Driver shuts the GUI down through
-        // the normal request, so this scope reaps every owned process before the
-        // same home is reopened below.
+        // compaction, then the reload Turn. Capture+exit reaps every owned
+        // process before the same home is reopened below.
         {
             let mut gui = start_recovery_gui(workspace, home, &first_log)?;
             let vm_url = wait_for_vm(&first_log, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_skill_activity_driver(context, "first", &vm_url, &project)?;
-            let exit = wait_for_skill_activity_driver(
-                "first",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
                 interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                &format!(
+                    "skill-activity first: open {}, load seeded skills, run failing then succeeding compaction, reload a skill, then type done.",
+                    project.display()
+                ),
             )?;
-            driver_exits.insert("first", Some(exit));
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "first")?;
         }
-        ensure_summary(output, "first")?;
         verify_dynamic_mutations(&project)?;
-        let observed: serde_json::Value = serde_json::from_slice(
-            &fs::read(working.join("skill-activity-observed.json"))
-                .context("the first lifecycle did not record its observations")?,
-        )?;
-        ensure!(
-            observed["threadId"].is_string() && observed["skillNames"].is_array(),
-            "the first lifecycle observations are incomplete: {observed}"
-        );
 
         // 2. The reopened lifecycle cold-reopens the same home with a one-token
         // automatic threshold: its first Turn must commit an automatic compaction
@@ -140,18 +130,17 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         {
             let mut gui = start_recovery_gui(workspace, home, &reopen_log)?;
             let vm_url = wait_for_vm(&reopen_log, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_skill_activity_driver(context, "reopen", &vm_url, &project)?;
-            let exit = wait_for_skill_activity_driver(
-                "reopen",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
                 interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                "skill-activity reopen: reopen the same home, confirm automatic compaction, load a skill, cancel the post-load compaction, then type done.",
             )?;
-            driver_exits.insert("reopen", Some(exit));
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "reopen")?;
         }
-        ensure_summary(output, "reopen")?;
         Ok(())
     })();
 
@@ -163,33 +152,6 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
             write_sanitized_log(source, &output.join(destination))?;
         }
     }
-    let redactions = [
-        (app_dir.to_string_lossy().into_owned(), "<app>"),
-        (workspace.to_string_lossy().into_owned(), "<workspace>"),
-        (home.to_string_lossy().into_owned(), "<home>"),
-        (working.to_string_lossy().into_owned(), "<coord>"),
-        (seeds.path().to_string_lossy().into_owned(), "<synthetic>"),
-    ];
-    for phase in ["first", "reopen"] {
-        write_realtime_driver_evidence(
-            &working.join(format!("skill-activity-{phase}-driver.log")),
-            output,
-            &format!("skill-activity-{phase}"),
-            driver_exits.get(phase).copied().flatten(),
-            journey.as_ref().err(),
-            &redactions,
-        )?;
-    }
-    if stage.is_file() {
-        let value = fs::read_to_string(&stage)?;
-        if value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-        {
-            fs::write(output.join("skill-activity-stage.txt"), value)?;
-        }
-    }
-
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
     write_fixture_log(fixture_log, &output.join("fixture.log"))?;
@@ -367,117 +329,4 @@ fn enable_automatic_compaction(home: &Path) -> Result<()> {
         account.set_model_auto_compact_override("fixture-model", Some(1))?;
     }
     persist_config(home, &config)
-}
-
-/// Starts one phase of the Driver journey inside the current isolated run.
-fn start_skill_activity_driver(
-    context: &SkillActivityScenario<'_>,
-    phase: &str,
-    vm_url: &str,
-    project: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(
-        context
-            .working
-            .join(format!("skill-activity-{phase}-driver.log")),
-    )?;
-    let mut command = driver_command(context.app_dir, "test_driver/skill_activity_journey.dart");
-    command
-        .arg(phase)
-        .arg(vm_url)
-        .arg(project)
-        .arg(context.output)
-        .arg(context.working)
-        .arg(context.status_file)
-        .env("ANYWORK_HOME", context.home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-fn wait_for_skill_activity_driver(
-    phase: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(1200);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            ensure!(
-                status.success(),
-                "skill-activity {phase} Driver failed with {status} (last stage: {})",
-                fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-            );
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "GUI exited before the skill-activity {phase} journey completed"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during the skill-activity {phase} journey"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "skill-activity {phase} journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "skill-activity {phase} journey timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
-}
-
-/// Rejects a summary that is missing, failed, not pending, or has a false check.
-fn ensure_summary(output: &Path, phase: &str) -> Result<()> {
-    let path = output.join(format!("skill-activity-{phase}-summary.json"));
-    let summary: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path)
-            .with_context(|| format!("Flutter Driver wrote no summary: {}", path.display()))?,
-    )?;
-    ensure!(
-        summary["scenario"] == "skill-activity" && summary["phase"] == phase,
-        "skill-activity {phase} summary has the wrong identity: {summary}"
-    );
-    ensure!(
-        summary["status"] == "complete" && summary["verdict"] == "pending",
-        "skill-activity {phase} journey did not complete with a pending verdict: {summary}"
-    );
-    let checks = summary["checks"]
-        .as_object()
-        .with_context(|| format!("skill-activity {phase} summary recorded no checks"))?;
-    ensure!(
-        !checks.is_empty(),
-        "skill-activity {phase} summary recorded no checks"
-    );
-    for (name, value) in checks {
-        ensure!(
-            value == &serde_json::Value::Bool(true),
-            "skill-activity {phase} check {name} did not pass"
-        );
-    }
-    if phase == "first" {
-        for name in [
-            "dynamicSameTurnCallIdentities",
-            "dynamicWaitHandoffsTerminal",
-            "dynamicViewDiscoversBeforeList",
-            "dynamicListDiscoversNewSkill",
-            "dynamicDeletionAndInvalidityVisible",
-            "dynamicDeletedActivationRetained",
-            "dynamicCanonicalDetailsReadable",
-        ] {
-            ensure!(
-                checks.get(name) == Some(&serde_json::Value::Bool(true)),
-                "skill-activity first summary omitted required dynamic check {name}"
-            );
-        }
-    }
-    Ok(())
 }

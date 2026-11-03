@@ -45,7 +45,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
 /// The second cargo invocation is a no-op build whose JSON artifact messages
 /// locate the executable without recompiling, respecting `CARGO_TARGET_DIR`
 /// and any configured build target.
-fn build_acceptance_tool(workspace: &Path) -> Result<PathBuf> {
+pub(crate) fn build_acceptance_tool(workspace: &Path) -> Result<PathBuf> {
     let display = format!("cargo build -p {ACCEPTANCE_PACKAGE}");
     let mut build = Command::new("cargo");
     build
@@ -85,6 +85,25 @@ fn parse_acceptance_executable(stdout: &[u8]) -> Result<PathBuf> {
         }
     }
     bail!("cargo reported no {ACCEPTANCE_PACKAGE} bin executable")
+}
+
+/// Waits for one already-built acceptance invocation without replacing xtask.
+///
+/// # Errors
+/// Returns an error when the tool cannot be started or exits non-zero.
+pub(crate) fn wait_acceptance_tool(executable: &Path, args: &[OsString]) -> Result<()> {
+    use std::process::Stdio;
+
+    #[cfg(windows)]
+    process::own_current_process_tree().context("failed to own acceptance tool process tree")?;
+    #[cfg(windows)]
+    let _ctrl_c_shield = shield_ctrl_c_while_tool_runs()?;
+    let program = executable.to_string_lossy();
+    let display = process::display_command(&program, args);
+    let mut command = Command::new(executable);
+    command.args(args);
+    command.stdin(Stdio::inherit());
+    process::run_checked(&mut command, &display)
 }
 
 #[cfg(unix)]

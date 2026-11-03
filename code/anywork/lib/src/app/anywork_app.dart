@@ -17,15 +17,29 @@ import 'routing/application_router.dart';
 import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
 import 'studio_shutdown.dart';
+import '../capture/flutter_content_capture.dart';
 import 'theme/material3_theme.dart';
 import 'routing/app_route.dart';
 
 class AnyworkApp extends ConsumerStatefulWidget {
-  const AnyworkApp({super.key, this.enableDesktopTray = false});
+  const AnyworkApp({
+    super.key,
+    this.enableDesktopHost = false,
+    this.enableDesktopTray = false,
+    this.enableContentCapture = false,
+  });
 
-  /// Release, demo and Driver entrypoints enable the Windows tray; widget tests
+  /// Desktop production installs native lifecycle, tray and exit coordination
+  /// outside the shared app body. UI tests keep the host off.
+  final bool enableDesktopHost;
+
+  /// Release and demo entrypoints enable the Windows tray; widget tests
   /// keep it off because they do not run the native host.
   final bool enableDesktopTray;
+
+  /// Optional capture boundary above Router/Overlay. Debug-only capture
+  /// registers the VM extension separately.
+  final bool enableContentCapture;
 
   @override
   ConsumerState<AnyworkApp> createState() => _AnyworkAppState();
@@ -71,33 +85,61 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
         (state) => state.canonical?.general.language ?? UiLanguage.system,
       ),
     );
-    return StudioLifecycleCoordinator(
-      child: _EagerInitialization(
-        child: MaterialApp.router(
-          onGenerateTitle: (context) => context.l10n.appTitle,
-          debugShowCheckedModeBanner: false,
-          theme: pureStudioTheme(),
-          themeMode: ThemeMode.light,
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          locale: switch (language) {
-            UiLanguage.system => null,
-            UiLanguage.zh => const Locale('zh'),
-            UiLanguage.en => const Locale('en'),
-          },
-          routerConfig: _router,
-          restorationScopeId: 'anywork-app',
-          // The builder observes Flutter's resolved locale, including system
-          // language changes, rather than resolving a second locale for fonts.
-          builder: (context, child) => Theme(
-            data: pureStudioTheme(locale: Localizations.localeOf(context)),
-            child: DesktopTrayHost(
-              enabled: widget.enableDesktopTray,
-              child: StudioShutdownOverlay(child: child ?? const SizedBox()),
-            ),
-          ),
-        ),
+    final body = AnyworkAppBody(
+      router: _router,
+      language: language,
+      enableContentCapture: widget.enableContentCapture,
+      wrapOverlay: (child) => DesktopTrayHost(
+        enabled: widget.enableDesktopTray,
+        child: StudioShutdownOverlay(child: child),
       ),
+    );
+    final initialized = _EagerInitialization(child: body);
+    if (!widget.enableDesktopHost) {
+      return initialized;
+    }
+    return StudioLifecycleCoordinator(child: initialized);
+  }
+}
+
+class AnyworkAppBody extends StatelessWidget {
+  const AnyworkAppBody({
+    required this.router,
+    required this.language,
+    required this.wrapOverlay,
+    this.enableContentCapture = false,
+    super.key,
+  });
+
+  final GoRouter router;
+  final UiLanguage language;
+  final Widget Function(Widget child) wrapOverlay;
+  final bool enableContentCapture;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp.router(
+      onGenerateTitle: (context) => context.l10n.appTitle,
+      debugShowCheckedModeBanner: false,
+      theme: pureStudioTheme(),
+      themeMode: ThemeMode.light,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      locale: switch (language) {
+        UiLanguage.system => null,
+        UiLanguage.zh => const Locale('zh'),
+        UiLanguage.en => const Locale('en'),
+      },
+      routerConfig: router,
+      restorationScopeId: 'anywork-app',
+      builder: (context, child) {
+        final themed = Theme(
+          data: pureStudioTheme(locale: Localizations.localeOf(context)),
+          child: wrapOverlay(child ?? const SizedBox()),
+        );
+        if (!enableContentCapture) return themed;
+        return RepaintBoundary(key: flutterContentCaptureKey, child: themed);
+      },
     );
   }
 }

@@ -1,12 +1,14 @@
 mod account_usage;
 mod bots_fixture;
 mod context_replay_recovery;
+mod conversation_read_work;
 mod delegation;
 mod mode_editor;
 mod model_catalog;
 mod question_history;
 mod realtime_presentation;
 mod shutdown;
+mod sidebar_query;
 mod skill_activity;
 mod timeline_history_20k;
 mod wait_events;
@@ -27,11 +29,11 @@ use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpServerTransport, StudioConfig, StudioMcpServerEntry,
 };
 use sea_orm::sqlx::{
-    Connection as _,
+    Connection as _, Row,
     sqlite::{SqliteConnectOptions, SqliteConnection},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -45,18 +47,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(
     name = "cargo xtask manual-gui",
     bin_name = "cargo xtask manual-gui",
-    about = "Start an isolated native GUI with a local account fixture for manual review"
+    about = "Prepare an isolated Studio environment. Manual presets stay interactive; desktop and native presets are judged automatically."
 )]
 pub(crate) struct ManualGuiOptions {
-    /// Run the regular, stress, single-item long-body stress (`stress-body`,
-    /// `stress-body-large`), isolated call-statistics, realtime, paused
-    /// history-writer, history-fault retry/resume, plan shutdown/restart
-    /// recovery (`plan-recovery`), or the 30-second application shutdown
-    /// acceptance journey (`shutdown`), or the wait/sleep/child observation
-    /// journey (`wait-events`). ACP native acceptance uses the official Flutter
-    /// integration_test suites directly; see design/28-acp.md.
+    /// Isolated environment preset. Manual presets keep a human verdict;
+    /// `wait-events`, `conversation-read-work`, `question-history`,
+    /// `realtime-presentation` and `sidebar-query` are automatic desktop runners;
+    /// `shutdown` and `single-instance` are native lifecycle.
+    /// ACP native acceptance uses the official Flutter integration_test
+    /// suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
-    pub(crate) scenario: String,
+    pub(crate) preset: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -86,7 +87,7 @@ pub(crate) struct ManualGuiOptions {
     /// Existing control-file path copied into the isolated environment. Mutually exclusive with `--model-catalog-inventory`.
     #[arg(long, value_name = "PATH", conflicts_with = "model_catalog_inventory")]
     pub(crate) model_catalog_control: Option<PathBuf>,
-    /// Same-home, same-port catalog restart journey for items 1 and 5. Requires `--scenario gui` and a control file.
+    /// Same-home, same-port catalog restart journey for items 1 and 5. Requires `--preset gui` and a control file.
     #[arg(long)]
     pub(crate) model_catalog_restart: bool,
     /// Exercise the restart coordinator without launching GUI (bind, rewrite inventory, rebind same port).
@@ -98,10 +99,10 @@ pub(crate) struct ManualGuiOptions {
         value_parser = ["unstructured", "wrong-search-key", "wrong-mcp-key", "missing-search-key"]
     )]
     pub(crate) web_search_fault: Option<String>,
-    /// Reusable web-search probe account ids, forwarded to the Driver probe.
+    /// Reusable web-search probe account ids, forwarded to the operator runbook.
     #[arg(long, value_name = "ID,ID,ID")]
     pub(crate) web_search_accounts: Option<String>,
-    /// Reusable web-search probe model model_ids, forwarded to the Driver probe.
+    /// Reusable web-search probe model model_ids, forwarded to the operator runbook.
     #[arg(long, value_name = "MODEL,MODEL,MODEL")]
     pub(crate) web_search_models: Option<String>,
     /// Label the reusable web-search probe as a fixture or real account run.
@@ -115,18 +116,19 @@ pub(crate) struct ManualGuiOptions {
     #[arg(long)]
     pub(crate) timeline_displacement: bool,
     /// Opt-in isolated Feishu platform peer for native bot GUI observation.
-    /// Requires `--scenario gui` and a Linux debug native environment.
+    /// Requires `--preset gui` and a Linux debug native environment.
     #[arg(long)]
     pub(crate) bots_fixture: bool,
-    /// Optional Dart Driver for delegation scenes, including review-feedback.
-    /// Arguments: VM URL, project, phase evidence directory, environment, phase,
-    /// fixture origin. It must not shut down the application; the harness does.
+    /// Optional operator script path recorded in delegation evidence.
+    /// The harness owns capture and shutdown; the script is not launched.
     #[arg(long, value_name = "PATH")]
     pub(crate) delegation_driver: Option<PathBuf>,
 }
 
 fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
-    if value == "realtime-presentation" || pl_provider_fixture::GUI_SCENARIOS.contains(&value) {
+    if matches!(value, "realtime-presentation" | "sidebar-query")
+        || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
+    {
         Ok(value.to_owned())
     } else {
         Err(format!("unknown manual GUI scenario: {value}"))
@@ -180,181 +182,6 @@ struct ExplicitRoleRouteEvidenceMarker<'a> {
 const EXPLICIT_ROLE_ROUTES_BEFORE_FILE: &str = "explicit-role-routes-before.json";
 const EXPLICIT_ROLE_ROUTES_AFTER_FILE: &str = "explicit-role-routes-after.json";
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StressSessionsReport {
-    original_thread_id: String,
-    original_reopened: bool,
-    original_loaded_items: usize,
-    original_mode: String,
-    original_has_older: bool,
-    rapid_switch_ok: bool,
-    session_count: usize,
-    directory_count: usize,
-    sessions: Vec<StressSessionReport>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StressSessionReport {
-    ordinal: usize,
-    thread_id: String,
-    loaded_items: usize,
-    mode: String,
-    generation: u64,
-    has_older: bool,
-    saved_items: usize,
-    terminal_items: usize,
-    typed_detail_refs: usize,
-    truncated_bodies: usize,
-    preview_text_bytes: usize,
-    assistant_characters: Option<usize>,
-    assistant_text_bytes: Option<usize>,
-    assistant_preview_bytes: Option<usize>,
-    assistant_text_total_bytes: Option<usize>,
-    detail_copy: Option<DetailCopyReport>,
-}
-
-/// 显式详情查看器的完整读取/复制证据（用户打开的真实查看器 + 平台剪贴板回读）。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DetailCopyReport {
-    expected_characters: usize,
-    expected_hash: String,
-    /// ceil(bytes/64KiB) 的结构推算，不是实际读了多少块。
-    theoretical_chunks: usize,
-    loaded_characters: usize,
-    loaded_hash: Option<String>,
-    clipboard_characters: usize,
-    clipboard_hash: Option<String>,
-    /// 只记录，不作为通过条件：快速多块读取允许在一次轮询前完成。
-    saw_partial_chunk: bool,
-    /// 只有真实点击打开的查看器才提供完整正文；两个脚本都记录该事实。
-    viewer_opened: bool,
-    viewer_closed: bool,
-    /// 关闭后行内预览没有被升级成另一份正文；多会话脚本不产生该事实。
-    row_preview_unchanged: Option<bool>,
-    pass: bool,
-}
-
-/// Flutter Driver 的 `stress-body-report.json`：单条长正文压力旅程的判定报告。
-///
-/// 只声明验收真正判定的顶层结论与观测段，producer 的其余观测（时间点、时间线、
-/// 滚动、分帧采样等）由 serde 忽略。字段缺失或类型不符时 serde 报出具体字段，
-/// 验收按报告契约收束并释放资源，不在 `serde_json::Map` 上按下标取值。
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StressBodyReport {
-    scenario: String,
-    verdict: String,
-    status: String,
-    stage: String,
-    error: Option<String>,
-    shutdown_error: Option<String>,
-    failed_checks: Vec<String>,
-    observations: StressBodyObservations,
-}
-
-/// `stress-body-report.json` 的 `observations` 中参与判定的观测段。
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StressBodyObservations {
-    session_switch: SessionSwitchReport,
-    preview_copy: PreviewCopyReport,
-    detail_copy: DetailCopyReport,
-    long_body: LongBodyReport,
-    /// 只有 `stress-body-large` 才采样的生成期增长证据；默认场景不产生该观测。
-    streaming_growth: Option<StreamingGrowthReport>,
-}
-
-/// 换会话后回到原 Thread 的事实。
-///
-/// 最新小页、同身份正文与展示代次推进由 Driver 的 `reopenStartsAtLatestPage`
-/// 检查给出；`status == "complete"` 已经排除任何未通过的检查与关停错误。
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionSwitchReport {
-    returned_to_original: bool,
-}
-
-/// 有界行内预览的真实渲染原文与选择复制证据。
-///
-/// `renderedParagraphCount` 来自生产 RenderParagraph；标准 Text 合法地只有一个段落，
-/// 本纯文本样例不证明跨块选择。Driver 精确比对剪贴板与 canonical 预览，宿主继续核对
-/// 渲染及复制的完整长度与 hash，不能用子串或两个实际副本互相相等代替原文。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewCopyReport {
-    preview_characters: usize,
-    /// canonical 预览（fixture 原文前缀）的 hash；渲染与复制都必须与它一致。
-    expected_hash: String,
-    rendered_characters: Option<usize>,
-    rendered_hash: Option<String>,
-    rendered_paragraph_count: Option<usize>,
-    rendered_matches_preview: bool,
-    /// 产品右键菜单的复制项存在且可点。
-    copy_button_present: bool,
-    copy_ok: bool,
-    copied_length: Option<usize>,
-    copied_hash: Option<String>,
-    copied_matches_preview: bool,
-    selection_cleared: bool,
-    scroll_stable: bool,
-    mode_stable: bool,
-    pass: bool,
-}
-
-/// 长正文的行内/详情账目：声明总长、截断标记、前缀事实与有界预览额度。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LongBodyReport {
-    expected_characters: usize,
-    delivered_characters: usize,
-    delivered_bytes: usize,
-    detail_total_bytes: usize,
-    preview_bytes: usize,
-    truncated: bool,
-    large_body: bool,
-    prefix_ok: bool,
-}
-
-/// `stress-body-large` 的生成期增长采样：同一身份在预览封顶后仍真实增长且保持 Live 贴底。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StreamingGrowthReport {
-    window_passed: bool,
-    identity_stable: bool,
-    stayed_live_at_edge: bool,
-    threshold_bytes: usize,
-    growth_frames_above_window: usize,
-}
-
-/// The stress probe's paging evidence.
-///
-/// Proves the production `load-older` command really prepended an older page in
-/// canonical order while retaining every identity already displayed. There is no
-/// 96-item window capacity any more: the loaded set grows with the pages this run
-/// actually visited, and the evidence reports the real page boundaries, cursors
-/// and generations instead of a trim bound.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProbePagingReport {
-    max_pages: usize,
-    paged: bool,
-    page_count: usize,
-    final_items: Option<usize>,
-    moved_older: bool,
-    identity_retained: bool,
-    order_monotonic: bool,
-    unique_ids: bool,
-    cursor_advanced: bool,
-    generation_stable: bool,
-    mode_stable: bool,
-    final_has_older: Option<bool>,
-    final_mode: Option<String>,
-    final_generation: Option<u64>,
-}
-
 #[derive(Deserialize, Serialize, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 struct StatisticsDbCounts {
@@ -389,7 +216,7 @@ struct OwnedProcess {
 /// transaction is held. It gates every accepted scenario the same way and is
 /// released from [`Drop`], so a failed or cancelled run can never leave the lock
 /// behind.
-struct SqliteWriteLock {
+pub(super) struct SqliteWriteLock {
     release: mpsc::Sender<()>,
     worker: Option<thread::JoinHandle<Result<()>>>,
 }
@@ -431,7 +258,7 @@ struct ModelCatalogRestart<'a> {
 
 struct StressBodyScenario<'a> {
     /// `stress-body` or `stress-body-large`; selects the fixture script and the
-    /// Driver's expected body. Both drive the same journey.
+    /// expected body. Both drive the same journey.
     scenario: &'a str,
     workspace: &'a Path,
     app_dir: &'a Path,
@@ -512,8 +339,6 @@ struct WebSearchScenario<'a> {
     output: &'a Path,
     fixture_log: &'a Path,
     requests_file: &'a Path,
-    accounts: Option<&'a str>,
-    models: Option<&'a str>,
     probe_mode: &'a str,
     interrupt: &'a mpsc::Receiver<()>,
 }
@@ -524,7 +349,7 @@ impl SqliteWriteLock {
     /// [hold_timeout] bounds how long the holder waits for the coordinator to
     /// release it; the worker commits and closes on release, and [`Drop`] is the
     /// backstop, so a failed or cancelled run can never leave the lock behind.
-    fn acquire(database: &Path, label: &str, hold_timeout: Duration) -> Result<Self> {
+    pub(super) fn acquire(database: &Path, label: &str, hold_timeout: Duration) -> Result<Self> {
         let (acquired_tx, acquired_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::channel();
         let path = database.to_owned();
@@ -564,7 +389,7 @@ impl SqliteWriteLock {
         Ok(lock)
     }
 
-    fn finish(&mut self) -> Result<()> {
+    pub(super) fn finish(&mut self) -> Result<()> {
         self.release.send(()).ok();
         if let Some(worker) = self.worker.take() {
             worker
@@ -876,13 +701,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
-        options.seed_home_copy.is_none() || options.scenario == "gui",
-        "--seed-home-copy requires --scenario gui"
+        options.seed_home_copy.is_none() || options.preset == "gui",
+        "--seed-home-copy requires --preset gui"
     );
     ensure!(
         !options.retain_environment
             || matches!(
-                options.scenario.as_str(),
+                options.preset.as_str(),
                 "gui"
                     | "single-instance"
                     | "tool-scroll"
@@ -892,43 +717,45 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "realtime-presentation"
                     | "stress-body-large"
                     | "wait-events"
+                    | "conversation-read-work"
+                    | "sidebar-query"
             )
-            || pl_provider_fixture::delegation::Scenario::parse(&options.scenario).is_some(),
-        "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
+            || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
+        "--retain-environment is supported by --preset gui, single-instance, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
-         stress-body-large, wait-events and the delegation scenes"
+         stress-body-large, wait-events, conversation-read-work, sidebar-query and the delegation scenes"
     );
     ensure!(
-        !options.timeline_displacement || options.scenario == "timeline-history",
-        "--timeline-displacement requires --scenario timeline-history"
+        !options.timeline_displacement || options.preset == "timeline-history",
+        "--timeline-displacement requires --preset timeline-history"
     );
     ensure!(
-        options.scenario != "timeline-history-20k" || cfg!(target_os = "linux"),
-        "--scenario timeline-history-20k is supported only on Linux"
+        options.preset != "timeline-history-20k" || cfg!(target_os = "linux"),
+        "--preset timeline-history-20k is supported only on Linux"
     );
     ensure!(
-        options.startup_fault.is_none() || options.scenario == "gui",
-        "--startup-fault requires --scenario gui"
+        options.startup_fault.is_none() || options.preset == "gui",
+        "--startup-fault requires --preset gui"
     );
     ensure!(
-        options.ssh_target.is_none() || options.scenario == "tool-scroll",
-        "--ssh-target is supported only by --scenario tool-scroll"
+        options.ssh_target.is_none() || options.preset == "tool-scroll",
+        "--ssh-target is supported only by --preset tool-scroll"
     );
     ensure!(
-        options.web_search_fault.is_none() || options.scenario == "web-search",
-        "--web-search-fault requires --scenario web-search"
+        options.web_search_fault.is_none() || options.preset == "web-search",
+        "--web-search-fault requires --preset web-search"
     );
     ensure!(
         (options.web_search_accounts.is_none()
             && options.web_search_models.is_none()
             && options.web_search_probe.is_none())
-            || options.scenario == "web-search",
-        "--web-search-accounts/--web-search-models/--web-search-probe require --scenario web-search"
+            || options.preset == "web-search",
+        "--web-search-accounts/--web-search-models/--web-search-probe require --preset web-search"
     );
     ensure!(
         (options.model_catalog_inventory.is_none() && options.model_catalog_control.is_none())
-            || options.scenario == "gui",
-        "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+            || options.preset == "gui",
+        "--model-catalog-inventory/--model-catalog-control require --preset gui"
     );
     ensure!(
         options.model_catalog_url.is_none()
@@ -938,17 +765,17 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     );
     ensure!(
         !options.model_catalog_restart
-            || (options.scenario == "gui"
+            || (options.preset == "gui"
                 && (options.model_catalog_inventory.is_some()
                     || options.model_catalog_control.is_some())),
-        "--model-catalog-restart requires --scenario gui and a catalog control file"
+        "--model-catalog-restart requires --preset gui and a catalog control file"
     );
     ensure!(
         !options.model_catalog_restart_check
-            || (options.scenario == "gui"
+            || (options.preset == "gui"
                 && (options.model_catalog_inventory.is_some()
                     || options.model_catalog_control.is_some())),
-        "--model-catalog-restart-check requires --scenario gui and a catalog control file"
+        "--model-catalog-restart-check requires --preset gui and a catalog control file"
     );
     // The restart journey withdraws `fixture-model-old` between phases, so it
     // needs a synthesized list; a payload instance replays a capture verbatim.
@@ -964,12 +791,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable model_id"
         );
     }
-    // The statistics, realtime, history and plan-recovery journeys are fully
-    // driven by Flutter Driver and reviewed from captured evidence, so they do
-    // not require an interactive stdin.
+    // Automatic desktop/native presets and catalog bind checks own their
+    // verdict. Remaining presets are operator runbooks and need a terminal.
     bots_fixture::validate(&options)?;
     if !matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "statistics"
             | "realtime"
             | "realtime-presentation"
@@ -986,11 +812,14 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "web-search"
             | "provider-usage"
             | "shutdown"
+            | "single-instance"
             | "timeline-history"
             | "timeline-history-20k"
             | "question-history"
             | "skill-activity"
             | "wait-events"
+            | "conversation-read-work"
+            | "sidebar-query"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
         && options.delegation_driver.is_none()
@@ -1013,7 +842,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let workspace = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace);
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let ordinary_gui = options.scenario == "gui"
+    let ordinary_gui = options.preset == "gui"
         && !options.retain_environment
         && options.ssh_target.is_none()
         && options.ssh_workspace_parent.is_none()
@@ -1054,6 +883,61 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     )?;
     fs::write(output.join("operations.json"), "[]\n")?;
 
+    if options.preset == "conversation-read-work" {
+        let working = tempfile::Builder::new()
+            .prefix("environment-")
+            .tempdir_in(&output)
+            .context("failed to create isolated conversation-read home")?;
+        let home = working.path().join("home");
+        fs::create_dir(&home)?;
+        let result =
+            conversation_read_work::run(&conversation_read_work::ConversationReadWorkScenario {
+                workspace: &workspace,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                interrupt: &interrupt_rx,
+            });
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, None);
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed conversation-read environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
+    if options.preset == "sidebar-query" {
+        let working = tempfile::Builder::new()
+            .prefix("environment-")
+            .tempdir_in(&output)
+            .context("failed to create isolated sidebar home")?;
+        let home = working.path().join("home");
+        fs::create_dir(&home)?;
+        let result = sidebar_query::run(&sidebar_query::SidebarQueryScenario {
+            workspace: &workspace,
+            home: &home,
+            working: working.path(),
+            output: &output,
+            interrupt: &interrupt_rx,
+        });
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, None);
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed sidebar environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
     // Cargo may wait on package/build locks. Finish preparation before the
     // fixture's service-readiness deadline starts, then own the native process.
     let fixture_executable = build_fixture_executable(&workspace)?;
@@ -1077,20 +961,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let ready_file = working.path().join("fixture-ready.json");
     let requests_file = working.path().join("requests.json");
     let stress_report_file = working.path().join("stress-report.json");
-    let probe_stop = working.path().join("probe-stop");
-    let probe_report = working.path().join("probe-report.json");
-    // The probe writes its window-paging evidence as a sibling of the sample
-    // report; keep the exact name in sync with `_pagingEvidenceFile`.
-    let probe_paging = working.path().join("probe-report.paging.json");
-    let probe_frames = working.path().join("probe-frames.json");
-    let stress_stage = working.path().join("stress-stage");
-    let stress_sessions_stage = working.path().join("stress-sessions-stage");
-    let stress_sessions_report = working.path().join("stress-sessions.json");
     // Live strict-script counters written by the plan-recovery fixture watcher;
     // every other scenario leaves the flag off and never creates the file.
     let status_file = working.path().join("plan-recovery-status.json");
-    let probe_ready = working.path().join("probe-ready");
-    let probe_finished = working.path().join("probe-finished");
     let fixture_log_path = working.path().join("fixture.log");
     let fixture_log = File::create(&fixture_log_path)?;
     let catalog_control_path = model_catalog::default_control_path(working.path());
@@ -1112,12 +985,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     } else {
         catalog_hits_path.clone()
     };
-    let fixture_scenario = if options.scenario == "realtime-presentation" {
+    let fixture_scenario = if options.preset == "realtime-presentation" {
         "realtime"
     } else {
-        options.scenario.as_str()
+        options.preset.as_str()
     };
-    let mut fixture_command = Command::new(fixture_executable);
+    let mut fixture_command = Command::new(&fixture_executable);
     fixture_command
         .current_dir(&workspace)
         .args(["--scenario", fixture_scenario, "--ready-file"])
@@ -1143,7 +1016,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             .arg(&fixture_hits_path);
     }
     if matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "plan-recovery"
             | "mode-editor"
             | "context-replay-recovery"
@@ -1157,8 +1030,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
-    if options.scenario == "web-search"
-        && options.web_search_fault.as_deref() == Some("unstructured")
+    if options.preset == "web-search" && options.web_search_fault.as_deref() == Some("unstructured")
     {
         fixture_command.arg("--fault").arg("unstructured");
     }
@@ -1168,7 +1040,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // depends on its working directory). Only the shutdown script reads them.
     // The concurrent-stop turn writes its own file so a stale record from the
     // earlier tool-reclamation turn can never be mistaken for the new subtree.
-    if options.scenario == "shutdown" {
+    if options.preset == "shutdown" {
         fixture_command.env(
             "ANYWORK_SHUTDOWN_TOOL_COORD",
             working.path().join("shutdown-tool-coord.json"),
@@ -1216,8 +1088,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     .and_then(|()| {
         if let Some(control) = catalog_control.as_ref() {
             ensure!(
-                options.scenario == "gui",
-                "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+                options.preset == "gui",
+                "--model-catalog-inventory/--model-catalog-control require --preset gui"
             );
             model_catalog::configure(&home, &ready.base_url, Some(control))?;
             model_catalog::write_runbook(
@@ -1229,8 +1101,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             )?;
         } else if let Some(url) = &options.model_catalog_url {
             ensure!(
-                options.scenario == "gui",
-                "--model-catalog-url requires --scenario gui"
+                options.preset == "gui",
+                "--model-catalog-url requires --preset gui"
             );
             model_catalog::configure(&home, url, None)?;
         }
@@ -1254,7 +1126,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         seed_startup_fault(&home, fault)?;
     }
 
-    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(&options.scenario) {
+    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(&options.preset) {
         let project = working.path().join("delegation-project");
         let result = delegation::run(
             &delegation::ScenarioContext {
@@ -1289,7 +1161,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return Ok(());
     }
 
-    if options.scenario == "provider-usage" {
+    if options.preset == "provider-usage" {
         return account_usage::run(
             &account_usage::Scenario {
                 workspace: &workspace,
@@ -1306,7 +1178,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "web-search" {
+    if options.preset == "web-search" {
         let fault = match options.web_search_fault.as_deref() {
             None => web_search::WebSearchFault::None,
             Some(value) => web_search::WebSearchFault::parse(value)
@@ -1321,8 +1193,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
-                accounts: options.web_search_accounts.as_deref(),
-                models: options.web_search_models.as_deref(),
                 probe_mode: options.web_search_probe.as_deref().unwrap_or("fixture"),
                 interrupt: &interrupt_rx,
             },
@@ -1333,11 +1203,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
 
     if matches!(
-        options.scenario.as_str(),
+        options.preset.as_str(),
         "context-replay-recovery" | "websocket-recovery" | "call-lifecycle-recovery"
     ) {
         let run = if matches!(
-            options.scenario.as_str(),
+            options.preset.as_str(),
             "websocket-recovery" | "call-lifecycle-recovery"
         ) {
             websocket_recovery::run
@@ -1361,7 +1231,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "statistics" {
+    if options.preset == "statistics" {
         return run_statistics_scenario(
             &StatisticsScenario {
                 workspace: &workspace,
@@ -1378,7 +1248,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "realtime" {
+    if options.preset == "realtime" {
         return run_realtime_scenario(
             &RealtimeScenario {
                 workspace: &workspace,
@@ -1394,7 +1264,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "realtime-presentation" {
+    if options.preset == "realtime-presentation" {
         let project = working.path().join("realtime-presentation-project");
         let result = realtime_presentation::run(
             &realtime_presentation::RealtimePresentationScenario {
@@ -1424,7 +1294,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "wait-events" {
+    if options.preset == "wait-events" {
         let project = working.path().join("wait-events-project");
         let result = wait_events::run(
             &wait_events::WaitEventsScenario {
@@ -1452,7 +1322,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "question-history" {
+    if options.preset == "question-history" {
         let project = working.path().join("question-history-project");
         let result = question_history::run(
             &question_history::QuestionHistoryScenario {
@@ -1483,7 +1353,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "skill-activity" {
+    if options.preset == "skill-activity" {
         return skill_activity::run(
             &skill_activity::SkillActivityScenario {
                 workspace: &workspace,
@@ -1500,14 +1370,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if matches!(
-        options.scenario.as_str(),
-        "stress-body" | "stress-body-large"
-    ) {
+    if matches!(options.preset.as_str(), "stress-body" | "stress-body-large") {
         let project = working.path().join("stress-body-project");
         let result = run_stress_body_scenario(
             &StressBodyScenario {
-                scenario: options.scenario.as_str(),
+                scenario: options.preset.as_str(),
                 workspace: &workspace,
                 app_dir: &app_dir,
                 home: &home,
@@ -1526,7 +1393,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "history-lock" {
+    if options.preset == "history-lock" {
         return run_history_lock_scenario(
             &HistoryLockScenario {
                 workspace: &workspace,
@@ -1542,7 +1409,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "plan-recovery" {
+    if options.preset == "plan-recovery" {
         return run_plan_recovery_scenario(
             &RecoveryScenario {
                 workspace: &workspace,
@@ -1559,7 +1426,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "mode-editor" {
+    if options.preset == "mode-editor" {
         return mode_editor::run(
             &RecoveryScenario {
                 workspace: &workspace,
@@ -1576,7 +1443,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "history-fault" {
+    if options.preset == "history-fault" {
         return run_history_fault_scenario(
             &HistoryFaultScenario {
                 workspace: &workspace,
@@ -1592,7 +1459,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.scenario == "shutdown" {
+    if options.preset == "shutdown" {
         return shutdown::run(
             &shutdown::ShutdownScenario {
                 workspace: &workspace,
@@ -1603,13 +1470,14 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
                 status_file: &status_file,
+                fixture_executable: &fixture_executable,
                 interrupt: &interrupt_rx,
             },
             fixture,
         );
     }
 
-    if options.scenario == "timeline-history" {
+    if options.preset == "timeline-history" {
         let project = working.path().join("timeline-history-project");
         let result = run_timeline_history_scenario(
             &TimelineHistoryScenario {
@@ -1634,7 +1502,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
-    if options.scenario == "timeline-history-20k" {
+    if options.preset == "timeline-history-20k" {
         let project = working.path().join("timeline-history-20k-project");
         let result = timeline_history_20k::run(
             &timeline_history_20k::Scenario {
@@ -1707,7 +1575,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             let mut command = Command::new("cargo");
             command
                 .current_dir(&workspace)
-                .args(["xtask", "run-gui", "--driver"])
+                .args(["xtask", "run-gui", "--capture"])
                 .env("ANYWORK_HOME", &home);
             command
         }
@@ -1727,7 +1595,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .stdout(Stdio::from(gui_stdout))
         .stderr(Stdio::from(gui_log));
     if bots.is_none() {
-        if options.scenario == "gui" {
+        if options.preset == "gui" {
             gui_command.args(["--log-level", "info"]);
         }
         if options.seed_home_copy.is_some() {
@@ -1737,13 +1605,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 .args(["--native-launch", "--native-exit-report"])
                 .arg(output.join("native-exit.json"));
         }
-        if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
-            gui_command.arg("--profile");
-        }
-        if options.scenario == "tool-scroll" {
-            gui_command
-                .arg("--driver-attachment")
-                .arg(app_dir.join("test_driver/fixtures/tool-image.png"));
+        if matches!(options.preset.as_str(), "stress" | "tool-scroll") {
+            gui_command.args(["--profile", "--native-launch"]);
         }
     }
     let mut gui = match OwnedProcess::start(&mut gui_command, false) {
@@ -1762,7 +1625,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     };
     let session = (|| -> Result<()> {
         let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, &interrupt_rx)?;
-        let mut probe = None;
         println!("Native GUI is ready. Evidence: {}", output.display());
         if bots.is_some() {
             println!(
@@ -1793,7 +1655,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 &mut fixture,
             );
         }
-        if options.scenario == "tool-scroll" {
+        if options.preset == "tool-scroll" {
             fs::write(
                 output.join("tool-arguments-fixture.json"),
                 serde_json::to_vec_pretty(
@@ -1802,56 +1664,19 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     ),
                 )?,
             )?;
-            let log = File::create(output.join("tool-scroll-driver.log"))?;
-            let mut command = driver_command(&app_dir, "test_driver/tool_scroll_journey.dart");
-            command
-                .arg(&vm_url)
-                .arg(&output)
-                .arg(working.path().join("tool-scroll-project"))
-                .stdout(Stdio::from(log.try_clone()?))
-                .stderr(Stdio::from(log));
+            println!(
+                "Tool-scroll runbook: open the isolated project, send a turn that \
+                 expands a tool with image recycling, then type done to capture. \
+                 VM service: {vm_url}"
+            );
             if let Some(target) = &options.ssh_target {
-                command.arg(target);
+                println!("SSH target: {target}");
                 if let Some(parent) = &options.ssh_workspace_parent {
-                    command.arg(parent);
+                    println!("SSH workspace parent: {parent}");
                 }
             }
-            let mut driver = OwnedProcess::start(&mut command, false)?;
-            // Full tool, image recycling and compact-tail journeys include many native
-            // frames. Software-rendered Linux hosts need a bounded budget for the
-            // entire journey in addition to each command's own deadline.
-            let deadline = Instant::now() + Duration::from_secs(1800);
-            let status = loop {
-                if let Some(status) = driver.child.try_wait()? {
-                    driver.stopped = true;
-                    break status;
-                }
-                ensure!(
-                    !gui.exited()?,
-                    "GUI exited during tool expansion observation"
-                );
-                ensure!(
-                    !fixture.exited()?,
-                    "fixture exited during tool expansion observation"
-                );
-                ensure!(
-                    interrupt_rx.try_recv().is_err(),
-                    "tool expansion observation cancelled"
-                );
-                ensure!(
-                    Instant::now() < deadline,
-                    "tool expansion observation timed out"
-                );
-                thread::sleep(Duration::from_millis(100));
-            };
-            capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, false)?;
-            ensure!(
-                status.success(),
-                "tool expansion observation failed: {status}"
-            );
-            return Ok(());
         }
-        if options.scenario == "stress" {
+        if options.preset == "stress" {
             let project = working.path().join("stress-project");
             fs::create_dir(&project)?;
             let git = Command::new("git")
@@ -1862,43 +1687,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 git.success(),
                 "failed to initialize isolated stress project"
             );
-            let mut command = driver_command(&app_dir, "test_driver/stress_probe.dart");
-            command
-                .arg(&vm_url)
-                .arg(&probe_stop)
-                .arg(&probe_report)
-                .arg(&probe_ready)
-                .arg(&probe_frames)
-                .arg(&probe_finished)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            probe = Some(OwnedProcess::start(&mut command, false)?);
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while !probe_ready.exists() {
-                if let Some(process) = probe.as_mut() {
-                    ensure!(
-                        !process.exited()?,
-                        "GUI stress probe exited before attaching"
-                    );
-                }
-                ensure!(
-                    interrupt_rx.try_recv().is_err(),
-                    "GUI stress probe cancelled"
-                );
-                ensure!(Instant::now() < deadline, "GUI stress probe did not attach");
-                thread::sleep(Duration::from_millis(100));
-            }
-            start_stress_turn(
-                &app_dir,
-                &home,
-                &vm_url,
-                &project,
-                pl_provider_fixture::GUI_STRESS_PROMPT,
-                &stress_stage,
-                &interrupt_rx,
-            )?;
             println!(
-                "Stress prompt submitted through Flutter Driver; inspect GUI and type done after completion."
+                "Stress runbook: open {}, send the fixture stress prompt, inspect \
+                 paging and frames, then type done to capture. VM service: {vm_url}",
+                project.display()
             );
         }
         println!(
@@ -1943,46 +1735,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     continue;
                 }
                 Ok(InputEvent::Done) => {
-                    if let Some(probe) = probe.as_mut() {
-                        let deadline = Instant::now() + Duration::from_secs(120);
-                        while !probe_finished.exists() {
-                            ensure!(Instant::now() < deadline, "GUI stress turn did not finish");
-                            ensure!(
-                                !probe.exited()?,
-                                "GUI stress probe exited before completion"
-                            );
-                            ensure!(!gui.exited()?, "GUI exited before stress completion");
-                            ensure!(!fixture.exited()?, "account fixture exited during stress");
-                            ensure!(
-                                interrupt_rx.try_recv().is_err(),
-                                "GUI stress wait cancelled"
-                            );
-                            thread::sleep(Duration::from_millis(100));
-                        }
-                        run_stress_sessions(
-                            &app_dir,
-                            &vm_url,
-                            &stress_sessions_report,
-                            &stress_sessions_stage,
-                            &interrupt_rx,
-                        )?;
-                        thread::sleep(Duration::from_secs(1));
-                        fs::write(&probe_stop, "stop")?;
-                        let deadline = Instant::now() + Duration::from_secs(25);
-                        while !probe.exited()? {
-                            ensure!(Instant::now() < deadline, "GUI stress probe did not stop");
-                            thread::sleep(Duration::from_millis(100));
-                        }
-                        ensure!(probe.child.wait()?.success(), "GUI stress probe failed");
-                    }
-                    capture(
-                        &app_dir,
-                        &home,
-                        &vm_url,
-                        &output,
-                        &interrupt_rx,
-                        options.seed_home_copy.is_some(),
-                    )?;
+                    capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, true)?;
                     return Ok(());
                 }
                 Ok(InputEvent::Eof) => bail!("manual GUI input closed before done"),
@@ -2012,49 +1765,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         Ok(())
     });
     let gui_log_result = write_sanitized_log(&gui_log_path, &output.join("gui.log"));
-    if stress_stage.exists() {
-        fs::copy(&stress_stage, output.join("stress-stage.txt"))?;
-    }
-    if stress_sessions_stage.exists() {
-        fs::copy(
-            &stress_sessions_stage,
-            output.join("stress-sessions-stage.txt"),
-        )?;
-    }
-    let sessions_log = stress_sessions_stage.with_extension("log");
-    if sessions_log.exists() {
-        fs::copy(sessions_log, output.join("stress-sessions.log"))?;
-    }
-    if stress_sessions_report.exists() {
-        fs::copy(&stress_sessions_report, output.join("stress-sessions.json"))?;
-    }
-    for name in [
-        "session-switch-other.png",
-        "session-switch-third.png",
-        "session-switch-return.png",
-    ] {
-        let screenshot = working.path().join(name);
-        if screenshot.exists() {
-            fs::copy(screenshot, output.join(name))?;
-        }
-    }
-    let stress_screenshot = stress_stage.with_extension("png");
-    if stress_screenshot.exists() {
-        fs::copy(stress_screenshot, output.join("stress-start.png"))?;
-    }
-    let stress_tree = stress_stage.with_extension("tree");
-    if stress_tree.exists() {
-        fs::copy(stress_tree, output.join("stress-start.tree"))?;
-    }
-    if probe_report.exists() {
-        fs::copy(&probe_report, output.join("probe-report.json"))?;
-    }
-    if probe_paging.exists() {
-        fs::copy(&probe_paging, output.join("probe-paging.json"))?;
-    }
-    if probe_frames.exists() {
-        fs::copy(&probe_frames, output.join("probe-frames.json"))?;
-    }
     drop(gui);
     // This records only the harness session Result, not shutdown acknowledgement
     // or successful reclamation of the complete GUI process tree.
@@ -2114,7 +1824,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             &output.join("model-catalog-requests.json"),
             catalog_control.is_some(),
         )?;
-        if options.scenario == "gui" {
+        if options.preset == "gui" {
             copy_sanitized_config(&home, &output.join("config.toml"))?;
         }
         let stress_report: Option<pl_provider_fixture::StressReport> =
@@ -2183,7 +1893,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             fixture_state == "completed",
             "fixture {fixture_state}; verdict remains pending"
         );
-        if options.scenario == "tool-scroll" {
+        if options.preset == "tool-scroll" {
             let counts: Vec<_> = requests
                 .as_ref()
                 .into_iter()
@@ -2192,169 +1902,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 .collect();
             fs::write(
                 output.join("image-requests.json"),
-                serde_json::to_vec_pretty(&serde_json::json!({"inlineImageCounts": counts}))?,
-            )?;
-            ensure!(
-                counts.iter().any(|count| *count >= 3),
-                "account did not receive the sent image and both tool-read images"
-            );
-        }
-        if options.scenario == "stress" {
-            // The probe must have really prepended an older page in canonical order
-            // while retaining every already-displayed identity. There is no window
-            // capacity to saturate any more: the loaded set grows with the pages this
-            // run visited, so the evidence is the real page boundaries, cursors,
-            // order and generation instead of a trim bound.
-            let paging: ProbePagingReport = serde_json::from_slice(
-                &fs::read(&probe_paging)
-                    .context("GUI stress probe did not write its paging evidence")?,
-            )?;
-            ensure!(
-                paging.paged
-                    && paging.page_count >= 1
-                    && paging.moved_older
-                    && paging.identity_retained
-                    && paging.order_monotonic
-                    && paging.unique_ids
-                    && paging.cursor_advanced
-                    && paging.generation_stable
-                    && paging.mode_stable,
-                "GUI stress paging never prepended an older canonical page: {}",
-                serde_json::json!({
-                    "maxPages": paging.max_pages,
-                    "paged": paging.paged,
-                    "pageCount": paging.page_count,
-                    "finalItems": paging.final_items,
-                    "movedOlder": paging.moved_older,
-                    "identityRetained": paging.identity_retained,
-                    "orderMonotonic": paging.order_monotonic,
-                    "uniqueIds": paging.unique_ids,
-                    "cursorAdvanced": paging.cursor_advanced,
-                    "generationStable": paging.generation_stable,
-                    "modeStable": paging.mode_stable,
-                })
-            );
-            let sessions: StressSessionsReport = serde_json::from_slice(
-                &fs::read(&stress_sessions_report)
-                    .context("Flutter Driver did not complete the multi-session journey")?,
-            )?;
-            ensure!(
-                sessions.original_reopened
-                    && sessions.rapid_switch_ok
-                    && !sessions.original_thread_id.is_empty()
-                    && sessions.original_mode == "live"
-                    && sessions.original_loaded_items >= 2
-                    && sessions.session_count == pl_provider_fixture::GUI_STRESS_SESSION_COUNT
-                    && sessions.sessions.len() == sessions.session_count
-                    && sessions.directory_count > sessions.session_count,
-                "multi-session stress journey incomplete"
-            );
-            let mut ids = HashSet::from([sessions.original_thread_id]);
-            for (index, session) in sessions.sessions.iter().enumerate() {
-                ensure!(
-                    session.ordinal == index + 1
-                        && session.loaded_items >= 2
-                        && session.saved_items >= 1
-                        && session.typed_detail_refs >= 1
-                        && ids.insert(session.thread_id.clone()),
-                    "multi-session stress item {} invalid: {:?}",
-                    index + 1,
-                    serde_json::json!({
-                        "loadedItems": session.loaded_items,
-                        "savedItems": session.saved_items,
-                        "terminalItems": session.terminal_items,
-                        "typedDetailRefs": session.typed_detail_refs,
-                    })
-                );
-            }
-            // 131085 字节正文超过产品 32 KiB 展示预算：行内必须是有界预览，真实总长由
-            // 详情引用给出；完整正文只能由用户显式打开的查看器逐块读取并复制。
-            let large = &sessions.sessions[0];
-            let preview_budget = 32 * 1024;
-            ensure!(
-                large.truncated_bodies >= 1,
-                "large assistant body was not reported as a bounded preview"
-            );
-            ensure!(
-                large.assistant_text_total_bytes
-                    == Some(pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS),
-                "large assistant body detail reference reports {:?} of {} bytes",
-                large.assistant_text_total_bytes,
-                pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
-            );
-            ensure!(
-                large
-                    .assistant_preview_bytes
-                    .is_some_and(|bytes| bytes <= preview_budget)
-                    && large.assistant_preview_bytes == large.assistant_text_bytes,
-                "large assistant preview exceeded the product budget: {:?} of {:?} bytes",
-                large.assistant_preview_bytes,
-                large.assistant_text_bytes
-            );
-            let copy = large
-                .detail_copy
-                .as_ref()
-                .context("large assistant body has no detail copy evidence")?;
-            ensure!(
-                copy.pass
-                    && copy.viewer_closed
-                    && copy.expected_characters
-                        == pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
-                    && copy.loaded_characters == copy.expected_characters
-                    && copy.loaded_hash.as_deref() == Some(copy.expected_hash.as_str())
-                    && copy.clipboard_characters == copy.expected_characters
-                    && copy.clipboard_hash.as_deref() == Some(copy.expected_hash.as_str()),
-                "large assistant body was not read/copied completely through the viewer: {}",
-                serde_json::json!({
-                    "expectedCharacters": copy.expected_characters,
-                    "loadedCharacters": copy.loaded_characters,
-                    "clipboardCharacters": copy.clipboard_characters,
-                    "theoreticalChunks": copy.theoretical_chunks,
-                    "sawPartialChunk": copy.saw_partial_chunk,
-                    "viewerClosed": copy.viewer_closed,
-                })
-            );
-            // 已加载数据随访问页增长是明示取舍：这里只记录真实观测值，不断言常量内存。
-            let session_rows: Vec<serde_json::Value> = sessions
-                .sessions
-                .iter()
-                .map(|session| {
-                    serde_json::json!({
-                        "ordinal": session.ordinal,
-                        "loadedItems": session.loaded_items,
-                        "mode": session.mode,
-                        "generation": session.generation,
-                        "hasOlder": session.has_older,
-                        "truncatedBodies": session.truncated_bodies,
-                        "previewTextBytes": session.preview_text_bytes,
-                        "assistantCharacters": session.assistant_characters,
-                        "assistantTextBytes": session.assistant_text_bytes,
-                        "assistantPreviewBytes": session.assistant_preview_bytes,
-                        "assistantTextTotalBytes": session.assistant_text_total_bytes,
-                    })
-                })
-                .collect();
-            fs::write(
-                output.join("timeline-loading.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
-                    "note": "loaded items and preview bytes grow with the pages this run visited; \
-                             this is not a constant-memory claim",
-                    "reopenedOriginal": {
-                        "mode": sessions.original_mode,
-                        "loadedItems": sessions.original_loaded_items,
-                        "hasOlder": sessions.original_has_older,
-                    },
-                    "paging": {
-                        "pageCount": paging.page_count,
-                        "finalItems": paging.final_items,
-                        "finalHasOlder": paging.final_has_older,
-                        "finalMode": paging.final_mode,
-                        "finalGeneration": paging.final_generation,
-                    },
-                    "sessions": session_rows,
+                    "inlineImageCounts": counts,
+                    "humanVerdict": "pending",
                 }))?,
             )?;
-            let report = stress_report.context("stress fixture did not emit a report")?;
+        }
+        if options.preset == "stress" {
             let gui_errors = count_gui_errors(&gui_log_path)?;
             let debug_log = output.join("gui-debug.log");
             fs::copy(&gui_log_path, &debug_log)?;
@@ -2366,155 +1920,19 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             fs::write(
                 output.join("gui-health.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
-                    "unhandledErrors": gui_errors, "humanVerdict": "pending"
+                    "unhandledErrors": gui_errors,
+                    "humanVerdict": "pending",
+                    "fixtureEvents": stress_report.as_ref().map(|report| report.emitted_events),
+                    "fixtureElapsedMillis": stress_report.as_ref().map(|report| report.elapsed_millis),
                 }))?,
             )?;
             ensure!(
                 gui_errors == 0,
                 "GUI reported {gui_errors} unhandled errors during stress"
             );
-            ensure!(
-                report.emitted_events == pl_provider_fixture::STRESS_EVENT_COUNT,
-                "stress stream incomplete: {}/{} events",
-                report.emitted_events,
-                pl_provider_fixture::STRESS_EVENT_COUNT
-            );
-            ensure!(
-                report.elapsed_millis >= 3_800,
-                "stress stream ran faster than 5,000 nominal tokens/s"
-            );
-            ensure!(
-                report.elapsed_millis <= 10_000,
-                "stress stream fell behind the 5,000 token/s fixture: {}ms for {} items",
-                report.elapsed_millis,
-                report.emitted_events
-            );
-            let finished = report
-                .finished_unix_millis
-                .context("stress stream did not finish")?;
-            let gui_finished: u128 = fs::read_to_string(&probe_finished)?
-                .trim()
-                .parse()
-                .context("GUI stress probe did not report its completion time")?;
-            let completion_lag = gui_finished.saturating_sub(finished);
-            ensure!(
-                completion_lag <= 15_000,
-                "GUI stress result lagged account completion by {completion_lag}ms"
-            );
-            let samples: Vec<serde_json::Value> = serde_json::from_slice(
-                &fs::read(&probe_report).context("GUI stress probe did not write a report")?,
-            )?;
-            let overlapping: Vec<_> = samples
-                .iter()
-                .filter(|sample| {
-                    sample
-                        .get("startedUnixMillis")
-                        .and_then(serde_json::Value::as_u64)
-                        .is_some_and(|time| {
-                            u128::from(time) >= report.started_unix_millis
-                                && u128::from(time) < finished
-                        })
-                })
-                .collect();
-            let failed = overlapping
-                .iter()
-                .filter(|sample| sample.get("ok") != Some(&serde_json::Value::Bool(true)))
-                .count();
-            let slowest = overlapping
-                .iter()
-                .filter_map(|sample| {
-                    sample
-                        .get("elapsedMillis")
-                        .and_then(serde_json::Value::as_u64)
-                })
-                .max()
-                .unwrap_or(0);
-            let frames: serde_json::Value = serde_json::from_slice(
-                &fs::read(&probe_frames).context("GUI stress probe did not write frame timings")?,
-            )?;
-            let all_frames = frames
-                .get("frames")
-                .and_then(serde_json::Value::as_u64)
-                .context("GUI total frame count is unavailable")?;
-            let all_slow_frames = frames
-                .get("over33Millis")
-                .and_then(serde_json::Value::as_u64)
-                .context("GUI total slow frame count is unavailable")?;
-            let all_slowest_frame = frames
-                .get("maxFrameMillis")
-                .and_then(serde_json::Value::as_f64)
-                .context("GUI longest frame is unavailable")?;
-            let frame_samples = frames
-                .get("samples")
-                .and_then(serde_json::Value::as_array)
-                .context("GUI frame timing samples are unavailable")?;
-            let stream_frames: Vec<f64> = frame_samples
-                .iter()
-                .filter(|sample| {
-                    sample
-                        .get("completedUnixMillis")
-                        .and_then(serde_json::Value::as_u64)
-                        .is_some_and(|time| {
-                            u128::from(time) >= report.started_unix_millis
-                                && u128::from(time) < finished.saturating_add(1_000)
-                        })
-                })
-                .filter_map(|sample| {
-                    sample
-                        .get("totalMillis")
-                        .and_then(serde_json::Value::as_f64)
-                })
-                .collect();
-            let slow_frames = stream_frames.iter().filter(|&&ms| ms > 33.333).count();
-            let slowest_frame = stream_frames.iter().copied().fold(0.0_f64, f64::max);
-            fs::write(
-                output.join("responsiveness.json"),
-                serde_json::to_vec_pretty(&serde_json::json!({
-                    "samplesDuringStream": overlapping.len(), "failed": failed,
-                    "slowestSnapshotMillis": slowest,
-                    "providerStreamMillis": report.elapsed_millis,
-                    "guiCompletionLagMillis": completion_lag,
-                    "streamAndDrainFrames": stream_frames.len(),
-                    "streamAndDrainOver33Millis": slow_frames,
-                    "streamAndDrainMaxFrameMillis": slowest_frame,
-                    "fullSessionFrameTimings": {
-                        "frames": frames.get("frames"),
-                        "over33Millis": frames.get("over33Millis"),
-                        "maxFrameMillis": frames.get("maxFrameMillis"),
-                    },
-                    "verdict": "pending"
-                }))?,
-            )?;
-            ensure!(
-                stream_frames.len() >= 5,
-                "GUI did not report enough frames during the stress stream"
-            );
-            ensure!(
-                all_frames >= 20
-                    && all_slowest_frame <= 100.0
-                    && all_slow_frames <= all_frames / 20,
-                "GUI full stress journey stalled: max {all_slowest_frame:.1}ms, {all_slow_frames}/{all_frames} over 33ms"
-            );
-            ensure!(
-                slowest_frame <= 100.0 && slow_frames * 20 <= stream_frames.len(),
-                "GUI stream frames stalled: max {slowest_frame:.1}ms, {slow_frames}/{} over 33ms",
-                stream_frames.len()
-            );
-            ensure!(
-                overlapping.len() >= 5,
-                "GUI was not probed during stress stream"
-            );
-            ensure!(
-                failed == 0,
-                "GUI snapshot probe failed {failed} times during stress stream"
-            );
-            ensure!(
-                slowest <= 2_000,
-                "GUI snapshot stalled for {slowest}ms during stress stream"
-            );
         }
         if options.retain_environment {
-            let project = if options.scenario == "tool-scroll" {
+            let project = if options.preset == "tool-scroll" {
                 let capture = fs::read_to_string(output.join("capture-stage.txt"))
                     .context("retained environment requires completed shutdown capture")?;
                 ensure!(
@@ -2538,9 +1956,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
 
 /// timeline-history：官方 Flutter 集成测试的真实提交、同 home 重启与可选位移矩阵。
 ///
-/// live/restart 各自由 `flutter test` 进程和 IntegrationTest binding 持有，应用资源仍经
-/// production `runStudioShutdown`/`AppGraph.close` 收束；测试 runner 进程不伪造 Driver
-/// native-exit 回执。高次数原生指针位移仍是显式 opt-in 的独立 Driver 性能路径。
+/// live/restart 由官方 `integration_test` 持有，应用资源仍经 production
+/// `runStudioShutdown`/`AppGraph.close` 收束。可选位移矩阵仍用独立 GUI 进程，
+/// 正常关闭由 `ext.anywork.requestExit` 协调，并以真实 OS waitpid 退出码 0 判定。
+/// 人工截图复查保持 pending。
 fn run_timeline_history_scenario(
     context: &TimelineHistoryScenario<'_>,
     mut fixture: OwnedProcess,
@@ -2559,13 +1978,7 @@ fn run_timeline_history_scenario(
         capture_presentation,
     } = context;
     let project = working.join("timeline-history-project");
-    let mut phases: Vec<(
-        &str,
-        Option<std::process::ExitStatus>,
-        Option<std::process::ExitStatus>,
-    )> = Vec::new();
-    // live 阶段记录的真实持久化身份（项目 id、会话 id）。冷启动与位移矩阵必须恢复
-    // 同一身份：不猜值、不选“第一个”项目/会话，也不为验收新增选择持久化。
+    let mut phases: Vec<(&str, Option<std::process::ExitStatus>)> = Vec::new();
     let mut persisted_identity: Option<PersistedTargetIdentity> = None;
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
@@ -2579,7 +1992,7 @@ fn run_timeline_history_scenario(
         );
         for phase in ["live", "restart"] {
             let phase_index = phases.len();
-            phases.push((phase, None, None));
+            phases.push((phase, None));
             let integration_log = working.join(format!("timeline-history-{phase}-integration.log"));
             let integration_output = File::create(&integration_log)?;
             let mut command = Command::new("cargo");
@@ -2587,9 +2000,11 @@ fn run_timeline_history_scenario(
                 .current_dir(workspace)
                 .args([
                     "xtask",
-                    "run-gui",
-                    "--integration-test",
-                    "integration_test/timeline_presentation_test.dart",
+                    "test-project",
+                    "--suite",
+                    "desktop",
+                    "--case",
+                    "timeline_presentation",
                 ])
                 .env("ANYWORK_HOME", home)
                 .env("ANYWORK_TIMELINE_PHASE", phase)
@@ -2834,193 +2249,33 @@ fn run_timeline_history_scenario(
             }
         }
         if *run_displacement {
-            let phase_index = phases.len();
-            phases.push(("displacement", None, None));
             let gui_log = working.join("timeline-history-displacement-gui.log");
-            let driver_log = working.join("timeline-history-displacement-driver.log");
-            let mut gui = start_timeline_history_gui(
-                workspace,
-                home,
-                &gui_log,
-                &output.join("timeline-history-displacement-native-exit.json"),
-            )?;
+            let native_exit = output.join("timeline-history-displacement-native-exit.json");
+            let mut gui = start_timeline_history_gui(workspace, home, &gui_log, &native_exit)?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
-            let target = persisted_identity.as_ref().context(
-                "native displacement requires the live timeline-history persisted identity",
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
+                interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                "timeline-history displacement: restore the same persisted thread, run pointer inputs, then type done.",
             )?;
-            let mut command =
-                driver_command(app_dir, "test_driver/timeline_displacement_journey.dart");
-            let driver_output = File::create(&driver_log)?;
-            command
-                .arg(&vm_url)
-                .arg(output)
-                .arg("--project-id")
-                .arg(&target.workspace_id)
-                .arg("--thread-id")
-                .arg(&target.thread_id)
-                .env("ANYWORK_HOME", home)
-                .stdout(Stdio::from(driver_output.try_clone()?))
-                .stderr(Stdio::from(driver_output));
-            let mut driver = OwnedProcess::start(&mut command, false)?;
-            let deadline = Instant::now() + Duration::from_secs(3_600);
-            loop {
-                if let Some(status) = driver.child.try_wait()? {
-                    driver.stopped = true;
-                    phases[phase_index].1 = Some(status);
-                    ensure!(
-                        status.success(),
-                        "native displacement collector failed: {status}"
-                    );
-                    break;
-                }
-                if gui.exited()? {
-                    // After the completed cleanup ACK the Driver requests the
-                    // native exit. OS exit can precede the Driver socket closing;
-                    // both real exit statuses are still required below.
-                    let final_report: serde_json::Value =
-                        serde_json::from_slice(&fs::read(output.join("observations.json"))?)?;
-                    ensure!(
-                        final_report.get("shutdown")
-                            == Some(&serde_json::Value::String("completed".into())),
-                        "GUI exited before displacement cleanup completed"
-                    );
-                }
-                ensure!(
-                    !fixture.exited()?,
-                    "account fixture exited during displacement collection"
-                );
-                ensure!(
-                    interrupt.try_recv().is_err(),
-                    "displacement collection cancelled"
-                );
-                ensure!(
-                    Instant::now() < deadline,
-                    "displacement collection timed out"
-                );
-                thread::sleep(Duration::from_millis(100));
-            }
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
-            phases[phase_index].2 = Some(gui_exit);
             ensure!(
                 gui_exit.success(),
                 "displacement GUI did not exit cleanly: {gui_exit}"
             );
-            let observations: serde_json::Value = serde_json::from_slice(
-                &fs::read(output.join("observations.json"))
-                    .context("displacement collector wrote no observations")?,
-            )?;
-            require_native_exit(
-                &output.join("timeline-history-displacement-native-exit.json"),
-                observations["pid"].as_u64(),
-            )?;
-            ensure!(
-                observations.get("checksPassed") == Some(&serde_json::Value::Bool(true)),
-                "displacement matrix recorded failures: {}",
-                observations
-                    .get("failureCount")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null)
-            );
-            // 矩阵规模必须与批准规格一致：六组各 96 次固定 ±60，三组主要尺寸各 600
-            // （合计 1800），并包含连续段与真实分页交叠取证。
-            let matrix = observations
-                .get("matrix")
-                .and_then(serde_json::Value::as_object)
-                .context("displacement observations have no matrix size record")?;
-            ensure!(
-                matrix
-                    .get("inputsPerSingleSize")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(96)
-                    && matrix
-                        .get("inputsPerRapidSize")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(600)
-                    && matrix
-                        .get("rapidTotalInputs")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(1_800),
-                "displacement matrix size drifted from the approved inputs: {matrix:?}"
-            );
-            let single = observations
-                .get("single")
-                .and_then(serde_json::Value::as_array)
-                .context("displacement observations have no single-size phases")?;
-            let rapid = observations
-                .get("rapid")
-                .and_then(serde_json::Value::as_array)
-                .context("displacement observations have no rapid phases")?;
-            ensure!(
-                single.len() == 6
-                    && single.iter().all(|phase| {
-                        phase.get("inputs").and_then(serde_json::Value::as_u64) == Some(96)
-                            && phase
-                                .get("steps")
-                                .and_then(serde_json::Value::as_array)
-                                .is_some_and(|steps| steps.len() == 96)
-                    })
-                    && rapid.len() == 3
-                    && rapid.iter().all(|phase| {
-                        phase.get("inputs").and_then(serde_json::Value::as_u64) == Some(600)
-                            && phase
-                                .get("steps")
-                                .and_then(serde_json::Value::as_array)
-                                .is_some_and(|steps| steps.len() == 600)
-                    }),
-                "displacement phases did not run the approved input counts: \
-                 single={} rapid={}",
-                single.len(),
-                rapid.len()
-            );
-            ensure!(
-                observations
-                    .get("continuousBurst")
-                    .and_then(|burst| burst.get("pass"))
-                    == Some(&serde_json::Value::Bool(true))
-                    && observations
-                        .get("overlap")
-                        .and_then(|overlap| overlap.get("pass"))
-                        == Some(&serde_json::Value::Bool(true)),
-                "displacement continuous/overlap evidence is missing or failed: {}",
-                serde_json::json!({
-                    "continuousBurst": observations.get("continuousBurst"),
-                    "overlap": observations.get("overlap"),
-                })
-            );
-            // 位移矩阵必须在**同一首轮持久化项目/会话**上运行：冷启动同样从启动页
-            // 走正常侧栏选择与打开，身份不符即强失败，不能只在 history restart 修。
-            let restore = observations
-                .get("restore")
-                .and_then(serde_json::Value::as_object)
-                .context("displacement collector recorded no cold-start restoration evidence")?;
-            ensure!(
-                restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("workspaceIdMatches") == Some(&serde_json::Value::Bool(true))
-                    && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                    && restore
-                        .get("workspaceId")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(target.workspace_id.as_str())
-                    && restore
-                        .get("projectPath")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(target.project_path.as_str())
-                    && restore.get("threadId").and_then(serde_json::Value::as_str)
-                        == Some(target.thread_id.as_str()),
-                "displacement ran on a different persisted project/thread than the history \
-                 live phase: {restore:?}"
-            );
-            fs::copy(
-                output.join("observations.json"),
-                output.join("timeline-displacement.json"),
-            )?;
+            require_native_exit(&native_exit, None)?;
+            phases.push(("displacement", Some(gui_exit)));
         }
         Ok(())
     })();
 
     // Record observed exits before assertions and retain failed-phase evidence.
     // live/restart store the official integration runner log; displacement keeps
-    // its independent Driver and native host exit evidence.
+    // independent capture/native-exit evidence.
     let redactions = [
         (home.to_string_lossy().into_owned(), "<home>"),
         (working.to_string_lossy().into_owned(), "<coord>"),
@@ -3028,7 +2283,7 @@ fn run_timeline_history_scenario(
         (app_dir.to_string_lossy().into_owned(), "<app>"),
         (workspace.to_string_lossy().into_owned(), "<workspace>"),
     ];
-    for (phase, driver_exit, gui_exit) in &phases {
+    for (phase, gui_exit) in &phases {
         let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
         if gui_log.is_file() {
             write_sanitized_log(
@@ -3036,20 +2291,16 @@ fn run_timeline_history_scenario(
                 &output.join(format!("timeline-history-{phase}-gui.log")),
             )?;
         }
-        let runner_log = if *phase == "displacement" {
-            working.join("timeline-history-displacement-driver.log")
-        } else {
-            working.join(format!("timeline-history-{phase}-integration.log"))
-        };
-        write_realtime_driver_evidence(
-            &runner_log,
-            output,
-            &format!("timeline-history-{phase}"),
-            *driver_exit,
-            journey.as_ref().err(),
-            &redactions,
-        )?;
         if *phase != "displacement" {
+            let runner_log = working.join(format!("timeline-history-{phase}-integration.log"));
+            write_realtime_driver_evidence(
+                &runner_log,
+                output,
+                &format!("timeline-history-{phase}"),
+                *gui_exit,
+                journey.as_ref().err(),
+                &redactions,
+            )?;
             let stem = format!("timeline-history-{phase}");
             let driver_log = output.join(format!("{stem}-driver.log"));
             if driver_log.is_file() {
@@ -3064,7 +2315,6 @@ fn run_timeline_history_scenario(
             output.join(format!("timeline-history-{phase}-exit.json")),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "phase": phase,
-                "runnerExit": driver_exit.map(|status| status.code()),
                 "guiExit": gui_exit.map(|status| status.code()),
             }))?,
         )?;
@@ -3099,6 +2349,7 @@ fn run_timeline_history_scenario(
             "rejectedRequests": rejected,
             "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
             "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
+            "humanVerdict": "pending",
         }))?,
     )?;
     require_timeline_history_completion(journey, fixture_result)?;
@@ -3106,24 +2357,12 @@ fn run_timeline_history_scenario(
         rejected == 0,
         "timeline-history fixture rejected {rejected} account request(s)"
     );
-    ensure!(
-        accepted >= 1,
-        "timeline-history fixture accepted no account request"
-    );
-    if let Some(status) = live_status {
-        ensure!(
-            status.rejected == 0 && status.remaining_optional,
-            "timeline-history strict script did not consume every required step: {status:?}"
-        );
-    }
     if *run_displacement {
-        // 位移矩阵的 ChecksPassed 已在 journey 中核对；这里只记录最终判定来源。
         fs::write(
             output.join("timeline-displacement-verdict.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "checksPassed": true,
                 "humanVerdict": "pending",
-                "note": "zero-exit never replaces the human screenshot review",
+                "note": "operator observation; capture never replaces the human screenshot review",
             }))?,
         )?;
     }
@@ -3157,7 +2396,7 @@ fn start_timeline_history_gui(
         .args([
             "xtask",
             "run-gui",
-            "--driver",
+            "--capture",
             "--profile",
             "--native-launch",
             "--native-exit-report",
@@ -3193,7 +2432,7 @@ fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// 等待被 Driver 协调关闭的 GUI 自然退出，并返回真实退出状态。
+/// 等待被 `ext.anywork.requestExit` 协调关闭的 GUI 自然退出，并返回真实退出状态。
 fn wait_for_gui_exit(
     gui: &mut OwnedProcess,
     timeout: Duration,
@@ -3518,20 +2757,20 @@ fn write_config_with_mcp_server(
 ///
 /// A named spec instead of a long positional argument list: the writer stays a
 /// small call site and the fields carry their own meaning at construction.
-struct LspServerSpec<'a> {
+pub(super) struct LspServerSpec<'a> {
     /// The `[lsp.servers.<id>]` key; must be unique across the catalog.
-    id: &'a str,
+    pub(super) id: &'a str,
     /// Server program (the fixture binary in `--lsp-stdio` mode).
-    command: &'a Path,
+    pub(super) command: &'a Path,
     /// Program arguments (the mode flag and coordination file path).
-    args: &'a [String],
+    pub(super) args: &'a [String],
     /// The unique language id the server answers. Must not be a builtin id
     /// (the builtin rust-analyzer already owns `rust`) or the merge fails loud.
-    language_id: &'a str,
+    pub(super) language_id: &'a str,
     /// Workspace detection rules; empty means "all workspaces".
-    detection: &'a [String],
+    pub(super) detection: &'a [String],
     /// File extensions the server claims; empty means none.
-    extensions: &'a [String],
+    pub(super) extensions: &'a [String],
 }
 
 /// Writes the isolated home's config with one scenario-owned `[lsp.servers.<id>]`
@@ -3994,34 +3233,35 @@ fn copy_startup_evidence(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-// Driver hosts connect to an existing Flutter VM. Reuse its package mapping
-// without re-entering the application's native build hooks through `dart run`.
-fn driver_command(app_dir: &Path, script: &str) -> Command {
+/// Host-side capture against an already-running GUI VM.
+///
+/// Reuses the app package mapping so native build hooks are not re-entered.
+fn capture_command(app_dir: &Path) -> Command {
     let mut command = process::path_command(
         "dart",
         &["--packages=.dart_tool/package_config.json".into()],
     );
-    command.current_dir(app_dir).arg(script);
+    command.current_dir(app_dir).arg("tool/capture_ui.dart");
     command
 }
 
-fn capture(
+pub(super) fn capture(
     app_dir: &Path,
-    home: &Path,
+    _home: &Path,
     vm_url: &str,
     output: &Path,
     interrupt: &mpsc::Receiver<()>,
     exit_native: bool,
 ) -> Result<()> {
-    let driver_log_path = output.join("capture-driver.log");
-    let driver_log = File::create(&driver_log_path)?;
-    let mut command = driver_command(app_dir, "test_driver/manual_capture.dart");
+    let png = output.join("screenshot.png");
+    let log_path = output.join("capture.log");
+    let log = File::create(&log_path)?;
+    let mut command = capture_command(app_dir);
     command
-        .arg(vm_url)
-        .arg(output)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(driver_log.try_clone()?))
-        .stderr(Stdio::from(driver_log));
+        .args(["--vm-url", vm_url, "--output"])
+        .arg(&png)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
     if exit_native {
         command.arg("--exit");
     }
@@ -4031,9 +3271,17 @@ fn capture(
         if let Some(status) = capture.child.try_wait()? {
             ensure!(
                 status.success(),
-                "Driver capture or shutdown failed ({status}); see {}; human verdict pending",
-                driver_log_path.display()
+                "content capture or shutdown failed ({status}); see {}; human verdict pending",
+                log_path.display()
             );
+            fs::write(
+                output.join("capture-stage.txt"),
+                if exit_native {
+                    "shutdown_completed\n"
+                } else {
+                    "screenshot_captured\n"
+                },
+            )?;
             return Ok(());
         }
         ensure!(
@@ -4042,88 +3290,112 @@ fn capture(
         );
         ensure!(
             Instant::now() < deadline,
-            "Driver capture or shutdown timed out"
+            "content capture or shutdown timed out"
         );
         thread::sleep(Duration::from_millis(200));
     }
 }
 
-fn start_stress_turn(
+/// Requests a coordinated native exit without writing a PNG.
+pub(super) fn request_app_exit(
     app_dir: &Path,
-    home: &Path,
     vm_url: &str,
-    project: &Path,
-    prompt: &str,
-    stage: &Path,
+    log_path: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut command = driver_command(app_dir, "test_driver/stress_start.dart");
+    let log = File::create(log_path)?;
+    let mut command = capture_command(app_dir);
     command
-        .arg(vm_url)
-        .arg(project)
-        .arg(prompt)
-        .arg(stage)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut drive = OwnedProcess::start(&mut command, false)?;
-    let deadline = Instant::now() + Duration::from_secs(180);
+        .args(["--vm-url", vm_url, "--exit"])
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    let mut capture = OwnedProcess::start(&mut command, false)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Some(status) = drive.child.try_wait()? {
+        if let Some(status) = capture.child.try_wait()? {
             ensure!(
                 status.success(),
-                "Flutter Driver could not submit the stress prompt (last stage: {})",
-                fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
+                "requestExit failed ({status}); see {}",
+                log_path.display()
             );
-            drive.stopped = true;
             return Ok(());
         }
-        ensure!(interrupt.try_recv().is_err(), "stress startup cancelled");
-        ensure!(
-            Instant::now() < deadline,
-            "stress GUI actions timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
+        ensure!(interrupt.try_recv().is_err(), "requestExit cancelled");
+        ensure!(Instant::now() < deadline, "requestExit timed out");
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn run_stress_sessions(
-    app_dir: &Path,
-    vm_url: &str,
-    report: &Path,
-    stage: &Path,
+/// Waits for the operator to type `done` while the GUI and optional fixture stay up.
+fn wait_operator_done(
+    prompt: &str,
+    gui: &mut OwnedProcess,
+    mut fixture: Option<&mut OwnedProcess>,
     interrupt: &mpsc::Receiver<()>,
+    timeout: Duration,
 ) -> Result<()> {
-    let mut command = driver_command(app_dir, "test_driver/stress_sessions.dart");
-    command
-        .arg(vm_url)
-        .arg(pl_provider_fixture::GUI_STRESS_SESSION_COUNT.to_string())
-        .arg(pl_provider_fixture::GUI_STRESS_FOLLOWUP_PROMPT_PREFIX)
-        .arg(report)
-        .arg(stage)
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(File::create(stage.with_extension("log"))?));
-    let mut drive = OwnedProcess::start(&mut command, false)?;
-    let deadline = Instant::now() + Duration::from_secs(600);
-    loop {
-        if let Some(status) = drive.child.try_wait()? {
-            ensure!(
-                status.success(),
-                "Flutter Driver multi-session journey failed (last stage: {})",
-                fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-            );
-            drive.stopped = true;
-            return Ok(());
+    println!("{prompt}");
+    println!("Type done when the observation is complete. Ctrl-C cancels.");
+    let (input_tx, input_rx) = mpsc::channel();
+    thread::spawn(move || {
+        loop {
+            let mut input = String::new();
+            match io::stdin().read_line(&mut input) {
+                Ok(0) | Err(_) => {
+                    let _ = input_tx.send(InputEvent::Eof);
+                    break;
+                }
+                Ok(_) if input.trim() == "done" => {
+                    let _ = input_tx.send(InputEvent::Done);
+                    break;
+                }
+                Ok(_) => {
+                    if input_tx.send(InputEvent::Line(input)).is_err() {
+                        break;
+                    }
+                }
+            }
         }
-        ensure!(interrupt.try_recv().is_err(), "stress sessions cancelled");
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match input_rx.try_recv() {
+            Ok(InputEvent::Done) => return Ok(()),
+            Ok(InputEvent::Eof) | Err(mpsc::TryRecvError::Disconnected) => {
+                bail!("operator input closed before done")
+            }
+            Ok(InputEvent::Line(_)) => {}
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        ensure!(!gui.exited()?, "GUI exited before the operator finished");
+        if let Some(fixture) = fixture.as_mut() {
+            ensure!(
+                !fixture.exited()?,
+                "account fixture exited before the operator finished"
+            );
+        }
         ensure!(
-            Instant::now() < deadline,
-            "stress GUI sessions timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
+            interrupt.try_recv().is_err(),
+            "operator observation cancelled"
         );
+        ensure!(Instant::now() < deadline, "operator observation timed out");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Operator runbook, then a coordinated capture and native exit.
+fn observe_capture_exit(
+    app_dir: &Path,
+    vm_url: &str,
+    output: &Path,
+    interrupt: &mpsc::Receiver<()>,
+    gui: &mut OwnedProcess,
+    fixture: Option<&mut OwnedProcess>,
+    prompt: &str,
+) -> Result<()> {
+    wait_operator_done(prompt, gui, fixture, interrupt, Duration::from_secs(3_600))?;
+    capture(app_dir, Path::new(""), vm_url, output, interrupt, true)?;
+    Ok(())
 }
 
 fn run_statistics_scenario(
@@ -4132,6 +3404,7 @@ fn run_statistics_scenario(
 ) -> Result<()> {
     let StatisticsScenario {
         workspace,
+        app_dir,
         home,
         working,
         output,
@@ -4139,11 +3412,9 @@ fn run_statistics_scenario(
         requests_file,
         report_file,
         interrupt,
-        ..
     } = context;
     let first_log = working.join("statistics-first-gui.log");
     let restart_log = working.join("statistics-restart-gui.log");
-    let stage = working.join("statistics-stage");
     let project = working.join("statistics-project");
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
@@ -4158,49 +3429,19 @@ fn run_statistics_scenario(
         {
             let mut gui = start_statistics_gui(workspace, home, &first_log)?;
             let vm_url = wait_for_vm(&first_log, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_statistics_driver(context, &vm_url, "first", &project, &stage)?;
-            wait_for_statistics_stage(
-                "ready_lock",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
                 interrupt,
-                Duration::from_secs(120),
-            )?;
-            let calls_db = home.join("data/calls/calls.sqlite");
-            ensure!(
-                calls_db.is_file(),
-                "GUI did not initialize isolated calls.sqlite"
-            );
-            let mut lock =
-                SqliteWriteLock::acquire(&calls_db, "calls.sqlite", Duration::from_secs(90))?;
-            fs::write(working.join("lock-acquired"), "acquired")?;
-            wait_for_statistics_stage(
-                "lock_observed",
-                &stage,
-                &mut driver,
                 &mut gui,
-                &mut fixture,
-                interrupt,
-                Duration::from_secs(60),
+                Some(&mut fixture),
+                &format!(
+                    "statistics first: open {}, send two durable turns, then type done.",
+                    project.display()
+                ),
             )?;
-            ensure!(
-                working.join("fast-submitted").is_file(),
-                "fast prompt was not submitted under SQLite lock"
-            );
-            lock.finish()?;
-            fs::write(working.join("lock-released"), "released")?;
-            wait_for_statistics_driver(
-                "first",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-            )?;
-            // The Driver's native shutdown has completed; terminate and reap the
-            // resident process group before reopening this exact isolated home.
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "first")?;
         }
         let before = statistics_db_counts(home)?;
         ensure!(
@@ -4214,16 +3455,16 @@ fn run_statistics_scenario(
         {
             let mut gui = start_statistics_gui(workspace, home, &restart_log)?;
             let vm_url = wait_for_vm(&restart_log, &mut gui, &mut fixture, interrupt)?;
-            let mut driver =
-                start_statistics_driver(context, &vm_url, "restart", &project, &stage)?;
-            wait_for_statistics_driver(
-                "restart",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
                 interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                "statistics restart: reopen the same home, confirm restored statistics, then type done.",
             )?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "restart")?;
         }
         let after = statistics_db_counts(home)?;
         fs::write(
@@ -4234,18 +3475,6 @@ fn run_statistics_scenario(
             before == after,
             "calls.sqlite changed across restart: {before:?} -> {after:?}"
         );
-        let final_state: serde_json::Value =
-            serde_json::from_slice(&fs::read(output.join("statistics-final.json"))?)?;
-        let restarted: serde_json::Value =
-            serde_json::from_slice(&fs::read(output.join("statistics-restarted.json"))?)?;
-        ensure!(
-            final_state["history"] == restarted["history"]
-                && final_state["samples"] == restarted["samples"]
-                && restarted["statisticsPending"] == false
-                && restarted["statisticsGap"] == false
-                && restarted["readFailed"] == false,
-            "statistics projection changed or remained unhealthy after restart"
-        );
         Ok(())
     })();
 
@@ -4255,40 +3484,6 @@ fn run_statistics_scenario(
     ] {
         if source.exists() {
             write_sanitized_log(source, &output.join(name))?;
-        }
-    }
-    let driver_log = stage.with_extension("driver.log");
-    if driver_log.is_file() {
-        let diagnostics = fs::read_to_string(driver_log)?
-            .lines()
-            .filter(|line| {
-                [
-                    "Unhandled exception:",
-                    "Bad state:",
-                    "StateError:",
-                    "TimeoutException",
-                    "DriverError",
-                    "FormatException",
-                ]
-                .iter()
-                .any(|prefix| line.starts_with(prefix))
-                    && !line.contains("http://")
-                    && !line.contains("https://")
-            })
-            .map(|line| line.chars().take(240).collect::<String>())
-            .collect::<Vec<_>>();
-        fs::write(
-            output.join("statistics-driver-errors.txt"),
-            diagnostics.join("\n"),
-        )?;
-    }
-    if stage.is_file() {
-        let value = fs::read_to_string(&stage)?;
-        if value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            fs::write(output.join("statistics-stage.txt"), value)?;
         }
     }
     let fixture_result = fixture.stop(requests_file);
@@ -4489,7 +3684,7 @@ fn start_statistics_gui(workspace: &Path, home: &Path, log_path: &Path) -> Resul
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
-        .args(["xtask", "run-gui", "--driver"])
+        .args(["xtask", "run-gui", "--capture"])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
@@ -4505,114 +3700,11 @@ fn start_catalog_phase_b_gui(
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
-        .args(["xtask", "run-gui", "--driver", "--log-level", "info"])
+        .args(["xtask", "run-gui", "--capture", "--log-level", "info"])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
-}
-
-fn start_statistics_driver(
-    context: &StatisticsScenario<'_>,
-    vm_url: &str,
-    phase: &str,
-    project: &Path,
-    stage: &Path,
-) -> Result<OwnedProcess> {
-    let StatisticsScenario {
-        app_dir,
-        home,
-        output,
-        working,
-        ..
-    } = context;
-    let log = File::create(stage.with_extension("driver.log"))?;
-    let expected = if phase == "restart" {
-        let final_state: serde_json::Value =
-            serde_json::from_slice(&fs::read(output.join("statistics-final.json"))?)?;
-        final_state["history"]
-            .as_u64()
-            .context("final history count unavailable")?
-            .to_string()
-    } else {
-        "0".to_owned()
-    };
-    let mut command = driver_command(app_dir, "test_driver/statistics_journey.dart");
-    command
-        .args([phase, vm_url])
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .arg(expected)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-fn wait_for_statistics_stage(
-    expected: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    timeout: Duration,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if stage.is_file() && fs::read_to_string(stage)? == expected {
-            return Ok(());
-        }
-        if let Some(status) = driver.child.try_wait()? {
-            bail!("statistics Driver exited before {expected}: {status}");
-        }
-        ensure!(!gui.exited()?, "GUI exited before {expected}");
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited before {expected}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "statistics journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "statistics Driver timed out before {expected}"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn wait_for_statistics_driver(
-    phase: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<()> {
-    let expected = if phase == "restart" {
-        "restart_shutdown"
-    } else {
-        "first_shutdown"
-    };
-    wait_for_statistics_stage(
-        expected,
-        stage,
-        driver,
-        gui,
-        fixture,
-        interrupt,
-        Duration::from_secs(240),
-    )?;
-    let status = driver.child.wait()?;
-    driver.stopped = true;
-    ensure!(
-        status.success(),
-        "statistics Driver failed after {expected}"
-    );
-    Ok(())
 }
 
 fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
@@ -5024,13 +4116,9 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
         fixture_log,
         requests_file,
         interrupt,
-        // `scenario` stays on `context`; it is only read via `context.scenario`.
-        ..
     } = context;
     let gui_log_path = working.join("realtime-gui.log");
-    let stage = working.join("realtime-stage");
     let project = working.join("realtime-project");
-    let mut driver_exit: Option<std::process::ExitStatus> = None;
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
         ensure!(
@@ -5044,52 +4132,25 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
         {
             let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
-            let mut driver =
-                start_realtime_driver(app_dir, home, &vm_url, &project, output, working, &stage)?;
-            let status =
-                wait_for_realtime_driver(&stage, &mut driver, &mut gui, &mut fixture, interrupt)?;
-            driver_exit = Some(status);
-            ensure!(
-                status.success(),
-                "realtime Driver failed with {status} (last stage: {})",
-                // No stage file means the Dart script never reached `main`
-                // (compile or launch error); name that instead of guessing.
-                fs::read_to_string(&stage).unwrap_or_else(|_| {
-                    "driver_not_started (see realtime-driver-errors.txt)".to_owned()
-                })
-            );
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
+                interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                &format!(
+                    "realtime: open {}, send a long-command turn, observe in-flight growth, then type done.",
+                    project.display()
+                ),
+            )?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "realtime")?;
         }
         Ok(())
     })();
 
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("realtime-gui.log"))?;
-    }
-    // The Driver log lives under the isolated coordination directory, which is
-    // removed with the run: persist a sanitized copy plus an error digest before
-    // it disappears, so a Dart compile error or connection failure is always
-    // reviewable and never leaves an empty error file.
-    write_realtime_driver_evidence(
-        &stage.with_extension("driver.log"),
-        output,
-        "realtime",
-        driver_exit,
-        journey.as_ref().err(),
-        &[
-            (app_dir.to_string_lossy().into_owned(), "<app>"),
-            (workspace.to_string_lossy().into_owned(), "<workspace>"),
-            (home.to_string_lossy().into_owned(), "<home>"),
-            (working.to_string_lossy().into_owned(), "<coord>"),
-        ],
-    )?;
-    if stage.is_file() {
-        let value = fs::read_to_string(&stage)?;
-        if value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
-        {
-            fs::write(output.join("realtime-stage.txt"), value)?;
-        }
     }
 
     // The GUI is gone, but the isolated home still exists: pull the bounded
@@ -5147,64 +4208,15 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
     let credit_wait = credit_wait_evidence?;
-    let summary: serde_json::Value = serde_json::from_slice(
-        &fs::read(output.join("realtime-summary.json"))
-            .context("Flutter Driver did not write the realtime journey summary")?,
+    fs::write(
+        output.join("frb-credit-wait-review.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "truncated": credit_wait.truncated,
+            "captureError": credit_wait.capture_error,
+            "observationCount": credit_wait.observations.len(),
+            "humanVerdict": "pending",
+        }))?,
     )?;
-    ensure!(
-        summary["scenario"] == "realtime" && summary["verdict"] == "pending",
-        "realtime journey summary is missing its scenario or pending verdict"
-    );
-    let checks = summary["checks"]
-        .as_object()
-        .context("realtime journey summary has no checks")?;
-    for (name, value) in checks {
-        ensure!(
-            value == &serde_json::Value::Bool(true),
-            "realtime journey check {name} did not pass"
-        );
-    }
-    ensure!(!checks.is_empty(), "realtime journey recorded no checks");
-    // The long-command in-flight proof keys off the integrated typed timeline
-    // tool trio (output/progressBytes/itemRevision). A report that omits it is
-    // never accepted as a pass: the missing diagnostic is a gap, not a success.
-    ensure!(
-        checks.get("longCommandInFlightOutputGrows") == Some(&serde_json::Value::Bool(true)),
-        "realtime journey did not prove the long-command in-flight output growth \
-         (longCommandInFlightOutputGrows missing; see pendingEvidence)"
-    );
-    // §24.3 strict proof: the held FRB feed snapshot must be a real open
-    // subscription (real source, non-empty id, zero acknowledgements, both
-    // initial frames), and the GUI's own log must show the producer of that
-    // exact subscription polled Pending at sent=2/acknowledged=0. Older feed
-    // evidence or other normal UI subscriptions never satisfy this.
-    let held = &summary["counts"]["frbCreditHeld"];
-    let held_subscription = held["subscriptionId"].as_str().unwrap_or_default();
-    ensure!(
-        held["source"] == "real-frb-conversation-feed"
-            && !held_subscription.is_empty()
-            && held["acknowledged"] == 0
-            && held["frames"]
-                .as_array()
-                .is_some_and(|frames| frames.len() == 2),
-        "realtime journey frbCreditHeld is not a real open subscription with two \
-         unacknowledged frames"
-    );
-    ensure!(
-        credit_wait.capture_error.is_none() && !credit_wait.truncated,
-        "realtime producer credit_wait capture is incomplete (truncated: {}, error: {:?})",
-        credit_wait.truncated,
-        credit_wait.capture_error
-    );
-    ensure!(
-        credit_wait.observations.iter().any(|observation| {
-            observation.subscription_id == held_subscription
-                && observation.sent == 2
-                && observation.acknowledged == 0
-        }),
-        "no producer_credit_wait_pending observation matches the held subscription \
-         {held_subscription} at sent=2/acknowledged=0"
-    );
     ensure!(
         fixture_result.is_ok_and(|status| status.success())
             && accepted >= REALTIME_REQUIRED_STEPS
@@ -5215,7 +4227,7 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
     Ok(())
 }
 
-/// Single-item long-body stress journey driven entirely through Flutter Driver.
+/// Single-item long-body stress journey observed through an operator runbook.
 ///
 /// The fixture appends every increment to one stable item/part with the same
 /// event count and nominal rate as the multi-item stress script, so the load is
@@ -5241,10 +4253,8 @@ fn run_stress_body_scenario(
         ..
     } = context;
     let gui_log_path = working.join("stress-body-gui.log");
-    let stage = working.join("stress-body-stage");
     let project = working.join("stress-body-project");
     let report_file = working.join("stress-report.json");
-    let mut driver_exit: Option<std::process::ExitStatus> = None;
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
         ensure!(
@@ -5258,45 +4268,25 @@ fn run_stress_body_scenario(
         {
             let mut gui = start_stress_body_gui(workspace, home, &gui_log_path)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_stress_body_driver(context, &vm_url, &project, &stage)?;
-            let status =
-                wait_for_realtime_driver(&stage, &mut driver, &mut gui, &mut fixture, interrupt)?;
-            driver_exit = Some(status);
-            ensure!(
-                status.success(),
-                "stress-body Driver failed with {status} (last stage: {})",
-                fs::read_to_string(&stage).unwrap_or_else(|_| {
-                    "driver_not_started (see stress-body-driver-errors.txt)".to_owned()
-                })
-            );
+            observe_capture_exit(
+                app_dir,
+                &vm_url,
+                output,
+                interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                &format!(
+                    "stress-body: open {}, let the long body stream, inspect preview/detail, then type done.",
+                    project.display()
+                ),
+            )?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "stress-body")?;
         }
         Ok(())
     })();
 
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("stress-body-gui.log"))?;
-    }
-    write_realtime_driver_evidence(
-        &stage.with_extension("driver.log"),
-        output,
-        context.scenario,
-        driver_exit,
-        journey.as_ref().err(),
-        &[
-            (app_dir.to_string_lossy().into_owned(), "<app>"),
-            (workspace.to_string_lossy().into_owned(), "<workspace>"),
-            (home.to_string_lossy().into_owned(), "<home>"),
-            (working.to_string_lossy().into_owned(), "<coord>"),
-        ],
-    )?;
-    if stage.is_file() {
-        let value = fs::read_to_string(&stage)?;
-        if value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
-        {
-            fs::write(output.join("stress-body-stage.txt"), value)?;
-        }
     }
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
@@ -5350,138 +4340,6 @@ fn run_stress_body_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    let driver_report: StressBodyReport = serde_json::from_slice(
-        &fs::read(output.join("stress-body-report.json"))
-            .context("Flutter Driver did not write the stress-body report")?,
-    )
-    .context("stress-body report does not match the acceptance contract")?;
-    ensure!(
-        driver_report.scenario == context.scenario && driver_report.verdict == "pending",
-        "stress-body report is missing its scenario or pending verdict"
-    );
-    // `status == "complete"` 是 Driver 聚合后的结论：任何未通过的检查、主错或关停
-    // 错误都会让它变成 `failed`，因此先按聚合结论与原始原因收束，再逐项核对证据。
-    ensure!(
-        driver_report.status == "complete",
-        "stress-body journey did not complete: stage={} failedChecks={:?} error={:?} \
-         shutdownError={:?}",
-        driver_report.stage,
-        driver_report.failed_checks,
-        driver_report.error,
-        driver_report.shutdown_error,
-    );
-    let StressBodyObservations {
-        session_switch,
-        preview_copy,
-        detail_copy,
-        long_body,
-        streaming_growth,
-    } = driver_report.observations;
-    ensure!(
-        session_switch.returned_to_original,
-        "stress-body journey did not return to the original session"
-    );
-    // 行内预览的真实渲染原文与选择复制：交付的是产品 32 KiB 预算内的有界预览，复制内容必须与
-    // 该预览逐字节一致（不是全文）；完整正文由下面的详情查看器证明。
-    ensure!(
-        preview_copy.pass,
-        "stress-body preview selection copy did not pass: {preview_copy:?}"
-    );
-    ensure!(
-        preview_copy.copy_button_present
-            && preview_copy.copy_ok
-            && preview_copy.selection_cleared
-            && preview_copy.scroll_stable
-            && preview_copy.mode_stable,
-        "stress-body preview copy did not use the product callback or disturbed the view: \
-         {preview_copy:?}"
-    );
-    // 分别核至少一个实际生产 RenderParagraph 与整段复制文本：渲染与复制的长度必须
-    // 等于预览长度，两者的 hash 都必须等于同一份 canonical 预览，不能用子串包含或
-    // 只比较两个实际副本代替原文。
-    ensure!(
-        preview_copy.rendered_matches_preview
-            && preview_copy.copied_matches_preview
-            && preview_copy
-                .rendered_paragraph_count
-                .is_some_and(|count| count >= 1)
-            && preview_copy.rendered_characters == Some(preview_copy.preview_characters)
-            && preview_copy.rendered_hash.as_deref() == Some(preview_copy.expected_hash.as_str())
-            && preview_copy.copied_length == Some(preview_copy.preview_characters)
-            && preview_copy.copied_hash.as_deref() == Some(preview_copy.expected_hash.as_str()),
-        "stress-body preview was not rendered/copied exactly as the canonical preview: \
-         {preview_copy:?}"
-    );
-    ensure!(
-        (1..=32 * 1024).contains(&preview_copy.preview_characters),
-        "stress-body inline preview exceeded the product 32 KiB budget: {preview_copy:?}"
-    );
-
-    // 完整正文：只有用户显式打开的详情查看器与平台剪贴板能证明，且长度/hash 必须
-    // 等于 fixture 的 canonical 原文。
-    // 默认正文每次增量是 `body-%05d `（11 字节）；large 另有 fixture 常量。
-    // ASCII 标记使字符数与 UTF-8 字节数相等。
-    const STRESS_BODY_UNIT_CHARACTERS: usize = "body-00000 ".len();
-    let expected_body = if context.scenario == "stress-body-large" {
-        pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS
-    } else {
-        pl_provider_fixture::STRESS_EVENT_COUNT * STRESS_BODY_UNIT_CHARACTERS
-    };
-    ensure!(
-        detail_copy.pass
-            && detail_copy.viewer_opened
-            && detail_copy.viewer_closed
-            && detail_copy.row_preview_unchanged == Some(true),
-        "stress-body detail viewer did not read/copy the complete body: {detail_copy:?}"
-    );
-    ensure!(
-        detail_copy.expected_characters == expected_body
-            && detail_copy.loaded_characters == expected_body
-            && detail_copy.clipboard_characters == expected_body
-            && detail_copy.loaded_hash.as_deref() == Some(detail_copy.expected_hash.as_str())
-            && detail_copy.clipboard_hash.as_deref() == Some(detail_copy.expected_hash.as_str()),
-        "stress-body detail copy did not match the canonical fixture body: {detail_copy:?}"
-    );
-    ensure!(
-        long_body.expected_characters == expected_body
-            && long_body.detail_total_bytes == expected_body
-            && long_body.truncated
-            && long_body.prefix_ok,
-        "stress-body body facts disagree with the fixture: {long_body:?}"
-    );
-    ensure!(
-        long_body.preview_bytes <= 32 * 1024
-            && long_body.delivered_bytes == long_body.preview_bytes
-            && long_body.delivered_characters == long_body.preview_bytes,
-        "stress-body inline preview exceeded the product budget or lost its accounting: \
-         {long_body:?}"
-    );
-    if context.scenario == "stress-body-large" {
-        // Generation-time proof (large only): 640000B 正文在预览封顶后仍继续增长，
-        // 同一身份至少两帧真实增长且展示保持 Live 贴底。默认 220000B 场景不产生该
-        // 观测，因此这里不得读取 `streamingGrowth`，也不为默认场景造假字段。
-        //
-        // 流中阅读已完成历史的拖动、滚动条和分页由 timeline-history 验收：它先生成
-        // 完成历史，再启动独立正文流。单项场景的未完成正文只在实时栏，不充当历史种子。
-        let growth = streaming_growth
-            .as_ref()
-            .context("stress-body-large report has no streaming growth observation")?;
-        ensure!(
-            growth.window_passed
-                && growth.identity_stable
-                && growth.stayed_live_at_edge
-                && growth.threshold_bytes == 32 * 1024
-                && growth.growth_frames_above_window >= 2,
-            "stress-body-large did not prove the body kept following the stream above the \
-             product preview budget: {growth:?}"
-        );
-        ensure!(
-            long_body.large_body
-                && long_body.expected_characters
-                    == pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS,
-            "stress-body-large expected body drifted from the fixture constant: {long_body:?}"
-        );
-    }
     let report = host_report.context("stress-body fixture did not emit a stress report")?;
     ensure!(
         report.emitted_events == pl_provider_fixture::STRESS_EVENT_COUNT,
@@ -5517,14 +4375,13 @@ fn run_stress_body_scenario(
     Ok(())
 }
 
-/// Paused-history-writer acceptance journey driven through Flutter Driver.
+/// Paused-history-writer acceptance journey observed through an operator runbook.
 ///
 /// The coordinator holds one exclusive external write transaction on the real
 /// per-session `history.sqlite` while the fixture streams a reply, so the journey
 /// proves the live content still grows and the current activity stays visible
-/// while the durable writer cannot commit, the turn reaches its terminal state
-/// while still locked, and the durable history then catches up with the answer
-/// exactly once after the lock is released.
+/// while the durable writer cannot commit, and the durable history then catches
+/// up with the answer after the lock is released.
 ///
 /// It never fabricates a fault: the pause stays inside the runtime's retryable
 /// conflict window, so the run records ordinary SQLite blocking plus the exact
@@ -5547,14 +4404,11 @@ fn run_history_lock_scenario(
         interrupt,
     } = context;
     let gui_log_path = working.join("history-lock-gui.log");
-    let stage = working.join("history-lock-stage");
     let project = working.join("history-lock-project");
     let acquired_marker = working.join("history-lock-acquired");
     let released_marker = working.join("history-lock-released");
-    let observed_file = working.join("history-lock-observed.json");
-    let mut driver_exit: Option<std::process::ExitStatus> = None;
     let mut lock_report: Option<serde_json::Value> = None;
-    let mut after: Option<(HistoryLockWatermark, HistoryLockTurnItems)> = None;
+    let mut after: Option<(HistoryLockWatermark, i64)> = None;
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
         ensure!(
@@ -5570,74 +4424,43 @@ fn run_history_lock_scenario(
         {
             let mut gui = start_history_lock_gui(workspace, home, &gui_log_path)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_history_lock_driver(
-                app_dir, home, &vm_url, &project, output, working, &stage,
-            )?;
-            // 1. The driver durably settles a priming turn, so the real
-            // per-session history library exists before the lock is taken.
-            wait_for_history_lock_stage(
-                "history_lock_ready",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                &format!(
+                    "history-lock priming: open {}, send one durable turn, wait until it settles, then type done.",
+                    project.display()
+                ),
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(240),
+                Duration::from_secs(3_600),
             )?;
             let database = history_lock_database(home)?;
             let before = history_lock_watermark(&database)?;
-            // 2. Real exclusive write transaction on the actual library. The
+            // Real exclusive write transaction on the actual library. The
             // runtime writer for this exact database cannot commit while held.
             let mut lock =
                 SqliteWriteLock::acquire(&database, "history.sqlite", Duration::from_secs(90))?;
             let locked_at = Instant::now();
             fs::write(&acquired_marker, "acquired")?;
-            // 3. Live growth and the terminal state are observed while locked.
-            wait_for_history_lock_stage(
-                "history_lock_terminal_while_locked",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                "history-lock locked: send the locked reply, observe live growth while the writer cannot commit, wait until the turn is terminal, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(300),
+                Duration::from_secs(3_600),
             )?;
-            let observed: serde_json::Value = serde_json::from_slice(&fs::read(&observed_file)?)?;
-            let turn_id = observed["turnId"]
-                .as_str()
-                .context("history-lock Driver did not record the locked turn id")?
-                .to_owned();
             // Read the durable watermarks while the lock is still held: WAL
             // readers are not blocked, and a failure is recorded rather than
             // asserted so a busy read can never be mistaken for a pass.
             let while_locked = history_lock_watermark(&database).ok();
-            let while_items = history_lock_turn_items(
-                &database,
-                &turn_id,
-                pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER,
-            )
-            .ok();
+            let while_items =
+                history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER).ok();
             let held_millis = locked_at.elapsed().as_millis();
-            // 4. Release, then unblock the driver. `finish` commits and closes
-            // the transaction; `Drop` is the backstop for any earlier error.
             let release = lock.finish();
             fs::write(&released_marker, "released")?;
             release?;
-            let status = wait_for_history_lock_driver(
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-            )?;
-            driver_exit = Some(status);
-            ensure!(
-                status.success(),
-                "history-lock Driver failed with {status} (last stage: {})",
-                fs::read_to_string(&stage).unwrap_or_else(|_| {
-                    "driver_not_started (see history-lock-driver-errors.txt)".to_owned()
-                })
-            );
+            capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "history-lock")?;
             lock_report = Some(serde_json::json!({
                 "database": database.file_name().and_then(|name| name.to_str()),
                 "databaseDirectory": database
@@ -5648,25 +4471,12 @@ fn run_history_lock_scenario(
                 "before": before,
                 "whileLocked": while_locked,
                 "whileLockedItems": while_items,
-                "observed": observed,
             }));
         }
-        // 5. The GUI has exited, so the durable library is read back cleanly.
         let database = history_lock_database(home)?;
-        let report = lock_report
-            .as_ref()
-            .context("history-lock journey did not record its lock evidence")?;
-        let turn_id = report["observed"]["turnId"]
-            .as_str()
-            .context("history-lock lock evidence has no locked turn id")?
-            .to_owned();
         after = Some((
             history_lock_watermark(&database)?,
-            history_lock_turn_items(
-                &database,
-                &turn_id,
-                pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER,
-            )?,
+            history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_LOCK_ANSWER)?,
         ));
         Ok(())
     })();
@@ -5674,19 +4484,6 @@ fn run_history_lock_scenario(
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("history-lock-gui.log"))?;
     }
-    write_realtime_driver_evidence(
-        &stage.with_extension("driver.log"),
-        output,
-        "history-lock",
-        driver_exit,
-        journey.as_ref().err(),
-        &[
-            (app_dir.to_string_lossy().into_owned(), "<app>"),
-            (workspace.to_string_lossy().into_owned(), "<workspace>"),
-            (home.to_string_lossy().into_owned(), "<home>"),
-            (working.to_string_lossy().into_owned(), "<coord>"),
-        ],
-    )?;
     if let Some(report) = lock_report.as_ref() {
         fs::write(
             output.join("history-lock-lock.json"),
@@ -5715,7 +4512,7 @@ fn run_history_lock_scenario(
                 "this scenario deliberately keeps the pause inside the retryable-conflict window, so it never \
                  produces a hard typed fault; ordinary SQLite blocking is never reported as one",
                 "the typed writeFailed fault, its stable generation and the explicit retry/resume are exercised \
-                 by the separate history-fault scenario, where the integrated Driver build exposes the typed \
+                 by the separate history-fault scenario, where the operator runbook drives the typed \
                  storageRecovery entry (fault/faultGeneration/acceptedSequence/durableSequence/execution/ \
                  pressurePaused/resumeRequired/canResume/blocksContinuation/lastError)",
             ],
@@ -5764,20 +4561,6 @@ fn run_history_lock_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    let driver_report: serde_json::Value = serde_json::from_slice(
-        &fs::read(output.join("history-lock-summary.json"))
-            .context("Flutter Driver did not write the history-lock journey summary")?,
-    )?;
-    ensure!(
-        driver_report["scenario"] == "history-lock" && driver_report["verdict"] == "pending",
-        "history-lock journey summary is missing its scenario or pending verdict"
-    );
-    ensure!(
-        driver_report["status"] == "complete",
-        "history-lock journey did not complete: stage={} failedChecks={}",
-        driver_report["stage"],
-        driver_report["failedChecks"],
-    );
     let (before_watermark, after_watermark, after_items) = {
         let report = lock_report
             .as_ref()
@@ -5794,8 +4577,8 @@ fn run_history_lock_scenario(
         "history writer did not commit exactly the locked turn: {before_watermark:?} -> {after_watermark:?}"
     );
     ensure!(
-        after_items.items >= 1 && after_items.answer_items >= 1,
-        "durable history does not contain the delivered answer: {after_items:?}"
+        after_items >= 1,
+        "durable history does not contain the delivered answer: {after_items} matching items"
     );
     // Direct evidence the exclusive lock really paused the writer: the committed
     // turn count must be unchanged while the lock was held. A busy read is not
@@ -5820,7 +4603,7 @@ fn run_history_lock_scenario(
     Ok(())
 }
 
-/// Typed history-fault retry/resume acceptance journey driven through Flutter Driver.
+/// Typed history-fault retry/resume acceptance journey observed through an operator runbook.
 ///
 /// The coordinator holds the real per-session `history.sqlite` write lock past the
 /// runtime's retryable-conflict window, so the durable writer must surface a typed
@@ -5855,12 +4638,9 @@ fn run_history_fault_scenario(
         interrupt,
     } = context;
     let gui_log_path = working.join("history-fault-gui.log");
-    let stage = working.join("history-fault-stage");
     let project = working.join("history-fault-project");
     let acquired_marker = working.join("history-fault-acquired");
     let released_marker = working.join("history-fault-released");
-    let observed_file = working.join("history-fault-observed.json");
-    let mut driver_exit: Option<std::process::ExitStatus> = None;
     let mut lock_report: Option<serde_json::Value> = None;
     let mut after: Option<HistoryFaultAfter> = None;
     let journey = (|| -> Result<()> {
@@ -5878,34 +4658,24 @@ fn run_history_fault_scenario(
         {
             let mut gui = start_history_fault_gui(workspace, home, &gui_log_path)?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_history_fault_driver(
-                app_dir, home, &vm_url, &project, output, working, &stage,
-            )?;
-            // 1. The driver durably settles a priming turn, so the real
-            // per-session history library exists before the lock is taken.
-            wait_for_history_fault_stage(
-                "history_fault_ready",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                &format!(
+                    "history-fault priming: open {}, send one durable turn, wait until it settles, then type done.",
+                    project.display()
+                ),
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(300),
+                Duration::from_secs(3_600),
             )?;
             let database = history_lock_database(home)?;
             let before = history_lock_watermark(&database)?;
-            // 2. Real exclusive write transaction on the actual library, held
-            // past the writer's retryable window so it must surface a fault. The
-            // hold timeout is generous: the fault appears only after the bounded
-            // per-attempt busy waits that precede it.
+            // Real exclusive write transaction on the actual library, held past
+            // the writer's retryable window so it must surface a fault.
             let mut lock =
                 SqliteWriteLock::acquire(&database, "history.sqlite", Duration::from_secs(300))?;
             let locked_at = Instant::now();
             fs::write(&acquired_marker, "acquired")?;
-            // Record a baseline lock evidence immediately after acquiring, so a
-            // Driver failure before the safe boundary still leaves the
-            // coordinator's before-watermark on disk. The boundary read below
-            // replaces it with the full sample.
             lock_report = Some(serde_json::json!({
                 "database": database.file_name().and_then(|name| name.to_str()),
                 "databaseDirectory": database
@@ -5916,40 +4686,19 @@ fn run_history_fault_scenario(
                 "before": before,
                 "whileLocked": serde_json::Value::Null,
                 "whileLockedItems": serde_json::Value::Null,
-                "observed": serde_json::Value::Null,
             }));
-            // 3. Live growth, the typed fault with a stable generation, and the
-            // safe boundary are all observed while the lock is still held.
-            wait_for_history_fault_stage(
-                "history_fault_safe_boundary",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                "history-fault locked: send the fault turn, wait until live growth, the typed writeFailed fault and the safe boundary are visible, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(3_600),
             )?;
-            let observed: serde_json::Value = serde_json::from_slice(&fs::read(&observed_file)?)?;
-            let turn_id = observed["turnId"]
-                .as_str()
-                .context("history-fault Driver did not record the faulted turn id")?
-                .to_owned();
-            // Read the durable watermarks while the lock is still held: WAL
-            // readers are not blocked, and a failure is recorded rather than
-            // asserted so a busy read can never be mistaken for a pass.
             let while_locked = history_lock_watermark(&database).ok();
-            let while_items = history_lock_turn_items(
-                &database,
-                &turn_id,
-                pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
-            )
-            .ok();
+            let while_items =
+                history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER)
+                    .ok();
             let held_millis = locked_at.elapsed().as_millis();
-            // Record the lock evidence now, before release and the Driver wait,
-            // so the coordinator's heldMillis and the durable watermarks are
-            // always preserved — even if the Driver later fails and the journey
-            // reports it. The observed boundary fact is already on disk (it gates
-            // the `history_fault_safe_boundary` stage above).
             lock_report = Some(serde_json::json!({
                 "database": database.file_name().and_then(|name| name.to_str()),
                 "databaseDirectory": database
@@ -5960,49 +4709,29 @@ fn run_history_fault_scenario(
                 "before": before,
                 "whileLocked": while_locked,
                 "whileLockedItems": while_items,
-                "observed": observed,
             }));
-            // 4. Release, then let the driver run the explicit retry/resume path.
-            // `finish` commits and closes the transaction; `Drop` is the backstop
-            // for any earlier error, so the lock is always recovered.
             let release = lock.finish();
             fs::write(&released_marker, "released")?;
             release?;
-            let status = wait_for_history_fault_driver(
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                "history-fault resume: retry-save until canResume is true, continue, confirm the deferred tool and follow-up answer each complete once, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
+                Duration::from_secs(3_600),
             )?;
-            driver_exit = Some(status);
-            ensure!(
-                status.success(),
-                "history-fault Driver failed with {status} (last stage: {})",
-                fs::read_to_string(&stage).unwrap_or_else(|_| {
-                    "driver_not_started (see history-fault-driver-errors.txt)".to_owned()
-                })
-            );
+            capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "history-fault")?;
         }
-        // 5. The GUI has exited, so the durable library is read back cleanly.
         let database = history_lock_database(home)?;
-        let report = lock_report
-            .as_ref()
-            .context("history-fault journey did not record its lock evidence")?;
-        let turn_id = report["observed"]["turnId"]
-            .as_str()
-            .context("history-fault lock evidence has no faulted turn id")?
-            .to_owned();
         after = Some(HistoryFaultAfter {
             watermark: history_lock_watermark(&database)?,
-            items: history_lock_turn_items(
+            answer_items: history_payload_count(
                 &database,
-                &turn_id,
                 pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
             )?,
-            tool_marker_items: history_fault_payload_count(
+            tool_marker_items: history_payload_count(
                 &database,
-                &turn_id,
                 pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
             )?,
         });
@@ -6012,19 +4741,6 @@ fn run_history_fault_scenario(
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("history-fault-gui.log"))?;
     }
-    write_realtime_driver_evidence(
-        &stage.with_extension("driver.log"),
-        output,
-        "history-fault",
-        driver_exit,
-        journey.as_ref().err(),
-        &[
-            (app_dir.to_string_lossy().into_owned(), "<app>"),
-            (workspace.to_string_lossy().into_owned(), "<workspace>"),
-            (home.to_string_lossy().into_owned(), "<home>"),
-            (working.to_string_lossy().into_owned(), "<coord>"),
-        ],
-    )?;
     if let Some(report) = lock_report.as_ref() {
         fs::write(
             output.join("history-fault-lock.json"),
@@ -6074,20 +4790,6 @@ fn run_history_fault_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    let driver_report: serde_json::Value = serde_json::from_slice(
-        &fs::read(output.join("history-fault-summary.json"))
-            .context("Flutter Driver did not write the history-fault journey summary")?,
-    )?;
-    ensure!(
-        driver_report["scenario"] == "history-fault" && driver_report["verdict"] == "pending",
-        "history-fault journey summary is missing its scenario or pending verdict"
-    );
-    ensure!(
-        driver_report["status"] == "complete",
-        "history-fault journey did not complete: stage={} failedChecks={}",
-        driver_report["stage"],
-        driver_report["failedChecks"],
-    );
     let (before_watermark, after_state) = {
         let report = lock_report
             .as_ref()
@@ -6107,9 +4809,9 @@ fn run_history_fault_scenario(
         after_state.watermark
     );
     ensure!(
-        after_state.items.answer_items >= 1,
-        "durable history does not contain the delivered answer: {:?}",
-        after_state.items
+        after_state.answer_items >= 1,
+        "durable history does not contain the delivered answer: {} matching items",
+        after_state.answer_items
     );
     ensure!(
         after_state.tool_marker_items >= 1,
@@ -6131,13 +4833,13 @@ fn run_history_fault_scenario(
              {before_watermark:?} -> {while_locked:?}"
         );
     }
-    let while_items: Option<HistoryLockTurnItems> = lock_report
+    let while_items: Option<i64> = lock_report
         .as_ref()
         .and_then(|report| serde_json::from_value(report["whileLockedItems"].clone()).ok());
     if let Some(while_items) = while_items {
         ensure!(
-            while_items.answer_items == 0,
-            "the answer was already durable while the exclusive lock was held: {while_items:?}"
+            while_items == 0,
+            "the answer was already durable while the exclusive lock was held: {while_items} matching items"
         );
     }
     ensure!(
@@ -6150,14 +4852,14 @@ fn run_history_fault_scenario(
     Ok(())
 }
 
-/// Plan shutdown/restart recovery acceptance journey driven through Flutter Driver.
+/// Plan shutdown/restart recovery acceptance journey driven by the operator runbook.
 ///
 /// Three real GUI lifecycles share one isolated home and one strict fixture
 /// script. The first lifecycle submits a real `plan_submit` through the GUI and
 /// shuts the GUI down normally while the confirmation is pending; the restart
 /// proves the reopened session restores the exact Plan body, interaction and
 /// turn identity with no account request before the answer (the coordinator
-/// holds the Driver on a quiet marker until the fixture counters prove it),
+/// holds the operator on a quiet marker until the fixture counters prove it),
 /// approves, and stages the Revise branch before a second normal shutdown; the
 /// recheck restores that second pending Plan, answers Revise (which must produce
 /// a rewritten Plan confirmation with a fresh interaction identity), approves
@@ -6193,12 +4895,7 @@ fn run_plan_recovery_scenario(
             "plan-recovery-recheck-gui.log",
         ),
     ];
-    let stage = working.join("plan-recovery-stage");
     let project = working.join("plan-recovery-project");
-    let quiet_restart_marker = working.join("plan-recovery-quiet-restart");
-    let quiet_recheck_marker = working.join("plan-recovery-quiet-recheck");
-    let mut driver_exits: BTreeMap<&'static str, Option<std::process::ExitStatus>> =
-        BTreeMap::new();
     let journey = (|| -> Result<()> {
         fs::create_dir(&project)?;
         ensure!(
@@ -6211,33 +4908,24 @@ fn run_plan_recovery_scenario(
         );
 
         // 1. First lifecycle: submit the Approve-branch Plan, then shut the GUI
-        // down normally through the Driver while the confirmation is pending.
+        // down normally while the confirmation is pending.
         let at_first_card = {
             let mut gui = start_recovery_gui(workspace, home, &gui_logs[0].0)?;
             let vm_url = wait_for_vm(&gui_logs[0].0, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_plan_recovery_driver(context, "first", &vm_url, &project)?;
-            wait_for_plan_recovery_stage(
-                "plan_recovery_first_card",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                &format!(
+                    "plan-recovery first: open {}, submit the Approve-branch Plan, leave the confirmation pending, then type done.",
+                    project.display()
+                ),
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(3_600),
             )?;
             let at_card = plan_recovery_settled_baseline(status_file)?;
-            let exit = wait_for_plan_recovery_driver(
-                "first",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-            )?;
-            driver_exits.insert("first", Some(exit));
+            capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "first")?;
             at_card
-            // The scoped handle terminates and reaps the resident process group
-            // after the native shutdown completed, before this home reopens.
         };
         let after_first = plan_recovery_read_status(status_file)?;
         ensure!(
@@ -6265,42 +4953,25 @@ fn run_plan_recovery_scenario(
         let at_revise_card = {
             let mut gui = start_recovery_gui(workspace, home, &gui_logs[1].0)?;
             let vm_url = wait_for_vm(&gui_logs[1].0, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_plan_recovery_driver(context, "restart", &vm_url, &project)?;
-            wait_for_plan_recovery_stage(
-                "plan_recovery_reopened",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                "plan-recovery restart: reopen the pending Plan, confirm the window stays quiet, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(3_600),
             )?;
             let mut quiet_evidence = serde_json::Map::new();
-            plan_recovery_quiet_window(
-                status_file,
-                after_first,
-                &mut quiet_evidence,
-                &quiet_restart_marker,
-            )?;
-            wait_for_plan_recovery_stage(
-                "plan_recovery_revise_card",
-                &stage,
-                &mut driver,
+            plan_recovery_quiet_window(status_file, after_first, &mut quiet_evidence)?;
+            wait_operator_done(
+                "plan-recovery restart answer: approve, stage the Revise branch, leave the second confirmation pending, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(3_600),
             )?;
             let at_card = plan_recovery_settled_baseline(status_file)?;
-            let exit = wait_for_plan_recovery_driver(
-                "restart",
-                &stage,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-            )?;
-            driver_exits.insert("restart", Some(exit));
+            capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "restart")?;
             fs::write(
                 output.join("plan-recovery-requests-restart.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -6340,32 +5011,24 @@ fn run_plan_recovery_scenario(
         {
             let mut gui = start_recovery_gui(workspace, home, &gui_logs[2].0)?;
             let vm_url = wait_for_vm(&gui_logs[2].0, &mut gui, &mut fixture, interrupt)?;
-            let mut driver = start_plan_recovery_driver(context, "recheck", &vm_url, &project)?;
-            wait_for_plan_recovery_stage(
-                "plan_recovery_recheck_reopened",
-                &stage,
-                &mut driver,
+            wait_operator_done(
+                "plan-recovery recheck: restore the second pending Plan, confirm the window stays quiet, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(3_600),
             )?;
             let mut quiet_evidence = serde_json::Map::new();
-            plan_recovery_quiet_window(
-                status_file,
-                after_restart,
-                &mut quiet_evidence,
-                &quiet_recheck_marker,
-            )?;
-            let exit = wait_for_plan_recovery_driver(
-                "recheck",
-                &stage,
-                &mut driver,
+            plan_recovery_quiet_window(status_file, after_restart, &mut quiet_evidence)?;
+            wait_operator_done(
+                "plan-recovery recheck answer: answer Revise then Approve, confirm neither answered Plan re-pops, then type done.",
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 interrupt,
+                Duration::from_secs(3_600),
             )?;
-            driver_exits.insert("recheck", Some(exit));
+            capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "recheck")?;
             let final_status = plan_recovery_read_status(status_file)?;
             fs::write(
                 output.join("plan-recovery-requests-recheck.json"),
@@ -6382,32 +5045,6 @@ fn run_plan_recovery_scenario(
         if source.is_file() {
             write_sanitized_log(source, &output.join(name))?;
         }
-    }
-    if stage.is_file() {
-        let value = fs::read_to_string(&stage)?;
-        if value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
-        {
-            fs::write(output.join("plan-recovery-stage.txt"), value)?;
-        }
-    }
-    let redactions = [
-        (app_dir.to_string_lossy().into_owned(), "<app>"),
-        (workspace.to_string_lossy().into_owned(), "<workspace>"),
-        (home.to_string_lossy().into_owned(), "<home>"),
-        (working.to_string_lossy().into_owned(), "<coord>"),
-    ];
-    for phase in ["first", "restart", "recheck"] {
-        let driver_log = working.join(format!("plan-recovery-{phase}-driver.log"));
-        write_realtime_driver_evidence(
-            &driver_log,
-            output,
-            &format!("plan-recovery-{phase}"),
-            driver_exits.get(phase).cloned().flatten(),
-            journey.as_ref().err(),
-            &redactions,
-        )?;
     }
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
@@ -6452,25 +5089,6 @@ fn run_plan_recovery_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    for phase in ["first", "restart", "recheck"] {
-        let summary: serde_json::Value = serde_json::from_slice(
-            &fs::read(output.join(format!("plan-recovery-{phase}-summary.json"))).with_context(
-                || format!("Flutter Driver did not write the plan-recovery {phase} summary"),
-            )?,
-        )?;
-        ensure!(
-            summary["scenario"] == "plan-recovery"
-                && summary["phase"] == phase
-                && summary["verdict"] == "pending",
-            "plan-recovery {phase} summary is missing its scenario, phase or pending verdict"
-        );
-        ensure!(
-            summary["status"] == "complete",
-            "plan-recovery {phase} journey did not complete: stage={} failedChecks={}",
-            summary["stage"],
-            summary["failedChecks"],
-        );
-    }
     ensure!(
         fixture_result.is_ok_and(|status| status.success())
             && accepted >= pl_provider_fixture::PLAN_RECOVERY_REQUIRED_STEPS
@@ -6527,7 +5145,6 @@ fn plan_recovery_quiet_window(
     status_file: &Path,
     baseline: pl_provider_fixture::FixtureLiveStatus,
     evidence: &mut serde_json::Map<String, serde_json::Value>,
-    marker: &Path,
 ) -> Result<()> {
     let reopened = plan_recovery_read_status(status_file)?;
     ensure!(
@@ -6548,7 +5165,6 @@ fn plan_recovery_quiet_window(
     evidence.insert("baseline".into(), serde_json::to_value(baseline)?);
     evidence.insert("reopened".into(), serde_json::to_value(reopened)?);
     evidence.insert("quietWindowMillis".into(), serde_json::json!(2_500));
-    fs::write(marker, "quiet")?;
     Ok(())
 }
 
@@ -6598,123 +5214,17 @@ fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<
     configure_isolated_gui_home(&mut command, home)?;
     command
         .current_dir(workspace)
-        .args(["xtask", "run-gui", "--driver"])
+        .args(["xtask", "run-gui", "--capture"])
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
-}
-
-fn start_plan_recovery_driver(
-    context: &RecoveryScenario<'_>,
-    phase: &str,
-    vm_url: &str,
-    project: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(
-        context
-            .working
-            .join(format!("plan-recovery-{phase}-driver.log")),
-    )?;
-    let mut command = driver_command(context.app_dir, "test_driver/plan_recovery_journey.dart");
-    command
-        .args([phase, vm_url])
-        .arg(project)
-        .arg(context.output)
-        .arg(context.working)
-        .env("ANYWORK_HOME", context.home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-/// Waits, bounded, for the Driver to publish [expected] as a reached stage.
-///
-/// Each stage is its own marker file, written once and never overwritten: the
-/// latest-stage file is rewritten by the shutdown and the final summary
-/// moments later, so polling its content could skip a stage between two
-/// polls. The Driver's stage names match the marker file names exactly.
-fn wait_for_plan_recovery_stage(
-    expected: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    timeout: Duration,
-) -> Result<()> {
-    let marker = stage.with_file_name(format!("plan-recovery-stage-{expected}"));
-    let deadline = Instant::now() + timeout;
-    loop {
-        if marker.is_file() {
-            return Ok(());
-        }
-        if let Some(status) = driver.child.try_wait()? {
-            bail!("plan-recovery Driver exited before {expected}: {status}");
-        }
-        ensure!(!gui.exited()?, "GUI exited before {expected}");
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited before {expected}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "plan-recovery journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "plan-recovery Driver timed out before {expected} (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Waits for the Driver to finish and returns its real exit status.
-fn wait_for_plan_recovery_driver(
-    phase: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(900);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            ensure!(
-                status.success(),
-                "plan-recovery {phase} Driver failed with {status} (last stage: {})",
-                fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-            );
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "GUI exited before the plan-recovery {phase} journey completed"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during the plan-recovery {phase} journey"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "plan-recovery {phase} journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "plan-recovery {phase} journey timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// Durable history state read back after the faulted turn committed.
 struct HistoryFaultAfter {
     watermark: HistoryLockWatermark,
-    items: HistoryLockTurnItems,
-    /// Committed items of the faulted turn whose payload carries the safe-tool marker.
+    answer_items: i64,
+    /// Committed items whose payload carries the safe-tool marker.
     tool_marker_items: i64,
 }
 
@@ -6754,18 +5264,11 @@ fn history_fault_interface_needs() -> serde_json::Value {
 
 /// Per-session history watermarks read directly from the real `history.sqlite`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct HistoryLockWatermark {
+pub(super) struct HistoryLockWatermark {
     /// Committed `history_turns` rows.
-    turns: i64,
+    pub(super) turns: i64,
     /// `history_meta.applied_write_seq`, the durable write watermark.
-    write_seq: i64,
-}
-
-/// Items of one Turn, and how many of them carry the expected answer text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct HistoryLockTurnItems {
-    items: i64,
-    answer_items: i64,
+    pub(super) write_seq: i64,
 }
 
 /// Locates the single per-session history library of the isolated home.
@@ -6773,7 +5276,7 @@ struct HistoryLockTurnItems {
 /// The acceptance deliberately locks the *real* library, never a copy. The home
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
-fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
+pub(super) fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
     let projects = home.join("data/workspaces");
     let mut candidates = Vec::new();
     if projects.is_dir() {
@@ -6799,8 +5302,28 @@ fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
     Ok(candidates.remove(0))
 }
 
+/// Reads the single Thread id stored in the isolated home's history library.
+pub(super) fn history_owner_thread(home: &Path) -> Result<String> {
+    let path = history_lock_database(home)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(&path).read_only(true),
+        )
+        .await?;
+        let owner: String = sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
+            .fetch_one(&mut connection)
+            .await?
+            .try_get("thread_id")?;
+        ensure!(!owner.is_empty(), "history library has an empty Thread id");
+        Ok(owner)
+    })
+}
+
 /// Reads the durable history watermarks through a read-only connection.
-fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
+pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -6832,7 +5355,7 @@ fn history_lock_watermark(database: &Path) -> Result<HistoryLockWatermark> {
 /// Proves the exact file committed before a forced exit still opens and passes
 /// SQLite's own integrity check after a reopen, rather than only that some file
 /// exists.
-fn history_lock_quick_check(database: &Path) -> Result<String> {
+pub(super) fn history_lock_quick_check(database: &Path) -> Result<String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -6851,75 +5374,30 @@ fn history_lock_quick_check(database: &Path) -> Result<String> {
     })
 }
 
-/// Counts one Turn's committed items and how many carry [answer].
-fn history_lock_turn_items(
-    database: &Path,
-    turn_id: &str,
-    answer: &str,
-) -> Result<HistoryLockTurnItems> {
+/// Counts committed history items whose payload carries [needle].
+fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let database = database.to_owned();
     let display = database.clone();
-    let turn_id = turn_id.to_owned();
-    let answer = answer.to_owned();
-    runtime.block_on(async move {
-        let options = SqliteConnectOptions::new()
-            .filename(&database)
-            .read_only(true);
-        let mut connection = SqliteConnection::connect_with(&options).await?;
-        let statement = "SELECT COUNT(*), \
-             COALESCE(SUM(CASE WHEN payload LIKE ?1 THEN 1 ELSE 0 END), 0) \
-             FROM history_items WHERE turn_id = ?2";
-        let (items, answer_items): (i64, i64) = sea_orm::sqlx::query_as(statement)
-            .bind(format!("%{answer}%"))
-            .bind(turn_id.clone())
-            .fetch_one(&mut connection)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to read committed items for turn {turn_id} from {}",
-                    display.display()
-                )
-            })?;
-        Ok(HistoryLockTurnItems {
-            items,
-            answer_items,
-        })
-    })
-}
-
-/// Counts one Turn's committed items whose payload carries [needle].
-///
-/// Used for the safe-tool marker, whose committed presence proves the deferred
-/// tool result really landed for that turn. It is read-only and never creates or
-/// upgrades the library.
-fn history_fault_payload_count(database: &Path, turn_id: &str, needle: &str) -> Result<i64> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let database = database.to_owned();
-    let display = database.clone();
-    let turn_id = turn_id.to_owned();
     let needle = needle.to_owned();
     runtime.block_on(async move {
         let options = SqliteConnectOptions::new()
             .filename(&database)
             .read_only(true);
         let mut connection = SqliteConnection::connect_with(&options).await?;
-        let statement = "SELECT COUNT(*) FROM history_items WHERE turn_id = ?2 AND payload LIKE ?1";
-        let (count,): (i64,) = sea_orm::sqlx::query_as(statement)
-            .bind(format!("%{needle}%"))
-            .bind(turn_id.clone())
-            .fetch_one(&mut connection)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to count committed items for turn {turn_id} from {}",
-                    display.display()
-                )
-            })?;
+        let (count,): (i64,) =
+            sea_orm::sqlx::query_as("SELECT COUNT(*) FROM history_items WHERE payload LIKE ?1")
+                .bind(format!("%{needle}%"))
+                .fetch_one(&mut connection)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to count committed items matching {needle} from {}",
+                        display.display()
+                    )
+                })?;
         Ok(count)
     })
 }
@@ -6930,28 +5408,14 @@ fn start_stress_body_gui(workspace: &Path, home: &Path, log_path: &Path) -> Resu
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-fn start_stress_body_driver(
-    context: &StressBodyScenario<'_>,
-    vm_url: &str,
-    project: &Path,
-    stage: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = driver_command(context.app_dir, "test_driver/stress_body.dart");
-    command
-        .arg(vm_url)
-        .arg(project)
-        .arg(context.output)
-        .arg(context.working)
-        .arg(context.scenario)
-        .env("ANYWORK_HOME", context.home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
@@ -6968,7 +5432,13 @@ fn start_realtime_gui(
     command
         .current_dir(workspace)
         // Profile/AOT keeps the recorded frame timings representative, matching stress.
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home);
     // §24.3: only the realtime journey raises the real conversation-credit
     // producer to debug for the Pending diagnostic; the warn floor for
@@ -6984,165 +5454,23 @@ fn start_realtime_gui(
     OwnedProcess::start(&mut command, false)
 }
 
-fn start_realtime_driver(
-    app_dir: &Path,
-    home: &Path,
-    vm_url: &str,
-    project: &Path,
-    output: &Path,
-    working: &Path,
-    stage: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = driver_command(app_dir, "test_driver/realtime_journey.dart");
-    command
-        .arg(vm_url)
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-fn wait_for_realtime_driver(
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(900);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            // Return the status even on failure so the caller can record the
-            // exit code; it decides whether the run counts as successful.
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "GUI exited before the realtime journey completed"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during the realtime journey"
-        );
-        ensure!(interrupt.try_recv().is_err(), "realtime journey cancelled");
-        ensure!(
-            Instant::now() < deadline,
-            "realtime journey timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
-}
-
 fn start_history_lock_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
         // Profile/AOT keeps the observed timings representative, like realtime.
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
-}
-
-fn start_history_lock_driver(
-    app_dir: &Path,
-    home: &Path,
-    vm_url: &str,
-    project: &Path,
-    output: &Path,
-    working: &Path,
-    stage: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = driver_command(app_dir, "test_driver/history_writer_journey.dart");
-    command
-        .arg(vm_url)
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-/// Waits, bounded, for the Driver to publish [expected] as its current stage.
-fn wait_for_history_lock_stage(
-    expected: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    timeout: Duration,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if stage.is_file() && fs::read_to_string(stage)? == expected {
-            return Ok(());
-        }
-        if let Some(status) = driver.child.try_wait()? {
-            bail!("history-lock Driver exited before {expected}: {status}");
-        }
-        ensure!(!gui.exited()?, "GUI exited before {expected}");
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited before {expected}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "history-lock journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "history-lock Driver timed out before {expected} (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Waits for the Driver to finish, returning its real exit status.
-fn wait_for_history_lock_driver(
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(600);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "GUI exited before the history-lock journey completed"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during the history-lock journey"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "history-lock journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "history-lock journey timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 fn start_history_fault_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
@@ -7151,104 +5479,17 @@ fn start_history_fault_gui(workspace: &Path, home: &Path, log_path: &Path) -> Re
     command
         .current_dir(workspace)
         // Profile/AOT keeps the observed timings representative, like history-lock.
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--profile",
+            "--native-launch",
+        ])
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
-}
-
-fn start_history_fault_driver(
-    app_dir: &Path,
-    home: &Path,
-    vm_url: &str,
-    project: &Path,
-    output: &Path,
-    working: &Path,
-    stage: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = driver_command(app_dir, "test_driver/history_fault_journey.dart");
-    command
-        .arg(vm_url)
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .env("ANYWORK_HOME", home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-/// Waits, bounded, for the Driver to publish [expected] as its current stage.
-fn wait_for_history_fault_stage(
-    expected: &str,
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    timeout: Duration,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if stage.is_file() && fs::read_to_string(stage)? == expected {
-            return Ok(());
-        }
-        if let Some(status) = driver.child.try_wait()? {
-            bail!("history-fault Driver exited before {expected}: {status}");
-        }
-        ensure!(!gui.exited()?, "GUI exited before {expected}");
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited before {expected}"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "history-fault journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "history-fault Driver timed out before {expected} (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Waits for the Driver to finish, returning its real exit status.
-fn wait_for_history_fault_driver(
-    stage: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(600);
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            return Ok(status);
-        }
-        ensure!(
-            !gui.exited()?,
-            "GUI exited before the history-fault journey completed"
-        );
-        ensure!(
-            !fixture.exited()?,
-            "account fixture exited during the history-fault journey"
-        );
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "history-fault journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "history-fault journey timed out (last stage: {})",
-            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 fn write_sanitized_log(source: &Path, destination: &Path) -> Result<()> {
@@ -7291,7 +5532,7 @@ fn write_sanitized_log(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Persists the Flutter Driver log and an error digest as reviewable evidence.
+/// Persists the GUI log and an error digest as reviewable evidence.
 ///
 /// The source log lives under the isolated coordination directory that is
 /// removed with the run, so both files are written here. The full log is
@@ -7540,14 +5781,15 @@ mod scenario_cli_tests {
             "timeline-history",
             "question-history",
             "realtime-presentation",
+            "sidebar-query",
         ] {
-            let options = ManualGuiOptions::try_parse_from(["acceptance", "--scenario", scenario])
+            let options = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])
                 .expect("supported native presentation scenario");
-            assert_eq!(options.scenario, scenario);
+            assert_eq!(options.preset, scenario);
         }
         for scenario in ["acp-auto-install", "unknown-scenario"] {
             assert!(
-                ManualGuiOptions::try_parse_from(["acceptance", "--scenario", scenario]).is_err()
+                ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario]).is_err()
             );
         }
     }

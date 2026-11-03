@@ -87,10 +87,7 @@ abstract final class TimelinePreviewFixtures {
       },
     },
     bodies: [
-      body(
-        'tool.arguments',
-        '{"command":"cargo flutter test test/features/timeline"}',
-      ),
+      body('tool.arguments', '{"command":"cargo flutter test test/ui"}'),
       body('tool.result', '00:04 +12: All tests passed!'),
     ],
   );

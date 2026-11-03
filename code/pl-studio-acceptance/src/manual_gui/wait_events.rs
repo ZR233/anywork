@@ -48,9 +48,11 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
             .current_dir(workspace)
             .args([
                 "xtask",
-                "run-gui",
-                "--integration-test",
-                "integration_test/wait_events_test.dart",
+                "test-project",
+                "--suite",
+                "desktop",
+                "--case",
+                "wait_events",
             ])
             .env("ANYWORK_HOME", home)
             .env("ANYWORK_WAIT_PROJECTS", &projects)

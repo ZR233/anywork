@@ -21,7 +21,7 @@ fixture 仅模拟 loopback 外部供应商及响应 gate。`verdict.json` 始终
 执行并等待真实终态；任何 ACK、截断输出或子代理未完成报告均不作为 Git 证据。
 
 旅程分多个有界 Turn，分别观察干净基线派生、脏工作区准入、工作树清理保护和重启读取。
-每个阶段在 provider observation 保留实际调用、完整结果与 Git/文件后置事实；Driver 保存
+每个阶段在 provider observation 保留实际调用、完整结果与 Git/文件后置事实；内容捕获保存
 真实 root/child 身份、截图和 canonical 快照，不通过填入期望值制造结果。合成 Git 写入
 仅限本次环境；只有合成文件显式暂存，身份与 hook 配置限定单条命令，不修改用户 Git 配置。
 
@@ -59,48 +59,40 @@ fixture 仅模拟 loopback 外部供应商及响应 gate。`verdict.json` 始终
 
 可靠附件、旧 preserved、bot、取消与真实 SSH 的额外证据仍逐项记录实际覆盖；
 不能从上述主旅程通过外推这些边界，也不把终态路径重现拒绝外推为所有身份替换情况。harness 的最终
-`manual_capture` 与进程回收规则不变，Driver 不提前 shutdown。
+内容捕获与进程回收规则不变，操作者在 `done` 之前不请求产品退出。
 
 ## 启动与资源所有权
 
 从仓库根目录运行，每次指定一个尚不存在的证据目录：
 
 ```bash
-cargo xtask manual-gui --scenario delegation-routing --output <artifacts>/routing
-cargo xtask manual-gui --scenario delegation-lifecycle --output <artifacts>/lifecycle --retain-environment
-cargo xtask manual-gui --scenario delegation-window --output <artifacts>/window --retain-environment
-cargo xtask manual-gui --scenario delegation-enablement --output <artifacts>/enablement
-cargo xtask manual-gui --scenario delegation-recovery --output <artifacts>/recovery --retain-environment
-cargo xtask manual-gui --scenario delegation-review-feedback --output <artifacts>/review-feedback --retain-environment --delegation-driver code/anywork/test_driver/delegation_review_feedback_journey.dart
-cargo xtask manual-gui --scenario delegation-worktree --output <artifacts>/worktree --retain-environment --delegation-driver code/anywork/test_driver/delegation_worktree_journey.dart
+cargo xtask manual-gui --preset delegation-routing --output <artifacts>/routing
+cargo xtask manual-gui --preset delegation-lifecycle --output <artifacts>/lifecycle --retain-environment
+cargo xtask manual-gui --preset delegation-window --output <artifacts>/window --retain-environment
+cargo xtask manual-gui --preset delegation-enablement --output <artifacts>/enablement
+cargo xtask manual-gui --preset delegation-recovery --output <artifacts>/recovery --retain-environment
+cargo xtask manual-gui --preset delegation-review-feedback --output <artifacts>/review-feedback --retain-environment
+cargo xtask manual-gui --preset delegation-worktree --output <artifacts>/worktree --retain-environment
 ```
 
-默认是有交互终端的原生 debug/Driver 场景。Linux SSH 没有显示时，复用已有的
+默认是有交互终端的原生 debug 场景。Linux SSH 没有显示时，复用已有的
 `GDK_BACKEND=x11 xvfb-run -a ... script -q -e -c '<上述命令>' /dev/null` 入口；动态
 端口不使用 `1420`。Xvfb 由外层 `xvfb-run` 拥有，必须等待外层命令退出后核对回收。
 不能直接运行 `flutter run`，也不要使用 demo。GUI 未完成生成/编译时不要盲启动。
 
 独立供应商 fixture 由 harness 在服务期限开始前使用 Cargo `release` profile 构建，
-GUI 仍保持上述原生 debug/Driver 模式。完整请求证据、原子发布和真实进程退出仍须在
+GUI 仍保持上述原生 debug 模式。完整请求证据、原子发布和真实进程退出仍须在
 既定停止期限内完成；不因业务阶段已经通过而忽略收尾失败。
 
-可选 `--delegation-driver <正式或当前会话 scratch 中的 Dart 脚本>`。harness 通过已有纯
-Dart Driver 入口运行它，依次传入：
+可选 `--delegation-driver` 只把操作者脚本路径记入证据，harness **不启动**该脚本。
+操作者按 runbook 用真实键盘/指针完成 UI，输入 `done` 后 harness 调用
+`tool/capture_ui.dart`（`ext.anywork.capture` / `ext.anywork.requestExit`），要求
+`capture-stage.txt=shutdown_completed` 并等待所属 GUI 进程真正退出。其他动作码仅记录、
+不会替你点击 UI。生命周期、窗口、恢复、工作树和 review-feedback 场景会在第一次 `done`
+后自动重开同一 home，第二次 `done` 才结束。EOF、取消、超时、缺主流程、provider 拒绝、
+shutdown 或进程退出异常都向最外层非零传播。
 
-1. 本次实测 VM Service URL；2. 合成 Git project；3. 本阶段 evidence directory；
-4. 合成 environment root；5. `first` 或 `reopen`；6. fixture loopback origin。
-
-脚本复用 `test_driver/flutter_driver_session.dart`，所有调用有界，`finally` 关闭
-连接；它只能通过真实 UI 执行业务操作、通过 snapshot 观察。返回非零是失败，不吞掉
-assertion。**脚本返回前不要 shutdown 应用**，harness 随后调用既有
-`manual_capture.dart`，要求 `capture-stage.txt=shutdown_completed` 并等待所属 GUI
-进程真正退出。无脚本时，外部 Driver 操作完后输入 `done`，其他动作码仅记录、不会替你
-点击 UI。生命周期、窗口、恢复、工作树和 review-feedback 场景会在第一次 `done`/脚本返回后
-自动重开同一 home，第二次
-`done` 才结束。EOF、取消、超时、缺主流程、provider 拒绝、Driver 非零、shutdown 或
-进程退出异常都向最外层非零传播。
-
-fixture、Flutter/DTD/GUI、Driver 都沿用 `OwnedProcess` 所属进程组的正常/失败回收。
+fixture、Flutter/GUI 都沿用 `OwnedProcess` 所属进程组的正常/失败回收。
 取消优先发送本次伪终端 Ctrl-C，再等待宿主 exec 终态；不能用全局 pkill。成功关闭后
 `--retain-environment` 才保留**整个环境根**并写 `retained-environment.json`，不能只复制
 home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束后的 retained environment
@@ -241,7 +233,7 @@ fixture 的期望清单重新实现候选路由器。第一个自动 child 使�
 
 **截图**：默认模式/偏好，草稿跟随/覆盖及有效值，冻结 Thread 策略，子代理菜单中 A/other
 与 A/B 同名型号的账号区别，长名/窄窗口、状态不挤出。全局修改后旧 root 保持原值，
-草稿覆盖不污染默认；这些 UI/canonical 行为由 Driver 独立断言，fixture 不冒充证明。
+草稿覆盖不污染默认；这些 UI/canonical 行为由真实界面与 canonical 证据独立断言，fixture 不冒充证明。
 
 ## 2. delegation-lifecycle：完整交付、审查、返修、最终评价
 
@@ -299,7 +291,7 @@ Closed。此时只 close 保留的 executor 与第三位 reviewer，取得真实
 第二阶段 child completion
 计数必须与第一阶段相同（正常 root completion 不计为 child 调用）。结束时再次 `done`。
 
-Driver 的外部 marker 不变：第一阶段原 root `[[delegation:lifecycle]]`、另一 root
+外部 marker 不变：第一阶段原 root `[[delegation:lifecycle]]`、另一 root
 `[[delegation:foreign]]`；第二阶段选回原 root `[[delegation:cold]]`。provider state 的
 `lifecycle_complete` observation 收据现在是 `executor`（revision 2）、`reviewers` 数组
 （按首轮/修复后/新增要求后三位排列，各 revision 1），不再有单个 `reviewer` 更新到
@@ -375,7 +367,7 @@ child，最多同时 2 个 Open child）。覆盖：
 
 CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings typed CAS 操作产生，
 不能仅以 fixture 请求计数宣称 CAS 通过。全局默认重开、Settings 与草稿 pending/error 的
-细粒度断言由 Client/adapter 契约及最终 GUI Driver 证据共同承担。
+细粒度断言由 Client/adapter 契约及最终 GUI 内容捕获证据共同承担。
 
 ## 5. delegation-recovery：正常退出后同 child 续修与显式关闭对照
 
@@ -399,7 +391,7 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
    `reviewerClose` 的真实 `target/agents/error`，并核对该 reviewer 的 `executionClosed/worktreeCleanup`。executor 此时必须 Open、
    reviewer 必须 Closed，无 pending，所有模型/父子/最新 Turn 与真实目录一致。
 4. root 显示 `delegation recovery first complete` 后保存截图、canonical 状态与真实 root ID，
-   输入第一次 `done`（或 first Driver 正常返回）。harness 正常 shutdown，等待
+   输入第一次 `done`。harness 正常 shutdown，等待
    `capture-stage.txt=shutdown_completed`、GUI 真 exit 0 和所属进程回收，再同 home/同 fixture
    端口启动 reopen。不能先向 executor 发送新输入，也不能在 first 偷跑 reopen marker。
 
@@ -476,16 +468,15 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
   并确认关闭目标没有新增请求。原 lifecycle/window 的第二阶段 child 请求总数不增规则仍保留，
   不套用于本场景的合法恢复调用。
 - outer fixture 同时要求两个主完成 checkpoint、真实关闭拒绝 checkpoint 和上述四个实际 final，
-  拒绝请求、缺阶段、空旅程、只启动就 done、Driver 非零、shutdown/进程退出失败全部向外非零。
+  拒绝请求、缺阶段、空旅程、只启动就 done、shutdown/进程退出失败全部向外非零。
   observation/receipt 不能替代真实 GUI shutdown、同 home 重开、截图与产品 canonical 证据。
 - 精确锁内 send/close/restore 交错仍是 unproved；不加生产 testhook、不以 sleep 竞赛作证明，
   不改私有库或构造 CallContext。迁移/保存故障由生产 owner 的允许专项验证承担。
 
-## Driver 对接（唯一 key 源与只读观察）
+## 控件身份（唯一 key 源与只读观察）
 
-宿主脚本读取 `code/anywork/lib/src/shared/studio_driver_key_values.dart`，不要自行拼接
-账号/模型 key 或添加业务 Driver command。使用 `FlutterDriverSession.rawTap`，不使用
-屏幕坐标；菜单是否已打开先观察，不重放有副作用的提交。
+操作者与测试读取 `code/anywork/lib/src/shared/studio_driver_key_values.dart`，不要自行拼接
+账号/模型 key。菜单是否已打开先观察，不重放有副作用的提交。
 
 - `sessionSettings` → `draftDelegationMode` / `draftDelegationPreference` → 对应
   `delegationModeOption('draft', null|mode)` / `delegationPreferenceOption(...)`。
@@ -549,8 +540,8 @@ Authorization、完整系统提示词或操作者正文。最终 fixture 原请�
 列表/详情都必须保留同一非零参考价；这些断言只观察产品查询，不在 fixture 中重做资格算法、
 经济排序或套餐换算。供应商为确定性脚本，不能证明真实模型会遵循选模偏好；偏好内容仍须审查。
 
-账号开关的真实 GUI 旅程复用 `cargo xtask manual-gui --scenario gui`，在隔离环境应用启动后
-运行 `cargo dart test_driver/account_settings_journey.dart <VM_URL> <当前会话 artifacts>/account`。
+账号开关的真实 GUI 旅程复用 `cargo xtask manual-gui --preset gui`，在隔离环境应用启动后
+由操作者按同一顺序完成真实 UI，并用内容捕获保存证据。
 旅程增加 `no-charge-canonical`、`account-save-preserved-overrides`、
 `no-charge-off-restores-auto` 快照：开启得到 canonical `noCharge`；保存开启之前已建立的
 连接草稿不回滚类别；再次编辑关闭清除覆盖，取消连接草稿也不撤销已提交的窄意图。
@@ -566,17 +557,16 @@ Authorization、完整系统提示词或操作者正文。最终 fixture 原请�
 root 运行两受控 native 与必要门禁，再由人工判定。原报告没有 `forward`，不保留旧结构兜底。
 原 GUI01–05 失败与 GUI06 在旧组合上的 first/reopen 通过均保留，不外推为本次整合通过。
 
-使用本文件开头的正式脚本命令。该场景复用现有 manual-gui、synthetic A/B loopback 账号、
+使用本文件开头的正式命令。该场景复用现有 manual-gui、synthetic A/B loopback 账号、
 真实 GUI/bridge/Runtime/Thread 工具、fixture response gate、OwnedProcess 和
-manual_capture；不新增 harness、生产角色、用户配置、消费账本 API 或数据库注入。
-脚本在项目草稿通过真实菜单选 **Simple、自动/平衡**，每个独立问题创建新 root。
+内容捕获；不新增 harness、生产角色、用户配置、消费账本 API 或数据库注入。
+操作者在项目草稿通过真实菜单选 **Simple、自动/平衡**，每个独立问题创建新 root。
 Simple 只避免无关 Plan 交互；这不能证明 Task 的提示词、模型决策质量、真实固定/自动
 用户配置或供应商兼容性。后续真实 Task 验收仍是独立要求。
 
 ### first：实际动作及标记
 
-正式 Driver 自动执行以下顺序；无脚本时也必须用 Flutter Driver 做相同真实 UI 操作，
-不要在 shell/DB 中创建产品 Thread 或改状态。
+操作者按以下顺序做相同真实 UI 操作，不要在 shell/DB 中创建产品 Thread 或改状态。
 
 | root | 用户输入 marker | 必需 provider checkpoint |
 | --- | --- | --- |
@@ -624,7 +614,7 @@ Simple 只避免无关 Plan 交互；这不能证明 Task 的提示词、模型�
    的主证据。记录 `rf-normal-compact-complete` 后才提交 normal-full。它通过公开
    `read_agent_session` 的真实 agent/turn、descending/full、每页50、最多4页找到精确
    原文和 commentary；随后出现全文属于显式授权读取，不记为默认泄漏。
-5. Driver 打开已有 agent 菜单，核各实际 child 的冻结 route；再进入原 reviewer 只读历史，
+5. 操作者打开已有 agent 菜单，核各实际 child 的冻结 route；再进入原 reviewer 只读历史，
    展开真实正文详情、复制后通过既有只读 clipboard 命令逐字核全文并留截图。无需也不要求
    target 上不存在的反馈输入历史卡片。返回原 root 后继续其余独立 roots。
 6. approved、inconclusive、natural、omitted 分别核真实结论与无自动转交的实际后态。
@@ -670,12 +660,12 @@ busy/changed/closed 均先获得真实 idle target 交付，再创建冻结 Revi
 
 ### 正常 shutdown 与 reopen
 
-first 完成后，Driver 保存正常 root 导航身份到隔离环境 `review-feedback-baseline.json`，另将
+first 完成后，操作者保存正常 root 导航身份到隔离环境 `review-feedback-baseline.json`，另将
 三个异常 root 的真实 snapshot workspaceId/rootId、原提交/独立异常完整模型可见字节与身份、
 正常链证据及全场 child 计数写入 `review-feedback-first-evidence.json`，并在本阶段输出目录
 保留同名副本。写失败直接失败，不以 fixture 内存缓存替代落盘；这些文件不写产品状态。
-脚本返回前不 shutdown；
-harness 继续 manual_capture，等待 shutdown_completed、GUI exit 和进程树回收，然后用
+操作者输入 `done` 前不请求产品退出；
+harness 继续内容捕获，等待 shutdown_completed、GUI exit 和进程树回收，然后用
 **同一 home、同一仍存活 fixture** 重开。
 
 reopen 先通过既有 `restoreColdStartTarget` 逐个恢复 busy/changed/closed 原 root，分别提交
@@ -687,7 +677,7 @@ reopen 先通过既有 `restoreColdStartTarget` 逐个恢复 busy/changed/closed
 它必须汇总三个异常 root 和正常链均已核验，任一路失败/缺证据都阻塞，first10/reopen1
 必需 checkpoint 集合不变。原 compact 的 child/turn/input/commit 身份及字节不变，异常
 通知不由原报告 ACK 代替；target 最新完成 Turn 不增，全场全部 child marker 请求计数不增，
-不能只比正常链。Driver 再与落盘 first 原件独立对照，fixture 缓存仅链接原身份、不是
+不能只比正常链。操作者再与落盘 first 原件独立对照，fixture 缓存仅链接原身份、不是
 重开事实来源。四个 root 自身因查询新增 Turn/请求是预期，不新建 recovery 工作分支，
 不向 target 重发任务，也不重新注入审查结论或异常。
 
@@ -699,12 +689,12 @@ reopen 先通过既有 `restoreColdStartTarget` 逐个恢复 busy/changed/closed
 ### 证据、限时与未覆盖
 
 - 真实截图/快照：各 checkpoint、`normal-child-list`、`reviewer-full-history-detail`、
-  两阶段 manual_capture；provider-observations.json、requests.json、gui/fixture/Driver
-  日志与 `review-feedback-driver.json` 共同核对。脚本没有屏幕或产品数据模拟写入。
-- Driver 每次业务完成等待最多300秒，UI点击最多30秒、详情加载/滚动最多60秒；harness
+  两阶段内容捕获；provider-observations.json、requests.json、gui/fixture
+  日志共同核对。没有屏幕或产品数据模拟写入。
+- 每次业务完成等待最多300秒，UI 操作最多30秒、详情加载/滚动最多60秒；harness
   每阶段总上限1800秒，正常退出最多120秒。轮询间隔只决定观测频率，不作为完成依据。
 - first 的10个 checkpoint 与 reopen 的独立 checkpoint 均必需，缺失、重复、provider
-  拒绝、Driver非零、capture或进程退出失败都保留失败，不用“命令启动成功”代替旅程完成。
+  拒绝、capture 或进程退出失败都保留失败，不用“命令启动成功”代替旅程完成。
 - humanVerdict 始终 pending，必须人工核截图、状态、真实工具回执、请求和 reviewer 历史。
   本次基础整合阶段不运行 GUI/live/full；后续接口迁移与适用验证由 root 统一安排，
   静态脚本核对、旧 GUI06 证据或 Rust 编译不冒充新组合通过。

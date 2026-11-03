@@ -4,7 +4,7 @@ part of 'studio_shell.dart';
 ///
 /// 阅读布局（并排 / 全宽 / 窄窗）只替换 [readingArea]；[footer] 始终是同一个子位置，
 /// 因此布局切换、窗口跨阈值与计划详情关开都不会重建反馈栏的 State（草稿、错误与
-/// 在途决定锁）。这条契约由 `test/client/plan_feedback_lifecycle_test.dart` 直接
+/// 在途决定锁）。这条契约由 `test/ui/plan_feedback_lifecycle_test.dart` 直接
 /// 挂上真实 `PlanConfirmationDock` 断言。
 class StudioWorkspaceBody extends StatelessWidget {
   const StudioWorkspaceBody({

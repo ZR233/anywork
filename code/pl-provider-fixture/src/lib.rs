@@ -147,9 +147,9 @@ pub fn gui_markdown_answer() -> String {
 /// `delegation-*` scenes keep the generic step script empty, but the dedicated
 /// delegation fixture still serves its controlled synthetic responses and the
 /// control/observation routes, and it verifies the real requests against them.
-/// The GUI side is driven by the optional delegation Driver
-/// (`--delegation-driver`), or by the manual flow when it is absent.
-pub const GUI_SCENARIOS: [&str; 32] = [
+/// The GUI side is driven by the operator runbook. `--delegation-driver`
+/// only records an optional script path in evidence; the harness does not launch it.
+pub const GUI_SCENARIOS: [&str; 33] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -175,6 +175,7 @@ pub const GUI_SCENARIOS: [&str; 32] = [
     "timeline-history",
     "timeline-history-20k",
     "wait-events",
+    "conversation-read-work",
     "delegation-routing",
     "delegation-lifecycle",
     "delegation-window",
@@ -2387,7 +2388,7 @@ pub fn gui_stress_body_script() -> Vec<Step> {
 /// live phase above the preview budget permits multiple real growth samples
 /// before the interaction journey enters History. The default `stress-body`
 /// keeps its 5,000 token/s, 4s baseline. The title and follow-up sessions are
-/// identical, so the same Driver journey (session switch and reopening the
+/// identical, so the same interaction journey (session switch and reopening the
 /// latest page) applies.
 pub fn gui_stress_body_large_script() -> Vec<Step> {
     gui_stress_body_script_with(
@@ -3412,7 +3413,7 @@ pub fn gui_mode_editor_script() -> Vec<Step> {
 /// Shutdown-acceptance strict script.
 ///
 /// Eleven real model turns, one per submitting GUI phase (normal exit,
-/// second-instance continue, duplicated exit request, Driver hang, storage
+/// second-instance continue, duplicated exit request, isolate hang, storage
 /// prime, storage-lock blocked, unresponsive service, MCP reclamation, LSP
 /// reclamation, background-tool reclamation and concurrent stop). The LSP turn
 /// is two steps (`discover_tools` then the real `lsp_query`) and adds a matching

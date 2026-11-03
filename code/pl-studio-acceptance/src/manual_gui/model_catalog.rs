@@ -200,7 +200,7 @@ pub(super) fn write_runbook(
 
 ## 环境
 
-- 隔离 home: `{home}`（临时目录，运行结束即删；`--scenario gui` 与 catalog 重启旅程可加 `--retain-environment` 保留整个隔离环境）
+- 隔离 home: `{home}`（临时目录，运行结束即删；`--preset gui` 与 catalog 重启旅程可加 `--retain-environment` 保留整个隔离环境）
 - config.toml: `{config}`（随隔离 home 删除；结束时脱敏副本写入证据目录 `{output}/config.toml`，重启旅程为 `{output}/config-phase-a.toml` / `{output}/config-phase-b.toml`）
 - 控制文件（启动时读取一次）: `{control}`；证据副本 `{output}/model-catalog.json`
 - 成功观察缓存: `{cache}`（随隔离 home 删除；协调器把 model_id/`checkedAt`/`cachePath` 写进证据目录的 phase JSON）
@@ -254,12 +254,12 @@ JSON 字段（每个 account：`openai` / `openai-second` / `deepseek` / `mimo`�
 一条命令完成第 1 项和第 5 项（同 home、同端口，必须重启 fixture + GUI）：
 
 ```text
-cargo xtask manual-gui --scenario gui --model-catalog-inventory a --model-catalog-restart
+cargo xtask manual-gui --preset gui --model-catalog-inventory a --model-catalog-restart
 ```
 
 状态机：库存 A 启动 → 协调器断言 `catalog-openai` 缓存 model_id 集合含 `fixture-model-old`、`gpt-6-astra`、`gpt-6.1-sol` → 停 GUI（保留 home）→ 停 fixture（shutdown 后复制 `<evidence>/model-catalog-requests-a.json`）→ 写库存 B（去掉 `fixture-model-old` 与内置 model_id `gpt-6.1-sol`，保留 `gpt-6-astra`；`openai-second` 改为 `gpt-6-sol`）→ **同一端口**重启 fixture → 同一 home 重启 GUI → 协调器断言 old 与 `gpt-6.1-sol` 消失、`gpt-6-astra` 仍在、`checkedAt` 前进，并记录被选中的 `cachePath`。阶段 A 把 `catalog-openai` 路由设为 `fixture-model-old` 并写入连接/压缩覆盖；阶段 B 断言 `config.toml` 仍保留该路由与覆盖。
 
-协调器断言 = 原始在线缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。上述内置项的“消失”仅指在线缓存；管理目录仍须保留 `gpt-6.1-sol`，显示 `origin=bundled` 且自动默认关闭，显式启用后恢复选择资格。线上独有的 `fixture-model-old` 则从管理目录消失，覆盖不得将它重新注入。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
+协调器断言 = 原始在线缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。上述内置项的“消失”仅指在线缓存；管理目录仍须保留 `gpt-6.1-sol`，显示 `origin=bundled` 且自动默认关闭，显式启用后恢复选择资格。线上独有的 `fixture-model-old` 则从管理目录消失，覆盖不得将它重新注入。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--preset gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
 
 阶段 B 证据：`<evidence>/model-catalog-requests-b.json`（对应 fixture shutdown 后）、`catalog-phase-b-gui.log`、`fixture-restart.log`、`requests-restart.json`、`model-catalog-phase-a.json` / `model-catalog-phase-b.json`、脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
 
@@ -268,7 +268,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory a --model-catalo
 本工具每次运行都是全新隔离 home，并自带 fixture 子进程。不要在同一会话里改控制文件后热重启。
 
 ```text
-cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-all
+cargo xtask manual-gui --preset gui --model-catalog-inventory reject-all
 ```
 
 1. 全新隔离 home（无既有 `{cache}` 成功观察）。
@@ -298,7 +298,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-all
 ## 6. MiMo 发现
 
 ```text
-cargo xtask manual-gui --scenario gui --model-catalog-inventory a
+cargo xtask manual-gui --preset gui --model-catalog-inventory a
 ```
 
 1. 控制文件 MiMo 段包含 `mimo-v2.5-pro`、`mimo-v2.5`、`mimo-v2.6-pro` 以及 4 个媒体 model_id。
@@ -311,7 +311,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory a
 本工具每次运行都是全新隔离 home。验证失败隔离请单独重跑，不要依赖上一趟库存 A 的进程：
 
 ```text
-cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-second
+cargo xtask manual-gui --preset gui --model-catalog-inventory reject-second
 ```
 
 1. `catalog-openai` 走库存 A（含 `gpt-6-astra`）；`catalog-openai-second` 返回 401。
@@ -326,7 +326,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-second
 `real` 预设让 fixture 原样返回抓取下来的真实 `/models` 响应，用于离线复现真实报文字段（`context_window`、`max_output_tokens`、`input_modalities`、`effort`、`api_capabilities` 等），**不联网、不校验真实凭据**。
 
 ```text
-cargo xtask manual-gui --scenario gui --model-catalog-inventory real
+cargo xtask manual-gui --preset gui --model-catalog-inventory real
 ```
 
 1. 控制文件：`catalog-openai` 与 `catalog-openai-second` 用 `payload: "openai-aggregator"`（19 个 id），`catalog-deepseek` 用 `payload: "deepseek"`（2 个 id），`catalog-mimo` 仍是库存 A 的合成名单（含 4 个 TTS/ASR 媒体 model_id）。

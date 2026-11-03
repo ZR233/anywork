@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
@@ -36,7 +37,7 @@ void main() {
   testWidgets(
     'official Antigravity login, quota and persisted restart',
     (tester) async {
-      final graph = AppGraph.production();
+      final graph = createProductionAppGraph();
       final container = ProviderContainer(
         overrides: [
           appGraphProvider.overrideWithValue(graph),

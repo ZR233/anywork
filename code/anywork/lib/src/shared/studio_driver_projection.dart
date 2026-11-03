@@ -16,8 +16,8 @@ import '../features/shell/shell_view.dart' show projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_state.dart';
 
-/// The Driver borrows this application's Client. Binding creates no account,
-/// observation, draft, Session, ChatView, or native subscription.
+/// 只读诊断借用本应用的 Client。绑定不创建账号、观察、草稿、Session、ChatView
+/// 或原生订阅。
 ///
 /// [timeline] 只被读取当前展示；绑定它不建立内容订阅、业务 demand 或展示 lease。
 void bindStudioDriver(
@@ -44,7 +44,7 @@ void bindStudioDriver(
 }
 
 /// Read immutable current mirrors synchronously. No business projection is
-/// retained by Driver, and owner existence never depends on a account family.
+/// retained by diagnostics, and owner existence never depends on a account family.
 StudioDriverFacts queryStudioDriverFacts(
   AnyworkClient client, {
   required TimelineSessionOwner timeline,
@@ -862,7 +862,7 @@ StudioDriverBotsFacts? _botsFacts(AnyworkClient client) {
 /// `acpInstall` 的只读取证：阶段 token 由 typed 状态映射，不做字符串解析。
 ///
 /// 未加载时返回 null（不能把空快照当成“未准备”的事实）；loaded 但 revision 0
-/// 仍然如实给出事实，Driver 需要的正是 rev0 也提交观察的证据。
+/// 仍然如实给出事实，只读诊断需要的正是 rev0 也提交观察的证据。
 StudioDriverAcpInstallFacts? _acpInstallFacts(AcpService service) {
   final clock = service.install.value;
   final snapshot = clock.value;

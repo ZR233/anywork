@@ -47,7 +47,7 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
     });
     try {
       setState(() => _picking = true);
-      final path = await ref.read(projectDirectoryPickerProvider)(context);
+      final path = await ref.read(projectDirectoryPickerProvider)();
       if (mounted) setState(() => _picking = false);
       if (!mounted || path == null || path.isEmpty) return;
       await ref.read(anyworkClientProvider).directoryCommands.openProject(path);

@@ -790,6 +790,89 @@ void main() {
   });
 
   test(
+    'late A1 retirement cannot erase A2 unresolved close ownership',
+    () async {
+      final budget = ResourceBudget(
+        capacities: {
+          ...ResourceBudget().capacities,
+          ResourceKind.chatHandle: 3,
+        },
+      );
+      final fixture = ConversationFixture(budget: budget);
+      fixture.attach('thread-main', demand: _demand);
+      fixture.attach('thread-alt', demand: _demand);
+
+      fixture.repository.setVisibleThread('thread-main');
+      await fixture.transport.opened(0);
+      final owner = fixture.repository.existingSession('thread-main')!;
+      final firstAttempt = owner.content.currentAttemptId!;
+
+      fixture.repository.setVisibleThread('thread-alt');
+      await fixture.transport.opened(1);
+      final alternate = TestConversationFeed(
+        threadId: 'thread-alt',
+        subscriptionId: 'alt',
+      );
+      fixture.transport.opens[1].result.complete(alternate);
+      await alternate.deliver(ConversationChatEvent(batch: chatSet()));
+
+      fixture.repository.setVisibleThread('thread-main');
+      await fixture.transport.opened(2);
+      final second = TestConversationFeed(
+        threadId: 'thread-main',
+        subscriptionId: 'a2',
+      )..closeFailure = StateError('A2 close acknowledgement failed');
+      fixture.transport.opens[2].result.complete(second);
+      await second.deliver(ConversationChatEvent(batch: chatSet()));
+      final secondAttempt = owner.content.currentAttemptId!;
+      expect(secondAttempt, isNot(firstAttempt));
+
+      fixture.repository.setVisibleThread(null);
+      final report = await fixture.close(deadline: DateTime.utc(2000));
+      expect(
+        report.unresolved.any(
+          (entry) =>
+              entry.owner == 'conversation:thread-main' &&
+              entry.attemptId == secondAttempt,
+        ),
+        isTrue,
+      );
+
+      final first = TestConversationFeed(
+        threadId: 'thread-main',
+        subscriptionId: 'a1',
+      );
+      fixture.transport.opens[0].result.complete(first);
+      await first.closeCompleted.future;
+      expect(first.closeCalls, greaterThanOrEqualTo(1));
+
+      final retired = await fixture.client.retryCleanup();
+      expect(retired.complete, isFalse);
+      expect(budget.used(ResourceKind.chatHandle), 1);
+      expect(
+        fixture.client.unresolvedResources.any(
+          (entry) =>
+              entry.owner == 'conversation:thread-main' &&
+              entry.attemptId == secondAttempt,
+        ),
+        isTrue,
+        reason:
+            'the old successful retirement must not replace A2 close evidence',
+      );
+
+      second.closeFailure = null;
+      final recovered = await fixture.client.retryCleanup();
+      expect(recovered.complete, isTrue);
+      expect(budget.used(ResourceKind.chatHandle), 0);
+      expect(
+        fixture.transport.opens.where((open) => open.threadId == 'thread-main'),
+        hasLength(2),
+        reason: 'cleanup never reopens a timeline connection',
+      );
+    },
+  );
+
+  test(
     'terminal control frames use no credit and close does not await an ACK',
     () async {
       final fixture = ConversationFixture();

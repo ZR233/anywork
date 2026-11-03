@@ -15,7 +15,7 @@ Studio 使用 Release Please 的单一根组件管理版本：根版本文件、
 
 PR 质量门禁（PR Quality Gate）对 PR 头部分支运行 Release Please 演练（dry run）以验证发布配置；仅在 GitHub GraphQL API 返回已知瞬时错误时执行有限重试，其余错误直接判定失败。
 
-现有 PR 质量工作流包含格式、静态分析、自动化测试及生成文件一致性检查；稳定发布与 RC 构建直接消费已提交的生成文件。发布器的确定性构建、签名、安装和完整性验证属于最终产物的信任边界，不由源码检查替代。人工批准是发布授权，不是对未执行检查的成功证明；本文不另设本地提交前测试流程。
+现有 PR 质量工作流由 cheap `changes` 计划作业，始终运行的 `ci-gate` 汇总；包含格式、静态分析、Linux workspace `cargo test --locked --workspace --features pl-core/sqlite`、Flutter UI `flutter test --no-pub test/ui`、桌面 `test-project` 与受影响平台的 native 套件，以及生成文件一致性检查。稳定发布与 RC 构建直接消费已提交的生成文件，并与当次已验证的构建/测试过程共享同一 SHA。发布器的确定性构建、签名、安装和完整性验证属于最终产物的信任边界，不由源码检查替代。人工批准是发布授权，不是对未执行检查的成功证明；本文不另设本地提交前测试流程。
 
 ### 分阶段发布器（Publisher）与权限分离
 

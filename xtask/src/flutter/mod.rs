@@ -33,7 +33,7 @@ enum DemoMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlutterProcessMode {
     Batch,
-    ResidentDriver,
+    Resident,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -149,7 +149,8 @@ pub(crate) fn verify_gui() -> Result<()> {
             "--output=none",
             "--set-exit-if-changed",
             "lib",
-            "test_driver",
+            "test",
+            "tool",
             "integration_test",
         ],
         &app_dir,
@@ -160,7 +161,94 @@ pub(crate) fn verify_gui() -> Result<()> {
         &["analyze", "--no-pub"],
         DemoMode::Native,
     )?;
+    run_tool(
+        "dart",
+        &[
+            "--packages=.dart_tool/package_config.json",
+            "../../xtask/dart/client_boundary_check.dart",
+            "--ui-closure",
+            "../..",
+        ],
+        &app_dir,
+    )?;
     Ok(())
+}
+
+/// Runs one official desktop `integration_test` with the same bridge, helper,
+/// and resident process ownership as a debug GUI run.
+pub(crate) fn run_desktop_integration_test(test_path: &Path) -> Result<()> {
+    let workspace_root = paths::workspace_root()?;
+    let app_dir = paths::studio_app_dir(&workspace_root);
+    let target = DesktopTarget::current()?;
+    let resolved = resolve_integration_test_path(&app_dir, test_path)?;
+    let app_version = studio_version::read(&app_dir)?;
+    let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
+    let test_arg = resolved.to_string_lossy().into_owned();
+    print_context(&workspace_root, &app_dir);
+    ensure_desktop_build_environment(target)?;
+    ensure_flutter_dependencies(&workspace_root, &app_dir)?;
+    let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, DemoMode::Native)?;
+    let run_args = [
+        "test",
+        test_arg.as_str(),
+        "-d",
+        target.flutter_name(),
+        "--no-pub",
+        "--reporter=expanded",
+        version_define.as_str(),
+    ];
+    let bridge_artifacts = prepare_bridge_artifacts(
+        &workspace_root,
+        DemoMode::Native,
+        BridgeConfiguration::Debug,
+    )?;
+    run_flutter_with_process_mode(
+        &workspace_root,
+        &app_dir,
+        &run_args,
+        FlutterInvocation {
+            demo_mode: DemoMode::Native,
+            process_mode: FlutterProcessMode::Resident,
+            bridge_artifacts: bridge_artifacts.as_ref(),
+            remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            log_level: None,
+        },
+    )
+}
+
+fn resolve_integration_test_path(app_dir: &Path, test_path: &Path) -> Result<PathBuf> {
+    let root = app_dir
+        .join("integration_test")
+        .canonicalize()
+        .with_context(|| {
+            format!(
+                "integration_test directory is missing: {}",
+                app_dir.join("integration_test").display()
+            )
+        })?;
+    let candidate = if test_path.is_absolute() {
+        test_path.to_path_buf()
+    } else {
+        app_dir.join(test_path)
+    };
+    let path = candidate.canonicalize().with_context(|| {
+        format!(
+            "desktop integration test does not exist: {}",
+            candidate.display()
+        )
+    })?;
+    ensure!(
+        path.starts_with(&root),
+        "desktop integration test must be inside {}: {}",
+        root.display(),
+        path.display()
+    );
+    ensure!(
+        path.is_file(),
+        "desktop integration test is not a file: {}",
+        path.display()
+    );
+    Ok(path)
 }
 
 fn ensure_desktop_build_environment(target: DesktopTarget) -> Result<()> {
@@ -209,7 +297,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
             &mut command,
             FlutterInvocation {
                 demo_mode: DemoMode::Native,
-                process_mode: FlutterProcessMode::ResidentDriver,
+                process_mode: FlutterProcessMode::Resident,
                 bridge_artifacts: None,
                 remote_helper_bundle_dir: None,
                 log_level: options.log_level,
@@ -236,82 +324,16 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
-    let driver_attachment_define = options
-        .driver_attachment
-        .as_ref()
-        .map(|path| {
-            let path = path
-                .canonicalize()
-                .with_context(|| format!("Driver attachment does not exist: {}", path.display()))?;
-            ensure!(
-                path.is_file(),
-                "Driver attachment is not a file: {}",
-                path.display()
-            );
-            Ok::<_, anyhow::Error>(format!(
-                "--dart-define=ANYWORK_DRIVER_ATTACHMENT_PATH={}",
-                path.to_string_lossy()
-            ))
-        })
-        .transpose()?;
-    let integration_target = options
-        .integration_test
-        .as_ref()
-        .map(|path| {
-            let project = app_dir.canonicalize()?;
-            let root = app_dir.join("integration_test").canonicalize()?;
-            let path = app_dir.join(path).canonicalize()?;
-            ensure!(
-                path.starts_with(&root),
-                "integration test target must be inside {}",
-                root.display()
-            );
-            // Flutter's test discovery does not accept Windows device paths.
-            // Validate the canonical boundary above, then pass a project-relative
-            // target in the invocation's existing application working directory.
-            Ok::<_, anyhow::Error>(path.strip_prefix(project)?.to_string_lossy().into_owned())
-        })
-        .transpose()?;
-    let run_args = if let Some(path) = integration_target.as_deref() {
-        vec![
-            "test",
-            path,
-            "-d",
-            target.flutter_name(),
-            "--no-pub",
-            "--reporter=expanded",
-            &version_define,
-        ]
-    } else {
-        run_gui_args(
-            target,
-            &version_define,
-            options.driver,
-            options.profile,
-            driver_attachment_define.as_deref(),
-        )
-    };
-    let process_mode = if options.driver || integration_target.is_some() {
-        FlutterProcessMode::ResidentDriver
-    } else {
-        FlutterProcessMode::Batch
-    };
-    let bridge_artifacts = prepare_bridge_artifacts(
-        &workspace_root,
-        demo_mode,
-        if options.profile {
-            BridgeConfiguration::Profile
-        } else {
-            BridgeConfiguration::Debug
-        },
-    )?;
+    let run_args = run_gui_args(target, &version_define, options.capture);
+    let bridge_artifacts =
+        prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Debug)?;
     run_flutter_with_process_mode(
         &workspace_root,
         &app_dir,
         &run_args,
         FlutterInvocation {
             demo_mode,
-            process_mode,
+            process_mode: FlutterProcessMode::Batch,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
@@ -319,7 +341,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
     )
 }
 
-/// Builds the Driver bundle and launches the native artifact directly.
+/// Builds the debug/profile bundle and launches the native artifact directly.
 ///
 /// The platform launch tool reports exit code 0 for whatever the app does
 /// (`resident_runner.dart` `appFinished`/`_serviceDisconnected` complete `0`),
@@ -327,77 +349,32 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
 /// process the artifact's real parent: its `waitpid` status is authoritative,
 /// and a SIGTERM-ignoring grandchild the product failed to supervise shows up as
 /// a reclaimed descendant instead of being silently masked. The VM service is
-/// re-enabled through the same engine switches the launch tool uses, so the
-/// Flutter Driver still connects to the real bridge and native host.
+/// re-enabled through the same engine switches the launch tool uses.
 fn run_gui_native_launch(
     workspace_root: &Path,
     app_dir: &Path,
     target: DesktopTarget,
     options: RunGuiOptions,
 ) -> Result<()> {
-    ensure!(
-        options.driver,
-        "--native-launch requires a Driver build so the artifact still exposes the Driver requests"
-    );
     let app_version = studio_version::read(app_dir)?;
     let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
     print_context(workspace_root, app_dir);
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies(workspace_root, app_dir)?;
-    let demo_mode = if options.demo {
-        DemoMode::Demo
-    } else {
-        DemoMode::Native
-    };
+    let spec = NativeLaunchSpec::from_options(app_dir, &options)?;
+    let demo_mode = spec.demo_mode;
     let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
-    let driver_attachment_define = options
-        .driver_attachment
-        .as_ref()
-        .map(|path| {
-            let path = path
-                .canonicalize()
-                .with_context(|| format!("Driver attachment does not exist: {}", path.display()))?;
-            ensure!(
-                path.is_file(),
-                "Driver attachment is not a file: {}",
-                path.display()
-            );
-            Ok::<_, anyhow::Error>(format!(
-                "--dart-define=ANYWORK_DRIVER_ATTACHMENT_PATH={}",
-                path.to_string_lossy()
-            ))
-        })
-        .transpose()?;
-    // The Driver entrypoint the build targets: the frozen default, or the
-    // acceptance-selected Driver-only fault entrypoint. It must be a real file
-    // so a typo fails the launch instead of silently building lib/main.dart.
-    let driver_target = match options.native_launch_driver_target.as_deref() {
-        Some(path) => {
-            let path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                app_dir.join(path)
-            };
-            ensure!(
-                path.is_file(),
-                "native-launch Driver target does not exist: {}",
-                path.display()
-            );
-            path.to_string_lossy().into_owned()
-        }
-        None => "test_driver/driver_main.dart".to_owned(),
-    };
     let build_args = run_native_launch_args(
         target,
         &version_define,
-        options.profile,
-        &driver_target,
-        driver_attachment_define.as_deref(),
+        spec.profile,
+        &spec.entrypoint,
+        spec.capture,
     );
     let bridge_artifacts = prepare_bridge_artifacts(
         workspace_root,
         demo_mode,
-        if options.profile {
+        if spec.profile {
             BridgeConfiguration::Profile
         } else {
             BridgeConfiguration::Debug
@@ -416,7 +393,7 @@ fn run_gui_native_launch(
         },
     )?;
 
-    let bundle_dir = target.native_bundle_dir(app_dir, options.profile);
+    let bundle_dir = target.native_bundle_dir(app_dir, spec.profile);
     let executable = bundle_dir.join(target.executable_name());
     ensure!(
         executable.is_file(),
@@ -429,7 +406,7 @@ fn run_gui_native_launch(
         &mut command,
         FlutterInvocation {
             demo_mode,
-            process_mode: FlutterProcessMode::ResidentDriver,
+            process_mode: FlutterProcessMode::Resident,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
@@ -441,7 +418,7 @@ fn run_gui_native_launch(
     let native_started = std::time::Instant::now();
     let exit = process::run_resident_reporting(&mut command, &display)?;
     let report = NativeExitReport::from_exit(&exit, native_started.elapsed());
-    if let Some(path) = options.native_exit_report.as_deref() {
+    if let Some(path) = spec.report.as_deref() {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -510,24 +487,69 @@ impl NativeExitReport {
     }
 }
 
+/// Launch contract for a directly started debug/profile artifact.
+///
+/// Entrypoint, build mode, capture, and the native exit report are explicit.
+/// Driver targets and disabled VM service auth codes are not part of this
+/// contract; capture uses the ordinary authenticated VM service.
+struct NativeLaunchSpec {
+    entrypoint: String,
+    profile: bool,
+    capture: bool,
+    demo_mode: DemoMode,
+    report: Option<PathBuf>,
+}
+
+impl NativeLaunchSpec {
+    fn from_options(app_dir: &Path, options: &RunGuiOptions) -> Result<Self> {
+        let entrypoint = match options.native_launch_target.as_deref() {
+            Some(path) => {
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    app_dir.join(path)
+                };
+                ensure!(
+                    path.is_file(),
+                    "native-launch target does not exist: {}",
+                    path.display()
+                );
+                path.to_string_lossy().into_owned()
+            }
+            None => "lib/main.dart".to_owned(),
+        };
+        Ok(Self {
+            entrypoint,
+            profile: options.profile,
+            capture: options.capture,
+            demo_mode: if options.demo {
+                DemoMode::Demo
+            } else {
+                DemoMode::Native
+            },
+            report: options.native_exit_report.clone(),
+        })
+    }
+}
+
 /// Enables the VM service for a directly launched debug/profile artifact.
 ///
 /// The launch tool delivers these to the engine through `FLUTTER_ENGINE_SWITCH_*`
 /// rather than command-line arguments (`desktop_device.dart`
-/// `_computeEnvironment`), so the Driver can still reach the real native host.
+/// `_computeEnvironment`). Auth codes stay enabled so capture uses the ordinary
+/// authenticated VM service.
 fn configure_native_engine_environment(command: &mut Command) {
-    command.env("FLUTTER_ENGINE_SWITCHES", "3");
+    command.env("FLUTTER_ENGINE_SWITCHES", "2");
     command.env("FLUTTER_ENGINE_SWITCH_1", "enable-dart-profiling=true");
-    command.env("FLUTTER_ENGINE_SWITCH_2", "disable-service-auth-codes=true");
-    command.env("FLUTTER_ENGINE_SWITCH_3", "enable-checked-mode=true");
+    command.env("FLUTTER_ENGINE_SWITCH_2", "enable-checked-mode=true");
 }
 
 fn run_native_launch_args<'a>(
     target: DesktopTarget,
     version_define: &'a str,
     profile: bool,
-    driver_target: &'a str,
-    driver_attachment_define: Option<&'a str>,
+    launch_target: &'a str,
+    capture: bool,
 ) -> Vec<&'a str> {
     let mut args = vec![
         "build",
@@ -536,46 +558,24 @@ fn run_native_launch_args<'a>(
         version_define,
         "--no-pub",
         "-t",
-        driver_target,
-        "--dart-define=ANYWORK_DRIVER=true",
+        launch_target,
     ];
-    if let Some(define) = driver_attachment_define {
-        args.push(define);
+    if capture {
+        args.push("--dart-define=ANYWORK_CAPTURE=true");
     }
     args
 }
 
-fn run_gui_args<'a>(
-    target: DesktopTarget,
-    version_define: &'a str,
-    driver: bool,
-    profile: bool,
-    driver_attachment_define: Option<&'a str>,
-) -> Vec<&'a str> {
-    let mut args = Vec::new();
-    if driver {
-        args.push("--print-dtd");
-    }
-    args.extend([
+fn run_gui_args(target: DesktopTarget, version_define: &str, capture: bool) -> Vec<&str> {
+    let mut args = vec![
         "run",
         "-d",
         target.flutter_name(),
         version_define,
         "--no-pub",
-    ]);
-    if profile {
-        args.push("--profile");
-    }
-    if driver {
-        args.extend([
-            "-t",
-            "test_driver/driver_main.dart",
-            "--dart-define=ANYWORK_DRIVER=true",
-        ]);
-        if let Some(define) = driver_attachment_define {
-            args.push(define);
-        }
-        args.extend(["--disable-service-auth-codes", "--verbose"]);
+    ];
+    if capture {
+        args.push("--dart-define=ANYWORK_CAPTURE=true");
     }
     args
 }
@@ -717,7 +717,7 @@ fn run_flutter_with_process_mode(
     configure_flutter_environment(&mut command, invocation);
     match invocation.process_mode {
         FlutterProcessMode::Batch => process::run_checked(&mut command, &display),
-        FlutterProcessMode::ResidentDriver => process::run_resident_checked(&mut command, &display),
+        FlutterProcessMode::Resident => process::run_resident_checked(&mut command, &display),
     }
 }
 

@@ -24,7 +24,7 @@ import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/studio_platform.dart';
 import '../../platform/host_app_icons.dart';
-import '../../platform/local_file_dialogs.dart';
+import '../../platform/file_picking.dart';
 import '../../platform/terminal_launcher.dart';
 import '../../platform/vscode_launcher.dart';
 import '../../platform/zed_launcher.dart';
@@ -54,27 +54,10 @@ import 'sidebar/sidebar_directory_owner.dart';
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
 part 'sidebar_entries.dart';
-part 'sidebar_actions.dart';
 part 'runtime_banners.dart';
 part 'studio_shell_chrome.dart';
 part 'studio_startup.dart';
 part 'agent_workspace_pane.dart';
-
-typedef ProjectDirectoryPicker = Future<String?> Function(BuildContext context);
-
-final projectDirectoryPickerProvider = Provider<ProjectDirectoryPicker>((ref) {
-  if (const bool.fromEnvironment('ANYWORK_DRIVER')) {
-    return showDriverProjectPathDialog;
-  }
-  return (_) => pickLocalProjectDirectory();
-});
-
-Future<String?> showDriverProjectPathDialog(BuildContext context) {
-  return showDialog<String>(
-    context: context,
-    builder: (_) => const _DriverProjectPathDialog(),
-  );
-}
 
 class StudioShell extends ConsumerStatefulWidget {
   const StudioShell({super.key});

@@ -11,7 +11,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-import '../test_driver/window_control.dart';
 import 'support/production_studio_harness.dart';
 import 'support/sidebar_fixture.dart';
 
@@ -26,7 +25,7 @@ void main() {
   final projectsRoot = Platform.environment['ANYWORK_SIDEBAR_PROJECTS'];
   if (Platform.environment['ANYWORK_HOME'] case final home?
       when home.trim().isNotEmpty) {
-    // AppGraph.production consumes this isolated home.
+    // The production composition consumes this isolated home.
   } else {
     throw StateError('Supply an isolated ANYWORK_HOME');
   }
@@ -545,40 +544,29 @@ void main() {
       );
       addTearDown(scene.dispose);
 
-      final narrow = resizeOwnedWindow(guiPid: pid, width: 820, height: 760);
-      expect(
-        narrow.resized,
-        isTrue,
-        reason: '${narrow.reason}\n${narrow.diagnostics.join('\n')}',
-      );
-      final original = narrow.original!;
-      addTearDown(() async {
-        final restored = resizeOwnedWindow(
-          guiPid: pid,
-          width: original.width,
-          height: original.height,
-        );
-        expect(
-          restored.resized,
-          isTrue,
-          reason: '${restored.reason}\n${restored.diagnostics.join('\n')}',
-        );
-      });
+      await tester.binding.setSurfaceSize(const Size(820, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      tester.view.physicalSize = const Size(820, 760);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pump();
       await File('${harness.artifacts.path}/sidebar-native-window.json')
           .writeAsString(
             const JsonEncoder.withIndent('  ').convert({
-              'guiPid': pid,
               'requested': {'width': 820, 'height': 760},
-              'original': original.toJson(),
-              'applied': narrow.applied!.toJson(),
-              'diagnostics': narrow.diagnostics,
+              'view': {
+                'physicalWidth': tester.view.physicalSize.width,
+                'physicalHeight': tester.view.physicalSize.height,
+                'devicePixelRatio': tester.view.devicePixelRatio,
+              },
             }),
             flush: true,
           );
       await scene.until(() {
         final view = ui.PlatformDispatcher.instance.views.single;
         return view.physicalSize.width / view.devicePixelRatio < 960;
-      }, 'Flutter adopts the real compact native window geometry');
+      }, 'Flutter adopts the compact test surface geometry');
 
       final shell = find.byKey(StudioDriverKeys.shell);
       final scaffold = find
