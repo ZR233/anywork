@@ -29,12 +29,12 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| 不可变完成历史与冻结详情 | Rust Session/HistoryStore | SDK 薄 query 与有限交付；Flutter 唯一 presentation owner 接纳原子并分组 | timelineEpoch + append_seq；呈现生命周期及独立 read scope |
+| 不可变完成历史、冻结详情与 Timeline 展示 item | Rust Session/HistoryStore 与 Studio Timeline 投影 | SDK 薄 query 与有限交付；Flutter 薄接纳展示 item（一条 item 一条 `Message.custom`）与成员窗口 | timelineEpoch + append_seq + item position；呈现生命周期及独立 read scope |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
 | 原生 OpenAI 登录状态与待保存授权 | Rust 原生认证所有者 | 账号 Repository 的类型化观察；共享 Native 编辑器只持有认证选择与登录身份 | `loginId + editorId + accountId`；显式取消、编辑意图丢弃或应用关闭，保存按 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证) 认领 |
-| 已加载历史与阅读/跟随意图 | Flutter 呈现 owner | 原子引用、分页边界、连续完成 cursor、展示控制器与局部 UI | Thread + 呈现代次；真正释放才退役，回到最新不重建订阅 |
+| 已加载展示 item 与阅读/跟随意图 | Flutter 呈现 owner | item 引用、item/成员分页边界、展示控制器与局部 UI | Thread + 展示 item 代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
@@ -146,7 +146,7 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 ## 25.5 会话观察、独立读取与资源退役
 
-会话 feed、read lease、呈现 owner 和 UI controller 是不同资源。公开 feed facade 组合自己的 feed 与私有 read lease；SDK owner 负责连接、机械批次交付、current 和其他领域发布及操作。Flutter 仅组件 ChatController 持已加载 Message，现有呈现 owner 保留游标、选择代次和资源控制，不另存历史 item/分组集合；资源不跨 AppGraph 共享。
+会话 feed、read lease、呈现 owner 和 UI controller 是不同资源。公开 feed facade 组合自己的 feed 与私有 read lease；SDK owner 负责连接、机械批次交付、current 和其他领域发布及操作。Flutter 仅组件 ChatController 持已加载 Message（一条展示 item 一条 Message），现有呈现 owner 保留 item/成员游标、选择代次和资源控制，不另存历史 item、成员集合或分组结果；资源不跨 AppGraph 共享。
 
 范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
 
@@ -162,7 +162,7 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。原子/真实生命周期 ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 唯一呈现 owner 在原 applyBatch 内分类、分段、交接；一工作组是一 Message.custom，原子页不等于组件消息页。已提交呈现只由 controller 的 Message.metadata 持有，当前仅留需求内片段、内容引用和普通读取位置，不保存 rawAtoms/groups/messages 三份完整历史或无界 ID/member map。SDK 不分类/分组，只保原有界传输及串行接纳。必要状态含 before、请求/选择代次、single-flight、错误和展开/滚动意图，不引入全局完成 cursor、展示 page proof 或通用重排账本，见 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。展示 item、成员原子与真实生命周期 ChatBatch 经 transport→SDK 一次机械映射，再由 Flutter 薄呈现 owner 在原 applyBatch 内接纳：Studio 已确定 item 类别、顺序与成员归属，一条 item 对应一条 `Message.custom`，Flutter 不分类、不合组、不重排、不计算成员归属；成员窗口只在展开后按 `GroupMembers { item_id }` 有界读取。已提交呈现只由 controller 的 Message.metadata 持有，当前仅留需求内 item 片段、内容引用和普通读取位置，不保存 rawAtoms/items/groups 三份完整历史或无界 ID/member map。SDK 不分组、不保存历史尾部，只保原有界传输及串行接纳。必要状态含 item/成员 before、请求/选择代次、single-flight、错误和展开/滚动意图，不引入全局完成 cursor、展示 page proof 或通用重排账本，见 [26](./26-timeline-content.md)。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -398,17 +398,17 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权和恢复边界，不要求五个 Session/连接。Main Chat.current 是活动展示的唯一写入口，State 保留其他现役领域，Children 不写全局 current。共享 owner 不另存可写全量镜像；loadOlder 和内容查询用独立 read lease，在应用队列外执行，不竞争 recv/credit 锁。transport/ACK 仍只归 feed owner，见 [07](./07-streaming.md)。
 
-原 query scope 的 `readBefore(completionSeq, before?, demand)` 读取已观察位置之前的普通原子窗口；`readAt` 使用相同参数读取包含该位置自身的窗口，供已驱逐完成 props 的合法重取。两者支持原 H0 之后新增的完成事实，不开启另一条 feed，也不自动更新 SDK 主历史 consumer。返回结果由 Flutter 原展示 lease 的既有串行 mutation 入口交给同一呈现 reducer；主历史游标/current 与各类窗口游标分开，不以临时选择或另一个 owner 接纳旧结果。普通窗口边界及资格见 [26](./26-timeline-content.md)。
+原 query scope 的 `readBefore(completionSeq, before?, demand)` 读取已观察位置之前的普通原子窗口；`readAt` 使用相同参数读取包含该位置自身的窗口，供已释放完成片段或成员窗口的合法重取。两者支持原 H0 之后新增的完成事实，不开启另一条 feed，也不自动更新 SDK 主历史 consumer。返回结果由 Flutter 原展示 lease 的既有串行 mutation 入口交给同一 applyBatch；主历史 item 游标/current 与成员窗口、普通原子窗口游标分开，不以临时选择或另一个 owner 接纳旧结果。普通窗口边界及资格见 [26](./26-timeline-content.md)。
 
-全部未提交完成 props 共用展示 demand 的总条数/字节边界，不逐工作段各分配预算。未物化内容只留有界普通区间恢复状态，使用原 lease 逐页重取；未知结构以局部片段保留，不能拒绝合法页、猜合组或建立每成员/每段的永久骨架。真实未终态事实和已交给 controller 的历史分别沿各自原 owner 管理，ACK 不等待物化；细节及局部 UI 资格见 [26](./26-timeline-content.md#2682-整个未提交范围的资源边界)。
+未提交展示片段是 Studio 投影的有界 current，不是客户端可增长的工作集：Flutter 只接纳 `CurrentProjection.items` 与成员 atoms，不计算成员归属、不另设每段展示预算，也不为显示条数丢弃未终态 part。已完成但尚未满足提交条件的片段仍属 current；成员正文与媒体只在展开时按 `GroupMembers` 或原 lease 逐页读取，未物化内容不保留每成员/每段的永久骨架。真实未终态事实和已交给 controller 的 item 分别沿各自原 owner 管理，ACK 不等待物化；细节及局部 UI 资格见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
 
-普通 Atom 的可空 `sourceState` 是相同读取切面的真实来源状态，不是独立完成项；SDK/FRB 机械保留，原呈现接纳入口按身份校验后与 `current.sources`、可靠 Source 事件使用同一来源归约。所有独立 entries 都计入 maxItems，不为来源证据增加一套事件流、信用或组范围模型。
+普通 Atom 的可空 `sourceState` 是相同读取切面的真实来源状态，不是独立完成项；SDK/FRB 机械保留，原呈现接纳入口按身份校验后与 `current.sources`、可靠 Source 事件使用同一来源归约。所有独立 entries、展示 item 与成员窗口页都计入相应 maxItems，不为来源证据增加一套事件流、信用或组范围模型。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 在原接纳入口唯一处理分组、当前未提交段、前台提交前缀及 controller 操作；ConversationCurrentOwner 保留内容窗口/订阅职责，不独立决定同组生命周期。两者不归约原始 token，不持第二权威历史。View 只根据每批实际布局和尺寸变化请求普通旧页，复用原 single-flight，未满且 cursor 前进就继续，无总页数上限；ACK 在呈现接纳后推进，不等封组、布局或填屏。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 只机械接纳 Studio 已确定的展示 item、维护当前片段与 controller 操作，不计算成员归属、不封组、不拼展示前缀；ConversationCurrentOwner 保留内容窗口/订阅职责，不独立决定 item 生命周期。旧 Flutter 分组归约、封组与展示前缀/交接 reducer 删除，不保留兼容分支、旧展示单元或第二套分组规则。两者不归约原始 token，不持第二权威历史。View 只根据每批实际布局和尺寸变化请求普通旧页，复用原 single-flight，未满且 item cursor 前进就继续，无总页数上限；ACK 在呈现接纳后推进，不等 item 提交、布局或填屏。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
-历史条目、过程、确定回执、current 正文/集合、Children 和媒体的呈现与读取责任分离。业务正文窗口、集合分页、媒体读取的 Future、订阅、查询资格及失效检查留在原 owner/Connector；纯 View 消费不可变呈现值、借用的 UI controller、同步组件插槽与动作回调，不因展开或 build 创建另一份领域所有者。局部展开、滚动、计时和动画仍属 UI 状态；读取或关闭失败保留原责任，不能以折叠或销毁视图冒充已完成收束。
+历史 item、过程、确定回执、current 片段/正文/集合、成员窗口、Children 和媒体的呈现与读取责任分离。业务正文窗口、集合分页、成员页、媒体读取的 Future、订阅、查询资格及失效检查留在原 owner/Connector；纯 View 消费不可变呈现值、借用的 UI controller、同步组件插槽与动作回调，不因展开或 build 创建另一份领域所有者。展示 item 身份与成员引用来自 Studio 投影；展开成员页和媒体读取的资格绑定该 item 与显示代次，主历史 item cursor 不复用成员页或内容窗口 cursor。局部展开、滚动、计时和动画仍属 UI 状态；读取或关闭失败保留原责任，不能以折叠或销毁视图冒充已完成收束。
 
 涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。需要局部状态的组件由自身 `State` 持有；跨组件呈现状态仍归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 `ExpansionTile`/`ExpansibleController` 的状态与生命周期，父层仅接收真实展开事件以声明读取需求、取消或诊断借用，不反向注入展开态或补做控制。组件身份变化按官方 key/生命周期退役原状态，不以外层修复循环、强制重置或备用数据维持显示。
 

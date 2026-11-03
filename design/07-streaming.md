@@ -10,11 +10,13 @@ Runtime 的唯一产品投影持续消费可靠 effect，一次生成业务当�
 
 模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等、取消收束及活动退出顺序见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，不能把已结束成员保留在活动元数据直到 attempt 终态，或通过增大内容帧预算掩盖累积。
 
-会话 Chat 事件携带 [26](./26-timeline-content.md) 的同形 ChatBatch：原子和必要真实来源生命周期沿同一可靠序列交付，有界 current 与原子同切面；展开正文独立按范围订阅。真实 start、空 text part 和 terminal 不被可替换预览合并吞掉，也不能因完成 H 不变而漏交付。Rust 不提供工作组、组关闭、展示前缀/排序或组分页。State 保留输入、workspace、元数据等其他现役领域，不覆盖 Main Chat.current。低频产品 topic 按领域独立，目录身份只由目录所有者更新，不被迟到会话快照反写。
+会话 Chat 事件携带 [26](./26-timeline-content.md) 的同形 ChatBatch：Studio 唯一 Timeline 投影在同一串行切面确定展示 item、成员归属与 `item_order`，原子和必要真实来源生命周期沿同一可靠序列交付，新增 item 与交接后的 current 同批到达；展开正文与工作组成员独立按范围或成员页订阅。真实 start、空 text part 和 terminal 不被可替换预览合并吞掉，也不能因完成 H 不变而漏交付。Flutter 不计算分组、封组、展示前缀或排序，只机械接纳 Studio 已确定的 item。State 保留输入、workspace、元数据等其他现役领域，不覆盖 Main Chat.current。低频产品 topic 按领域独立，目录身份只由目录所有者更新，不被迟到会话快照反写。
 
-open 先登记被动接收者，再捕获完成上界与 current 的一致切点，首个成功 Chat 为 Set，之后只有切点后的 Append。源资格失效或无法证明连续时终结原流并明确要求重同步，重新打开取得新 Set；不在原流 reset、不重放业务命令或旧 token。历史与当前态边界见 [26](./26-timeline-content.md)。
+open 先登记被动接收者，再捕获完成上界、Main 展示 item 上界与 current 的一致切点，首个成功 Chat 为 Set（Main 固定 item 位置切点），之后只有切点后的 Append，且新增 item 与交接后的 current 同切面到达。源资格失效或无法证明连续时终结原流并明确要求重同步，重新打开取得新 Set；不在原流 reset、不重放业务命令或旧 token。历史与当前态边界见 [26](./26-timeline-content.md)。
 
-前台展示阻挡不构成传输背压条件：接纳后的完成 props 可以退出有界呈现工作集，原子仍留在原完成集合。原 read lease 的排他 read_before 与包含锚点的 read_at 使用普通独立窗口恢复所需页，不能为恢复扩大 current、延迟 ACK 或另开可靠 feed；范围、未知结构和资源规则见 [26](./26-timeline-content.md#2682-整个未提交范围的资源边界)。
+展示 item 的可靠发布以 Studio 投影的提交结果为单位：同一 effect 串行边界冻结本批新增 item、成员引用与交接后的 current（currentAfter），Feed 按条数/字节分批交付；Append 被预算截断时只退役已交付展示前缀对应的 current 片段，未交付 item 留到后继批，不得先发 item 后补 current 或跨切面拼接。current 允许多个有界未交接片段并保持投影顺序，客户端不得自行拼接、重排或补组。批次、current 与内容引用共用原编码预算；取消或关闭先封闭新准入，再按原所有权收束批与 current 发布责任，不把未交付事实计入已 ACK 前缀。
+
+前台展示阻挡不构成传输背压条件：接纳后的完成片段可以退出客户端物化集合，原子与展示 item 事实仍留在原完成集合和 Studio 投影中。原 read lease 的排他 read_before 与包含锚点的 read_at 使用普通独立窗口恢复所需成员/原子页，不能为恢复扩大 current、延迟 ACK 或另开可靠 feed；范围、成员页和资源规则见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
 
 ## 7.2 领域版本与实时内容
 
@@ -22,7 +24,7 @@ execution、authoring、configuration、metrics、context 是独立当前态领�
 
 轮次、任务、交互、Todo、存储、上下文和统计继续由既有权威所有者发布 typed replace 或增量。取消、失败、预算限制和 stepLimit 保留真实类型化终态；子智能体单轮上限为 256 步，自动压缩不计停止预算。Turn 完成不表示后台工具/子任务结束；执行终态与可靠保存独立。
 
-长实时文本由 Rust 当前内容 owner 以稳定内容身份和 generation 维护；Chat.current 只含有界预览和引用，展开后通过同形 ContentWindow 接纳所需范围。append-only 前缀不随 token 换代，替换才变 generation。SDK/Flutter 不再归约原始 Activity Begin/Text/Commit 或 LiveDelta，不逐 token diff/拼全文；过期内容引用明确 stale，不回读私有执行上下文补正文。
+长实时文本由 Rust 当前内容 owner 以稳定内容身份和 generation 维护；Chat.current 只含有界未交接展示片段、成员事实、有界预览和引用，展开后通过同形 ContentWindow 接纳所需范围。append-only 前缀不随 token 换代，替换才变 generation。SDK/Flutter 不再归约原始 Activity Begin/Text/Commit 或 LiveDelta，不逐 token diff/拼全文；过期内容引用明确 stale，不回读私有执行上下文补正文。
 
 ChatBatch 包括 current、引用和编码开销共同受单批预算约束；大正文/大当前集合使用独立范围或集合页，不用客户端两阶段业务 staging 拼成超大事务。独立内容订阅同样有界并支持取消；其他现役领域已有分块协议仍由其原 owner 负责，不扩展成另一份聊天历史模型。
 
@@ -48,7 +50,7 @@ FRB 的消费确认与在途上限遵循 §7.10；HTTP 与原生消费者同样�
 
 SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型映射，ViewModel 只从已提交快照派生不可变 ViewState。Flutter 不把 snapshot 拆为伪事件再归约，也不保存 competing mirror。首帧、恢复和版本缺口仅更新受影响域，不清理草稿或无关状态。
 
-ChatBatch 通过 SDK domain 的单消费者接口交唯一 Flutter 呈现 owner，流和普通旧页共用串行 applyBatch；SDK 不分类/分组或保存历史尾部，已提交消息只由组件 ChatController 持有。先接纳轻量事实和合法引用、更新当前呈现、向 controller 提交可提交前缀/独立结果，再发布同批 current 并 ACK 连续接纳前缀。ACK 不等封组、下一页、query、数据库、用户展开、绘制或视口填满；长开放组跨 credit 窗口仍能收到后继事实，不用无限队列掩盖背压。布局后的补载通过原普通分页逐页推进，不延迟当前批接纳，具体语义归 [26](./26-timeline-content.md)。
+ChatBatch 通过 SDK domain 的串行 applyBatch 交 Flutter 薄呈现 owner，流和普通旧页共用同一入口；SDK 不分组或保存历史尾部，已提交消息只由组件 ChatController 持有。Studio 已确定一条 item 对应一条 `Message.custom`，Flutter 只接纳 item 与 current、把新 item 交给 controller、再 ACK 连续接纳前缀，不计算成员归属、不封组、不拼展示前缀。ACK 不等 item 提交、下一页、query、数据库、用户展开、绘制或视口填满；长未交接片段跨 credit 窗口仍能收到后继事实，不用无限队列掩盖背压。布局后的补载通过原 Main item 分页逐页推进，不延迟当前批接纳，具体语义归 [26](./26-timeline-content.md)。
 
 迟到结果按首次 await 前冻结的会话、incarnation、operationId、领域/草稿版本和附件归属结算。未知结果保留原意图，不自动重发。选择 null 仍为合法新会话草稿，流恢复或目录新增不能擅自选中历史会话。
 
@@ -60,16 +62,16 @@ ChatBatch 通过 SDK domain 的单消费者接口交唯一 Flutter 呈现 owner�
 
 FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，不各自维护流状态机：
 - **端点与订阅顺序**：HTTP 产品流端点为 `GET /api/v1/events/product`，线程状态流端点为 `GET /api/v1/threads/{thread_id}/events`。订阅建立时一律先注册接收通道、再读取当前基线状态（如自更新主题流 `Updater` 先登记接收者再读取当前更新状态），确保建连期间完成的后台状态变更不会漏发。
-- **统一会话 SSE**：`GET /api/v1/threads/{thread_id}/events` 消费同一个 Runtime ConversationFeed。状态沿用现役事件，聊天统一为 `chat`，其载荷为 ChatBatch；不保留 contentBaseline/contentUpdate/activityContent 并行内容事件，也不在 HTTP 重组完成/current。
+- **统一会话 SSE**：`GET /api/v1/threads/{thread_id}/events` 消费同一个 Runtime ConversationFeed。状态沿用现役事件，聊天统一为 `chat`，其载荷为 ChatBatch；Main 批次交付 Studio 投影确定的展示 item 与同切面 currentAfter，工作组成员通过独立 `GroupMembers` 读取作用域展开，不保留 contentBaseline/contentUpdate/activityContent 并行内容事件，也不在 HTTP 重组完成/item 分组/current。
 - **需求与恢复**：scope 和初始条数/字节需求遵循 [26](./26-timeline-content.md)，聊天的完成水位不再是客户端协议。重连取得新 handle 的 Set；Last-Event-ID 不伪装完成接纳位置，不支持旧 timelineEpoch/appendSeq 恢复参数或流内 Reset 兼容分支。
-- **独立内容读取**：历史页、成员、内容范围和当前集合复用同一产品查询语义；不保留另一套旧 timeline/events 的 baseline/batch/reset 协议。独立查询不受 SSE/FRB credit 阻塞，不提供跨连接 durable replay。
+- **独立内容读取**：历史展示 item 页、工作组成员窗口、内容范围和当前集合复用同一产品查询语义；成员窗口使用自己的 continuation，不读取 Main 的 item cursor，也不保留另一套旧 timeline/events 的 baseline/batch/reset 协议。独立查询不受 SSE/FRB credit 阻塞，不提供跨连接 durable replay。
 - **内存驻留与关闭**：统一 feed 在连接存活期间持有正式 reader/订阅作用域，不在 HTTP 新建平行会话登记或内容缓存。正文发送最多保留一个有界排队帧；发送背压、断连及服务端关闭均保留原取消语义，先取消并 join 真实 feed 再释放作用域。重叠订阅与临时激活各自管理所有权。
 - **快照点查与技能激活通知**：FRB 的 `readThreadSnapshot` 与 HTTP 的 `GET /api/v1/threads/{thread_id}` 调用同一快照查询入口，返回不含历史条目的当前线程完整状态。技能（`Skill`）激活通过常规的终态技能条目与 `threadRuntimeUpdated` 通知表达，激活来源为强类型的 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置为类型化资源基址（resource base），时间线据此区分“智能体调用激活”与“用户手动激活”（压缩重置与冷恢复语义见 [10](./10-skills.md) §10.6）。
 - **滞后重同步与心跳**：产品流发生滞后或收到客户端携带 `Last-Event-ID` 的重连请求时，立即下发 `stale` 事件要求客户端重读 `/api/v1/state`。SSE 连接每 15 秒发送一次注释行心跳（comment heartbeat），心跳不占用业务序号，且 FRB 与 HTTP 各自的传输缓冲区互不共享序号或取消句柄。会话标题的自动生成与提交统一通过 `ThreadDirectoryChanged` 增量事件发布（见 [18](./18-studio-state.md)），不设平行的标题通知帧。
 
 ### HTTP 读取资格的传递
 
-会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选 `parentId` 选择 Children，省略时选择 Main。成功打开后，响应头 `X-Anywork-Conversation` 返回该原生 feed 的订阅身份。后续独立查询必须在同名请求头携带它，并与路径中的 Thread 一起校验；它只定位原 feed 持有的 read lease，不替代调用方的访问授权，也不作为完成游标。
+会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选参数选择真实业务 Children 或展示工作组成员窗口（`GroupMembers { item_id }`），省略时选择 Main。成功打开后，响应头 `X-Anywork-Conversation` 返回该原生 feed 的订阅身份。后续独立查询必须在同名请求头携带它，并与路径中的 Thread 一起校验；它只定位原 feed 持有的 read lease，不替代调用方的访问授权，也不作为完成游标。
 
 HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
 
@@ -82,7 +84,7 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |
 | `POST /current/page` | reference、continuation、demand | CurrentCollectionPage |
 
-这些路径均以 `/api/v1/threads/{thread_id}` 为前缀，复用 [26](./26-timeline-content.md) 的同形请求字段和产品结果。它们直接借原 read lease，等待不会占用会话 SSE 的发送位置或信用；内容 watch 结束只关闭自身观察。会话 SSE 发送继续使用有界单帧背压，独立查询不确认会话流的数据帧。
+这些路径均以 `/api/v1/threads/{thread_id}` 为前缀，复用 [26](./26-timeline-content.md) 的同形请求字段和产品结果。`/chat/older` 对 Main 以展示 item 位置分页、对 `GroupMembers` 以成员顺序分页，两类 continuation 不互换；Main 的 `before` 是 item 键集游标，`/chat/before` 是独立的完成窗口，不改写主历史 item cursor。它们直接借原 read lease，等待不会占用会话 SSE 的发送位置或信用；内容 watch 结束只关闭自身观察。会话 SSE 发送继续使用有界单帧背压，独立查询不确认会话流的数据帧。
 
 ## 7.7 实时运行事实与前端细粒度投影
 
