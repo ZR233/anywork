@@ -474,7 +474,15 @@ void main() {
           expect(failedFacts.presentationThreadId, 'thread-alt');
           expect(failedFacts.visibleThreadId, isNull);
           expect(failedFacts.timeline!.threadId, 'thread-alt');
-          expect(failedFacts.workspace, isNull);
+          // S1：工作区视图由 typed 目录行驱动（目录观察不占 read-model 预算），
+          // 预算耗尽时仍显示会话工作区身份，但 Native 会话事实保持未装载。
+          expect(failedFacts.workspace, isNotNull);
+          expect(
+            failedFacts.workspace!.row.threadId,
+            'thread-alt',
+          );
+          expect(failedFacts.workspace!.turn, isNull);
+          expect(failedFacts.workspace!.runtime.activeSkills, isEmpty);
           // A released permit must not resurrect a route that has already left.
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await tester.pumpAndSettle();
