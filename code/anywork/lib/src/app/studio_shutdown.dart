@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:anywork_client/studio_client.dart' show CloseReport;
+import 'package:anywork_client/studio_client.dart'
+    show CloseReport, StudioTransport;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../infrastructure/frb/studio_api.dart';
 import '../domain/models/studio_models.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
@@ -129,7 +129,7 @@ Future<StudioExitReport> runStudioShutdown(
     );
   } on Object catch (error, stackTrace) {
     // Frb core 已用同一 correlation 记录脱敏诊断时复用 memoized issue，避免重复记录。
-    final recorded = FrbStudioTransport.recordedBeginExitIssue(error);
+    final recorded = api.recordedBeginExitIssue(error);
     if (recorded != null) {
       issues.add(recorded);
     } else {

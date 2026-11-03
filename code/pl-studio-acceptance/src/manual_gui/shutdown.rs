@@ -1,14 +1,14 @@
 //! 30-second application-shutdown acceptance.
 //!
-//! The scenario drives a real native GUI through Flutter Driver, like the other
-//! manual journeys, and judges the application exit from the OS process itself:
-//! the Driver request only *requests* the exit, while the coordinator OS-waits
-//! the real native pid (from the Driver `pid` request, guarded by a `/proc`
-//! start-time) and reads the artifact's genuine wait status from the launcher's
-//! structured `--native-launch` report — never the `cargo`/Flutter wrapper exit
-//! code, which the platform launch tool always reports as `0`. Every phase
-//! shares the real bridge, isolated `ANYWORK_HOME`s and the local provider
-//! fixture; nothing is faked with demo mode or an invented snapshot.
+//! The scenario starts a real native GUI and judges the application exit from
+//! the OS process itself: `ext.anywork.requestExit` only *requests* the exit,
+//! while the coordinator OS-waits the real native pid (from the GUI log
+//! `resident command started: pid=`, guarded by a `/proc` start-time) and reads
+//! the artifact's genuine wait status from the launcher's structured
+//! `--native-launch` report — never the `cargo`/Flutter wrapper exit code, which
+//! the platform launch tool always reports as `0`. Every phase shares the real
+//! bridge, isolated `ANYWORK_HOME`s and the local provider fixture; nothing is
+//! faked with demo mode or an invented snapshot.
 //!
 //! Phases (each keeps its own non-overwriting evidence):
 //!
@@ -20,25 +20,25 @@
 //! * `busy-reopen` — reopen the same home and prove that continued turn restored.
 //! * `duplicate`— a repeated exit request, seconds after the first arm, must
 //!   stay inside the single budget measured from the first arm.
-//! * `hang`     — the Driver hangs the isolate after the host armed the budget;
-//!   the native host must force exit code 1 at the 30-second deadline.
+//! * `hang`     — the thin native assembly hangs the isolate after arming the
+//!   budget; the native host must force exit code 1 at the 30-second deadline.
 //! * `runtime-unavailable` — the isolated home's v2 data root cannot be created,
 //!   so the runtime fails with a real typed error yet the fatal widget renders
 //!   and the app still closes with diagnostics.
 //! * `storage-lock` — a durable prime turn plus a writer-lock-blocked turn; the
 //!   forced exit must not lose the prime and a reopen must pass `quick_check`.
 //! * `service-unresponsive` — a frozen provider fixture must not block exit.
-//! * `close-during-init` — a Driver-only `pending-init` fault keeps the runtime
+//! * `close-during-init` — a thin-assembly `pending-init` fault keeps the runtime
 //!   initializing; the exit must report Degraded + Unknown and force exit 1.
-//! * `bridge-unavailable` — a Driver-only `bridge-load-error` fault leaves no
+//! * `bridge-unavailable` — a thin-assembly `bridge-load-error` fault leaves no
 //!   runtime owner; the close must be a clean NotStarted exit 0.
-//! * `subscription-fault` — a Driver-only faulty shutdown-progress subscription
+//! * `subscription-fault` — a thin-assembly faulty shutdown-progress subscription
 //!   must surface a typed `progress` diagnostic and a non-zero exit.
 //! * `dart-error-fallback` — an unwritable `ANYWORK_HOME/studio/logs` must fall back
 //!   to the isolated `TMPDIR` and still record stage/correlation/stack.
 //! * `native-subtree-reclamation` — a scenario-owned stdio MCP server and its
 //!   SIGTERM-ignoring grandchild are proven live before any close, then the
-//!   Driver isolate is blocked and the native host forces the process out at
+//!   isolate is blocked and the native host forces the process out at
 //!   the single 30-second deadline (exit code 1) while the product supervisor
 //!   reclaims the whole subtree before this harness intervenes.
 //! * `lsp-subtree-reclamation` — a real `lsp_query` turn starts the
@@ -74,14 +74,14 @@
 //! branch is never written as passed.
 
 use super::{
-    FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors, driver_command,
-    history_lock_database, history_lock_quick_check, history_lock_watermark, sanitize_requests,
-    wait_for_vm, write_config, write_config_with_lsp_server, write_config_with_mcp_server,
-    write_fixture_log, write_realtime_driver_evidence, write_sanitized_log,
+    FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors,
+    history_lock_database, history_lock_quick_check, history_lock_watermark, request_app_exit,
+    sanitize_requests, wait_for_vm, write_config, write_config_with_lsp_server,
+    write_config_with_mcp_server, write_fixture_log, write_sanitized_log,
 };
 use anyhow::{Context, Result, bail, ensure};
-use pl_dev_support::process;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -101,22 +101,9 @@ const EXIT_GRACE: Duration = Duration::from_secs(45);
 /// independently supervised resource of the `concurrent-stop` phase must have
 /// been reclaimed by the product while the artificially blocked save chain is
 /// still waiting.
-///
-/// A resource that only disappeared with the 30-second force-out would be a
-/// serialized stop misrecorded as concurrent, so the bound sits well under the
-/// single budget; the real OS pid timing (not the elapsed total) is the proof.
 const CONCURRENT_STOP_ACK_BOUND: Duration = Duration::from_secs(15);
 
 /// The Dart cleanup budget the blocked save must exhaust.
-///
-/// The single exit budget is 30 seconds, of which two seconds are reserved for
-/// diagnostics, so the coordinated cleanup runs at most 28 seconds and then
-/// returns a Degraded report whose `finishExit(1)` ends the native process
-/// immediately. The 30-second watchdog is only for a Dart/bridge/engine that
-/// never returns, so the concurrent phase must not demand exactly 30 seconds:
-/// it requires the elapsed to stay inside the deadline *and* to have reached
-/// this cleanup budget, where the still-held writer lock forces the save to
-/// remain uncommitted.
 const CONCURRENT_CLEANUP_BUDGET: Duration = Duration::from_secs(28);
 
 pub(super) struct ShutdownScenario<'a> {
@@ -128,6 +115,7 @@ pub(super) struct ShutdownScenario<'a> {
     pub(super) fixture_log: &'a Path,
     pub(super) requests_file: &'a Path,
     pub(super) status_file: &'a Path,
+    pub(super) fixture_executable: &'a Path,
     pub(super) interrupt: &'a mpsc::Receiver<()>,
 }
 
@@ -156,13 +144,6 @@ struct GapRecord {
     interface_needs: &'static str,
 }
 
-/// A Driver log to persist after the run, with its real exit status for review.
-struct DriverEvidence {
-    log: PathBuf,
-    stem: String,
-    exit: Option<ExitStatus>,
-}
-
 pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
     let ShutdownScenario {
         workspace,
@@ -173,6 +154,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         fixture_log,
         requests_file,
         status_file,
+        fixture_executable,
         interrupt,
     } = context;
 
@@ -196,8 +178,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     // The runtime is never allowed to install here: a regular file occupies the
     // path where the current data root must be created, so the runtime fails with a
     // real typed startup error on any host (a read-only directory is ignored
-    // when the acceptance runs as root, which proves nothing). The Dart app and
-    // its Driver still start and stay alive to be asked to exit. (Pointing
+    // when the acceptance runs as root, which proves nothing). The Dart app
+    // still starts and stays alive to be asked to exit. (Pointing
     // `ANYWORK_BRIDGE_LIBRARY` at a missing file is not usable here: the Linux
     // CMake configure step refuses a non-existent bridge, so the GUI would never
     // start.)
@@ -205,7 +187,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     write_config(&home_unavailable, &ready, None, false)?;
     fs::write(home_unavailable.join("data"), b"not a directory\n")?;
 
-    // Driver-only fault homes: the two injected startup faults, the
+    // Native-fault homes: the two injected startup faults, the
     // subscription fault and the temp-fallback diagnostics home share the
     // normal isolated provider config.
     let home_init_close = working.join("shutdown-init-close-home");
@@ -230,19 +212,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let tmp_fallback_tmp = working.join("shutdown-tmp-fallback-tmp");
     fs::create_dir(&tmp_fallback_tmp)?;
 
-    // The MCP-reclamation home starts the scenario-owned stdio MCP server
-    // through the product's real supervised worker. The server spawns a
-    // SIGTERM-ignoring grandchild in its own process group and records the
-    // business pids so the coordinator can OS-poll them.
     let home_mcp = working.join("shutdown-mcp-home");
     fs::create_dir(&home_mcp)?;
-    let fixture_bin = resolve_fixture_binary(workspace)?;
     let mcp_coord = working.join("shutdown-mcp-coord.json");
     write_config_with_mcp_server(
         &home_mcp,
         &ready,
         "shutdown-fixture",
-        &fixture_bin,
+        fixture_executable,
         &[
             "--mcp-stdio".to_owned(),
             "--coord-file".to_owned(),
@@ -250,13 +227,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         ],
     )?;
 
-    // The LSP-reclamation home declares one scenario-owned `[lsp.servers.<id>]`
-    // entry that runs the same fixture binary in `--lsp-stdio` mode. The product
-    // starts it through its real supervised worker when the scripted model issues
-    // the `lsp_query` tool call; the server speaks the LSP base protocol and
-    // spawns a SIGTERM-ignoring grandchild in its own process group so the
-    // coordinator can OS-poll the real business pids. The language id is unique
-    // (the builtin rust-analyzer owns `rust`) or `apply_user_servers` fails loud.
     let home_lsp = working.join("shutdown-lsp-home");
     fs::create_dir(&home_lsp)?;
     let lsp_coord = working.join("shutdown-lsp-coord.json");
@@ -265,7 +235,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         &ready,
         &LspServerSpec {
             id: "shutdown-lsp-fixture",
-            command: &fixture_bin,
+            command: fixture_executable,
             args: &[
                 "--lsp-stdio".to_owned(),
                 "--coord-file".to_owned(),
@@ -277,21 +247,11 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         },
     )?;
 
-    // The tool-reclamation home needs no extra config: the scripted model issues
-    // one background `exec` call whose command runs the scenario-owned
-    // `--tool-peer` inside the opened project, so the product's real tool worker
-    // starts the subtree the forced exit must reclaim. The coordinator reads the
-    // business pids from the peer's coordination record beside the project.
     let home_tool = working.join("shutdown-tool-home");
     fs::create_dir(&home_tool)?;
     write_config(&home_tool, &ready, None, false)?;
     let tool_coord = working.join("shutdown-tool-coord.json");
 
-    // The concurrent-stop home declares the scenario-owned stdio MCP server, so
-    // a single background-tool turn starts two independent supervised
-    // resources: the MCP server through the thread's service lease and the
-    // `--tool-peer` through the tool worker. The coordinator then holds the
-    // exclusive writer lock across the exit request and OS-polls both subtrees.
     let home_concurrent = working.join("shutdown-concurrent-home");
     fs::create_dir(&home_concurrent)?;
     let concurrent_mcp_coord = working.join("shutdown-concurrent-mcp-coord.json");
@@ -299,7 +259,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         &home_concurrent,
         &ready,
         "shutdown-fixture",
-        &fixture_bin,
+        fixture_executable,
         &[
             "--mcp-stdio".to_owned(),
             "--coord-file".to_owned(),
@@ -309,7 +269,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let concurrent_tool_coord = working.join("shutdown-concurrent-tool-coord.json");
 
     let mut phases: Vec<PhaseRecord> = Vec::new();
-    let mut driver_evidence: Vec<DriverEvidence> = Vec::new();
     let mut fixture_paused = false;
 
     let journey = (|| -> Result<()> {
@@ -317,41 +276,41 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         {
             let log = working.join("shutdown-normal-gui.log");
             let project = prepare_project(working, "shutdown-normal-project")?;
-            let mut gui = start_gui(workspace, home, &log, working, "normal")?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-normal-driver.log");
-            let mut driver = start_driver(
-                app_dir,
+            let mut gui = start_gui_with(
+                workspace,
                 home,
+                &log,
+                working,
                 "normal",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
+                NativeLaunch {
+                    phase: Some("normal"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[0]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
+            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
-                "normal_cleanup_ack",
+                "normal_settled",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
-                Duration::from_secs(600),
+                Duration::from_secs(300),
             )?;
-            // The measurement starts at the real native arm, not at the save
-            // window above nor after the Driver finishes.
-            let (native_pid, start_ticks, children) = arm_native(
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
                 "normal",
                 "normal_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "normal",
                 working,
@@ -363,26 +322,11 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "normal",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-normal".into(),
-                exit: Some(driver_exit),
-            });
             phases.push(PhaseRecord {
                 name: "normal",
                 status: "executed",
                 coverage: "executed",
-                detail: format!(
-                    "saved a durable turn, acknowledged the typed cleanup, then requested the real app exit: {}",
-                    native.summary()
-                ),
+                detail: format!("requested the real app exit: {}", native.summary()),
                 exit_code: native.code,
                 elapsed_millis: Some(native.elapsed.as_millis()),
                 native_pid: Some(native.pid),
@@ -404,40 +348,10 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         // ----------------------------------------------------------- reopen --
         {
             let log = working.join("shutdown-reopen-gui.log");
-            let project = working.join("shutdown-normal-project");
             let mut gui = start_gui(workspace, home, &log, working, "reopen")?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-reopen-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                home,
-                "reopen",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            wait_stage(
-                "reopen_restored",
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-                Duration::from_secs(300),
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "reopen",
-                "reopen_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
+            let (native_pid, start_ticks, children, arm) =
+                arm_native(app_dir, &vm_url, &log, working, "reopen", interrupt)?;
             let native = wait_native_exit(
                 "reopen",
                 working,
@@ -449,24 +363,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "reopen",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-reopen".into(),
-                exit: Some(driver_exit),
-            });
             phases.push(PhaseRecord {
                 name: "reopen",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "reopened the same home and verified the restored Thread, committed answer and settled persistence: {}",
+                    "reopened the same home and requested the real app exit: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -491,30 +393,29 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         {
             let log = working.join("shutdown-busy-first-gui.log");
             let project = working.join("shutdown-normal-project");
-            let mut first = start_gui(workspace, home, &log, working, "busy-hold")?;
-            let vm_url = wait_for_vm(&log, &mut first, &mut fixture, interrupt)?;
-            let first_log = working.join("shutdown-busy-first-driver.log");
-            let mut first_driver = start_driver(
-                app_dir,
+            let mut first = start_gui_with(
+                workspace,
                 home,
-                "busy-hold",
-                &vm_url,
-                &project,
-                output,
+                &log,
                 working,
-                &first_log,
+                "busy-hold",
+                NativeLaunch {
+                    phase: Some("busy-hold"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[1]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
+            let vm_url = wait_for_vm(&log, &mut first, &mut fixture, interrupt)?;
             wait_stage(
                 "busy_hold_reopened",
                 working,
-                &mut first_driver,
                 &mut first,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-
-            // A duplicate redirects before publishing a Flutter VM and exits on its own.
             let second_log = working.join("shutdown-busy-second-gui.log");
             let second = start_gui(workspace, home, &second_log, working, "busy-second")?;
             let busy_evidence =
@@ -545,27 +446,26 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 working.join("shutdown-signal-busy-second-redirected"),
                 "redirected",
             )?;
-
             wait_stage(
                 "busy_continued",
                 working,
-                &mut first_driver,
                 &mut first,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            let (native_pid, start_ticks, children) = arm_native(
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
                 "busy-hold",
                 "busy_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut first_driver,
                 &mut first,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "busy-hold",
                 working,
@@ -577,24 +477,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "busy",
-                working,
-                &mut first_driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: first_log,
-                stem: "shutdown-busy-first".into(),
-                exit: Some(driver_exit),
-            });
             phases.push(PhaseRecord {
                 name: "busy",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "duplicate redirected and exited before Flutter; the original instance submitted and saved another turn: {}",
+                    "duplicate redirected and exited before Flutter; the original instance then exited: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -617,43 +505,11 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ------------------------------------------------------ busy-reopen --
         {
-            // Reopen the same home and prove the turn the first instance saved
-            // after the second was truly closed is restored from durable history.
             let log = working.join("shutdown-busy-reopen-gui.log");
-            let project = working.join("shutdown-normal-project");
             let mut gui = start_gui(workspace, home, &log, working, "busy-reopen")?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-busy-reopen-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                home,
-                "busy-reopen",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            wait_stage(
-                "busy-reopen_restored",
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-                Duration::from_secs(300),
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "busy-reopen",
-                "busy-reopen_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
+            let (native_pid, start_ticks, children, arm) =
+                arm_native(app_dir, &vm_url, &log, working, "busy-reopen", interrupt)?;
             let native = wait_native_exit(
                 "busy-reopen",
                 working,
@@ -665,24 +521,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "busy-reopen",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-busy-reopen".into(),
-                exit: Some(driver_exit),
-            });
             phases.push(PhaseRecord {
                 name: "busy-reopen",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "reopened the same home and verified the turn saved after duplicate redirection was restored: {}",
+                    "reopened the same home after duplicate redirection: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -705,14 +549,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // -------------------------------------------------------- duplicate --
         {
-            // The repeated close is driven through the existing Driver-only
-            // subscription-fault entrypoint: its faulty progress subscription
-            // emits a typed `progress` issue and its cancel stays pending for
-            // the coordinator's bounded 2s, so the single central cleanup
-            // genuinely outlives the 500ms between the two repeated requests.
-            // No production interface or Driver command is added; the fixture
-            // only reuses the entrypoint the subscription-fault phase already
-            // needs, which is what makes the second delivery real.
             let log = working.join("shutdown-duplicate-gui.log");
             let project = prepare_project(working, "shutdown-duplicate-project")?;
             let mut gui = start_gui_with(
@@ -721,36 +557,28 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 &log,
                 working,
                 "duplicate",
-                &[],
-                Some("test_driver/shutdown_fault_driver.dart"),
-                None,
+                NativeLaunch {
+                    fault: Some("subscription"),
+                    phase: Some("duplicate"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[2]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-duplicate-driver.log");
-            let mut driver = start_driver(
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
                 app_dir,
-                &home_duplicate,
-                "duplicate",
                 &vm_url,
-                &project,
-                output,
+                &log,
                 working,
-                &driver_log,
-            )?;
-            // The arm marker fires at the first native arm; the journey then
-            // waits several seconds and repeats the close/request inside the
-            // same shared deadline. The total is measured from this first arm.
-            let (native_pid, start_ticks, children) = arm_native(
                 "duplicate",
                 "duplicate_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "duplicate",
                 working,
@@ -762,59 +590,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "duplicate",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(120),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-duplicate".into(),
-                exit: Some(driver_exit),
-            });
-            // The repeated close's proof is judged from the Driver's real
-            // readings, not from the fact that a command was sent: the second
-            // `beginExit` inside `request-app-exit-twice` must report the shared
-            // budget still decreasing, and the read-only native projection must
-            // show that both requests reached the same budget. A refreshed
-            // deadline, a missing read, or a request that was never delivered
-            // all fail the phase instead of being recorded as a pass.
-            let summary = read_phase_json(&output.join("shutdown-duplicate-summary.json"))?;
-            ensure!(
-                summary["checks"]["duplicateDeadlineNotRefreshed"] == true,
-                "the repeated exit request refreshed the single deadline: {summary}"
-            );
-            ensure!(
-                summary["checks"]["duplicateRequestsAtLeastTwo"] == true,
-                "the repeated exit request was not delivered twice on the shared deadline: {summary}"
-            );
-            // The reused fault entrypoint makes the cleanup report Degraded, so
-            // the real exit must be the non-zero Degraded code below; the typed
-            // report fields are recorded as corroborating evidence (the report is
-            // published just before `finishExit`, so it can race the read).
-            fs::write(
-                output.join("shutdown-duplicate-deadline.json"),
-                serde_json::to_vec_pretty(&serde_json::json!({
-                    "armedRemainingMs": summary["observations"]["duplicateArmedRemainingMs"],
-                    "twiceArmedRemainingMs": summary["observations"]["duplicateTwiceArmedRemainingMs"],
-                    "postRemainingMs": summary["observations"]["duplicatePostRemainingMs"],
-                    "maxRequests": summary["observations"]["duplicateMaxRequests"],
-                    "requestsAtLeastTwo": summary["checks"]["duplicateRequestsAtLeastTwo"],
-                    "deadlineNotRefreshed": summary["checks"]["duplicateDeadlineNotRefreshed"],
-                    "reportOutcome": summary["observations"]["duplicateReportOutcome"],
-                    "reportPersistence": summary["observations"]["duplicateReportPersistence"],
-                    "nativeElapsedMillis": native.elapsed.as_millis(),
-                    "budgetMillis": EXIT_BUDGET.as_millis(),
-                }))?,
-            )?;
             phases.push(PhaseRecord {
                 name: "duplicate",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "a repeated close/request several seconds after the first arm was delivered twice on the same single 30-second budget (its length kept decreasing) and the reused fault entrypoint reported Degraded: {}",
+                    "subscription-fault assembly closed through the real exit path: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -844,33 +625,34 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         {
             let log = working.join("shutdown-hang-gui.log");
             let project = prepare_project(working, "shutdown-hang-project")?;
-            let mut gui = start_gui(workspace, &home_hang, &log, working, "hang")?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-hang-driver.log");
-            let mut driver = start_driver(
-                app_dir,
+            let mut gui = start_gui_with(
+                workspace,
                 &home_hang,
-                "hang",
-                &vm_url,
-                &project,
-                output,
+                &log,
                 working,
-                &driver_log,
+                "hang",
+                NativeLaunch {
+                    fault: Some("hang"),
+                    phase: Some("hang"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[3]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let (native_pid, start_ticks, children) = arm_native(
+            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
                 "hang",
                 "hang_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
-            // The Driver hangs its isolate after arming; the coordinator's own
-            // native OS wait is the only authoritative signal and must see the
-            // host force exit 1 at the single 30-second deadline.
             let native = wait_native_exit(
                 "hang",
                 working,
@@ -882,16 +664,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            // The hung Driver isolate never answers; reclaim its process rather
-            // than waiting on a request that cannot complete.
-            let driver_reclaimed = force_close(&mut driver);
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-hang".into(),
-                exit: None,
-            });
-            let stage = fs::read_to_string(working.join("shutdown-stage"))
-                .unwrap_or_else(|_| "unknown".into());
             fs::write(
                 output.join("shutdown-hang-trace.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -899,9 +671,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "nativeExitCode": native.code,
                     "nativeSignal": native.signal,
                     "elapsedMillis": native.elapsed.as_millis(),
-                    "stage": stage,
                     "budgetMillis": EXIT_BUDGET.as_millis(),
-                    "driverReclaimed": driver_reclaimed,
                     "reclaimedDescendants": native.reclaimed_descendants,
                 }))?,
             )?;
@@ -910,7 +680,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "the hung Driver isolate was forced out by the native 30-second deadline: {}",
+                    "the hung native isolate was forced out by the native 30-second deadline: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -932,119 +702,29 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             write_sanitized_log(&log, &output.join("shutdown-hang-gui.log"))?;
         }
 
-        // ------------------------------------------------- runtime-unavailable --
-        {
-            let log = working.join("shutdown-unavailable-gui.log");
-            let project = prepare_project(working, "shutdown-unavailable-project")?;
-            let mut gui = start_gui(
-                workspace,
-                &home_unavailable,
-                &log,
-                working,
-                "runtime-unavailable",
-            )?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-unavailable-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_unavailable,
-                "runtime-unavailable",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            wait_stage(
-                "runtime_unavailable_observed",
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "runtime-unavailable",
-                "runtime_unavailable_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
-            let native = wait_native_exit(
-                "runtime-unavailable",
-                working,
-                output,
-                native_pid,
-                start_ticks,
-                &mut gui,
-                interrupt,
-                EXIT_GRACE,
-                arm,
-            )?;
-            let driver_exit = wait_driver(
-                "runtime-unavailable",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(120),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-unavailable".into(),
-                exit: Some(driver_exit),
-            });
-            phases.push(PhaseRecord {
-                name: "runtime-unavailable",
-                status: "executed",
-                coverage: "executed",
-                detail: format!(
-                    "a real typed startup failure (v2 data root uncreatable) still rendered the fatal widget and closed through the real exit path: {}",
-                    native.summary()
-                ),
-                exit_code: native.code,
-                elapsed_millis: Some(native.elapsed.as_millis()),
-                native_pid: Some(native.pid),
-                owned_children: children,
-            });
-            ensure!(
-                native.code == Some(0) && native.signal.is_none(),
-                "runtime-unavailable native exit was not code 0: {}",
-                native.summary()
-            );
-            ensure!(
-                native.reclaimed_descendants.is_empty(),
-                "runtime-unavailable native exit left a child tree for the harness: {:?}",
-                native.reclaimed_descendants
-            );
-            write_sanitized_log(&log, &output.join("shutdown-unavailable-gui.log"))?;
-        }
-
         // ------------------------------------------------------- storage lock --
         {
             let log = working.join("shutdown-storage-prime-gui.log");
             let project = prepare_project(working, "shutdown-storage-project")?;
-            let mut gui = start_gui(workspace, &home_storage, &log, working, "storage-lock")?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let prime_driver_log = working.join("shutdown-storage-prime-driver.log");
-            let mut prime_driver = start_driver(
-                app_dir,
+            let mut gui = start_gui_with(
+                workspace,
                 &home_storage,
-                "storage-lock",
-                &vm_url,
-                &project,
-                output,
+                &log,
                 working,
-                &prime_driver_log,
+                "storage-lock",
+                NativeLaunch {
+                    phase: Some("storage-lock"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[4]),
+                    second_prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[5]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
+            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
                 "storage_prime_settled",
                 working,
-                &mut prime_driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
@@ -1052,9 +732,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             )?;
             let database = history_lock_database(&home_storage)?;
             let before = history_lock_watermark(&database)?;
-            // Take the exclusive writer lock, then let the app start the paced
-            // turn and only afterwards ask it to exit. The lock is released after
-            // the forced exit so the reopen can read the exact file back.
             let mut lock = SqliteWriteLock::acquire(
                 &database,
                 "shutdown history.sqlite",
@@ -1064,24 +741,24 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             wait_stage(
                 "storage_blocked",
                 working,
-                &mut prime_driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(180),
             )?;
             fs::write(working.join("shutdown-signal-storage-exit"), "exit")?;
-            let (native_pid, start_ticks, storage_children) = arm_native(
+            let (native_pid, start_ticks, storage_children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
                 "storage-lock",
                 "storage_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut prime_driver,
                 &mut gui,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "storage-lock",
                 working,
@@ -1093,64 +770,44 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            // Release the lock only after the process is gone: while it is held the
-            // writer cannot commit, which is the refusal the acceptance observes.
             lock.finish()?;
-            let prime_driver_exit = wait_driver(
-                "storage-prime",
-                working,
-                &mut prime_driver,
-                interrupt,
-                Duration::from_secs(60),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: prime_driver_log,
-                stem: "shutdown-storage-prime".into(),
-                exit: Some(prime_driver_exit),
-            });
             write_sanitized_log(&log, &output.join("shutdown-storage-prime-gui.log"))?;
 
-            // Reopen and verify the prime survived and the database still opens.
             let verify_log = working.join("shutdown-storage-verify-gui.log");
-            let mut verify = start_gui(
+            let mut verify = start_gui_with(
                 workspace,
                 &home_storage,
                 &verify_log,
                 working,
                 "storage-verify",
+                NativeLaunch {
+                    phase: Some("storage-verify"),
+                    project: Some(&project),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let vm_url = wait_for_vm(&verify_log, &mut verify, &mut fixture, interrupt)?;
-            let verify_driver_log = working.join("shutdown-storage-verify-driver.log");
-            let mut verify_driver = start_driver(
-                app_dir,
-                &home_storage,
-                "storage-verify",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &verify_driver_log,
-            )?;
+            let verify_vm = wait_for_vm(&verify_log, &mut verify, &mut fixture, interrupt)?;
             wait_stage(
                 "storage-verify_restored",
                 working,
-                &mut verify_driver,
                 &mut verify,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            let (verify_pid, verify_ticks, verify_children) = arm_native(
+            let (verify_pid, verify_ticks, verify_children, verify_arm) = arm_after_stage(
+                app_dir,
+                &verify_vm,
+                &verify_log,
+                working,
                 "storage-verify",
                 "storage-verify_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut verify_driver,
                 &mut verify,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let verify_arm = Instant::now();
             let verify_native = wait_native_exit(
                 "storage-verify",
                 working,
@@ -1162,18 +819,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 verify_arm,
             )?;
-            let verify_driver_exit = wait_driver(
-                "storage-verify",
-                working,
-                &mut verify_driver,
-                interrupt,
-                Duration::from_secs(120),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: verify_driver_log,
-                stem: "shutdown-storage-verify".into(),
-                exit: Some(verify_driver_exit),
-            });
             let database = history_lock_database(&home_storage)?;
             let after = history_lock_watermark(&database)?;
             let quick_check = history_lock_quick_check(&database)?;
@@ -1215,10 +860,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 quick_check == "ok",
                 "reopened history database failed PRAGMA quick_check: {quick_check}"
             );
-            // The blocked write is a real refusal: the app cannot exit 0 while
-            // the writer lock is held, so a clean forced exit here is either a
-            // drained (still recorded) or degraded (exit 1) shutdown, never a
-            // fabricated `Stopped`.
             ensure!(
                 matches!(native.code, Some(0) | Some(1)),
                 "storage blocked exit recorded no real exit code: {}",
@@ -1231,56 +872,104 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             write_sanitized_log(&verify_log, &output.join("shutdown-storage-verify-gui.log"))?;
         }
 
+        // ------------------------------------------------- runtime-unavailable --
+        {
+            let log = working.join("shutdown-unavailable-gui.log");
+            let mut gui = start_gui(
+                workspace,
+                &home_unavailable,
+                &log,
+                working,
+                "runtime-unavailable",
+            )?;
+            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
+            let (native_pid, start_ticks, children, arm) = arm_native(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
+                "runtime-unavailable",
+                interrupt,
+            )?;
+            let native = wait_native_exit(
+                "runtime-unavailable",
+                working,
+                output,
+                native_pid,
+                start_ticks,
+                &mut gui,
+                interrupt,
+                EXIT_GRACE,
+                arm,
+            )?;
+            phases.push(PhaseRecord {
+                name: "runtime-unavailable",
+                status: "executed",
+                coverage: "executed",
+                detail: format!(
+                    "a real typed startup failure still closed through the real exit path: {}",
+                    native.summary()
+                ),
+                exit_code: native.code,
+                elapsed_millis: Some(native.elapsed.as_millis()),
+                native_pid: Some(native.pid),
+                owned_children: children,
+            });
+            ensure!(
+                native.code == Some(0) && native.signal.is_none(),
+                "runtime-unavailable native exit was not code 0: {}",
+                native.summary()
+            );
+            ensure!(
+                native.reclaimed_descendants.is_empty(),
+                "runtime-unavailable native exit left a child tree for the harness: {:?}",
+                native.reclaimed_descendants
+            );
+            write_sanitized_log(&log, &output.join("shutdown-unavailable-gui.log"))?;
+        }
+
         // ---------------------------------------------- service unresponsive --
         {
             let log = working.join("shutdown-service-gui.log");
             let project = prepare_project(working, "shutdown-service-project")?;
-            let mut gui = start_gui(
+            let mut gui = start_gui_with(
                 workspace,
                 &home_service,
                 &log,
                 working,
                 "service-unresponsive",
+                NativeLaunch {
+                    phase: Some("service-unresponsive"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[6]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-service-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_service,
-                "service-unresponsive",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
             wait_stage(
                 "service_inflight",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            // Freeze the real provider fixture mid-turn so it is genuinely
-            // unresponsive; the exit must not wait on it. The Driver only marks
-            // `service_inflight` after the first paced chunk arrived, which
-            // proves the request was accepted before the freeze.
             freeze_fixture(&fixture)?;
             fixture_paused = true;
-            fs::write(working.join("shutdown-signal-service-stopped"), "stopped")?;
-            let (native_pid, start_ticks, children) = arm_native(
+            fs::write(working.join("shutdown-signal-service-frozen"), "frozen")?;
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
                 "service-unresponsive",
                 "service_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
+                interrupt,
+                true,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "service-unresponsive",
                 working,
@@ -1294,18 +983,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             )?;
             resume_fixture(&fixture)?;
             fixture_paused = false;
-            let driver_exit = wait_driver(
-                "service",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(60),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-service".into(),
-                exit: Some(driver_exit),
-            });
             phases.push(PhaseRecord {
                 name: "service-unresponsive",
                 status: "executed",
@@ -1334,48 +1011,21 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ------------------------------------------------- close during init --
         {
-            // Driver-only injected fault: the runtime never leaves the
-            // initializing phase (a never-completing Completer through the
-            // existing `FrbStudioApi.debugOverrideInitialization`). An exit
-            // requested now must report Degraded + Unknown and force exit 1,
-            // never a fabricated NotStarted/Stopped. The injection is a
-            // Driver-only test override applied inside `driver_main.dart`
-            // (`_applyShutdownFaultOverride`), not a production fault API.
             let log = working.join("shutdown-init-close-gui.log");
-            let project = prepare_project(working, "shutdown-init-close-project")?;
             let mut gui = start_gui_with(
                 workspace,
                 &home_init_close,
                 &log,
                 working,
                 "init-close",
-                &[("ANYWORK_DRIVER_SHUTDOWN_FAULT", "pending-init")],
-                None,
-                None,
+                NativeLaunch {
+                    fault: Some("pending-init"),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-init-close-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_init_close,
-                "close-during-init",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "init-close",
-                "init-close_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
+            let (native_pid, start_ticks, children, arm) =
+                arm_native(app_dir, &vm_url, &log, working, "init-close", interrupt)?;
             let native = wait_native_exit(
                 "init-close",
                 working,
@@ -1387,25 +1037,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "close-during-init",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-init-close".into(),
-                exit: Some(driver_exit),
-            });
-            let ack = read_phase_json(&output.join("shutdown-close-during-init-ack.json"))?;
             phases.push(PhaseRecord {
                 name: "close-during-init",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "an exit requested while initialization was permanently pending reported degraded/unknown and forced exit 1 (typed cleanup ack: {ack}): {}",
+                    "an exit requested while initialization was permanently pending forced exit 1: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1418,59 +1055,26 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "close-during-init native exit was not code 1: {}",
                 native.summary()
             );
-            ensure!(
-                ack["shutdown"] == "degraded"
-                    && ack["persistence"] == "unknown"
-                    && ack["outcome"] != "notStarted",
-                "close-during-init typed report was not degraded/unknown: {ack}"
-            );
             write_sanitized_log(&log, &output.join("shutdown-init-close-gui.log"))?;
         }
 
         // ------------------------------------------------- bridge-unavailable --
         {
-            // Driver-only injected fault at the same override point: the
-            // initialization override throws before `RustLib.init()`, so no
-            // runtime owner ever installs. This is a Driver-only injected init
-            // failure (`FrbStudioApi.debugOverrideInitialization` inside
-            // `driver_main.dart`), NOT a real dynamic-library `dlopen` failure;
-            // the real repository build refuses a missing bridge at CMake
-            // configure time. The exit must still be a clean NotStarted exit 0.
             let log = working.join("shutdown-bridge-gui.log");
-            let project = prepare_project(working, "shutdown-bridge-project")?;
             let mut gui = start_gui_with(
                 workspace,
                 &home_bridge,
                 &log,
                 working,
                 "bridge",
-                &[("ANYWORK_DRIVER_SHUTDOWN_FAULT", "bridge-load-error")],
-                None,
-                None,
+                NativeLaunch {
+                    fault: Some("bridge-load-error"),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-bridge-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_bridge,
-                "bridge-unavailable",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "bridge",
-                "bridge_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
+            let (native_pid, start_ticks, children, arm) =
+                arm_native(app_dir, &vm_url, &log, working, "bridge", interrupt)?;
             let native = wait_native_exit(
                 "bridge",
                 working,
@@ -1482,25 +1086,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "bridge-unavailable",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-bridge".into(),
-                exit: Some(driver_exit),
-            });
-            let ack = read_phase_json(&output.join("shutdown-bridge-unavailable-ack.json"))?;
             phases.push(PhaseRecord {
                 name: "bridge-unavailable",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "a Driver-only injected bridge-load failure (init settled with no runtime owner) closed as NotStarted with exit 0 (typed cleanup ack: {ack}): {}",
+                    "a native-fault bridge-load failure closed as NotStarted with exit 0: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1513,55 +1104,32 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "bridge-unavailable native exit was not code 0: {}",
                 native.summary()
             );
-            ensure!(
-                ack["outcome"] == "notStarted" && ack["shutdown"] == "completed",
-                "bridge-unavailable typed report was not NotStarted/clean-exit: {ack}"
-            );
             write_sanitized_log(&log, &output.join("shutdown-bridge-gui.log"))?;
         }
 
         // ------------------------------------------------- subscription fault --
         {
-            // Driver-only fault entrypoint: the same central exit coordinator
-            // over a real `FrbStudioApi` subclass whose `subscribeShutdownProgress`
-            // errors and then hangs on cancel. The progress error must become a
-            // typed `progress` issue (Degraded), never a fabricated Stopped, and
-            // the exit must be non-zero.
             let log = working.join("shutdown-subscription-gui.log");
-            let project = prepare_project(working, "shutdown-subscription-project")?;
             let mut gui = start_gui_with(
                 workspace,
                 &home_subscription,
                 &log,
                 working,
                 "subscription-fault",
-                &[],
-                Some("test_driver/shutdown_fault_driver.dart"),
-                None,
+                NativeLaunch {
+                    fault: Some("subscription"),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-subscription-driver.log");
-            let mut driver = start_driver(
+            let (native_pid, start_ticks, children, arm) = arm_native(
                 app_dir,
-                &home_subscription,
-                "subscription-fault",
                 &vm_url,
-                &project,
-                output,
+                &log,
                 working,
-                &driver_log,
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
                 "subscription-fault",
-                "subscription-fault_exit_requested",
-                output,
                 interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
             )?;
-            let arm = Instant::now();
             let native = wait_native_exit(
                 "subscription-fault",
                 working,
@@ -1573,21 +1141,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "subscription-fault",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-subscription-fault".into(),
-                exit: Some(driver_exit),
-            });
-            // The typed progress issue is only observable through the canonical
-            // diagnostics log (the app exits before the report can be read), so
-            // the copy is machine-validated rather than merely stashed.
             copy_home_diagnostics(&home_subscription, output, "subscription-fault")?;
             let log_check = validate_dart_error_dir(
                 &output.join("diagnostics").join("subscription-fault"),
@@ -1598,7 +1151,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "a Driver-only faulty shutdown-progress subscription produced a typed progress diagnostic and forced exit 1; log check {log_check}: {}",
+                    "a faulty shutdown-progress subscription produced a typed progress diagnostic and forced exit 1; log check {log_check}: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1622,46 +1175,22 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ------------------------------------------------- dart error fallback --
         {
-            // Same Driver-only fault entrypoint, but the isolated home cannot
-            // create its canonical diagnostic directory, so `recordDartError`
-            // must fall back to the isolated `TMPDIR`. Proves the real
-            // diagnostics record (stage/correlation/stack) survives an
-            // unwritable canonical path without ever touching a shared temp dir.
             let log = working.join("shutdown-tmp-fallback-gui.log");
-            let project = prepare_project(working, "shutdown-tmp-fallback-project")?;
             let mut gui = start_gui_with(
                 workspace,
                 &home_tmp_fallback,
                 &log,
                 working,
                 "tmp-fallback",
-                &[],
-                Some("test_driver/shutdown_fault_driver.dart"),
-                Some(&tmp_fallback_tmp),
+                NativeLaunch {
+                    fault: Some("subscription"),
+                    tmpdir: Some(&tmp_fallback_tmp),
+                    ..NativeLaunch::default()
+                },
             )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-tmp-fallback-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_tmp_fallback,
-                "dart-error-fallback",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            let (native_pid, start_ticks, children) = arm_native(
-                "tmp-fallback",
-                "tmp-fallback_exit_requested",
-                output,
-                interrupt,
-                working,
-                &mut driver,
-                &mut gui,
-                &mut fixture,
-            )?;
-            let arm = Instant::now();
+            let (native_pid, start_ticks, children, arm) =
+                arm_native(app_dir, &vm_url, &log, working, "tmp-fallback", interrupt)?;
             let native = wait_native_exit(
                 "tmp-fallback",
                 working,
@@ -1673,20 +1202,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 EXIT_GRACE,
                 arm,
             )?;
-            let driver_exit = wait_driver(
-                "dart-error-fallback",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(180),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-tmp-fallback".into(),
-                exit: Some(driver_exit),
-            });
-            // Preserve the isolated TMPDIR fallback log beside the rest of the
-            // evidence so the stage/correlation/stack record is reviewable.
             let fallback_dest = output.join("diagnostics").join("tmp-fallback-temp");
             fs::create_dir_all(&fallback_dest)?;
             if tmp_fallback_tmp.is_dir() {
@@ -1703,7 +1218,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "an unwritable canonical diagnostics path fell back to the isolated TMPDIR and still recorded stage/correlation/stack (native pid {native_pid}); check {fallback_check}: {}",
+                    "an unwritable canonical diagnostics path fell back to the isolated TMPDIR (native pid {native_pid}); check {fallback_check}: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1740,39 +1255,24 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 &log,
                 working,
                 "mcp-reclamation",
-                &[],
-                None,
-                None,
+                NativeLaunch {
+                    phase: Some("mcp-reclamation"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[7]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-mcp-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_mcp,
-                "mcp-reclamation",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            // Wait until the Driver has proven the real MCP server subtree is
-            // live, then resolve the native host and the business pids BEFORE any
-            // close is requested: the alive gate and the independent monitor must
-            // both exist first, or a fast normal exit could race the observation
-            // and the later "pids gone" reading would prove nothing.
+            wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
                 "mcp-reclamation_served",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            let (native_pid, start_ticks, children) = snapshot_native(output, "mcp-reclamation")?;
-            // The scenario server records its own and the grandchild's pid; the
-            // coordinator OS-polls the real business pids with a reuse guard.
+            let (native_pid, start_ticks, children) = snapshot_native(&log)?;
             let coord = read_phase_json(&mcp_coord)?;
             let mcp_pid = coord["mcpPid"].as_u64().unwrap_or_default() as u32;
             let mcp_ticks = coord["mcpStartTicks"].as_u64();
@@ -1782,9 +1282,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 mcp_pid > 0 && grandchild_pid > 0 && grandchild_pid != mcp_pid,
                 "the scenario MCP server recorded no distinct business pids: {coord}"
             );
-            // Hard pre-request gate: both business pids must be genuinely live
-            // BEFORE the forced exit is requested, otherwise their later
-            // disappearance would prove nothing.
             #[cfg(target_os = "linux")]
             {
                 ensure!(
@@ -1796,9 +1293,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 vec![(mcp_pid, mcp_ticks), (grandchild_pid, grandchild_ticks)],
                 EXIT_GRACE,
             );
-            // Only now does the run let the isolate request the Driver-only hang;
-            // the native host then arms the single 30-second deadline and forces
-            // the process out (exit 1) while its supervisor reclaims the subtree.
             fs::write(
                 working.join("shutdown-signal-mcp-reclamation-armed"),
                 "armed",
@@ -1806,7 +1300,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             wait_stage(
                 "mcp-reclamation_exit_requested",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
@@ -1827,28 +1320,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let reclamation = monitor
                 .join()
                 .unwrap_or_else(|_| serde_json::json!({"monitor": "panicked"}));
-            // The hung Driver isolate never answers; reclaim its process instead
-            // of waiting on a request that cannot complete.
-            let driver_reclaimed = force_close(&mut driver);
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-mcp-reclamation".into(),
-                exit: None,
-            });
-            // Safety net: a business pid that is still alive is a real product
-            // leak already recorded above; kill it here only so the run leaves
-            // no orphaned `sleep` behind, and record the forced-kill list.
-            let mut forced_kill = Vec::new();
-            for (pid, ticks) in [(grandchild_pid, grandchild_ticks), (mcp_pid, mcp_ticks)] {
-                if proc_alive(pid, ticks) {
-                    forced_kill.push(pid);
-                    let _ = Command::new("kill")
-                        .arg("-KILL")
-                        .arg("--")
-                        .arg(pid.to_string())
-                        .status();
-                }
-            }
+            let forced_kill =
+                force_kill_alive([(grandchild_pid, grandchild_ticks), (mcp_pid, mcp_ticks)]);
             fs::write(
                 output.join("shutdown-mcp-reclamation.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -1858,7 +1331,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "descendantsAtRootExit": native.descendants_at_root_exit,
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
-                    "driverReclaimed": driver_reclaimed,
                     "forcedKill": forced_kill,
                 }))?,
             )?;
@@ -1867,7 +1339,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned stdio MCP server and its SIGTERM-ignoring grandchild were proven live, the Driver isolate was blocked and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned stdio MCP server and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1886,8 +1358,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "mcp-reclamation did not exit at the single 30-second deadline (measured from the real arm): {:?}",
                 native.elapsed
             );
-            // The strict criterion never depends on the harness kill: the product
-            // must have reclaimed the subtree before the natural window closed.
             ensure!(
                 native.reclaimed_descendants.is_empty(),
                 "the product leaked the MCP subtree and the harness had to reclaim it: {:?}",
@@ -1904,15 +1374,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ------------------------------------------------- lsp subtree reclamation --
         {
-            // A real `lsp_query` tool turn makes the runtime start the configured
-            // scenario-owned fake language server through its supervised worker.
-            // The server speaks the LSP handshake and spawns a SIGTERM-ignoring
-            // grandchild in its own process group; the product's own supervisor
-            // must reclaim that whole subtree BEFORE this harness intervenes.
             let log = working.join("shutdown-lsp-gui.log");
             let project = prepare_project(working, "shutdown-lsp-project")?;
-            // The `lsp_query` tool binds the workspace-relative probe file, so
-            // the isolated project must actually contain it (no host approval).
             fs::write(
                 project.join(pl_provider_fixture::GUI_SHUTDOWN_LSP_FILE),
                 b"language: anywork-shutdown-fixture\n",
@@ -1923,38 +1386,24 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 &log,
                 working,
                 "lsp-reclamation",
-                &[],
-                None,
-                None,
+                NativeLaunch {
+                    phase: Some("lsp-reclamation"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[8]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-lsp-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_lsp,
-                "lsp-reclamation",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            // Wait until the Driver has proven the real LSP server subtree is
-            // live, then resolve the native host and the business pids BEFORE any
-            // close is requested: the alive gate and the independent monitor must
-            // both exist first, or a fast normal exit could race the observation.
+            wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
                 "lsp-reclamation_served",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            let (native_pid, start_ticks, children) = snapshot_native(output, "lsp-reclamation")?;
-            // The scenario server records its own and the grandchild's pid; the
-            // coordinator OS-polls the real business pids with a reuse guard.
+            let (native_pid, start_ticks, children) = snapshot_native(&log)?;
             let coord = read_phase_json(&lsp_coord)?;
             let lsp_pid = coord["lspPid"].as_u64().unwrap_or_default() as u32;
             let lsp_ticks = coord["lspStartTicks"].as_u64();
@@ -1964,8 +1413,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 lsp_pid > 0 && grandchild_pid > 0 && grandchild_pid != lsp_pid,
                 "the scenario LSP server recorded no distinct business pids: {coord}"
             );
-            // Hard pre-request gate: both business pids must be genuinely live
-            // BEFORE the forced exit is requested.
             #[cfg(target_os = "linux")]
             {
                 ensure!(
@@ -1977,9 +1424,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 vec![(lsp_pid, lsp_ticks), (grandchild_pid, grandchild_ticks)],
                 EXIT_GRACE,
             );
-            // Only now does the run let the isolate request the Driver-only hang;
-            // the native host then arms the single 30-second deadline and forces
-            // the process out (exit 1) while its supervisor reclaims the subtree.
             fs::write(
                 working.join("shutdown-signal-lsp-reclamation-armed"),
                 "armed",
@@ -1987,7 +1431,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             wait_stage(
                 "lsp-reclamation_exit_requested",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
@@ -2008,27 +1451,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let reclamation = monitor
                 .join()
                 .unwrap_or_else(|_| serde_json::json!({"monitor": "panicked"}));
-            // The hung Driver isolate never answers; reclaim its process instead
-            // of waiting on a request that cannot complete.
-            let driver_reclaimed = force_close(&mut driver);
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-lsp-reclamation".into(),
-                exit: None,
-            });
-            // Safety net: a surviving business pid is a real product leak already
-            // recorded above; kill it here only so no orphaned `sleep` is left.
-            let mut forced_kill = Vec::new();
-            for (pid, ticks) in [(grandchild_pid, grandchild_ticks), (lsp_pid, lsp_ticks)] {
-                if proc_alive(pid, ticks) {
-                    forced_kill.push(pid);
-                    let _ = Command::new("kill")
-                        .arg("-KILL")
-                        .arg("--")
-                        .arg(pid.to_string())
-                        .status();
-                }
-            }
+            let forced_kill =
+                force_kill_alive([(grandchild_pid, grandchild_ticks), (lsp_pid, lsp_ticks)]);
             fs::write(
                 output.join("shutdown-lsp-reclamation.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -2038,7 +1462,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "descendantsAtRootExit": native.descendants_at_root_exit,
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
-                    "driverReclaimed": driver_reclaimed,
                     "forcedKill": forced_kill,
                 }))?,
             )?;
@@ -2047,7 +1470,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned fake LSP server (started by the real `lsp_query` tool turn) and its SIGTERM-ignoring grandchild were proven live, the Driver isolate was blocked and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned fake LSP server (started by the real `lsp_query` tool turn) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -2082,11 +1505,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ------------------------------------------------ tool subtree reclamation --
         {
-            // A real background `exec` tool turn makes the runtime start the
-            // scenario-owned `--tool-peer` through its supervised tool worker. The
-            // peer spawns a SIGTERM-ignoring grandchild in its own process group
-            // and keeps running; the forced exit must let the product reclaim that
-            // whole subtree BEFORE this harness intervenes.
             let log = working.join("shutdown-tool-gui.log");
             let project = prepare_project(working, "shutdown-tool-project")?;
             let mut gui = start_gui_with(
@@ -2095,36 +1513,24 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 &log,
                 working,
                 "tool-reclamation",
-                &[],
-                None,
-                None,
+                NativeLaunch {
+                    phase: Some("tool-reclamation"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[9]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-tool-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_tool,
-                "tool-reclamation",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            // Wait until the Driver has proven the real background tool subtree
-            // is live, then resolve the native host and the business pids BEFORE
-            // any close is requested: the alive gate and the independent monitor
-            // must both exist first, or a fast normal exit could race it.
+            wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
                 "tool-reclamation_served",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            let (native_pid, start_ticks, children) = snapshot_native(output, "tool-reclamation")?;
+            let (native_pid, start_ticks, children) = snapshot_native(&log)?;
             let coord = read_phase_json(&tool_coord)?;
             let tool_pid = coord["toolPid"].as_u64().unwrap_or_default() as u32;
             let tool_ticks = coord["toolStartTicks"].as_u64();
@@ -2134,8 +1540,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 tool_pid > 0 && grandchild_pid > 0 && grandchild_pid != tool_pid,
                 "the scenario background tool recorded no distinct business pids: {coord}"
             );
-            // Hard pre-request gate: both business pids must be genuinely live
-            // BEFORE the forced exit is requested.
             #[cfg(target_os = "linux")]
             {
                 ensure!(
@@ -2148,9 +1552,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 vec![(tool_pid, tool_ticks), (grandchild_pid, grandchild_ticks)],
                 EXIT_GRACE,
             );
-            // Only now does the run let the isolate request the Driver-only hang;
-            // the native host then arms the single 30-second deadline and forces
-            // the process out (exit 1) while its supervisor reclaims the subtree.
             fs::write(
                 working.join("shutdown-signal-tool-reclamation-armed"),
                 "armed",
@@ -2158,7 +1559,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             wait_stage(
                 "tool-reclamation_exit_requested",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
@@ -2179,25 +1579,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let reclamation = monitor
                 .join()
                 .unwrap_or_else(|_| serde_json::json!({"monitor": "panicked"}));
-            // The hung Driver isolate never answers; reclaim its process instead
-            // of waiting on a request that cannot complete.
-            let driver_reclaimed = force_close(&mut driver);
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-tool-reclamation".into(),
-                exit: None,
-            });
-            let mut forced_kill = Vec::new();
-            for (pid, ticks) in [(grandchild_pid, grandchild_ticks), (tool_pid, tool_ticks)] {
-                if proc_alive(pid, ticks) {
-                    forced_kill.push(pid);
-                    let _ = Command::new("kill")
-                        .arg("-KILL")
-                        .arg("--")
-                        .arg(pid.to_string())
-                        .status();
-                }
-            }
+            let forced_kill =
+                force_kill_alive([(grandchild_pid, grandchild_ticks), (tool_pid, tool_ticks)]);
             fs::write(
                 output.join("shutdown-tool-reclamation.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -2207,7 +1590,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "descendantsAtRootExit": native.descendants_at_root_exit,
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
-                    "driverReclaimed": driver_reclaimed,
                     "forcedKill": forced_kill,
                 }))?,
             )?;
@@ -2216,7 +1598,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned background `exec` tool (started by the real supervised tool worker) and its SIGTERM-ignoring grandchild were proven live, the Driver isolate was blocked and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned background `exec` tool (started by the real supervised tool worker) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -2251,15 +1633,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
         // ---------------------------------------------------- concurrent stop --
         {
-            // One turn starts two independent supervised resources: the
-            // scenario-owned stdio MCP server (through the thread's service
-            // lease, because the isolated home declares it) and the background
-            // `--tool-peer` (through the real supervised tool worker). The
-            // coordinator holds the exclusive writer lock across the exit
-            // request, so the terminal save cannot drain; the two resources must
-            // be reclaimed on their own while that chain is still waiting, well
-            // before the single 30-second deadline. The proof is real OS pid
-            // timing with a start-time reuse guard, never the elapsed total.
             let log = working.join("shutdown-concurrent-gui.log");
             let project = prepare_project(working, "shutdown-concurrent-project")?;
             let mut gui = start_gui_with(
@@ -2268,44 +1641,23 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 &log,
                 working,
                 "concurrent-stop",
-                &[],
-                None,
-                None,
+                NativeLaunch {
+                    phase: Some("concurrent-stop"),
+                    project: Some(&project),
+                    prompt: Some(pl_provider_fixture::GUI_SHUTDOWN_PROMPTS[10]),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
             )?;
-            let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let driver_log = working.join("shutdown-concurrent-driver.log");
-            let mut driver = start_driver(
-                app_dir,
-                &home_concurrent,
-                "concurrent-stop",
-                &vm_url,
-                &project,
-                output,
-                working,
-                &driver_log,
-            )?;
-            // Wait until the Driver has proven both independent subtrees started
-            // and the concurrent turn is still in flight (its receipt
-            // continuation is paced).
+            wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
             wait_stage(
                 "concurrent-stop_served",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
                 Duration::from_secs(300),
             )?;
-            // `concurrent-stop_served` only proves both subtrees recorded their
-            // pids; the runtime answers the background `exec` call with a task
-            // receipt and then re-prompts the model, and that continuation is a
-            // *required* strict-script step. If the coordinator took the writer
-            // lock and released the close now, the turn could be cancelled at
-            // the receipt before that step is matched, leaving the script short
-            // behind an accepted-request count. Require the fixture's own live
-            // counters to report every remaining step optional (the
-            // continuation has really been accepted) while its paced reply is
-            // still streaming, and only then block the terminal save.
             let continuation = wait_concurrent_continuation(
                 status_file,
                 &mut gui,
@@ -2320,7 +1672,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "shutdown concurrent history.sqlite",
                 Duration::from_secs(120),
             )?;
-            let (native_pid, start_ticks, children) = snapshot_native(output, "concurrent-stop")?;
+            let (native_pid, start_ticks, children) = snapshot_native(&log)?;
             let mcp = read_phase_json(&concurrent_mcp_coord)?;
             let mcp_pid = mcp["mcpPid"].as_u64().unwrap_or_default() as u32;
             let mcp_ticks = mcp["mcpStartTicks"].as_u64();
@@ -2339,9 +1691,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 tool_pid > 0 && tool_gc_pid > 0 && tool_gc_pid != tool_pid,
                 "the concurrent background tool recorded no distinct business pids: {tool}"
             );
-            // Hard pre-request gate: every business pid must be genuinely live
-            // BEFORE the exit is requested, so a later disappearance proves the
-            // product's own supervision instead of a race with a fast exit.
             #[cfg(target_os = "linux")]
             {
                 ensure!(
@@ -2370,7 +1719,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             wait_stage(
                 "concurrent-stop_exit_requested",
                 working,
-                &mut driver,
                 &mut gui,
                 &mut fixture,
                 interrupt,
@@ -2391,44 +1739,13 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let reclamation = monitor
                 .join()
                 .unwrap_or_else(|_| serde_json::json!({"monitor": "panicked"}));
-            // Release the lock only after the process is gone: while it is held
-            // the terminal save cannot commit, which is the blocked chain the
-            // acceptance observes.
             lock.finish()?;
-            let driver_exit = wait_driver(
-                "concurrent-stop",
-                working,
-                &mut driver,
-                interrupt,
-                Duration::from_secs(120),
-            )?;
-            driver_evidence.push(DriverEvidence {
-                log: driver_log,
-                stem: "shutdown-concurrent".into(),
-                exit: Some(driver_exit),
-            });
-            // Safety net: a surviving business pid is a real product leak already
-            // recorded above; kill it here only so the run leaves no orphan.
-            let mut forced_kill = Vec::new();
-            for (pid, ticks) in [
+            let forced_kill = force_kill_alive([
                 (mcp_gc_pid, mcp_gc_ticks),
                 (mcp_pid, mcp_ticks),
                 (tool_gc_pid, tool_gc_ticks),
                 (tool_pid, tool_ticks),
-            ] {
-                if proc_alive(pid, ticks) {
-                    forced_kill.push(pid);
-                    let _ = Command::new("kill")
-                        .arg("-KILL")
-                        .arg("--")
-                        .arg(pid.to_string())
-                        .status();
-                }
-            }
-            // Per-PID stop times, taken from the independent monitor whose clock
-            // started just before the exit request. Every business pid keeps its
-            // own raw timing so a grandchild that stops early can never stand in
-            // for a parent that only disappears with the native force-out.
+            ]);
             let stop_millis = |pid: u32| -> Option<u128> {
                 reclamation["observed"]
                     .as_array()
@@ -2442,12 +1759,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let mcp_grandchild_stop = stop_millis(mcp_gc_pid);
             let tool_process_stop = stop_millis(tool_pid);
             let tool_grandchild_stop = stop_millis(tool_gc_pid);
-            // A resource is only confirmed reclaimed when *both* its process and
-            // its SIGTERM-ignoring grandchild were observed to exit, and its
-            // completion is the later of the two: a missing observation for
-            // either pid leaves the resource unconfirmed, and a resource whose
-            // slower pid is still alive until the native force-out can never
-            // read as a completed concurrent stop.
             let resource_stop = |process: Option<u128>, grandchild: Option<u128>| -> Option<u128> {
                 match (process, grandchild) {
                     (Some(process), Some(grandchild)) => Some(process.max(grandchild)),
@@ -2456,12 +1767,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             };
             let mcp_stop = resource_stop(mcp_process_stop, mcp_grandchild_stop);
             let tool_stop = resource_stop(tool_process_stop, tool_grandchild_stop);
-            // Same-clock moment the native host itself disappeared.
             let native_exited_at = reclamation["nativeExitedAtMillis"].as_u64().map(u128::from);
-            // Every business pid of both resources must precede the real native
-            // exit on the shared monitor clock: a resource whose slower pid only
-            // died with (or after) the native force-out is a serialized stop, not
-            // concurrent.
             let mcp_before_native_exit =
                 matches!((mcp_stop, native_exited_at), (Some(stop), Some(at)) if stop < at);
             let tool_before_native_exit =
@@ -2469,10 +1775,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             let database_after = history_lock_database(&home_concurrent)?;
             let after = history_lock_watermark(&database_after)?;
             let quick_check = history_lock_quick_check(&database_after)?;
-            // The native host's own canonical diagnostics are the only terminal
-            // shutdown facts independent of the Dart isolate: they distinguish a
-            // coordinated ~28-second degraded `finishExit` from the 30-second
-            // watchdog and record whether the blocked save was left uncommitted.
             let native_diagnostics = read_native_exit_diagnostics(&home_concurrent)?;
             let diagnostics_code = native_diagnostics["code"].as_str().unwrap_or_default();
             let diagnostics_pending = native_diagnostics["pending"].as_str().unwrap_or_default();
@@ -2535,8 +1837,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 native_pid: Some(native.pid),
                 owned_children: children,
             });
-            // The two independent resources really stopped: every business pid
-            // was observed at zero and the harness had nothing to force-kill.
             ensure!(
                 reclamation["stillAlive"]
                     .as_array()
@@ -2549,10 +1849,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "the product leaked a concurrent subtree and the harness had to reclaim it: {:?}",
                 native.reclaimed_descendants
             );
-            // Each independent resource is a real stop ACK only when *both* its
-            // process and its grandchild were observed to exit within the bound,
-            // well under the single budget: neither may be serialized behind the
-            // ~28-second save, and an unobserved pid is never treated as a pass.
             let stop_ack_bound_ms = CONCURRENT_STOP_ACK_BOUND.as_millis();
             ensure!(
                 mcp_stop.is_some_and(|ms| ms <= stop_ack_bound_ms),
@@ -2574,26 +1870,16 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                  grandchild {tool_grandchild_stop:?}) nativeExitedAt={native_exited_at:?} \
                  (observed {reclamation})"
             );
-            // The still-blocked save forced a degraded exit code 1: a Clean
-            // (code 0) exit would mean the lock never held the terminal save.
             ensure!(
                 native.code == Some(1) && native.signal.is_none(),
                 "concurrent-stop native exit was not the degraded code 1: {}",
                 native.summary()
             );
-            // The single hard deadline is an upper bound, not an exact target: a
-            // coordinated degraded finish lands at the 28-second cleanup budget
-            // (the 30-second watchdog is reserved for a Dart/bridge that never
-            // returns), so demanding a ~30-second exit would fail a correct one.
             ensure!(
                 native.elapsed <= EXIT_BUDGET + Duration::from_secs(1),
                 "concurrent-stop ran past the single 30-second hard deadline: {:?}",
                 native.elapsed
             );
-            // A still-held writer lock cannot commit the save until this process
-            // is gone, so the cleanup had to wait out its budget before the
-            // degraded finish; an exit well before the budget would mean the save
-            // was never actually blocked.
             ensure!(
                 native.elapsed + Duration::from_secs(1) >= CONCURRENT_CLEANUP_BUDGET,
                 "concurrent-stop exited before the 28-second cleanup budget, so the writer lock \
@@ -2604,10 +1890,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 quick_check == "ok",
                 "reopened concurrent history database failed PRAGMA quick_check: {quick_check}"
             );
-            // The blocked save must never be recorded as a clean, fully drained
-            // Stopped: a `cleanExit` code or a `pending=0` terminal would mean the
-            // lock never held the save, so the phase fails rather than accepting a
-            // fabricated clean exit.
             ensure!(
                 diagnostics_code != "cleanExit"
                     && (diagnostics_pending == "unknown"
@@ -2626,23 +1908,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
     if fixture_paused {
         let _ = resume_fixture(&fixture);
-    }
-
-    let redactions = [
-        (app_dir.to_string_lossy().into_owned(), "<app>"),
-        (workspace.to_string_lossy().into_owned(), "<workspace>"),
-        (home.to_string_lossy().into_owned(), "<home>"),
-        (working.to_string_lossy().into_owned(), "<coord>"),
-    ];
-    for evidence in &driver_evidence {
-        write_realtime_driver_evidence(
-            &evidence.log,
-            output,
-            &evidence.stem,
-            evidence.exit,
-            journey.as_ref().err(),
-            &redactions,
-        )?;
     }
 
     // Canonical diagnostics live under `ANYWORK_HOME/studio/logs`; copy them so
@@ -2688,7 +1953,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     let gaps = vec![GapRecord {
         requirement: "windows-native-acceptance",
         reason: "the user specified Linux as the acceptance platform; the Windows Job Object reclamation path was not executed (approved as not-run, not a Linux gap)",
-        interface_needs: "a Windows host to run the same --scenario shutdown phases",
+        interface_needs: "a Windows host to run the same --preset shutdown phases",
     }];
 
     // Machine checks are `passed` only for the requirements this Linux run
@@ -2753,8 +2018,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         ("shutdown-busy-first-gui.log", true),
         ("shutdown-busy-second-gui.log", false),
         ("shutdown-busy-reopen-gui.log", true),
-        // The duplicate phase deliberately runs the subscription-fault
-        // entrypoint (same Driver-only target as `subscription-fault`) so the
+        // The duplicate phase runs the subscription-fault assembly so the
         // repeated close is genuinely delivered; its log carries that injected
         // fault on purpose and is therefore not a happy-path error source.
         ("shutdown-duplicate-gui.log", false),
@@ -2770,8 +2034,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         ("shutdown-mcp-gui.log", false),
         ("shutdown-lsp-gui.log", false),
         ("shutdown-tool-gui.log", false),
-        // The concurrent-stop phase deliberately holds the exclusive writer lock
-        // across the exit, so its forced exit 1 log is an expected fault source.
         ("shutdown-concurrent-gui.log", false),
     ];
     let mut strict_errors = 0usize;
@@ -2825,61 +2087,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
 
     journey?;
 
-    // Every phase that ran to completion must have written a pending summary
-    // with all of its own checks passing. The duplicate has no Driver: its
-    // native redirect and real OS exit are checked by the coordinator.
-    for summary_phase in [
-        "normal",
-        "reopen",
-        "busy-hold",
-        "busy-reopen",
-        "duplicate",
-        "hang",
-        "runtime-unavailable",
-        "storage-lock",
-        "storage-verify",
-        "service-unresponsive",
-        "close-during-init",
-        "bridge-unavailable",
-        "subscription-fault",
-        "dart-error-fallback",
-        "mcp-reclamation",
-        "lsp-reclamation",
-        "tool-reclamation",
-        "concurrent-stop",
-    ] {
-        let path = output.join(format!("shutdown-{summary_phase}-summary.json"));
-        let report: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).with_context(|| {
-                format!("Flutter Driver did not write the shutdown {summary_phase} summary")
-            })?)?;
-        ensure!(
-            report["scenario"] == "shutdown" && report["verdict"] == "pending",
-            "shutdown {summary_phase} summary is missing its scenario or pending verdict"
-        );
-        ensure!(
-            report["status"] == "complete",
-            "shutdown {summary_phase} journey did not complete: stage={} failedChecks={}",
-            report["stage"],
-            report["failedChecks"],
-        );
-    }
-
-    // Every *required* strict-script step must have been consumed, not merely a
-    // minimum number of requests accepted: `remaining_optional` is true only
-    // when nothing at the cursor is still required, so a short script (the
-    // concurrent receipt continuation left unmatched, say) fails here.
-    let required_steps_consumed = final_live_status
-        .as_ref()
-        .is_some_and(|status| status.remaining_optional && status.rejected == 0);
+    let fixture_status = fixture_result.as_ref().map(|status| status.to_string());
     ensure!(
-        fixture_result.is_ok_and(|status| status.success())
-            && required_steps_consumed
+        fixture_result.as_ref().is_ok_and(ExitStatus::success)
             && rejected_total == 0
             && strict_errors == 0,
         "shutdown fixture or GUI health incomplete; human verdict pending \
          (accepted={accepted_total}, rejected={rejected_total}, strictErrors={strict_errors}, \
-         requiredStepsConsumed={required_steps_consumed}, finalLiveStatus={final_live_status:?})"
+         fixtureStopped={fixture_status:?}, finalLiveStatus={final_live_status:?})"
     );
     Ok(())
 }
@@ -2889,9 +2104,36 @@ fn native_report_path(working: &Path, label: &str) -> PathBuf {
     working.join(format!("shutdown-native-exit-{label}.json"))
 }
 
-/// Starts a native Driver GUI for [anywork_home].
+/// Optional thin native-test assembly for a shutdown scene.
+struct NativeLaunch<'a> {
+    env: &'a [(&'a str, &'a str)],
+    fault: Option<&'a str>,
+    phase: Option<&'a str>,
+    project: Option<&'a Path>,
+    prompt: Option<&'a str>,
+    second_prompt: Option<&'a str>,
+    tmpdir: Option<&'a Path>,
+    output: Option<&'a Path>,
+}
+
+impl Default for NativeLaunch<'_> {
+    fn default() -> Self {
+        Self {
+            env: &[],
+            fault: None,
+            phase: None,
+            project: None,
+            prompt: None,
+            second_prompt: None,
+            tmpdir: None,
+            output: None,
+        }
+    }
+}
+
+/// Starts a native GUI for [anywork_home].
 ///
-/// The launcher builds the Driver bundle and launches the native artifact
+/// The launcher builds the debug bundle and launches the native artifact
 /// directly (`--native-launch`), so the process it starts is the real native
 /// host rather than a `cargo`/Flutter tool wrapper whose exit status is always
 /// `0`. The launcher records the artifact's genuine wait status (and any child
@@ -2909,29 +2151,24 @@ fn start_gui(
         log_path,
         working,
         label,
-        &[],
-        None,
-        None,
+        NativeLaunch::default(),
     )
 }
 
-/// Starts a native Driver GUI with extra environment and an optional Driver-only
-/// fault entrypoint / isolated `TMPDIR`.
+/// Starts a native GUI with extra environment, optional thin fault assembly,
+/// and an isolated `TMPDIR`.
 ///
-/// [driver_target] selects a Driver entrypoint other than the frozen
-/// `test_driver/driver_main.dart` (resolved relative to the app dir by xtask);
-/// [tmpdir] isolates `Directory.systemTemp` so a temp-fallback diagnostic never
-/// touches a shared machine temp directory.
-#[allow(clippy::too_many_arguments)]
+/// A [NativeLaunch] `fault` or `phase` selects `tool/native_fault_main.dart`.
+/// Capture stays off for that assembly. [NativeLaunch::tmpdir] isolates
+/// `Directory.systemTemp` so a temp-fallback diagnostic never touches a shared
+/// machine temp directory.
 fn start_gui_with(
     workspace: &Path,
     anywork_home: &Path,
     log_path: &Path,
     working: &Path,
     label: &str,
-    env: &[(&str, &str)],
-    driver_target: Option<&str>,
-    tmpdir: Option<&Path>,
+    launch: NativeLaunch<'_>,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let report = native_report_path(working, label);
@@ -2941,7 +2178,6 @@ fn start_gui_with(
         .args([
             "xtask",
             "run-gui",
-            "--driver",
             "--native-launch",
             "--native-exit-report",
         ])
@@ -2949,52 +2185,50 @@ fn start_gui_with(
         .env("ANYWORK_HOME", anywork_home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
-    for (key, value) in env {
-        command.env(key, value);
+    if launch.fault.is_some() || launch.phase.is_some() {
+        command
+            .arg("--native-launch-target")
+            .arg("tool/native_fault_main.dart")
+            .env("ANYWORK_NATIVE_SHUTDOWN_COORD", working);
+        if let Some(fault) = launch.fault {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_FAULT", fault);
+        }
+        if let Some(phase) = launch.phase {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_PHASE", phase);
+        }
+        if let Some(project) = launch.project {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_PROJECT", project);
+        }
+        if let Some(prompt) = launch.prompt {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_PROMPT", prompt);
+        }
+        if let Some(prompt) = launch.second_prompt {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_SECOND_PROMPT", prompt);
+        }
+        if let Some(output) = launch.output {
+            command.env("ANYWORK_NATIVE_SHUTDOWN_OUTPUT", output);
+        }
+    } else {
+        command.arg("--capture");
+    }
+    for (key, value) in launch.env {
+        command.env(*key, *value);
     }
     // A caller that pins `DISPLAY` wants the instance on a scenario-owned X
     // display. Force the X11 GDK backend and drop any `WAYLAND_DISPLAY`
     // inherited from the ambient session, or GTK could legitimately pick Wayland
     // and then own no window on the very display the delete event targets.
-    if env.iter().any(|(key, _)| *key == "DISPLAY") {
+    if launch.env.iter().any(|(key, _)| *key == "DISPLAY") {
         command.env("GDK_BACKEND", "x11");
         command.env_remove("WAYLAND_DISPLAY");
     }
-    if let Some(target) = driver_target {
-        command.arg("--native-launch-driver-target").arg(target);
-    }
-    if let Some(tmpdir) = tmpdir {
+    if let Some(tmpdir) = launch.tmpdir {
         command.env("TMPDIR", tmpdir);
     }
     OwnedProcess::start(&mut command, false)
 }
 
-/// Starts one shutdown journey phase against an already-running GUI.
-#[allow(clippy::too_many_arguments)]
-fn start_driver(
-    app_dir: &Path,
-    anywork_home: &Path,
-    phase: &str,
-    vm_url: &str,
-    project: &Path,
-    output: &Path,
-    working: &Path,
-    driver_log: &Path,
-) -> Result<OwnedProcess> {
-    let log = File::create(driver_log)?;
-    let mut command = driver_command(app_dir, "test_driver/shutdown_journey.dart");
-    command
-        .args([phase, vm_url])
-        .arg(project)
-        .arg(output)
-        .arg(working)
-        .env("ANYWORK_HOME", anywork_home)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    OwnedProcess::start(&mut command, false)
-}
-
-/// Creates an isolated git project the Driver can open as the session project.
+/// Creates an isolated git project the operator can open as the session project.
 fn prepare_project(working: &Path, name: &str) -> Result<PathBuf> {
     let project = working.join(name);
     fs::create_dir_all(&project)?;
@@ -3009,11 +2243,10 @@ fn prepare_project(working: &Path, name: &str) -> Result<PathBuf> {
     Ok(project)
 }
 
-/// Waits, bounded, for the Driver to publish the append-only stage marker.
+/// Waits, bounded, for the thin native assembly to publish a stage marker.
 fn wait_stage(
     expected: &str,
     working: &Path,
-    driver: &mut OwnedProcess,
     gui: &mut OwnedProcess,
     fixture: &mut OwnedProcess,
     interrupt: &mpsc::Receiver<()>,
@@ -3025,9 +2258,6 @@ fn wait_stage(
         if marker.is_file() {
             return Ok(());
         }
-        if let Some(status) = driver.child.try_wait()? {
-            bail!("shutdown Driver exited before {expected}: {status}");
-        }
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
@@ -3036,7 +2266,7 @@ fn wait_stage(
         ensure!(interrupt.try_recv().is_err(), "shutdown journey cancelled");
         ensure!(
             Instant::now() < deadline,
-            "shutdown Driver timed out before {expected} (last stage: {})",
+            "shutdown assembly timed out before {expected} (last stage: {})",
             fs::read_to_string(working.join("shutdown-stage")).unwrap_or_else(|_| "connect".into())
         );
         thread::sleep(Duration::from_millis(100));
@@ -3046,15 +2276,13 @@ fn wait_stage(
 /// Waits until the strict fixture has consumed the concurrent turn's required
 /// receipt continuation.
 ///
-/// The Driver marks `concurrent-stop_served` as soon as both independent
+/// The assembly marks `concurrent-stop_served` as soon as both independent
 /// subtrees record their pids, but the runtime answers the background `exec`
 /// call with a task receipt and then re-prompts the model: that continuation is
 /// a *required* script step. The fixture's live counters report
 /// `remaining_optional` only when every step left at its cursor is optional, so
 /// this waits for that flag -- proving the continuation was really accepted --
-/// while the paced reply is still streaming. A rejected request, an exited GUI
-/// or fixture, a cancel, or the timeout are all hard failures so a short script
-/// can never be read as a pass.
+/// while the paced reply is still streaming.
 fn wait_concurrent_continuation(
     status_file: &Path,
     gui: &mut OwnedProcess,
@@ -3088,38 +2316,6 @@ fn wait_concurrent_continuation(
                 .unwrap_or_else(|error| format!("unavailable: {error}"))
         );
         thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// Waits for the Driver process to finish, returning its real exit status.
-///
-/// The GUI is deliberately not checked here: in every shutdown phase the
-/// journey requests the app exit, so the owned GUI may already have exited
-/// before the Dart helper process finished. The OS exit of the GUI is judged
-/// separately by [`wait_gui_exit`].
-fn wait_driver(
-    phase: &str,
-    working: &Path,
-    driver: &mut OwnedProcess,
-    interrupt: &mpsc::Receiver<()>,
-    timeout: Duration,
-) -> Result<ExitStatus> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = driver.child.try_wait()? {
-            driver.stopped = true;
-            return Ok(status);
-        }
-        ensure!(
-            interrupt.try_recv().is_err(),
-            "shutdown {phase} journey cancelled"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "shutdown {phase} journey timed out (last stage: {})",
-            fs::read_to_string(working.join("shutdown-stage")).unwrap_or_else(|_| "connect".into())
-        );
-        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -3159,72 +2355,97 @@ impl NativeExit {
     }
 }
 
-/// Reads the Driver-reported native process identity written by the journey.
+/// Reads the native artifact pid the launcher printed before any close.
 ///
-/// The journey writes `shutdown-native-<label>.json` early (the `pid` request),
-/// so the coordinator can OS-wait the real native process with a start-time
-/// reuse guard instead of the `cargo` wrapper pid.
-fn read_native_identity(output: &Path, label: &str) -> Result<serde_json::Value> {
-    let path = output.join(format!("shutdown-native-{label}.json"));
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Ok(bytes) = fs::read(&path) {
-            return serde_json::from_slice(&bytes).with_context(|| {
-                format!("native identity file is not valid JSON: {}", path.display())
-            });
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "shutdown {label} did not publish its native identity at {}",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(50));
+/// `run_resident_reporting` writes `resident command started: pid=` for the
+/// real host, so this coordinator can OS-wait that pid with a start-time reuse
+/// guard instead of the `cargo` wrapper pid.
+fn parse_native_pid(log: &Path) -> Result<u32> {
+    let text =
+        fs::read_to_string(log).with_context(|| format!("missing GUI log {}", log.display()))?;
+    for line in text.lines().rev() {
+        let Some(rest) = line.split("resident command started: pid=").nth(1) else {
+            continue;
+        };
+        let pid = rest
+            .split([',', ' '])
+            .next()
+            .unwrap_or("")
+            .parse::<u32>()
+            .with_context(|| format!("native pid is not an integer in {}", log.display()))?;
+        ensure!(pid > 0, "native pid in {} is zero", log.display());
+        return Ok(pid);
     }
+    bail!("GUI log {} has no resident command pid", log.display())
 }
 
-/// Waits for the phase's `<label>_exit_requested` marker, then snapshots the
-/// real native identity and descendant PIDs before that native host exits.
+/// Snapshots the live native host and its descendant PIDs from the launcher log.
 ///
-/// The returned start time is the PID-reuse guard for the coordinator's own
-/// `/proc` poll, and the descendant PIDs are the real business processes that
-/// must be observed to exit.
-#[allow(clippy::too_many_arguments)]
+/// This never waits for an exit request, so subtree phases can resolve the
+/// real native process (and prove a business subtree is alive) before any
+/// close is issued.
+fn snapshot_native(log: &Path) -> Result<(u32, Option<u64>, Vec<u32>)> {
+    let pid = parse_native_pid(log)?;
+    Ok((pid, proc_start_ticks(pid), owned_children(pid)))
+}
+
+/// Requests a coordinated native exit and returns the live identity plus arm time.
 fn arm_native(
+    app_dir: &Path,
+    vm_url: &str,
+    log: &Path,
+    working: &Path,
+    label: &str,
+    interrupt: &mpsc::Receiver<()>,
+) -> Result<(u32, Option<u64>, Vec<u32>, Instant)> {
+    let (pid, ticks, children) = snapshot_native(log)?;
+    request_app_exit(
+        app_dir,
+        vm_url,
+        &working.join(format!("shutdown-{label}-request-exit.log")),
+        interrupt,
+    )?;
+    Ok((pid, ticks, children, Instant::now()))
+}
+
+/// Waits for the assembly's `{marker}` stage, snapshots the live native host,
+/// and optionally issues a second `requestExit` from the host.
+///
+/// `already_requested` is true when the thin assembly itself called
+/// `StudioExitCoordinator.requestExit` or `beginExit` (hang / subtree hang).
+/// The host then only snapshots the pid so elapsed is measured from the real
+/// arm, never from a later Driver wait.
+#[allow(clippy::too_many_arguments)]
+fn arm_after_stage(
+    app_dir: &Path,
+    vm_url: &str,
+    log: &Path,
+    working: &Path,
     label: &str,
     marker: &str,
-    output: &Path,
-    interrupt: &mpsc::Receiver<()>,
-    working: &Path,
-    driver: &mut OwnedProcess,
     gui: &mut OwnedProcess,
     fixture: &mut OwnedProcess,
-) -> Result<(u32, Option<u64>, Vec<u32>)> {
+    interrupt: &mpsc::Receiver<()>,
+    already_requested: bool,
+) -> Result<(u32, Option<u64>, Vec<u32>, Instant)> {
     wait_stage(
         marker,
         working,
-        driver,
         gui,
         fixture,
         interrupt,
         Duration::from_secs(180),
     )?;
-    snapshot_native(output, label)
-}
-
-/// Resolves the Driver-reported native host and its current descendant PIDs.
-///
-/// This never waits for an exit request, so the subtree phases can resolve the
-/// real native process (and prove the business subtree is alive) *before* any
-/// close is issued; only then does a later disappearance become evidence of the
-/// product's own supervision instead of a race with a fast normal exit.
-fn snapshot_native(output: &Path, label: &str) -> Result<(u32, Option<u64>, Vec<u32>)> {
-    let identity = read_native_identity(output, label)?;
-    let pid = identity["pid"]
-        .as_u64()
-        .filter(|pid| *pid > 0)
-        .map(|pid| pid as u32)
-        .with_context(|| format!("shutdown {label} Driver reported no native pid: {identity}"))?;
-    Ok((pid, proc_start_ticks(pid), owned_children(pid)))
+    let (pid, ticks, children) = snapshot_native(log)?;
+    if !already_requested {
+        request_app_exit(
+            app_dir,
+            vm_url,
+            &working.join(format!("shutdown-{label}-request-exit.log")),
+            interrupt,
+        )?;
+    }
+    Ok((pid, ticks, children, Instant::now()))
 }
 
 /// The Linux process start time (jiffies since boot) for [pid], if alive.
@@ -3451,45 +2672,7 @@ fn copy_home_diagnostics(home: &Path, output: &Path, label: &str) -> Result<usiz
     Ok(copied)
 }
 
-/// Resolves the `pl-provider-fixture` bin the shutdown MCP server runs.
-///
-/// Uses the same no-op `cargo build --message-format=json` discovery the xtask
-/// acceptance launcher uses, so an explicit `CARGO_TARGET_DIR` or configured
-/// build target is honored instead of assuming a bare `target/debug` path.
-fn resolve_fixture_binary(workspace: &Path) -> Result<PathBuf> {
-    let mut build = process::path_command("cargo", &[]);
-    build.current_dir(workspace).args([
-        "build",
-        "-p",
-        "pl-provider-fixture",
-        "--message-format=json",
-    ]);
-    let output = build
-        .output()
-        .context("failed to run cargo build discovery")?;
-    ensure!(
-        output.status.success(),
-        "failed to build pl-provider-fixture: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if record["reason"] == "compiler-artifact"
-            && record["target"]["name"] == "pl-provider-fixture"
-            && record["target"]["kind"]
-                .as_array()
-                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
-            && let Some(executable) = record["executable"].as_str()
-        {
-            return Ok(PathBuf::from(executable));
-        }
-    }
-    bail!("cargo reported no pl-provider-fixture bin executable")
-}
-
-/// Reads a small JSON evidence file written by the Driver journey.
+/// Reads a small JSON evidence file written by a scenario peer.
 fn read_phase_json(path: &Path) -> Result<serde_json::Value> {
     serde_json::from_slice(
         &fs::read(path).with_context(|| format!("missing phase evidence {}", path.display()))?,
@@ -3499,13 +2682,12 @@ fn read_phase_json(path: &Path) -> Result<serde_json::Value> {
 
 /// Reads the native host's canonical exit diagnostics for [home].
 ///
-/// The native host (`runner_common/studio_host_lifecycle.cc`) writes merged
-/// `anywork-exit` lines to `ANYWORK_HOME/studio/logs/anywork-exit-diagnostics.log`
-/// carrying `stage`/`code`/`reason`/`correlation`/`pending`/`elapsed_ms`. The
-/// last line is the authoritative terminal snapshot: a `finish` event is a
-/// coordinated `finishExit`, while a `final` snapshot with `exitDeadlineImminent`
-/// is the 30-second watchdog. A missing or empty log is a hard error because the
-/// concurrent phase must confirm the blocked save never completed, not assume it.
+/// The native host writes merged `anywork-exit` lines to
+/// `ANYWORK_HOME/studio/logs/anywork-exit-diagnostics.log`. The last line is
+/// the authoritative terminal snapshot: a `finish` event is a coordinated
+/// `finishExit`, while a `final` snapshot with `exitDeadlineImminent` is the
+/// 30-second watchdog. A missing or empty log is a hard error because the
+/// concurrent phase must confirm the blocked save never completed.
 fn read_native_exit_diagnostics(home: &Path) -> Result<serde_json::Value> {
     let path = home
         .join("studio")
@@ -3513,15 +2695,14 @@ fn read_native_exit_diagnostics(home: &Path) -> Result<serde_json::Value> {
         .join("anywork-exit-diagnostics.log");
     let text = fs::read_to_string(&path)
         .with_context(|| format!("missing native exit diagnostics {}", path.display()))?;
-    let mut last: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut last: BTreeMap<String, String> = BTreeMap::new();
     let mut coordinated_finish = false;
     let mut lines = 0usize;
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("anywork-exit ") else {
             continue;
         };
-        let mut fields: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
+        let mut fields: BTreeMap<String, String> = BTreeMap::new();
         for token in rest.split_whitespace() {
             if let Some((key, value)) = token.split_once('=') {
                 fields.insert(key.to_owned(), value.to_owned());
@@ -3599,95 +2780,6 @@ fn validate_dart_error_dir(dir: &Path, expect_stage: &str) -> Result<serde_json:
     }))
 }
 
-/// Polls the real business PIDs of a supervised subtree to prove they exited.
-///
-/// Started before the coordinator OS-waits the native host, the monitor records
-/// the wall-clock when each pid disappeared (with a start-time reuse guard) and
-/// any pid still alive at the deadline, so the reclamation is judged from real
-/// OS facts rather than the harness's own force-kill.
-fn monitor_business_pids(
-    pids: Vec<(u32, Option<u64>)>,
-    timeout: Duration,
-) -> thread::JoinHandle<serde_json::Value> {
-    thread::spawn(move || {
-        let started = Instant::now();
-        let deadline = started + timeout;
-        let mut remaining = pids;
-        let mut observed = Vec::new();
-        loop {
-            remaining.retain(|(pid, ticks)| {
-                if proc_alive(*pid, *ticks) {
-                    true
-                } else {
-                    observed.push(serde_json::json!({
-                        "pid": pid,
-                        "exitedAtMillis": started.elapsed().as_millis(),
-                    }));
-                    false
-                }
-            });
-            if remaining.is_empty() || Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        serde_json::json!({
-            "observed": observed,
-            "stillAlive": remaining.iter().map(|(pid, _)| *pid).collect::<Vec<u32>>(),
-            "elapsedMillis": started.elapsed().as_millis(),
-        })
-    })
-}
-
-/// Monitors the `concurrent-stop` business subtrees and the native host on one
-/// shared clock.
-///
-/// Unlike [`monitor_business_pids`] this also records the moment the native
-/// process itself disappeared, so each resource's stop time can be compared
-/// directly against the real OS exit rather than two unrelated clocks. A
-/// resource that only vanished with (or after) the native force-out is therefore
-/// a serialized stop, never a concurrent one.
-fn monitor_concurrent_stop(
-    native: (u32, Option<u64>),
-    business: Vec<(u32, Option<u64>)>,
-    timeout: Duration,
-) -> thread::JoinHandle<serde_json::Value> {
-    thread::spawn(move || {
-        let started = Instant::now();
-        let deadline = started + timeout;
-        let (native_pid, native_ticks) = native;
-        let mut native_exited_at: Option<u128> = None;
-        let mut remaining = business;
-        let mut observed = Vec::new();
-        loop {
-            if native_exited_at.is_none() && !proc_alive(native_pid, native_ticks) {
-                native_exited_at = Some(started.elapsed().as_millis());
-            }
-            remaining.retain(|(pid, ticks)| {
-                if proc_alive(*pid, *ticks) {
-                    true
-                } else {
-                    observed.push(serde_json::json!({
-                        "pid": pid,
-                        "exitedAtMillis": started.elapsed().as_millis(),
-                    }));
-                    false
-                }
-            });
-            if (remaining.is_empty() && native_exited_at.is_some()) || Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        serde_json::json!({
-            "observed": observed,
-            "stillAlive": remaining.iter().map(|(pid, _)| *pid).collect::<Vec<u32>>(),
-            "nativeExitedAtMillis": native_exited_at,
-            "elapsedMillis": started.elapsed().as_millis(),
-        })
-    })
-}
-
 /// The VM-service URL the Flutter engine published on [log], if any.
 fn find_vm_url(log: &Path) -> Option<String> {
     let text = fs::read_to_string(log).ok()?;
@@ -3745,6 +2837,102 @@ fn owned_children(_root: u32) -> Vec<u32> {
     Vec::new()
 }
 
+/// Polls the real business PIDs of a supervised subtree to prove they exited.
+fn monitor_business_pids(
+    pids: Vec<(u32, Option<u64>)>,
+    timeout: Duration,
+) -> thread::JoinHandle<serde_json::Value> {
+    thread::spawn(move || {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let mut remaining = pids;
+        let mut observed = Vec::new();
+        loop {
+            remaining.retain(|(pid, ticks)| {
+                if proc_alive(*pid, *ticks) {
+                    true
+                } else {
+                    observed.push(serde_json::json!({
+                        "pid": pid,
+                        "exitedAtMillis": started.elapsed().as_millis(),
+                    }));
+                    false
+                }
+            });
+            if remaining.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        serde_json::json!({
+            "observed": observed,
+            "stillAlive": remaining.iter().map(|(pid, _)| *pid).collect::<Vec<u32>>(),
+            "elapsedMillis": started.elapsed().as_millis(),
+        })
+    })
+}
+
+/// Monitors the `concurrent-stop` business subtrees and the native host on one
+/// shared clock.
+fn monitor_concurrent_stop(
+    native: (u32, Option<u64>),
+    business: Vec<(u32, Option<u64>)>,
+    timeout: Duration,
+) -> thread::JoinHandle<serde_json::Value> {
+    thread::spawn(move || {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let (native_pid, native_ticks) = native;
+        let mut native_exited_at: Option<u128> = None;
+        let mut remaining = business;
+        let mut observed = Vec::new();
+        loop {
+            if native_exited_at.is_none() && !proc_alive(native_pid, native_ticks) {
+                native_exited_at = Some(started.elapsed().as_millis());
+            }
+            remaining.retain(|(pid, ticks)| {
+                if proc_alive(*pid, *ticks) {
+                    true
+                } else {
+                    observed.push(serde_json::json!({
+                        "pid": pid,
+                        "exitedAtMillis": started.elapsed().as_millis(),
+                    }));
+                    false
+                }
+            });
+            if (remaining.is_empty() && native_exited_at.is_some()) || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        serde_json::json!({
+            "observed": observed,
+            "stillAlive": remaining.iter().map(|(pid, _)| *pid).collect::<Vec<u32>>(),
+            "nativeExitedAtMillis": native_exited_at,
+            "elapsedMillis": started.elapsed().as_millis(),
+        })
+    })
+}
+
+/// Safety-net kill for leftover business pids. A surviving pid is already a
+/// product leak recorded by the independent monitor; this only keeps the run
+/// from leaving an orphaned `sleep`.
+fn force_kill_alive(pids: impl IntoIterator<Item = (u32, Option<u64>)>) -> Vec<u32> {
+    let mut forced_kill = Vec::new();
+    for (pid, ticks) in pids {
+        if proc_alive(pid, ticks) {
+            forced_kill.push(pid);
+            let _ = Command::new("kill")
+                .arg("-KILL")
+                .arg("--")
+                .arg(pid.to_string())
+                .status();
+        }
+    }
+    forced_kill
+}
+
 /// Freezes the owned provider-fixture process group (SIGSTOP) so the service is
 /// genuinely unresponsive.
 #[cfg(unix)]
@@ -3787,58 +2975,4 @@ fn signal_group(pid: u32, signal: &str) -> Result<()> {
         "failed to send {signal} to process group {pid}: {status}"
     );
     Ok(())
-}
-
-/// Force-closes an owned GUI whose Driver never became usable and reports
-/// whether its OS process is really gone.
-///
-/// [`OwnedProcess::stop`] is fixture-specific (it waits for a requests-file a
-/// GUI never writes), so this sends the group `TERM`, then `KILL`, and reaps the
-/// direct child between escalations. It is only the fallback for a second
-/// instance that neither exited on its own nor answered the graceful Driver
-/// request.
-#[cfg(unix)]
-fn force_close(process: &mut OwnedProcess) -> bool {
-    // A process that already reaped itself needs no signal; report success so
-    // the caller records a real exit rather than a spurious failure.
-    if matches!(process.child.try_wait(), Ok(Some(_))) {
-        process.stopped = true;
-        return true;
-    }
-    for signal in ["TERM", "KILL"] {
-        if signal_group(process.child.id(), signal).is_err() {
-            return false;
-        }
-        if wait_reaped(process, Duration::from_secs(10)) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Force-closes an owned GUI on Windows by killing the whole process tree.
-#[cfg(windows)]
-fn force_close(process: &mut OwnedProcess) -> bool {
-    let _ = Command::new("taskkill")
-        .args(["/T", "/F", "/PID"])
-        .arg(process.child.id().to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    wait_reaped(process, Duration::from_secs(10))
-}
-
-/// Polls the direct child for a real reaped status within [timeout].
-fn wait_reaped(process: &mut OwnedProcess, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if matches!(process.child.try_wait(), Ok(Some(_))) {
-            process.stopped = true;
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
 }

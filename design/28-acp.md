@@ -141,7 +141,7 @@ HTTP、FRB 与 SDK 传递同一类型化观察，Flutter 只做本地化和格�
 
 协议回归通过官方 SDK 对端与 Tokio 虚拟时间覆盖超过原初始化、探测和人工授权上限的成功响应，断连、取消竞争、授权后仍要求认证和关闭失败。业务等待不以虚拟时钟触发超时，结果未知时不重发。
 
-Flutter 原生回归使用官方 `integration_test` 与 `WidgetTester`，通过 `cargo xtask run-gui --integration-test integration_test/acp_auth_test.dart` 运行生产路由、Client、账户观察与组件。外部端点的 ACP 响应和账户提交回执由夹具控制，验证同流程继续、授权后复核仍要求登录、页面离开后返回、重复输入、取消及删除，不使用 Driver、`requestData` 或宿主脚本作断言。夹具不证明实际持久化或进程行为，真实边界由下述供应商验收覆盖。旧合成分发包的 Driver 旅程与独立观察脚本已移除；固定官方 SHA-256 不允许合成包冒充官方安装。
+Flutter 原生回归使用官方 `integration_test` 与 `WidgetTester`，通过 `cargo xtask test-project --suite desktop --case acp_auth` 运行生产路由、Client、账户观察与组件。外部端点的 ACP 响应和账户提交回执由夹具控制，验证同流程继续、授权后复核仍要求登录、页面离开后返回、重复输入、取消及删除，不使用 Driver、`requestData` 或宿主脚本作断言。夹具不证明实际持久化或进程行为，真实边界由下述供应商验收覆盖。旧合成分发包的 Driver 旅程与独立观察脚本已移除；固定官方 SHA-256 不允许合成包冒充官方安装。
 
 真实供应商验收使用 `integration_test/acp_real_login_test.dart`，设置进程环境 `ANYWORK_ACP_ACCEPTANCE=login` 和独立 `ANYWORK_HOME` 后运行同一官方命令；`ANYWORK_ACP_EVIDENCE` 可指定真实组件渲染截图目录。显式准备固定发行、保存/检查账户、用户完成官方浏览器授权、等待原流程自动验证，随后显式查询额度。已有凭据使检查直接通过时，须由用户通过官方入口退出，或为验收进程使用独立用户配置目录；不得删除或改写原有凭据，也不把复用登录状态计为首次浏览器授权。重复运行可复用已保存的验收账户和受管安装。结束后以同一产品及用户配置目录、`ANYWORK_ACP_ACCEPTANCE=restart` 再次运行，验证重启后重新检查及额度读取。人工授权不设测试时限，Google 账号选择、验证码、同意和官方退出由用户完成，工具不操作其凭据。截图导出只遮蔽包含 Windows 用户名的本机安装路径，保留实际认证、版本和额度结果。
 

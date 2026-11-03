@@ -1,5 +1,5 @@
 //! Official integration_test coverage for realtime production presentation.
-//! The existing `realtime` Driver journey remains the owner of credit-wait,
+//! The existing `realtime` preset remains the owner of credit-wait,
 //! host-cwd, geometry and diagnostic evidence.
 
 use super::*;
@@ -41,9 +41,11 @@ pub(super) fn run(
             .current_dir(context.workspace)
             .args([
                 "xtask",
-                "run-gui",
-                "--integration-test",
-                "integration_test/realtime_presentation_test.dart",
+                "test-project",
+                "--suite",
+                "desktop",
+                "--case",
+                "realtime_presentation",
             ])
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_REALTIME_PROJECT", &project)

@@ -43,17 +43,18 @@ cargo xtask generate-gui
 cargo xtask check-gui-generated
 cargo xtask build-gui --check-generated # CI/release: regenerate and reject unstable output
 
-# Run the native app through the dedicated test_driver entrypoint for Dart MCP
-# interaction and GUI acceptance. The driver command owns the resident process
-# tree, keeps Flutter's control pipe open, and connects directly to the app VM
-# service without a DDS proxy. Release builds never use it.
-cargo xtask run-gui --driver
-cargo xtask manual-gui # isolated native app with local scripted provider and evidence
+# Isolated native app with local scripted provider and evidence. Scene flag is --preset.
+cargo xtask manual-gui --preset gui
+# Optional Flutter content capture on a normal debug run (ext.anywork.capture).
+cargo xtask run-gui --capture
+# Official desktop / native project suites.
+cargo xtask test-project --suite desktop --set smoke
+cargo xtask test-project --suite native --set smoke
 
 # Windows/Linux/macOS GUI run/build must use xtask so the runner receives the
 # prebuilt Rust bridge artifact. cargo flutter/dart are passthrough commands.
 
-# Use cargo xtask run-gui --driver for live manual observations using installed config.
+# Use cargo xtask run-gui for live manual observations using installed config.
 ```
 
 `cargo xtask build-gui` is a reproducible build step based on the checked-in `pubspec.lock` and
@@ -72,8 +73,8 @@ Riverpod、Freezed、l10n 和 FRB 生成必须从仓库根目录使用
 版本，并统一 FRB 2.12 用于 Rust crate 和输出的路径表示。
 
 真实协作观察使用根 README 中的 `collaboration_observe` 或隔离 Studio server 的 HTTP/SSE；
-GUI 交互通过 `cargo xtask manual-gui` 的隔离模拟服务人工验收；真实供应商人工观察
-直接使用用户配置运行 `cargo xtask run-gui --driver`，不作为自动测试通过的证明。
+GUI 交互通过 `cargo xtask manual-gui --preset` 的隔离模拟服务人工验收；真实供应商人工观察
+直接使用用户配置运行 `cargo xtask run-gui`，不作为自动测试通过的证明。
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
 
@@ -100,7 +101,7 @@ ProviderScope、Client 或 FRB 建立业务运行时，预览动作仅改变本�
 
 官方工具会编译项目内所有已发现的预览，搜索筛选不是依赖隔离。不要在原生应用壳的
 `part` 中注册预览，或通过预览入口导入 AppGraph/FRB；旧工作区聚合预览已移除，
-纯组件与组合时间线直接使用生产 View，完整业务链路使用隔离原生集成测试。Native 模型声明使用同一套结构化手动模型
+完整工作区和时间线仍使用原生 demo 或 `manual-gui --preset` 观察。纯组件与组合时间线直接使用生产 View，完整业务链路使用隔离原生集成测试。Native 模型声明使用同一套结构化手动模型
 字段，不另设自由文本解析器或第二份文本草稿。
 
 从仓库根目录操作，生成输入变化后先同步生成物：
@@ -148,7 +149,7 @@ dependency_overrides:
 再统一移除本地包、应用及预览 override，更新应用 lockfile 并完成相关图片与预览回归。
 
 预览证明的是组件解耦、Web 渲染和布局，不证明原生插件、FRB、凭据、持久化或进程关闭行为；
-这些仍需通过 `cargo xtask manual-gui` 的官方原生集成测试或适用的真实 Driver 人工验收。
+这些仍需通过 `cargo xtask manual-gui --preset` 和真实 `run-gui` 验收，PR 产品截图也应来自原生程序。
 PR 产品集成截图应来自同次真实应用运行，并区分官方集成测试的离屏渲染表面与操作系统顶层窗口；
 合成组件预览只能作为明确标注的组件视觉证据，不能冒充产品集成。
 截图和诊断日志写入当前会话产物目录，不放入源码或预览缓存的 Git 提交。
@@ -174,9 +175,9 @@ PR 产品集成截图应来自同次真实应用运行，并区分官方集成�
 截图须标明合成预览与原生运行的区别，不能用概念稿截图冒充生产组件。
 
 普通功能集成使用 Flutter 官方 `integration_test`，通过
-`cargo xtask run-gui --integration-test integration_test/<场景>_test.dart`
+`cargo xtask test-project --suite desktop --case <场景>`
 运行真实生产组件。需要隔离配置、严格模拟供应商、持久化与进程回收时使用
-`cargo xtask manual-gui` 对应场景，不直接把测试连接到用户的 Studio home。
+`cargo xtask manual-gui --preset` 对应场景，不直接把测试连接到用户的 Studio home。
 测试使用 `WidgetTester` 和真实 `AppGraph`，不依赖 `driver_main` 或 `requestData` 协议。
 业务就绪与帧推进分别等待，持续旋转或流式输出期间不以 `pumpAndSettle` 等待业务结束。
 
@@ -193,6 +194,6 @@ render surface，不注入业务值，也不增加备用 UI。它不是 X11 顶�
 原 `realtime` 的 FRB credit、host cwd 等专项观察，以及 `plan-recovery` 的多生命周期恢复，
 仍保留独立入口，不能用普通展示测试或 Preview 的结果替代。
 
-独立的 20k 历史、原生位移和帧耗时采样仍保留各自入口，共享 Driver 仍供人工观察使用；
+独立的 20k 历史、原生位移和帧耗时采样仍保留各自入口，供人工观察使用；
 它们不与普通展示旅程捆绑重跑。覆盖边界见
 [测试与人工验收](../../design/24-testing.md) §24.1.3。

@@ -29,8 +29,10 @@ pub(crate) enum Command {
     CheckGuiGenerated,
     /// Check generated sources, formatting, and Flutter analysis.
     VerifyGui,
-    /// Check the Dart Client boundary and run Client/adapter contract tests.
+    /// Check the Dart Client boundary and run SDK-only Client tests.
     VerifyClient,
+    /// Run desktop integration_test or native lifecycle project suites.
+    TestProject(TestProjectOptions),
     /// Build and run the isolated GUI acceptance tool (arguments forwarded).
     ManualGui(ToolOptions),
     /// Run the anywork desktop app.
@@ -63,48 +65,90 @@ pub(crate) struct ToolOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct RunGuiOptions {
     /// Run the existing release bundle without building or resolving dependencies.
-    #[arg(long, conflicts_with_all = ["demo", "driver", "profile"])]
+    #[arg(long, conflicts_with_all = ["demo", "profile", "capture", "native_launch"])]
     pub(crate) release: bool,
     /// Run with ANYWORK_DEMO=true.
     #[arg(long)]
     pub(crate) demo: bool,
-    /// Enable Flutter Driver through test_driver/driver_main.dart.
-    #[arg(long)]
-    pub(crate) driver: bool,
-    /// Run official integration_test files through the native desktop test runner.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["release", "demo", "driver", "profile", "native_launch"])]
-    pub(crate) integration_test: Option<std::path::PathBuf>,
-    /// Run the Driver in profile/AOT mode for representative frame timings.
-    #[arg(long, requires = "driver")]
+    /// Register the debug-only Flutter content capture extension.
+    #[arg(long, conflicts_with = "release")]
+    pub(crate) capture: bool,
+    /// Build the debug/profile bundle in profile/AOT mode.
+    #[arg(long, requires = "native_launch")]
     pub(crate) profile: bool,
-    /// Deterministic file-picker result exposed only to the Driver build.
-    #[arg(long, value_name = "PATH", requires = "driver")]
-    pub(crate) driver_attachment: Option<std::path::PathBuf>,
     /// Override RUST_LOG with a process-wide tracing level.
     #[arg(long, value_enum, value_name = "LEVEL")]
     pub(crate) log_level: Option<LogLevel>,
-    /// Build the debug/profile Driver bundle and launch the native artifact
+    /// Build the debug/profile bundle and launch the native artifact
     /// directly so this process is its real parent.
     ///
     /// The platform launch tool always reports exit code 0 for the app it
     /// started (`resident_runner.appFinished`), so a native process that exited
     /// non-zero is otherwise indistinguishable from a clean one. Direct launch
     /// makes the true wait status observable and keeps the VM service available
-    /// through engine switches. Driver-only.
-    #[arg(long, requires = "driver")]
+    /// through engine switches.
+    #[arg(long)]
     pub(crate) native_launch: bool,
     /// Write a structured JSON exit report for the `--native-launch` process.
     #[arg(long, value_name = "PATH", requires = "native_launch")]
     pub(crate) native_exit_report: Option<std::path::PathBuf>,
-    /// Driver entrypoint to build and launch with `--native-launch`.
+    /// Entrypoint to build and launch with `--native-launch`.
     ///
-    /// Defaults to `test_driver/driver_main.dart`. The shutdown acceptance
-    /// selects a dedicated Driver-only fault entrypoint here; the path is
-    /// resolved relative to the anywork app directory (or used as-is when
-    /// absolute). It must be a real file and is passed to the Flutter build as
-    /// its `-t` target.
+    /// Defaults to `lib/main.dart`. Temporary native tests may still pass a
+    /// dedicated target; the path is resolved relative to the anywork app
+    /// directory (or used as-is when absolute). It must be a real file and is
+    /// passed to the Flutter build as its `-t` target.
     #[arg(long, value_name = "PATH", requires = "native_launch")]
-    pub(crate) native_launch_driver_target: Option<std::path::PathBuf>,
+    pub(crate) native_launch_target: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct TestProjectOptions {
+    /// Project-integration suite.
+    #[arg(long, value_enum)]
+    pub(crate) suite: ProjectSuite,
+    /// smoke is the unique subset of full for the chosen suite.
+    #[arg(long, value_enum, default_value_t = ProjectSet::Full)]
+    pub(crate) set: ProjectSet,
+    /// Directory for the machine-readable run report and forwarded evidence.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) output: Option<std::path::PathBuf>,
+    /// Print discovered case ids and exit. An empty discovery fails.
+    #[arg(long)]
+    pub(crate) list: bool,
+    /// Run or list one case. The id names the target and its environment, not assertions.
+    #[arg(long, value_name = "ID")]
+    pub(crate) case: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProjectSuite {
+    Desktop,
+    Native,
+}
+
+impl std::fmt::Display for ProjectSuite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Desktop => write!(f, "desktop"),
+            Self::Native => write!(f, "native"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProjectSet {
+    Smoke,
+    Full,
+}
+
+impl std::fmt::Display for ProjectSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smoke => write!(f, "smoke"),
+            Self::Full => write!(f, "full"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

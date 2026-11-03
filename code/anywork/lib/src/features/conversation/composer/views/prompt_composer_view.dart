@@ -2,13 +2,14 @@ import 'dart:async';
 
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/composer_primary_action.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../platform/desktop_drop_adapter.dart';
+import '../../../../platform/dropped_file.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_menu_label.dart';
@@ -149,7 +150,7 @@ class PromptComposerView extends StatefulWidget {
   final String? pasteTargetId;
   final Future<void> Function(List<ModelInputCapabilityView>, bool Function())
   onPickLocalAttachments;
-  final Future<void> Function(DropDetails, bool Function()) onDropAttachments;
+  final Future<void> Function(List<DroppedFileTransfer>, bool Function()) onDropAttachments;
   final VoidCallback? onStop;
   final VoidCallback? onContinue;
   final Widget? selectorBar;
@@ -441,12 +442,12 @@ class PromptComposerViewState extends State<PromptComposerView> {
     return onPick(capabilities, isCurrent);
   }
 
-  Future<void> _dropAttachments(DropDetails details) async {
+  Future<void> _dropAttachments(List<DroppedFileTransfer> files) async {
     final isCurrent = _captureOperationEligibility();
     final onDrop = widget.onDropAttachments;
     final onReportFailure = widget.onReportFailure;
     try {
-      await onDrop(details, isCurrent);
+      await onDrop(files, isCurrent);
     } catch (error) {
       if (isCurrent()) onReportFailure(error);
     }
@@ -624,10 +625,9 @@ class PromptComposerViewState extends State<PromptComposerView> {
         ],
       ),
     );
-    return DropTarget(
+    return DesktopFileDropTarget(
       enabled: attachmentEnabled && localCapabilities.isNotEmpty,
-      acceptedKinds: const {DropItemKind.file},
-      onEnter: (_) => setState(() => _dragging = true),
+      onEnter: () => setState(() => _dragging = true),
       onLeave: () {
         if (_dragging) setState(() => _dragging = false);
       },

@@ -1,9 +1,8 @@
-/// 驱动与验收脚本使用的键值字符串。
+/// 测试与验收使用的键值字符串。
 ///
-/// 本文件**只依赖 Dart**：宿主机侧 driver 脚本（`test_driver/*.dart`）在纯 Dart VM
-/// 中编译，任何 `package:flutter` 依赖都会因为缺少 `dart:ui` 而编译失败。Flutter 侧
-/// 的 `StudioDriverKeys` 从同一常量构造 `ValueKey`，因此键值只有这一份事实源；
-/// driver 脚本需要新的键时，把字符串加进这里并在 `StudioDriverKeys` 中引用。
+/// 本文件**只依赖 Dart**：纯 Dart 宿主脚本不能导入 `package:flutter`（缺少 `dart:ui`）。
+/// Flutter 侧的 `StudioDriverKeys` 从同一常量构造 `ValueKey`，因此键值只有这一份事实源；
+/// 需要新的键时，把字符串加进这里并在 `StudioDriverKeys` 中引用。
 library;
 
 import 'dart:convert';
@@ -121,7 +120,7 @@ abstract final class StudioDriverKeyValues {
   static String accountTemplateOption(String token) =>
       'account-template-option-$token';
 
-  /// 模板选择器里**有界滚动列表**的稳定键：Driver 用官方滚动能力把目标选项真正
+  /// 模板选择器里**有界滚动列表**的稳定键：测试或操作者把目标选项真正
   /// 滚入视口后再拍摄/点击，不靠坐标或“元素存在”冒充可见。
   static const accountTemplateList = 'account-template-list';
 
@@ -169,7 +168,7 @@ abstract final class StudioDriverKeyValues {
   /// ACP 官方 server 准备面板的稳定键。
   ///
   /// 主操作沿用 `acp-install-prepare`：空闲时是“下载并准备”，可重试失败后是
-  /// “重试准备”，Driver 只按当前 typed 阶段判断这一次点击的语义。
+  /// “重试准备”，只按当前 typed 阶段判断这一次点击的语义。
   static const acpInstallPanel = 'acp-install-panel';
   static const acpInstallPrepare = 'acp-install-prepare';
   static const acpInstallCancel = 'acp-install-cancel';

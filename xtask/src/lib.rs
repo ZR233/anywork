@@ -11,6 +11,7 @@ mod rust_bridge;
 mod studio_acceptance;
 mod studio_tool;
 mod studio_version;
+mod test_project;
 mod toolchain;
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
@@ -34,6 +35,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
                 cli::Command::CheckGuiGenerated => flutter::check_gui_generated(),
                 cli::Command::VerifyGui => flutter::verify_gui(),
                 cli::Command::VerifyClient => client::verify(),
+                cli::Command::TestProject(options) => test_project::run(options),
                 cli::Command::ManualGui(options) => studio_acceptance::run(&options.args),
                 cli::Command::RunGui(options) => flutter::run_gui(options),
                 cli::Command::BuildGui(options) => flutter::build_gui(options),

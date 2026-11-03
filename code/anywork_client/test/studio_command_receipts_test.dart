@@ -3897,6 +3897,11 @@ void main() {
           client.threadCommands.state.commands,
           isNot(contains('continue:thread')),
         );
+        expect(
+          client.drafts.composer('thread').state.draft,
+          isEmpty,
+          reason: 'A content-free continuation never writes a user draft',
+        );
       },
     );
   }
