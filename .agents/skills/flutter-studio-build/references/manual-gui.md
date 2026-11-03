@@ -122,7 +122,9 @@ bots-env conversations prepare-pages
 `target/gui-acceptance/` 是显式的本地工程探针示例，不是产品的命令 capture 或通用会话
 临时目录。
 
-1. 读取当前 Dart MCP 的工具 schema，通过 `dtd` 连接启动日志中的 DTD/VM Service，
+1. 读取当前 Dart MCP 的工具 schema；`dtd.connect` 使用启动日志中的 DTD URI，
+   `appUri` 使用已连接应用的 VM Service URI，不能混用两者。仅有 VM Service 的原生直启
+   可按官方 `vm_service.connect` 的 schema 附着，或直接使用 Flutter Driver SDK。
    用 `widget_inspector` 的 `get_widget_tree` 发现真实控件；用 `flutter_driver_command` 的
    `get_diagnostics_tree` / `get_offset`、`tap`、`enter_text`、`scroll` 和 `screenshot`
    检查布局、交互与画面。多应用时显式指定 `appUri`，不猜定位器。自动化断言使用

@@ -98,7 +98,9 @@ Flutter / Dart 官方技能安装在用户主目录 `.agents/skills/`，不放�
 项目通过 roots 指定；不要使用向 stdout 打印日志的 Cargo 包装启动 MCP，也不要让 MCP
 `launch_app` 绕过项目的 bridge/helper 准备。
 
-先读取已安装 MCP 的 schema，通过 `dtd` 连接本次日志中的 DTD/VM Service；使用
+先读取已安装 MCP 的 schema，`dtd.connect` 使用本次日志中的 DTD URI，`appUri` 使用
+应用的 VM Service URI；两者不能混用。原生直启仅有 VM Service 时使用官方
+`vm_service.connect` 或 Flutter Driver SDK 附着。使用
 `widget_inspector` 的 `get_widget_tree` 发现控件，再用 `flutter_driver_command` 获取布局诊断、
 点击、输入、滚动和 `screenshot`。多应用显式指定 `appUri`。截图返回后实际查看画面，结合
 运行时错误和 canonical 状态判断；复用热更新缩短迭代，不把工具调用成功当作行为断言通过。
