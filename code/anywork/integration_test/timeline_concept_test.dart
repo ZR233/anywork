@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
 
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
@@ -97,7 +98,7 @@ void main() {
   late ProviderContainer container;
   var assertionsPassed = false;
   setUpAll(() async {
-    graph = AppGraph.production();
+    graph = createProductionAppGraph();
     container = ProviderContainer(
       overrides: [
         appGraphProvider.overrideWithValue(graph),

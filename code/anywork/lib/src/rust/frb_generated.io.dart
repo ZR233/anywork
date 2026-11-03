@@ -545,6 +545,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeClosingAgent dco_decode_box_autoadd_bridge_closing_agent(dynamic raw);
 
   @protected
+  BridgeCodexAccountInfo dco_decode_box_autoadd_bridge_codex_account_info(
+    dynamic raw,
+  );
+
+  @protected
   BridgeContentOwner dco_decode_box_autoadd_bridge_content_owner(dynamic raw);
 
   @protected
@@ -1107,6 +1112,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SettingsFieldInput dco_decode_box_autoadd_settings_field_input(dynamic raw);
 
   @protected
+  SubscriptionUsageDto dco_decode_box_autoadd_subscription_usage_dto(
+    dynamic raw,
+  );
+
+  @protected
   int dco_decode_box_autoadd_u_16(dynamic raw);
 
   @protected
@@ -1117,11 +1127,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_box_autoadd_u_8(dynamic raw);
-
-  @protected
-  ZhipuCodingPlanUsageDto dco_decode_box_autoadd_zhipu_coding_plan_usage_dto(
-    dynamic raw,
-  );
 
   @protected
   BridgeAccountSettingsDto dco_decode_box_bridge_account_settings_dto(
@@ -1753,6 +1758,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeClosingAgent dco_decode_bridge_closing_agent(dynamic raw);
+
+  @protected
+  BridgeCodexAccountInfo dco_decode_bridge_codex_account_info(dynamic raw);
 
   @protected
   BridgeCommandDisposition dco_decode_bridge_command_disposition(dynamic raw);
@@ -3394,12 +3402,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SshServerDto> dco_decode_list_ssh_server_dto(dynamic raw);
 
   @protected
-  List<ZhipuQuotaLimitDto> dco_decode_list_zhipu_quota_limit_dto(dynamic raw);
-
-  @protected
-  List<ZhipuToolUsageDetailDto> dco_decode_list_zhipu_tool_usage_detail_dto(
+  List<SubscriptionQuotaLimitDto> dco_decode_list_subscription_quota_limit_dto(
     dynamic raw,
   );
+
+  @protected
+  List<SubscriptionUsageDetailDto>
+  dco_decode_list_subscription_usage_detail_dto(dynamic raw);
 
   @protected
   LspScopeInput dco_decode_lsp_scope_input(dynamic raw);
@@ -3502,6 +3511,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatToolIdentity? dco_decode_opt_box_autoadd_bridge_chat_tool_identity(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeCodexAccountInfo? dco_decode_opt_box_autoadd_bridge_codex_account_info(
     dynamic raw,
   );
 
@@ -3817,6 +3831,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SubmitPromptResponse dco_decode_submit_prompt_response(dynamic raw);
 
   @protected
+  SubscriptionQuotaLimitDto dco_decode_subscription_quota_limit_dto(
+    dynamic raw,
+  );
+
+  @protected
+  SubscriptionUsageDetailDto dco_decode_subscription_usage_detail_dto(
+    dynamic raw,
+  );
+
+  @protected
+  SubscriptionUsageDto dco_decode_subscription_usage_dto(dynamic raw);
+
+  @protected
   int dco_decode_u_16(dynamic raw);
 
   @protected
@@ -3833,15 +3860,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt dco_decode_usize(dynamic raw);
-
-  @protected
-  ZhipuCodingPlanUsageDto dco_decode_zhipu_coding_plan_usage_dto(dynamic raw);
-
-  @protected
-  ZhipuQuotaLimitDto dco_decode_zhipu_quota_limit_dto(dynamic raw);
-
-  @protected
-  ZhipuToolUsageDetailDto dco_decode_zhipu_tool_usage_detail_dto(dynamic raw);
 
   @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
@@ -4341,6 +4359,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeClosingAgent sse_decode_box_autoadd_bridge_closing_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCodexAccountInfo sse_decode_box_autoadd_bridge_codex_account_info(
     SseDeserializer deserializer,
   );
 
@@ -5083,6 +5106,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SubscriptionUsageDto sse_decode_box_autoadd_subscription_usage_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int sse_decode_box_autoadd_u_16(SseDeserializer deserializer);
 
   @protected
@@ -5093,11 +5121,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_box_autoadd_u_8(SseDeserializer deserializer);
-
-  @protected
-  ZhipuCodingPlanUsageDto sse_decode_box_autoadd_zhipu_coding_plan_usage_dto(
-    SseDeserializer deserializer,
-  );
 
   @protected
   BridgeAccountSettingsDto sse_decode_box_bridge_account_settings_dto(
@@ -5929,6 +5952,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeClosingAgent sse_decode_bridge_closing_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCodexAccountInfo sse_decode_bridge_codex_account_info(
     SseDeserializer deserializer,
   );
 
@@ -7956,14 +7984,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<ZhipuQuotaLimitDto> sse_decode_list_zhipu_quota_limit_dto(
+  List<SubscriptionQuotaLimitDto> sse_decode_list_subscription_quota_limit_dto(
     SseDeserializer deserializer,
   );
 
   @protected
-  List<ZhipuToolUsageDetailDto> sse_decode_list_zhipu_tool_usage_detail_dto(
-    SseDeserializer deserializer,
-  );
+  List<SubscriptionUsageDetailDto>
+  sse_decode_list_subscription_usage_detail_dto(SseDeserializer deserializer);
 
   @protected
   LspScopeInput sse_decode_lsp_scope_input(SseDeserializer deserializer);
@@ -8084,6 +8111,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatToolIdentity? sse_decode_opt_box_autoadd_bridge_chat_tool_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCodexAccountInfo? sse_decode_opt_box_autoadd_bridge_codex_account_info(
     SseDeserializer deserializer,
   );
 
@@ -8491,6 +8523,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SubscriptionQuotaLimitDto sse_decode_subscription_quota_limit_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SubscriptionUsageDetailDto sse_decode_subscription_usage_detail_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SubscriptionUsageDto sse_decode_subscription_usage_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int sse_decode_u_16(SseDeserializer deserializer);
 
   @protected
@@ -8507,21 +8554,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
-
-  @protected
-  ZhipuCodingPlanUsageDto sse_decode_zhipu_coding_plan_usage_dto(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ZhipuQuotaLimitDto sse_decode_zhipu_quota_limit_dto(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ZhipuToolUsageDetailDto sse_decode_zhipu_tool_usage_detail_dto(
-    SseDeserializer deserializer,
-  );
 
   @protected
   void sse_encode_AnyhowException(
@@ -9096,6 +9128,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_closing_agent(
     BridgeClosingAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_codex_account_info(
+    BridgeCodexAccountInfo self,
     SseSerializer serializer,
   );
 
@@ -9922,6 +9960,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_subscription_usage_dto(
+    SubscriptionUsageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer);
 
   @protected
@@ -9932,12 +9976,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_zhipu_coding_plan_usage_dto(
-    ZhipuCodingPlanUsageDto self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_box_bridge_account_settings_dto(
@@ -10953,6 +10991,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_closing_agent(
     BridgeClosingAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_codex_account_info(
+    BridgeCodexAccountInfo self,
     SseSerializer serializer,
   );
 
@@ -13411,14 +13455,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_zhipu_quota_limit_dto(
-    List<ZhipuQuotaLimitDto> self,
+  void sse_encode_list_subscription_quota_limit_dto(
+    List<SubscriptionQuotaLimitDto> self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_list_zhipu_tool_usage_detail_dto(
-    List<ZhipuToolUsageDetailDto> self,
+  void sse_encode_list_subscription_usage_detail_dto(
+    List<SubscriptionUsageDetailDto> self,
     SseSerializer serializer,
   );
 
@@ -13551,6 +13595,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_chat_tool_identity(
     BridgeChatToolIdentity? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_codex_account_info(
+    BridgeCodexAccountInfo? self,
     SseSerializer serializer,
   );
 
@@ -14008,6 +14058,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_subscription_quota_limit_dto(
+    SubscriptionQuotaLimitDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_subscription_usage_detail_dto(
+    SubscriptionUsageDetailDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_subscription_usage_dto(
+    SubscriptionUsageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_u_16(int self, SseSerializer serializer);
 
   @protected
@@ -14024,24 +14092,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_zhipu_coding_plan_usage_dto(
-    ZhipuCodingPlanUsageDto self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_zhipu_quota_limit_dto(
-    ZhipuQuotaLimitDto self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_zhipu_tool_usage_detail_dto(
-    ZhipuToolUsageDetailDto self,
-    SseSerializer serializer,
-  );
 }
 
 // Section: wire_class

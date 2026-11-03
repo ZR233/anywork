@@ -2,13 +2,11 @@ name: PR Quality Gate
 
 on:
   pull_request:
-    paths-ignore:
-      - 'design/**'
+  merge_group:
+    types: [checks_requested]
   push:
     branches:
       - main
-    paths-ignore:
-      - 'design/**'
 
 permissions: {}
 
@@ -19,6 +17,66 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_policy: ${{ steps.plan.outputs.docs_policy }}
+      release_configuration: ${{ steps.plan.outputs.release_configuration }}
+      rust_checks: ${{ steps.plan.outputs.rust_checks }}
+      linux_environment: ${{ steps.plan.outputs.linux_environment }}
+      flutter_checks: ${{ steps.plan.outputs.flutter_checks }}
+      gui_generated: ${{ steps.plan.outputs.gui_generated }}
+      linux_tools: ${{ steps.plan.outputs.linux_tools }}
+      remote_helpers: ${{ steps.plan.outputs.remote_helpers }}
+      linux_desktop: ${{ steps.plan.outputs.linux_desktop }}
+      linux_native: ${{ steps.plan.outputs.linux_native }}
+      windows_build: ${{ steps.plan.outputs.windows_build }}
+      macos_build: ${{ steps.plan.outputs.macos_build }}
+      required_jobs: ${{ steps.plan.outputs.required_jobs }}
+      plan: ${{ steps.plan.outputs.plan }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove path classification and gate rules
+        env:
+          PR_HANDOFF_TEST_SCRATCH: ${{ runner.temp }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s .github/scripts -p 'test_pr_quality_*.py' -v
+
+      - name: Classify applicable jobs from Git paths
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/pr_quality_changes.py
+
+  docs-policy:
+    name: docs-policy
+    needs: changes
+    if: needs.changes.outputs.docs_policy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check design index and local documentation links
+        run: python3 .github/scripts/pr_quality_docs_policy.py
+
   pr-title:
     name: Conventional PR title
     if: github.event_name == 'pull_request'
@@ -47,6 +105,8 @@ jobs:
 
   release-configuration:
     name: Release configuration
+    needs: changes
+    if: needs.changes.outputs.release_configuration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -111,255 +171,396 @@ jobs:
             sleep "$((attempt * 2))"
           done
 
-  rust-quality:
-    name: Rust (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 60
+  # Frontend-only changes never depend on the Rust image or native tools.
+  flutter-checks:
+    name: Flutter and Client (Linux, no bridge)
+    needs: changes
+    if: needs.changes.outputs.flutter_checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
-      - name: Check out source
+      - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
-
-      # Rust Cache hashes every installed rustup toolchain into its environment key, and
-      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
-      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
-      # on this temporary runner, so the cache identity follows the compiler this job uses.
-      - name: Remove unused preinstalled stable Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          active_listing="$(rustup show active-toolchain)"
-          toolchains="$(rustup toolchain list)"
-          active="${active_listing%%[[:space:]]*}"
-          if [ -z "$active" ]; then
-            echo 'rustup did not report an active toolchain' >&2
-            exit 1
-          fi
-          while IFS= read -r listing; do
-            name="${listing%%[[:space:]]*}"
-            case "$name" in
-              stable-*) ;;
-              *) continue ;;
-            esac
-            if [ "$name" = "$active" ]; then
-              continue
-            fi
-            echo "Removing unused preinstalled toolchain $name"
-            rustup toolchain uninstall "$name"
-          done <<< "$toolchains"
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+          persist-credentials: false
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-
-      - name: cargo fmt
-        run: cargo fmt --all --check
-
-      - name: Check standalone core without database features
-        run: cargo check -p pl-core --no-default-features --all-targets
-
-      - name: Check core SQLite backend
-        run: cargo check -p pl-core --no-default-features --features sqlite --all-targets
-
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test ACP authentication events and cancellation
-        run: cargo test --locked -p pl-acp
-
-      - name: Test pl-model public API
-        run: cargo test -p pl-model
-
-      - name: Test pl-core public API
-        run: cargo test -p pl-core --features sqlite
-
-      - name: Test pl-patch semantics
-        run: cargo test -p pl-patch
-
-      # TOML schema admission and credential/file commit recovery also depend on the
-      # Windows atomic replacement boundary; Linux-only Studio tests are not sufficient.
-      - name: Test Studio migrations and recovery on Windows
-        run: cargo test --locked -p pl-studio-runtime --lib
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Check frontend contracts and production UI components
+        run: bash .github/scripts/pr-quality-flutter.sh
 
   linux-environment:
     name: Prepare exact Linux build environment
+    needs: changes
+    if: needs.changes.outputs.linux_environment == 'true'
     uses: ./.github/workflows/linux-build-environment.yml
-    permissions:
-      contents: read
     with:
       sourceRef: ${{ github.sha }}
-      mode: prepare
+    permissions:
+      contents: read
 
-  studio-server-linux:
-    name: Studio server (Linux)
-    needs: linux-environment
+  rust-checks:
+    name: Rust quality, workspace tests and server (Linux)
+    needs: [changes, linux-environment]
+    if: needs.changes.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
-      CARGO_INCREMENTAL: "0"
-    timeout-minutes: 60
+      CARGO_INCREMENTAL: '0'
     permissions:
       contents: read
     steps:
-      - name: Check out source
+      - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Download same-run candidate environment
-        if: needs.linux-environment.outputs.artifactId != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
         with:
-          artifact-ids: ${{ needs.linux-environment.outputs.artifactId }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/linux-build-image
-
-      - name: Verify exact environment identity
-        env:
-          LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
-          LINUX_IMAGE_ID: ${{ needs.linux-environment.outputs.imageId }}
-          LINUX_IMAGE_ARTIFACT_ID: ${{ needs.linux-environment.outputs.artifactId }}
-          LINUX_IMAGE_ARCHIVE_SHA256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-        run: bash .github/scripts/linux-build-handoff.sh
-
-      # One container retains the locally installed worker across build and tests.
-      - name: Build server and test Studio with the matching local worker
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Check and test Rust once with the locked SQLite profile
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            cargo build -p pl-studio-server
-            cargo install --path code/pl-remote-helper --locked --debug --target-dir "$PWD/target" --root "$PWD/target/local-worker"
-            export PATH="$PWD/target/local-worker/bin:$PATH"
-            cargo test -p pl-studio-runtime
+            cargo fmt --all --check
+            cargo check --locked -p pl-core --no-default-features --all-targets
+            cargo clippy --locked --workspace --all-targets -- -D warnings
+            cargo test --locked --workspace --features pl-core/sqlite
+            cargo build --locked -p pl-studio-server
           '
 
-  flutter-quality:
-    name: Flutter
-    runs-on: windows-latest
+  linux-tools:
+    name: Compile reusable Linux engineering tool
+    needs: [changes, linux-environment]
+    if: needs.changes.outputs.linux_tools == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      artifactId: ${{ steps.archive.outputs.artifact-id }}
+      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
+      sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
+      workspace: ${{ steps.checkpoint.outputs.workspace }}
+      environment: ${{ steps.checkpoint.outputs.environment }}
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Build xtask once in its consuming environment
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
+            cargo build --locked --target-dir target/xtask -p pl-xtask
+      - name: Checkpoint only the engineering executable
+        id: checkpoint
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 .github/scripts/pr_quality_handoff.py pack-tool \
+            --archive "$RUNNER_TEMP/quality.tar.gz" --source-sha "$SOURCE_SHA" \
+            --environment "$LINUX_BUILD_IMAGE"
+      - name: Share the exact tool archive
+        id: archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-linux-tools-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quality.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  remote-helpers:
+    name: Compile bundled Linux helper targets once
+    needs: [changes, linux-environment, linux-tools]
+    if: needs.changes.outputs.remote_helpers == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      artifactId: ${{ steps.archive.outputs.artifact-id }}
+      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
+      sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
     steps:
-      - name: Check out source
+      - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Restore this run's Linux engineering tool
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tool
+          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
+          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
+          workspace: ${{ needs.linux-tools.outputs.workspace }}
+          environment: ${{ needs.linux-tools.outputs.environment }}
+      - name: Build both resource targets with the existing cross compiler
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
+            env PURE_REMOTE_HELPER_BUILDER=zigbuild "$PR_QUALITY_XTASK" build-remote-helper --all-targets
+      - name: Checkpoint the two target resources
+        id: checkpoint
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 .github/scripts/pr_quality_handoff.py pack-helpers \
+            --archive "$RUNNER_TEMP/quality.tar.gz" --source-sha "$SOURCE_SHA"
+      - name: Share the exact helper archive
+        id: archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-bundled-helpers-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quality.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
+  gui-generated:
+    name: Canonical GUI generation (Linux)
+    needs: [changes, linux-environment, linux-tools]
+    if: needs.changes.outputs.gui_generated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Restore this run's Linux engineering tool
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tool
+          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
+          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
+          workspace: ${{ needs.linux-tools.outputs.workspace }}
+          environment: ${{ needs.linux-tools.outputs.environment }}
+      - name: Check generated sources once without repeating Rust quality or UI tests
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+            cargo binstall --root "$HOME/.quality-tools" --no-confirm --force --disable-strategies compile \
+              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
+            export PATH="$HOME/.quality-tools/bin:$PATH"
+            "$1" check-gui-generated
+          ' -- "$PR_QUALITY_XTASK"
+
+  linux-integration:
+    name: Desktop and native integration (Linux)
+    needs: [changes, linux-environment, linux-tools, remote-helpers]
+    if: needs.changes.outputs.linux_desktop == 'true' || needs.changes.outputs.linux_native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Restore this run's Linux engineering tool
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tool
+          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
+          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
+          workspace: ${{ needs.linux-tools.outputs.workspace }}
+          environment: ${{ needs.linux-tools.outputs.environment }}
+      - name: Restore this run's bundled helper inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: helpers
+          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
+          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
+          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
+      # One container keeps Cargo sources, acceptance and target fingerprints
+      # alive between suites, rather than only sharing the checkout directory.
+      - name: Run selected functional and native suites with shared build inputs
+        env:
+          RUN_DESKTOP: ${{ needs.changes.outputs.linux_desktop }}
+          RUN_NATIVE: ${{ needs.changes.outputs.linux_native }}
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+            failed=0
+            if [ "$2" = true ]; then
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+                "$1" test-project --suite desktop --set full --output target/ci-desktop-linux || failed=1
+            fi
+            if [ "$3" = true ]; then
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+                "$1" test-project --suite native --set full --output target/ci-native-linux || failed=1
+            fi
+            exit "$failed"
+          ' -- "$PR_QUALITY_XTASK" "$RUN_DESKTOP" "$RUN_NATIVE"
+
+  windows-build:
+    name: Native Rust and application checks (windows)
+    needs: [changes, remote-helpers]
+    if: needs.changes.outputs.windows_build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore this run's bundled helper inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: helpers
+          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
+          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
+          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
+      - name: Set up cached native Rust build
+        uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
           channel: stable
           cache: true
-
-      # Rust Cache hashes every installed rustup toolchain into its environment key, and
-      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
-      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
-      # on this temporary runner, so the cache identity follows the compiler this job uses.
-      - name: Remove unused preinstalled stable Rust toolchain
+      - name: Prepare Clippy for Rust changes
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: rustup component add clippy
+      - name: Check Rust on Windows
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test Rust on Windows with the locked SQLite profile
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked --workspace --features pl-core/sqlite
+      - name: Compile the production Flutter executable without running tests
         shell: bash
         run: |
           set -euo pipefail
-          active_listing="$(rustup show active-toolchain)"
-          toolchains="$(rustup toolchain list)"
-          active="${active_listing%%[[:space:]]*}"
-          if [ -z "$active" ]; then
-            echo 'rustup did not report an active toolchain' >&2
-            exit 1
-          fi
-          while IFS= read -r listing; do
-            name="${listing%%[[:space:]]*}"
-            case "$name" in
-              stable-*) ;;
-              *) continue ;;
-            esac
-            if [ "$name" = "$active" ]; then
-              continue
-            fi
-            echo "Removing unused preinstalled toolchain $name"
-            rustup toolchain uninstall "$name"
-          done <<< "$toolchains"
+          cargo xtask build-gui
+          test -f dist/anywork-release/anywork.exe
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          workspaces: |
-            . -> target
-            . -> target/xtask
-
-      - name: Set up cargo-binstall
-        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
-        with:
-          version: 1.26.0
-
-      # FRB otherwise installs cargo-expand from source during generation.
-      - name: Install prebuilt FRB tools
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
-
-      # 确定性 Client/adapter 与 GUI 静态门禁。原生 Driver/live 人工验收
-      # 按实际宿主平台单独记录（见 AGENTS.md），不由此推断跨平台通过。
-      - name: Verify Dart Client and adapter contracts
-        run: cargo xtask verify-client
-
-      - name: Verify Flutter application
-        run: cargo xtask verify-gui
-
-  macos-desktop:
-    name: macOS desktop
+  macos-build:
+    name: Native Rust and application checks (macos)
+    needs: [changes, remote-helpers]
+    if: needs.changes.outputs.macos_build == 'true'
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
-      - name: Check out source
+      - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
-
+          persist-credentials: false
+      - name: Restore this run's bundled helper inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: helpers
+          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
+          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
+          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
+      - name: Set up cached native Rust build
+        uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
           channel: stable
           cache: true
-
-      - name: Set up existing remote helper cross compiler
+      - name: Prepare Clippy for Rust changes
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: rustup component add clippy
+      - name: Check Rust on macOS
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test Rust on macOS with the locked SQLite profile
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked --workspace --features pl-core/sqlite
+      - name: Compile the production Flutter executable without running tests
+        shell: bash
         run: |
-          brew install zig
-          cargo install cargo-zigbuild --version 0.24.0 --locked
+          set -euo pipefail
+          cargo xtask build-gui
+          test -x dist/anywork-release/anywork.app/Contents/MacOS/anywork
 
-      - name: Test native process ownership and bundle collection
-        run: cargo test --locked -p pl-dev-support -p pl-xtask
-
-      - name: Build native macOS application
-        run: cargo xtask build-gui
-
-      - name: Test AppKit asynchronous termination and exit codes
-        run: python3 .github/scripts/studio-macos-termination-tests.py dist/anywork-release/anywork.app
-
-      - name: Verify macOS archive, version, architecture and signatures
-        run: |
-          version=$(cat studio-version.txt)
-          cargo xtask release-gui stage --version "$version" --bundle dist/anywork-release
-          cargo xtask release-gui verify --version "$version"
-
-      - name: Test macOS terminal command quoting
-        run: cargo flutter test --no-pub test/platform/macos_terminal_test.dart
+  # Configure this stable aggregate as the repository required check.
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - changes
+      - docs-policy
+      - pr-title
+      - release-configuration
+      - flutter-checks
+      - linux-environment
+      - rust-checks
+      - linux-tools
+      - remote-helpers
+      - gui-generated
+      - linux-integration
+      - windows-build
+      - macos-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify all required results against the path plan
+        env:
+          REQUIRED_JOBS: ${{ needs.changes.outputs.required_jobs }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_POLICY_RESULT: ${{ needs.docs-policy.result }}
+          PR_TITLE_RESULT: ${{ needs.pr-title.result }}
+          RELEASE_CONFIGURATION_RESULT: ${{ needs.release-configuration.result }}
+          FLUTTER_CHECKS_RESULT: ${{ needs.flutter-checks.result }}
+          LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
+          RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
+          LINUX_TOOLS_RESULT: ${{ needs.linux-tools.result }}
+          REMOTE_HELPERS_RESULT: ${{ needs.remote-helpers.result }}
+          GUI_GENERATED_RESULT: ${{ needs.gui-generated.result }}
+          LINUX_INTEGRATION_RESULT: ${{ needs.linux-integration.result }}
+          WINDOWS_BUILD_RESULT: ${{ needs.windows-build.result }}
+          MACOS_BUILD_RESULT: ${{ needs.macos-build.result }}
+        run: python3 .github/scripts/pr_quality_gate.py

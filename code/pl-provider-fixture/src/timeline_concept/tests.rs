@@ -225,7 +225,7 @@ fn tool_images_step() -> Step {
 fn tool_images_request() -> Value {
     let bytes = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../anywork/test_driver/fixtures/tool-image.png"),
+            .join("../anywork/integration_test/fixtures/tool-image.png"),
     )
     .unwrap();
     let digest = hex::encode(Sha256::digest(&bytes));

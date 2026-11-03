@@ -12,7 +12,6 @@ import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/conversation_encoding.dart';
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -50,14 +49,11 @@ import '../../rust/api/studio/directory/types.dart' as frb_directory_types;
 import '../../rust/api/studio/accounts/commands.dart' as frb_account_commands;
 import '../../rust/api/studio/types/bots.dart' as frb_bots_types;
 import '../../rust/frb_generated.dart';
-import '../demo/accounts/demo_account_observation.dart';
-
 part 'studio_thread_stream.dart';
 part 'studio_thread_preparation.dart';
 part 'studio_conversation.dart';
 part 'studio_conversation_descriptor.dart';
 part 'studio_conversation_content_watch.dart';
-part 'studio_demo_conversation.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
@@ -66,8 +62,6 @@ part 'studio_account_catalog_converters.dart';
 part 'studio_acp_converters.dart';
 part 'studio_delegation_converters.dart';
 part 'studio_bots_converters.dart';
-part 'studio_demo_api.dart';
-part 'studio_demo_settings.dart';
 
 PermissionMode _permissionMode(Object? value) {
   return switch (_string(value)) {

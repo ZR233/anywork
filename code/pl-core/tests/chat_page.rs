@@ -90,7 +90,7 @@ async fn class_and_typed_parent_indexes_never_budget_hidden_candidates() {
     let call = ChatKey::new("call", "same").unwrap();
     let turn = ChatKey::new("turn", "same").unwrap();
     let mut drafts = vec![draft("main", "opaque bytes")];
-    for seq in 0..4096 {
+    for seq in 0..36 {
         let mut item = ChatDraft::new(format!("activity-{seq}"), "activity", Arc::from([255, 0]));
         item.parent_id = Some(if seq == 17 {
             call.clone()
@@ -100,19 +100,53 @@ async fn class_and_typed_parent_indexes_never_budget_hidden_candidates() {
         drafts.push(item);
     }
     session.publish_batch(drafts).await.unwrap();
-    let budget = Budget::default();
-    let main = session.page(latest(1), &budget).await.unwrap();
-    assert_eq!(sequences(&main.items), [1]);
-    assert!(budget.visited.lock().unwrap().iter().all(|seq| *seq == 1));
-    budget.visited.lock().unwrap().clear();
-    let scoped = ChatQuery::new("activity", Some(call));
-    let children = session
-        .page(ChatPageRequest::latest(scoped, demand(1)), &budget)
-        .await
-        .unwrap();
-    assert_eq!(sequences(&children.items), [19]);
-    assert!(budget.visited.lock().unwrap().iter().all(|seq| *seq == 19));
-    assert!(stored.reads.pages.lock().unwrap().is_empty());
+    let mut expected_work = None;
+    let mut next_hidden = 36;
+    for hidden_count in [36, 64, 1024, 8192] {
+        if hidden_count > next_hidden {
+            let extra = (next_hidden..hidden_count)
+                .map(|seq| {
+                    let mut item =
+                        ChatDraft::new(format!("activity-{seq}"), "activity", Arc::from([255, 0]));
+                    item.parent_id = Some(turn.clone());
+                    item
+                })
+                .collect();
+            session.publish_batch(extra).await.unwrap();
+            next_hidden = hidden_count;
+        }
+        let reads_before = stored.reads.item.load(Ordering::SeqCst);
+        let budget = Budget::default();
+        let main = session.page(latest(1), &budget).await.unwrap();
+        assert_eq!(sequences(&main.items), [1], "hidden={hidden_count}");
+        assert!(
+            budget.visited.lock().unwrap().iter().all(|seq| *seq == 1),
+            "hidden={hidden_count}"
+        );
+        budget.visited.lock().unwrap().clear();
+        let children = session
+            .page(
+                ChatPageRequest::latest(ChatQuery::new("activity", Some(call.clone())), demand(1)),
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequences(&children.items), [19], "hidden={hidden_count}");
+        let work = budget.visited.lock().unwrap().clone();
+        assert!(work.iter().all(|seq| *seq == 19), "hidden={hidden_count}");
+        if let Some(expected) = &expected_work {
+            assert_eq!(&work, expected, "hidden={hidden_count}");
+        } else {
+            expected_work = Some(work);
+        }
+        assert_eq!(
+            stored.reads.item.load(Ordering::SeqCst),
+            reads_before,
+            "hidden={hidden_count}"
+        );
+        assert!(stored.reads.pages.lock().unwrap().is_empty());
+        assert!(stored.reads.afters.lock().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]

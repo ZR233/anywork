@@ -1,5 +1,4 @@
 //! Evidence for recovery through the real Thread, projection, bridge and native GUI.
-use super::context_replay_recovery::{wait_driver, wait_stage};
 use super::*;
 use sea_orm::sqlx::Row;
 use serde_json::{Value, json};
@@ -26,52 +25,31 @@ pub(super) fn run(
         let mut prior_history = None;
         for phase in ["first", "restart"] {
             let gui_log = context.working.join(format!("{phase}-gui.log"));
-            let driver_log = context.working.join(format!("{phase}-driver.log"));
             logs.push((
                 gui_log.clone(),
                 context.output.join(format!("{phase}-gui.log")),
             ));
-            logs.push((
-                driver_log.clone(),
-                context.output.join(format!("{phase}-driver.log")),
-            ));
             let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log)?;
             let vm = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
-            let log = File::create(&driver_log)?;
-            let script = if native {
-                "test_driver/call_lifecycle_recovery_journey.dart"
-            } else {
-                "test_driver/websocket_recovery_journey.dart"
-            };
-            let mut command = driver_command(context.app_dir, script);
-            command
-                .args([phase, "ws", &vm])
-                .arg(&project)
-                .arg(context.output)
-                .arg(context.working)
-                .stdout(Stdio::from(log.try_clone()?))
-                .stderr(Stdio::from(log));
-            if native {
-                command.arg(context.home);
-            }
-            let mut driver = OwnedProcess::start(&mut command, false)?;
             let gui_pid = gui.child.id();
-            let driver_pid = driver.child.id();
             let stage = if phase == "first" {
                 "cancel"
             } else {
                 "restart"
             };
-            wait_stage(
-                &context.working.join(format!("{stage}-opened")),
-                &mut driver,
+            wait_operator_done(
+                &format!(
+                    "websocket {phase}: open {}, reach the {stage} observation, then type done.",
+                    project.display()
+                ),
                 &mut gui,
-                &mut fixture,
+                Some(&mut fixture),
                 context.interrupt,
+                Duration::from_secs(3_600),
             )?;
             let before = plan_recovery_settled_baseline(context.status_file)?;
             if phase == "restart" {
-                let restored = read_history(context.home, &observed_thread(context.working)?)?;
+                let restored = read_history(context.home, &history_owner_thread(context.home)?)?;
                 ensure!(
                     Some(&restored) == prior_history.as_ref(),
                     "reopen changed canonical history or frozen context"
@@ -81,7 +59,7 @@ pub(super) fn run(
             let deadline = Instant::now() + Duration::from_secs(quiet_duration);
             while Instant::now() < deadline {
                 ensure!(
-                    !gui.exited()? && !fixture.exited()? && driver.child.try_wait()?.is_none(),
+                    !gui.exited()? && !fixture.exited()?,
                     "WebSocket evidence process exited during quiet window"
                 );
                 ensure!(
@@ -101,24 +79,27 @@ pub(super) fn run(
                     &json!({"before":before,"after":after,"seconds":quiet_duration}),
                 )?,
             )?;
-            fs::write(context.working.join(format!("{stage}-quiet")), "verified")?;
-            wait_driver(&mut driver, &mut gui, &mut fixture, context.interrupt)?;
-            let summary: Value = serde_json::from_slice(&fs::read(
-                context.output.join(format!("{phase}-summary.json")),
-            )?)?;
-            ensure!(
-                summary["status"] == "complete" && summary["shutdown"] == "completed",
-                "{phase} did not complete native shutdown"
-            );
-            drop(driver);
+            observe_capture_exit(
+                context.app_dir,
+                &vm,
+                context.output,
+                context.interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                &format!(
+                    "websocket {phase}: finish the {stage} observation on {}, then type done.",
+                    project.display()
+                ),
+            )?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), phase)?;
             drop(gui);
-            lifecycles.push(json!({"phase":phase,"guiLauncherPid":gui_pid,"driverLauncherPid":driver_pid,
+            lifecycles.push(json!({"phase":phase,"guiLauncherPid":gui_pid,
                 "shutdown":"completed","ownersReapedAt":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()}));
             fs::write(
                 context.output.join("lifecycle.json"),
                 serde_json::to_vec_pretty(&lifecycles)?,
             )?;
-            let history = read_history(context.home, &observed_thread(context.working)?)?;
+            let history = read_history(context.home, &history_owner_thread(context.home)?)?;
             validate_history(&history, native)?;
             if phase == "restart" {
                 ensure!(
@@ -196,14 +177,6 @@ pub(super) fn run(
         context.output.display()
     );
     Ok(())
-}
-
-fn observed_thread(working: &Path) -> Result<String> {
-    let observed: Value = serde_json::from_slice(&fs::read(working.join("observed.json"))?)?;
-    Ok(observed["threadId"]
-        .as_str()
-        .context("observed Thread id missing")?
-        .to_owned())
 }
 
 fn read_history(home: &Path, thread_id: &str) -> Result<Value> {

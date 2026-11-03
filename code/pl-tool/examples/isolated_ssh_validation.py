@@ -22,14 +22,14 @@ import time
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--helper', type=Path, required=True)
-    parser.add_argument('--validator', type=Path, default=Path('target/debug/examples/ssh_remote_validation'))
+    parser.add_argument('--validator', type=Path, default=None)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bytes', type=int, default=1024 * 1024 * 1024)
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     helper = args.helper.resolve()
-    validator = args.validator.resolve()
+    root = Path(__file__).resolve().parents[3]
     digest = hashlib.sha256(helper.read_bytes()).hexdigest()
     expected = helper.with_suffix('.sha256').read_text().split()[0]
     if digest != expected:
@@ -103,8 +103,17 @@ LogLevel VERBOSE
                 'PURE_SSH_TEST_TRANSFER_BYTES': str(args.bytes),
             })
             with output.joinpath('stdout.log').open('w') as stdout, output.joinpath('stderr.log').open('w') as stderr:
-                result = subprocess.run([str(validator)], env=environment, stdout=stdout, stderr=stderr, timeout=600)
-            report = {'validator': str(validator), 'helper': str(helper), 'helperSha256': digest,
+                if args.validator is None:
+                    command = [
+                        'cargo', 'test', '--locked', '-p', 'pl-tool', '--test', 'ssh_remote',
+                        '--', '--ignored', '--nocapture',
+                    ]
+                    cwd = root
+                else:
+                    command = [str(args.validator.resolve())]
+                    cwd = None
+                result = subprocess.run(command, env=environment, stdout=stdout, stderr=stderr, timeout=600, cwd=cwd)
+            report = {'validator': str(args.validator) if args.validator else 'cargo test --test ssh_remote -- --ignored', 'helper': str(helper), 'helperSha256': digest,
                       'platform': os.uname().sysname+' '+os.uname().machine, 'port': port,
                       'bytes': args.bytes, 'seconds': time.monotonic()-started, 'exitCode': result.returncode}
             output.joinpath('report.json').write_text(json.dumps(report, indent=2))

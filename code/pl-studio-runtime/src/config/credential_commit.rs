@@ -1,5 +1,5 @@
 //! Credential participation in the configuration coordinator: frozen bindings, protected
-//! snapshots and versioned recovery. No token-bearing payload is written to the filesystem.
+//! snapshots and versioned recovery. No plaintext token payload enters filesystem journals.
 use super::{ConfigStore, StudioConfig};
 use crate::{PureError, Result};
 use pl_model::protocol::chatgpt::ChatGptCredentialRecord;

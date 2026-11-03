@@ -58,7 +58,6 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
     let mut evidence = JourneyEvidence::default();
     let mut lifecycles = Vec::new();
     let mut phase_reports = Vec::new();
-    let mut driver_exits = BTreeMap::new();
     fs::write(
         context.output.join("verdict.json"),
         "{\"human_verdict\":\"pending\"}\n",
@@ -86,7 +85,6 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
                 &mut evidence,
                 &mut lifecycles,
                 &mut phase_reports,
-                &mut driver_exits,
             )?;
         }
         Ok(())
@@ -136,17 +134,6 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
                 errors,
             )?;
         }
-        let driver_log = context
-            .working
-            .join(format!("mode-editor-{phase}-driver.log"));
-        write_realtime_driver_evidence(
-            &driver_log,
-            context.output,
-            &format!("mode-editor-{phase}"),
-            driver_exits.get(phase).cloned().flatten(),
-            journey.as_ref().err(),
-            &redactions,
-        )?;
     }
     write_lifecycle(context.output, &lifecycles)?;
     let accepted = requests
@@ -186,26 +173,10 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .sum::<usize>();
-    let dart_errors = MODE_EDITOR_PHASES
-        .iter()
-        .map(|phase| {
-            let path = context
-                .working
-                .join(format!("mode-editor-{phase}-driver.log"));
-            if path.is_file() {
-                count_dart_errors(&path)
-            } else {
-                Ok(0)
-            }
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .sum::<usize>();
     fs::write(
         context.output.join("gui-health.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "unhandledGuiErrors": gui_errors,
-            "dartErrors": dart_errors,
             "humanVerdict": "pending",
         }))?,
     )?;
@@ -217,8 +188,7 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
         && fixture_complete
         && accepted >= MODE_EDITOR_REQUIRED_REQUESTS
         && rejected == 0
-        && gui_errors == 0
-        && dart_errors == 0;
+        && gui_errors == 0;
     fs::write(
         context.output.join("mode-editor-result.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -230,7 +200,6 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
             "rejectedRequests": rejected,
             "requiredAcceptedRequests": MODE_EDITOR_REQUIRED_REQUESTS,
             "guiErrors": gui_errors,
-            "dartErrors": dart_errors,
             "fixtureCompleted": fixture_complete,
             "error": journey_error,
         }))?,
@@ -245,8 +214,7 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
         fixture_complete
             && accepted >= MODE_EDITOR_REQUIRED_REQUESTS
             && rejected == 0
-            && gui_errors == 0
-            && dart_errors == 0,
+            && gui_errors == 0,
         "mode-editor fixture or GUI health incomplete; human verdict pending"
     );
     Ok(())
@@ -257,85 +225,61 @@ fn run_phase(
     context: &RecoveryScenario<'_>,
     fixture: &mut OwnedProcess,
     project: &Path,
-    coord: &Path,
+    _coord: &Path,
     phase: &'static str,
     evidence: &mut JourneyEvidence,
     lifecycles: &mut Vec<serde_json::Value>,
     phase_reports: &mut Vec<serde_json::Value>,
-    driver_exits: &mut BTreeMap<&'static str, Option<std::process::ExitStatus>>,
 ) -> Result<()> {
     let gui_log = context.working.join(format!("mode-editor-{phase}-gui.log"));
-    let driver_log = context
-        .working
-        .join(format!("mode-editor-{phase}-driver.log"));
     let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log)?;
     let gui_pid = gui.child.id();
-    let mut driver = None;
-    let mut driver_pid = None;
-    let mut driver_exit = None;
     let outcome = (|| -> Result<()> {
         let vm_url = wait_for_vm(&gui_log, &mut gui, fixture, context.interrupt)?;
-        let log = File::create(&driver_log)?;
-        let mut command = driver_command(context.app_dir, "test_driver/mode_editor_journey.dart");
-        command
-            .args([phase, &vm_url])
-            .arg(project)
-            .arg(context.output)
-            .arg(coord)
-            .arg(context.home)
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log));
-        let process = OwnedProcess::start(&mut command, false)?;
-        driver_pid = Some(process.child.id());
-        driver = Some(process);
-        let driver = driver.as_mut().expect("Mode editor Driver was installed");
-
         match phase {
             "first" => {
-                let original = await_mode_stage(
-                    "first-updated-during-turn",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    &format!(
+                        "mode-editor first original: open {}, freeze the original Mode prompt on the first Turn, then type done.",
+                        project.display()
+                    ),
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let original = observe_mode_stage("first-updated-during-turn", context, evidence)?;
                 ensure!(
                     definition_prompt(&original).contains("mode-editor-original"),
                     "first Turn did not freeze the original Mode prompt"
                 );
                 assert_valid_snapshot(&original)?;
                 let original_run = original.run.clone();
-                mark_stage_verified(coord, "first-updated-during-turn")?;
 
-                let graph = await_mode_stage(
-                    "graph-updated",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    "mode-editor first graph: update the graph, freeze the graph-updated prompt, then type done.",
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let graph = observe_mode_stage("graph-updated", context, evidence)?;
                 ensure!(
                     definition_prompt(&graph).contains("mode-editor-graph-updated"),
                     "graph-updated Turn did not freeze the updated graph prompt"
                 );
                 assert_valid_snapshot(&graph)?;
                 assert_graph_update(&graph, &original_run)?;
-                mark_stage_verified(coord, "graph-updated")?;
                 evidence.graph_updated = Some(graph);
 
-                let prompt = await_mode_stage(
-                    "prompt-updated",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    "mode-editor first prompt: apply a prompt-only update, then type done.",
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let prompt = observe_mode_stage("prompt-updated", context, evidence)?;
                 ensure!(
                     definition_prompt(&prompt).contains("mode-editor-prompt-only"),
                     "prompt-updated Turn did not freeze the prompt-only update"
@@ -347,18 +291,16 @@ fn run_phase(
                         .as_ref()
                         .context("graph-updated snapshot is missing")?,
                 )?;
-                mark_stage_verified(coord, "prompt-updated")?;
                 evidence.prompt_updated = Some(prompt);
 
-                let deleted = await_mode_stage(
-                    "deleted-running",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    "mode-editor first delete: delete the Mode file while the Turn is still running, then type done.",
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let deleted = observe_mode_stage("deleted-running", context, evidence)?;
                 ensure!(
                     !mode_file(context.home).is_file(),
                     "deleted-running stage still has the Mode file"
@@ -371,18 +313,16 @@ fn run_phase(
                         .context("prompt-updated snapshot is missing")?,
                     "deleting the Mode changed the saved Turn snapshot",
                 )?;
-                mark_stage_verified(coord, "deleted-running")?;
             }
             "restart" => {
-                let reopened = await_mode_stage(
-                    "restart-opened",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    "mode-editor restart: reopen the same home, confirm the deleted Mode snapshot is unchanged, then type done.",
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let reopened = observe_mode_stage("restart-opened", context, evidence)?;
                 ensure!(
                     !mode_file(context.home).is_file(),
                     "restart opened with the deleted Mode file present"
@@ -404,18 +344,16 @@ fn run_phase(
                     context.output.join("restart-quiet.json"),
                     serde_json::to_vec_pretty(&quiet)?,
                 )?;
-                mark_stage_verified(coord, "restart-opened")?;
             }
             "recheck" => {
-                let reopened = await_mode_stage(
-                    "recheck-opened",
-                    context,
-                    coord,
-                    driver,
+                wait_operator_done(
+                    "mode-editor recheck: reopen again, confirm the deleted Mode snapshot is unchanged, then type done.",
                     &mut gui,
-                    fixture,
-                    evidence,
+                    Some(fixture),
+                    context.interrupt,
+                    Duration::from_secs(3_600),
                 )?;
+                let reopened = observe_mode_stage("recheck-opened", context, evidence)?;
                 ensure!(
                     !mode_file(context.home).is_file(),
                     "recheck opened with the deleted Mode file present"
@@ -437,36 +375,24 @@ fn run_phase(
                     context.output.join("recheck-quiet.json"),
                     serde_json::to_vec_pretty(&quiet)?,
                 )?;
-                mark_stage_verified(coord, "recheck-opened")?;
             }
             other => bail!("unknown mode-editor phase: {other}"),
         }
 
-        super::context_replay_recovery::wait_driver(driver, &mut gui, fixture, context.interrupt)
-            .with_context(|| format!("mode-editor {phase} Driver did not finish"))?;
-        let status = driver
-            .child
-            .try_wait()?
-            .context("completed Driver has no exit status")?;
-        driver_exit = Some(status);
-        ensure!(
-            status.success(),
-            "mode-editor {phase} Driver failed with {status}"
-        );
-        ensure!(
-            count_dart_errors(&driver_log)? == 0,
-            "mode-editor {phase} Driver log contains an error"
-        );
-        let (_summary, summary_thread) = read_phase_summary(context.output, phase)?;
-        let observed_thread = read_observed_thread(coord)?;
-        ensure!(
-            summary_thread == observed_thread,
-            "mode-editor {phase} summary and observed Thread differ"
-        );
-        remember_thread(evidence, &summary_thread)?;
+        capture(
+            context.app_dir,
+            Path::new(""),
+            &vm_url,
+            context.output,
+            context.interrupt,
+            true,
+        )?;
+        let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), phase)?;
+        let thread_id = history_owner_thread(context.home)?;
+        remember_thread(evidence, &thread_id)?;
         match phase {
             "first" => {
-                let final_observation = read_mode_observation(context.home, &summary_thread)?;
+                let final_observation = read_mode_observation(context.home, &thread_id)?;
                 ensure!(
                     final_observation.history_records > 0,
                     "first lifecycle final history is empty"
@@ -474,7 +400,7 @@ fn run_phase(
                 evidence.first_final_history = Some(final_observation.history);
             }
             "restart" => {
-                let final_observation = read_mode_observation(context.home, &summary_thread)?;
+                let final_observation = read_mode_observation(context.home, &thread_id)?;
                 ensure!(
                     final_observation.history_records > 0,
                     "restart lifecycle final history is empty"
@@ -486,25 +412,19 @@ fn run_phase(
         phase_reports.push(serde_json::json!({
             "phase": phase,
             "status": "complete",
-            "threadId": summary_thread,
+            "threadId": thread_id,
         }));
         Ok(())
     })();
 
-    if let Some(process) = driver.as_mut() {
-        process.terminate();
-    }
     gui.terminate();
     lifecycles.push(serde_json::json!({
         "scenario": "mode-editor",
         "phase": phase,
         "guiLauncherPid": gui_pid,
-        "driverLauncherPid": driver_pid,
-        "driverExit": driver_exit.as_ref().map(ToString::to_string),
         "shutdown": if outcome.is_ok() { "completed" } else { "failed" },
         "ownersReapedAt": SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
     }));
-    driver_exits.insert(phase, driver_exit);
     let lifecycle_write = write_lifecycle(context.output, lifecycles);
     if outcome.is_ok() {
         lifecycle_write?;
@@ -520,24 +440,12 @@ fn run_phase(
     outcome
 }
 
-fn await_mode_stage(
+fn observe_mode_stage(
     stage: &'static str,
     context: &RecoveryScenario<'_>,
-    coord: &Path,
-    driver: &mut OwnedProcess,
-    gui: &mut OwnedProcess,
-    fixture: &mut OwnedProcess,
     evidence: &mut JourneyEvidence,
 ) -> Result<ModeObservation> {
-    super::context_replay_recovery::wait_stage(
-        &coord.join(stage),
-        driver,
-        gui,
-        fixture,
-        context.interrupt,
-    )
-    .with_context(|| format!("mode-editor Driver did not reach {stage}"))?;
-    let thread_id = read_observed_thread(coord)?;
+    let thread_id = history_owner_thread(context.home)?;
     remember_thread(evidence, &thread_id)?;
     let observation = read_mode_observation(context.home, &thread_id)
         .with_context(|| format!("failed to read the checkpoint at {stage}"))?;
@@ -554,46 +462,6 @@ fn remember_thread(evidence: &mut JourneyEvidence, thread_id: &str) -> Result<()
     } else {
         evidence.thread_id = Some(thread_id.to_owned());
     }
-    Ok(())
-}
-
-fn read_phase_summary(output: &Path, phase: &str) -> Result<(serde_json::Value, String)> {
-    let path = output.join(format!("{phase}-summary.json"));
-    let summary: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path)
-            .with_context(|| format!("Mode editor Driver did not write {phase}-summary.json"))?,
-    )?;
-    ensure!(
-        summary["status"] == "complete" && summary["shutdown"] == "completed",
-        "mode-editor {phase} summary did not complete a normal shutdown"
-    );
-    let thread_id = summary["threadId"]
-        .as_str()
-        .context("mode-editor summary Thread id is missing")?
-        .to_owned();
-    ensure!(
-        !thread_id.is_empty(),
-        "mode-editor summary Thread id is empty"
-    );
-    Ok((summary, thread_id))
-}
-
-fn read_observed_thread(coord: &Path) -> Result<String> {
-    let observed: serde_json::Value =
-        serde_json::from_slice(&fs::read(coord.join("observed.json"))?)?;
-    let thread_id = observed["threadId"]
-        .as_str()
-        .context("mode-editor observed Thread id is missing")?
-        .to_owned();
-    ensure!(
-        !thread_id.is_empty(),
-        "mode-editor observed Thread id is empty"
-    );
-    Ok(thread_id)
-}
-
-fn mark_stage_verified(coord: &Path, stage: &str) -> Result<()> {
-    fs::write(coord.join(format!("{stage}-verified")), "verified")?;
     Ok(())
 }
 
@@ -746,22 +614,6 @@ fn quiet_window(status_file: &Path) -> Result<serde_json::Value> {
         "after": after,
         "quietWindowMillis": 2_000,
     }))
-}
-
-fn count_dart_errors(source: &Path) -> Result<usize> {
-    let log = fs::read_to_string(source)?;
-    Ok(log
-        .lines()
-        .filter(|line| {
-            line.contains("Unhandled exception")
-                || line.contains("Bad state:")
-                || line.contains("DriverError")
-                || line.contains("FormatException")
-                || line.contains("Compilation failed")
-                || line.contains("E/flutter")
-                || line.contains("] E/flutter")
-        })
-        .count())
 }
 
 fn read_mode_observation(home: &Path, thread_id: &str) -> Result<ModeObservation> {

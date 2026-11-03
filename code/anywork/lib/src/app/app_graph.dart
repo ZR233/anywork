@@ -12,14 +12,10 @@ import 'package:anywork_client/acp_ports.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 
-import '../infrastructure/frb/studio_api.dart';
-import '../infrastructure/frb/studio_update_api.dart';
-import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
-import '../infrastructure/demo/statistics/demo_statistics_feed.dart';
 import '../platform/clipboard_image_reader.dart';
-import '../platform/studio_platform.dart';
 import '../platform/error_log.dart';
 import '../presentation/view_models/timeline_session_owner.dart';
+import 'studio_startup_host.dart';
 
 /// The application composition root is the only place that knows both the
 /// transport implementation and the SDK-only Client.
@@ -35,9 +31,11 @@ class AppGraph {
     AccountModelsPort? accountModels,
     AccountUsagePort? accountUsage,
     AcpPort? acpPort,
-  }) {
+    StudioStartupHost? startupHost,
+    ClipboardImageStager? clipboardImageStager,
+  }) : startupHost = startupHost ?? ImmediateStudioStartupHost() {
     final staged = <String, StagedClipboardImage>{};
-    final stager = const SystemClipboardImageStager();
+    final stager = clipboardImageStager ?? const SystemClipboardImageStager();
     final instanceId = clientId ?? 'app-${identityHashCode(this)}';
     final budget = ResourceBudget();
     final mutations = MutationBoard(clientId: instanceId, budget: budget);
@@ -98,29 +96,12 @@ class AppGraph {
     _selectionObservation = selection.observation;
   }
 
-  factory AppGraph.production() => AppGraph(
-    transport: FrbStudioTransport(),
-    statisticsFeed: const FrbStatisticsFeedPort(),
-    updateApi: const FrbStudioUpdateApi(),
-    updatesEnabled:
-        isWindowsPlatform &&
-        (const bool.fromEnvironment('dart.vm.product') ||
-            const bool.fromEnvironment('ANYWORK_DRIVER')) &&
-        !const bool.fromEnvironment('ANYWORK_DEMO'),
-  );
-  factory AppGraph.demo({bool driver = false}) => AppGraph(
-    transport: driver
-        ? DriverDemoStudioTransport(lspActivityLoop: true)
-        : DemoStudioTransport(lspActivityLoop: true),
-    statisticsFeed: DemoStatisticsFeedPort(),
-  );
-
+  final StudioStartupHost startupHost;
   ValueListenable<StudioStartupPhase> get startupProgress =>
-      FrbStudioTransport.startupProgress;
+      startupHost.progress;
   ValueListenable<StartupRecoveryReport?> get startupRecovery =>
-      FrbStudioTransport.startupRecovery;
-  void dismissStartupRecovery() =>
-      FrbStudioTransport.startupRecovery.value = null;
+      startupHost.recovery;
+  void dismissStartupRecovery() => startupHost.dismissRecovery();
 
   /// Client publishes success/failure before this application-level handler
   /// records diagnostics. A route never owns a separate startup Future or flag.
@@ -135,7 +116,7 @@ class AppGraph {
       });
 
   Future<void> retryStartup() {
-    FrbStudioTransport.retryInitialization();
+    startupHost.prepareRetry();
     return initialize();
   }
 

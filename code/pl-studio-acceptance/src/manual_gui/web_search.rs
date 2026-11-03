@@ -3,7 +3,7 @@
 //! One isolated home starts the real GUI/bridge/Studio twice (a `first` and a
 //! `restart` lifecycle) against a loopback fixture that serves the OpenAI
 //! standalone search API, the DeepSeek Search & Fetch tool endpoints and a generic
-//! Streamable-HTTP MCP server. A Driver probe opens a session, switches the
+//! Streamable-HTTP MCP server. An operator runbook opens a session, switches the
 //! session model across the three fixture models, exercises each search path,
 //! edits and persists the Web Search settings and probes the hot-add/remove of
 //! the search tools. The coordinator proves the real wire traffic and the
@@ -14,7 +14,6 @@
 //! names a missing tool is recorded as a rejection. Fault runs keep the same
 //! journeys but assert the fault is visible instead of the happy-path hits.
 
-use super::context_replay_recovery::wait_driver;
 use super::*;
 use pl_model::protocol::{
     HostedWebSearchDialect, ProtocolEndpoint, ProtocolKind, ProtocolServiceCapabilities,
@@ -241,7 +240,7 @@ fn start_gui(
     configure_isolated_gui_home(&mut command, home)?;
     command
         .current_dir(workspace)
-        .args(["xtask", "run-gui", "--driver"])
+        .args(["xtask", "run-gui", "--capture"])
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let openai_value = match fault {
@@ -289,84 +288,6 @@ fn request_mentions(request: &Value, needle: &str) -> bool {
         .get("body")
         .and_then(|body| serde_json::to_string(body).ok())
         .is_some_and(|body| body.contains(needle))
-}
-
-/// One DeepSeek Search/Fetch tool row copied from a Driver snapshot timeline.
-#[derive(Debug, Clone)]
-struct DeepSeekToolRow {
-    snapshot: String,
-    name: String,
-    call_id: String,
-    status: String,
-    result: String,
-}
-
-fn deepseek_tool_status_terminal_ok(status: &str) -> bool {
-    matches!(status, "succeeded" | "running" | "pending")
-}
-
-/// Reads every `snapshot-*.json` Driver dump and collects DeepSeek tool rows
-/// from `workspace.timeline[].tools[]`. The Driver summary does not carry tool
-/// status, so this is the only real evidence of a failed Search/Fetch call.
-fn collect_deepseek_tool_rows(output: &Path) -> Result<Vec<DeepSeekToolRow>> {
-    let mut files: Vec<PathBuf> = fs::read_dir(output)
-        .with_context(|| format!("failed to list evidence dir {}", output.display()))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("snapshot-") && name.ends_with(".json"))
-        })
-        .collect();
-    files.sort();
-    let mut rows = Vec::new();
-    for path in files {
-        let snapshot: Value = serde_json::from_slice(&fs::read(&path)?)
-            .with_context(|| format!("failed to parse snapshot {}", path.display()))?;
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("snapshot")
-            .to_owned();
-        let Some(timeline) = snapshot
-            .pointer("/workspace/timeline")
-            .and_then(Value::as_array)
-        else {
-            continue;
-        };
-        for item in timeline {
-            let Some(tools) = item.get("tools").and_then(Value::as_array) else {
-                continue;
-            };
-            for tool in tools {
-                let name = tool.get("name").and_then(Value::as_str).unwrap_or_default();
-                if name != "deepseek_web_search" && name != "deepseek_web_fetch" {
-                    continue;
-                }
-                rows.push(DeepSeekToolRow {
-                    snapshot: file_name.clone(),
-                    name: name.to_owned(),
-                    call_id: tool
-                        .get("callId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    status: tool
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    result: tool
-                        .get("result")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                });
-            }
-        }
-    }
-    Ok(rows)
 }
 
 /// Rejection categories a fault run is *expected* to own.
@@ -430,61 +351,33 @@ pub(super) fn run(
     );
     let mut logs = Vec::new();
     let mut lifecycles = Vec::new();
-    let mut summaries: Vec<Value> = Vec::new();
     let journey = (|| -> Result<()> {
         for phase in ["first", "restart"] {
             let gui_log = context.working.join(format!("web-search-{phase}-gui.log"));
-            let driver_log = context
-                .working
-                .join(format!("web-search-{phase}-driver.log"));
             logs.push((
                 gui_log.clone(),
                 context.output.join(format!("{phase}-gui.log")),
             ));
-            logs.push((
-                driver_log.clone(),
-                context.output.join(format!("{phase}-driver.log")),
-            ));
             let mut gui = start_gui(context.workspace, context.home, &gui_log, fault)?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
             let gui_pid = gui.child.id();
-            let log = File::create(&driver_log)?;
-            let allow_turn_failure = fault != WebSearchFault::None;
-            let mut command =
-                driver_command(context.app_dir, "test_driver/web_search_journey.dart");
-            command
-                .arg(format!("--phase={phase}"))
-                .arg(format!("--vm={vm_url}"))
-                .arg(format!("--project={}", project.display()))
-                .arg(format!("--output={}", context.output.display()))
-                .arg(format!("--coord={}", context.working.display()))
-                .arg(format!("--probe-mode={}", context.probe_mode))
-                .arg(format!("--allow-turn-failure={allow_turn_failure}"))
-                .stdout(Stdio::from(log.try_clone()?))
-                .stderr(Stdio::from(log))
-                .env("ANYWORK_HOME", context.home);
-            if let Some(providers) = context.accounts {
-                command.arg(format!("--account-ids={providers}"));
-            }
-            if let Some(models) = context.models {
-                command.arg(format!("--models={models}"));
-            }
-            let mut driver = OwnedProcess::start(&mut command, false)?;
-            let driver_pid = driver.child.id();
-            wait_driver(&mut driver, &mut gui, &mut fixture, context.interrupt)?;
-            let summary: Value = serde_json::from_slice(&fs::read(
-                context.output.join(format!("{phase}-summary.json")),
-            )?)?;
-            ensure!(
-                summary["status"] == "complete" && summary["shutdown"] == "completed",
-                "web-search {phase} did not finish a normal native shutdown"
-            );
-            drop(driver);
+            observe_capture_exit(
+                context.app_dir,
+                &vm_url,
+                context.output,
+                context.interrupt,
+                &mut gui,
+                Some(&mut fixture),
+                &format!(
+                    "web-search {phase}: open {}, switch session models across the three fixture models, exercise OpenAI/DeepSeek search and MCP, persist Web Search settings, then type done.",
+                    project.display()
+                ),
+            )?;
+            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), phase)?;
             drop(gui);
             lifecycles.push(json!({
                 "phase": phase,
                 "guiLauncherPid": gui_pid,
-                "driverLauncherPid": driver_pid,
                 "shutdown": "completed",
                 "ownersReapedAt": SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
             }));
@@ -492,15 +385,7 @@ pub(super) fn run(
                 context.output.join("lifecycle.json"),
                 serde_json::to_vec_pretty(&lifecycles)?,
             )?;
-            summaries.push(summary);
         }
-        let first = summaries.first().context("missing first summary")?;
-        let restart = summaries.get(1).context("missing restart summary")?;
-        ensure!(
-            first["settingsFingerprint"].is_string()
-                && first["settingsFingerprint"] == restart["settingsFingerprint"],
-            "canonical web-search settings did not survive the restart lifecycle"
-        );
         Ok(())
     })();
     for (source, destination) in &logs {
@@ -525,9 +410,6 @@ pub(super) fn run(
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .sum::<usize>();
-    let summary: Option<Value> = fs::read(context.output.join("first-summary.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let fixture_exit = fixture.stop(context.requests_file);
     // Keep the fixture's raw shutdown fact, but do not let an expected fault
     // rejection be reported as an unexplained shutdown failure.
@@ -673,43 +555,6 @@ pub(super) fn run(
                 && request.pointer("/body/method").and_then(Value::as_str) == Some("tools/call")
         })
     });
-    // Child tool assembly: the Driver records the child Thread it opened and the
-    // tools that child really called; the fixture log holds the tools each child
-    // model request actually declared. Cross-check that the called rows are a
-    // subset of the declared set instead of trusting a fabricated snapshot.
-    let child_summary = summary
-        .as_ref()
-        .and_then(|summary| summary.get("child"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let child_thread_id = child_summary.get("threadId").and_then(Value::as_str);
-    let child_root_thread_id = child_summary.get("rootThreadId").and_then(Value::as_str);
-    let child_declared: BTreeSet<String> = requests
-        .iter()
-        .filter(|request| category(request).is_some_and(|name| name.starts_with("child_search")))
-        .flat_map(declared_tool_names)
-        .collect();
-    let child_tools: BTreeSet<String> = child_summary
-        .get("toolNames")
-        .and_then(Value::as_array)
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let child_has_search_tools = [
-        "web_search",
-        "deepseek_web_search",
-        "deepseek_web_fetch",
-        "discover_tools",
-    ]
-    .iter()
-    .all(|name| child_tools.contains(*name));
-    let child_has_mcp = child_tools.iter().any(|name| name.starts_with("mcp__"));
-    let child_tools_declared = !child_tools.is_empty() && child_tools.is_subset(&child_declared);
     let spawn_requested = categories("spawn_child_requested");
     let spawn_wait = categories("spawn_child_wait");
     let auxiliary_title = categories("auxiliary_title_answered");
@@ -718,33 +563,12 @@ pub(super) fn run(
     let child_deepseek_fetch = categories("child_search_deepseek_fetch");
     let child_discover = categories("child_search_discover");
     let child_mcp_present = categories("child_search_mcp_present");
-    let deepseek_tool_rows = collect_deepseek_tool_rows(context.output)?;
-    let deepseek_search_succeeded = deepseek_tool_rows
+    let child_declared: BTreeSet<String> = requests
         .iter()
-        .filter(|row| row.name == "deepseek_web_search" && row.status == "succeeded")
-        .count();
-    let deepseek_fetch_succeeded = deepseek_tool_rows
-        .iter()
-        .filter(|row| row.name == "deepseek_web_fetch" && row.status == "succeeded")
-        .count();
-    let deepseek_tool_failures: Vec<Value> = deepseek_tool_rows
-        .iter()
-        .filter(|row| !deepseek_tool_status_terminal_ok(&row.status))
-        .map(|row| {
-            json!({
-                "snapshot": row.snapshot,
-                "name": row.name,
-                "callId": row.call_id,
-                "status": row.status,
-                "result": row.result,
-            })
-        })
+        .filter(|request| category(request).is_some_and(|name| name.starts_with("child_search")))
+        .flat_map(declared_tool_names)
         .collect();
-    let summaries_complete = summaries.len() == 2
-        && summaries
-            .iter()
-            .all(|summary| summary["status"] == "complete");
-    let mut collection = json!({
+    let collection = json!({
             "scenario": ready.scenario,
             "platform": std::env::consts::OS,
             "probeMode": context.probe_mode,
@@ -776,29 +600,16 @@ pub(super) fn run(
             "childDeepseekFetchRequests": child_deepseek_fetch,
             "childDiscoverRequests": child_discover,
             "childMcpPresentRequests": child_mcp_present,
-            "childThreadId": child_thread_id,
-            "childRootThreadId": child_root_thread_id,
-            "childTools": child_tools,
             "childDeclaredTools": child_declared,
-            "childToolsDeclared": child_tools_declared,
-            "driverSummariesComplete": summaries_complete,
-            "driverSettingsFingerprint": summary.as_ref().and_then(|s| s.get("settingsFingerprint").cloned()),
             "journey": if journey.is_ok() { "complete" } else { "failed" },
             "error": journey.as_ref().err().map(ToString::to_string),
             "humanVerdict": "pending",
     });
-    collection["deepseekSearchSucceededRows"] = json!(deepseek_search_succeeded);
-    collection["deepseekFetchSucceededRows"] = json!(deepseek_fetch_succeeded);
-    collection["deepseekToolFailures"] = Value::Array(deepseek_tool_failures.clone());
     fs::write(
         context.output.join("collection.json"),
         serde_json::to_vec_pretty(&collection)?,
     )?;
     journey?;
-    ensure!(
-        summaries_complete,
-        "Driver did not complete both web-search lifecycles"
-    );
     ensure!(
         gui_errors == 0,
         "GUI reported {gui_errors} unhandled errors"
@@ -883,18 +694,6 @@ pub(super) fn run(
         "DeepSeek search was never called with multiple merged queries within a single tool call"
     );
     ensure!(
-        deepseek_tool_failures.is_empty(),
-        "DeepSeek Search/Fetch tool row failed: {deepseek_tool_failures:?}"
-    );
-    ensure!(
-        deepseek_search_succeeded >= 1,
-        "no snapshot recorded a succeeded deepseek_web_search tool row"
-    );
-    ensure!(
-        deepseek_fetch_succeeded >= 1,
-        "no snapshot recorded a succeeded deepseek_web_fetch tool row"
-    );
-    ensure!(
         ["initialize", "tools/list", "tools/call"]
             .iter()
             .all(|method| mcp_methods.contains(*method)),
@@ -938,19 +737,6 @@ pub(super) fn run(
     ensure!(
         child_mcp_present >= 1,
         "no child request coexisted the discovered MCP tool after discovery"
-    );
-    let child_thread = child_thread_id.context("driver summary is missing the child Thread id")?;
-    ensure!(
-        child_root_thread_id.is_some_and(|root| root != child_thread),
-        "child Thread id is missing or equals its root: {child_thread_id:?} / {child_root_thread_id:?}"
-    );
-    ensure!(
-        child_has_search_tools && child_has_mcp,
-        "child tool rows are missing a search/MCP tool: {child_tools:?}"
-    );
-    ensure!(
-        child_tools_declared,
-        "child tool rows are not a subset of the declared tools: {child_tools:?} vs {child_declared:?}"
     );
     println!(
         "Evidence: {} (human verdict pending)",

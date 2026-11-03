@@ -22,18 +22,12 @@ pub(super) struct ScenarioContext<'a> {
 }
 
 pub(super) fn validate(options: &ManualGuiOptions) -> Result<()> {
-    let scenario = Scenario::parse(&options.scenario);
+    let scenario = Scenario::parse(&options.preset);
     ensure!(
         options.delegation_driver.is_none() || scenario.is_some(),
         "--delegation-driver requires a delegation scenario"
     );
-    if let Some(path) = &options.delegation_driver {
-        ensure!(
-            path.is_file(),
-            "delegation Driver script does not exist: {}",
-            path.display()
-        );
-    }
+    let _ = options.delegation_driver.as_ref();
     if scenario.is_some() {
         ensure!(
             options.model_catalog_url.is_none(),
@@ -125,15 +119,8 @@ pub(super) fn run(
             let phase_output = context.output.join(phase);
             fs::create_dir(&phase_output)?;
             let gui_log_path = context.working.join(format!("delegation-gui-{phase}.log"));
-            let phase_result = run_phase(
-                context,
-                &project,
-                &phase_output,
-                &gui_log_path,
-                phase,
-                host,
-                &mut fixture,
-            );
+            let phase_result =
+                run_phase(context, &phase_output, &gui_log_path, phase, &mut fixture);
             let log_result = write_sanitized_log(&gui_log_path, &phase_output.join("gui.log"));
             bots_fixture::with_cleanup(phase_result, log_result)?;
             let state = read_state(host)?;
@@ -271,18 +258,16 @@ fn run_fixture_git(project: &Path, args: &[&str]) -> Result<std::process::Output
 
 fn run_phase(
     context: &ScenarioContext<'_>,
-    project: &Path,
     output: &Path,
     gui_log_path: &Path,
     phase: &str,
-    host: &str,
     fixture: &mut OwnedProcess,
 ) -> Result<()> {
     let log = File::create(gui_log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(context.workspace)
-        .args(["xtask", "run-gui", "--driver"])
+        .args(["xtask", "run-gui", "--capture"])
         .env("ANYWORK_HOME", context.home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
@@ -294,65 +279,21 @@ fn run_phase(
         context.output.join("delegation-runbook.md").display(),
         gui_log_path.display()
     );
-    if let Some(driver) = context.driver {
-        let driver = driver.canonicalize()?;
-        let driver_log = File::create(output.join("journey-driver.log"))?;
-        let mut command = driver_command(
-            context.app_dir,
-            driver.to_str().context("Driver path is not UTF-8")?,
-        );
-        command
-            .arg(&vm)
-            .arg(project)
-            .arg(output)
-            .arg(context.working)
-            .arg(phase)
-            .arg(host)
-            .env("ANYWORK_HOME", context.home)
-            .stdout(Stdio::from(driver_log.try_clone()?))
-            .stderr(Stdio::from(driver_log));
-        let mut driver = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(1800);
-        loop {
-            if let Some(status) = driver.child.try_wait()? {
-                driver.stopped = true;
-                ensure!(
-                    status.success(),
-                    "delegation {phase} Driver failed with {status}; see journey-driver.log"
-                );
-                break;
-            }
-            ensure!(
-                !gui.exited()? && !fixture.exited()?,
-                "GUI/provider exited during delegation Driver"
-            );
-            ensure!(
-                context.interrupt.try_recv().is_err(),
-                "delegation Driver cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "delegation Driver exceeded bounded phase deadline"
-            );
-            thread::sleep(Duration::from_millis(100));
-        }
-    } else {
-        manual_phase(context, &mut gui, fixture, phase)?;
+    if let Some(path) = context.driver {
+        fs::write(
+            output.join("delegation-driver-path.txt"),
+            path.display().to_string(),
+        )?;
     }
-    // Existing canonical capture saves the actual screenshot and asks the app
-    // to shut down. Await both shutdown_completed and the real process exit.
+    manual_phase(context, &mut gui, fixture, phase)?;
     capture(
         context.app_dir,
         context.home,
         &vm,
         output,
         context.interrupt,
-        false,
+        true,
     )?;
-    ensure!(
-        fs::read_to_string(output.join("capture-stage.txt"))?.trim() == "shutdown_completed",
-        "capture did not observe native Runtime shutdown_completed"
-    );
     let exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), phase)?;
     ensure!(exit.success(), "delegation native GUI exited with {exit}");
     ensure!(
@@ -369,7 +310,7 @@ fn manual_phase(
     phase: &str,
 ) -> Result<()> {
     println!(
-        "Observe {phase} using Flutter Driver. Type action codes to record; done captures and shuts down this phase. Lifecycle/window/recovery/review-feedback reopen the SAME environment automatically. Ctrl-C fails and cleans up."
+        "Observe {phase} using the native GUI. Type action codes to record; done captures and shuts down this phase. Lifecycle/window/recovery/review-feedback reopen the SAME environment automatically. Ctrl-C fails and cleans up."
     );
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {

@@ -1,6 +1,6 @@
 ---
 name: flutter-studio-build
-description: Use when building anywork, aligning UI designs with official headless Flutter tests or Widget Previewer, validating native desktop integration, debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
+description: Use when building anywork on Windows, Linux or macOS, aligning UI designs with official headless Flutter tests or Widget Previewer, validating native desktop integration with keyboard/pointer input and Flutter content capture (including SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
 category: guides
 platforms: [windows, linux, macos]
 ---
@@ -23,7 +23,7 @@ FRB、原生插件、持久化、真实窗口和进程退出仍由相应原生�
 
 一次性诊断脚本与探针优先使用最新 `studio.session-files` 事实给出的本会话执行 `scratch/`，
 不要使用宿主内部会话数据库目录、helper 缓存或其他 Thread 的目录。SSH 的事实路径属于远端；
-需要本地 Driver 时在本地工程工具自己的证据目录准备脚本，不把远端路径传给本地 Dart。
+需要本地捕获时在本地工程工具自己的证据目录准备脚本，不把远端路径传给本地 Dart。
 xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临时截图、日志和 VM URL 不提交。
 
 ## 标准入口
@@ -33,8 +33,10 @@ xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临�
 ```powershell
 cargo xtask run-gui
 cargo xtask run-gui --demo
-cargo xtask run-gui --driver
+cargo xtask run-gui --capture
 cargo xtask run-gui --release
+cargo xtask test-project --suite desktop
+cargo xtask test-project --suite native
 cargo xtask build-gui
 cargo xtask build-gui --demo
 cargo xtask build-gui --no-clean
@@ -71,8 +73,7 @@ cargo xtask check-gui-generated
 
 共享 checkout 中先等待生成命令完整结束，再启动消费生成物的分析、Client 适配测试或原生构建。
 生成器可能先替换输入再重建 Freezed 等产物；此时并发测试看到的缺失 `part` 文件属于不完整
-生成窗口，不能据此修改生成物或判断业务失败。`verify-client` 也会运行 Flutter 适配测试，
-不是仅消费纯 Client 源码。接口返修后重新生成受影响产物，再补失败或受影响的消费者证据。
+生成窗口，不能据此修改生成物或判断业务失败。`verify-client` 只检查 SDK-only Client；应用适配与 UI 闭包由 `verify-gui` 和 `flutter test --no-pub test/ui` 覆盖。接口返修后重新生成受影响产物，再补失败或受影响的消费者证据。
 
 ## Rust bridge
 
@@ -140,12 +141,12 @@ musl 目标，可复用现有 Zig/cargo-zigbuild 或 `PURE_REMOTE_HELPER_PREBUIL
 Apple Silicon 构建、预构建打包作业；`release-gui stage` 通过 Apple `ditto` 生成完整 `.app` ZIP
 及 SHA-256，`verify` 解包核对版本、arm64 架构、资源和完整签名。编译检查点以 tar 保留
 framework 符号链接与执行权限，跨作业仍按构件 ID、生产者摘要与工具工作区验证，不回退编译。
-关闭窗口与 `Cmd+Q` 复用标准退出协调器和共享原生期限。Driver 使用 `process-wrap` 进程组回收；
+关闭窗口与 `Cmd+Q` 复用标准退出协调器和共享原生期限。原生测试与人工验收使用 `process-wrap` 进程组回收；
 macOS 没有 Linux subreaper，主动脱离进程组的子进程不在该机制覆盖内，不能外推 Linux 回收结论。
 
 ## 入口的证明范围
 
-构建、生成检查、Client 测试、Widget Previewer 和原生 Driver 各有不同的观察边界，
+构建、生成检查、Client 测试、Widget Previewer、内容捕获和原生人工操作各有不同的观察边界，
 可按实际风险选用，不构成固定先后顺序或每次 GUI 修改的必跑清单。
 `verify-gui` 不接受 `--integration`；其成功不等同于实际业务交互通过。
 
@@ -155,11 +156,11 @@ Linux 缺少编译器、CMake、Ninja、pkg-config 或 GTK 3 开发文件时，�
 ## 原生 GUI 人工验收
 
 需要原生观察时可参考 [人工验收操作指南](references/manual-gui.md)：包含隔离 harness、Linux SSH 下的
-伪终端与 Xvfb、Flutter Driver 定向操作、截图/快照核对及进程回收。不要将无交互终端直接
+伪终端与 Xvfb、真实键盘/指针、Flutter 内容捕获、截图/快照核对及进程回收。不要将无交互终端直接
 等同于无法验收，也不要把 demo、静态分析或成功启动等同于完整业务验收。
 
 ## 官方组件预览
 
 验证无需业务运行时的生产组件时，读取 [Widget Previewer 指南](references/widget-preview.md)。
 优先使用官方预览编译、缓存和热更新，分别验证纯入口、主题/本地化、交互与进程回收；
-浏览器预览不替代原生 Driver、bridge、凭据或持久化验收。
+浏览器预览不替代原生 GUI、bridge、凭据或持久化验收。

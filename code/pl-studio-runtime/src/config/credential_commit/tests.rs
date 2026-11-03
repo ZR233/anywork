@@ -23,6 +23,7 @@ fn record(generation: &str) -> ChatGptCredentialRecord {
             client_id: "issued-client".into(),
             email: None,
             plan_usage_enabled: true,
+            codex: None,
         },
         ext_agent_host_id: "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
         access_token: format!("secret-access-{generation}"),
@@ -156,6 +157,110 @@ fn release_markers(store: &ConfigStore, journal: &Journal) {
         )
         .unwrap();
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_codex_account_commit_reopens_large_protected_credentials() -> crate::Result<()> {
+    let home = tempfile::tempdir()?;
+    let store = ConfigStore::for_studio_home(home.path());
+    let id = format!("codex-commit-test-{}", uuid::Uuid::new_v4());
+    let previous_id = format!("other-home-test-{}", uuid::Uuid::new_v4());
+    let baseline_id = AccountId::new(format!("baseline-test-{}", uuid::Uuid::new_v4()))?;
+    struct Cleanup<'a>(&'a ConfigStore, [&'a str; 3]);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.recover_credentials();
+            for id in self.1 {
+                let _ = self.0.credentials.delete_strict(id);
+            }
+        }
+    }
+    let _cleanup = Cleanup(&store, [&id, &previous_id, baseline_id.as_str()]);
+    let mut baseline = StudioConfig::default_config()?;
+    // This test owns only its UUID namespace, never the user's default account aliases.
+    let mut default = baseline.models.accounts.pop_first().unwrap().1;
+    default.bearer_token_env = None;
+    baseline
+        .models
+        .accounts
+        .insert(baseline_id.clone(), default);
+    for route in baseline.mode_model_routes.values_mut() {
+        route.account_id = baseline_id.clone();
+    }
+    store.save(&baseline)?;
+    let mut record = record("windows-codex-registration");
+    record.account.client_id = pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into();
+    record.account.codex = Some(pl_protocol::studio::CodexAccountInfo {
+        account_id: "verified-workspace".into(),
+        plan_type: Some("plus".into()),
+    });
+    record.access_token = "synthetic-access-".repeat(1024);
+    record.id_token = "synthetic-id-".repeat(1024);
+    record.scopes = ["openid", "profile", "email", "offline_access"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut account = pl_model::config::builtin_account_catalog()?
+        .templates
+        .into_iter()
+        .find(|entry| entry.id.as_str() == "openai")
+        .unwrap()
+        .account;
+    account.authentication = AccountAuthenticationMethod::ChatGpt;
+    account.base_url = pl_model::protocol::chatgpt::CODEX_RESOURCE.into();
+    account.bearer_token_env = None;
+    account.chatgpt_account = Some(record.account.clone());
+    account.chatgpt_credentials = Some(record.clone());
+    let mut candidate = baseline.clone();
+    let previous_account_id = AccountId::new(&previous_id)?;
+    store
+        .credentials
+        .save_strict(&previous_id, "other-home-api-secret")?;
+    account.chatgpt_session = Some(store.chatgpt_session(&previous_id, &record)?);
+    candidate
+        .models
+        .accounts
+        .insert(previous_account_id.clone(), account.clone());
+    let replacement = |id: &str| {
+        CredentialIntents::for_account(
+            id,
+            &AccountAuthenticationIntent::ChatGpt {
+                login_id: "windows-login".into(),
+                editor_id: "windows-editor".into(),
+            },
+        )
+    };
+    let conflict = store
+        .commit_config(&baseline, &candidate, &replacement(&previous_id))
+        .unwrap_err();
+    assert!(conflict.to_string().contains("credential binding changed"));
+    assert_eq!(
+        store.credentials.load_strict(&previous_id)?.as_deref(),
+        Some("other-home-api-secret")
+    );
+    assert_eq!(store.load()?.models.accounts, baseline.models.accounts);
+    candidate.models.accounts.remove(&previous_account_id);
+    account.chatgpt_session = Some(store.chatgpt_session(&id, &record)?);
+    let account_id = AccountId::new(&id)?;
+    candidate
+        .models
+        .accounts
+        .insert(account_id.clone(), account);
+    store.commit_config(&baseline, &candidate, &replacement(&id))?;
+    let reopened = ConfigStore::for_studio_home(home.path()).load()?;
+    let saved = &reopened.models.accounts[&account_id];
+    assert_eq!(saved.chatgpt_account.as_ref(), Some(&record.account));
+    assert_eq!(saved.chatgpt_credentials.as_ref(), Some(&record));
+    let persisted = fs::read_to_string(store.paths().config_file())?;
+    assert!(!persisted.contains("synthetic-access-"));
+    assert!(!persisted.contains("synthetic-id-"));
+    assert!(fs::read_dir(store.transaction_root())?.next().is_none());
+    for owned in [&id, &previous_id, baseline_id.as_str()] {
+        store.credentials.delete_strict(owned)?;
+        assert!(store.credentials.load_strict(owned)?.is_none());
+    }
+    Ok(())
 }
 
 #[tokio::test]

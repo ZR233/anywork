@@ -7,9 +7,9 @@ use crate::api::studio::types::{
     BridgeModelConnectionSettingsDto, BridgeRoleSettingsDto, BridgeSettingsConfigSnapshotDto,
     BridgeSettingsStateResponse, BridgeSkillsSettingsDto, BridgeStudioSettingsDto,
     BridgeWebSearchSettingsDto, DeepSeekBalanceDto, DeepSeekBalanceInfoDto,
-    ZhipuCodingPlanUsageDto, ZhipuQuotaLimitDto, ZhipuToolUsageDetailDto,
+    SubscriptionQuotaLimitDto, SubscriptionUsageDetailDto, SubscriptionUsageDto,
 };
-use pl_studio_runtime::{AccountUsageData, AccountUsageState, ZhipuQuotaWindow};
+use pl_studio_runtime::{AccountUsageData, AccountUsageState, SubscriptionQuotaWindow};
 
 pub(crate) fn bridge_settings_snapshot(
     snapshot: pl_protocol::studio::SettingsStateResponse,
@@ -288,15 +288,15 @@ pub(crate) fn account_usage_dto(record: pl_studio_runtime::AccountUsageRecord) -
                         .collect(),
                 }),
             },
-            AccountUsageData::ZhipuCodingPlan(usage) => BridgeAccountUsageState::Ready {
-                data: BridgeAccountUsageData::ZhipuCodingPlan(ZhipuCodingPlanUsageDto {
+            AccountUsageData::Subscription(usage) => BridgeAccountUsageState::Ready {
+                data: BridgeAccountUsageData::Subscription(SubscriptionUsageDto {
                     level: usage.level.clone(),
                     limits: usage
                         .limits
                         .iter()
                         .map(|limit| {
                             let (window, label) = zhipu_window_labels(&limit.window);
-                            ZhipuQuotaLimitDto {
+                            SubscriptionQuotaLimitDto {
                                 window: window.to_string(),
                                 label: label.to_string(),
                                 percentage: limit.percentage,
@@ -307,7 +307,7 @@ pub(crate) fn account_usage_dto(record: pl_studio_runtime::AccountUsageRecord) -
                                 usage_details: limit
                                     .usage_details
                                     .iter()
-                                    .map(|detail| ZhipuToolUsageDetailDto {
+                                    .map(|detail| SubscriptionUsageDetailDto {
                                         name: detail.name.clone(),
                                         current_value: detail.current_value,
                                         total: detail.total,
@@ -329,12 +329,12 @@ pub(crate) fn account_usage_dto(record: pl_studio_runtime::AccountUsageRecord) -
     }
 }
 
-fn zhipu_window_labels(window: &ZhipuQuotaWindow) -> (&'static str, &str) {
+fn zhipu_window_labels(window: &SubscriptionQuotaWindow) -> (&'static str, &str) {
     match window {
-        ZhipuQuotaWindow::FiveHour => ("fiveHour", "5h"),
-        ZhipuQuotaWindow::Weekly => ("weekly", "7d"),
-        ZhipuQuotaWindow::McpMonthly => ("mcpMonthly", "MCP"),
-        ZhipuQuotaWindow::Other(label) => ("other", label.as_str()),
+        SubscriptionQuotaWindow::FiveHour => ("fiveHour", "5h"),
+        SubscriptionQuotaWindow::Weekly => ("weekly", "7d"),
+        SubscriptionQuotaWindow::McpMonthly => ("mcpMonthly", "MCP"),
+        SubscriptionQuotaWindow::Other(label) => ("other", label.as_str()),
     }
 }
 

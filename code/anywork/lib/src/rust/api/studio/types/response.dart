@@ -84,9 +84,9 @@ sealed class BridgeAccountUsageData with _$BridgeAccountUsageData {
   const factory BridgeAccountUsageData.deepSeekBalance(
     DeepSeekBalanceDto field0,
   ) = BridgeAccountUsageData_DeepSeekBalance;
-  const factory BridgeAccountUsageData.zhipuCodingPlan(
-    ZhipuCodingPlanUsageDto field0,
-  ) = BridgeAccountUsageData_ZhipuCodingPlan;
+  const factory BridgeAccountUsageData.subscription(
+    SubscriptionUsageDto field0,
+  ) = BridgeAccountUsageData_Subscription;
 }
 
 @freezed
@@ -1523,25 +1523,7 @@ class SubmitPromptResponse {
           revision == other.revision;
 }
 
-class ZhipuCodingPlanUsageDto {
-  final String? level;
-  final List<ZhipuQuotaLimitDto> limits;
-
-  const ZhipuCodingPlanUsageDto({this.level, required this.limits});
-
-  @override
-  int get hashCode => level.hashCode ^ limits.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ZhipuCodingPlanUsageDto &&
-          runtimeType == other.runtimeType &&
-          level == other.level &&
-          limits == other.limits;
-}
-
-class ZhipuQuotaLimitDto {
+class SubscriptionQuotaLimitDto {
   final String window;
   final String label;
   final double percentage;
@@ -1549,9 +1531,9 @@ class ZhipuQuotaLimitDto {
   final double? total;
   final double? remaining;
   final PlatformInt64? nextResetAt;
-  final List<ZhipuToolUsageDetailDto> usageDetails;
+  final List<SubscriptionUsageDetailDto> usageDetails;
 
-  const ZhipuQuotaLimitDto({
+  const SubscriptionQuotaLimitDto({
     required this.window,
     required this.label,
     required this.percentage,
@@ -1576,7 +1558,7 @@ class ZhipuQuotaLimitDto {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ZhipuQuotaLimitDto &&
+      other is SubscriptionQuotaLimitDto &&
           runtimeType == other.runtimeType &&
           window == other.window &&
           label == other.label &&
@@ -1588,13 +1570,13 @@ class ZhipuQuotaLimitDto {
           usageDetails == other.usageDetails;
 }
 
-class ZhipuToolUsageDetailDto {
+class SubscriptionUsageDetailDto {
   final String name;
   final double? currentValue;
   final double? total;
   final double? percentage;
 
-  const ZhipuToolUsageDetailDto({
+  const SubscriptionUsageDetailDto({
     required this.name,
     this.currentValue,
     this.total,
@@ -1611,10 +1593,28 @@ class ZhipuToolUsageDetailDto {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ZhipuToolUsageDetailDto &&
+      other is SubscriptionUsageDetailDto &&
           runtimeType == other.runtimeType &&
           name == other.name &&
           currentValue == other.currentValue &&
           total == other.total &&
           percentage == other.percentage;
+}
+
+class SubscriptionUsageDto {
+  final String? level;
+  final List<SubscriptionQuotaLimitDto> limits;
+
+  const SubscriptionUsageDto({this.level, required this.limits});
+
+  @override
+  int get hashCode => level.hashCode ^ limits.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SubscriptionUsageDto &&
+          runtimeType == other.runtimeType &&
+          level == other.level &&
+          limits == other.limits;
 }

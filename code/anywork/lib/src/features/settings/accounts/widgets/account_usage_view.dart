@@ -157,7 +157,8 @@ class AccountUsageView extends StatelessWidget {
       AccountQueryPhase.idle => l10n.accountsQueryIdle,
       AccountQueryPhase.loading => l10n.settingsUsageRefreshing,
       AccountQueryPhase.unsupported => l10n.accountsQueryUnsupported,
-      AccountQueryPhase.missingCredential => l10n.settingsUsageApiKeyMissing,
+      AccountQueryPhase.missingCredential =>
+        value.missingCredentialLabel ?? l10n.settingsUsageApiKeyMissing,
       AccountQueryPhase.failed => l10n.accountsQueryFailed,
       AccountQueryPhase.ready => null,
     };
@@ -189,6 +190,12 @@ class AccountUsageView extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 8),
             child: AccountBalanceMetrics(value: balance, density: density),
           ),
+        if (value.levelLabel case final level?)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(level, style: Theme.of(context).textTheme.labelLarge),
+          ),
+        if (value.emptyLabel case final label?) Text(label),
         if (value.quotas.isNotEmpty)
           AccountQuotaMetrics(values: value.quotas, density: density),
         if (phaseLabel != null && value.phase != AccountQueryPhase.failed)

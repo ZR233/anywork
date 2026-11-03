@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
@@ -47,7 +48,7 @@ final class ProductionStudioHarness {
     final artifacts = Directory(artifactsPath);
     await artifacts.create(recursive: true);
 
-    final graph = AppGraph.production();
+    final graph = createProductionAppGraph();
     await graph.initialize();
     if (graph.client.bootstrapState.value.failure case final failure?) {
       throw StateError('Production Studio bootstrap failed: $failure');

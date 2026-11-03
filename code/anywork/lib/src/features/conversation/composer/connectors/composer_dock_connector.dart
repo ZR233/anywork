@@ -4,7 +4,6 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 
@@ -12,7 +11,8 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../domain/models/composer_primary_action.dart';
 import '../../../../platform/clipboard_image_reader.dart';
 import '../../../../platform/dropped_attachments.dart';
-import '../../../../platform/local_file_dialogs.dart';
+import '../../../../platform/file_picking.dart';
+import '../../../../platform/dropped_file.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
@@ -266,9 +266,10 @@ class _StartPageComposerBodyState
                 context.mounted &&
                 isCurrent() &&
                 widget.workspaceId == workspaceId,
+            pickPaths: ref.read(attachmentPathPickerProvider),
           ),
-      onDropAttachments: (details, isCurrent) => _dropAttachmentsFromConnector(
-        details,
+      onDropAttachments: (files, isCurrent) => _dropAttachmentsFromConnector(
+        files,
         _addLocal,
         _reportFailure,
         isCurrent: () =>
@@ -698,10 +699,11 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                     .read(composerDockViewModelProvider(thread.id).notifier)
                     .reportDraftFailure(thread.id, error),
                 isCurrent: () => context.mounted && isCurrent(),
+                pickPaths: ref.read(attachmentPathPickerProvider),
               ),
-          onDropAttachments: (details, isCurrent) =>
+          onDropAttachments: (files, isCurrent) =>
               _dropAttachmentsFromConnector(
-                details,
+                files,
                 (paths) => ref
                     .read(composerDockViewModelProvider(thread.id).notifier)
                     .addLocalAttachments(thread.id, paths),
@@ -818,20 +820,12 @@ Future<void> _pickAttachmentsFromConnector(
   Future<void> Function(List<String>) admit,
   ValueChanged<Object> reportFailure, {
   required bool Function() isCurrent,
+  required AttachmentPathPicker pickPaths,
 }) async {
   try {
-    const driverFixture = String.fromEnvironment(
-      'ANYWORK_DRIVER_ATTACHMENT_PATH',
-    );
-    if (const bool.fromEnvironment('ANYWORK_DRIVER') &&
-        driverFixture.isNotEmpty) {
-      if (!isCurrent()) return;
-      await admit([driverFixture]);
-      return;
-    }
     final modalities = capabilities.map((item) => item.modality).toSet();
     final acceptsFiles = modalities.contains(ModelModalityView.file);
-    final paths = await pickLocalAttachmentPaths(
+    final paths = await pickPaths(
       extensions: acceptsFiles
           ? const []
           : [
@@ -858,15 +852,13 @@ Future<void> _pickAttachmentsFromConnector(
 }
 
 Future<void> _dropAttachmentsFromConnector(
-  DropDetails details,
+  List<DroppedFileTransfer> files,
   Future<void> Function(List<String>) admit,
   ValueChanged<Object> reportFailure, {
   required bool Function() isCurrent,
 }) async {
   try {
-    await admitDroppedAttachments(details.items.whereType<DropFileItem>(), (
-      paths,
-    ) {
+    await admitDroppedAttachments(files, (paths) {
       if (!isCurrent()) return Future<void>.value();
       return admit(paths);
     });

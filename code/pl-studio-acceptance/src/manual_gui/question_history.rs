@@ -38,9 +38,11 @@ pub(super) fn run(context: &QuestionHistoryScenario<'_>, mut fixture: OwnedProce
             .current_dir(context.workspace)
             .args([
                 "xtask",
-                "run-gui",
-                "--integration-test",
-                "integration_test/question_history_test.dart",
+                "test-project",
+                "--suite",
+                "desktop",
+                "--case",
+                "question_history",
             ])
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_QUESTION_HISTORY_PROJECT", &project)

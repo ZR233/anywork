@@ -32,6 +32,7 @@ final class AccountSummary {
     required this.name,
     this.brandKey,
     this.displayEndpoint,
+    this.chatgptAccount,
     required this.isDefault,
     this.billingKind,
     this.billingKindOverride,
@@ -46,6 +47,7 @@ final class AccountSummary {
 
   /// Display-only canonical origin; never a source for saved connection settings.
   final String? displayEndpoint;
+  final ChatGptAccountInfo? chatgptAccount;
   final bool isDefault;
   final BillingKind? billingKind;
   final BillingKind? billingKindOverride;

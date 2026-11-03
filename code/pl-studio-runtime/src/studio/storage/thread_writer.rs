@@ -5362,6 +5362,12 @@ pub(crate) mod storage_fault_tests {
                     &next_write.checkpoint.state,
                 )
                 .await?;
+            sink.0
+                .channel
+                .set_projection_retention(ProjectionRetention {
+                    resident_bytes: projection.retained_bytes(),
+                    pending: None,
+                })?;
             // The later fact has also left the live window; only its new unsaved obligation
             // must keep the reconstructed identity resident until the writer reaches it.
             index.retain(&Default::default(), &Default::default());

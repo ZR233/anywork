@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:anywork_client/studio_client.dart' show CloseReport;
+import 'package:anywork_client/studio_client.dart'
+    show CloseReport, StudioTransport;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 
-import '../infrastructure/frb/studio_api.dart';
 import '../domain/models/studio_models.dart';
 import '../platform/error_log.dart';
 import '../shared/studio_driver_state.dart';
@@ -435,11 +435,11 @@ class StudioExitCoordinator {
     // 最终报告（含 Dart 订阅/stream 收束）不是可靠 Clean 时撤销安全 dispose，绝不
     // 在仍有订阅或事件循环占用时释放 RustLib 把正常关闭拖成 watchdog degraded。
     if (!report.allowsCleanExit) {
-      FrbStudioTransport.revokeSafeDispose();
+      _api.revokeSafeDispose();
     }
     // 独立诊断收尾：不依赖 runtime 是否安装，也不依赖上面的清理是否成功。
     await _runBounded(
-      FrbStudioTransport.finishShutdownDiagnostics,
+      _api.finishShutdownDiagnostics,
       _remainingDiagnosticsDuration(),
     );
     // 只有全部关闭报告（含 Dart 订阅 / 诊断清理）确认可靠后才发布终态 `Stopped`；

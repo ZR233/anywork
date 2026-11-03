@@ -1502,13 +1502,13 @@ AccountUsageView _accountUsageFromFrb(frb.AccountUsageDto usage) {
                     .toList(),
               ),
             ),
-          frb.BridgeAccountUsageData_ZhipuCodingPlan(:final field0) =>
-            ZhipuCodingPlanAccountUsageView(
-              codingPlan: ZhipuCodingPlanUsageView(
+          frb.BridgeAccountUsageData_Subscription(:final field0) =>
+            SubscriptionAccountUsageView(
+              codingPlan: SubscriptionUsageView(
                 level: field0.level,
                 limits: field0.limits
                     .map(
-                      (item) => ZhipuQuotaLimitView(
+                      (item) => SubscriptionQuotaLimitView(
                         window: item.window.isEmpty ? 'other' : item.window,
                         label: item.label,
                         percentage: item.percentage,
@@ -1518,7 +1518,7 @@ AccountUsageView _accountUsageFromFrb(frb.AccountUsageDto usage) {
                         nextResetAt: _frbNullableInt(item.nextResetAt),
                         usageDetails: item.usageDetails
                             .map(
-                              (detail) => ZhipuToolUsageDetailView(
+                              (detail) => SubscriptionUsageDetailView(
                                 name: detail.name,
                                 currentValue: detail.currentValue,
                                 total: detail.total,

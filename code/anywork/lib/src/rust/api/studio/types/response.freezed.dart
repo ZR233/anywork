@@ -61,12 +61,12 @@ extension BridgeAccountUsageDataPatterns on BridgeAccountUsageData {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult Function( BridgeAccountUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult Function( BridgeAccountUsageData_Subscription value)?  subscription,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that);case _:
+return deepSeekBalance(_that);case BridgeAccountUsageData_Subscription() when subscription != null:
+return subscription(_that);case _:
   return orElse();
 
 }
@@ -84,12 +84,12 @@ return zhipuCodingPlan(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountUsageData_DeepSeekBalance value)  deepSeekBalance,required TResult Function( BridgeAccountUsageData_ZhipuCodingPlan value)  zhipuCodingPlan,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountUsageData_DeepSeekBalance value)  deepSeekBalance,required TResult Function( BridgeAccountUsageData_Subscription value)  subscription,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance():
-return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan():
-return zhipuCodingPlan(_that);}
+return deepSeekBalance(_that);case BridgeAccountUsageData_Subscription():
+return subscription(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -103,12 +103,12 @@ return zhipuCodingPlan(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult? Function( BridgeAccountUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult? Function( BridgeAccountUsageData_Subscription value)?  subscription,}){
 final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that);case _:
+return deepSeekBalance(_that);case BridgeAccountUsageData_Subscription() when subscription != null:
+return subscription(_that);case _:
   return null;
 
 }
@@ -125,11 +125,11 @@ return zhipuCodingPlan(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult Function( SubscriptionUsageDto field0)?  subscription,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that.field0);case _:
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_Subscription() when subscription != null:
+return subscription(_that.field0);case _:
   return orElse();
 
 }
@@ -147,11 +147,11 @@ return zhipuCodingPlan(_that.field0);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DeepSeekBalanceDto field0)  deepSeekBalance,required TResult Function( ZhipuCodingPlanUsageDto field0)  zhipuCodingPlan,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DeepSeekBalanceDto field0)  deepSeekBalance,required TResult Function( SubscriptionUsageDto field0)  subscription,}) {final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance():
-return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan():
-return zhipuCodingPlan(_that.field0);}
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_Subscription():
+return subscription(_that.field0);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -165,11 +165,11 @@ return zhipuCodingPlan(_that.field0);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult? Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult? Function( SubscriptionUsageDto field0)?  subscription,}) {final _that = this;
 switch (_that) {
 case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that.field0);case _:
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_Subscription() when subscription != null:
+return subscription(_that.field0);case _:
   return null;
 
 }
@@ -248,23 +248,23 @@ as DeepSeekBalanceDto,
 /// @nodoc
 
 
-class BridgeAccountUsageData_ZhipuCodingPlan extends BridgeAccountUsageData {
-  const BridgeAccountUsageData_ZhipuCodingPlan(this.field0): super._();
+class BridgeAccountUsageData_Subscription extends BridgeAccountUsageData {
+  const BridgeAccountUsageData_Subscription(this.field0): super._();
 
 
-@override final  ZhipuCodingPlanUsageDto field0;
+@override final  SubscriptionUsageDto field0;
 
 /// Create a copy of BridgeAccountUsageData
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeAccountUsageData_ZhipuCodingPlanCopyWith<BridgeAccountUsageData_ZhipuCodingPlan> get copyWith => _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl<BridgeAccountUsageData_ZhipuCodingPlan>(this, _$identity);
+$BridgeAccountUsageData_SubscriptionCopyWith<BridgeAccountUsageData_Subscription> get copyWith => _$BridgeAccountUsageData_SubscriptionCopyWithImpl<BridgeAccountUsageData_Subscription>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageData_ZhipuCodingPlan&&(identical(other.field0, field0) || other.field0 == field0));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageData_Subscription&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
@@ -275,18 +275,18 @@ int get hashCode {
 
 @override
 String toString() {
-    return 'BridgeAccountUsageData.zhipuCodingPlan(field0: $field0)';
+    return 'BridgeAccountUsageData.subscription(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeAccountUsageData_ZhipuCodingPlanCopyWith<$Res> implements $BridgeAccountUsageDataCopyWith<$Res> {
-  factory $BridgeAccountUsageData_ZhipuCodingPlanCopyWith(BridgeAccountUsageData_ZhipuCodingPlan value, $Res Function(BridgeAccountUsageData_ZhipuCodingPlan) _then) = _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl;
+abstract mixin class $BridgeAccountUsageData_SubscriptionCopyWith<$Res> implements $BridgeAccountUsageDataCopyWith<$Res> {
+  factory $BridgeAccountUsageData_SubscriptionCopyWith(BridgeAccountUsageData_Subscription value, $Res Function(BridgeAccountUsageData_Subscription) _then) = _$BridgeAccountUsageData_SubscriptionCopyWithImpl;
 @useResult
 $Res call({
- ZhipuCodingPlanUsageDto field0
+ SubscriptionUsageDto field0
 });
 
 
@@ -294,19 +294,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl<$Res>
-    implements $BridgeAccountUsageData_ZhipuCodingPlanCopyWith<$Res> {
-  _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl(this._self, this._then);
+class _$BridgeAccountUsageData_SubscriptionCopyWithImpl<$Res>
+    implements $BridgeAccountUsageData_SubscriptionCopyWith<$Res> {
+  _$BridgeAccountUsageData_SubscriptionCopyWithImpl(this._self, this._then);
 
-  final BridgeAccountUsageData_ZhipuCodingPlan _self;
-  final $Res Function(BridgeAccountUsageData_ZhipuCodingPlan) _then;
+  final BridgeAccountUsageData_Subscription _self;
+  final $Res Function(BridgeAccountUsageData_Subscription) _then;
 
 /// Create a copy of BridgeAccountUsageData
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeAccountUsageData_ZhipuCodingPlan(
+  return _then(BridgeAccountUsageData_Subscription(
 null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as ZhipuCodingPlanUsageDto,
+as SubscriptionUsageDto,
   ));
 }
 

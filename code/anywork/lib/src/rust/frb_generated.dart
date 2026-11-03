@@ -8527,6 +8527,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCodexAccountInfo dco_decode_box_autoadd_bridge_codex_account_info(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_codex_account_info(raw);
+  }
+
+  @protected
   BridgeContentOwner dco_decode_box_autoadd_bridge_content_owner(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_content_owner(raw);
@@ -9513,6 +9521,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SubscriptionUsageDto dco_decode_box_autoadd_subscription_usage_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_subscription_usage_dto(raw);
+  }
+
+  @protected
   int dco_decode_box_autoadd_u_16(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -9534,14 +9550,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int dco_decode_box_autoadd_u_8(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
-  }
-
-  @protected
-  ZhipuCodingPlanUsageDto dco_decode_box_autoadd_zhipu_coding_plan_usage_dto(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_zhipu_coding_plan_usage_dto(raw);
   }
 
   @protected
@@ -10013,22 +10021,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAccountSummary dco_decode_bridge_account_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return BridgeAccountSummary(
       identity: dco_decode_bridge_account_identity(arr[0]),
       name: dco_decode_String(arr[1]),
       brandKey: dco_decode_opt_String(arr[2]),
       displayEndpoint: dco_decode_opt_String(arr[3]),
-      isDefault: dco_decode_bool(arr[4]),
-      billingKind: dco_decode_opt_box_autoadd_bridge_billing_kind(arr[5]),
-      billingKindOverride: dco_decode_opt_box_autoadd_bridge_billing_kind(
-        arr[6],
+      chatgptAccount: dco_decode_opt_box_autoadd_bridge_chat_gpt_account_info(
+        arr[4],
       ),
-      credentialReady: dco_decode_opt_box_autoadd_bool(arr[7]),
-      usageQueryRevision: dco_decode_opt_box_autoadd_u_64(arr[8]),
-      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[9]),
-      capabilities: dco_decode_bridge_account_capabilities(arr[10]),
+      isDefault: dco_decode_bool(arr[5]),
+      billingKind: dco_decode_opt_box_autoadd_bridge_billing_kind(arr[6]),
+      billingKindOverride: dco_decode_opt_box_autoadd_bridge_billing_kind(
+        arr[7],
+      ),
+      credentialReady: dco_decode_opt_box_autoadd_bool(arr[8]),
+      usageQueryRevision: dco_decode_opt_box_autoadd_u_64(arr[9]),
+      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      capabilities: dco_decode_bridge_account_capabilities(arr[11]),
     );
   }
 
@@ -10084,8 +10095,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_box_autoadd_deep_seek_balance_dto(raw[1]),
         );
       case 1:
-        return BridgeAccountUsageData_ZhipuCodingPlan(
-          dco_decode_box_autoadd_zhipu_coding_plan_usage_dto(raw[1]),
+        return BridgeAccountUsageData_Subscription(
+          dco_decode_box_autoadd_subscription_usage_dto(raw[1]),
         );
       default:
         throw Exception("unreachable");
@@ -11824,14 +11835,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeChatGptAccountInfo(
       issuer: dco_decode_String(arr[0]),
       subject: dco_decode_String(arr[1]),
       clientId: dco_decode_String(arr[2]),
       email: dco_decode_opt_String(arr[3]),
       planUsageEnabled: dco_decode_bool(arr[4]),
+      codex: dco_decode_opt_box_autoadd_bridge_codex_account_info(arr[5]),
     );
   }
 
@@ -12134,6 +12146,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return BridgeClosingAgent(
       turnId: dco_decode_opt_String(arr[0]),
       error: dco_decode_opt_box_autoadd_bridge_state_error(arr[1]),
+    );
+  }
+
+  @protected
+  BridgeCodexAccountInfo dco_decode_bridge_codex_account_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BridgeCodexAccountInfo(
+      accountId: dco_decode_String(arr[0]),
+      planType: dco_decode_opt_String(arr[1]),
     );
   }
 
@@ -18224,20 +18248,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<ZhipuQuotaLimitDto> dco_decode_list_zhipu_quota_limit_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_zhipu_quota_limit_dto)
-        .toList();
-  }
-
-  @protected
-  List<ZhipuToolUsageDetailDto> dco_decode_list_zhipu_tool_usage_detail_dto(
+  List<SubscriptionQuotaLimitDto> dco_decode_list_subscription_quota_limit_dto(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
-        .map(dco_decode_zhipu_tool_usage_detail_dto)
+        .map(dco_decode_subscription_quota_limit_dto)
+        .toList();
+  }
+
+  @protected
+  List<SubscriptionUsageDetailDto>
+  dco_decode_list_subscription_usage_detail_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_subscription_usage_detail_dto)
         .toList();
   }
 
@@ -18472,6 +18497,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_bridge_chat_tool_identity(raw);
+  }
+
+  @protected
+  BridgeCodexAccountInfo? dco_decode_opt_box_autoadd_bridge_codex_account_info(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_codex_account_info(raw);
   }
 
   @protected
@@ -19402,6 +19437,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SubscriptionQuotaLimitDto dco_decode_subscription_quota_limit_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return SubscriptionQuotaLimitDto(
+      window: dco_decode_String(arr[0]),
+      label: dco_decode_String(arr[1]),
+      percentage: dco_decode_f_64(arr[2]),
+      currentValue: dco_decode_opt_box_autoadd_f_64(arr[3]),
+      total: dco_decode_opt_box_autoadd_f_64(arr[4]),
+      remaining: dco_decode_opt_box_autoadd_f_64(arr[5]),
+      nextResetAt: dco_decode_opt_box_autoadd_i_64(arr[6]),
+      usageDetails: dco_decode_list_subscription_usage_detail_dto(arr[7]),
+    );
+  }
+
+  @protected
+  SubscriptionUsageDetailDto dco_decode_subscription_usage_detail_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return SubscriptionUsageDetailDto(
+      name: dco_decode_String(arr[0]),
+      currentValue: dco_decode_opt_box_autoadd_f_64(arr[1]),
+      total: dco_decode_opt_box_autoadd_f_64(arr[2]),
+      percentage: dco_decode_opt_box_autoadd_f_64(arr[3]),
+    );
+  }
+
+  @protected
+  SubscriptionUsageDto dco_decode_subscription_usage_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return SubscriptionUsageDto(
+      level: dco_decode_opt_String(arr[0]),
+      limits: dco_decode_list_subscription_quota_limit_dto(arr[1]),
+    );
+  }
+
+  @protected
   int dco_decode_u_16(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -19435,50 +19518,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt dco_decode_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
-  }
-
-  @protected
-  ZhipuCodingPlanUsageDto dco_decode_zhipu_coding_plan_usage_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return ZhipuCodingPlanUsageDto(
-      level: dco_decode_opt_String(arr[0]),
-      limits: dco_decode_list_zhipu_quota_limit_dto(arr[1]),
-    );
-  }
-
-  @protected
-  ZhipuQuotaLimitDto dco_decode_zhipu_quota_limit_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return ZhipuQuotaLimitDto(
-      window: dco_decode_String(arr[0]),
-      label: dco_decode_String(arr[1]),
-      percentage: dco_decode_f_64(arr[2]),
-      currentValue: dco_decode_opt_box_autoadd_f_64(arr[3]),
-      total: dco_decode_opt_box_autoadd_f_64(arr[4]),
-      remaining: dco_decode_opt_box_autoadd_f_64(arr[5]),
-      nextResetAt: dco_decode_opt_box_autoadd_i_64(arr[6]),
-      usageDetails: dco_decode_list_zhipu_tool_usage_detail_dto(arr[7]),
-    );
-  }
-
-  @protected
-  ZhipuToolUsageDetailDto dco_decode_zhipu_tool_usage_detail_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return ZhipuToolUsageDetailDto(
-      name: dco_decode_String(arr[0]),
-      currentValue: dco_decode_opt_box_autoadd_f_64(arr[1]),
-      total: dco_decode_opt_box_autoadd_f_64(arr[2]),
-      percentage: dco_decode_opt_box_autoadd_f_64(arr[3]),
-    );
   }
 
   @protected
@@ -20420,6 +20459,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_closing_agent(deserializer));
+  }
+
+  @protected
+  BridgeCodexAccountInfo sse_decode_box_autoadd_bridge_codex_account_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_codex_account_info(deserializer));
   }
 
   @protected
@@ -21579,6 +21626,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SubscriptionUsageDto sse_decode_box_autoadd_subscription_usage_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_subscription_usage_dto(deserializer));
+  }
+
+  @protected
   int sse_decode_box_autoadd_u_16(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_16(deserializer));
@@ -21600,14 +21655,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int sse_decode_box_autoadd_u_8(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_8(deserializer));
-  }
-
-  @protected
-  ZhipuCodingPlanUsageDto sse_decode_box_autoadd_zhipu_coding_plan_usage_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_zhipu_coding_plan_usage_dto(deserializer));
   }
 
   @protected
@@ -22229,6 +22276,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_name = sse_decode_String(deserializer);
     var var_brandKey = sse_decode_opt_String(deserializer);
     var var_displayEndpoint = sse_decode_opt_String(deserializer);
+    var var_chatgptAccount =
+        sse_decode_opt_box_autoadd_bridge_chat_gpt_account_info(deserializer);
     var var_isDefault = sse_decode_bool(deserializer);
     var var_billingKind = sse_decode_opt_box_autoadd_bridge_billing_kind(
       deserializer,
@@ -22246,6 +22295,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       name: var_name,
       brandKey: var_brandKey,
       displayEndpoint: var_displayEndpoint,
+      chatgptAccount: var_chatgptAccount,
       isDefault: var_isDefault,
       billingKind: var_billingKind,
       billingKindOverride: var_billingKindOverride,
@@ -22328,10 +22378,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
         return BridgeAccountUsageData_DeepSeekBalance(var_field0);
       case 1:
-        var var_field0 = sse_decode_box_autoadd_zhipu_coding_plan_usage_dto(
+        var var_field0 = sse_decode_box_autoadd_subscription_usage_dto(
           deserializer,
         );
-        return BridgeAccountUsageData_ZhipuCodingPlan(var_field0);
+        return BridgeAccountUsageData_Subscription(var_field0);
       default:
         throw UnimplementedError('');
     }
@@ -24601,12 +24651,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_clientId = sse_decode_String(deserializer);
     var var_email = sse_decode_opt_String(deserializer);
     var var_planUsageEnabled = sse_decode_bool(deserializer);
+    var var_codex = sse_decode_opt_box_autoadd_bridge_codex_account_info(
+      deserializer,
+    );
     return BridgeChatGptAccountInfo(
       issuer: var_issuer,
       subject: var_subject,
       clientId: var_clientId,
       email: var_email,
       planUsageEnabled: var_planUsageEnabled,
+      codex: var_codex,
     );
   }
 
@@ -24961,6 +25015,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_turnId = sse_decode_opt_String(deserializer);
     var var_error = sse_decode_opt_box_autoadd_bridge_state_error(deserializer);
     return BridgeClosingAgent(turnId: var_turnId, error: var_error);
+  }
+
+  @protected
+  BridgeCodexAccountInfo sse_decode_bridge_codex_account_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_accountId = sse_decode_String(deserializer);
+    var var_planType = sse_decode_opt_String(deserializer);
+    return BridgeCodexAccountInfo(
+      accountId: var_accountId,
+      planType: var_planType,
+    );
   }
 
   @protected
@@ -32968,29 +33035,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<ZhipuQuotaLimitDto> sse_decode_list_zhipu_quota_limit_dto(
+  List<SubscriptionQuotaLimitDto> sse_decode_list_subscription_quota_limit_dto(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <ZhipuQuotaLimitDto>[];
+    var ans_ = <SubscriptionQuotaLimitDto>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_zhipu_quota_limit_dto(deserializer));
+      ans_.add(sse_decode_subscription_quota_limit_dto(deserializer));
     }
     return ans_;
   }
 
   @protected
-  List<ZhipuToolUsageDetailDto> sse_decode_list_zhipu_tool_usage_detail_dto(
-    SseDeserializer deserializer,
-  ) {
+  List<SubscriptionUsageDetailDto>
+  sse_decode_list_subscription_usage_detail_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <ZhipuToolUsageDetailDto>[];
+    var ans_ = <SubscriptionUsageDetailDto>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_zhipu_tool_usage_detail_dto(deserializer));
+      ans_.add(sse_decode_subscription_usage_detail_dto(deserializer));
     }
     return ans_;
   }
@@ -33335,6 +33401,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_bridge_chat_tool_identity(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeCodexAccountInfo? sse_decode_opt_box_autoadd_bridge_codex_account_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_codex_account_info(deserializer));
     } else {
       return null;
     }
@@ -34645,6 +34724,60 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SubscriptionQuotaLimitDto sse_decode_subscription_quota_limit_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_window = sse_decode_String(deserializer);
+    var var_label = sse_decode_String(deserializer);
+    var var_percentage = sse_decode_f_64(deserializer);
+    var var_currentValue = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_total = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_remaining = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_nextResetAt = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_usageDetails = sse_decode_list_subscription_usage_detail_dto(
+      deserializer,
+    );
+    return SubscriptionQuotaLimitDto(
+      window: var_window,
+      label: var_label,
+      percentage: var_percentage,
+      currentValue: var_currentValue,
+      total: var_total,
+      remaining: var_remaining,
+      nextResetAt: var_nextResetAt,
+      usageDetails: var_usageDetails,
+    );
+  }
+
+  @protected
+  SubscriptionUsageDetailDto sse_decode_subscription_usage_detail_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_name = sse_decode_String(deserializer);
+    var var_currentValue = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_total = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_percentage = sse_decode_opt_box_autoadd_f_64(deserializer);
+    return SubscriptionUsageDetailDto(
+      name: var_name,
+      currentValue: var_currentValue,
+      total: var_total,
+      percentage: var_percentage,
+    );
+  }
+
+  @protected
+  SubscriptionUsageDto sse_decode_subscription_usage_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_level = sse_decode_opt_String(deserializer);
+    var var_limits = sse_decode_list_subscription_quota_limit_dto(deserializer);
+    return SubscriptionUsageDto(level: var_level, limits: var_limits);
+  }
+
+  @protected
   int sse_decode_u_16(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint16();
@@ -34677,60 +34810,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  ZhipuCodingPlanUsageDto sse_decode_zhipu_coding_plan_usage_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_level = sse_decode_opt_String(deserializer);
-    var var_limits = sse_decode_list_zhipu_quota_limit_dto(deserializer);
-    return ZhipuCodingPlanUsageDto(level: var_level, limits: var_limits);
-  }
-
-  @protected
-  ZhipuQuotaLimitDto sse_decode_zhipu_quota_limit_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_window = sse_decode_String(deserializer);
-    var var_label = sse_decode_String(deserializer);
-    var var_percentage = sse_decode_f_64(deserializer);
-    var var_currentValue = sse_decode_opt_box_autoadd_f_64(deserializer);
-    var var_total = sse_decode_opt_box_autoadd_f_64(deserializer);
-    var var_remaining = sse_decode_opt_box_autoadd_f_64(deserializer);
-    var var_nextResetAt = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_usageDetails = sse_decode_list_zhipu_tool_usage_detail_dto(
-      deserializer,
-    );
-    return ZhipuQuotaLimitDto(
-      window: var_window,
-      label: var_label,
-      percentage: var_percentage,
-      currentValue: var_currentValue,
-      total: var_total,
-      remaining: var_remaining,
-      nextResetAt: var_nextResetAt,
-      usageDetails: var_usageDetails,
-    );
-  }
-
-  @protected
-  ZhipuToolUsageDetailDto sse_decode_zhipu_tool_usage_detail_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_name = sse_decode_String(deserializer);
-    var var_currentValue = sse_decode_opt_box_autoadd_f_64(deserializer);
-    var var_total = sse_decode_opt_box_autoadd_f_64(deserializer);
-    var var_percentage = sse_decode_opt_box_autoadd_f_64(deserializer);
-    return ZhipuToolUsageDetailDto(
-      name: var_name,
-      currentValue: var_currentValue,
-      total: var_total,
-      percentage: var_percentage,
-    );
   }
 
   @protected
@@ -35769,6 +35848,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_closing_agent(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_codex_account_info(
+    BridgeCodexAccountInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_codex_account_info(self, serializer);
   }
 
   @protected
@@ -37008,6 +37096,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_subscription_usage_dto(
+    SubscriptionUsageDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_subscription_usage_dto(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_16(self, serializer);
@@ -37029,15 +37126,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_8(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_zhipu_coding_plan_usage_dto(
-    ZhipuCodingPlanUsageDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_zhipu_coding_plan_usage_dto(self, serializer);
   }
 
   @protected
@@ -37582,6 +37670,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.name, serializer);
     sse_encode_opt_String(self.brandKey, serializer);
     sse_encode_opt_String(self.displayEndpoint, serializer);
+    sse_encode_opt_box_autoadd_bridge_chat_gpt_account_info(
+      self.chatgptAccount,
+      serializer,
+    );
     sse_encode_bool(self.isDefault, serializer);
     sse_encode_opt_box_autoadd_bridge_billing_kind(
       self.billingKind,
@@ -37649,9 +37741,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeAccountUsageData_DeepSeekBalance(field0: final field0):
         sse_encode_i_32(0, serializer);
         sse_encode_box_autoadd_deep_seek_balance_dto(field0, serializer);
-      case BridgeAccountUsageData_ZhipuCodingPlan(field0: final field0):
+      case BridgeAccountUsageData_Subscription(field0: final field0):
         sse_encode_i_32(1, serializer);
-        sse_encode_box_autoadd_zhipu_coding_plan_usage_dto(field0, serializer);
+        sse_encode_box_autoadd_subscription_usage_dto(field0, serializer);
     }
   }
 
@@ -39463,6 +39555,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.clientId, serializer);
     sse_encode_opt_String(self.email, serializer);
     sse_encode_bool(self.planUsageEnabled, serializer);
+    sse_encode_opt_box_autoadd_bridge_codex_account_info(
+      self.codex,
+      serializer,
+    );
   }
 
   @protected
@@ -39764,6 +39860,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_String(self.turnId, serializer);
     sse_encode_opt_box_autoadd_bridge_state_error(self.error, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_codex_account_info(
+    BridgeCodexAccountInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.accountId, serializer);
+    sse_encode_opt_String(self.planType, serializer);
   }
 
   @protected
@@ -46029,26 +46135,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_list_zhipu_quota_limit_dto(
-    List<ZhipuQuotaLimitDto> self,
+  void sse_encode_list_subscription_quota_limit_dto(
+    List<SubscriptionQuotaLimitDto> self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
-      sse_encode_zhipu_quota_limit_dto(item, serializer);
+      sse_encode_subscription_quota_limit_dto(item, serializer);
     }
   }
 
   @protected
-  void sse_encode_list_zhipu_tool_usage_detail_dto(
-    List<ZhipuToolUsageDetailDto> self,
+  void sse_encode_list_subscription_usage_detail_dto(
+    List<SubscriptionUsageDetailDto> self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
-      sse_encode_zhipu_tool_usage_detail_dto(item, serializer);
+      sse_encode_subscription_usage_detail_dto(item, serializer);
     }
   }
 
@@ -46369,6 +46475,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_chat_tool_identity(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_codex_account_info(
+    BridgeCodexAccountInfo? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_codex_account_info(self, serializer);
     }
   }
 
@@ -47557,6 +47676,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_subscription_quota_limit_dto(
+    SubscriptionQuotaLimitDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.window, serializer);
+    sse_encode_String(self.label, serializer);
+    sse_encode_f_64(self.percentage, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.currentValue, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.total, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.remaining, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.nextResetAt, serializer);
+    sse_encode_list_subscription_usage_detail_dto(
+      self.usageDetails,
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_subscription_usage_detail_dto(
+    SubscriptionUsageDetailDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.name, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.currentValue, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.total, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.percentage, serializer);
+  }
+
+  @protected
+  void sse_encode_subscription_usage_dto(
+    SubscriptionUsageDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.level, serializer);
+    sse_encode_list_subscription_quota_limit_dto(self.limits, serializer);
+  }
+
+  @protected
   void sse_encode_u_16(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint16(self);
@@ -47589,44 +47749,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_usize(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
-  }
-
-  @protected
-  void sse_encode_zhipu_coding_plan_usage_dto(
-    ZhipuCodingPlanUsageDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.level, serializer);
-    sse_encode_list_zhipu_quota_limit_dto(self.limits, serializer);
-  }
-
-  @protected
-  void sse_encode_zhipu_quota_limit_dto(
-    ZhipuQuotaLimitDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.window, serializer);
-    sse_encode_String(self.label, serializer);
-    sse_encode_f_64(self.percentage, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.currentValue, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.total, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.remaining, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.nextResetAt, serializer);
-    sse_encode_list_zhipu_tool_usage_detail_dto(self.usageDetails, serializer);
-  }
-
-  @protected
-  void sse_encode_zhipu_tool_usage_detail_dto(
-    ZhipuToolUsageDetailDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.name, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.currentValue, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.total, serializer);
-    sse_encode_opt_box_autoadd_f_64(self.percentage, serializer);
   }
 }
 

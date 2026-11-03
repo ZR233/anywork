@@ -6,7 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../test_driver/window_control.dart';
+import 'window_control.dart';
 
 const _environment = 'ANYWORK_PRESENTATION_SCREENSHOTS';
 final _safeFileName = RegExp(r'^[a-z0-9][a-z0-9-]*\.png$');

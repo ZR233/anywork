@@ -1,0 +1,33 @@
+name: Set up Studio Rust build
+description: Install the pinned compiler and cache build outputs without an unrelated moving stable toolchain.
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      with:
+        toolchain: 1.99.1
+    # rust-cache includes installed toolchains in its key. Keep the pre-existing
+    # policy of removing only unused stable on this disposable hosted runner.
+    - name: Remove unused preinstalled stable Rust toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        active_listing="$(rustup show active-toolchain)"
+        toolchains="$(rustup toolchain list)"
+        active="${active_listing%%[[:space:]]*}"
+        test -n "$active"
+        while IFS= read -r listing; do
+          name="${listing%%[[:space:]]*}"
+          case "$name" in stable-*) ;; *) continue ;; esac
+          if [ "$name" != "$active" ]; then
+            rustup toolchain uninstall "$name"
+          fi
+        done <<< "$toolchains"
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        workspaces: |
+          . -> target
+          . -> target/xtask

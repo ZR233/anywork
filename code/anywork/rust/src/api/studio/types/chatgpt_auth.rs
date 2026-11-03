@@ -18,6 +18,14 @@ pub struct BridgeChatGptAccountInfo {
     pub client_id: String,
     pub email: Option<String>,
     pub plan_usage_enabled: bool,
+    pub codex: Option<BridgeCodexAccountInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCodexAccountInfo {
+    pub account_id: String,
+    pub plan_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

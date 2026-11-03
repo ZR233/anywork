@@ -268,6 +268,7 @@ async fn main() -> Result<()> {
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
         "wait-events" => gui_wait_events_script(),
+        "conversation-read-work" => Vec::new(),
         name if pl_provider_fixture::delegation::Scenario::parse(name).is_some() => Vec::new(),
         value => bail!("unknown fixture scenario: {value}"),
     };

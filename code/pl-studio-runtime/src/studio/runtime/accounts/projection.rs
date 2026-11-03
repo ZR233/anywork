@@ -37,16 +37,21 @@ pub(super) fn read(
                         .get(&pl_protocol::ThreadModeId::simple())
                         .map(|route| &route.account_id);
                     for (id, account) in &desired.models.accounts {
-                        let usage = account_usage_query_kind(
-                            crate::config_editor::account_template_kind(account)?,
-                        )
-                        .is_some();
+                        let usage = account
+                            .chatgpt_account
+                            .as_ref()
+                            .is_some_and(|info| info.codex.is_some())
+                            || account_usage_query_kind(
+                                crate::config_editor::account_template_kind(account)?,
+                            )
+                            .is_some();
                         accounts.push(AccountSummary {
                             identity: AccountIdentity::Native {
                                 account_id: id.to_string(),
                             },
                             name: account.name.clone(),
                             display_endpoint: display_endpoint(&account.base_url),
+                            chatgpt_account: account.chatgpt_account.clone(),
                             brand_key: account.template_id().and_then(|template_id| {
                                 account_catalog
                                     .as_ref()?
@@ -85,6 +90,7 @@ pub(super) fn read(
                             },
                             name: account.name,
                             display_endpoint: None,
+                            chatgpt_account: None,
                             brand_key: Some(account.provider.as_str().to_owned()),
                             is_default: false,
                             billing_kind: None,

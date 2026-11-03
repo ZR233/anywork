@@ -2521,7 +2521,7 @@ as bool,
 /// @nodoc
 mixin _$AccountUsagePresentation {
 
- AccountQueryPhase get phase; AccountBalanceHealth get balanceHealth; List<AccountCurrencyBalance> get balances; List<AccountQuotaPresentation> get quotas; String? get updatedLabel; String? get error;/// The owner confirms that retained values belong to a successful query.
+ AccountQueryPhase get phase; AccountBalanceHealth get balanceHealth; List<AccountCurrencyBalance> get balances; List<AccountQuotaPresentation> get quotas; String? get levelLabel; String? get emptyLabel; String? get missingCredentialLabel; String? get updatedLabel; String? get error;/// The owner confirms that retained values belong to a successful query.
  bool get hasLastGood; bool get canRefresh; bool get canRetry;
 /// Create a copy of AccountUsagePresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -2534,20 +2534,20 @@ $AccountUsagePresentationCopyWith<AccountUsagePresentation> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountUsagePresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountUsagePresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.balanceHealth, _this.balanceHealth) || other.balanceHealth == _this.balanceHealth)&&const DeepCollectionEquality().equals(other.balances, _this.balances)&&const DeepCollectionEquality().equals(other.quotas, _this.quotas)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.hasLastGood, _this.hasLastGood) || other.hasLastGood == _this.hasLastGood)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.canRetry, _this.canRetry) || other.canRetry == _this.canRetry));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountUsagePresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.balanceHealth, _this.balanceHealth) || other.balanceHealth == _this.balanceHealth)&&const DeepCollectionEquality().equals(other.balances, _this.balances)&&const DeepCollectionEquality().equals(other.quotas, _this.quotas)&&(identical(other.levelLabel, _this.levelLabel) || other.levelLabel == _this.levelLabel)&&(identical(other.emptyLabel, _this.emptyLabel) || other.emptyLabel == _this.emptyLabel)&&(identical(other.missingCredentialLabel, _this.missingCredentialLabel) || other.missingCredentialLabel == _this.missingCredentialLabel)&&(identical(other.updatedLabel, _this.updatedLabel) || other.updatedLabel == _this.updatedLabel)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.hasLastGood, _this.hasLastGood) || other.hasLastGood == _this.hasLastGood)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.canRetry, _this.canRetry) || other.canRetry == _this.canRetry));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountUsagePresentation;
-  return Object.hash(runtimeType,_this.phase,_this.balanceHealth,const DeepCollectionEquality().hash(_this.balances),const DeepCollectionEquality().hash(_this.quotas),_this.updatedLabel,_this.error,_this.hasLastGood,_this.canRefresh,_this.canRetry);
+  return Object.hash(runtimeType,_this.phase,_this.balanceHealth,const DeepCollectionEquality().hash(_this.balances),const DeepCollectionEquality().hash(_this.quotas),_this.levelLabel,_this.emptyLabel,_this.missingCredentialLabel,_this.updatedLabel,_this.error,_this.hasLastGood,_this.canRefresh,_this.canRetry);
 }
 
 @override
 String toString() {
   final _this = this as AccountUsagePresentation;
-  return 'AccountUsagePresentation(phase: ${_this.phase}, balanceHealth: ${_this.balanceHealth}, balances: ${_this.balances}, quotas: ${_this.quotas}, updatedLabel: ${_this.updatedLabel}, error: ${_this.error}, hasLastGood: ${_this.hasLastGood}, canRefresh: ${_this.canRefresh}, canRetry: ${_this.canRetry})';
+  return 'AccountUsagePresentation(phase: ${_this.phase}, balanceHealth: ${_this.balanceHealth}, balances: ${_this.balances}, quotas: ${_this.quotas}, levelLabel: ${_this.levelLabel}, emptyLabel: ${_this.emptyLabel}, missingCredentialLabel: ${_this.missingCredentialLabel}, updatedLabel: ${_this.updatedLabel}, error: ${_this.error}, hasLastGood: ${_this.hasLastGood}, canRefresh: ${_this.canRefresh}, canRetry: ${_this.canRetry})';
 }
 
 
@@ -2558,7 +2558,7 @@ abstract mixin class $AccountUsagePresentationCopyWith<$Res>  {
   factory $AccountUsagePresentationCopyWith(AccountUsagePresentation value, $Res Function(AccountUsagePresentation) _then) = _$AccountUsagePresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountQueryPhase phase, AccountBalanceHealth balanceHealth, List<AccountCurrencyBalance> balances, List<AccountQuotaPresentation> quotas, String? updatedLabel, String? error, bool hasLastGood, bool canRefresh, bool canRetry
+ AccountQueryPhase phase, AccountBalanceHealth balanceHealth, List<AccountCurrencyBalance> balances, List<AccountQuotaPresentation> quotas, String? levelLabel, String? emptyLabel, String? missingCredentialLabel, String? updatedLabel, String? error, bool hasLastGood, bool canRefresh, bool canRetry
 });
 
 
@@ -2575,13 +2575,16 @@ class _$AccountUsagePresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountUsagePresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? balanceHealth = null,Object? balances = null,Object? quotas = null,Object? updatedLabel = freezed,Object? error = freezed,Object? hasLastGood = null,Object? canRefresh = null,Object? canRetry = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? balanceHealth = null,Object? balances = null,Object? quotas = null,Object? levelLabel = freezed,Object? emptyLabel = freezed,Object? missingCredentialLabel = freezed,Object? updatedLabel = freezed,Object? error = freezed,Object? hasLastGood = null,Object? canRefresh = null,Object? canRetry = null,}) {
   return _then(AccountUsagePresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountQueryPhase,balanceHealth: null == balanceHealth ? _self.balanceHealth : balanceHealth // ignore: cast_nullable_to_non_nullable
 as AccountBalanceHealth,balances: null == balances ? _self.balances : balances // ignore: cast_nullable_to_non_nullable
 as List<AccountCurrencyBalance>,quotas: null == quotas ? _self.quotas : quotas // ignore: cast_nullable_to_non_nullable
-as List<AccountQuotaPresentation>,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaPresentation>,levelLabel: freezed == levelLabel ? _self.levelLabel : levelLabel // ignore: cast_nullable_to_non_nullable
+as String?,emptyLabel: freezed == emptyLabel ? _self.emptyLabel : emptyLabel // ignore: cast_nullable_to_non_nullable
+as String?,missingCredentialLabel: freezed == missingCredentialLabel ? _self.missingCredentialLabel : missingCredentialLabel // ignore: cast_nullable_to_non_nullable
+as String?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,hasLastGood: null == hasLastGood ? _self.hasLastGood : hasLastGood // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
@@ -2671,10 +2674,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? levelLabel,  String? emptyLabel,  String? missingCredentialLabel,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountUsagePresentation() when $default != null:
-return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
+return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.levelLabel,_that.emptyLabel,_that.missingCredentialLabel,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
   return orElse();
 
 }
@@ -2692,10 +2695,10 @@ return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? levelLabel,  String? emptyLabel,  String? missingCredentialLabel,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)  $default,) {final _that = this;
 switch (_that) {
 case _AccountUsagePresentation():
-return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
+return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.levelLabel,_that.emptyLabel,_that.missingCredentialLabel,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2712,10 +2715,10 @@ return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountQueryPhase phase,  AccountBalanceHealth balanceHealth,  List<AccountCurrencyBalance> balances,  List<AccountQuotaPresentation> quotas,  String? levelLabel,  String? emptyLabel,  String? missingCredentialLabel,  String? updatedLabel,  String? error,  bool hasLastGood,  bool canRefresh,  bool canRetry)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountUsagePresentation() when $default != null:
-return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
+return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_that.levelLabel,_that.emptyLabel,_that.missingCredentialLabel,_that.updatedLabel,_that.error,_that.hasLastGood,_that.canRefresh,_that.canRetry);case _:
   return null;
 
 }
@@ -2727,7 +2730,7 @@ return $default(_that.phase,_that.balanceHealth,_that.balances,_that.quotas,_tha
 
 
 class _AccountUsagePresentation implements AccountUsagePresentation {
-  const _AccountUsagePresentation({this.phase = AccountQueryPhase.idle, this.balanceHealth = AccountBalanceHealth.unknown,  List<AccountCurrencyBalance> balances = const <AccountCurrencyBalance>[],  List<AccountQuotaPresentation> quotas = const <AccountQuotaPresentation>[], this.updatedLabel, this.error, this.hasLastGood = false, this.canRefresh = false, this.canRetry = false}): _balances = balances,_quotas = quotas;
+  const _AccountUsagePresentation({this.phase = AccountQueryPhase.idle, this.balanceHealth = AccountBalanceHealth.unknown,  List<AccountCurrencyBalance> balances = const <AccountCurrencyBalance>[],  List<AccountQuotaPresentation> quotas = const <AccountQuotaPresentation>[], this.levelLabel, this.emptyLabel, this.missingCredentialLabel, this.updatedLabel, this.error, this.hasLastGood = false, this.canRefresh = false, this.canRetry = false}): _balances = balances,_quotas = quotas;
 
 
 @override@JsonKey() final  AccountQueryPhase phase;
@@ -2746,6 +2749,9 @@ class _AccountUsagePresentation implements AccountUsagePresentation {
   return EqualUnmodifiableListView(_quotas);
 }
 
+@override final  String? levelLabel;
+@override final  String? emptyLabel;
+@override final  String? missingCredentialLabel;
 @override final  String? updatedLabel;
 @override final  String? error;
 /// The owner confirms that retained values belong to a successful query.
@@ -2763,18 +2769,18 @@ _$AccountUsagePresentationCopyWith<_AccountUsagePresentation> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountUsagePresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.balanceHealth, balanceHealth) || other.balanceHealth == balanceHealth)&&const DeepCollectionEquality().equals(other.balances, _balances)&&const DeepCollectionEquality().equals(other.quotas, _quotas)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel)&&(identical(other.error, error) || other.error == error)&&(identical(other.hasLastGood, hasLastGood) || other.hasLastGood == hasLastGood)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.canRetry, canRetry) || other.canRetry == canRetry));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountUsagePresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.balanceHealth, balanceHealth) || other.balanceHealth == balanceHealth)&&const DeepCollectionEquality().equals(other.balances, _balances)&&const DeepCollectionEquality().equals(other.quotas, _quotas)&&(identical(other.levelLabel, levelLabel) || other.levelLabel == levelLabel)&&(identical(other.emptyLabel, emptyLabel) || other.emptyLabel == emptyLabel)&&(identical(other.missingCredentialLabel, missingCredentialLabel) || other.missingCredentialLabel == missingCredentialLabel)&&(identical(other.updatedLabel, updatedLabel) || other.updatedLabel == updatedLabel)&&(identical(other.error, error) || other.error == error)&&(identical(other.hasLastGood, hasLastGood) || other.hasLastGood == hasLastGood)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.canRetry, canRetry) || other.canRetry == canRetry));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,balanceHealth,const DeepCollectionEquality().hash(_balances),const DeepCollectionEquality().hash(_quotas),updatedLabel,error,hasLastGood,canRefresh,canRetry);
+    return Object.hash(runtimeType,phase,balanceHealth,const DeepCollectionEquality().hash(_balances),const DeepCollectionEquality().hash(_quotas),levelLabel,emptyLabel,missingCredentialLabel,updatedLabel,error,hasLastGood,canRefresh,canRetry);
 }
 
 @override
 String toString() {
-    return 'AccountUsagePresentation(phase: $phase, balanceHealth: $balanceHealth, balances: $balances, quotas: $quotas, updatedLabel: $updatedLabel, error: $error, hasLastGood: $hasLastGood, canRefresh: $canRefresh, canRetry: $canRetry)';
+    return 'AccountUsagePresentation(phase: $phase, balanceHealth: $balanceHealth, balances: $balances, quotas: $quotas, levelLabel: $levelLabel, emptyLabel: $emptyLabel, missingCredentialLabel: $missingCredentialLabel, updatedLabel: $updatedLabel, error: $error, hasLastGood: $hasLastGood, canRefresh: $canRefresh, canRetry: $canRetry)';
 }
 
 
@@ -2785,7 +2791,7 @@ abstract mixin class _$AccountUsagePresentationCopyWith<$Res> implements $Accoun
   factory _$AccountUsagePresentationCopyWith(_AccountUsagePresentation value, $Res Function(_AccountUsagePresentation) _then) = __$AccountUsagePresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountQueryPhase phase, AccountBalanceHealth balanceHealth, List<AccountCurrencyBalance> balances, List<AccountQuotaPresentation> quotas, String? updatedLabel, String? error, bool hasLastGood, bool canRefresh, bool canRetry
+ AccountQueryPhase phase, AccountBalanceHealth balanceHealth, List<AccountCurrencyBalance> balances, List<AccountQuotaPresentation> quotas, String? levelLabel, String? emptyLabel, String? missingCredentialLabel, String? updatedLabel, String? error, bool hasLastGood, bool canRefresh, bool canRetry
 });
 
 
@@ -2802,13 +2808,16 @@ class __$AccountUsagePresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountUsagePresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? balanceHealth = null,Object? balances = null,Object? quotas = null,Object? updatedLabel = freezed,Object? error = freezed,Object? hasLastGood = null,Object? canRefresh = null,Object? canRetry = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? balanceHealth = null,Object? balances = null,Object? quotas = null,Object? levelLabel = freezed,Object? emptyLabel = freezed,Object? missingCredentialLabel = freezed,Object? updatedLabel = freezed,Object? error = freezed,Object? hasLastGood = null,Object? canRefresh = null,Object? canRetry = null,}) {
   return _then(_AccountUsagePresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountQueryPhase,balanceHealth: null == balanceHealth ? _self.balanceHealth : balanceHealth // ignore: cast_nullable_to_non_nullable
 as AccountBalanceHealth,balances: null == balances ? _self._balances : balances // ignore: cast_nullable_to_non_nullable
 as List<AccountCurrencyBalance>,quotas: null == quotas ? _self._quotas : quotas // ignore: cast_nullable_to_non_nullable
-as List<AccountQuotaPresentation>,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
+as List<AccountQuotaPresentation>,levelLabel: freezed == levelLabel ? _self.levelLabel : levelLabel // ignore: cast_nullable_to_non_nullable
+as String?,emptyLabel: freezed == emptyLabel ? _self.emptyLabel : emptyLabel // ignore: cast_nullable_to_non_nullable
+as String?,missingCredentialLabel: freezed == missingCredentialLabel ? _self.missingCredentialLabel : missingCredentialLabel // ignore: cast_nullable_to_non_nullable
+as String?,updatedLabel: freezed == updatedLabel ? _self.updatedLabel : updatedLabel // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,hasLastGood: null == hasLastGood ? _self.hasLastGood : hasLastGood // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
@@ -2933,10 +2942,10 @@ return acp(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult Function( String status,  AcpUsagePresentation? usage)?  acp,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult Function( String status,  AcpUsagePresentation? usage)?  acp,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
-return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
+return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent() when acp != null:
 return acp(_that.status,_that.usage);case _:
   return orElse();
 
@@ -2955,10 +2964,10 @@ return acp(_that.status,_that.usage);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)  native,required TResult Function( String status,  AcpUsagePresentation? usage)  acp,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)  native,required TResult Function( String status,  AcpUsagePresentation? usage)  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent():
-return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent():
+return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent():
 return acp(_that.status,_that.usage);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -2973,10 +2982,10 @@ return acp(_that.status,_that.usage);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint)?  native,TResult? Function( String status,  AcpUsagePresentation? usage)?  acp,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult? Function( String status,  AcpUsagePresentation? usage)?  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
-return native(_that.billing,_that.usage,_that.displayEndpoint);case AcpAccountRowContent() when acp != null:
+return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent() when acp != null:
 return acp(_that.status,_that.usage);case _:
   return null;
 
@@ -2989,12 +2998,13 @@ return acp(_that.status,_that.usage);case _:
 
 
 class NativeAccountRowContent implements AccountRowContent {
-  const NativeAccountRowContent({required this.billing, required this.usage, this.displayEndpoint});
+  const NativeAccountRowContent({required this.billing, required this.usage, this.displayEndpoint, this.accountLabel});
 
 
  final  AccountBilling billing;
 @override final  AccountUsagePresentation usage;
  final  String? displayEndpoint;
+ final  String? accountLabel;
 
 /// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
@@ -3006,18 +3016,18 @@ $NativeAccountRowContentCopyWith<NativeAccountRowContent> get copyWith => _$Nati
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountRowContent&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.displayEndpoint, displayEndpoint) || other.displayEndpoint == displayEndpoint));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountRowContent&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.displayEndpoint, displayEndpoint) || other.displayEndpoint == displayEndpoint)&&(identical(other.accountLabel, accountLabel) || other.accountLabel == accountLabel));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,billing,usage,displayEndpoint);
+    return Object.hash(runtimeType,billing,usage,displayEndpoint,accountLabel);
 }
 
 @override
 String toString() {
-    return 'AccountRowContent.native(billing: $billing, usage: $usage, displayEndpoint: $displayEndpoint)';
+    return 'AccountRowContent.native(billing: $billing, usage: $usage, displayEndpoint: $displayEndpoint, accountLabel: $accountLabel)';
 }
 
 
@@ -3028,7 +3038,7 @@ abstract mixin class $NativeAccountRowContentCopyWith<$Res> implements $AccountR
   factory $NativeAccountRowContentCopyWith(NativeAccountRowContent value, $Res Function(NativeAccountRowContent) _then) = _$NativeAccountRowContentCopyWithImpl;
 @useResult
 $Res call({
- AccountBilling billing, AccountUsagePresentation usage, String? displayEndpoint
+ AccountBilling billing, AccountUsagePresentation usage, String? displayEndpoint, String? accountLabel
 });
 
 
@@ -3045,11 +3055,12 @@ class _$NativeAccountRowContentCopyWithImpl<$Res>
 
 /// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? billing = null,Object? usage = null,Object? displayEndpoint = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? billing = null,Object? usage = null,Object? displayEndpoint = freezed,Object? accountLabel = freezed,}) {
   return _then(NativeAccountRowContent(
 billing: null == billing ? _self.billing : billing // ignore: cast_nullable_to_non_nullable
 as AccountBilling,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
 as AccountUsagePresentation,displayEndpoint: freezed == displayEndpoint ? _self.displayEndpoint : displayEndpoint // ignore: cast_nullable_to_non_nullable
+as String?,accountLabel: freezed == accountLabel ? _self.accountLabel : accountLabel // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
 }
@@ -7075,7 +7086,7 @@ as String?,
 /// @nodoc
 mixin _$NativeAccountDetailsPresentation {
 
- AccountAuthenticationMethod get authentication; bool get credentialReady; AccountBillingPresentation get billing; AccountCatalogPresentation get catalog; AccountUsagePresentation get usage; List<AccountDisplayFact> get advanced;
+ AccountAuthenticationMethod get authentication; bool get credentialReady; AccountBillingPresentation get billing; AccountCatalogPresentation get catalog; AccountUsagePresentation get usage; List<AccountDisplayFact> get advanced; String? get identityLabel;
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -7087,20 +7098,20 @@ $NativeAccountDetailsPresentationCopyWith<NativeAccountDetailsPresentation> get 
 @override
 bool operator ==(Object other) {
   final _this = this as NativeAccountDetailsPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountDetailsPresentation&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.credentialReady, _this.credentialReady) || other.credentialReady == _this.credentialReady)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.catalog, _this.catalog) || other.catalog == _this.catalog)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&const DeepCollectionEquality().equals(other.advanced, _this.advanced));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountDetailsPresentation&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.credentialReady, _this.credentialReady) || other.credentialReady == _this.credentialReady)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.catalog, _this.catalog) || other.catalog == _this.catalog)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&const DeepCollectionEquality().equals(other.advanced, _this.advanced)&&(identical(other.identityLabel, _this.identityLabel) || other.identityLabel == _this.identityLabel));
 }
 
 
 @override
 int get hashCode {
   final _this = this as NativeAccountDetailsPresentation;
-  return Object.hash(runtimeType,_this.authentication,_this.credentialReady,_this.billing,_this.catalog,_this.usage,const DeepCollectionEquality().hash(_this.advanced));
+  return Object.hash(runtimeType,_this.authentication,_this.credentialReady,_this.billing,_this.catalog,_this.usage,const DeepCollectionEquality().hash(_this.advanced),_this.identityLabel);
 }
 
 @override
 String toString() {
   final _this = this as NativeAccountDetailsPresentation;
-  return 'NativeAccountDetailsPresentation(authentication: ${_this.authentication}, credentialReady: ${_this.credentialReady}, billing: ${_this.billing}, catalog: ${_this.catalog}, usage: ${_this.usage}, advanced: ${_this.advanced})';
+  return 'NativeAccountDetailsPresentation(authentication: ${_this.authentication}, credentialReady: ${_this.credentialReady}, billing: ${_this.billing}, catalog: ${_this.catalog}, usage: ${_this.usage}, advanced: ${_this.advanced}, identityLabel: ${_this.identityLabel})';
 }
 
 
@@ -7111,7 +7122,7 @@ abstract mixin class $NativeAccountDetailsPresentationCopyWith<$Res>  {
   factory $NativeAccountDetailsPresentationCopyWith(NativeAccountDetailsPresentation value, $Res Function(NativeAccountDetailsPresentation) _then) = _$NativeAccountDetailsPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
+ AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced, String? identityLabel
 });
 
 
@@ -7128,7 +7139,7 @@ class _$NativeAccountDetailsPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,Object? identityLabel = freezed,}) {
   return _then(NativeAccountDetailsPresentation(
 authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
 as AccountAuthenticationMethod,credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
@@ -7136,7 +7147,8 @@ as bool,billing: null == billing ? _self.billing : billing // ignore: cast_nulla
 as AccountBillingPresentation,catalog: null == catalog ? _self.catalog : catalog // ignore: cast_nullable_to_non_nullable
 as AccountCatalogPresentation,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
 as AccountUsagePresentation,advanced: null == advanced ? _self.advanced : advanced // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,
+as List<AccountDisplayFact>,identityLabel: freezed == identityLabel ? _self.identityLabel : identityLabel // ignore: cast_nullable_to_non_nullable
+as String?,
   ));
 }
 /// Create a copy of NativeAccountDetailsPresentation
@@ -7248,10 +7260,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced,  String? identityLabel)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation() when $default != null:
-return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced,_that.identityLabel);case _:
   return orElse();
 
 }
@@ -7269,10 +7281,10 @@ return $default(_that.authentication,_that.credentialReady,_that.billing,_that.c
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced,  String? identityLabel)  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation():
-return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced,_that.identityLabel);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -7289,10 +7301,10 @@ return $default(_that.authentication,_that.credentialReady,_that.billing,_that.c
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountAuthenticationMethod authentication,  bool credentialReady,  AccountBillingPresentation billing,  AccountCatalogPresentation catalog,  AccountUsagePresentation usage,  List<AccountDisplayFact> advanced,  String? identityLabel)?  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountDetailsPresentation() when $default != null:
-return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced);case _:
+return $default(_that.authentication,_that.credentialReady,_that.billing,_that.catalog,_that.usage,_that.advanced,_that.identityLabel);case _:
   return null;
 
 }
@@ -7304,7 +7316,7 @@ return $default(_that.authentication,_that.credentialReady,_that.billing,_that.c
 
 
 class _NativeAccountDetailsPresentation implements NativeAccountDetailsPresentation {
-  const _NativeAccountDetailsPresentation({required this.authentication, required this.credentialReady, required this.billing, required this.catalog, required this.usage,  List<AccountDisplayFact> advanced = const <AccountDisplayFact>[]}): _advanced = advanced;
+  const _NativeAccountDetailsPresentation({required this.authentication, required this.credentialReady, required this.billing, required this.catalog, required this.usage,  List<AccountDisplayFact> advanced = const <AccountDisplayFact>[], this.identityLabel}): _advanced = advanced;
 
 
 @override final  AccountAuthenticationMethod authentication;
@@ -7319,6 +7331,7 @@ class _NativeAccountDetailsPresentation implements NativeAccountDetailsPresentat
   return EqualUnmodifiableListView(_advanced);
 }
 
+@override final  String? identityLabel;
 
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -7330,18 +7343,18 @@ _$NativeAccountDetailsPresentationCopyWith<_NativeAccountDetailsPresentation> ge
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountDetailsPresentation&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.credentialReady, credentialReady) || other.credentialReady == credentialReady)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.catalog, catalog) || other.catalog == catalog)&&(identical(other.usage, usage) || other.usage == usage)&&const DeepCollectionEquality().equals(other.advanced, _advanced));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountDetailsPresentation&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.credentialReady, credentialReady) || other.credentialReady == credentialReady)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.catalog, catalog) || other.catalog == catalog)&&(identical(other.usage, usage) || other.usage == usage)&&const DeepCollectionEquality().equals(other.advanced, _advanced)&&(identical(other.identityLabel, identityLabel) || other.identityLabel == identityLabel));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,authentication,credentialReady,billing,catalog,usage,const DeepCollectionEquality().hash(_advanced));
+    return Object.hash(runtimeType,authentication,credentialReady,billing,catalog,usage,const DeepCollectionEquality().hash(_advanced),identityLabel);
 }
 
 @override
 String toString() {
-    return 'NativeAccountDetailsPresentation(authentication: $authentication, credentialReady: $credentialReady, billing: $billing, catalog: $catalog, usage: $usage, advanced: $advanced)';
+    return 'NativeAccountDetailsPresentation(authentication: $authentication, credentialReady: $credentialReady, billing: $billing, catalog: $catalog, usage: $usage, advanced: $advanced, identityLabel: $identityLabel)';
 }
 
 
@@ -7352,7 +7365,7 @@ abstract mixin class _$NativeAccountDetailsPresentationCopyWith<$Res> implements
   factory _$NativeAccountDetailsPresentationCopyWith(_NativeAccountDetailsPresentation value, $Res Function(_NativeAccountDetailsPresentation) _then) = __$NativeAccountDetailsPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced
+ AccountAuthenticationMethod authentication, bool credentialReady, AccountBillingPresentation billing, AccountCatalogPresentation catalog, AccountUsagePresentation usage, List<AccountDisplayFact> advanced, String? identityLabel
 });
 
 
@@ -7369,7 +7382,7 @@ class __$NativeAccountDetailsPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountDetailsPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? authentication = null,Object? credentialReady = null,Object? billing = null,Object? catalog = null,Object? usage = null,Object? advanced = null,Object? identityLabel = freezed,}) {
   return _then(_NativeAccountDetailsPresentation(
 authentication: null == authentication ? _self.authentication : authentication // ignore: cast_nullable_to_non_nullable
 as AccountAuthenticationMethod,credentialReady: null == credentialReady ? _self.credentialReady : credentialReady // ignore: cast_nullable_to_non_nullable
@@ -7377,7 +7390,8 @@ as bool,billing: null == billing ? _self.billing : billing // ignore: cast_nulla
 as AccountBillingPresentation,catalog: null == catalog ? _self.catalog : catalog // ignore: cast_nullable_to_non_nullable
 as AccountCatalogPresentation,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
 as AccountUsagePresentation,advanced: null == advanced ? _self._advanced : advanced // ignore: cast_nullable_to_non_nullable
-as List<AccountDisplayFact>,
+as List<AccountDisplayFact>,identityLabel: freezed == identityLabel ? _self.identityLabel : identityLabel // ignore: cast_nullable_to_non_nullable
+as String?,
   ));
 }
 

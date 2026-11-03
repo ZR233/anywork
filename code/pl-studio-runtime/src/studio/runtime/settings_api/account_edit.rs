@@ -66,7 +66,11 @@ pub(super) fn account_configuration(
             .is_some_and(|previous| {
                 previous.issuer != record.account.issuer
                     || previous.subject != record.account.subject
-                    || previous.client_id != record.account.client_id
+                    || (previous.codex.is_some()
+                        && previous.codex.as_ref().map(|info| &info.account_id)
+                            != record.account.codex.as_ref().map(|info| &info.account_id))
+                    || (record.account.codex.is_none()
+                        && previous.client_id != record.account.client_id)
             })
         {
             return Err(invalid_settings_argument(
@@ -79,6 +83,12 @@ pub(super) fn account_configuration(
             .get_mut(&id)
             .expect("account edit inserted target");
         account.authentication = AccountAuthenticationMethod::ChatGpt;
+        account.base_url = if record.account.codex.is_some() {
+            pl_model::protocol::chatgpt::CODEX_RESOURCE
+        } else {
+            pl_model::protocol::chatgpt::CHATGPT_RESOURCE
+        }
+        .into();
         account.chatgpt_account = Some(record.account.clone());
         account.chatgpt_session = Some(runtime.chatgpt_session(id.as_str(), &record)?);
         account.chatgpt_credentials = Some(record);

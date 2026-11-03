@@ -1,16 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:anywork/src/app/anywork_app.dart';
+import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
-import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
-import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -36,9 +35,9 @@ void main() {
     expect(
       projectRoot,
       isNotNull,
-      reason: 'Use manual-gui --scenario wait-events',
+      reason: 'Use cargo xtask test-project --suite desktop --case wait_events',
     );
-    graph = AppGraph.production();
+    graph = createProductionAppGraph();
     container = ProviderContainer(
       overrides: [
         appGraphProvider.overrideWithValue(graph),
@@ -69,7 +68,6 @@ void main() {
   });
 
   Future<_Scene> open(WidgetTester tester, String name) async {
-    final router = createApplicationRouter();
     // This suite tests Waiting, not native IME compatibility. The SDK warns
     // that enterText and a real IME can overwrite each other's editing state.
     // Use its standard keyboard for the entire scene, before any field mounts.
@@ -92,20 +90,13 @@ void main() {
         );
       } finally {
         tester.testTextInput.unregister();
-        router.dispose();
         FlutterError.onError = testErrorHandler;
       }
     });
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: MaterialApp.router(
-          theme: pureStudioTheme(),
-          locale: const Locale('zh'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          routerConfig: router,
-        ),
+        child: const AnyworkApp(enableDesktopHost: false),
       ),
     );
     await graph.client.directoryCommands.openProject('$projectRoot/$name');

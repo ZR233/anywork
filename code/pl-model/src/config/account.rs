@@ -917,8 +917,13 @@ impl AccountConfig {
     /// 解析不包含模型与 transport 事实的 runtime endpoint。
     pub fn to_endpoint(&self) -> Result<ProtocolEndpoint> {
         if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
-            crate::protocol::chatgpt::ChatGptSession::validate_resource(&self.base_url)
-                .map_err(|error| PureError::ConfigError(error.to_string()))?;
+            crate::protocol::chatgpt::ChatGptSession::validate_account_resource(
+                self.chatgpt_account
+                    .as_ref()
+                    .ok_or_else(|| PureError::ConfigError("ChatGPT identity is missing".into()))?,
+                &self.base_url,
+            )
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
         }
         Ok(ProtocolEndpoint {
             protocol: self.protocol,
@@ -966,8 +971,13 @@ impl AccountConfig {
                     "invalid ChatGPT account configuration".into(),
                 ));
             }
-            crate::protocol::chatgpt::ChatGptSession::validate_resource(&self.base_url)
-                .map_err(|error| PureError::ConfigError(error.to_string()))?;
+            crate::protocol::chatgpt::ChatGptSession::validate_account_resource(
+                self.chatgpt_account
+                    .as_ref()
+                    .ok_or_else(|| PureError::ConfigError("ChatGPT identity is missing".into()))?,
+                &self.base_url,
+            )
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
         } else if self.chatgpt_account.is_some()
             || self.chatgpt_session.is_some()
             || self.chatgpt_credentials.is_some()

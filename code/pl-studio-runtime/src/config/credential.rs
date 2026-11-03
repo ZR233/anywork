@@ -6,6 +6,45 @@ use std::sync::Mutex;
 use crate::{PureError, Result};
 
 const CREDENTIAL_SERVICE: &str = "anywork";
+
+#[cfg(windows)]
+mod windows_payload;
+
+fn protected_get(entry: &Entry, account: &str) -> keyring::Result<String> {
+    #[cfg(windows)]
+    {
+        windows_payload::get(entry, account)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = account;
+        entry.get_password()
+    }
+}
+
+fn protected_set(entry: &Entry, account: &str, secret: &str) -> keyring::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_payload::set(entry, account, secret)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = account;
+        entry.set_password(secret)
+    }
+}
+
+fn protected_delete(entry: &Entry, account: &str) -> keyring::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_payload::delete(entry, account)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = account;
+        entry.delete_credential()
+    }
+}
 /// 当前 account 凭据命名空间；`config.toml` 只保存 env 引用，不保存该值。
 fn account_key(account_id: &str) -> String {
     format!("account:{account_id}")
@@ -27,7 +66,7 @@ pub(super) enum LegacyCredentialCopy {
 }
 
 pub(super) trait CredentialStore: Send + Sync {
-    /// Dedicated durable transaction aliases; payloads never enter filesystem journals.
+    /// Dedicated durable transaction aliases; plaintext never enters filesystem journals.
     fn read_transaction(&self, alias: &str) -> Result<Option<String>>;
     fn write_transaction(&self, alias: &str, payload: &str) -> Result<()>;
     fn delete_transaction(&self, alias: &str) -> Result<()>;
@@ -186,7 +225,7 @@ impl std::fmt::Debug for SystemCredentialStore {
 
 impl SystemCredentialStore {
     fn load_account(&self, scope: &str, id: &str, account: &str) -> Result<Option<String>> {
-        match entry_for_account(scope, id, account)?.get_password() {
+        match protected_get(&entry_for_account(scope, id, account)?, account) {
             Ok(secret) => Ok(Some(secret)),
             Err(KeyringError::NoEntry) => Ok(self
                 .fallback_lease
@@ -216,7 +255,7 @@ impl SystemCredentialStore {
         account: &str,
         secret: &str,
     ) -> Result<bool> {
-        match entry_for_account(scope, id, account)?.set_password(secret) {
+        match protected_set(&entry_for_account(scope, id, account)?, account, secret) {
             Ok(()) => {
                 self.fallback_lease
                     .lock()
@@ -247,7 +286,7 @@ impl SystemCredentialStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(account);
-        match entry_for_account(scope, id, account)?.delete_credential() {
+        match protected_delete(&entry_for_account(scope, id, account)?, account) {
             Ok(())
             | Err(
                 KeyringError::NoEntry
@@ -307,7 +346,10 @@ impl SystemCredentialStore {
 
 impl CredentialStore for SystemCredentialStore {
     fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
-        match entry_for_account("credential transaction", alias, alias)?.get_password() {
+        match protected_get(
+            &entry_for_account("credential transaction", alias, alias)?,
+            alias,
+        ) {
             Ok(value) => Ok(Some(value)),
             Err(KeyringError::NoEntry) => Ok(None),
             Err(_) => Err(PureError::ConfigError(
@@ -316,11 +358,14 @@ impl CredentialStore for SystemCredentialStore {
         }
     }
     fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
-        entry_for_account("credential transaction", alias, alias)?
-            .set_password(payload)
-            .map_err(|_| {
-                PureError::ConfigError("credential transaction storage write failed".into())
-            })?;
+        protected_set(
+            &entry_for_account("credential transaction", alias, alias)?,
+            alias,
+            payload,
+        )
+        .map_err(|_| {
+            PureError::ConfigError("credential transaction storage write failed".into())
+        })?;
         if self.read_transaction(alias)?.as_deref() != Some(payload) {
             return Err(PureError::ConfigError(
                 "credential transaction storage verification failed".into(),
@@ -329,7 +374,10 @@ impl CredentialStore for SystemCredentialStore {
         Ok(())
     }
     fn delete_transaction(&self, alias: &str) -> Result<()> {
-        match entry_for_account("credential transaction", alias, alias)?.delete_credential() {
+        match protected_delete(
+            &entry_for_account("credential transaction", alias, alias)?,
+            alias,
+        ) {
             Ok(()) | Err(KeyringError::NoEntry) => {}
             Err(_) => {
                 return Err(PureError::ConfigError(
@@ -355,7 +403,7 @@ impl CredentialStore for SystemCredentialStore {
     }
     fn delete_strict(&self, account_id: &str) -> Result<()> {
         let entry = entry_for_account("account", account_id, &account_key(account_id))?;
-        match entry.delete_credential() {
+        match protected_delete(&entry, &account_key(account_id)) {
             Ok(()) | Err(KeyringError::NoEntry) => {}
             Err(error) => return Err(credential_error("delete", "account", account_id, error)),
         }
@@ -371,7 +419,10 @@ impl CredentialStore for SystemCredentialStore {
         Ok(())
     }
     fn load_strict(&self, account_id: &str) -> Result<Option<String>> {
-        match entry_for_account("account", account_id, &account_key(account_id))?.get_password() {
+        match protected_get(
+            &entry_for_account("account", account_id, &account_key(account_id))?,
+            &account_key(account_id),
+        ) {
             Ok(secret) => Ok(Some(secret)),
             Err(KeyringError::NoEntry) => Ok(None),
             Err(error) => Err(credential_error("read", "account", account_id, error)),
@@ -380,11 +431,9 @@ impl CredentialStore for SystemCredentialStore {
 
     fn save_strict(&self, account_id: &str, secret: &str) -> Result<()> {
         let entry = entry_for_account("account", account_id, &account_key(account_id))?;
-        entry
-            .set_password(secret)
+        protected_set(&entry, &account_key(account_id), secret)
             .map_err(|error| credential_error("write", "account", account_id, error))?;
-        let actual = entry
-            .get_password()
+        let actual = protected_get(&entry, &account_key(account_id))
             .map_err(|error| credential_error("verify", "account", account_id, error))?;
         if actual != secret {
             return Err(PureError::ConfigError(
@@ -425,7 +474,7 @@ impl CredentialStore for SystemCredentialStore {
             }
         };
         let target = entry_for_account("account", account_id, &account_key(account_id))?;
-        match target.get_password() {
+        match protected_get(&target, &account_key(account_id)) {
             Ok(existing) if existing == source => {
                 return Ok(LegacyCredentialCopy::AlreadyIdentical);
             }
@@ -437,10 +486,9 @@ impl CredentialStore for SystemCredentialStore {
             Err(KeyringError::NoEntry) => {}
             Err(error) => return Err(credential_error("read", "account", account_id, error)),
         }
-        target
-            .set_password(&source)
+        protected_set(&target, &account_key(account_id), &source)
             .map_err(|error| credential_error("write", "account", account_id, error))?;
-        match target.get_password() {
+        match protected_get(&target, &account_key(account_id)) {
             Ok(actual) if actual == source => Ok(LegacyCredentialCopy::Copied),
             Ok(_) => Err(PureError::ConfigError(format!(
                 "system credential verification failed for migrated account {account_id}"
@@ -452,7 +500,7 @@ impl CredentialStore for SystemCredentialStore {
     fn import_inline_secret(&self, account_id: &str, secret: &str) -> Result<LegacyCredentialCopy> {
         // 与旧命名空间复制同一持久义务：只用 keyring 的持久读写，绝不回退到进程内 lease。
         let target = entry_for_account("account", account_id, &account_key(account_id))?;
-        match target.get_password() {
+        match protected_get(&target, &account_key(account_id)) {
             Ok(existing) if existing == secret => {
                 return Ok(LegacyCredentialCopy::AlreadyIdentical);
             }
@@ -464,10 +512,9 @@ impl CredentialStore for SystemCredentialStore {
             Err(KeyringError::NoEntry) => {}
             Err(error) => return Err(credential_error("read", "account", account_id, error)),
         }
-        target
-            .set_password(secret)
+        protected_set(&target, &account_key(account_id), secret)
             .map_err(|error| credential_error("write", "account", account_id, error))?;
-        match target.get_password() {
+        match protected_get(&target, &account_key(account_id)) {
             Ok(actual) if actual == secret => Ok(LegacyCredentialCopy::Copied),
             Ok(_) => Err(PureError::ConfigError(format!(
                 "system credential verification failed for migrated account {account_id}"

@@ -212,11 +212,11 @@ source_order 是可比较的真实来源位置，不是稠密编号。普通非 
 
 普通当前格式打开的 full_context_rows、quick_check、execution_activation、tool_or_ssh_initialization、query_triggered_flush 均为零。相同需求下增加总历史、隐藏活动或上下文，不增加线性全量读取/检查/解码。记录 SQL/pending 候选与返回量、payload/content/编码字节、逐项解码数、controller/实际构建行数及排队时间；诊断只临时借用 controller/owner，不反建第二历史集合。
 
-Driver 直接按 controller 的 Message 顺序和唯一呈现 owner 已挂载的片段读取 metadata，分别报告顶层项数、已加载原子身份、兼容性、有界正文/引用及显示代次；不查询未展开内容或反建隐藏集合。完成 seq/来源位置是实际原子事实，H/D 与源 epoch 仍留 Rust，不为旧脚本伪造组成员或跨 owner 稳定组 key；顺序与局部插入/更新使用真实对象身份和操作证据。
+当前展示诊断直接按 controller 的 Message 顺序和唯一呈现 owner 已挂载的片段读取 metadata，分别报告顶层项数、已加载原子身份、兼容性、有界正文/引用及显示代次；不查询未展开内容或反建隐藏集合。完成 seq/来源位置是实际原子事实，H/D 与源 epoch 仍留 Rust，不为旧脚本伪造组成员或跨 owner 稳定组 key；顺序与局部插入/更新使用真实对象身份和操作证据。
 
-展开内容通过原 Main 展示 lease 登记只读借用，记录实际普通原子读取位置、显示代次、资格及已挂载窗口；真正业务 Children 另保真实 parent。查询 Driver 不触发 IO 或建立完整组镜像。关闭/换代/lease 退役同步撤销借用，旧回调不能登记到新 lease。批接纳、读页和 controller 操作分别计数：一页可以没有新增顶层项，不能用卡片数/高度不变推断无数据进展。
+展开内容通过原 Main 展示 lease 登记只读借用，记录实际普通原子读取位置、显示代次、资格及已挂载窗口；真正业务 Children 另保真实 parent，不从 Main 的 Turn 卡片重建 Children。查询诊断不触发 IO 或建立完整组镜像。关闭/换代/lease 退役同步撤销借用，旧回调不能登记到新 lease。批接纳、读页和 controller 操作分别计数：一页可以没有新增顶层项，不能用卡片数/高度不变推断无数据进展。Set/Prepend/Append 的操作计数在原组件操作成功且资格复核后递增，不从当前消息长度或内容推测操作。
 
-运行中详情同样只借用真实挂载的 current 资源：Driver 可读取用户已展开、原 scope 已接纳的有界集合页及正文窗口，并报告原集合引用、局部代次、展开/加载/错误状态和 continuation。读取诊断不能发起 page/watch、展开组件、复制完整 current 集合或保留跨代页面；折叠、引用 revision 变化、来源 attempt 变化和 Main lease 退役同步撤销资格。工具等待只按现役 `tools` 页中原 call 身份与 producer 提供的 typed wait 判断，不从工具名、完成记录或输出片段猜测；没有提供的 item 身份及终态结果保持未知。
+运行中详情同样只借用真实挂载的 current 资源：只读观察可读取用户已展开、原 scope 已接纳的有界集合页及正文窗口，并报告原集合引用、局部代次、展开/加载/错误状态和 continuation。读取诊断不能发起 page/watch、展开组件、复制完整 current 集合或保留跨代页面；折叠、引用 revision 变化、来源 attempt 变化和 Main lease 退役同步撤销资格。工具等待只按现役 `tools` 页中原 call 身份与 producer 提供的 typed wait 判断，不从工具名、完成记录或输出片段猜测；没有提供的 item 身份及终态结果保持未知。
 
 各层验收证明其实际拥有的事实。独立工具结果在 Turn 结束前已可靠发布使用原 Runtime/HTTP 读取资格证明，不能以将来的页或实时输出片段冒充更早完整结果，也不要求 Flutter 提前制造历史卡片。需完整库存时，验收器沿普通 Main 与真实业务 scope 有界分页到 EOF 并即时取证，不以最后一组/当前成员窗口代替全历史，不要求惰性行、图片或展开态全常驻。
 

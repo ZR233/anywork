@@ -37,7 +37,9 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
         )?;
         for name in ["a", "b", "c"] {
             fs::copy(
-                context.app_dir.join("test_driver/fixtures/tool-image.png"),
+                context
+                    .app_dir
+                    .join("integration_test/fixtures/tool-image.png"),
                 project.join(format!("concept-image-{name}.png")),
             )?;
         }

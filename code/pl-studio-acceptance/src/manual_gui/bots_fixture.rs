@@ -40,7 +40,7 @@ exit "$status"
 
 const RUNBOOK: &str = r#"# Bots fixture runbook
 
-This `manual-gui --scenario gui --bots-fixture` run is a **local loopback**
+This `manual-gui --preset gui --bots-fixture` run is a **local loopback**
 Feishu platform environment plus the existing scripted model fixture.
 
 - Real Feishu authorization, QR login, and tenant compatibility are **not**
@@ -253,8 +253,8 @@ pub(super) fn validate(options: &ManualGuiOptions) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        options.scenario == "gui",
-        "--bots-fixture requires --scenario gui"
+        options.preset == "gui",
+        "--bots-fixture requires --preset gui"
     );
     ensure!(
         cfg!(debug_assertions),
@@ -497,7 +497,7 @@ impl BotsFixture {
             .arg("cargo")
             .arg("xtask")
             .arg("run-gui")
-            .arg("--driver")
+            .arg("--capture")
             .arg("--log-level")
             .arg("info");
         apply_isolation_env(&mut command, home, keyring.path(), &self.manifest)?;

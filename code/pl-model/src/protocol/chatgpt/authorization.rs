@@ -1,5 +1,5 @@
 use super::{
-    CHATGPT_ISSUER, CHATGPT_RESOURCE, ChatGptAuthError, DIRECT_SCOPE, exchange, now, oauth_client,
+    CHATGPT_ISSUER, CODEX_CLIENT_ID, ChatGptAuthError, exchange, now, oauth_client,
     session::ChatGptCredentialRecord,
 };
 use oauth2::TokenResponse as _;
@@ -36,6 +36,20 @@ impl ChatGptAuthorization {
         host_id: String,
         previous: Option<ChatGptAccountInfo>,
     ) -> Result<Self, ChatGptAuthError> {
+        let listener = match TcpListener::bind(("127.0.0.1", 1455)).await {
+            Ok(listener) => listener,
+            Err(_) => TcpListener::bind(("127.0.0.1", 1457))
+                .await
+                .map_err(|_| ChatGptAuthError::Network)?,
+        };
+        Self::with_listener(host_id, previous, listener)
+    }
+
+    fn with_listener(
+        host_id: String,
+        previous: Option<ChatGptAccountInfo>,
+        listener: TcpListener,
+    ) -> Result<Self, ChatGptAuthError> {
         if !host_id.starts_with("urn:uuid:")
             || previous.as_ref().is_some_and(|info| {
                 info.issuer != CHATGPT_ISSUER
@@ -45,43 +59,29 @@ impl ChatGptAuthorization {
         {
             return Err(ChatGptAuthError::InvalidIdentity);
         }
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .map_err(|_| ChatGptAuthError::Network)?;
         let port = listener
             .local_addr()
             .map_err(|_| ChatGptAuthError::Network)?
             .port();
-        let redirect = RedirectUrl::new(format!("http://127.0.0.1:{port}/auth/callback"))
+        let redirect = RedirectUrl::new(format!("http://localhost:{port}/auth/callback"))
             .map_err(|_| ChatGptAuthError::InvalidCallback)?;
-        let id = previous
-            .as_ref()
-            .map_or("dynamic_agent_client", |info| info.client_id.as_str());
-        let client = oauth_client(id).set_redirect_uri(redirect.clone());
+        let client = oauth_client(CODEX_CLIENT_ID).set_redirect_uri(redirect.clone());
         let nonce = Nonce::new_random();
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
         let mut authorization = client
             .authorize_url(CsrfToken::new_random)
             .set_pkce_challenge(challenge)
             .add_extra_param("nonce", nonce.secret())
-            .add_extra_param("ext_agent_host_id", &host_id)
-            .add_extra_param("resource", CHATGPT_RESOURCE);
-        for scope in [
-            "openid",
-            "profile",
-            "email",
-            "offline_access",
-            "resource.invoke",
-            DIRECT_SCOPE,
-        ] {
+            .add_extra_param("id_token_add_organizations", "true")
+            .add_extra_param("codex_cli_simplified_flow", "true")
+            .add_extra_param("originator", "anywork");
+        for scope in ["openid", "profile", "email", "offline_access"] {
             authorization = authorization.add_scope(Scope::new(scope.into()));
         }
-        if let Some(previous) = &previous {
-            if let Some(email) = &previous.email {
-                authorization = authorization.add_extra_param("login_hint", email);
-            }
-        } else {
-            authorization = authorization.add_extra_param("agent_name_hint", "anywork");
+        if let Some(previous) = &previous
+            && let Some(email) = &previous.email
+        {
+            authorization = authorization.add_extra_param("login_hint", email);
         }
         let (url, state) = authorization.url();
         Ok(Self {
@@ -123,11 +123,9 @@ impl ChatGptAuthorization {
             + Send
             + 'static,
     {
-        let callback =
-            tokio::time::timeout(std::time::Duration::from_secs(15 * 60), self.callback())
-                .await
-                .map_err(|_| ChatGptAuthError::Expired)??;
-        let (code, client_id) = callback;
+        // Human authorization has no local deadline. The owner cancels this
+        // future explicitly; only a validated callback advances the exchange.
+        let (code, client_id) = self.callback().await?;
         exchanging();
         super::within_operation_limit(async {
             // Resolve/validate discovery before consuming the one-use code.
@@ -148,7 +146,6 @@ impl ChatGptAuthorization {
             let response = client
                 .exchange_code(AuthorizationCode::new(code))
                 .set_pkce_verifier(self.verifier)
-                .add_extra_param("resource", CHATGPT_RESOURCE)
                 .request_async(http)
                 .await
                 .map_err(|_| ChatGptAuthError::Network)?;
@@ -182,9 +179,27 @@ impl ChatGptAuthorization {
                 client_id,
                 email: claims.email().map(|email| email.as_str().into()),
                 plan_usage_enabled: true,
+                codex: Some(pl_protocol::studio::CodexAccountInfo {
+                    account_id: claims
+                        .additional_claims()
+                        .auth
+                        .as_ref()
+                        .and_then(|auth| auth.chatgpt_account_id.clone())
+                        .filter(|id| !id.is_empty())
+                        .ok_or(ChatGptAuthError::InvalidIdentity)?,
+                    plan_type: claims
+                        .additional_claims()
+                        .auth
+                        .as_ref()
+                        .and_then(|auth| auth.chatgpt_plan_type.clone()),
+                }),
             };
             if self.previous.as_ref().is_some_and(|previous| {
-                previous.subject != info.subject || previous.issuer != info.issuer
+                previous.subject != info.subject
+                    || previous.issuer != info.issuer
+                    || (previous.codex.is_some()
+                        && previous.codex.as_ref().map(|c| &c.account_id)
+                            != info.codex.as_ref().map(|c| &c.account_id))
             }) {
                 return Err(ChatGptAuthError::InvalidIdentity);
             }
@@ -289,14 +304,13 @@ impl ChatGptAuthorization {
                 ChatGptAuthError::InvalidCallback
             });
         }
-        let client_id = match (&self.previous, params.remove("client_id")) {
-            (Some(previous), Some(id)) if id != previous.client_id => {
-                return Err(ChatGptAuthError::InvalidIdentity);
-            }
-            (Some(previous), _) => previous.client_id.clone(),
-            (None, Some(id)) if !id.is_empty() && id != "dynamic_agent_client" => id,
-            _ => return Err(ChatGptAuthError::InvalidCallback),
-        };
+        if params
+            .remove("client_id")
+            .is_some_and(|id| id != CODEX_CLIENT_ID)
+        {
+            return Err(ChatGptAuthError::InvalidIdentity);
+        }
+        let client_id = CODEX_CLIENT_ID.to_owned();
         let code = params
             .remove("code")
             .filter(|code| !code.is_empty())
@@ -310,9 +324,7 @@ mod tests {
     use super::*;
     use openidconnect::{
         PrivateSigningKey,
-        core::{
-            CoreEdDsaPrivateSigningKey, CoreIdToken, CoreIdTokenClaims, CoreJwsSigningAlgorithm,
-        },
+        core::{CoreEdDsaPrivateSigningKey, CoreJwsSigningAlgorithm},
     };
     use serde_json::json;
     use std::sync::{
@@ -327,22 +339,19 @@ mod tests {
         case: &str,
         previous: Option<ChatGptAccountInfo>,
     ) -> Result<ChatGptCredentialRecord, ChatGptAuthError> {
-        let authorization = ChatGptAuthorization::prepare(
+        let authorization = ChatGptAuthorization::with_listener(
             "urn:uuid:00000000-0000-4000-8000-000000000001".into(),
             previous,
+            TcpListener::bind(("127.0.0.1", 0)).await.unwrap(),
         )
-        .await
         .unwrap();
         let params: BTreeMap<_, _> = authorization
             .url
             .query_pairs()
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect();
-        assert_eq!(
-            params["scope"],
-            "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
-        );
-        assert_eq!(params["resource"], CHATGPT_RESOURCE);
+        assert_eq!(params["scope"], "openid profile email offline_access");
+        assert!(!params.contains_key("resource"));
         assert!(!params.contains_key("id_token_hint"));
         let redirect = authorization.redirect.as_str().to_owned();
         let mut callback = Url::parse(&redirect).unwrap();
@@ -350,7 +359,7 @@ mod tests {
             .query_pairs_mut()
             .append_pair("state", &params["state"])
             .append_pair("code", "one-use-code")
-            .append_pair("client_id", "issued-client");
+            .append_pair("client_id", CODEX_CLIENT_ID);
         if case == "client" {
             callback.set_query(None);
             callback
@@ -373,8 +382,9 @@ mod tests {
         }
         let key = CoreEdDsaPrivateSigningKey::from_ed25519_pem(TEST_KEY, None).unwrap();
         let mut claims = json!({
-            "iss": CHATGPT_ISSUER, "sub": "signed-subject", "aud": ["issued-client"],
-            "iat": now(), "exp": now() + 3600, "nonce": params["nonce"], "email": "fixture@example.test"
+            "iss": CHATGPT_ISSUER, "sub": "signed-subject", "aud": [CODEX_CLIENT_ID],
+            "iat": now(), "exp": now() + 3600, "nonce": params["nonce"], "email": "fixture@example.test",
+            "https://api.openai.com/auth": {"chatgpt_account_id": "workspace-fixture", "chatgpt_plan_type": "plus"}
         });
         match case {
             "issuer" => claims["iss"] = json!("https://wrong.example"),
@@ -383,18 +393,25 @@ mod tests {
             "nonce" => claims["nonce"] = json!("wrong-nonce"),
             _ => {}
         }
-        let claims: CoreIdTokenClaims = serde_json::from_value(claims).unwrap();
+        let claims: openidconnect::IdTokenClaims<
+            super::super::IdentityClaims,
+            openidconnect::core::CoreGenderClaim,
+        > = serde_json::from_value(claims).unwrap();
         let signed =
-            CoreIdToken::new(claims, &key, CoreJwsSigningAlgorithm::EdDsa, None, None).unwrap();
+            super::super::IdToken::new(claims, &key, CoreJwsSigningAlgorithm::EdDsa, None, None)
+                .unwrap();
         let mut jwks = json!({"keys": [key.as_verification_key()]});
         if case == "signature" {
             jwks["keys"][0]["x"] = json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         }
-        let token = json!({
+        let mut token = json!({
             "access_token": if case == "empty-access" { "" } else { "fixture-access" }, "refresh_token": "fixture-refresh", "id_token": signed.to_string(),
             "token_type": "Bearer", "expires_in": 3600, "earliest_refresh_at": now() + 1800,
-            "scope": if case == "scope" { "openid profile email offline_access" } else { DIRECT_SCOPE }
+            "scope": "openid profile email offline_access"
         });
+        if case == "missing-scope" {
+            token.as_object_mut().unwrap().remove("scope");
+        }
         let exchanges = Arc::new(AtomicUsize::new(0));
         let count = exchanges.clone();
         let http = move |request: oauth2::HttpRequest| {
@@ -409,16 +426,16 @@ mod tests {
             } else if uri.ends_with("/fixture-jwks") {
                 jwks.clone()
             } else {
-                assert_eq!(uri, super::super::TOKEN);
+                assert_eq!(uri, super::super::CODEX_TOKEN);
                 assert_eq!(request.method(), hyper::Method::POST);
                 let form: BTreeMap<_, _> = url::form_urlencoded::parse(request.body())
                     .map(|(key, value)| (key.into_owned(), value.into_owned()))
                     .collect();
                 assert_eq!(form["grant_type"], "authorization_code");
-                assert_eq!(form["client_id"], "issued-client");
+                assert_eq!(form["client_id"], CODEX_CLIENT_ID);
                 assert_eq!(form["redirect_uri"], redirect);
                 assert_eq!(form["code"], "one-use-code");
-                assert_eq!(form["resource"], CHATGPT_RESOURCE);
+                assert!(!form.contains_key("resource"));
                 let challenge = PkceCodeChallenge::from_code_verifier_sha256(
                     &PkceCodeVerifier::new(form["code_verifier"].clone()),
                 );
@@ -460,16 +477,16 @@ mod tests {
             assert_eq!(client.get(callback).send().await.unwrap().status(), 200);
         };
         let (result, ()) = tokio::join!(finish, browser);
-        let expected = usize::from(!matches!(case, "client" | "missing-client" | "denied"));
+        let expected = usize::from(!matches!(case, "client" | "denied"));
         assert_eq!(progress.load(Ordering::SeqCst), expected);
         assert_eq!(exchanges.load(Ordering::SeqCst), expected);
         result
     }
 
     #[tokio::test]
-    async fn signed_oidc_exchange_rejects_bad_callbacks_claims_and_missing_direct_scope() {
+    async fn signed_codex_exchange_rejects_bad_callbacks_and_claims() {
         let connected = signed_flow("valid", None).await.unwrap();
-        assert_eq!(connected.account.client_id, "issued-client");
+        assert_eq!(connected.account.client_id, CODEX_CLIENT_ID);
         assert_eq!(connected.account.subject, "signed-subject");
         assert!(connected.account.plan_usage_enabled);
         for case in [
@@ -486,14 +503,8 @@ mod tests {
                 "{case}"
             );
         }
-        assert_eq!(
-            signed_flow("scope", None).await,
-            Err(ChatGptAuthError::MissingPlanPermission)
-        );
-        assert_eq!(
-            signed_flow("missing-client", None).await,
-            Err(ChatGptAuthError::InvalidCallback)
-        );
+        assert!(signed_flow("missing-scope", None).await.is_ok());
+        assert!(signed_flow("missing-client", None).await.is_ok());
         assert_eq!(
             signed_flow("denied", None).await,
             Err(ChatGptAuthError::AuthorizationDenied)
