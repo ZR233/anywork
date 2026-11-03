@@ -1,4 +1,5 @@
-//! Lightweight atomic facts and actual source lifecycle, never presentation groups.
+//! Lightweight atomic facts and actual source lifecycle. Work-group boundaries
+//! and display categorization belong to the Studio Timeline projection, not here.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -27,7 +28,8 @@ pub struct ChatFactPosition {
     pub suborder: u32,
 }
 
-/// Domain kind. Tool UI categories, work-group boundaries and titles belong to Flutter.
+/// Domain kind. Tool UI presentation and member classification belong to the
+/// Studio Timeline projection; this only states what the original fact is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ChatAtomKind {
@@ -174,7 +176,7 @@ pub struct ChatSourceState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum ChatEntry {
-    /// Keep lifecycle-only entries small without changing the serialized envelope.
+    /// Member entry inside a work-group member scope or a real business child page.
     Atom(Box<ChatAtom>),
     /// A reliable lifecycle event, not an extra row of per-page source evidence.
     Source(ChatSourceState),
