@@ -44,5 +44,6 @@ pub(crate) fn bundle_staging_dir(workspace_root: &Path) -> PathBuf {
 struct HelperMetadata {
     target: String,
     worker_protocol_version: u32,
+    remote_protocol_version: u32,
     sha256: String,
 }

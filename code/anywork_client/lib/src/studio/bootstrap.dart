@@ -23,7 +23,7 @@ class StudioBootstrap {
     required this.agentDirectory,
     required this.settingsState,
     required this.recoveryState,
-    required this.mcpState,
+    this.mcpCatalog = const McpCatalogSnapshot(),
     required this.lspState,
     required this.skillsByProject,
     required this.threadModeCatalog,
@@ -41,7 +41,7 @@ class StudioBootstrap {
   final AgentDirectoryState agentDirectory;
   final SettingsStateSnapshot settingsState;
   final RecoveryStateSnapshot recoveryState;
-  final McpStateSnapshot mcpState;
+  final McpCatalogSnapshot mcpCatalog;
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;

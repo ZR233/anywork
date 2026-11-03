@@ -181,6 +181,7 @@ async fn exercise(
         arguments: vec!["-c".into(), "printf start >> starts; IFS= read -r line; printf '%s' \"$line\" > stdin-result".into()],
         cwd: ".".into(), remove_environment: vec![], environment: Default::default(), capture: RemoteCapture::None,
                 remaining_timeout_ms: None,
+                process_lease: None,
     }), &[]).await?;
     reconnect(executable, attachment).await?;
     let recovered = attachment

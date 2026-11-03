@@ -51,18 +51,6 @@ pub enum SettingsFieldUpdate {
     SkillsAutoLearnMinToolCalls {
         value: u32,
     },
-    McpServerEnabled {
-        id: String,
-        value: bool,
-    },
-    McpServerTransport {
-        id: String,
-        transport: String,
-    },
-    McpServerEndpoint {
-        id: String,
-        endpoint: String,
-    },
     GeneralFollowActiveTurn {
         value: bool,
     },

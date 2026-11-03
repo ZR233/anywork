@@ -68,13 +68,6 @@ pub struct AccountModelAutoCompactInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "scope")]
-pub enum McpResetInput {
-    Server { server_id: String },
-    All,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "scope")]
 pub enum LspScopeInput {
     Server {
         workspace_id: String,
@@ -135,18 +128,6 @@ pub enum SettingsFieldInput {
     },
     SkillsAutoLearnMinToolCalls {
         value: u32,
-    },
-    McpServerEnabled {
-        id: String,
-        value: bool,
-    },
-    McpServerTransport {
-        id: String,
-        transport: String,
-    },
-    McpServerEndpoint {
-        id: String,
-        endpoint: String,
     },
     GeneralFollowActiveTurn {
         value: bool,
@@ -248,15 +229,6 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
             SettingsFieldInput::SkillsDisabled { value } => Update::SkillsDisabled { value },
             SettingsFieldInput::SkillsAutoLearnMinToolCalls { value } => {
                 Update::SkillsAutoLearnMinToolCalls { value }
-            }
-            SettingsFieldInput::McpServerEnabled { id, value } => {
-                Update::McpServerEnabled { id, value }
-            }
-            SettingsFieldInput::McpServerTransport { id, transport } => {
-                Update::McpServerTransport { id, transport }
-            }
-            SettingsFieldInput::McpServerEndpoint { id, endpoint } => {
-                Update::McpServerEndpoint { id, endpoint }
             }
             SettingsFieldInput::GeneralFollowActiveTurn { value } => {
                 Update::GeneralFollowActiveTurn { value }
@@ -369,7 +341,6 @@ pub struct BridgeStudioSettingsDto {
     pub permission_mode: String,
     pub instructions: BridgeInstructionsSettingsDto,
     pub skills: BridgeSkillsSettingsDto,
-    pub mcp_servers: Vec<BridgeMcpServerSettingsDto>,
     pub general: BridgeGeneralSettingsDto,
     pub delegation: BridgeDelegationSettings,
     pub web_search: BridgeWebSearchSettingsDto,
@@ -609,26 +580,6 @@ pub struct BridgeSkillsSettingsDto {
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,
-}
-
-/// MCP 设置页的 canonical server 视图。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeMcpServerSettingsDto {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub configuration: BridgeMcpServerConfiguration,
-    pub source_kind: String,
-    pub mutation_policy: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeMcpServerConfiguration {
-    Enabled,
-    Disabled,
-    MissingCredential,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

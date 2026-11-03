@@ -8,11 +8,18 @@ use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
-use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
+use super::{
+    AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
+    McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig,
+};
 use crate::mode::ThreadModeManager;
 use pl_model::config::AccountId;
 use pl_protocol::ThreadModeDocument;
-use pl_protocol::{ThreadModeId, studio::StudioModelCatalogStatus};
+use pl_protocol::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogSnapshot,
+    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, ThreadModeId,
+    UpdateMcpDocumentRequest, studio::StudioModelCatalogStatus,
+};
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。
@@ -31,6 +38,8 @@ pub struct ConfigRuntime {
     settings_observer: Arc<Mutex<Vec<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
+    /// 配置 owner 持有的按环境作用域组织的单文件 MCP 配置目录资源。
+    mcp_catalog: McpCatalogResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
     modes: ThreadModeManager,
     /// 文件定义的完整编辑文档；查询只读该缓存，不扫描目录。
@@ -175,6 +184,7 @@ impl ConfigRuntime {
         super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
+        let mcp_catalog = McpCatalogResource::new(store.paths(), &config.models);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
@@ -208,6 +218,7 @@ impl ConfigRuntime {
                 observations,
             })),
             profiles,
+            mcp_catalog,
             modes,
             mode_documents: Arc::new(RwLock::new(mode_documents)),
         })
@@ -383,6 +394,159 @@ impl ConfigRuntime {
     /// 订阅 Agent Profiles 资源变更唤醒；值为最新 revision。
     pub fn subscribe_agent_profiles(&self) -> tokio::sync::watch::Receiver<u64> {
         self.profiles.subscribe()
+    }
+
+    /// 读取指定环境作用域的 MCP 配置目录快照。
+    pub fn mcp_catalog_snapshot(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<McpCatalogSnapshot> {
+        let snapshot = self.read()?;
+        Ok(self
+            .mcp_catalog
+            .read_catalog(self.store.paths(), &snapshot.config.models, scope)?)
+    }
+
+    /// 订阅指定环境作用域的 MCP 配置目录变更唤醒。
+    pub fn subscribe_mcp_catalog(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, tokio::sync::watch::Receiver<u64>)> {
+        let snapshot = self.read()?;
+        Ok(self
+            .mcp_catalog
+            .subscribe(self.store.paths(), &snapshot.config.models, scope)?)
+    }
+
+    /// 解析指定环境作用域内所有有效 MCP 条目（含启用、禁用、缺前置条件）。
+    pub fn effective_mcp_servers_for_scope(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<BTreeMap<String, ScopedEffectiveMcpServer>> {
+        let snapshot = self.read()?;
+        Ok(self.mcp_catalog.effective_servers_for_scope(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+        )?)
+    }
+
+    /// 解析单个 Thread 在指定环境作用域下需要连接的 MCP servers。
+    pub fn resolve_thread_mcp_configs(
+        &self,
+        scope: &McpScope,
+        workspace_root: &std::path::Path,
+        host_base_cwd: &std::path::Path,
+        remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
+    ) -> ConfigRuntimeResult<BTreeMap<String, ResolvedThreadMcpServer>> {
+        let snapshot = self.read()?;
+        Ok(self.mcp_catalog.resolve_thread_mcp_configs(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+            workspace_root,
+            host_base_cwd,
+            remote_commands,
+        )?)
+    }
+
+    /// 读取单个 MCP 配置文件的完整源码与诊断。
+    pub fn read_mcp_document(
+        &self,
+        document: &McpDocumentRef,
+    ) -> std::result::Result<McpDocumentContent, McpDocumentError> {
+        self.mcp_catalog.read_document(self.store.paths(), document)
+    }
+
+    /// 创建单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn create_mcp_document(
+        &self,
+        request: &CreateMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .create_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 更新单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn update_mcp_document(
+        &self,
+        request: &UpdateMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .update_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 删除单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
+    pub fn delete_mcp_document(
+        &self,
+        request: &DeleteMcpDocumentRequest,
+    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
+        let _command = self.command_lock.lock().map_err(|_| {
+            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
+        })?;
+        let snapshot = self
+            .read()
+            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        self.mcp_catalog
+            .delete_document(self.store.paths(), &snapshot.config.models, request)
+    }
+
+    /// 重新扫描指定环境作用域的 MCP 配置目录，返回最新快照与受影响的作用域列表。
+    pub fn reload_mcp_catalog(
+        &self,
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, Vec<McpScope>)> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let snapshot = self.read()?;
+        let (catalog, _) =
+            self.mcp_catalog
+                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
+        let mut changed_scopes = vec![scope.clone()];
+        if matches!(scope, McpScope::Host) {
+            for changed in self.mcp_catalog.refresh_all_scopes(
+                self.store.paths(),
+                &snapshot.config.models,
+                &[],
+            ) {
+                if !changed_scopes.contains(&changed) {
+                    changed_scopes.push(changed);
+                }
+            }
+        }
+        Ok((catalog, changed_scopes))
+    }
+
+    /// 当模型账号/凭据发生变化时，重新扫描已加载作用域的 MCP 配置目录（更新内置 MCP 前置条件状态）。
+    pub fn refresh_mcp_catalogs_for_models(
+        &self,
+        models: &pl_model::config::AgentModelConfig,
+    ) -> Vec<McpCatalogSnapshot> {
+        let changed_scopes = self
+            .mcp_catalog
+            .refresh_all_scopes(self.store.paths(), models, &[]);
+        changed_scopes
+            .into_iter()
+            .filter_map(|scope| {
+                self.mcp_catalog
+                    .read_catalog(self.store.paths(), models, &scope)
+                    .ok()
+            })
+            .collect()
     }
 
     /// 读取系统凭据库或当前进程租约中的 SSH 主机密码。
@@ -643,6 +807,8 @@ impl ConfigRuntime {
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.mcp_catalog
+            .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)
@@ -697,6 +863,8 @@ impl ConfigRuntime {
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.mcp_catalog
+            .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)

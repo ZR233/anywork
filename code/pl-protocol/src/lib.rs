@@ -90,7 +90,14 @@ pub use event::{
 pub use id::{AgentRoleId, ThreadId, TurnId};
 pub use interaction::*;
 pub use labeled::{LabeledEnum, UnknownLabelError};
-pub use mcp::{McpAvailabilityDescriptor, McpHealthSnapshot, McpServerDescriptor};
+pub use mcp::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpAvailabilityDescriptor, McpCatalogEntry,
+    McpCatalogSnapshot, McpConfigStatusKind, McpDocumentCommitReceipt, McpDocumentContent,
+    McpDocumentDiagnostic, McpDocumentRef, McpEffectiveSource, McpExecutionLocation,
+    McpHealthSnapshot, McpScope, McpServerDescriptor, McpServerKey, ReconnectThreadMcpRequest,
+    ReloadMcpCatalogRequest, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot,
+    UpdateMcpDocumentRequest,
+};
 pub use message::{
     AttachmentModality, ContentPart, Message, MessageContent, MessagePresentation, MessageRole,
     ToolCallCaller, ToolCallKind, ToolCallRecord, ToolResultRecord,

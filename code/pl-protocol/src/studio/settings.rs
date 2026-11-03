@@ -59,7 +59,6 @@ pub struct StudioSettings {
     pub permission_mode: String,
     pub instructions: StudioInstructionsSettings,
     pub skills: StudioSkillsSettings,
-    pub mcp_servers: Vec<StudioMcpServerSettings>,
     pub general: StudioGeneralSettings,
     pub web_search: StudioWebSearchSettings,
     pub deepseek_web_search: StudioDeepSeekWebSearchSettings,
@@ -334,25 +333,6 @@ pub struct StudioSkillsSettings {
     pub external_dirs: Vec<String>,
     pub disabled: Vec<String>,
     pub auto_learn_min_tool_calls: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioMcpServerSettings {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub configuration: StudioMcpServerConfiguration,
-    pub source_kind: String,
-    pub mutation_policy: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioMcpServerConfiguration {
-    Enabled,
-    Disabled,
-    MissingCredential,
 }
 
 /// Persisted interface language preference, independent of conversation content.

@@ -1,25 +1,89 @@
 use crate::api::studio::bridge_runtime::active_bridge;
-use crate::api::studio::convert::runtime::{bridge_lsp_state, bridge_mcp_state};
+use crate::api::studio::convert::runtime::bridge_lsp_state;
 use crate::api::studio::types::{
-    BridgeError, BridgeLspStateSnapshot, BridgeMcpStateSnapshot, LspScopeInput, McpResetInput,
+    BridgeCreateMcpDocumentInput, BridgeDeleteMcpDocumentInput, BridgeError,
+    BridgeLspStateSnapshot, BridgeMcpCatalogSnapshot, BridgeMcpDocumentCommitReceipt,
+    BridgeMcpDocumentContent, BridgeMcpDocumentRef, BridgeMcpScope, BridgeReconnectThreadMcpInput,
+    BridgeThreadMcpStateSnapshot, BridgeUpdateMcpDocumentInput, LspScopeInput,
 };
 
-pub async fn read_mcp_state() -> Result<BridgeMcpStateSnapshot, BridgeError> {
+pub async fn read_mcp_catalog(
+    scope: BridgeMcpScope,
+) -> Result<BridgeMcpCatalogSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
-    let state = bridge.studio.read_mcp_state().await?;
-    Ok(bridge_mcp_state(state.state))
+    let snapshot = bridge.studio.read_mcp_catalog(&scope.into())?;
+    Ok(snapshot.into())
 }
 
-pub async fn reset_mcp(input: McpResetInput) -> Result<BridgeMcpStateSnapshot, BridgeError> {
+pub async fn reload_mcp_catalog(
+    scope: BridgeMcpScope,
+) -> Result<BridgeMcpCatalogSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
-    let request = match input {
-        McpResetInput::Server { server_id } => {
-            pl_protocol::studio::McpResetRequest::Server { server_id }
-        }
-        McpResetInput::All => pl_protocol::studio::McpResetRequest::All,
-    };
-    bridge.studio.reset_mcp(request).await?;
-    read_mcp_state().await
+    let snapshot = bridge.studio.reload_mcp_catalog(&scope.into()).await?;
+    Ok(snapshot.into())
+}
+
+pub async fn read_mcp_document(
+    document: BridgeMcpDocumentRef,
+) -> Result<BridgeMcpDocumentContent, BridgeError> {
+    let bridge = active_bridge().await?;
+    let content = bridge
+        .studio
+        .read_mcp_document(&document.into())
+        .map_err(anyhow::Error::from)?;
+    Ok(content.into())
+}
+
+pub async fn create_mcp_document(
+    input: BridgeCreateMcpDocumentInput,
+) -> Result<BridgeMcpDocumentCommitReceipt, BridgeError> {
+    let bridge = active_bridge().await?;
+    let receipt = bridge
+        .studio
+        .create_mcp_document(&input.into())
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(receipt.into())
+}
+
+pub async fn update_mcp_document(
+    input: BridgeUpdateMcpDocumentInput,
+) -> Result<BridgeMcpDocumentCommitReceipt, BridgeError> {
+    let bridge = active_bridge().await?;
+    let receipt = bridge
+        .studio
+        .update_mcp_document(&input.into())
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(receipt.into())
+}
+
+pub async fn delete_mcp_document(
+    input: BridgeDeleteMcpDocumentInput,
+) -> Result<BridgeMcpDocumentCommitReceipt, BridgeError> {
+    let bridge = active_bridge().await?;
+    let receipt = bridge
+        .studio
+        .delete_mcp_document(&input.into())
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(receipt.into())
+}
+
+pub async fn read_thread_mcp(
+    thread_id: String,
+) -> Result<BridgeThreadMcpStateSnapshot, BridgeError> {
+    let bridge = active_bridge().await?;
+    let snapshot = bridge.studio.read_thread_mcp(&thread_id).await?;
+    Ok(snapshot.into())
+}
+
+pub async fn reconnect_thread_mcp(
+    input: BridgeReconnectThreadMcpInput,
+) -> Result<BridgeThreadMcpStateSnapshot, BridgeError> {
+    let bridge = active_bridge().await?;
+    let snapshot = bridge.studio.reconnect_thread_mcp(input.into()).await?;
+    Ok(snapshot.into())
 }
 
 pub async fn read_lsp_state() -> Result<BridgeLspStateSnapshot, BridgeError> {

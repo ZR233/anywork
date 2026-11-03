@@ -153,7 +153,6 @@ SettingsStoreState mergeSettingsState(
     revision: incoming.revision,
     modeModelRoutes: data.modeModelRoutes,
     roles: data.roles,
-    mcpServers: data.mcpServers,
     instructions: data.instructions,
     skills: data.skills,
     general: data.general,

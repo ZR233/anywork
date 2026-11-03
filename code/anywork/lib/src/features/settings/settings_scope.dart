@@ -63,7 +63,12 @@ final settingsTopicSyncProvider = Provider.autoDispose
         AgentProfilesTopic() => ref.watch(
           settingsStoreProvider.select((state) => state.agentProfilesSync),
         ),
-        McpTopic() => ref.watch(mcpStoreProvider.select((state) => state.sync)),
+        McpCatalogTopic(:final scope) => ref.watch(
+          mcpCatalogByScopeProvider(scope).select((state) => state.sync),
+        ),
+        ThreadMcpTopic(:final threadId) => ref.watch(
+          threadMcpProvider(threadId).select((state) => state.sync),
+        ),
         LspTopic() => ref.watch(lspStoreProvider.select((state) => state.sync)),
         SkillsTopic(:final workspaceId) => ref.watch(
           skillsStoreProvider(workspaceId).select((state) => state.sync),

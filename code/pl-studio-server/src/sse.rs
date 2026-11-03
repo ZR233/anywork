@@ -175,6 +175,22 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
             query.append_pair("topic", "childInteractions");
             query.append_pair("hostThreadId", host_thread_id);
         }
+        StudioProductTopic::McpCatalog { scope } => {
+            query.append_pair("topic", "mcpCatalog");
+            match scope {
+                pl_protocol::McpScope::Host => {
+                    query.append_pair("scope", "host");
+                }
+                pl_protocol::McpScope::Ssh { ssh_alias } => {
+                    query.append_pair("scope", "ssh");
+                    query.append_pair("sshAlias", ssh_alias);
+                }
+            }
+        }
+        StudioProductTopic::ThreadMcp { thread_id } => {
+            query.append_pair("topic", "threadMcp");
+            query.append_pair("threadId", thread_id);
+        }
         other => {
             query.append_pair("topic", topic_token(other));
         }
@@ -192,7 +208,8 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::SettingsConfig => "settingsConfig",
         StudioProductTopic::ModelCatalog => "modelCatalog",
         StudioProductTopic::Recovery => "recovery",
-        StudioProductTopic::Mcp => "mcp",
+        StudioProductTopic::McpCatalog { .. } => "mcpCatalog",
+        StudioProductTopic::ThreadMcp { .. } => "threadMcp",
         StudioProductTopic::Lsp => "lsp",
         StudioProductTopic::Skills { .. } => "skills",
         StudioProductTopic::ThreadModeCatalog => "threadModeCatalog",

@@ -5,6 +5,7 @@ mod close_child;
 mod errors;
 mod execution_admission;
 mod execution_cleanup;
+mod mcp;
 pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
@@ -34,7 +35,7 @@ pub(in crate::studio) struct StudioThreadServices {
     pub recovery: crate::studio::StudioRecoveryRegistry,
     pub product_events: ProductEventBus,
     pub config_runtime: crate::config::ConfigRuntime,
-    pub mcp_runtime: pl_tool::mcp::McpRuntimeHandle,
+    pub mcp_connector: pl_tool::mcp::McpConnector,
     pub lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry,
     pub skills: crate::studio::runtime::SkillCatalogRuntime,
     pub thread_modes: crate::mode::ThreadModeManager,
@@ -48,6 +49,8 @@ pub(in crate::studio) struct StudioThreadServices {
 pub(crate) struct StudioThreadFactory {
     services: StudioThreadServices,
     bindings: Arc<std::sync::Mutex<std::collections::BTreeMap<String, tool_bindings::ToolBinding>>>,
+    mcp_owners: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<mcp::ThreadMcpOwner>>>>,
+    retiring_mcp: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<
@@ -65,6 +68,8 @@ impl StudioThreadFactory {
         Self {
             services,
             bindings: Default::default(),
+            mcp_owners: Default::default(),
+            retiring_mcp: Default::default(),
             initial_routes: Default::default(),
         }
     }

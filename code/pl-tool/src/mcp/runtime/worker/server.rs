@@ -238,5 +238,6 @@ pub(super) fn server_fingerprint(server: &EffectiveMcpServerConfig) -> u64 {
     server.source_kind.as_str().hash(&mut hasher);
     server.bearer_token.hash(&mut hasher);
     server.tool_effect.hash(&mut hasher);
+    server.execution_context.hash(&mut hasher);
     hasher.finish()
 }

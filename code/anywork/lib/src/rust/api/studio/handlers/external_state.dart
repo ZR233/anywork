@@ -5,19 +5,59 @@
 
 import '../../../frb_generated.dart';
 import '../types/error.dart';
+import '../types/mcp.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
 import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<BridgeMcpStateSnapshot> readMcpState() =>
-    RustLib.instance.api.crateApiStudioHandlersExternalStateReadMcpState();
+Future<BridgeMcpCatalogSnapshot> readMcpCatalog({
+  required BridgeMcpScope scope,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateReadMcpCatalog(
+  scope: scope,
+);
 
-Future<BridgeMcpStateSnapshot> resetMcp({required McpResetInput input}) =>
-    RustLib.instance.api.crateApiStudioHandlersExternalStateResetMcp(
-      input: input,
-    );
+Future<BridgeMcpCatalogSnapshot> reloadMcpCatalog({
+  required BridgeMcpScope scope,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateReloadMcpCatalog(
+  scope: scope,
+);
+
+Future<BridgeMcpDocumentContent> readMcpDocument({
+  required BridgeMcpDocumentRef document,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateReadMcpDocument(
+  document: document,
+);
+
+Future<BridgeMcpDocumentCommitReceipt> createMcpDocument({
+  required BridgeCreateMcpDocumentInput input,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateCreateMcpDocument(
+  input: input,
+);
+
+Future<BridgeMcpDocumentCommitReceipt> updateMcpDocument({
+  required BridgeUpdateMcpDocumentInput input,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateUpdateMcpDocument(
+  input: input,
+);
+
+Future<BridgeMcpDocumentCommitReceipt> deleteMcpDocument({
+  required BridgeDeleteMcpDocumentInput input,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateDeleteMcpDocument(
+  input: input,
+);
+
+Future<BridgeThreadMcpStateSnapshot> readThreadMcp({
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersExternalStateReadThreadMcp(
+  threadId: threadId,
+);
+
+Future<BridgeThreadMcpStateSnapshot> reconnectThreadMcp({
+  required BridgeReconnectThreadMcpInput input,
+}) => RustLib.instance.api
+    .crateApiStudioHandlersExternalStateReconnectThreadMcp(input: input);
 
 Future<BridgeLspStateSnapshot> readLspState() =>
     RustLib.instance.api.crateApiStudioHandlersExternalStateReadLspState();

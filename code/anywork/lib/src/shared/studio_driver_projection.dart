@@ -648,6 +648,12 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(client.project.state.agentSync);
   counts.add(client.recovery.state.sync);
   counts.add(client.mcp.state.sync);
+  for (final store in client.ownedMcpCatalogs) {
+    counts.add(store.state.sync);
+  }
+  for (final store in client.ownedThreadMcp) {
+    counts.add(store.state.sync);
+  }
   counts.add(client.lsp.state.sync);
   counts.add(client.modeCatalog.state.sync);
   counts.add(client.updater.state.sync);

@@ -25,15 +25,20 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "linux")]
 use crate::command::LocalWorkerExecutable;
-use crate::mcp::config::EffectiveMcpServerConfig;
-use crate::mcp::config::McpServerTransport;
+use crate::command::ManagedCommand;
+use crate::mcp::config::{EffectiveMcpServerConfig, McpExecutionContext, McpServerTransport};
 #[cfg(target_os = "linux")]
 use pl_remote_helper::client::ManagedWorker;
 #[cfg(target_os = "linux")]
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+pub(crate) mod remote_http;
+mod remote_stdio;
 mod stderr_capture;
 mod stdio_program;
+
+pub use remote_http::RemoteStreamableHttpClient;
 
 use stderr_capture::StderrCapture;
 
@@ -57,6 +62,7 @@ type ToolListChangedSink = Arc<dyn Fn(String) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct McpConnector {
     tool_list_changed: Option<ToolListChangedSink>,
+    close_timeout: Option<Duration>,
     /// Bundled supervisor for local stdio servers. On Linux every stdio server is
     /// started through the same per-child supervisor as the local command tool so a
     /// GUI that is force-killed still reclaims the whole language/tool process tree.
@@ -74,14 +80,69 @@ impl fmt::Debug for McpConnector {
 }
 
 impl McpConnector {
-    /// 按 transport 选择兼容的 MCP 启动协商并建立连接。
+    /// 按执行环境与 transport 选择兼容的 MCP 启动协商并建立连接。
     pub async fn connect(&self, request: McpConnectRequest) -> Result<ConnectedMcp> {
-        match request.server.config.transport {
-            McpServerTransport::Stdio => self.connect_stdio(request).await,
-            McpServerTransport::StreamableHttp => {
-                connect_http(request, self.tool_list_changed.clone()).await
+        self.connect_cancellable(request, CancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn connect_cancellable(
+        &self,
+        request: McpConnectRequest,
+        cancel: CancellationToken,
+    ) -> Result<ConnectedMcp> {
+        let close_timeout = self.close_timeout.unwrap_or(CLOSE_TIMEOUT);
+        match (
+            &request.server.execution_context,
+            request.server.config.transport,
+        ) {
+            (McpExecutionContext::Host, McpServerTransport::Stdio) => {
+                self.connect_stdio(request, cancel).await
+            }
+            (McpExecutionContext::Host, McpServerTransport::StreamableHttp) => {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => Err(connection_error(
+                        &request.server_id,
+                        "MCP HTTP connection cancelled",
+                    )),
+                    res = connect_http(request.clone(), self.tool_list_changed.clone(), close_timeout) => res,
+                }
+            }
+            (McpExecutionContext::Remote { commands }, McpServerTransport::Stdio) => {
+                let commands = commands.clone();
+                remote_stdio::connect_remote_stdio(
+                    request,
+                    commands,
+                    self.tool_list_changed.clone(),
+                    close_timeout,
+                    cancel,
+                )
+                .await
+            }
+            (McpExecutionContext::Remote { commands }, McpServerTransport::StreamableHttp) => {
+                let client = commands.client().clone();
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => Err(connection_error(
+                        &request.server_id,
+                        "MCP remote HTTP connection cancelled",
+                    )),
+                    res = remote_http::connect_remote_http(
+                        request.clone(),
+                        client,
+                        self.tool_list_changed.clone(),
+                        close_timeout,
+                    ) => res,
+                }
             }
         }
+    }
+
+    /// Overrides the per-session close timeout (defaults to 5 seconds).
+    pub fn with_close_timeout(mut self, timeout: Duration) -> Self {
+        self.close_timeout = Some(timeout);
+        self
     }
 
     /// Retains the bundled per-child supervisor used to start local stdio servers.
@@ -110,7 +171,11 @@ impl McpConnector {
     /// force-killed GUI still reclaims the whole process tree. Without a supervisor the
     /// connector fails loudly instead of falling back to an unsupervised spawn.
     #[cfg(target_os = "linux")]
-    async fn connect_stdio(&self, request: McpConnectRequest) -> Result<ConnectedMcp> {
+    async fn connect_stdio(
+        &self,
+        request: McpConnectRequest,
+        cancel: CancellationToken,
+    ) -> Result<ConnectedMcp> {
         let (command_name, program) = resolve_stdio_program(&request)?;
         let worker = self.stdio_worker.clone().ok_or_else(|| {
             connection_error(
@@ -127,6 +192,8 @@ impl McpConnector {
             command_name,
             program,
             worker,
+            self.close_timeout.unwrap_or(CLOSE_TIMEOUT),
+            cancel,
         )
         .await
     }
@@ -134,13 +201,19 @@ impl McpConnector {
     /// Other platforms keep the native child-process transport, which the background
     /// factory already wraps in a Windows Job Object / Unix process group.
     #[cfg(not(target_os = "linux"))]
-    async fn connect_stdio(&self, request: McpConnectRequest) -> Result<ConnectedMcp> {
+    async fn connect_stdio(
+        &self,
+        request: McpConnectRequest,
+        cancel: CancellationToken,
+    ) -> Result<ConnectedMcp> {
         let (command_name, program) = resolve_stdio_program(&request)?;
         connect_stdio_child_process(
             request,
             self.tool_list_changed.clone(),
             command_name,
             program,
+            self.close_timeout.unwrap_or(CLOSE_TIMEOUT),
+            cancel,
         )
         .await
     }
@@ -200,6 +273,8 @@ impl ClientHandler for McpClientHandler {
 /// lease 释放后通过 [`Self::close`] 显式关闭。
 pub struct ConnectedMcp {
     peer: Peer<RoleClient>,
+    closing: AtomicBool,
+    close_timeout: Duration,
     owner: RwLock<Option<RunningService<RoleClient, McpClientHandler>>>,
     /// Tool-subscription owner shared with the close task so a subscription that cannot be
     /// confirmed stopped is re-inserted here instead of being dropped while still running.
@@ -216,6 +291,10 @@ pub struct ConnectedMcp {
     /// executable alive and is moved into the close task with the supervisor.
     #[cfg(target_os = "linux")]
     worker_owner: Option<Arc<dyn LocalWorkerExecutable>>,
+    /// Supervised remote stdio command owned through `pl-remote-helper`.
+    remote_command: tokio::sync::Mutex<Option<ManagedCommand>>,
+    /// Cancellation token for remote HTTP exchange / SSE streams.
+    transport_cancel: Option<CancellationToken>,
 }
 
 /// Close bookkeeping shared by every `close()` caller on one [`ConnectedMcp`].
@@ -239,6 +318,7 @@ impl fmt::Debug for ConnectedMcp {
 impl ConnectedMcp {
     pub(super) async fn from_running(
         service: RunningService<RoleClient, McpClientHandler>,
+        close_timeout: Duration,
     ) -> Self {
         let peer = service.peer().clone();
         peer.set_response_cache_config(
@@ -248,6 +328,8 @@ impl ConnectedMcp {
         let tool_subscription = start_tool_list_subscription(&service).await;
         Self {
             peer,
+            closing: AtomicBool::new(false),
+            close_timeout,
             owner: RwLock::new(Some(service)),
             tool_subscription: Arc::new(tokio::sync::Mutex::new(tool_subscription)),
             close: tokio::sync::Mutex::new(CloseProgress {
@@ -258,6 +340,8 @@ impl ConnectedMcp {
             stdio_worker: tokio::sync::Mutex::new(None),
             #[cfg(target_os = "linux")]
             worker_owner: None,
+            remote_command: tokio::sync::Mutex::new(None),
+            transport_cancel: None,
         }
     }
 
@@ -268,10 +352,31 @@ impl ConnectedMcp {
         service: RunningService<RoleClient, McpClientHandler>,
         worker: ManagedWorker,
         worker_owner: Arc<dyn LocalWorkerExecutable>,
+        close_timeout: Duration,
     ) -> Self {
-        let mut connected = Self::from_running(service).await;
+        let mut connected = Self::from_running(service, close_timeout).await;
         *connected.stdio_worker.lock().await = Some(worker);
         connected.worker_owner = Some(worker_owner);
+        connected
+    }
+
+    pub(super) async fn from_running_with_remote_command(
+        service: RunningService<RoleClient, McpClientHandler>,
+        command: ManagedCommand,
+        close_timeout: Duration,
+    ) -> Self {
+        let connected = Self::from_running(service, close_timeout).await;
+        *connected.remote_command.lock().await = Some(command);
+        connected
+    }
+
+    pub(super) async fn from_running_with_transport_cancel(
+        service: RunningService<RoleClient, McpClientHandler>,
+        transport_cancel: CancellationToken,
+        close_timeout: Duration,
+    ) -> Self {
+        let mut connected = Self::from_running(service, close_timeout).await;
+        connected.transport_cancel = Some(transport_cancel);
         connected
     }
 
@@ -288,6 +393,7 @@ impl ConnectedMcp {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
+        self.ensure_running("tools/list")?;
         self.peer
             .list_all_tools()
             .await
@@ -310,16 +416,15 @@ impl ConnectedMcp {
                 });
             }
         }
-        let owner = self.running_service("tools/call").await?;
-        owner
-            .as_ref()
-            .expect("checked running MCP service")
+        self.ensure_running("tools/call")?;
+        self.peer
             .call_tool(request)
             .await
             .map_err(|error| connection_error("tools/call", error))
     }
 
     pub async fn list_resources(&self, cursor: Option<String>) -> Result<ListResourcesResult> {
+        self.ensure_running("resources/list")?;
         self.peer
             .list_resources(Some(PaginatedRequestParams::default().with_cursor(cursor)))
             .await
@@ -330,6 +435,7 @@ impl ConnectedMcp {
         &self,
         cursor: Option<String>,
     ) -> Result<ListResourceTemplatesResult> {
+        self.ensure_running("resources/templates/list")?;
         self.peer
             .list_resource_templates(Some(PaginatedRequestParams::default().with_cursor(cursor)))
             .await
@@ -337,10 +443,8 @@ impl ConnectedMcp {
     }
 
     pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult> {
-        let owner = self.running_service("resources/read").await?;
-        owner
-            .as_ref()
-            .expect("checked running MCP service")
+        self.ensure_running("resources/read")?;
+        self.peer
             .read_resource(ReadResourceRequestParams::new(uri))
             .await
             .map_err(|error| connection_error("resources/read", error))
@@ -353,6 +457,10 @@ impl ConnectedMcp {
     /// 进程终止回收），而不是静默 clean。只有确认全部 owner 已释放才缓存终态结果供
     /// 幂等重放；仍有 owner 未确认时保留可重试状态。
     pub async fn close(&self) -> Result<()> {
+        self.closing.store(true, Ordering::Release);
+        if let Some(cancel) = &self.transport_cancel {
+            cancel.cancel();
+        }
         let mut progress = self.close.lock().await;
         if let Some(result) = &progress.completed {
             return result
@@ -362,19 +470,36 @@ impl ConnectedMcp {
         if progress.task.is_none() {
             let subscription = self.tool_subscription.clone();
             let service = self.owner.write().await.take();
+            let remote_command = self.remote_command.lock().await.take();
+            let transport_cancel = self.transport_cancel.clone();
+            let close_timeout = self.close_timeout;
             #[cfg(target_os = "linux")]
             let worker = self.stdio_worker.lock().await.take();
             #[cfg(target_os = "linux")]
             let executable = self.worker_owner.clone();
             #[cfg(target_os = "linux")]
-            let task = tokio::spawn(close_everything(subscription, service, worker, executable));
+            let task = tokio::spawn(close_everything(
+                subscription,
+                service,
+                remote_command,
+                transport_cancel,
+                close_timeout,
+                worker,
+                executable,
+            ));
             #[cfg(not(target_os = "linux"))]
-            let task = tokio::spawn(close_everything(subscription, service));
+            let task = tokio::spawn(close_everything(
+                subscription,
+                service,
+                remote_command,
+                transport_cancel,
+                close_timeout,
+            ));
             progress.task = Some(task);
         }
         let outcome = {
             let task = progress.task.as_mut().expect("MCP close task must exist");
-            tokio::time::timeout(CLOSE_TIMEOUT, task).await
+            tokio::time::timeout(self.close_timeout, task).await
         };
         match outcome {
             Ok(Ok(result)) => {
@@ -399,20 +524,14 @@ impl ConnectedMcp {
         }
     }
 
-    async fn running_service(
-        &self,
-        operation: &str,
-    ) -> Result<
-        tokio::sync::RwLockReadGuard<'_, Option<RunningService<RoleClient, McpClientHandler>>>,
-    > {
-        let owner = self.owner.read().await;
-        if owner.is_none() {
+    fn ensure_running(&self, operation: &str) -> Result<()> {
+        if self.closing.load(Ordering::Acquire) {
             return Err(PureError::ToolExecutionFailed {
                 tool: "mcp".to_string(),
                 error: format!("MCP service is closed during {operation}"),
             });
         }
-        Ok(owner)
+        Ok(())
     }
 }
 
@@ -507,7 +626,15 @@ async fn connect_stdio_child_process(
     tool_list_changed: Option<ToolListChangedSink>,
     command_name: String,
     program: stdio_program::ResolvedStdioProgram,
+    close_timeout: Duration,
+    cancel: CancellationToken,
 ) -> Result<ConnectedMcp> {
+    if cancel.is_cancelled() {
+        return Err(connection_error(
+            &request.server_id,
+            "MCP stdio connection cancelled",
+        ));
+    }
     let config = &request.server.config;
     let mut command = Command::new(program.executable);
     command
@@ -534,25 +661,33 @@ async fn connect_stdio_child_process(
             )
         })?;
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
-    let service = match client_handler(
+    let handshake = client_handler(
         &request.server_id,
         ProtocolVersion::V_2026_07_28,
         tool_list_changed,
     )
-    .serve_with_lifecycle(transport, discovery_lifecycle())
-    .await
-    {
-        Ok(service) => service,
-        Err(error) => {
-            tokio::task::yield_now().await;
-            let error = stderr.as_ref().and_then(StderrCapture::render).map_or_else(
-                || error.to_string(),
-                |stderr| format!("{error}; stderr: {stderr}"),
-            );
-            return Err(connection_error(&request.server_id, error));
+    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let service = tokio::select! {
+        biased;
+        () = cancel.cancelled() => {
+            return Err(connection_error(
+                &request.server_id,
+                "MCP stdio connection cancelled during handshake",
+            ));
+        }
+        result = handshake => match result {
+            Ok(service) => service,
+            Err(error) => {
+                tokio::task::yield_now().await;
+                let error = stderr.as_ref().and_then(StderrCapture::render).map_or_else(
+                    || error.to_string(),
+                    |stderr| format!("{error}; stderr: {stderr}"),
+                );
+                return Err(connection_error(&request.server_id, error));
+            }
         }
     };
-    Ok(ConnectedMcp::from_running(service).await)
+    Ok(ConnectedMcp::from_running(service, close_timeout).await)
 }
 
 /// Starts a Linux local stdio server under the bundled per-child supervisor.
@@ -568,9 +703,17 @@ async fn connect_stdio_supervised(
     command_name: String,
     program: stdio_program::ResolvedStdioProgram,
     worker_executable: Arc<dyn LocalWorkerExecutable>,
+    close_timeout: Duration,
+    cancel: CancellationToken,
 ) -> Result<ConnectedMcp> {
     use pl_remote_helper::client::ProcessCommand;
 
+    if cancel.is_cancelled() {
+        return Err(connection_error(
+            &request.server_id,
+            "MCP stdio connection cancelled",
+        ));
+    }
     let config = &request.server.config;
     let mut specification = ProcessCommand::new(program.executable.into_os_string())
         .args(program.prefix_args)
@@ -581,14 +724,23 @@ async fn connect_stdio_supervised(
     for (key, value) in &config.env {
         specification = specification.env(key.clone(), value.clone());
     }
-    let mut worker = ManagedWorker::spawn(worker_executable.worker_path(), specification)
-        .await
-        .map_err(|error| {
-            connection_error(
-                &request.server_id,
-                format!("failed to start stdio command {command_name}: {error}"),
-            )
-        })?;
+    let start_control = crate::command::CommandStartControl::new(
+        tokio::time::Instant::now() + Duration::from_secs(3600),
+        cancel.clone(),
+        CancellationToken::new(),
+    );
+    let mut worker = ManagedWorker::spawn_controlled(
+        worker_executable.worker_path(),
+        specification,
+        &start_control,
+    )
+    .await
+    .map_err(|error| {
+        connection_error(
+            &request.server_id,
+            format!("failed to start stdio command {command_name}: {error}"),
+        )
+    })?;
     let stdin = worker.take_stdin();
     let stdout = worker.take_stdout();
     let stderr = worker.take_stderr();
@@ -601,26 +753,41 @@ async fn connect_stdio_supervised(
     };
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
     let transport = AsyncRwTransport::new_client(stdout, stdin);
-    let service = match client_handler(
+    let handshake = client_handler(
         &request.server_id,
         ProtocolVersion::V_2026_07_28,
         tool_list_changed,
     )
-    .serve_with_lifecycle(transport, discovery_lifecycle())
-    .await
-    {
-        Ok(service) => service,
-        Err(error) => {
-            tokio::task::yield_now().await;
-            let error = stderr.as_ref().and_then(StderrCapture::render).map_or_else(
-                || error.to_string(),
-                |stderr| format!("{error}; stderr: {stderr}"),
-            );
+    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let service = tokio::select! {
+        biased;
+        () = cancel.cancelled() => {
             cancel_and_wait_worker(worker).await;
-            return Err(connection_error(&request.server_id, error));
+            return Err(connection_error(
+                &request.server_id,
+                "MCP stdio connection cancelled during handshake",
+            ));
+        }
+        result = handshake => match result {
+            Ok(service) => service,
+            Err(error) => {
+                tokio::task::yield_now().await;
+                let error = stderr.as_ref().and_then(StderrCapture::render).map_or_else(
+                    || error.to_string(),
+                    |stderr| format!("{error}; stderr: {stderr}"),
+                );
+                cancel_and_wait_worker(worker).await;
+                return Err(connection_error(&request.server_id, error));
+            }
         }
     };
-    Ok(ConnectedMcp::from_running_with_stdio_worker(service, worker, worker_executable).await)
+    Ok(ConnectedMcp::from_running_with_stdio_worker(
+        service,
+        worker,
+        worker_executable,
+        close_timeout,
+    )
+    .await)
 }
 
 /// Requests cancellation of one stdio supervisor and waits for its complete tree exit.
@@ -642,6 +809,9 @@ async fn cancel_and_wait_worker(mut worker: ManagedWorker) {
 async fn close_everything(
     subscription_slot: Arc<tokio::sync::Mutex<Option<ToolListSubscription>>>,
     service: Option<RunningService<RoleClient, McpClientHandler>>,
+    remote_command: Option<ManagedCommand>,
+    transport_cancel: Option<CancellationToken>,
+    close_timeout: Duration,
     #[cfg(target_os = "linux")] worker: Option<ManagedWorker>,
     #[cfg(target_os = "linux")] executable: Option<Arc<dyn LocalWorkerExecutable>>,
 ) -> std::result::Result<(), String> {
@@ -656,19 +826,32 @@ async fn close_everything(
     if let Some(service) = service.as_ref() {
         service.cancellation_token().cancel();
     }
+    if let Some(cancel) = transport_cancel.as_ref() {
+        cancel.cancel();
+    }
+    if let Some(command) = remote_command.as_ref() {
+        command.cancellation().cancel();
+    }
 
-    let subscription_join = close_tool_subscription(&subscription_slot, &mut subscription);
+    let subscription_join =
+        close_tool_subscription(&subscription_slot, &mut subscription, close_timeout);
     let service_join = await_service_close(service);
+    let remote_join = close_remote_command(remote_command);
     #[cfg(target_os = "linux")]
     let worker_join = close_worker(worker, executable);
     #[cfg(not(target_os = "linux"))]
     let worker_join = async { Ok::<(), String>(()) };
 
-    let (subscription_result, service_result, worker_result) =
-        tokio::join!(subscription_join, service_join, worker_join);
+    let (subscription_result, service_result, remote_result, worker_result) =
+        tokio::join!(subscription_join, service_join, remote_join, worker_join);
 
     let mut failures = Vec::new();
-    for result in [subscription_result, service_result, worker_result] {
+    for result in [
+        subscription_result,
+        service_result,
+        remote_result,
+        worker_result,
+    ] {
         if let Err(error) = result {
             failures.push(error);
         }
@@ -685,6 +868,7 @@ async fn close_everything(
 async fn close_tool_subscription(
     slot: &tokio::sync::Mutex<Option<ToolListSubscription>>,
     subscription: &mut Option<ToolListSubscription>,
+    close_timeout: Duration,
 ) -> std::result::Result<(), String> {
     if subscription.is_none() {
         return Ok(());
@@ -693,7 +877,7 @@ async fn close_tool_subscription(
         let active = subscription
             .as_mut()
             .expect("checked MCP subscription owner");
-        tokio::time::timeout(CLOSE_TIMEOUT, &mut active.task).await
+        tokio::time::timeout(close_timeout, &mut active.task).await
     };
     match first {
         Ok(Ok(Ok(()))) => {
@@ -715,7 +899,7 @@ async fn close_tool_subscription(
             .as_mut()
             .expect("checked MCP subscription owner");
         active.task.abort();
-        tokio::time::timeout(CLOSE_TIMEOUT, &mut active.task).await
+        tokio::time::timeout(close_timeout, &mut active.task).await
     };
     match second {
         Ok(Ok(Ok(()))) => {
@@ -754,6 +938,24 @@ async fn await_service_close(
     }
 }
 
+async fn close_remote_command(command: Option<ManagedCommand>) -> std::result::Result<(), String> {
+    let Some(mut command) = command else {
+        return Ok(());
+    };
+    command.cancellation().cancel();
+    match command.wait().await {
+        Ok(exit) => match exit.supervision_failure {
+            Some(failure) => Err(format!(
+                "MCP remote stdio process did not confirm tree exit: {failure}"
+            )),
+            None => Ok(()),
+        },
+        Err(error) => Err(format!(
+            "MCP remote stdio process did not confirm tree exit: {error}"
+        )),
+    }
+}
+
 /// Owns the Linux stdio supervisor (and its executable image lease) until the whole process
 /// tree is confirmed exited. A failed cancel request is preserved as a degraded result even
 /// when the follow-up seal + wait reclaims the tree, so nothing is silently clean.
@@ -789,6 +991,7 @@ async fn close_worker(
 async fn connect_http(
     request: McpConnectRequest,
     tool_list_changed: Option<ToolListChangedSink>,
+    close_timeout: Duration,
 ) -> Result<ConnectedMcp> {
     let config = &request.server.config;
     let uri = config.url.as_deref().ok_or_else(|| {
@@ -809,6 +1012,18 @@ async fn connect_http(
         .custom_headers(custom_headers)
         .reinit_on_expired_session(true);
     if let Some(token) = request.server.bearer_token.as_deref() {
+        transport_config = transport_config.auth_header(token);
+    } else if let Some(env_var) = config.bearer_token_env_var.as_deref() {
+        let token = std::env::var(env_var)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                connection_config_error(
+                    &request.server_id,
+                    &format!("missing bearer token environment variable '{env_var}'"),
+                )
+            })?;
         transport_config = transport_config.auth_header(token);
     }
     let transport = StreamableHttpClientTransport::from_config(transport_config.clone());
@@ -844,7 +1059,7 @@ async fn connect_http(
         }
         Err(error) => return Err(connection_error(&request.server_id, error)),
     };
-    Ok(ConnectedMcp::from_running(service).await)
+    Ok(ConnectedMcp::from_running(service, close_timeout).await)
 }
 
 fn should_retry_http_with_initialize(error: &ClientInitializeError) -> bool {

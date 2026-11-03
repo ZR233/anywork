@@ -8,10 +8,10 @@ use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
-    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
-    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
+    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioModelCatalogStateSnapshot,
+    StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
+    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
+    StudioUpdateStateSnapshot,
 };
 
 use super::ProductEventBus;
@@ -139,8 +139,18 @@ impl ProductEventBus {
         ))
     }
 
-    pub fn emit_mcp_state(&self, state: StudioMcpStateSnapshot) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::McpStateChanged(state))
+    pub fn emit_mcp_catalog(
+        &self,
+        snapshot: pl_protocol::McpCatalogSnapshot,
+    ) -> StudioProductEventEnvelope {
+        self.emit(StudioProductEventKind::McpCatalogChanged(snapshot))
+    }
+
+    pub fn emit_thread_mcp_state(
+        &self,
+        state: pl_protocol::ThreadMcpStateSnapshot,
+    ) -> StudioProductEventEnvelope {
+        self.emit(StudioProductEventKind::ThreadMcpStateChanged(state))
     }
 
     pub fn emit_lsp_state(&self, state: StudioLspStateSnapshot) -> StudioProductEventEnvelope {

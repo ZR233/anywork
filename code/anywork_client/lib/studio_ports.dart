@@ -314,9 +314,28 @@ abstract class StudioTransport
     String query, {
     int limit = 50,
   });
-  Future<McpStateSnapshot> readMcpState();
-  Future<McpStateSnapshot> resetMcpServer(String serverId);
-  Future<McpStateSnapshot> resetAllMcp();
+  Future<McpCatalogSnapshot> readMcpCatalog(McpScope scope);
+  Future<McpCatalogSnapshot> reloadMcpCatalog(McpScope scope);
+  Future<McpDocumentContent> readMcpDocument(McpDocumentRef document);
+  Future<McpDocumentCommitReceipt> createMcpDocument({
+    required McpScope scope,
+    required String id,
+    required String rawToml,
+  });
+  Future<McpDocumentCommitReceipt> updateMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+    required String rawToml,
+  });
+  Future<McpDocumentCommitReceipt> deleteMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+  });
+  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId);
+  Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
+    required String threadId,
+    String? serverId,
+  });
   Future<LspStateSnapshot> readLspState();
   Future<LspStateSnapshot> probeLspServer(String workspaceId);
   Future<LspStateSnapshot> repairLspServer(String workspaceId, String serverId);

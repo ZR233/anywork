@@ -26,11 +26,13 @@ mod server;
 mod tools;
 
 use reconcile::{
-    ActivePreparation, PendingReconcile, await_preparation, prepare_generation, reject_reconciles,
+    ActivePreparation, PendingReconcile, await_preparation, cancel_and_collect_reconciles,
+    prepare_generation,
 };
 use server::{
     RuntimeGeneration, assign_tool_descriptors, reset_failed, server_fingerprint, unique_sessions,
 };
+use tokio_util::sync::CancellationToken;
 use tools::{configured_startup_timeout, filter_tool_definitions};
 
 pub(super) async fn run(
@@ -53,6 +55,7 @@ struct RuntimeWorker {
     generations: BTreeMap<McpGeneration, RuntimeGeneration>,
     current: McpGeneration,
     next_generation: u64,
+    shutting_down: bool,
     /// Single-owned closing completion shared with every runtime handle.
     shutdown_completion: ShutdownCompletion,
 }
@@ -96,6 +99,7 @@ impl RuntimeWorker {
                 .collect(),
             current,
             next_generation: 1,
+            shutting_down: false,
             shutdown_completion,
         }
     }
@@ -106,7 +110,7 @@ impl RuntimeWorker {
         let mut pending_tool_refreshes = BTreeSet::new();
         let mut tool_refresh = None;
         loop {
-            if preparation.is_none() && tool_refresh.is_none() {
+            if !self.shutting_down && preparation.is_none() && tool_refresh.is_none() {
                 if let Some(request) = pending.pop_front() {
                     preparation = Some(self.start_preparation(request));
                 } else if let Some(server_id) = pending_tool_refreshes.pop_first() {
@@ -134,11 +138,18 @@ impl RuntimeWorker {
                 }
                 candidate = await_tool_refresh(&mut tool_refresh), if tool_refresh.is_some() => {
                     tool_refresh = None;
-                    self.apply_tool_refresh(candidate, &mut pending_tool_refreshes).await;
+                    if !self.shutting_down {
+                        self.apply_tool_refresh(candidate, &mut pending_tool_refreshes).await;
+                    }
                 }
                 command = self.receiver.recv() => {
                     let Some(command) = command else {
-                        reject_reconciles(preparation.take(), &mut pending);
+                        if let Some(mut unpublished) =
+                            cancel_and_collect_reconciles(preparation.take(), &mut pending).await
+                        {
+                            unpublished.retired = true;
+                            self.generations.insert(unpublished.id, unpublished);
+                        }
                         break;
                     };
                     match command {
@@ -146,6 +157,10 @@ impl RuntimeWorker {
                     servers,
                     reply,
                 } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
                     if self.configuration_matches(&servers) {
                         let _ = reply.send(Ok(()));
                         continue;
@@ -161,6 +176,10 @@ impl RuntimeWorker {
                     scope,
                     reply,
                 } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
                     pending.push_back(PendingReconcile {
                         servers,
                         reset_scope: Some(scope),
@@ -168,9 +187,13 @@ impl RuntimeWorker {
                     });
                 }
                 RuntimeCommand::AcquireLease { reply } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
                     // Preparation is independent of a Thread's admission. A later
                     // generation update refreshes its tool directory when ready.
-                        let _ = reply.send(self.acquire_lease());
+                    let _ = reply.send(self.acquire_lease());
                 }
                 RuntimeCommand::ReleaseLease { generation } => {
                     self.release_lease(generation).await;
@@ -190,31 +213,54 @@ impl RuntimeWorker {
                     raw_name,
                     arguments,
                     reply,
-                } => self.spawn_tool_call(generation, server_id, raw_name, arguments, reply),
+                } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
+                    self.spawn_tool_call(generation, server_id, raw_name, arguments, reply);
+                }
                 RuntimeCommand::ResourceQuery {
                     generation,
                     server_id,
                     operation,
                     reply,
-                } => self.spawn_resource_query(generation, server_id, operation, reply),
+                } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
+                    self.spawn_resource_query(generation, server_id, operation, reply);
+                }
                 RuntimeCommand::MarkUnavailable {
                     generation,
                     server_id,
                     error,
                 } => self.mark_unavailable(generation, &server_id, error),
                 RuntimeCommand::ToolListChanged { server_id } => {
-                    pending_tool_refreshes.insert(server_id);
+                    if !self.shutting_down {
+                        pending_tool_refreshes.insert(server_id);
+                    }
                 }
                 RuntimeCommand::Shutdown { reply } => {
-                    reject_reconciles(preparation.take(), &mut pending);
+                    self.shutting_down = true;
+                    tool_refresh = None;
+                    pending_tool_refreshes.clear();
+                    if let Some(mut unpublished) =
+                        cancel_and_collect_reconciles(preparation.take(), &mut pending).await
+                    {
+                        unpublished.retired = true;
+                        self.generations.insert(unpublished.id, unpublished);
+                    }
                     let result = self.shutdown().await;
-                    let recorded = match &result {
-                        Ok(()) => Ok(()),
-                        Err(error) => Err(error.to_string()),
-                    };
-                    self.shutdown_completion.record(recorded).await;
+                    if result.is_ok() {
+                        self.shutdown_completion.record(Ok(())).await;
+                        let _ = reply.send(Ok(()));
+                        return;
+                    }
+                    // Retain the worker and its unconfirmed session owners so a subsequent
+                    // `shutdown()` joins the same in-flight `ConnectedMcp::close()` tasks.
                     let _ = reply.send(result);
-                    return;
                 }
                     }
                 }
@@ -239,14 +285,17 @@ impl RuntimeWorker {
             Some(McpResetScope::All) => reusable.clear(),
             None => {}
         }
+        let cancel = CancellationToken::new();
         let future = prepare_generation(
             self.connector.clone(),
             generation_id,
             request.servers,
             reusable,
+            cancel.clone(),
         );
         ActivePreparation {
             future: future.boxed(),
+            cancel,
             reply: request.reply,
             reset_scope: request.reset_scope,
         }
@@ -608,5 +657,12 @@ impl RuntimeWorker {
 
     fn emit_update(&self) {
         let _ = self.updates.send(());
+    }
+}
+
+fn shutting_down_error() -> PureError {
+    PureError::ToolExecutionFailed {
+        tool: "mcp".to_string(),
+        error: "MCP runtime is shutting down".to_string(),
     }
 }
