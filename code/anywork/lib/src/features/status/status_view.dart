@@ -1,5 +1,4 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
@@ -7,7 +6,6 @@ import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
-import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/settings_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
@@ -191,16 +189,5 @@ T? _observeSession<T>(
 }
 
 StudioThread? _threadIdentity(Ref ref, String threadId) {
-  final directory = ref.watch(threadDirectoryStoreProvider);
-  final sessionThread = ref.watch(
-    threadSessionStoreProvider(threadId)
-        .select((state) => state.workspace?.thread),
-  );
-  for (final thread in [
-    ...directory.window.threads,
-    ...directory.overlayThreads,
-  ]) {
-    if (thread.id == threadId) return thread;
-  }
-  return sessionThread;
+  return ref.watch(threadMetadataStoreProvider(threadId)).frame?.thread;
 }

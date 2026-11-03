@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../../models.dart';
 import '../../../conversation_ports.dart';
+import '../../../directory_ports.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
@@ -33,7 +34,11 @@ final class ConversationSessionImpl implements ConversationSession {
       onFailure: _onFailure,
       onAttempt: _onAttempt,
     );
-    _directoryObservation = directory.source.watch((_) => _rebindDirectory());
+    _directoryDemand = directory.observeThread(threadId);
+    _directoryObservation = _directoryDemand.state.watch(
+      (_) => _rebindDirectory(),
+      fireImmediately: true,
+    );
   }
   @override
   final String threadId;
@@ -41,6 +46,7 @@ final class ConversationSessionImpl implements ConversationSession {
   final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
   late final ConversationContentImpl _content;
+  late final DirectoryObservation<ThreadMetadataFrame> _directoryDemand;
   late final Observation _directoryObservation;
   _RuntimeResync? _resync;
   bool _closed = false;
@@ -70,15 +76,7 @@ final class ConversationSessionImpl implements ConversationSession {
     }
   }
 
-  StudioThread? get _identity {
-    for (final thread in [
-      ...directory.state.window.threads,
-      ...directory.state.overlayThreads,
-    ]) {
-      if (thread.id == threadId) return thread;
-    }
-    return null;
-  }
+  StudioThread? get _identity => _directoryDemand.state.value.frame?.thread;
 
   void _rebindDirectory() {
     if (_closed) return;
@@ -227,11 +225,26 @@ final class ConversationSessionImpl implements ConversationSession {
 
   Future<CloseReport> close({DateTime? deadline}) =>
       _closing ??= _close(deadline);
-  Future<CloseReport> _close(DateTime? deadline) {
+  Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
     _cancelResync();
     _directoryObservation.cancel();
-    return _content.close(deadline: deadline);
+    final unresolved = <UnresolvedResource>[];
+    final directoryWork = _directoryDemand.release().then<void>(
+      (_) {},
+      onError: (Object error, StackTrace _) {
+        unresolved.add(
+          UnresolvedResource(
+            owner: 'conversation-directory:$threadId',
+            attemptId: const AttemptId(0),
+            reason: error,
+          ),
+        );
+      },
+    );
+    final content = await _content.close(deadline: deadline);
+    await directoryWork;
+    return CloseReport(unresolved: [...content.unresolved, ...unresolved]);
   }
 
   Future<CloseReport> retryCleanup({DateTime? deadline}) =>

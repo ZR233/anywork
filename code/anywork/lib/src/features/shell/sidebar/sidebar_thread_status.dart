@@ -1,4 +1,4 @@
-part of 'studio_shell.dart';
+part of 'studio_sidebar.dart';
 
 /// 侧栏会话行右侧固定状态区的单行状态指示。
 ///

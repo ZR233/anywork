@@ -1651,13 +1651,9 @@ Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
   final store = _client.settings.state;
   final defaults = store.configLoaded ? store.canonical?.delegation : null;
   final drafts = _client.drafts.startDraft.state;
-  final directory = _client.threadDirectory.state;
   final threads = <String, StudioThread>{
-    for (final thread in [
-      ...directory.window.threads,
-      ...directory.overlayThreads,
-    ])
-      thread.id: thread,
+    for (final frame in _client.threadDirectory.observedWindows)
+      for (final thread in frame.threads) thread.id: thread,
     for (final workspace in facts.workspacesByThread.values)
       workspace.thread.id: workspace.thread,
   };

@@ -37,7 +37,7 @@ class StudioBootstrap {
   });
   final String ownerEpoch;
   final ProjectDirectoryState projectDirectory;
-  final ThreadDirectoryWindow threadDirectory;
+  final ThreadDirectoryPage threadDirectory;
   final AgentDirectoryState agentDirectory;
   final SettingsStateSnapshot settingsState;
   final RecoveryStateSnapshot recoveryState;

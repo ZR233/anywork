@@ -86,8 +86,21 @@
 widget 不证明 native 句柄和持久化，单平台／模拟对端不证明跨平台／真实供应商兼容。
 构建、生成和原生观察使用 `flutter-studio-build`，复用未受影响结果，不惯性叠加全量检查。
 
+### 真实链路的测试所有权
+
+- 合成模型路由也必须符合实际模型声明；没有 effort 参数时不自填候选值。
+  从具体观察或目录建立目标事实，不能以创建了 fixture、选中了 ID 或填入旧查询页代替首帧接纳。
+- 每个 Widget 测试使用独立的官方 `ProviderScope`／`ProviderContainer`，不跨测试复用 provider 图。
+  业务 fixture 可以按测试目的共享，但呈现观察、router 和调度回调随各自挂载场景收束；
+  不用生产 scheduler 补丁或额外 sleep 掩盖测试所有权错位。
+- 清理前尚无可停止执行，与已经准入停止命令后等待身份证明是不同状态。
+  后者须确认原目标、原操作和真实观察；缺行、无资格或取消请求本身都不能冒充完成。
+- 先保存实际关闭报告和必要操作身份，再断言 clean／持久化／资源回收。
+  失败同样保留诊断，不能因断言先抛出就丢失报告，或用进程退出替代应用自身收束。
+
 ## 来源与职责
 
 - `{workspace}/design/README.md` 设计索引：产品契约唯一归属，具体协议变化在所属文档维护。
 - [SQLite 隔离](https://sqlite.org/isolation.html) 与 [WAL](https://sqlite.org/wal.html)：读快照和提交边界。
 - [SeaORM migration](https://www.sea-ql.org/SeaORM/docs/migration/writing-migration/)：按实际版本和后端核对事务能力。
+- [Riverpod 测试隔离](https://riverpod.dev/docs/how_to/testing)：每个测试独立的 provider 容器与作用域。

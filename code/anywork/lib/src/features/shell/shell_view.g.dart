@@ -317,7 +317,7 @@ final class SidebarViewProvider
   }
 }
 
-String _$sidebarViewHash() => r'3085cd6b54e6019e6b0c123ee5006eb1adb16e23';
+String _$sidebarViewHash() => r'143430e906ffedddecaf2f1b2593e90614863842';
 
 @ProviderFor(headerView)
 final headerViewProvider = HeaderViewProvider._();
@@ -358,7 +358,7 @@ final class HeaderViewProvider
   }
 }
 
-String _$headerViewHash() => r'937e9473191389b3cc86b241eaa035c9d6bd5cf2';
+String _$headerViewHash() => r'3d7f5eb3b1b86e16358ceac54f5bdb7ae490ba8f';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -439,7 +439,7 @@ final class ConversationWorkspaceProvider
 }
 
 String _$conversationWorkspaceHash() =>
-    r'a55e4d1211f38344177d85dc69e0f728e77c363f';
+    r'13038da506c9f5f870ca9287ae0c9ae44599fd36';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -522,4 +522,4 @@ final class PersistencePanelViewProvider
 }
 
 String _$persistencePanelViewHash() =>
-    r'1f7a8020bc1e1e54fdc1b7e314a0ec1da915102c';
+    r'3f804606c55f0564550007563abc891611fb43f3';

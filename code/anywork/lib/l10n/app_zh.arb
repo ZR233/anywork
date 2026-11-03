@@ -133,6 +133,16 @@
     }
   },
   "sidebarCloseProject": "关闭项目",
+  "sidebarArchiveProjectConfirmTitle": "归档项目",
+  "sidebarArchiveProjectConfirmBody": "归档“{project}”将归档其会话、丢弃项目草稿并清理受管理的会话工作树。工作树中未提交或尚未整合的内容会永久丢失。是否继续？",
+  "@sidebarArchiveProjectConfirmBody": {
+    "placeholders": {
+      "project": {
+        "type": "String"
+      }
+    }
+  },
+  "sidebarArchiveProjectConfirmAction": "归档项目",
   "sidebarArchiveSession": "归档会话",
   "sidebarArchiveSessionFailed": "无法归档该会话。",
   "sidebarArchiveSessionBusy": "无法归档该会话，它可能仍在运行。",
@@ -1303,6 +1313,7 @@
   "sidebarNoResults": "没有匹配的项目或会话",
   "sidebarEmptyProject": "还没有会话，点击项目右侧 ＋ 开始",
   "sidebarStandaloneSessions": "非项目会话",
+  "sidebarNewStandaloneSession": "新建非项目会话",
   "sidebarStandaloneEmpty": "还没有非项目会话。",
   "sidebarStandalonePrepareFailed": "准备工作区失败：{error}。点击“新建会话”重试。",
   "@sidebarStandalonePrepareFailed": {
@@ -2318,5 +2329,23 @@
   "acpUsageFailed": "额度查询失败，请重试。",
   "acpUsageInvalidResponse": "服务端返回了无法识别的额度数据。",
   "acpUsageDisabled": "已停用",
-  "acpUsageUnknown": "剩余量未知"
+  "acpUsageUnknown": "剩余量未知",
+  "acpEditorStepBasicTitle": "1. 账号信息",
+  "acpEditorStepBasicSubtitle": "设置此反重力账号在糊来帮中的显示名称。无需填写 API 密钥。",
+  "acpEditorStepPrepareTitle": "2. 准备官方受管服务",
+  "acpEditorStepPrepareSubtitle": "糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（v1.4.5）。",
+  "acpEditorStepConnectTitle": "3. 保存并登录 Google 账号",
+  "acpEditorStepConnectSubtitle": "受管服务就绪后点击「保存并连接」，将进入账号详情页并引导在浏览器中完成 Google 登录授权。",
+  "acpInstallIdleHint": "点击下方「下载并准备」检测本机已有安装或从官方源下载受管服务。",
+  "acpInstallClaimHint": "本机已有准备好的受管服务，点击下方「使用已准备的服务器」即可绑定到当前草稿。",
+  "acpInstallReadyConfirmedHint": "官方受管服务已就绪并绑定到当前账号草稿，现在可以点击右下角「保存并连接」。",
+  "acpAuthCheckingSubtitle": "正在启动本地受管服务并检查登录状态（首次冷启动解包可能需要 20–40 秒，若弹出浏览器窗口请在其中完成授权）…",
+  "acpAuthVerifyingSubtitle": "正在核对登录凭据与探测会话（若弹出浏览器窗口，请在浏览器中完成 Google 账号授权）…",
+  "acpAuthConnectedSubtitle": "本地受管服务运行正常，已通过 Google Antigravity 登录验证。",
+  "acpAuthRecommendedBadge": "推荐",
+  "acpMethodOauthPersonalDesc": "使用个人 Google 账号在浏览器中完成登录授权（推荐个人用户使用）",
+  "acpMethodOauthBusinessDesc": "使用具备 Gemini Enterprise 许可的 Google Cloud 企业身份登录",
+  "acpMethodGeminiApiKeyDesc": "使用 Google AI Studio 的 Gemini API 密钥（需在宿主环境配置 GEMINI_API_KEY）",
+  "acpMethodAgentPlatformDesc": "连接到 Gemini Enterprise Agent Platform 企业部署",
+  "acpServiceInfoSectionTitle": "受管服务与连接信息"
 }

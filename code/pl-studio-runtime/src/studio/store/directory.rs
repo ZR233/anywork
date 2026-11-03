@@ -3,7 +3,7 @@
 //!
 //! 目录 mutation 一律"内存先行 + delta 异步落库"（见 design/17 §17.2）；本模块
 //! 只承载已经由 owner 决定的事实，不做业务校验或状态转换。SQLite `thread`/`project`
-//! 表是 write-behind 镜像，冷分页/搜索/归档范围只从 `catalog.toml` 读取。
+//! 表是 write-behind 镜像，运行期目录查询读取目录 owner 的当前摘要。
 
 use anyhow::Result;
 use pl_protocol::{Thread, ThreadModeId, ThreadWorkspaceMode};
@@ -207,22 +207,12 @@ impl ThreadDirectoryCursor {
     pub(in crate::studio) fn decode(raw: &str) -> Option<Self> {
         let rest = raw.strip_prefix("v2:")?;
         let (sort_time, id) = rest.split_once(':')?;
+        if id.trim().is_empty() {
+            return None;
+        }
         Some(Self {
             sort_time: sort_time.parse().ok()?,
             id: id.to_string(),
         })
-    }
-}
-
-impl StudioStore {
-    /// 未归档 Thread 的冷分页：按 `(last_user_message_at ?? created_at, id)` 倒序
-    /// keyset，cursor 为闭区间锚点（下一页取严格小于该键的条目）。
-    pub(in crate::studio) async fn list_thread_directory_page(
-        &self,
-        cursor: Option<&ThreadDirectoryCursor>,
-        limit: usize,
-    ) -> Result<Vec<Thread>> {
-        // `catalog.toml` is the only cold source for the first screen; no session state is read.
-        self.catalog_page_active(cursor, limit).await
     }
 }

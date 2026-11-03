@@ -35,6 +35,10 @@ use crate::api::studio::accounts::{
     registry::{AccountObservationRegistry, PendingAccountObservations},
 };
 use crate::api::studio::bridge_runtime::current_bridge;
+use crate::api::studio::directory::{
+    feed::BridgeDirectoryObservationInner,
+    registry::{DirectoryObservationRegistry, PendingDirectoryObservations},
+};
 use crate::api::studio::handlers::StartupFrame;
 use crate::api::studio::handlers::chat::ConversationOwner;
 use crate::api::studio::statistics::{
@@ -335,6 +339,7 @@ pub(crate) struct BridgeTaskRegistry {
     subscriptions: Mutex<HashMap<u64, Arc<BridgeSubscriptionInner>>>,
     statistics_feeds: StatisticsFeedRegistry,
     account_observations: AccountObservationRegistry,
+    directory_observations: DirectoryObservationRegistry,
     conversations: ConversationRegistry,
 }
 
@@ -345,6 +350,7 @@ pub(crate) struct PendingSubscriptionCancellation {
     issues: Vec<BridgeShutdownIssue>,
     statistics: PendingStatisticsFeedCancellation,
     accounts: PendingAccountObservations,
+    directories: PendingDirectoryObservations,
     conversations: PendingConversations,
 }
 
@@ -369,12 +375,25 @@ impl BridgeTaskRegistry {
         self.account_observations.unregister(id);
     }
 
+    pub(crate) fn register_directory_observation(
+        &self,
+        owner: &Arc<BridgeDirectoryObservationInner>,
+        shutdown: &CancellationToken,
+    ) -> Result<(), BridgeError> {
+        self.directory_observations.register(owner, shutdown)
+    }
+
+    pub(crate) fn unregister_directory_observation(&self, id: u64) {
+        self.directory_observations.unregister(id);
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             subscriptions: Mutex::new(HashMap::new()),
             statistics_feeds: StatisticsFeedRegistry::new(),
             account_observations: AccountObservationRegistry::default(),
+            directory_observations: DirectoryObservationRegistry::default(),
             conversations: ConversationRegistry::default(),
         }
     }
@@ -432,6 +451,7 @@ impl BridgeTaskRegistry {
         deadline: Instant,
     ) -> PendingSubscriptionCancellation {
         let accounts = self.account_observations.broadcast_cancel();
+        let directories = self.directory_observations.broadcast_cancel();
         let conversations = self.conversations.broadcast_cancel();
         let mut issues = Vec::new();
         // Bound the registry lock by the shared exit deadline; a lock timeout must not stall exit.
@@ -463,6 +483,7 @@ impl BridgeTaskRegistry {
             issues,
             statistics,
             accounts,
+            directories,
             conversations,
         }
     }
@@ -481,16 +502,26 @@ impl BridgeTaskRegistry {
             issues,
             statistics,
             accounts,
+            directories,
             conversations,
         } = pending;
-        let (mut subscription_issues, statistics_issues, account_issues, conversation_issues) = tokio::join!(
+        let (
+            mut subscription_issues,
+            statistics_issues,
+            account_issues,
+            directory_issues,
+            conversation_issues,
+        ) = tokio::join!(
             self.join_subscription_cancellations(owners, issues, deadline),
             self.statistics_feeds.join_cancelled(statistics, deadline),
             self.account_observations.join_cancelled(accounts, deadline),
+            self.directory_observations
+                .join_cancelled(directories, deadline),
             self.conversations.join_cancelled(conversations, deadline),
         );
         subscription_issues.extend(statistics_issues);
         subscription_issues.extend(account_issues);
+        subscription_issues.extend(directory_issues);
         subscription_issues.extend(conversation_issues);
         subscription_issues
     }

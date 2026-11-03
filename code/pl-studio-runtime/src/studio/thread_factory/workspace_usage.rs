@@ -78,9 +78,8 @@ impl StudioThreadFactory {
         let records = self.services.store.agent_closes().await?;
         for record in &records {
             self.services
-                .store
-                .catalog()
-                .project_explicit_close(&record.agent_id)
+                .product_events
+                .commit_explicit_close(&record.agent_id)
                 .await?;
             if let Some(binding) = &record.worktree {
                 if record.worktree_cleanup.is_terminal() {

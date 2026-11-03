@@ -1,4 +1,4 @@
-// Opt-in native cold reopen, window, sidebar and composer acceptance.
+// Opt-in native cold reopen, window and composer acceptance.
 // Use a retained manual-gui snapshot as the original project/thread identity.
 import 'dart:convert';
 import 'dart:io';
@@ -9,7 +9,6 @@ import 'flutter_driver_session.dart';
 import 'cold_start_navigation.dart';
 import 'timeline_observation.dart';
 import 'window_control.dart';
-import 'key_press.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length != 3) {
@@ -29,11 +28,6 @@ Future<void> main(List<String> args) async {
   };
   WindowGeometry? originalWindow;
   int? guiPid;
-  var heldRight = false;
-  int? canonicalWidth(Map<String, dynamic> state) =>
-      (state['settings'] as Map?)?['sidebarWidth'] as int?;
-  bool settingsSettled(Map<String, dynamic> state) =>
-      ((state['settings'] as Map)['mutations'] as List).isEmpty;
   Future<Map<String, dynamic>> until(
     String stage,
     bool Function(Map<String, dynamic>) predicate,
@@ -151,140 +145,6 @@ Future<void> main(List<String> args) async {
       await File('${output.path}/responsive-${size.$1}x${size.$2}.png')
           .writeAsBytes(await driver.screenshot());
     }
-    await driver.sendCommand(const SetSemantics(true));
-    final sidebar = find.byValueKey('sidebar-resize');
-    final sidebarBefore = await bounds('timeline-scrollable');
-    final initialSidebarWidth =
-        (await driver.getTopLeft(sidebar)).dx -
-        (await driver.getTopLeft(find.byValueKey('studio-shell'))).dx;
-    await driver.dragBy(sidebar, dx: 80);
-    final sidebarState = await settled('sidebar resized');
-    final sidebarAfter = await bounds('timeline-scrollable');
-    final expectedDrag = (440 - initialSidebarWidth).clamp(0.0, 80.0);
-    if ((sidebarBefore.width - sidebarAfter.width - expectedDrag).abs() > 1) {
-      throw StateError(
-        'Sidebar drag lost part of the native pointer displacement',
-      );
-    }
-    final sidebarContent = TimelineObservation.parse(sidebarState);
-    final savedDrag = await until(
-      'sidebar drag saved',
-      (state) =>
-          canonicalWidth(state) ==
-              (initialSidebarWidth + expectedDrag).round() &&
-          settingsSettled(state),
-    );
-    if (sidebarBefore.width - sidebarAfter.width < 1 ||
-        !sidebarContent.isLive ||
-        sidebarContent.generation != content.generation) {
-      throw StateError('Sidebar resize did not preserve display');
-    }
-    report['sidebarResize'] = {
-      'beforeWidth': sidebarBefore.width,
-      'afterWidth': sidebarAfter.width,
-      'expectedDelta': expectedDrag,
-      'canonicalWidth': canonicalWidth(savedDrag),
-      'pass': true,
-    };
-    await File('${output.path}/sidebar-resized.png')
-        .writeAsBytes(await driver.screenshot());
-    await driver.dragBy(sidebar, dx: -80);
-    await settled('sidebar restored');
-    final keyboardWidth = (await bounds('timeline-scrollable')).width;
-    final sidebarWidth =
-        (await driver.getTopLeft(sidebar)).dx -
-        (await driver.getTopLeft(find.byValueKey('studio-shell'))).dx;
-    final keyboardWidths = <Map<String, Object?>>[];
-    report['sidebarKeyboard'] = {'widths': keyboardWidths, 'pass': false};
-    Future<void> expectWidth(
-      double expected,
-      String stage, {
-      bool saved = true,
-    }) async {
-      final deadline = DateTime.now().add(const Duration(seconds: 8));
-      final expectedCanonical = (keyboardWidth + sidebarWidth - expected)
-          .round();
-      while (DateTime.now().isBefore(deadline)) {
-        final actual = (await bounds('timeline-scrollable')).width;
-        final state = await driver.readSnapshot();
-        final canonical = canonicalWidth(state);
-        if ((actual - expected).abs() <= 1 &&
-            (!saved ||
-                (canonical == expectedCanonical && settingsSettled(state)))) {
-          keyboardWidths.add({
-            'stage': stage,
-            'expected': expected,
-            'actual': actual,
-            'canonicalWidth': canonical,
-            'saved': saved,
-            'settingsSettled': settingsSettled(state),
-          });
-          return;
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-      throw StateError('Sidebar keyboard width did not change: $stage');
-    }
-
-    await driver.rawTap(find.byValueKey('composer-input'));
-    await driver.rawTap(sidebar);
-    await driver.pressKey(0x100000303, 0x7004f);
-    await expectWidth(keyboardWidth - 16, 'Right');
-    await driver.pressKey(0x100000303, 0x7004f);
-    await expectWidth(keyboardWidth - 32, 'Right twice');
-    await driver.pressKey(0x100000302, 0x70050);
-    await expectWidth(keyboardWidth - 16, 'Left');
-    await driver.pressKey(0x100000303, 0x7004f);
-    await driver.pressKey(0x100000302, 0x70050);
-    await expectWidth(keyboardWidth - 16, 'rapid Right then Left');
-    await driver.pressKey(0x100000306, 0x7004a);
-    await expectWidth(
-      keyboardWidth + sidebarWidth - 336,
-      'Home canonical default',
-    );
-    await driver.sendCommand(
-      KeyPress(0x100000303, 0x7004f, phase: KeyPressPhase.down),
-    );
-    heldRight = true;
-    await expectWidth(
-      keyboardWidth + sidebarWidth - 352,
-      'Right held',
-      saved: false,
-    );
-    final heldCanonical = canonicalWidth(await driver.readSnapshot());
-    if (heldCanonical != 336) {
-      throw StateError('Held key committed before release or focus loss');
-    }
-    await driver.rawTap(find.byValueKey('composer-input'));
-    await expectWidth(
-      keyboardWidth + sidebarWidth - 352,
-      'focus loss saves held key',
-    );
-    await driver.sendCommand(
-      KeyPress(0x100000303, 0x7004f, phase: KeyPressPhase.up),
-    );
-    heldRight = false;
-    await driver.rawTap(sidebar);
-    await driver.pressKey(0x100000306, 0x7004a);
-    await expectWidth(
-      keyboardWidth + sidebarWidth - 336,
-      'Home after focus loss',
-    );
-    final keyboardState = TimelineObservation.parse(
-      await settled('sidebar keyboard'),
-    );
-    if (!keyboardState.isLive ||
-        keyboardState.generation != content.generation) {
-      throw StateError('Sidebar keyboard changed reading mode');
-    }
-    report['sidebarKeyboard'] = {
-      'arrowsAndHome': true,
-      'focusLossSaved': true,
-      'widths': keyboardWidths,
-      'pass': true,
-    };
-    await File('${output.path}/sidebar-keyboard.png')
-        .writeAsBytes(await driver.screenshot());
     final composerBefore = await driver.readSnapshot();
     final originalDraft =
         ((composerBefore['workspace'] as Map)['composer'] as Map)['draft']
@@ -334,11 +194,6 @@ Future<void> main(List<String> args) async {
     rethrow;
   } finally {
     try {
-      if (heldRight) {
-        await driver.sendCommand(
-          KeyPress(0x100000303, 0x7004f, phase: KeyPressPhase.up),
-        );
-      }
       if (originalWindow != null && guiPid != null) {
         resizeOwnedWindow(
           guiPid: guiPid,

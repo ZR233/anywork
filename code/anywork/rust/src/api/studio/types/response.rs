@@ -16,7 +16,7 @@ pub struct BridgeStudioStateSnapshot {
     pub owner_epoch: String,
     pub runtime: RuntimeSnapshot,
     pub project_directory: BridgeProjectDirectoryState,
-    /// 目录分页窗口的首页；后续页通过 `listThreadsPage` keyset cursor 加载。
+    /// Thread directory page snapshot carried by the Studio response model.
     pub thread_directory: BridgeThreadDirectoryPage,
     pub agent_directory: BridgeAgentDirectoryState,
     pub settings_config: BridgeSettingsConfigStateSnapshot,
@@ -269,14 +269,6 @@ pub struct BridgeThreadDirectoryPageData {
     pub threads: Vec<BridgeThread>,
     /// `None` 表示没有更旧的页。
     pub next_cursor: Option<String>,
-}
-
-/// `listThreadsPage` 请求；`cursor` 为 `null` 时从最新一页开始。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeListThreadsPageRequest {
-    pub cursor: Option<String>,
-    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -748,23 +740,4 @@ pub enum SkillResourceBaseDto {
     Directory { path: String },
     Url { url: String },
     Opaque { description: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeDirectoryQuery {
-    pub workspace_id: Option<String>,
-    pub search: Option<String>,
-    pub archived: bool,
-    pub filter: BridgeDirectoryFilter,
-    pub cursor: Option<String>,
-    pub limit: u32,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeDirectoryFilter {
-    All,
-    Running,
-    Attention,
 }

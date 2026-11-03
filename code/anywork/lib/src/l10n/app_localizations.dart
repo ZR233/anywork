@@ -758,6 +758,24 @@ abstract class AppLocalizations {
   /// **'Close project'**
   String get sidebarCloseProject;
 
+  /// No description provided for @sidebarArchiveProjectConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive project'**
+  String get sidebarArchiveProjectConfirmTitle;
+
+  /// No description provided for @sidebarArchiveProjectConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Archiving “{project}” archives its sessions, discards the project draft, and cleans up managed session worktrees. Uncommitted or unintegrated content in those worktrees will be permanently lost. Continue?'**
+  String sidebarArchiveProjectConfirmBody(String project);
+
+  /// No description provided for @sidebarArchiveProjectConfirmAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive project'**
+  String get sidebarArchiveProjectConfirmAction;
+
   /// No description provided for @sidebarArchiveSession.
   ///
   /// In en, this message translates to:
@@ -6498,6 +6516,12 @@ abstract class AppLocalizations {
   /// **'Non-project sessions'**
   String get sidebarStandaloneSessions;
 
+  /// No description provided for @sidebarNewStandaloneSession.
+  ///
+  /// In en, this message translates to:
+  /// **'New non-project session'**
+  String get sidebarNewStandaloneSession;
+
   /// No description provided for @sidebarStandaloneEmpty.
   ///
   /// In en, this message translates to:
@@ -10691,6 +10715,114 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Remaining amount unknown'**
   String get acpUsageUnknown;
+
+  /// No description provided for @acpEditorStepBasicTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'1. Account information'**
+  String get acpEditorStepBasicTitle;
+
+  /// No description provided for @acpEditorStepBasicSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Set a display name for this Antigravity account in anywork. No API key is needed.'**
+  String get acpEditorStepBasicSubtitle;
+
+  /// No description provided for @acpEditorStepPrepareTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'2. Prepare official managed server'**
+  String get acpEditorStepPrepareTitle;
+
+  /// No description provided for @acpEditorStepPrepareSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).'**
+  String get acpEditorStepPrepareSubtitle;
+
+  /// No description provided for @acpEditorStepConnectTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'3. Save and sign in with Google'**
+  String get acpEditorStepConnectTitle;
+
+  /// No description provided for @acpEditorStepConnectSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Once the server is ready, click Save and connect to open account details and sign in with Google in your browser.'**
+  String get acpEditorStepConnectSubtitle;
+
+  /// No description provided for @acpInstallIdleHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Click Download and prepare below to reuse an existing installation or download from the official source.'**
+  String get acpInstallIdleHint;
+
+  /// No description provided for @acpInstallClaimHint.
+  ///
+  /// In en, this message translates to:
+  /// **'A prepared managed server is available. Click Use prepared server below to bind it to this draft.'**
+  String get acpInstallClaimHint;
+
+  /// No description provided for @acpInstallReadyConfirmedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'The official managed server is ready and bound to this draft. You can now click Save and connect.'**
+  String get acpInstallReadyConfirmedHint;
+
+  /// No description provided for @acpAuthCheckingSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting the local managed server and checking sign-in status (cold start may take 20–40s; if a browser opens, complete authorization there)…'**
+  String get acpAuthCheckingSubtitle;
+
+  /// No description provided for @acpAuthVerifyingSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Verifying credentials and probe session (if a browser opens, complete Google authorization there)…'**
+  String get acpAuthVerifyingSubtitle;
+
+  /// No description provided for @acpAuthConnectedSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'The local managed server is running and verified with Google Antigravity.'**
+  String get acpAuthConnectedSubtitle;
+
+  /// No description provided for @acpAuthRecommendedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Recommended'**
+  String get acpAuthRecommendedBadge;
+
+  /// No description provided for @acpMethodOauthPersonalDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with your personal Google account in the browser (recommended)'**
+  String get acpMethodOauthPersonalDesc;
+
+  /// No description provided for @acpMethodOauthBusinessDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with a Google Cloud identity that has a Gemini Enterprise license'**
+  String get acpMethodOauthBusinessDesc;
+
+  /// No description provided for @acpMethodGeminiApiKeyDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Use a Gemini API key from Google AI Studio (requires GEMINI_API_KEY in host environment)'**
+  String get acpMethodGeminiApiKeyDesc;
+
+  /// No description provided for @acpMethodAgentPlatformDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect to a Gemini Enterprise Agent Platform deployment'**
+  String get acpMethodAgentPlatformDesc;
+
+  /// No description provided for @acpServiceInfoSectionTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed server and connection'**
+  String get acpServiceInfoSectionTitle;
 }
 
 class _AppLocalizationsDelegate

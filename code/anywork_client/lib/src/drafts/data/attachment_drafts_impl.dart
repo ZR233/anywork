@@ -694,9 +694,6 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   }
 
   StudioThread? _lookupThread(String threadId) {
-    for (final thread in _dependencies.threads()) {
-      if (thread.id == threadId) return thread;
-    }
     return _dependencies.conversations
         .session(threadId)
         .state

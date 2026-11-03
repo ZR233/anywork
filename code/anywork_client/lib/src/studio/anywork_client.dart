@@ -58,6 +58,12 @@ class AnyworkClient {
        _accountDomains = accountDomains {
     mutations =
         mutationBoard ?? MutationBoard(clientId: clientId, budget: this.budget);
+    threadDirectory = ThreadDirectoryStore(
+      feed: transport,
+      budget: this.budget,
+      onStamp: (stamp) => mutations.observe(stamp),
+      onCleanupFailure: resourceFailure.publish,
+    );
     modeEditor = ModeEditorOwner(this);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
@@ -88,11 +94,6 @@ class AnyworkClient {
         selection: selection.source,
         recovery: recovery.source,
         modelAccounts: () => modelAccounts,
-        threads: () => [
-          ...threadDirectory.state.window.threads,
-          ...threadDirectory.state.overlayThreads,
-        ],
-        findThread: findThread,
         threadCommands: threadCommands,
         transport: transport,
       ),
@@ -110,10 +111,6 @@ class AnyworkClient {
       settings.source.watch((value) {
         if (value.configLoaded)
           observeResource('settings', value.settingsRevision);
-      }),
-      threadDirectory.source.watch((value) {
-        if (value.loaded)
-          observeResource('thread-directory', value.window.revision);
       }),
       modeCatalog.source.watch((value) {
         if (value.loaded)
@@ -219,7 +216,7 @@ class AnyworkClient {
   final project = ProjectStore();
   final settings = SettingsStore();
   final selection = SelectionStore();
-  final threadDirectory = ThreadDirectoryStore();
+  late final ThreadDirectoryStore threadDirectory;
   final mcp = McpStore();
   final lsp = LspStore();
   final modeCatalog = ModeCatalogStore();
@@ -532,7 +529,6 @@ class AnyworkClient {
     settingsWrites.requireOwner(owner);
     project.applyProjectDirectory(snapshot.projectDirectory);
     project.applyAgentDirectory(snapshot.agentDirectory);
-    threadDirectory.applyWindow(snapshot.threadDirectory);
     acceptSettingsSnapshot(
       snapshot.settingsState,
       scope: SettingsMergeScope.configOnly,
@@ -564,15 +560,10 @@ class AnyworkClient {
     }
   }
 
-  StudioThread? findThread(String id) {
-    for (final thread in [
-      ...threadDirectory.state.window.threads,
-      ...threadDirectory.state.overlayThreads,
-    ]) {
-      if (thread.id == id) return thread;
-    }
-    return null;
-  }
+  /// Synchronous lookup is limited to a Conversation that already owns this
+  /// exact ID observation; it never searches a directory-list union.
+  StudioThread? findThread(String id) =>
+      conversations.sessionState(id)?.workspace?.thread;
 
   void _selectionChanged(SelectionStoreState next) {
     if (_closed) return;
@@ -581,8 +572,8 @@ class AnyworkClient {
       threadId: next.selectedThreadId,
       agents: project.state.agents?.values ?? const [],
       threads: [
-        ...threadDirectory.state.window.threads,
-        ...threadDirectory.state.overlayThreads,
+        if (findThread(next.selectedThreadId ?? '') case final selected?)
+          selected,
       ],
     );
     final topicKey = '$workspaceId/$rootId';
@@ -636,23 +627,6 @@ class AnyworkClient {
     );
   }
 
-  void reconcileRemovedThreads(Set<String> removed) {
-    for (final id in removed) {
-      // A removed identity has no visible conversation demand.
-      if (selection.state.selectedThreadId == id)
-        conversations.setVisibleThread(null);
-    }
-    final selected = selection.state.selectedThreadId;
-    if (selected == null || !removed.contains(selected)) return;
-    final workspaceId = selection.state.selectedProjectId;
-    selection.replaceRemovedThread(
-      threadDirectory.state.window.threads
-          .where((thread) => thread.isRoot && thread.workspaceId == workspaceId)
-          .firstOrNull
-          ?.id,
-    );
-  }
-
   Future<CloseReport> close({DateTime? deadline}) {
     final existing = _closing;
     if (existing != null) return existing;
@@ -675,6 +649,7 @@ class AnyworkClient {
       _joinOwner('drafts', draftWork, deadline),
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
+      _joinReport('thread-directory', threadDirectory.close(), deadline),
       _joinOwner('bots-commands', botsCommands.close(), deadline),
       _joinOwner('bots-queries', botsQueries.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
@@ -786,6 +761,7 @@ class AnyworkClient {
         channels.retryCleanup(deadline: deadline),
         deadline,
       ),
+      _joinReport('thread-directory', threadDirectory.retryCleanup(), deadline),
       if (_closed)
         _joinReport(
           'updates',

@@ -12,7 +12,6 @@ import 'package:anywork_client/studio_client.dart';
 
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
-import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 
@@ -108,36 +107,48 @@ void main() {
       reason: 'demo fixture 的根会话默认是简洁模式',
     );
     final routeRevisionBefore = routeRevision();
-    final directoryRevisionBefore = container
-        .read(threadDirectoryStoreProvider)
-        .revision;
+    final directory = graph.client.threadDirectory.observeThreads(
+      DirectoryQuery(workspaceId: 'project-local'),
+      DirectoryWindow(),
+    );
+    try {
+      final initial = await directory.state
+          .waitFor((state) => state.frame != null)
+          .timeout(const Duration(seconds: 5));
+      final directoryRevisionBefore = initial.frame!.stamp.revision;
 
-    await container
-        .read(anyworkClientProvider)
-        .threadCommands
-        .setThreadMode(ThreadModeId.task, threadId: threadId);
+      await container
+          .read(anyworkClientProvider)
+          .threadCommands
+          .setThreadMode(ThreadModeId.task, threadId: threadId);
 
-    await graph.client.conversations
-        .session(threadId)
-        .source
-        .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
-    await graph.client.threadDirectory.source.waitFor(
-      (state) => state.window.threads.any(
-        (thread) => thread.id == threadId && thread.mode == ThreadModeId.task,
-      ),
-    );
-    expect(
-      container.read(threadDirectoryStoreProvider).revision,
-      greaterThan(directoryRevisionBefore),
-      reason: 'mode 是目录事实：必须经目录增量推进水位后才能被界面看到',
-    );
-    expect(
-      routeRevision(),
-      routeRevisionBefore + 1,
-      reason:
-          'mode 默认 route 是 Thread 状态事实，必须由有序流帧交付；'
-          '命令后重新读取会掩盖这里缺帧',
-    );
+      await graph.client.conversations
+          .session(threadId)
+          .source
+          .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
+      final updated = await directory.state.waitFor(
+        (state) =>
+            state.frame?.threads.any(
+              (thread) =>
+                  thread.id == threadId && thread.mode == ThreadModeId.task,
+            ) ==
+            true,
+      );
+      expect(
+        updated.frame!.stamp.revision,
+        greaterThan(directoryRevisionBefore),
+        reason: 'mode 是目录事实：必须由受控窗口的新完整帧交付',
+      );
+      expect(
+        routeRevision(),
+        routeRevisionBefore + 1,
+        reason:
+            'mode 默认 route 是 Thread 状态事实，必须由有序流帧交付；'
+            '命令后重新读取会掩盖这里缺帧',
+      );
+    } finally {
+      await directory.release();
+    }
   });
 
   test('思考强度由 Thread 有序流收敛，命令响应只合并 settings', () async {

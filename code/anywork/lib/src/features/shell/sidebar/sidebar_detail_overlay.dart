@@ -1,4 +1,4 @@
-part of 'studio_shell.dart';
+part of 'studio_sidebar.dart';
 
 /// 详情卡期望宽度；超过可用窗口时按真实尺寸收敛，窄抽屉中自动收窄。
 const double _sidebarDetailCardWidth = 300.0;

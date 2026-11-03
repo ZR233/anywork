@@ -28,6 +28,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/directory_feed.dart';
 
 final class _UnusedTransport extends UnusedAccountPorts
     implements StudioTransport {
@@ -42,18 +43,62 @@ final class _UnusedTransport extends UnusedAccountPorts
   }
 }
 
-final class _ColdDirectoryTransport extends _UnusedTransport {
+final class _ColdDirectoryTransport extends _UnusedTransport
+    with DirectoryFeedFixture {
   // Restoring navigation may observe product topics, but must not open a child.
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
       const Stream.empty();
 }
 
+final class _DirectoryRecordingDemoTransport extends RecordingDemoTransport
+    with DirectoryFeedFixture {}
+
+Future<DirectoryObservation<ThreadDirectoryFrame>> _observeDirectory(
+  AnyworkClient client,
+  String workspaceId,
+) async {
+  final demand = client.threadDirectory.observeThreads(
+    DirectoryQuery(workspaceId: workspaceId),
+    DirectoryWindow(),
+  );
+  try {
+    await demand.state
+        .waitFor((state) => state.frame != null)
+        .timeout(const Duration(seconds: 5));
+    return demand;
+  } catch (error, stackTrace) {
+    await demand.release();
+    Error.throwWithStackTrace(error, stackTrace);
+  }
+}
+
+Future<DirectoryObservation<ThreadMetadataFrame>> _observeThreadMetadata(
+  AnyworkClient client,
+  String threadId,
+) async {
+  final demand = client.threadDirectory.observeThread(threadId);
+  try {
+    await demand.state
+        .waitFor((state) => state.frame?.thread != null)
+        .timeout(const Duration(seconds: 5));
+    return demand;
+  } catch (error, stackTrace) {
+    await demand.release();
+    Error.throwWithStackTrace(error, stackTrace);
+  }
+}
+
+Future<void> _closeDirectoryDemand<T>(DirectoryObservation<T> demand) =>
+    demand.release();
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('canonical cold and closed members survive a root-only Thread page and cold selection', () async {
-    final transport = _ColdDirectoryTransport();
+    final transport = _ScriptedTimelineTransport(
+      workspace: _factsWorkspace(_factsThread()),
+    );
     final graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
@@ -165,9 +210,16 @@ void main() {
     client.project.applyAgentDirectory(
       AgentDirectoryState(revision: 1, values: members),
     );
-    client.threadDirectory.applyWindow(
-      ThreadDirectoryWindow(threads: [root, other], revision: 1),
+    transport.seedThread(root);
+    final directoryDemand = await _observeDirectory(client, root.workspaceId);
+    addTearDown(() => _closeDirectoryDemand(directoryDemand));
+    expect(
+      directoryDemand.state.value.frame!.threads.map((thread) => thread.id),
+      [root.id],
+      reason: 'The test demand is the root-only complete directory window',
     );
+    final rootMetadata = await _observeThreadMetadata(client, root.id);
+    addTearDown(() => _closeDirectoryDemand(rootMetadata));
     client.selection.restoreStartup(
       workspaceId: root.workspaceId,
       threadId: root.id,
@@ -180,6 +232,7 @@ void main() {
     final header = container.listen(headerViewProvider, (_, _) {});
     final sidebar = container.listen(sidebarViewProvider, (_, _) {});
     addTearDown(sidebar.close);
+    await container.pump();
     expect(header.read().agents.map((a) => a.threadId), [
       root.id,
       'cold-executor',
@@ -198,6 +251,13 @@ void main() {
       ['cold-executor', 'nested', 'faulted', root.id, 'cold-closed'],
       reason: 'Status grouping keeps stable canonical order inside each group',
     );
+    graph.timeline.updateReadDemand(chatDemand);
+    graph.setConversationPageVisible(true);
+    await client.directoryCommands.selectThread(root.id);
+    final rootSession = client.conversations.session(root.id);
+    await rootSession.source
+        .waitFor((state) => state.workspace != null)
+        .timeout(const Duration(seconds: 5));
     final timeline = graph.timeline;
     expect(
       queryStudioDriverFacts(
@@ -210,6 +270,24 @@ void main() {
       ).workspace?.agents.map((a) => a.threadId),
       [root.id, 'cold-executor', 'cold-closed', 'nested', 'faulted'],
     );
+    transport.emitThread(
+      StudioThread(
+        id: 'cold-closed',
+        workspaceId: root.workspaceId,
+        title: 'Closed child',
+        workspacePath: root.workspacePath,
+        mode: ThreadModeId.simple,
+        delegationMode: DelegationMode.profile,
+        delegationPreference: DelegationPreference.balanced,
+        parentThreadId: root.id,
+        rootThreadId: root.id,
+        updatedAt: root.updatedAt,
+      ),
+      'cold-closed',
+      revision: transport.directoryRevision + 1,
+    );
+    final closedMetadata = await _observeThreadMetadata(client, 'cold-closed');
+    addTearDown(() => _closeDirectoryDemand(closedMetadata));
     client.selection.restoreStartup(
       workspaceId: root.workspaceId,
       threadId: 'cold-closed',
@@ -218,10 +296,10 @@ void main() {
     expect(
       header.read().selectedRootThread?.id,
       root.id,
-      reason: 'Typed agent root identity is sufficient even before child Thread metadata arrives',
+      reason: 'Independent exact-ID child metadata identifies its root without opening a child Conversation',
     );
     expect(header.read().selectedThreadId, 'cold-closed');
-    expect(sidebar.read().selectedRootThreadId, root.id);
+    expect(sidebar.read().selectedProjectId, root.workspaceId);
     expect(header.read().agents.map((a) => a.threadId), [
       root.id,
       'cold-executor',
@@ -229,13 +307,15 @@ void main() {
       'nested',
       'faulted',
     ]);
-    expect(client.conversations.sessionStates, isEmpty);
-    expect(
-      transport.calls,
-      0,
-      reason:
-          'Enumeration and cold navigation restore cannot load child sessions',
-    );
+    expect(client.conversations.sessionStates.map((state) => state.threadId), [
+      root.id,
+    ]);
+    expect(transport.feeds.map((feed) => feed.threadId), [
+      root.id,
+    ], reason: 'Cold selection does not open a child Conversation feed');
+    transport.seedThread(other);
+    final otherMetadata = await _observeThreadMetadata(client, other.id);
+    addTearDown(() => _closeDirectoryDemand(otherMetadata));
     client.selection.restoreStartup(
       workspaceId: other.workspaceId,
       threadId: other.id,
@@ -250,13 +330,25 @@ void main() {
       threadId: 'cold-closed',
       needsOpen: true,
     );
-    client.threadDirectory.applyDelta(
-      revision: 2,
-      upserted: const [],
-      removed: [root.id],
+    final rootMetadataDemand = client.threadDirectory.observeThread(root.id);
+    addTearDown(() => _closeDirectoryDemand(rootMetadataDemand));
+    await rootMetadataDemand.state
+        .waitFor((state) => state.frame != null)
+        .timeout(const Duration(seconds: 5));
+    transport.emitThread(
+      null,
+      root.id,
+      revision: transport.directoryRevision + 1,
     );
+    await rootMetadataDemand.state
+        .waitFor((state) => state.frame?.thread == null)
+        .timeout(const Duration(seconds: 5));
     expect(header.read().selectedRootThread, isNull);
-    expect(header.read().workspaceThreads, isEmpty);
+    expect(
+      header.read().workspaceThreads.map((thread) => thread.id),
+      ['cold-closed'],
+      reason: 'Missing root metadata cannot remove independently observed child metadata',
+    );
     expect(header.read().agents.map((a) => a.threadId), [
       root.id,
       'cold-executor',
@@ -264,16 +356,24 @@ void main() {
       'nested',
       'faulted',
     ], reason: 'Even root metadata availability is not a membership condition');
-    expect(sidebar.read().selectedRootThreadId, root.id);
-    expect(client.conversations.sessionStates, isEmpty);
-    expect(transport.calls, 0);
+    expect(sidebar.read().selectedProjectId, root.workspaceId);
+    expect(
+      client.conversations.sessionStates.map((state) => state.threadId),
+      [root.id],
+      reason: 'Only the previously opened root Conversation remains; metadata cannot activate a cold child',
+    );
+    expect(transport.feeds.map((feed) => feed.threadId), [
+      root.id,
+    ], reason: 'The cold child does not open a Conversation feed');
     header.close();
   });
 
   test(
     'canonical saved agent routes retain selection without activating children',
     () async {
-      final transport = _ColdDirectoryTransport();
+      final transport = _ScriptedTimelineTransport(
+        workspace: _factsWorkspace(_factsThread()),
+      );
       final graph = AppGraph(
         transport: transport,
         statisticsFeed: const TestStatisticsFeedPort(),
@@ -305,24 +405,34 @@ void main() {
         workspacePath: '/project',
         updatedAt: DateTime.utc(2026),
       );
-      client.threadDirectory.applyWindow(
-        ThreadDirectoryWindow(threads: [root, child], revision: 1),
+      transport.seedThread(root);
+      final directoryDemand = await _observeDirectory(client, root.workspaceId);
+      addTearDown(() => _closeDirectoryDemand(directoryDemand));
+      expect(
+        directoryDemand.state.value.frame!.threads.map((thread) => thread.id),
+        [root.id],
       );
-      StudioAgentView saved(StudioAgentState state) => StudioAgentView(
-        id: child.id,
-        threadId: child.id,
-        path: child.id,
-        parentPath: root.id,
-        rootThreadId: root.id,
-        role: child.role,
-        task: child.title,
-        depth: 1,
-        delegationMode: child.delegationMode,
-        delegationPreference: child.delegationPreference,
-        frozenModel: frozen,
-        state: state,
-        updatedAt: child.updatedAt,
-      );
+      transport.seedThread(child);
+      final rootMetadata = await _observeThreadMetadata(client, root.id);
+      addTearDown(() => _closeDirectoryDemand(rootMetadata));
+      // This independent fixture exercises saved-route fallback below; it is
+      // deliberately not published into the live AgentDirectory.
+      StudioAgentView savedWithFrozenRoute(StudioAgentState state) =>
+          StudioAgentView(
+            id: child.id,
+            threadId: child.id,
+            path: child.id,
+            parentPath: root.id,
+            rootThreadId: root.id,
+            role: child.role,
+            task: child.title,
+            depth: 1,
+            delegationMode: child.delegationMode,
+            delegationPreference: child.delegationPreference,
+            frozenModel: frozen,
+            state: state,
+            updatedAt: child.updatedAt,
+          );
       final savedRoot = StudioAgentView(
         id: root.id,
         threadId: root.id,
@@ -335,16 +445,79 @@ void main() {
         state: const IdleStudioAgent(),
         updatedAt: root.updatedAt,
       );
+      client.project.applyProjectDirectory(
+        ProjectDirectoryState(
+          revision: 1,
+          values: [
+            StudioProject(
+              id: root.workspaceId,
+              name: 'Saved project',
+              path: root.workspacePath,
+            ),
+          ],
+        ),
+      );
       client.project.applyAgentDirectory(
         AgentDirectoryState(
           revision: 1,
-          values: [savedRoot, saved(const IdleStudioAgent())],
+          values: [
+            savedRoot,
+            StudioAgentView(
+              id: child.id,
+              threadId: child.id,
+              path: child.id,
+              parentPath: root.id,
+              rootThreadId: root.id,
+              role: child.role,
+              task: child.title,
+              depth: 1,
+              delegationMode: child.delegationMode,
+              delegationPreference: child.delegationPreference,
+              state: const IdleStudioAgent(),
+              updatedAt: child.updatedAt,
+            ),
+          ],
         ),
       );
+      graph.timeline.updateReadDemand(chatDemand);
+      graph.setConversationPageVisible(true);
       client.selection.restoreStartup(
-        workspaceId: 'project',
+        workspaceId: root.workspaceId,
+        threadId: root.id,
+        needsOpen: true,
+      );
+      await client.directoryCommands.selectThread(root.id);
+      final rootSession = client.conversations.session(root.id);
+      await rootSession.source
+          .waitFor((state) => state.workspace != null)
+          .timeout(const Duration(seconds: 5));
+      await rootSession.content.ready;
+      // Keep the real root presentation independent of the cold selection.
+      graph.setConversationPageVisible(true, threadId: root.id);
+      client.selection.restoreStartup(
+        workspaceId: root.workspaceId,
         threadId: child.id,
         needsOpen: true,
+      );
+      final childMetadata = await _observeThreadMetadata(client, child.id);
+      addTearDown(() => _closeDirectoryDemand(childMetadata));
+      expect(childMetadata.state.value.frame!.thread, same(child));
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final header = container.listen(headerViewProvider, (_, _) {});
+      addTearDown(header.close);
+      await container.pump();
+      expect(
+        header
+            .read()
+            .workspaceThreads
+            .singleWhere((thread) => thread.id == child.id)
+            .frozenModel,
+        frozen,
+        reason:
+            'Header owns exact-ID metadata including the complete frozen route',
       );
       final timeline = graph.timeline;
       final facts = queryStudioDriverFacts(
@@ -355,17 +528,22 @@ void main() {
         acpService: graph.acp,
         timeline: timeline,
       );
+      expect(facts.workspace, isNotNull);
+      final workspace = facts.workspace!;
+      expect(workspace.thread.id, root.id);
+      expect(workspace.agents.map((a) => a.threadId), contains(child.id));
+      final driverChild = workspace.agents.singleWhere(
+        (a) => a.threadId == child.id,
+      );
       expect(
-        facts.workspace?.agents
-            .where((a) => a.threadId == child.id)
-            .single
-            .frozenModel,
-        frozen,
+        driverChild.frozenModel,
+        isNull,
+        reason: 'Driver has no child Conversation or child row in its root-only window; it must not union independent metadata demands',
       );
       expect(client.conversations.existingSession(child.id), isNull);
       final cold = AgentDirectoryQueries.forRoot(
         rootThreadId: root.id,
-        agents: [saved(const IdleStudioAgent())],
+        agents: [savedWithFrozenRoute(const IdleStudioAgent())],
       ).single;
       final active = StudioAgentView(
         id: child.id,
@@ -392,17 +570,15 @@ void main() {
       );
       final closed = AgentDirectoryQueries.forRoot(
         rootThreadId: root.id,
-        agents: [saved(const ClosedStudioAgent())],
+        agents: [savedWithFrozenRoute(const ClosedStudioAgent())],
       ).single;
       expect(cold.frozenModel, frozen);
       expect(closed.frozenModel, frozen);
       expect(closed.delegationPreference, DelegationPreference.economy);
       expect(client.selection.state.selectedThreadId, child.id);
-      expect(
-        transport.calls,
-        0,
-        reason: 'Fallback/Driver reads cannot fetch or activate a cold child',
-      );
+      expect(transport.feeds.map((feed) => feed.threadId), [
+        root.id,
+      ], reason: 'Fallback/Driver reads cannot fetch or activate a cold child');
       expect(
         AgentDirectoryQueries.forRoot(
           rootThreadId: root.id,
@@ -412,12 +588,13 @@ void main() {
         reason: 'No saved model remains genuinely unknown, never filled from a current Profile',
       );
     },
+    timeout: const Timeout(Duration(seconds: 30)),
   );
 
   test('workspace and Driver join current directory identity after a Turn', () async {
     final graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
-      transport: RecordingDemoTransport(),
+      transport: _DirectoryRecordingDemoTransport(),
       clientId: 'directory-identity',
     );
     addTearDown(
@@ -425,7 +602,20 @@ void main() {
           graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
     );
     final client = graph.client;
+    final transport =
+        graph.client.transport as _DirectoryRecordingDemoTransport;
+    final bootstrap = await transport.readBootstrap();
+    transport.seedThread(
+      bootstrap.threadDirectory.threads.singleWhere(
+        (thread) => thread.id == 'thread-main',
+      ),
+    );
     await client.bootstrap();
+    final metadataDemand = client.threadDirectory.observeThread('thread-main');
+    addTearDown(() => _closeDirectoryDemand(metadataDemand));
+    await metadataDemand.state
+        .waitFor((state) => state.frame?.thread != null)
+        .timeout(const Duration(seconds: 5));
     await (graph
           ..timeline.updateReadDemand(chatDemand)
           ..setConversationPageVisible(true))
@@ -436,7 +626,7 @@ void main() {
     await session.content.state.waitFor((state) => state.snapshot == true);
     final initial = session.state.workspace!;
     // A runtime baseline may predate the directory's terminal/title/mode frame.
-    await (client.transport as RecordingDemoTransport).publishWorkspace(
+    await transport.publishWorkspace(
       initial.copyWith(
         thread: initial.thread.copyWith(status: ThreadStatusView.running),
       ),
@@ -466,14 +656,17 @@ void main() {
       status: ThreadStatusView.idle,
       updatedAt: initial.thread.updatedAt,
     );
-    client.threadDirectory.applyDelta(
-      revision: client.threadDirectory.state.revision + 1,
-      upserted: [canonical],
-      removed: const [],
+    transport.emitThread(
+      canonical,
+      canonical.id,
+      revision: transport.directoryRevision + 1,
     );
+    await metadataDemand.state
+        .waitFor((state) => identical(state.frame?.thread, canonical))
+        .timeout(const Duration(seconds: 5));
     // The directory frame can arrive before an already captured runtime
     // baseline. Unix-second timestamps cannot order these resource domains.
-    await (client.transport as RecordingDemoTransport).publishWorkspace(
+    await transport.publishWorkspace(
       initial.copyWith(
         thread: initial.thread.copyWith(status: ThreadStatusView.running),
       ),
@@ -533,106 +726,104 @@ void main() {
     expect(composer.read().requireValue.thread, same(canonical));
   });
 
-  test(
-    'Driver reads current Client facts without creating any owner or lease',
-    () async {
-      final transport = _UnusedTransport();
-      final graph = AppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
-        transport: transport,
-        clientId: 'driver-query',
-      );
-      final client = graph.client;
-      addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
-      );
-      final thread = StudioThread(
-        id: 'thread',
-        workspaceId: 'project',
-        title: 'Original title',
-        mode: ThreadModeId.simple,
-        delegationMode: DelegationMode.profile,
-        delegationPreference: DelegationPreference.balanced,
-        updatedAt: DateTime.utc(2026),
-        workspacePath: '/tmp/thread',
-      );
-      client.threadDirectory.applyWindow(
-        ThreadDirectoryWindow(threads: [thread], revision: 1),
-      );
-      final timeline = graph.timeline;
-      bindStudioDriver(
-        client,
-        accountsRepository: graph.accounts,
-        modelsRepository: graph.models,
-        usageRepository: graph.accountUsage,
-        acpService: graph.acp,
-        timeline: timeline,
-      );
-      final usageBefore = client.budget.usage.length;
-      final original = StudioDriverState.readFacts();
-      expect(original.rootThreads.single.title, 'Original title');
-      // 读诊断不建立展示 lease，也不打开会话。
-      expect(original.timeline, isNull);
-      expect(
-        original.timelineScroll,
-        isNull,
-        reason: '没有展示 lease 就没有几何，也不回放上一代',
-      );
-      expect(timeline.lease('thread'), isNull);
-      expect(client.conversations.sessionStates, isEmpty);
-      expect(client.drafts.existingComposer('thread')?.state, isNull);
-      expect(client.ownedSkills, isEmpty);
-      expect(client.ownedSessionCosts, isEmpty);
-      expect(transport.calls, 0);
+  test('Driver reads a test-owned directory demand without creating another owner or lease', () async {
+    final transport = _ColdDirectoryTransport();
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'driver-query',
+    );
+    final client = graph.client;
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    );
+    final thread = StudioThread(
+      id: 'thread',
+      workspaceId: 'project',
+      title: 'Original title',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(2026),
+      workspacePath: '/tmp/thread',
+    );
+    transport.seedThread(thread);
+    final directoryDemand = await _observeDirectory(client, thread.workspaceId);
+    addTearDown(() => _closeDirectoryDemand(directoryDemand));
+    final timeline = graph.timeline;
+    bindStudioDriver(
+      client,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+      timeline: timeline,
+    );
+    final usageBefore = client.budget.usage.length;
+    final original = StudioDriverState.readFacts();
+    expect(original.rootThreads.single.title, 'Original title');
+    // 读诊断不建立展示 lease，也不打开会话。
+    expect(original.timeline, isNull);
+    expect(original.timelineScroll, isNull, reason: '没有展示 lease 就没有几何，也不回放上一代');
+    expect(timeline.lease('thread'), isNull);
+    expect(client.conversations.sessionStates, isEmpty);
+    expect(client.drafts.existingComposer('thread')?.state, isNull);
+    expect(client.ownedSkills, isEmpty);
+    expect(client.ownedSessionCosts, isEmpty);
+    expect(transport.calls, 0);
 
-      client.threadDirectory.applyDelta(
-        revision: 2,
-        upserted: [thread.copyWith(title: 'Updated canonical title')],
-        removed: const [],
-      );
-      final current = StudioDriverState.readFacts();
-      expect(current.rootThreads.single.title, 'Updated canonical title');
-      expect(original.rootThreads.single.title, 'Original title');
-      expect(() => current.rootThreads.add(thread), throwsUnsupportedError);
-      final json =
-          jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
-      expect(json.containsKey('timelineScroll'), isTrue);
-      expect(json['timelineScroll'], isNull);
-      final settingsJson = json['settings'] as Map;
-      expect(settingsJson.containsKey('modelCatalogRevision'), isFalse);
-      final domains = settingsJson['accountDomains'] as Map;
-      expect(domains['schemaVersion'], 2);
-      expect(domains['templates'], {
-        'loaded': false,
-        'revision': null,
-        'usable': null,
-      });
-      expect(settingsJson['nativeTemplates'], isNull);
-      expect(current.accountDetails, isEmpty);
-      expect((domains['usage'] as Map)['stamp'], isNull);
-      final directory = json['sidebarDirectory'] as Map<String, dynamic>;
-      expect(directory['titles'], {'thread': 'Updated canonical title'});
-      studioDriverTopicDiagnostics(
-        client,
-        timeline: timeline,
-        accountsRepository: graph.accounts,
-        modelsRepository: graph.models,
-        usageRepository: graph.accountUsage,
-        acpService: graph.acp,
-      );
-      expect(client.conversations.sessionStates, isEmpty);
-      expect(client.drafts.existingComposer('thread')?.state, isNull);
-      expect(client.budget.usage.length, usageBefore);
-      expect(
-        transport.calls,
-        0,
-        reason: 'snapshot queries never create transport demand',
-      );
-      expect((await client.close()).complete, isTrue);
-    },
-  );
+    transport.directoryRevision++;
+    transport.directoryThreads[thread.id] = thread.copyWith(
+      title: 'Updated canonical title',
+    );
+    await directoryDemand.refresh();
+    await directoryDemand.state
+        .waitFor(
+          (state) =>
+              state.frame?.threads.single.title == 'Updated canonical title',
+        )
+        .timeout(const Duration(seconds: 5));
+    final current = StudioDriverState.readFacts();
+    expect(current.rootThreads.single.title, 'Updated canonical title');
+    expect(original.rootThreads.single.title, 'Original title');
+    expect(() => current.rootThreads.add(thread), throwsUnsupportedError);
+    final json =
+        jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+    expect(json.containsKey('timelineScroll'), isTrue);
+    expect(json['timelineScroll'], isNull);
+    final settingsJson = json['settings'] as Map;
+    expect(settingsJson.containsKey('modelCatalogRevision'), isFalse);
+    final domains = settingsJson['accountDomains'] as Map;
+    expect(domains['schemaVersion'], 2);
+    expect(domains['templates'], {
+      'loaded': false,
+      'revision': null,
+      'usable': null,
+    });
+    expect(settingsJson['nativeTemplates'], isNull);
+    expect(current.accountDetails, isEmpty);
+    expect((domains['usage'] as Map)['stamp'], isNull);
+    final directory = json['sidebarDirectory'] as Map<String, dynamic>;
+    expect(directory['titles'], {'thread': 'Updated canonical title'});
+    studioDriverTopicDiagnostics(
+      client,
+      timeline: timeline,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+    );
+    expect(client.conversations.sessionStates, isEmpty);
+    expect(client.drafts.existingComposer('thread')?.state, isNull);
+    expect(client.budget.usage.length, usageBefore);
+    expect(
+      transport.calls,
+      0,
+      reason: 'snapshot queries never create transport demand',
+    );
+    expect((await client.close()).complete, isTrue);
+  });
 
   test('Driver domain snapshot keeps target clocks, unknown details and exact last-good usage', () {
     const native = NativeAccountIdentity('shared-id');
@@ -1020,10 +1211,9 @@ void main() {
       ),
     );
     client.selection.markOpened();
-    client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
-      revision: 1,
-    );
+    transport.seedThread(_factsThread());
+    final metadataDemand = await _observeThreadMetadata(client, 'thread');
+    addTearDown(() => _closeDirectoryDemand(metadataDemand));
     final timeline = graph.timeline;
     (graph
           ..timeline.updateReadDemand(chatDemand)
@@ -1614,10 +1804,9 @@ void main() {
     });
     final client = graph.client;
     client.selection.markOpened();
-    client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
-      revision: 1,
-    );
+    transport.seedThread(_factsThread());
+    final metadataDemand = await _observeThreadMetadata(client, 'thread');
+    addTearDown(() => _closeDirectoryDemand(metadataDemand));
     graph.timeline.updateReadDemand(chatDemand);
     graph.setConversationPageVisible(true);
     client.selection.selectThread(threadId: 'thread', workspaceId: 'project');
@@ -1739,7 +1928,10 @@ void main() {
   test(
     'attachment facts keep canonical modality for user and tool items',
     () async {
-      final transport = _ScriptedTimelineTransport(initial: _attachmentSet);
+      final transport = _ScriptedTimelineTransport(
+        initial: _attachmentSet,
+        workspace: _factsWorkspace(_factsThread()),
+      );
       final graph = AppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
@@ -1757,10 +1949,9 @@ void main() {
         ),
       );
       client.selection.markOpened();
-      client.threadDirectory.applyBaseline(
-        ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
-        revision: 1,
-      );
+      transport.seedThread(_factsThread());
+      final metadataDemand = await _observeThreadMetadata(client, 'thread');
+      addTearDown(() => _closeDirectoryDemand(metadataDemand));
       final timeline = graph.timeline;
       (graph
             ..timeline.updateReadDemand(chatDemand)
@@ -2022,6 +2213,22 @@ StudioThread _factsThread() => StudioThread(
   workspacePath: '/tmp/thread',
 );
 
+ThreadWorkspace _factsWorkspace(StudioThread thread) => ThreadWorkspace(
+  thread: thread,
+  revision: 1,
+  interactions: const [],
+  runtime: const ThreadRuntimeView(
+    modelId: 'model',
+    contextTokens: 0,
+    contextWindow: 128000,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
+  ),
+);
+
 ThreadModelRouteView _sharedModelRoute({
   required String accountId,
   bool available = true,
@@ -2107,13 +2314,15 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
 }
 
 // Only the external source is scripted; SDK admission and Driver queries remain real.
-final class _ScriptedTimelineTransport extends UnusedAccountPorts
-    implements StudioTransport {
+final class _ScriptedTimelineTransport extends _UnusedTransport
+    with DirectoryFeedFixture {
   _ScriptedTimelineTransport({
     ChatBatch Function()? initial,
     this.readerFactory,
+    this.workspace,
   }) : _initial = initial ?? _factsSet;
   final ChatBatch Function() _initial;
+  final ThreadWorkspace? workspace;
   final ConversationReader Function(String threadId)? readerFactory;
   final feeds = <ScriptedConversationFeed>[];
   int opens = 0;
@@ -2129,6 +2338,9 @@ final class _ScriptedTimelineTransport extends UnusedAccountPorts
       subscriptionId: 'facts-$opens',
       initial: _initial,
       reader: readerFactory?.call(threadId),
+      state: workspace == null
+          ? null
+          : () => ThreadSnapshotFrame(workspace: workspace!),
     );
     feeds.add(feed);
     return feed;

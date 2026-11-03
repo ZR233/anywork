@@ -591,6 +591,11 @@ impl CurrentState {
                     .saturating_add(128)
             },
         );
+        // An empty interaction slice owns no dynamic budget, exactly like every other empty
+        // resident list: only a non-empty slice pays its fat-pointer shell here.
+        if self.interactions.is_empty() {
+            return entries;
+        }
         self.interactions.iter().fold(
             entries.saturating_add(2 * std::mem::size_of::<usize>() as u64),
             |bytes, interaction| {

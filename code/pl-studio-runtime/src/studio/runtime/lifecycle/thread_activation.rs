@@ -27,7 +27,6 @@ impl StudioRuntime {
             return Ok(thread);
         }
         let mut ancestry: Vec<(ThreadActivation, ThreadRecord)> = Vec::new();
-        let mut directory = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut cursor = id.to_owned();
         loop {
@@ -48,7 +47,6 @@ impl StudioRuntime {
                 "archived Thread cannot be activated for execution"
             );
             let parent = record.parent_thread_id.clone();
-            directory.push(pl_protocol::Thread::from(record.clone()));
             ancestry.push((
                 ThreadActivation {
                     id: record.id.clone(),
@@ -61,11 +59,6 @@ impl StudioRuntime {
             };
             cursor = parent;
         }
-        // Observers and tool refresh can run as soon as activation publishes an owner.
-        // Warm the validated ancestry first, preserving any newer in-memory entries.
-        self.agent_facility
-            .product_events
-            .warm_thread_index(directory);
         for (identity, record) in ancestry.into_iter().rev() {
             let activated_id = identity.id.clone();
             // The assembler owns/coalesces preparation. Its waiter need not inline that

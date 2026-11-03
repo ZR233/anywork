@@ -1,6 +1,7 @@
 export 'models.dart';
 export 'anywork_client.dart';
 export 'studio_ports.dart';
+export 'directory_ports.dart';
 export 'src/studio/anywork_client.dart';
 export 'src/studio/stores/mcp_store.dart';
 export 'src/studio/stores/persistence_store.dart';

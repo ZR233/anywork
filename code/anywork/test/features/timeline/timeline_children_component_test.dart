@@ -20,6 +20,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../anywork_client/test/support/timeline_transport.dart';
 import '../../client/support/pump_client_future.dart';
+import '../../client/support/recording_demo_transport.dart';
+
+ThreadDirectoryStore _threadDirectory() => ThreadDirectoryStore(
+  feed: RecordingDemoTransport(),
+  budget: ResourceBudget(),
+);
 
 void main() {
   testWidgets(
@@ -98,7 +104,7 @@ void main() {
       final transport = _Transport();
       final repository = ConversationRepositoryImpl(
         transport: transport,
-        directory: ThreadDirectoryStore(),
+        directory: _threadDirectory(),
         budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
@@ -317,7 +323,7 @@ void main() {
       final transport = _Transport();
       final repository = ConversationRepositoryImpl(
         transport: transport,
-        directory: ThreadDirectoryStore(),
+        directory: _threadDirectory(),
         budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
@@ -397,7 +403,7 @@ void main() {
         final transport = _Transport();
         final repository = ConversationRepositoryImpl(
           transport: transport,
-          directory: ThreadDirectoryStore(),
+          directory: _threadDirectory(),
           budget: ResourceBudget(),
           onRevision: (_, _) {},
         );

@@ -10,7 +10,6 @@
 //   在这里不保留转发，账号操作导出当前的 `handlers/accounts.dart`；
 // - 生成器统一重建输出集后，本文件与引用方保持同一份 canonical 生成 API。
 
-export '../../rust/api/studio/handlers/history.dart';
 export '../../rust/api/studio/handlers/agent_profiles.dart';
 export '../../rust/api/studio/handlers/external_state.dart';
 export '../../rust/api/studio/handlers/lifecycle.dart';
@@ -24,6 +23,8 @@ export '../../rust/api/studio/handlers/settings.dart';
 export '../../rust/api/studio/handlers/delegation.dart';
 export '../../rust/api/studio/handlers/snapshot.dart';
 export '../../rust/api/studio/handlers/thread.dart';
+export '../../rust/api/studio/directory/feed.dart';
+export '../../rust/api/studio/directory/types.dart';
 export '../../rust/api/studio/handlers/updater.dart';
 export '../../rust/api/studio/subscription.dart';
 export '../../rust/api/studio/types/event.dart';

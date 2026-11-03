@@ -437,12 +437,7 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
   return StudioBootstrap(
     ownerEpoch: value.ownerEpoch,
     projectDirectory: projectDirectory,
-    threadDirectory: ThreadDirectoryWindow(
-      threads: threadPage.threads,
-      nextCursor: threadPage.nextCursor,
-      hasMore: threadPage.nextCursor != null,
-      revision: threadPage.revision,
-    ),
+    threadDirectory: threadPage,
     agentDirectory: _agentDirectoryFromFrb(value.agentDirectory),
     settingsState: settingsProjection.canonical ?? configSnapshot,
     recoveryState: _recoveryStateFromFrb(value.recovery),
@@ -793,6 +788,49 @@ ThreadDirectoryPage _threadDirectoryPageFromFrb(
   };
   return resource.value ?? const ThreadDirectoryPage(threads: []);
 }
+
+ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
+  frb_directory_types.BridgeThreadDirectoryFrame value,
+) => ThreadDirectoryFrame(
+  query: DirectoryQuery.withThreadIds(
+    workspaceId: value.query.workspaceId,
+    search: value.query.search,
+    archived: value.query.archived,
+    filter: switch (value.query.filter) {
+      frb_directory_types.BridgeThreadDirectoryFilter.all =>
+        DirectoryFilter.all,
+      frb_directory_types.BridgeThreadDirectoryFilter.running =>
+        DirectoryFilter.running,
+      frb_directory_types.BridgeThreadDirectoryFilter.attention =>
+        DirectoryFilter.attention,
+    },
+    threadIds: value.query.threadIds,
+    excludedThreadIds: value.query.excludedThreadIds,
+  ),
+  window: DirectoryWindow(
+    before: value.window.before,
+    limit: value.window.limit,
+  ),
+  stamp: ResourceStamp(
+    resourceKey: value.stamp.resourceKey,
+    ownerEpoch: value.stamp.ownerEpoch,
+    revision: value.stamp.revision.toInt(),
+  ),
+  threads: value.threads.map(_threadFromFrb).toList(),
+  nextCursor: value.nextCursor,
+);
+
+ThreadMetadataFrame _threadMetadataFrameFromFrb(
+  frb_directory_types.BridgeThreadMetadataFrame value,
+) => ThreadMetadataFrame(
+  threadId: value.threadId,
+  stamp: ResourceStamp(
+    resourceKey: value.stamp.resourceKey,
+    ownerEpoch: value.stamp.ownerEpoch,
+    revision: value.stamp.revision.toInt(),
+  ),
+  thread: value.thread == null ? null : _threadFromFrb(value.thread!),
+);
 
 AgentDirectoryState _agentDirectoryFromFrb(
   frb.BridgeAgentDirectoryState snapshot,

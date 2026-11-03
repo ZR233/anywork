@@ -151,7 +151,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: mode.id);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = _directoryThread(threadId);
+      final thread = await _readThread(threadId);
       final runtime = _client.conversations.session(threadId).state.runtime;
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
@@ -688,9 +688,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   }) {
     _ensureOpen();
     if (_isChildThread(threadId)) {
-      return Future<ContinueThreadCommandReply>.error(
-        _childRequiresParentScheduling(threadId),
-      );
+      throw _childRequiresParentScheduling(threadId);
     }
     final accessIssue = _accessBlockerForThread(threadId);
     if (accessIssue != null) {
@@ -814,6 +812,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     var transportInvoked = false;
     return _lane.enqueue(() async {
       try {
+        final observedThread = await _readThread(intent.threadId);
+        if (observedThread != null && !observedThread.isRoot) {
+          throw _childRequiresParentScheduling(intent.threadId);
+        }
+        if (observedThread?.status.blocksNewExecution == true) {
+          throw _closedReadOnlyFailure;
+        }
         if (resend) {
           _ensureOpen();
           _throwIfAccessBlockedForThread(intent.threadId);
@@ -1086,7 +1091,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: title);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = _directoryThread(threadId);
+      final thread = await _readThread(threadId);
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
         final failure = recoveryIssue.blockedFailure();
@@ -1122,8 +1127,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           threadId: _client.selection.state.selectedThreadId,
           agents: _client.project.state.agents?.values ?? const [],
           threads: [
-            ..._client.threadDirectory.state.window.threads,
-            ..._client.threadDirectory.state.overlayThreads,
+            if (_directoryThread(_client.selection.state.selectedThreadId ?? '')
+                case final selected?)
+              selected,
           ],
         ) ==
         threadId) {
@@ -1134,7 +1140,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: threadId);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = _directoryThread(threadId);
+      final thread = await _readThread(threadId);
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
         final failure = recoveryIssue.blockedFailure();
@@ -1324,15 +1330,21 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return null;
   }
 
-  StudioThread? _directoryThread(String threadId) {
-    final directory = _client.threadDirectory.state;
-    for (final thread in directory.window.threads) {
-      if (thread.id == threadId) return thread;
+  StudioThread? _directoryThread(String threadId) =>
+      _client.threadDirectory.observedThread(threadId);
+
+  Future<StudioThread?> _readThread(String threadId) async {
+    final observation = _client.threadDirectory.observeThread(threadId);
+    try {
+      var state = observation.state.value;
+      if (state.isLoading) {
+        state = await observation.state.waitFor((value) => !value.isLoading);
+      }
+      if (state.error case final error?) throw error;
+      return state.frame?.thread;
+    } finally {
+      await observation.release();
     }
-    for (final thread in directory.overlayThreads) {
-      if (thread.id == threadId) return thread;
-    }
-    return null;
   }
 
   /// 智能体目录里该成员行的唯一事实；未装载时为空，不据旧摘要假造成员。

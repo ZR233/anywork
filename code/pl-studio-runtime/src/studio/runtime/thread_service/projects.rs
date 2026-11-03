@@ -458,15 +458,6 @@ impl StudioRuntime {
 
     async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
         let threads = self.store.list_threads_for_project(workspace_id).await?;
-        let entries = threads
-            .iter()
-            .filter(|thread| thread.visibility == ThreadVisibility::Active)
-            .cloned()
-            .map(pl_protocol::Thread::from)
-            .collect();
-        self.agent_facility
-            .product_events
-            .warm_thread_index(entries);
         Ok(threads)
     }
 }

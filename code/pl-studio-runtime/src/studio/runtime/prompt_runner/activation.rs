@@ -30,18 +30,12 @@ impl StudioRuntime {
     }
 
     pub(crate) async fn find_owned_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
-        let thread = if let Some(thread) = self
+        let Some(thread) = self
             .agent_facility
             .product_events
             .thread_snapshot(thread_id)
-        {
-            thread
-        } else {
-            match self.store.read_thread(thread_id).await {
-                Ok(Some(record)) => pl_protocol::Thread::from(record),
-                Ok(None) => return Ok(None),
-                Err(error) => return Err(error),
-            }
+        else {
+            return Ok(None);
         };
         Ok(Some(ThreadRecord {
             id: thread.id,
