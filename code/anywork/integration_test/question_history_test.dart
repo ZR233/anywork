@@ -501,13 +501,10 @@ Future<ChatItemPresentation> _questionReceipt(
   WidgetTester tester,
   AppGraph graph,
 ) async {
-  final observed = TimelineObservation(
-    tester,
-    () {
-      final threadId = graph.client.selection.state.selectedThreadId!;
-      return graph.timeline.lease(threadId)!;
-    },
-  );
+  final observed = TimelineObservation(tester, () {
+    final threadId = graph.client.selection.state.selectedThreadId!;
+    return graph.timeline.lease(threadId)!;
+  });
   ChatAtom? target;
   await _until(tester, () {
     final matches = observed.atoms
@@ -520,8 +517,7 @@ Future<ChatItemPresentation> _questionReceipt(
         .toList();
     expect(matches.length, lessThanOrEqualTo(1));
     target = matches.singleOrNull;
-    return target?.payload != null &&
-        target?.lifecycle is TerminalChatAtom;
+    return target?.payload != null && target?.lifecycle is TerminalChatAtom;
   }, 'exact completed question interaction in Main work members');
   final atom = target!;
   expect(
