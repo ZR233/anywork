@@ -277,6 +277,7 @@ abstract final class AccountPreviewFixtures {
   static const acp = AcpAccountPresentation(
     phase: AcpPresentationPhase.needsLogin,
     status: '需要登录',
+    subtitle: '服务器需要登录才能使用。请选择下方登录方式并点击「开始登录」。',
     message: '已完成连接检查。请选择官方支持的登录方式。',
     primaryAction: AcpAccountAction.login,
     availableActions: [
@@ -286,13 +287,22 @@ abstract final class AccountPreviewFixtures {
       AcpAccountAction.openTerms,
     ],
     loginMethods: [
-      AcpLoginMethodPresentation(label: '在浏览器登录', id: 'synthetic-browser'),
-      AcpLoginMethodPresentation(label: '使用设备码', id: 'synthetic-device'),
+      AcpLoginMethodPresentation(
+        label: '在浏览器登录',
+        id: 'synthetic-browser',
+        description: '使用个人 Google 账号在浏览器中完成登录授权（推荐个人用户使用）',
+        recommended: true,
+      ),
+      AcpLoginMethodPresentation(
+        label: '使用设备码',
+        id: 'synthetic-device',
+        description: '适用于企业或受限环境的备用登录方式',
+      ),
     ],
     selectedLoginMethod: 'synthetic-browser',
     canSelectLoginMethod: true,
     facts: [
-      AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.1 · linux-x64'),
+      AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.5 · linux-x64'),
     ],
   );
   static final list = AccountsListPresentation(

@@ -1,6 +1,8 @@
 import 'dart:async';
-import 'dart:ui' show PointerDeviceKind;
 
+import 'package:anywork_client/studio_client.dart' show AnyworkClient;
+import 'package:flutter/foundation.dart'
+    show DiagnosticsProperty, StringProperty;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
@@ -12,6 +14,7 @@ import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/recovery_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
@@ -29,7 +32,6 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
-import 'recovery_issue_indicator.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';
@@ -39,23 +41,19 @@ import '../settings/settings_remote_directory_dialog.dart';
 import '../conversation/composer/connectors/composer_dock_connector.dart';
 import '../conversation/composer/view_models/composer_view_model.dart';
 import '../status/thread_status_bar.dart';
-import '../conversation/timeline/widgets/conversation_activity_bar.dart';
+import '../conversation/timeline/connectors/conversation_activity_connector.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
-import '../conversation/timeline/connectors/conversation_current_connector.dart';
-import '../conversation/timeline/connectors/timeline_children_connector.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'thread_preparation_card.dart';
+import 'sidebar/sidebar_views.dart';
+import 'sidebar/sidebar_directory_owner.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
 part 'sidebar_entries.dart';
-part 'sidebar_tiles.dart';
-part 'sidebar_thread_status.dart';
-part 'sidebar_detail_overlay.dart';
-part 'sidebar_actions.dart';
 part 'runtime_banners.dart';
 part 'studio_shell_chrome.dart';
 part 'studio_startup.dart';
@@ -228,6 +226,8 @@ class _StudioShellState extends ConsumerState<StudioShell> {
             final width = desiredWidth.clamp(300.0, maximumWidth);
             return Scaffold(
               key: _scaffoldKey,
+              onDrawerChanged: (_) =>
+                  _sidebarKey.currentState?.retireNavigation(),
               drawer: overlay
                   ? Drawer(
                       width: (constraints.maxWidth - 24).clamp(0.0, 360.0),

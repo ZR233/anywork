@@ -19,6 +19,13 @@ abstract interface class AcpPort {
     required int expectedConnectionRevision,
     required AcpAuthActionView action,
   });
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  });
   Future<AcpAuthCommandReply> cancelAcpAuth({
     required OperationId operationId,
     required String accountId,

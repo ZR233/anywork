@@ -12,7 +12,6 @@ import 'package:anywork/src/presentation/providers/mode_catalog_store.dart';
 import 'package:anywork/src/presentation/providers/project_store.dart';
 import 'package:anywork/src/presentation/providers/recovery_store.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
-import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/directory_feed.dart';
 
 void main() {
   test('production sidebarViewProvider matches scope and prioritizes actual blockers', () async {
@@ -38,12 +38,6 @@ void main() {
             ProjectStoreState(
               projects: bootstrap.projectDirectory,
               agents: bootstrap.agentDirectory,
-            ),
-          ),
-          threadDirectoryStoreProvider.overrideWithValue(
-            ThreadDirectoryStoreState(
-              window: bootstrap.threadDirectory,
-              loaded: true,
             ),
           ),
           recoveryStoreProvider.overrideWithValue(
@@ -85,11 +79,7 @@ void main() {
         detail: 'Preserved child remains reviewable',
       ),
     ]);
-    expect(
-      childOnly.threadRecoveryIssues.containsKey(root.id),
-      isFalse,
-      reason: 'A child issue is not inherited by the root sidebar row',
-    );
+    expect(childOnly.projectRecoveryIssues, isEmpty);
 
     final threadOnlyAdvisory = readProductionView([
       StudioRecoveryIssue(
@@ -103,15 +93,7 @@ void main() {
         detail: 'Thread observation is being retried',
       ),
     ]);
-    expect(
-      threadOnlyAdvisory.threadRecoveryIssues[root.id]?.id,
-      'thread-only-advisory',
-    );
-    expect(
-      threadOnlyAdvisory.threadRecoveryIssues[root.id]?.canRetry,
-      isTrue,
-      reason: 'A legal thread-only advisory remains visible and retryable',
-    );
+    expect(threadOnlyAdvisory.projectRecoveryIssues, isEmpty);
 
     final applicationAccess = StudioRecoveryIssue(
       id: 'application-access-block',
@@ -149,7 +131,6 @@ void main() {
       appWide.projectRecoveryIssues[root.workspaceId]?.id,
       applicationAccess.id,
     );
-    expect(appWide.threadRecoveryIssues[root.id]?.id, applicationAccess.id);
 
     final applicationAdvisory = StudioRecoveryIssue(
       id: 'application-advisory',
@@ -187,12 +168,6 @@ void main() {
       prioritized.projectRecoveryIssues[root.workspaceId]?.id,
       projectExecution.id,
     );
-    expect(
-      prioritized.threadRecoveryIssues[root.id]?.id,
-      rootAdvisory.id,
-      reason: 'An existing Thread does not inherit its storage Project issue',
-    );
-
     final rootExecution = StudioRecoveryIssue(
       id: 'root-execution-block',
       scope: RecoveryIssueScope.thread,
@@ -209,7 +184,6 @@ void main() {
       rootAdvisory,
       rootExecution,
     ]);
-    expect(exact.threadRecoveryIssues[root.id]?.id, rootExecution.id);
     expect(
       exact.projectRecoveryIssues[root.workspaceId]?.id,
       projectExecution.id,
@@ -227,7 +201,7 @@ void main() {
         detail: 'A mismatched non-null project cannot grant a match',
       ),
     ]);
-    expect(foreignProject.threadRecoveryIssues, isEmpty);
+    expect(foreignProject.projectRecoveryIssues, isEmpty);
   });
 
   test('Project recovery gates Project operations while exact Thread recovery gates only its owner', () async {
@@ -243,10 +217,19 @@ void main() {
     );
     final client = graph.client;
     await client.bootstrap();
-    final healthy = client.threadDirectory.state.window.threads.firstWhere(
-      (thread) => thread.isRoot,
+    final directoryDemand = client.threadDirectory.observeThreads(
+      const DirectoryQuery(),
+      DirectoryWindow(),
     );
-    final affected = client.threadDirectory.state.window.threads.firstWhere(
+    addTearDown(() async {
+      await directoryDemand.release();
+    });
+    final directoryFrame = await directoryDemand.state
+        .waitFor((state) => state.frame != null)
+        .timeout(const Duration(seconds: 5));
+    final threads = directoryFrame.frame!.threads;
+    final healthy = threads.firstWhere((thread) => thread.isRoot);
+    final affected = threads.firstWhere(
       (thread) =>
           thread.isRoot &&
           thread.workspaceId == healthy.workspaceId &&
@@ -368,7 +351,7 @@ void main() {
   testWidgets(
     'closing the selected thread does not reopen content from shell',
     (tester) async {
-      final transport = RecordingDemoTransport();
+      final transport = _DirectoryFailureTransport();
       final graph = AppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
@@ -442,7 +425,7 @@ void main() {
   testWidgets(
     'shell sidebar keeps running status beside advisory recovery diagnostic',
     (tester) async {
-      final transport = RecordingDemoTransport();
+      final transport = _SidebarStatusTransport();
       final graph = AppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
@@ -456,20 +439,30 @@ void main() {
           'sidebar recovery status teardown',
         );
       });
+      final bootstrap = await transport.readBootstrap();
       await pumpClientFuture(
         tester,
         graph.client.bootstrap(),
         'sidebar recovery status bootstrap',
       );
-
-      final root = graph.client.threadDirectory.state.window.threads
-          .where((thread) => thread.isRoot)
-          .first;
+      final root = bootstrap.threadDirectory.threads.firstWhere(
+        (thread) => thread.isRoot,
+      );
+      transport.seedThread(root);
       final recoveryRevision = graph.client.recovery.state.revision;
       graph.client.recovery.apply(
         RecoveryStateSnapshot(
           revision: recoveryRevision + 1,
           values: [
+            StudioRecoveryIssue(
+              id: 'sidebar-project-advisory',
+              scope: RecoveryIssueScope.project,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.advisory,
+              availableActions: const [],
+              workspaceId: root.workspaceId,
+              detail: 'Project catalog observation is delayed',
+            ),
             StudioRecoveryIssue(
               id: 'sidebar-running-advisory',
               scope: RecoveryIssueScope.thread,
@@ -478,7 +471,17 @@ void main() {
               availableActions: const [],
               workspaceId: root.workspaceId,
               threadId: root.id,
-              detail: 'Repository observation is retrying',
+              detail: 'Root repository is retrying',
+            ),
+            StudioRecoveryIssue(
+              id: 'sidebar-foreign-child-access',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.storage,
+              impact: RecoveryIssueImpact.accessBlocked,
+              availableActions: const [],
+              workspaceId: root.workspaceId,
+              threadId: 'unlisted-child',
+              detail: 'An unlisted child has blocked access',
             ),
           ],
         ),
@@ -499,22 +502,58 @@ void main() {
         ),
       );
       final rootRow = find.byKey(StudioDriverKeys.threadRow(root.id));
+      final projectRow = find.byKey(
+        StudioDriverKeys.projectRow(root.workspaceId),
+      );
       await pumpClientUntil(
         tester,
         () => rootRow.evaluate().isNotEmpty,
         'production sidebar renders root row',
       );
+      final sidebarQuery = transport.openedDirectoryQueries.lastWhere(
+        (query) => query.workspaceId == root.workspaceId,
+      );
+      final directoryDemand = graph.client.threadDirectory.observeThreads(
+        sidebarQuery,
+        DirectoryWindow(),
+      );
+      addTearDown(
+        () => pumpClientFuture(
+          tester,
+          directoryDemand.release(),
+          'release sidebar diagnostic borrow',
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () =>
+            directoryDemand.state.value.frame?.query == sidebarQuery &&
+            directoryDemand.state.value.frame?.window == DirectoryWindow(),
+        'borrow the production sidebar directory frame',
+      );
       // Let the shell's production topic observations pass their ten-second
       // stability windows before introducing the continuously animated badge.
-      await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 10));
-      await tester.pumpAndSettle();
-      final directoryRevision =
-          graph.client.threadDirectory.state.window.revision;
-      graph.client.threadDirectory.applyDelta(
-        revision: directoryRevision + 1,
-        upserted: [root.copyWith(status: ThreadStatusView.running)],
-        removed: const [],
+      await tester.pump();
+      transport.directoryRevision++;
+      transport.directoryThreads[root.id] = root.copyWith(
+        status: ThreadStatusView.running,
+      );
+      await pumpClientFuture(
+        tester,
+        directoryDemand.refresh(),
+        'refresh the actual sidebar window',
+      );
+      await pumpClientUntil(
+        tester,
+        () =>
+            directoryDemand.state.value.frame?.threads.any(
+              (thread) =>
+                  thread.id == root.id &&
+                  thread.status == ThreadStatusView.running,
+            ) ==
+            true,
+        'running root frame is accepted',
       );
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -529,10 +568,70 @@ void main() {
       expect(
         find.descendant(of: rootRow, matching: find.byIcon(Icons.info_outline)),
         findsOneWidget,
-        reason: 'advisory Recovery diagnostic is shown beside the status',
+        reason: 'The exact root advisory is shown beside its running status',
+      );
+      expect(
+        find.descendant(
+          of: projectRow,
+          matching: find.byIcon(Icons.info_outline),
+        ),
+        findsOneWidget,
+        reason: 'Project-scoped advisory remains on its Project row',
+      );
+
+      graph.client.recovery.apply(
+        RecoveryStateSnapshot(
+          revision: graph.client.recovery.state.revision + 1,
+          values: [
+            StudioRecoveryIssue(
+              id: 'sidebar-project-advisory',
+              scope: RecoveryIssueScope.project,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.advisory,
+              availableActions: const [],
+              workspaceId: root.workspaceId,
+              detail: 'Project catalog observation is delayed',
+            ),
+            StudioRecoveryIssue(
+              id: 'sidebar-root-execution',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.executionBlocked,
+              availableActions: const [RecoveryIssueAction.retry],
+              workspaceId: root.workspaceId,
+              threadId: root.id,
+              detail: 'Root execution is blocked',
+            ),
+            StudioRecoveryIssue(
+              id: 'sidebar-foreign-child-access',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.storage,
+              impact: RecoveryIssueImpact.accessBlocked,
+              availableActions: const [],
+              workspaceId: root.workspaceId,
+              threadId: 'unlisted-child',
+              detail: 'An unlisted child has blocked access',
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: rootRow,
+          matching: find.byIcon(Icons.error_outline),
+        ),
+        findsOneWidget,
+        reason: 'Exact root execution block outranks the Project advisory',
+      );
+      expect(
+        find.descendant(of: rootRow, matching: find.byIcon(Icons.info_outline)),
+        findsNothing,
+        reason: 'An unlisted child issue cannot override the root issue',
       );
       expect(tester.takeException(), isNull);
     },
+    timeout: const Timeout(Duration(seconds: 30)),
   );
 
   testWidgets(
@@ -677,3 +776,6 @@ final class _DirectoryFailureTransport extends RecordingDemoTransport {
     });
   }
 }
+
+final class _SidebarStatusTransport extends RecordingDemoTransport
+    with DirectoryFeedFixture {}

@@ -6,7 +6,7 @@
 //!
 //! 收尾结果刻意分三态：[`Reclaim::Stopped`] 已确认停止、[`Reclaim::Settled`] 等待结果已交付
 //! 且失败（`ManagedWorker::wait` 只在监督者真实退出后才交付错误，之后绝不再 wait）、
-//! [`Reclaim::Pending`] 期限内未确认停止（owner 保留，可再次尝试，不是终态）。
+//! [`Reclaim::Pending`] 等待系统调用报错但未确认停止（owner 保留，不是终态）。
 
 #[cfg(target_os = "linux")]
 use std::ffi::OsStr;
@@ -20,12 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::worker_assets::RemoteHelperSource;
 
-/// 首次收尾等待上限；超过后升级为更强终止并继续等待真实退出。
+/// 连接资源统一关闭预算；耗尽后报告失败并继续等待真实退出。
 pub(super) const PROCESS_CLEANUP_LIMIT: Duration = Duration::from_secs(5);
-/// 强制终止后的第二次等待上限。
-pub(super) const PROCESS_KILL_LIMIT: Duration = Duration::from_secs(5);
-/// stderr 有界排空的字节预算；超过预算后继续读到 EOF 但不再保存。
-pub(super) const STDERR_BUDGET_BYTES: usize = 8 * 1024;
 const STDERR_CHUNK_BYTES: usize = 1024;
 
 /// 交给 ACP codec 的写入半边。
@@ -181,7 +177,7 @@ pub(super) enum Reclaim {
 pub(super) struct AcpWorker {
     stdin: Option<ChildWriter>,
     stdout: Option<ChildReader>,
-    stderr_task: Option<JoinHandle<()>>,
+    stderr_task: Option<JoinHandle<std::io::Result<()>>>,
     /// 已交付的物理退出结果；一旦交付就绝不再 `wait`。
     ///
     /// 只有"退出已确认"或"监督者在真实退出后交付了错误"才会写入；非 Linux 的普通 `wait`
@@ -241,7 +237,50 @@ impl AcpWorker {
         Some((self.stdin.take()?, self.stdout.take()?))
     }
 
-    /// 请求终止并观察收尾结果；只有 `Stopped` 表示已确认回收。
+    /// 观察真实退出；future 可取消，句柄和已交付结果始终留在 owner 内。
+    pub(super) async fn observe_exit(&mut self) -> Result<(), String> {
+        if let Some(settled) = &self.settled {
+            return settled.clone();
+        }
+        #[cfg(target_os = "linux")]
+        let result = match self.supervisor.as_mut() {
+            Some(supervisor) => supervisor
+                .wait()
+                .await
+                .map(|termination| {
+                    tracing::debug!(?termination, "ACP supervised process exited");
+                })
+                .map_err(|_| "ACP supervisor wait failed".to_string()),
+            None => Ok(()),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = match self.child.as_mut() {
+            // 工厂的最外层是 JobObject / ProcessGroup。这里只观察内层主进程，
+            // 不取消最外层整树 wait（JobObject::wait 的排空不能安全重入）。
+            // 外层 wrapper 和所有句柄仍由本 owner 保留，最终收束才完整等待整树。
+            Some(child) => child
+                .inner_mut()
+                .wait()
+                .await
+                .map(|status| {
+                    tracing::debug!(
+                        exit_code = status.code(),
+                        success = status.success(),
+                        "ACP process exited"
+                    );
+                })
+                .map_err(|_| "ACP process wait failed".to_string()),
+            None => Ok(()),
+        };
+        // 普通 wait 系统调用错误不证明进程停止；Linux ManagedWorker 的错误在真实退出后交付。
+        #[cfg(target_os = "linux")]
+        {
+            self.settled = Some(result.clone());
+        }
+        result
+    }
+
+    /// 请求终止并等到进程与读取任务实际结束；统一预算由 supervisor 应用。
     pub(super) async fn reclaim(&mut self) -> Reclaim {
         let process = self.reclaim_process().await;
         let stderr = self.reclaim_stderr().await;
@@ -249,110 +288,64 @@ impl AcpWorker {
     }
 
     async fn reclaim_process(&mut self) -> Reclaim {
-        if let Some(settled) = self.settled.as_ref() {
-            return match settled {
-                Ok(()) => Reclaim::Stopped,
-                Err(issue) => Reclaim::Settled(issue.clone()),
-            };
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let Some(supervisor) = self.supervisor.as_mut() else {
-                self.settled = Some(Ok(()));
-                return Reclaim::Stopped;
-            };
-            if !self.cancel_requested {
+        if self.settled.is_none() && !self.cancel_requested {
+            #[cfg(target_os = "linux")]
+            if let Some(supervisor) = self.supervisor.as_mut() {
                 let control = supervisor.control();
                 if control.cancel().await.is_err() {
-                    // 控制通道已经不可写：封闭租约后仍然等待真实退出，不把通道错误当成已回收。
                     control.close();
                 }
                 self.cancel_requested = true;
             }
-            match tokio::time::timeout(PROCESS_CLEANUP_LIMIT, supervisor.wait()).await {
-                Ok(Ok(_termination)) => {
-                    self.settled = Some(Ok(()));
-                    Reclaim::Stopped
-                }
-                Ok(Err(error)) => {
-                    // wait 只在监督者真实退出后交付错误；记录已交付，后续绝不再 wait。
-                    let issue = format!("ACP supervisor wait failed: {error}");
-                    self.settled = Some(Err(issue.clone()));
-                    Reclaim::Settled(issue)
-                }
-                Err(_) => {
-                    // 超时保留 supervisor 与 lease 供再次 wait；先升级一次更强终止。
-                    let control = supervisor.control();
-                    let _ = control.retry_cleanup().await;
-                    match tokio::time::timeout(PROCESS_KILL_LIMIT, supervisor.wait()).await {
-                        Ok(Ok(_termination)) => {
-                            self.settled = Some(Ok(()));
-                            Reclaim::Stopped
-                        }
-                        Ok(Err(error)) => {
-                            let issue = format!("ACP supervisor wait failed: {error}");
-                            self.settled = Some(Err(issue.clone()));
-                            Reclaim::Settled(issue)
-                        }
-                        Err(_) => Reclaim::Pending(
-                            "ACP supervisor did not exit within the cleanup budget".to_string(),
-                        ),
-                    }
-                }
+            #[cfg(not(target_os = "linux"))]
+            if let Some(child) = self.child.as_mut()
+                && child.start_kill().is_ok()
+            {
+                self.cancel_requested = true;
             }
         }
+        #[cfg(target_os = "linux")]
+        let result = self.observe_exit().await;
         #[cfg(not(target_os = "linux"))]
-        {
-            let Some(child) = self.child.as_mut() else {
-                self.settled = Some(Ok(()));
-                return Reclaim::Stopped;
+        let result = if let Some(settled) = &self.settled {
+            settled.clone()
+        } else {
+            let result = match self.child.as_mut() {
+                Some(child) => child
+                    .wait()
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| "ACP process tree wait failed".to_string()),
+                None => Ok(()),
             };
-            if !self.cancel_requested {
-                // 终止请求成功才记为已请求；失败保留可重试的 kill/wait 责任。
-                if Pin::from(child.kill()).await.is_ok() {
-                    self.cancel_requested = true;
-                }
+            if result.is_ok() {
+                self.settled = Some(result.clone());
             }
-            match tokio::time::timeout(PROCESS_KILL_LIMIT, child.wait()).await {
-                Ok(Ok(_status)) => {
-                    self.settled = Some(Ok(()));
-                    Reclaim::Stopped
-                }
-                // 普通 wait 系统调用错误不是退出证明：保留 child owner 与错误摘要，仍可重试。
-                Ok(Err(error)) => Reclaim::Pending(format!("ACP process wait failed: {error}")),
-                Err(_) => Reclaim::Pending(
-                    "ACP process did not exit within the cleanup budget".to_string(),
-                ),
-            }
+            result
+        };
+        match result {
+            Ok(()) => Reclaim::Stopped,
+            Err(issue) if self.settled.is_some() => Reclaim::Settled(issue),
+            Err(issue) => Reclaim::Pending(issue),
         }
     }
 
-    /// 收束 stderr 排空任务；超时借用 JoinHandle 并放回，绝不因超时丢句柄。
+    /// 借用真实 JoinHandle 等待 EOF；预算耗尽或取消等待不会丢失任务句柄。
     async fn reclaim_stderr(&mut self) -> Reclaim {
-        if let Some(issue) = self.stderr_failure.as_ref() {
-            // 已交付的终态失败跨轮次粘滞：进程仍 Pending 时也不能丢失。
+        if let Some(issue) = &self.stderr_failure {
             return Reclaim::Settled(issue.clone());
         }
-        let Some(mut task) = self.stderr_task.take() else {
+        let Some(task) = self.stderr_task.as_mut() else {
             return Reclaim::Stopped;
         };
-        let deadline = tokio::time::sleep(PROCESS_CLEANUP_LIMIT);
-        tokio::pin!(deadline);
-        let outcome = tokio::select! {
-            result = &mut task => Some(result),
-            _ = &mut deadline => None,
-        };
+        let outcome = task.await;
+        self.stderr_task = None;
         match outcome {
-            Some(Ok(())) => Reclaim::Stopped,
-            Some(Err(error)) => {
-                let issue = format!("ACP stderr drain task failed: {error}");
+            Ok(Ok(())) => Reclaim::Stopped,
+            Ok(Err(_)) | Err(_) => {
+                let issue = "ACP stderr drain task failed".to_string();
                 self.stderr_failure = Some(issue.clone());
                 Reclaim::Settled(issue)
-            }
-            None => {
-                // 句柄放回 owner：任务仍在运行，下一次收尾继续 join 同一任务。
-                self.stderr_task = Some(task);
-                Reclaim::Pending("ACP stderr drain did not finish".to_string())
             }
         }
     }
@@ -499,7 +492,9 @@ fn validate_executable(program: &Path) -> Result<(), AcpSpawnError> {
 }
 
 /// 有界排空 stderr：只消费，不转发、不解析，也不让它阻塞业务管道。
-fn drain_stderr(mut stderr: impl AsyncRead + Unpin + Send + 'static) -> JoinHandle<()> {
+fn drain_stderr(
+    mut stderr: impl AsyncRead + Unpin + Send + 'static,
+) -> JoinHandle<std::io::Result<()>> {
     tokio::spawn(async move {
         let mut buffer = [0u8; STDERR_CHUNK_BYTES];
         let mut total = 0usize;
@@ -508,15 +503,12 @@ fn drain_stderr(mut stderr: impl AsyncRead + Unpin + Send + 'static) -> JoinHand
                 Ok(0) => break,
                 Ok(read) => total = total.saturating_add(read),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+                Err(error) => return Err(error),
             }
         }
         // 只有字节数进入诊断；原始 stderr 既不发布给 UI，也不写入日志。
-        tracing::debug!(
-            bytes = total,
-            budget = STDERR_BUDGET_BYTES,
-            "ACP server stderr drained"
-        );
+        tracing::debug!(bytes = total, "ACP server stderr drained");
+        Ok(())
     })
 }
 

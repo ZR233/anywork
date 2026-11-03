@@ -85,6 +85,164 @@ const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
   ],
 );
 
+final class _DemoDirectoryChangeSignal {
+  _DemoDirectoryChangeSignal(DemoStudioTransport transport) {
+    _subscription = transport
+        .subscribeProductTopic(const ThreadDirectoryTopic())
+        .listen(
+          (_) {
+            if (_baselinePending) {
+              _baselinePending = false;
+              if (!_ready.isCompleted) _ready.complete();
+              return;
+            }
+            _dirty = true;
+            if (_wake case final wake? when !wake.isCompleted) wake.complete();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            _failure ??= error;
+            _failureStack ??= stackTrace;
+            if (!_ready.isCompleted) _ready.complete();
+            if (_wake case final wake? when !wake.isCompleted) wake.complete();
+          },
+        );
+  }
+
+  late final StreamSubscription<ProductTopicFrame> _subscription;
+  final Completer<void> _ready = Completer<void>();
+  Completer<void>? _wake;
+  bool _baselinePending = true;
+  bool _initial = true;
+  bool _dirty = false;
+  bool _closed = false;
+  Object? _failure;
+  StackTrace? _failureStack;
+
+  Future<bool> next() async {
+    await _ready.future;
+    while (!_initial && !_dirty && !_closed && _failure == null) {
+      final wake = _wake ??= Completer<void>();
+      await wake.future;
+    }
+    if (_closed) return false;
+    if (_failure case final failure?) {
+      Error.throwWithStackTrace(failure, _failureStack!);
+    }
+    _initial = false;
+    _dirty = false;
+    _wake = null;
+    return true;
+  }
+
+  void requestClose() {
+    _closed = true;
+    if (!_ready.isCompleted) _ready.complete();
+    if (_wake case final wake? when !wake.isCompleted) wake.complete();
+  }
+
+  Future<void> close() async {
+    requestClose();
+    await _subscription.cancel();
+  }
+}
+
+final class _DemoThreadsObservation implements ThreadsObservationHandle {
+  _DemoThreadsObservation(this.transport, this.query, this.window)
+    : _changes = _DemoDirectoryChangeSignal(transport);
+
+  final DemoStudioTransport transport;
+  final DirectoryQuery query;
+  final DirectoryWindow window;
+  final _DemoDirectoryChangeSignal _changes;
+  Future<ThreadDirectoryFrame?>? _next;
+  bool _closed = false;
+
+  @override
+  Future<ThreadDirectoryFrame?> next() {
+    if (_closed) return Future.value(null);
+    if (_next != null) {
+      return Future.error(StateError('Directory next is already in flight'));
+    }
+    final work = () async {
+      if (!await _changes.next()) return null;
+      return transport._readDirectoryFrame(query, window);
+    }();
+    _next = work;
+    unawaited(
+      work.then<void>(
+        (_) => _next = null,
+        onError: (Object _, StackTrace _) => _next = null,
+      ),
+    );
+    return work;
+  }
+
+  @override
+  void requestClose() {
+    _closed = true;
+    _changes.requestClose();
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
+    await _changes.close();
+    final pending = _next;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+  }
+}
+
+final class _DemoThreadObservation implements ThreadObservationHandle {
+  _DemoThreadObservation(this.transport, this.threadId)
+    : _changes = _DemoDirectoryChangeSignal(transport);
+
+  final DemoStudioTransport transport;
+  final String threadId;
+  final _DemoDirectoryChangeSignal _changes;
+  Future<ThreadMetadataFrame?>? _next;
+  bool _closed = false;
+
+  @override
+  Future<ThreadMetadataFrame?> next() {
+    if (_closed) return Future.value(null);
+    if (_next != null) {
+      return Future.error(
+        StateError('Thread metadata next is already in flight'),
+      );
+    }
+    final work = () async {
+      if (!await _changes.next()) return null;
+      return transport._readMetadataFrame(threadId);
+    }();
+    _next = work;
+    unawaited(
+      work.then<void>(
+        (_) => _next = null,
+        onError: (Object _, StackTrace _) => _next = null,
+      ),
+    );
+    return work;
+  }
+
+  @override
+  void requestClose() {
+    _closed = true;
+    _changes.requestClose();
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
+    await _changes.close();
+    final pending = _next;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+  }
+}
+
 class DemoStudioTransport extends StudioTransport
     implements
         PersistenceQueueReader,
@@ -1198,14 +1356,13 @@ class DemoStudioTransport extends StudioTransport
     );
   }
 
-  ThreadDirectoryWindow _demoThreadDirectory() {
+  ThreadDirectoryPage _demoThreadDirectory() {
     final directory = _sortedDirectoryThreads();
-    return ThreadDirectoryWindow(
+    return ThreadDirectoryPage(
       threads: directory.take(directoryPageSize).toList(),
       nextCursor: directory.length > directoryPageSize
           ? _demoDirectoryCursor(directoryPageSize - 1)
           : null,
-      hasMore: directory.length > directoryPageSize,
       revision: _threadDirectoryRevision,
     );
   }
@@ -1552,11 +1709,24 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<ThreadDirectoryPage> queryThreads(
-    DirectoryQuery query, {
-    String? cursor,
-    int limit = 50,
-  }) async {
+  Future<ThreadsObservationHandle> openThreadsObservation(
+    DirectoryQuery query,
+    DirectoryWindow window,
+  ) async {
+    _ensureDemoRunning();
+    return _DemoThreadsObservation(this, query, window);
+  }
+
+  @override
+  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
+    _ensureDemoRunning();
+    return _DemoThreadObservation(this, threadId);
+  }
+
+  ThreadDirectoryFrame _readDirectoryFrame(
+    DirectoryQuery query,
+    DirectoryWindow window,
+  ) {
     final projects = _demoProjectDirectory().values;
     final all = <String, StudioThread>{
       for (final thread in [
@@ -1569,13 +1739,146 @@ class DemoStudioTransport extends StudioTransport
         ),
     };
     final rows =
-        all.values.where((thread) => query.matches(thread, projects)).toList()
+        all.values
+            .where((thread) => _matchesDirectoryQuery(query, thread, projects))
+            .toList()
           ..sort(StudioThread.compareDirectoryOrder);
-    final offset = cursor == null ? 0 : int.parse(cursor);
-    return ThreadDirectoryPage(
-      threads: rows.skip(offset).take(limit).toList(),
-      nextCursor: offset + limit < rows.length ? '${offset + limit}' : null,
-      revision: _threadDirectoryRevision,
+    final offset = window.before == null
+        ? 0
+        : int.tryParse(window.before!) ??
+              (throw ArgumentError.value(window.before, 'before'));
+    if (offset < 0) throw ArgumentError.value(window.before, 'before');
+    final threads = rows.skip(offset).take(window.limit).toList();
+    final nextOffset = offset + threads.length;
+    final stamp = _demoStamp('thread-directory', _threadDirectoryRevision);
+    _checkDemoFrameSize({
+      'query': {
+        'workspaceId': query.workspaceId,
+        'search': query.search,
+        'archived': query.archived,
+        'filter': query.filter.name,
+        'threadIds': query.threadIds,
+        'excludedThreadIds': query.excludedThreadIds,
+      },
+      'window': {'before': window.before, 'limit': window.limit},
+      'stamp': _demoStampWireFields(stamp),
+      'threads': threads.map(_demoThreadWireFields).toList(),
+      'nextCursor': nextOffset < rows.length ? '$nextOffset' : null,
+    });
+    return ThreadDirectoryFrame(
+      query: query,
+      window: window,
+      stamp: stamp,
+      threads: threads,
+      nextCursor: nextOffset < rows.length ? '$nextOffset' : null,
+    );
+  }
+
+  Map<String, Object?> _demoStampWireFields(ResourceStamp stamp) => {
+    'resourceKey': stamp.resourceKey,
+    'ownerEpoch': stamp.ownerEpoch,
+    'revision': stamp.revision,
+  };
+
+  Map<String, Object?> _demoThreadWireFields(StudioThread thread) => {
+    'id': thread.id,
+    'workspaceId': thread.workspaceId,
+    'title': thread.title,
+    'mode': thread.mode.id,
+    'delegationMode': thread.delegationMode.name,
+    'delegationPreference': thread.delegationPreference.name,
+    'frozenModel': thread.frozenModel == null
+        ? null
+        : {
+            'accountId': thread.frozenModel!.accountId,
+            'modelId': thread.frozenModel!.modelId,
+            'effort': thread.frozenModel!.effort,
+          },
+    'workspaceMode': thread.workspaceMode.id,
+    'workspacePath': thread.workspacePath,
+    'rootThreadId': thread.rootThreadId,
+    'parentThreadId': thread.parentThreadId,
+    'role': thread.role,
+    'agentPath': thread.agentPath,
+    'status': thread.status.name,
+    'createdAt': thread.effectiveCreatedAt.millisecondsSinceEpoch,
+    'updatedAt': thread.updatedAt.millisecondsSinceEpoch,
+    'lastUserMessageAt': thread.lastUserMessageAt?.millisecondsSinceEpoch,
+    'archived': thread.archived,
+  };
+
+  void _checkDemoFrameSize(Map<String, Object?> frame) {
+    // This mirrors the Rust serialized-frame budget; Demo still returns typed frames directly.
+    if (utf8.encode(jsonEncode(frame)).length <=
+        DirectoryWindow.maxFrameBytes) {
+      return;
+    }
+    throw StudioFailure(
+      code: StudioFailureCode.overloaded,
+      message: 'Directory frame exceeds the 256 KiB delivery limit',
+      retryable: false,
+      correlationId: 'demo-thread-directory-$_threadDirectoryRevision',
+    );
+  }
+
+  bool _matchesDirectoryQuery(
+    DirectoryQuery query,
+    StudioThread thread,
+    Iterable<StudioProject> projects,
+  ) {
+    if (!thread.isRoot ||
+        thread.archived != query.archived ||
+        (query.workspaceId != null &&
+            thread.workspaceId != query.workspaceId) ||
+        (query.threadIds != null && !query.threadIds!.contains(thread.id)) ||
+        query.excludedThreadIds.contains(thread.id)) {
+      return false;
+    }
+    if (query.filter == DirectoryFilter.running &&
+        (!thread.status.isActive ||
+            thread.status == ThreadStatusView.waitingInteraction)) {
+      return false;
+    }
+    if (query.filter == DirectoryFilter.attention &&
+        thread.status != ThreadStatusView.waitingInteraction &&
+        thread.status != ThreadStatusView.faulted) {
+      return false;
+    }
+    final term = query.search?.trim().toLowerCase() ?? '';
+    String projectText = '';
+    for (final project in projects) {
+      if (project.id == thread.workspaceId) {
+        projectText = '${project.name} ${project.path}'.toLowerCase();
+        break;
+      }
+    }
+    return term.isEmpty ||
+        thread.title.toLowerCase().contains(term) ||
+        projectText.contains(term);
+  }
+
+  ThreadMetadataFrame _readMetadataFrame(String threadId) {
+    final all = <String, StudioThread>{
+      for (final thread in [
+        ..._workspaces.values.map((workspace) => workspace.thread),
+        ..._createdRootThreads,
+        ..._pageFillThreads,
+      ])
+        thread.id: thread.copyWith(
+          archived: _archivedThreadIds.contains(thread.effectiveRootThreadId),
+        ),
+    };
+    final thread = all[threadId];
+    final stamp = _demoStamp('thread-directory', _threadDirectoryRevision);
+    _checkDemoFrameSize({
+      'threadId': threadId,
+      'stamp': _demoStampWireFields(stamp),
+      'thread': thread == null ? null : _demoThreadWireFields(thread),
+    });
+    return ThreadMetadataFrame(
+      threadId: threadId,
+      stamp: stamp,
+      thread: thread,
     );
   }
 
@@ -1590,30 +1893,6 @@ class DemoStudioTransport extends StudioTransport
   }
 
   String _demoDirectoryCursor(int lastIndex) => 'demo:$lastIndex';
-
-  @override
-  Future<ThreadDirectoryPage> listThreadsPage({
-    String? cursor,
-    int limit = 50,
-  }) async {
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    final directory = _sortedDirectoryThreads();
-    final lastIndex = cursor == null
-        ? -1
-        : int.tryParse(cursor.replaceFirst('demo:', '')) ?? -1;
-    final page = directory
-        .skip(lastIndex + 1)
-        .take(limit.clamp(1, 100))
-        .toList();
-    final nextLastIndex = lastIndex + page.length;
-    return ThreadDirectoryPage(
-      threads: page,
-      nextCursor: nextLastIndex < directory.length - 1
-          ? _demoDirectoryCursor(nextLastIndex)
-          : null,
-      revision: _threadDirectoryRevision,
-    );
-  }
 
   ThreadWorkspace _rootWorkspace(StudioThread thread, DateTime now) {
     final route = _demoModeRoute(thread.mode);
@@ -1888,14 +2167,32 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     final snapshot = switch (action) {
-      AcpCheckActionView() => _demoAcpAuth.check(account),
-      AcpQueryUsageActionView() => _demoAcpAuth.queryUsage(account),
-      AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
+      AcpCheckActionView() => _demoAcpAuth.check(account, operationId.value),
+      AcpQueryUsageActionView() => _demoAcpAuth.queryUsage(
         account,
-        methodId,
+        operationId.value,
       ),
     };
     return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
+  Future<AcpAuthCommandReply> continueAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required OperationId targetOperationId,
+    required String methodId,
+  }) async {
+    _ensureDemoRunning();
+    final account = _demoAcpAccount(accountId);
+    if (account.connectionRevision != expectedConnectionRevision) {
+      throw StateError('ACP connection identity changed');
+    }
+    return _demoAcpReply(
+      operationId,
+      _demoAcpAuth.authenticate(account, methodId, targetOperationId.value),
+    );
   }
 
   @override
@@ -1945,7 +2242,7 @@ class DemoStudioTransport extends StudioTransport
   );
 
   AcpInstallReleaseView _demoInstallRelease() => const AcpInstallReleaseView(
-    version: '1.4.1',
+    version: '1.4.5',
     target: 'linux-x86_64',
     archiveUrl: 'https://dl.google.com/agy-extensions/releases/antigravity-acp-linux-x86_64.zip',
   );
@@ -2049,7 +2346,7 @@ class DemoStudioTransport extends StudioTransport
                 server: AcpInstalledServerView(
                   installationId: 'demo-installation-$op',
                   release: release,
-                  program: '/home/studio/acp-servers/antigravity/1.4.1/program',
+                  program: '/home/studio/acp-servers/antigravity/1.4.5/program',
                   readyAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
                 ),
               ),
@@ -3967,10 +4264,6 @@ class DemoStudioTransport extends StudioTransport
       index = (index + 1) % cycle.length;
     });
   }
-
-  @override
-  Future<StudioThread> readThread(String threadId) async =>
-      _demoWorkspace(threadId).thread;
 
   /// Thread 首帧只暴露当前状态；历史正文由独立 reader 和完成尾部交付。
   ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {

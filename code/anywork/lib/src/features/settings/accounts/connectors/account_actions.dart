@@ -256,10 +256,10 @@ Future<void> performAcpAction(
       await owner.cancelPreparation();
     case AcpAccountAction.usePrepared:
       owner.usePrepared();
-    case AcpAccountAction.check ||
-        AcpAccountAction.verify ||
-        AcpAccountAction.retry:
+    case AcpAccountAction.check:
       await owner.authenticate();
+    case AcpAccountAction.retry:
+      await owner.retry();
     case AcpAccountAction.login:
       await owner.authenticate(login: true);
     case AcpAccountAction.cancelAuthentication:

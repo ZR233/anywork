@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'directory_ports.dart';
 import 'src/modes/modes_ports.dart';
 import 'transport_ports.dart';
 import 'src/studio/bootstrap.dart';
@@ -9,6 +10,7 @@ import 'src/studio/bootstrap.dart';
 export 'src/modes/modes_ports.dart';
 export 'src/studio/thread_frames.dart';
 export 'src/studio/bootstrap.dart';
+export 'directory_ports.dart';
 
 abstract interface class RuntimeTransport {
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic);
@@ -83,6 +85,7 @@ abstract class StudioTransport
         RuntimeTransport,
         AttachmentTransport,
         BootstrapTransport,
+        DirectoryFeedPort,
         ConversationTransport,
         CommandTransport,
         ModeEditorTransport {
@@ -133,17 +136,8 @@ abstract class StudioTransport
     required int expectedLeaseRevision,
   });
   Future<StudioBootstrap> readBootstrap();
-  Future<ThreadDirectoryPage> listThreadsPage({String? cursor, int limit = 50});
-  Future<ThreadDirectoryPage> queryThreads(
-    DirectoryQuery query, {
-    String? cursor,
-    int limit = 50,
-  });
   Future<StudioThread> restoreThread(String threadId);
 
-  /// Reads saved/live metadata for one explicitly selected member without
-  /// activating its execution owner or subscribing other child histories.
-  Future<StudioThread> readThread(String threadId);
   Future<void> activateProject(String workspaceId);
   Future<StudioProject> openProject(String path);
 

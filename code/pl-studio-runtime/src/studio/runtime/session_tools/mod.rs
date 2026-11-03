@@ -441,6 +441,7 @@ impl ListInput {
                 StatusFilter::Running => ThreadDirectoryFilter::Running,
                 StatusFilter::Attention => ThreadDirectoryFilter::Attention,
             },
+            ..Default::default()
         }
     }
 }

@@ -85,7 +85,7 @@ const openaiTemplate = AccountTemplateView(
 const vmAcpTemplate = AcpAccountTemplateView(
   provider: AcpProviderView.antigravity,
   displayName: 'Antigravity',
-  supportedVersion: '1.4.1',
+  supportedVersion: '1.4.5',
   automaticInstall: AcpInstallAvailableView(target: 'linux-x86_64'),
 );
 const vmCapabilities = AccountCapabilities(
@@ -603,8 +603,16 @@ class VmAcp implements AcpService {
   Future<AcpSaveAndConnectResult> Function(AcpAccountUpdateView command)?
   connect;
   Future<OperationState> Function()? write;
+  Future<AcpAccountCatalogView> Function()? templateLoader;
+  int templateLoads = 0;
   @override
-  Future<void> loadTemplates() async {}
+  Future<void> loadTemplates() async {
+    templateLoads++;
+    if (templateLoader case final load?) {
+      templates.publish(await load());
+    }
+  }
+
   @override
   Future<OperationState> remove(AcpAccountIdentity identity) {
     removals.add(identity);
@@ -850,7 +858,7 @@ void publishVmAcpReady(AccountsVmHarness h) {
               server: AcpInstalledServerView(
                 installationId: 'id',
                 release: AcpInstallReleaseView(
-                  version: '1.4.1',
+                  version: '1.4.5',
                   target: 'linux-x86_64',
                   archiveUrl: 'https://example.test/archive',
                 ),
@@ -1788,7 +1796,14 @@ void main() {
       h.acp.usageQueries.single.complete(const AcpAuthSnapshotView.empty());
       await querying;
 
-      publishVmAcp(h, const AcpRequiredState(server: null, methods: []));
+      publishVmAcp(
+        h,
+        const AcpRequiredState(
+          operationId: 'op-auth',
+          server: null,
+          methods: [],
+        ),
+      );
       expect(
         owner.state.requireValue.panel.availableActions,
         isNot(contains(AcpAccountAction.queryUsage)),

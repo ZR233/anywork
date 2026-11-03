@@ -228,6 +228,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Test ACP authentication events and cancellation
+        run: cargo test --locked -p pl-acp
+
       # TOML schema admission and credential/file commit recovery also depend on the
       # Windows atomic replacement boundary; Linux-only Studio tests are not sufficient.
       - name: Test Studio migrations and recovery on Windows

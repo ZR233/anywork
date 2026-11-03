@@ -25,8 +25,6 @@ final class DraftsDependencies {
     required this.selection,
     required this.recovery,
     required this.modelAccounts,
-    required this.threads,
-    required this.findThread,
     required this.threadCommands,
     required this.transport,
   });
@@ -39,8 +37,6 @@ final class DraftsDependencies {
   final ValueObservation<SelectionStoreState> selection;
   final ValueObservation<CanonicalClockState<RecoveryStateSnapshot>> recovery;
   final List<ModelSelectionAccount> Function() modelAccounts;
-  final Iterable<StudioThread> Function() threads;
-  final StudioThread? Function(String) findThread;
   final DraftSubmissionCommands threadCommands;
   final AttachmentTransport transport;
   late final DraftAttachmentOperations attachments;

@@ -11,7 +11,8 @@ import '../domain/models/agent_workspace_view.dart';
 import '../features/conversation/timeline/state/chat_item_presentation.dart';
 import '../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../features/conversation/timeline/state/chat_payload_reading.dart';
-import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
+import '../features/conversation/interactions/state/interaction_payload.dart';
+import '../features/shell/shell_view.dart' show projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_state.dart';
 
@@ -55,8 +56,15 @@ StudioDriverFacts queryStudioDriverFacts(
       const {},
 }) {
   final selection = client.selection.state;
-  final directory = client.threadDirectory.state;
-  final threads = [...directory.window.threads, ...directory.overlayThreads];
+  final rootThreadsById = <String, StudioThread>{};
+  var directoryHasMore = false;
+  for (final frame in client.threadDirectory.observedWindows) {
+    directoryHasMore = directoryHasMore || frame.nextCursor != null;
+    for (final thread in frame.threads) {
+      if (thread.isRoot) rootThreadsById.putIfAbsent(thread.id, () => thread);
+    }
+  }
+  final rootThreads = rootThreadsById.values.toList(growable: false);
   final settings = client.settings.state;
   final canonical = settings.canonical;
   final summaries = accountsRepository.state.value;
@@ -85,16 +93,16 @@ StudioDriverFacts queryStudioDriverFacts(
   final thread =
       client.findThread(observedThreadId ?? '') ?? session?.workspace?.thread;
   final agents = projects.agents?.values ?? const <StudioAgentView>[];
-  final rootId = AgentDirectoryQueries.rootThreadId(
-    threadId: observedThreadId,
-    agents: agents,
-    threads: threads,
-  );
-  final root =
-      threads
-          .where((thread) => thread.id == rootId && thread.isRoot)
-          .firstOrNull ??
-      (thread?.isRoot == true ? thread : null);
+  final rootId = thread?.effectiveRootThreadId;
+  final root = rootId == null
+      ? null
+      : client.findThread(rootId) ?? (thread?.id == rootId ? thread : null);
+  final observedThreadsById = <String, StudioThread>{
+    ...rootThreadsById,
+    ?thread?.id: ?thread,
+    ?root?.id: ?root,
+  };
+  final observedThreads = observedThreadsById.values.toList(growable: false);
   final threadComposer = observedThreadId == null
       ? const ComposerThreadState.idle()
       : client.drafts.existingComposer(observedThreadId)?.state ??
@@ -119,7 +127,9 @@ StudioDriverFacts queryStudioDriverFacts(
       modelRoute: session?.modelRoute,
       turn: session?.activeTurn,
       lastTurn: session?.workspace?.lastTurn,
-      activeInteraction: primaryInteraction(session?.interactions ?? const []),
+      activeInteraction: activePendingInteraction(
+        session?.interactions ?? const [],
+      ),
       composer: threadComposer,
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
@@ -130,7 +140,7 @@ StudioDriverFacts queryStudioDriverFacts(
       agents: AgentDirectoryQueries.forRoot(
         rootThreadId: rootId,
         agents: agents,
-        threads: threads,
+        threads: observedThreads,
       ),
     );
   }
@@ -145,11 +155,8 @@ StudioDriverFacts queryStudioDriverFacts(
             thread: client.findThread(state.threadId) ?? workspace.thread,
           ),
     },
-    rootThreads: [
-      for (final thread in threads)
-        if (thread.isRoot) thread,
-    ],
-    directoryHasMore: directory.hasMore,
+    rootThreads: rootThreads,
+    directoryHasMore: directoryHasMore,
     selectedProjectId: selection.selectedProjectId,
     selectedThreadId: selectedThreadId,
     visibleThreadId: visibleThreadId,
@@ -639,7 +646,6 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(settings.agentProfilesSync);
   counts.add(client.project.state.projectSync);
   counts.add(client.project.state.agentSync);
-  counts.add(client.threadDirectory.state.sync);
   counts.add(client.recovery.state.sync);
   counts.add(client.mcp.state.sync);
   counts.add(client.lsp.state.sync);
@@ -694,7 +700,9 @@ Map<String, Object?> _projectionRevisions(
     'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,
     'bots': client.bots.state.revision,
-    'threadDirectory': client.threadDirectory.state.revision,
+    // Directory revisions belong to explicit observation frames. This
+    // request-local diagnostic owns no directory demand.
+    'threadDirectory': null,
     'presentationThread': session?.workspace?.revision,
     'skills': {
       'scopeCount': skills.length,

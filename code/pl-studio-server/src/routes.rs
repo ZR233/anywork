@@ -11,14 +11,15 @@ use pl_protocol::studio::{
     AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
     AdmitAttachmentDraftsResponse, CancelAcpAuthRequest, CancelAcpInstallRequest,
-    ContinuationOperationView, ContinueThreadRequest, ContinueThreadResponse, CreateAccountRequest,
-    CreateThreadRequest, ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest,
-    OpenProjectRequest, PatchAccountRequest, RemoveAccountModelRequest, RemoveAccountRequest,
-    RemoveAcpAccountRequest, RenameThreadRequest, ResolveInteractionRequest, SearchSkillsRequest,
-    SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
-    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
-    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
-    StartAcpAuthRequest, StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
+    ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
+    ContinueThreadResponse, CreateAccountRequest, CreateThreadRequest, ExpectedRevisionRequest,
+    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest, PatchAccountRequest,
+    RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
+    ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
+    SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
+    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
+    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
     StudioError, SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest,
     ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
@@ -305,6 +306,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(check_account_usage))
         .routes(routes!(read_acp_auth))
         .routes(routes!(start_acp_auth))
+        .routes(routes!(continue_acp_auth))
         .routes(routes!(cancel_acp_auth))
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
@@ -1217,6 +1219,19 @@ async fn start_acp_auth(
         state
             .runtime
             .start_acp_auth(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-auth/continue", operation_id = "acpAuth.continue", request_body = ContinueAcpAuthRequest, responses(StudioApiErrors, (status = 200, body = AcpAuthCommandReply)))]
+async fn continue_acp_auth(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ContinueAcpAuthRequest>,
+) -> Result<Json<AcpAuthCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .continue_acp_auth(request)
             .map_err(ApiError::from)?,
     ))
 }

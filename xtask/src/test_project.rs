@@ -178,12 +178,16 @@ fn run_case(
 ) -> Result<()> {
     match case.target {
         CaseTarget::Desktop { ref relative_path } => {
-            if let Some(preset) = desktop_harness_preset(&case.id)
-                && !desktop_env_ready(&case.id)
-            {
-                let workspace = paths::workspace_root()?;
-                let executable = studio_acceptance::build_acceptance_tool(&workspace)?;
-                return wait_acceptance_preset(&executable, preset, output);
+            if !desktop_env_ready(&case.id) {
+                if let Some(preset) = desktop_harness_preset(&case.id) {
+                    let workspace = paths::workspace_root()?;
+                    let executable = studio_acceptance::build_acceptance_tool(&workspace)?;
+                    return wait_acceptance_preset(&executable, preset, output);
+                }
+                bail!(
+                    "desktop case `{}` needs an isolated environment; no acceptance preset owns it",
+                    case.id
+                );
             }
             flutter::run_desktop_integration_test(Path::new(relative_path))
         }
@@ -203,6 +207,10 @@ fn desktop_harness_preset(id: &str) -> Option<&'static str> {
     match id {
         "wait_events" => Some("wait-events"),
         "conversation_read_work" => Some("conversation-read-work"),
+        "question_history" => Some("question-history"),
+        "realtime_presentation" => Some("realtime-presentation"),
+        "timeline_presentation" => Some("timeline-history"),
+        "sidebar" => Some("sidebar-query"),
         _ => None,
     }
 }
@@ -215,12 +223,34 @@ fn desktop_env_ready(id: &str) -> bool {
                 && env_present("ANYWORK_READ_REPORT")
                 && env_present("ANYWORK_HOME")
         }
+        "question_history" => {
+            env_present("ANYWORK_QUESTION_HISTORY_PROJECT")
+                && env_present("ANYWORK_QUESTION_HISTORY_OUTPUT")
+        }
+        "realtime_presentation" => {
+            env_present("ANYWORK_REALTIME_PROJECT") && env_present("ANYWORK_REALTIME_OUTPUT")
+        }
+        "timeline_presentation" => {
+            env_present("ANYWORK_TIMELINE_PHASE")
+                && env_present("ANYWORK_TIMELINE_PROJECT")
+                && env_present("ANYWORK_TIMELINE_OUTPUT")
+        }
+        "sidebar" => {
+            env_present("ANYWORK_HOME")
+                && env_present("ANYWORK_SIDEBAR_PROJECTS")
+                && env_present("ANYWORK_SIDEBAR_ARTIFACTS")
+        }
+        "acp_real_login" => env_present("ANYWORK_ACP_ACCEPTANCE"),
         _ => true,
     }
 }
 
 fn env_present(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn desktop_opt_in(id: &str) -> bool {
+    matches!(id, "acp_real_login")
 }
 
 fn wait_acceptance_preset(executable: &Path, preset: &str, output: Option<&Path>) -> Result<()> {
@@ -354,6 +384,8 @@ fn select_cases(
             !selected.is_empty(),
             "{suite} {set} does not include `{id}`"
         );
+    } else {
+        selected.retain(|case| !desktop_opt_in(&case.id) || desktop_env_ready(&case.id));
     }
     ensure!(!selected.is_empty(), "{suite} {set} discovery is empty");
     Ok(selected)
@@ -514,6 +546,19 @@ mod tests {
             desktop_harness_preset("conversation_read_work"),
             Some("conversation-read-work")
         );
+        assert_eq!(
+            desktop_harness_preset("question_history"),
+            Some("question-history")
+        );
+        assert_eq!(
+            desktop_harness_preset("realtime_presentation"),
+            Some("realtime-presentation")
+        );
+        assert_eq!(
+            desktop_harness_preset("timeline_presentation"),
+            Some("timeline-history")
+        );
+        assert_eq!(desktop_harness_preset("sidebar"), Some("sidebar-query"));
         assert_eq!(desktop_harness_preset("session_open"), None);
     }
 

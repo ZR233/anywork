@@ -135,10 +135,7 @@ class StudioChannels {
         _client.project.state.agentsLoaded,
         _client.project.state.agentRevision,
       ),
-      ThreadDirectoryTopic() => _loaded(
-        _client.threadDirectory.state.loaded,
-        _client.threadDirectory.state.revision,
-      ),
+      ThreadDirectoryTopic() => null,
       SettingsConfigTopic() => _loaded(
         _client.settings.state.configLoaded,
         _client.settings.state.settingsRevision,
@@ -197,8 +194,8 @@ class StudioChannels {
         if (_client.project.applyProjectDirectory(state)) {
           _client.reconcileSelectedProject();
         }
-      case ThreadDirectoryBaseline(:final page):
-        _client.threadDirectory.applyBaseline(page, revision: revision);
+      case ThreadDirectoryBaseline():
+        break;
       case AgentDirectoryBaseline(:final state):
         _client.project.applyAgentDirectory(state);
       case SettingsConfigBaseline(:final state):
@@ -250,19 +247,11 @@ class StudioChannels {
         if (_client.project.applyProjectDirectory(state)) {
           _client.reconcileSelectedProject();
         }
-      case ThreadDirectoryChangedPayload(
-        :final revision,
-        :final upserted,
-        :final removed,
-      ):
-        final applied = _client.threadDirectory.applyDelta(
-          revision: revision,
-          upserted: upserted,
-          removed: removed,
-        );
-        // 目录增量只更新 threadDirectoryStore。removed 会话由 reconcile 释放，
-        // 不把目录线程元数据回绑到 threadSession，也不在这里清空其 workspace。
-        if (applied) _client.reconcileRemovedThreads(removed.toSet());
+      case ThreadDirectoryChangedPayload():
+        // Directory observations now deliver complete demand-scoped frames.
+        // Keep decoding the legacy topic for external consumers, but do not
+        // reduce it into a second SDK directory model.
+        break;
       case AgentDirectoryChangedPayload(:final state):
         _client.project.applyAgentDirectory(state);
       case SettingsConfigStateChangedPayload(:final state):
@@ -315,7 +304,7 @@ class StudioChannels {
       case AgentDirectoryTopic():
         _client.project.applyAgentTransport(sync);
       case ThreadDirectoryTopic():
-        _client.threadDirectory.applyTransport(sync);
+        break;
       case SettingsConfigTopic():
         _client.settings.applyConfigTransport(sync);
       case ModelCatalogTopic():

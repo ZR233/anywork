@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../app/theme/studio_semantic_colors.dart';
 import '../../../../l10n/app_localizations.dart';
 import 'account_identity.dart';
 import '../state/account_presentations.dart';
@@ -31,7 +32,12 @@ class AccountDetailsHeader extends StatelessWidget {
         NativeAccountDetailsContent(:final value) => AccountBillingBadge(
           billing: value.billing.effective,
         ),
-        AcpAccountDetailsContent() => null,
+        AcpAccountDetailsContent() => AccountStatusBadge(
+          label: l10n.acpAccountProviderChip,
+          indicator: Theme.of(context)
+              .extension<StudioSemanticColors>()
+              ?.activeIndicator,
+        ),
       },
     );
     final actions = Wrap(

@@ -1635,8 +1635,9 @@ Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
         'kind': 'checking',
         'operationId': operationId,
       },
-      AcpRequiredState(:final server, :final methods) => {
+      AcpRequiredState(:final operationId, :final server, :final methods) => {
         'kind': 'required',
+        'operationId': operationId,
         'server': server == null ? null : _acpServerJson(server),
         'methods': [
           for (final method in methods)

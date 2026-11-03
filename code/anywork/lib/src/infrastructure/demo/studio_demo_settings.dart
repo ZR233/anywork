@@ -10,7 +10,7 @@ const demoAcpAccountCatalogFixture = AcpAccountCatalogView(
       description: '通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。',
       iconKey: 'antigravity',
       // 产品固定的受管版本由后端模板给出；demo 只镜像这一权威值。
-      supportedVersion: '1.4.1',
+      supportedVersion: '1.4.5',
       installUrl: 'https://antigravity.google/docs/ide/extensions',
       termsUrl: 'https://antigravity.google/terms',
       // demo 预览固定声明一个可用目标；真实目标只由后端按宿主平台给出。
@@ -22,11 +22,11 @@ const demoAcpAccountCatalogFixture = AcpAccountCatalogView(
 /// Demo 的认证观察替身。
 ///
 /// 它只模拟后端发布的 canonical 事实（未检查 → 需要登录 → 认证通过/取消），
-/// 不模拟真实进程，也不参与生产路径；真实 Authenticating/Verifying 由 fake CLI
-/// 与生产 bridge 的 manual-gui 验收覆盖。
+/// 不模拟真实进程，也不参与生产路径；原生回归由官方 integration_test 覆盖。
 class DemoAcpAuth {
   final Map<String, AcpAuthAccountView> _accounts = {};
   final Set<String> _verifiedConnectionKeys = {};
+  final Map<String, String> _pendingUsage = {};
   int _revision = 0;
 
   static const methods = [
@@ -75,6 +75,7 @@ class DemoAcpAuth {
   }
 
   void forget(String accountId) {
+    _pendingUsage.remove(accountId);
     if (_accounts.remove(accountId) == null) return;
     _revision += 1;
   }
@@ -82,7 +83,10 @@ class DemoAcpAuth {
   String _connectionKey(AcpAccountSettingsView account) =>
       '${account.accountId}:${account.connectionRevision}';
 
-  AcpAuthSnapshotView check(AcpAccountSettingsView account) {
+  AcpAuthSnapshotView check(
+    AcpAccountSettingsView account,
+    String operationId,
+  ) {
     if (_verifiedConnectionKeys.contains(_connectionKey(account))) {
       _set(
         account,
@@ -93,14 +97,26 @@ class DemoAcpAuth {
       );
       return snapshot;
     }
-    _set(account, const AcpRequiredState(server: server, methods: methods));
+    _set(
+      account,
+      AcpRequiredState(
+        operationId: operationId,
+        server: server,
+        methods: methods,
+      ),
+    );
     return snapshot;
   }
 
   AcpAuthSnapshotView authenticate(
     AcpAccountSettingsView account,
     String methodId,
+    String targetOperationId,
   ) {
+    if (stateOf(account.accountId) is! AcpRequiredState ||
+        stateOf(account.accountId).operationId != targetOperationId) {
+      throw StateError('ACP login flow is no longer current');
+    }
     final method = methods.where((item) => item.id == methodId).firstOrNull;
     if (method == null || !method.isAgent) {
       throw StudioFailure(
@@ -118,12 +134,21 @@ class DemoAcpAuth {
         server: server,
       ),
     );
+    if (_pendingUsage.remove(account.accountId) == targetOperationId) {
+      return queryUsage(account, targetOperationId);
+    }
     return snapshot;
   }
 
-  AcpAuthSnapshotView queryUsage(AcpAccountSettingsView account) {
-    check(account);
-    if (stateOf(account.accountId) is! AcpVerifiedState) return snapshot;
+  AcpAuthSnapshotView queryUsage(
+    AcpAccountSettingsView account,
+    String operationId,
+  ) {
+    check(account, operationId);
+    if (stateOf(account.accountId) is! AcpVerifiedState) {
+      _pendingUsage[account.accountId] = operationId;
+      return snapshot;
+    }
     final current = _accounts[account.accountId]!;
     _accounts[account.accountId] = AcpAuthAccountView(
       accountId: current.accountId,
@@ -168,6 +193,7 @@ class DemoAcpAuth {
         correlationId: 'demo-acp-auth',
       );
     }
+    _pendingUsage.remove(account.accountId);
     _set(account, const AcpCancelledState());
     return snapshot;
   }
@@ -177,7 +203,7 @@ class DemoAcpAuth {
       accountId: account.accountId,
       connectionRevision: account.connectionRevision,
       // demo 不合成真实阶段：检查/登录直接收敛到需要登录或认证通过，
-      // Authenticating/Verifying 只由 fake CLI + 生产 bridge 验收覆盖。
+      // Authenticating/Verifying 由官方 integration_test 与真实供应商验收覆盖。
       state: state,
       usage: _accounts[account.accountId]?.usage,
     );

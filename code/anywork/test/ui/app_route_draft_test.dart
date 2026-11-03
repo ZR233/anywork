@@ -6,8 +6,8 @@ import 'dart:convert';
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
-import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -72,7 +72,7 @@ void main() {
         // Keep host mocks installed while an early assertion failure unmounts
         // the real lifecycle coordinator and joins its shared exit operation.
         await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pumpAndSettle();
+        await tester.pump();
         final exiting = StudioExitCoordinator.requestExit();
         await pumpClientFuture(tester, exiting, 'teardown exit');
         await pumpClientFuture(
@@ -97,7 +97,7 @@ void main() {
       );
       // Await the production bootstrap owner, not a timer guessed from frame count.
       await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
-      await tester.pumpAndSettle();
+      await tester.pump();
       expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
       expect(transport.bootstrapCalls, 1);
       final workspaceId = graph.client.selection.state.selectedProjectId!;
@@ -230,7 +230,7 @@ void main() {
             ProviderScope.containerOf(
               tester.element(find.byType(AnyworkApp)),
               listen: false,
-            ).read(conversationActivityInputProvider('thread-main')),
+            ).read(conversationActivityViewModelProvider('thread-main')),
             isNull,
             reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
           );
@@ -390,16 +390,37 @@ void main() {
           expect(router.routerDelegate.state.name, BotDetailsRoute.name);
           expect(router.routerDelegate.state.pathParameters, {'botId': botId});
           expect(graph.client.conversations.visibleThreadId.value, isNull);
-          // Bound conversations can be outside the currently loaded directory page.
-          final directory = graph.client.threadDirectory.state;
-          graph.client.threadDirectory.state = directory.copyWith(
-            window: const ThreadDirectoryWindow(
-              nextCursor: 'more-threads',
-              hasMore: true,
+          // The bound route has an ID observation independent of the sidebar query.
+          final directoryDemand = graph.client.threadDirectory.observeThreads(
+            DirectoryQuery(
+              workspaceId: workspaceId,
+              search: '__no_sidebar_match__',
             ),
-            overlayThreads: const [],
+            DirectoryWindow(),
           );
-          expect(graph.client.findThread('thread-alt'), isNull);
+          final directoryFrame = await directoryDemand.state
+              .waitFor((state) => state.frame != null)
+              .timeout(const Duration(seconds: 5));
+          expect(directoryFrame.frame!.threads, isEmpty);
+          final metadataDemand = graph.client.threadDirectory.observeThread(
+            'thread-alt',
+          );
+          final metadataFrame = await metadataDemand.state
+              .waitFor((state) => state.frame != null)
+              .timeout(const Duration(seconds: 5));
+          expect(metadataFrame.frame!.thread?.id, 'thread-alt');
+          addTearDown(() async {
+            await pumpClientFuture(
+              tester,
+              metadataDemand.release(),
+              'route metadata release',
+            );
+            await pumpClientFuture(
+              tester,
+              directoryDemand.release(),
+              'route directory release',
+            );
+          });
           // A bound route owns its target, independently of the hidden studio.
           final budget = graph.client.budget;
           final heldReadModels = <ResourcePermit>[
@@ -422,7 +443,14 @@ void main() {
           await tester.tap(
             find.byKey(StudioDriverKeys.botsConversation('route-chat')),
           );
-          await tester.pumpAndSettle();
+          await pumpClientUntil(
+            tester,
+            () =>
+                graph.timeline.source.value?.connection ==
+                    TimelineConnectionPhase.failed &&
+                find.byKey(StudioDriverKeys.botsChatBack).evaluate().isNotEmpty,
+            'route admission rejected',
+          );
           expect(
             graph.timeline.source.value?.connection,
             TimelineConnectionPhase.failed,
@@ -465,7 +493,14 @@ void main() {
           await tester.tap(
             find.byKey(StudioDriverKeys.botsConversation('route-chat')),
           );
-          await tester.pumpAndSettle();
+          await pumpClientUntil(
+            tester,
+            () =>
+                graph.timeline.source.value?.connection ==
+                    TimelineConnectionPhase.failed &&
+                find.byKey(StudioDriverKeys.botsChatBack).evaluate().isNotEmpty,
+            'second route admission rejected',
+          );
           expect(
             graph.timeline.source.value?.connectionError,
             isA<ResourceBudgetExceeded>(),
@@ -538,7 +573,13 @@ void main() {
           expect(observed['navigation']['visibleThreadId'], 'thread-alt');
           expect(observed['navigation']['selectedThreadId'], isNull);
           expect(observed['navigation']['isStartPage'], isFalse);
-          expect(graph.client.findThread('thread-alt'), isNull);
+          // The visible Conversation owns exact-ID metadata even though the
+          // independent sidebar query still has no matching rows.
+          expect(
+            graph.client.findThread('thread-alt'),
+            same(facts.workspace!.thread),
+          );
+          expect(directoryDemand.state.value.frame!.threads, isEmpty);
           expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
           expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(
@@ -630,7 +671,6 @@ void main() {
             graph.client.drafts.existingComposer('missing-thread'),
             isNull,
           );
-          graph.client.threadDirectory.state = directory;
           graph.client.selection.selectThread(
             threadId: 'thread-main',
             workspaceId: workspaceId,
@@ -668,6 +708,7 @@ void main() {
       expect(graph.client.budget.usage, isEmpty);
       expect(tester.takeException(), isNull);
     },
+    timeout: const Timeout(Duration(seconds: 60)),
   );
 }
 

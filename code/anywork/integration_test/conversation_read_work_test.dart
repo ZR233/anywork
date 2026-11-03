@@ -52,7 +52,7 @@ void main() {
       isNull,
       reason: 'The prepared home must bootstrap before measuring reads',
     );
-    expect(graph.client.threadDirectory.state.loaded, isTrue);
+    await _verifyDirectoryObservation(graph);
   });
   tearDownAll(() async {
     try {
@@ -230,6 +230,35 @@ void main() {
         switchThreadId == null ? 1 : 3,
       );
     });
+  }
+}
+
+Future<void> _verifyDirectoryObservation(AppGraph graph) async {
+  final observation = graph.client.threadDirectory.observeThreads(
+    const DirectoryQuery(),
+    DirectoryWindow(limit: 1),
+  );
+  try {
+    final state = await observation.state
+        .waitFor(
+          (state) => state.frame != null || state.error != null || state.closed,
+        )
+        .timeout(const Duration(seconds: 30));
+    if (state.error case final error?) {
+      fail('Prepared thread directory failed: $error');
+    }
+    expect(
+      state.closed,
+      isFalse,
+      reason: 'Prepared thread directory closed before its initial frame',
+    );
+    expect(
+      state.frame,
+      isNotNull,
+      reason: 'Prepared thread directory must publish an initial frame',
+    );
+  } finally {
+    await observation.release();
   }
 }
 

@@ -325,11 +325,8 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
     let run_args = run_gui_args(target, &version_define, options.capture);
-    let bridge_artifacts = prepare_bridge_artifacts(
-        &workspace_root,
-        demo_mode,
-        BridgeConfiguration::Debug,
-    )?;
+    let bridge_artifacts =
+        prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Debug)?;
     run_flutter_with_process_mode(
         &workspace_root,
         &app_dir,
@@ -569,11 +566,7 @@ fn run_native_launch_args<'a>(
     args
 }
 
-fn run_gui_args<'a>(
-    target: DesktopTarget,
-    version_define: &'a str,
-    capture: bool,
-) -> Vec<&'a str> {
+fn run_gui_args<'a>(target: DesktopTarget, version_define: &'a str, capture: bool) -> Vec<&'a str> {
     let mut args = vec![
         "run",
         "-d",

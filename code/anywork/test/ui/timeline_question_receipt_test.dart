@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -38,6 +39,8 @@ void main() {
   ChatItemPresentation receipt({
     bool cancelled = false,
     bool reverseAnswers = false,
+    int optionCount = 2,
+    int answerCount = 2,
   }) => ChatItemPresentation.decode(
     chatEnvelope(
       'qa',
@@ -60,7 +63,7 @@ void main() {
               'id': 'public-q',
               'isSecret': false,
               'isOther': true,
-              'optionCount': 2,
+              'optionCount': optionCount,
             },
             {
               'id': 'secret-q',
@@ -74,7 +77,11 @@ void main() {
             'answers': [
               if (reverseAnswers)
                 {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
-              {'questionId': 'public-q', 'answerCount': 2, 'redacted': false},
+              {
+                'questionId': 'public-q',
+                'answerCount': answerCount,
+                'redacted': false,
+              },
               if (!reverseAnswers)
                 {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
             ],
@@ -84,13 +91,13 @@ void main() {
       bodies: [
         inlineBody('tool.arguments', '{}'),
         inlineBody('tool.user-input.question.0.header', '公开问题'),
-        inlineBody('tool.user-input.question.0.question', 'Which option?'),
+        inlineBody('tool.user-input.question.0.body', 'Which option?'),
         inlineBody('tool.user-input.question.0.option.0.label', 'Option A'),
         inlineBody('tool.user-input.question.0.option.1.label', 'Option B'),
         inlineBody('tool.user-input.answer.0.0', 'Option A'),
         inlineBody('tool.user-input.answer.0.1', 'free second'),
         inlineBody('tool.user-input.question.1.header', 'PRIVATE HEADER'),
-        inlineBody('tool.user-input.question.1.question', 'PRIVATE QUESTION'),
+        inlineBody('tool.user-input.question.1.body', 'PRIVATE QUESTION'),
         inlineBody(
           'tool.user-input.answer.1.0',
           'secret-token-must-not-render',
@@ -104,6 +111,13 @@ void main() {
       'questionId links answers with redaction even when answer order reversed=$reversed',
       (tester) async {
         await pumpReceipt(tester, receipt(reverseAnswers: reversed));
+        final receiptHeader = find.byKey(
+          StudioDriverKeys.timelineUserInput('qa'),
+        );
+        expect(receiptHeader, findsOneWidget);
+        expect(find.text('公开问题'), findsNothing);
+        await tester.tap(receiptHeader);
+        await tester.pumpAndSettle();
         expect(find.text('公开问题'), findsOneWidget);
         expect(find.text('free second'), findsOneWidget);
         expect(find.text('敏感内容已隐藏'), findsOneWidget);
@@ -134,52 +148,98 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       await pumpReceipt(tester, receipt(cancelled: true), width: 280);
-      expect(find.text('问答已取消'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.timelineUserInput('qa')),
+          matching: find.textContaining('问答已取消'),
+        ),
+        findsOneWidget,
+      );
       expect(find.byType(TextField), findsNothing);
       expect(find.byType(Checkbox), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets(
-    'ordinary question titled Plan is not reclassified into a plan decision',
-    (tester) async {
-      final ordinary = ChatItemPresentation.decode(
-        chatEnvelope(
-          'ordinary',
-          type: 'tool',
-          data: {
-            'invocation': {
-              'toolCallId': 'call',
-              'name': 'plan',
-              'presentationContract': 'generic@1',
+  for (final (options, answers) in [
+    (-1, 2),
+    (1 << 30, 2),
+    (2, -1),
+    (2, 1 << 30),
+  ]) {
+    testWidgets(
+      'invalid counts ($options options, $answers answers) report malformed content before building',
+      (tester) async {
+        await pumpReceipt(
+          tester,
+          receipt(optionCount: options, answerCount: answers),
+        );
+        expect(find.text('内容格式错误'), findsOneWidget);
+        expect(
+          find.byKey(StudioDriverKeys.timelineUserInput('qa')),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final optionCount in <int?>[null, 0]) {
+    testWidgets(
+      'ordinary question titled Plan with optionCount=$optionCount is not a plan decision',
+      (tester) async {
+        final ordinary = ChatItemPresentation.decode(
+          chatEnvelope(
+            'ordinary',
+            type: 'tool',
+            data: {
+              'invocation': {
+                'toolCallId': 'call',
+                'name': 'plan',
+                'presentationContract': 'generic@1',
+              },
+              'state': {
+                'kind': 'succeeded',
+                'output': {'attachments': []},
+              },
+              'userInput': {
+                'questions': [
+                  {
+                    'id': 'ordinary-q',
+                    'isSecret': false,
+                    'optionCount': optionCount,
+                  },
+                ],
+                'state': {'kind': 'resolved', 'answers': []},
+              },
             },
-            'state': {
-              'kind': 'succeeded',
-              'output': {'attachments': []},
-            },
-            'userInput': {
-              'questions': [
-                {'id': 'ordinary-q', 'isSecret': false},
-              ],
-              'state': {'kind': 'resolved', 'answers': []},
-            },
-          },
-          bodies: [
-            inlineBody('tool.arguments', '{}'),
-            inlineBody(
-              'tool.user-input.question.0.header',
-              'Plan approval question',
-            ),
-          ],
-        ),
-      );
-      await pumpReceipt(tester, ordinary);
-      expect(find.text('Plan approval question'), findsOneWidget);
-      expect(find.text('计划已批准'), findsNothing);
-      expect(find.text('已请求修改计划'), findsNothing);
-    },
-  );
+            bodies: [
+              inlineBody('tool.arguments', '{}'),
+              inlineBody(
+                'tool.user-input.question.0.header',
+                'Plan approval question',
+              ),
+              inlineBody(
+                'tool.user-input.question.0.body',
+                'An ordinary prompt',
+              ),
+            ],
+          ),
+        );
+        await pumpReceipt(tester, ordinary);
+        expect(find.text('Plan approval question'), findsNothing);
+        await tester.tap(
+          find.byKey(StudioDriverKeys.timelineUserInput('ordinary')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Plan approval question'), findsOneWidget);
+        expect(find.text('An ordinary prompt'), findsOneWidget);
+        expect(find.text('可选项'), findsNothing);
+        expect(find.text('计划已批准'), findsNothing);
+        expect(find.text('已请求修改计划'), findsNothing);
+      },
+    );
+  }
 
   for (final (decision, label) in [
     ('revisionRequested', '已请求修改计划'),
@@ -207,7 +267,13 @@ void main() {
           ),
         );
         await pumpReceipt(tester, item);
-        expect(find.text(label), findsOneWidget);
+        expect(find.textContaining(label), findsOneWidget);
+        expect(
+          find.textContaining('Keep the current draft readable.'),
+          findsNothing,
+        );
+        await tester.tap(find.textContaining(label));
+        await tester.pumpAndSettle();
         expect(find.text('计划已批准'), findsNothing);
         expect(
           find.textContaining('Keep the current draft readable.'),
@@ -247,6 +313,8 @@ void main() {
           ),
         ),
       );
+      await tester.tap(find.text('已请求修改计划'));
+      await tester.pumpAndSettle();
       final rich = find.descendant(
         of: find.text(feedback),
         matching: find.byType(RichText),

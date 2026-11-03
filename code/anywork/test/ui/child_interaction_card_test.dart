@@ -956,9 +956,18 @@ void main() {
     final transport = fixture.transport;
     final client = fixture.graph.client;
     const hostB = 'thread-alt';
-    final alternate = await transport.readThread(hostB);
-    client.threadDirectory.mergeOverlayThreads([alternate]);
+    final metadata = client.threadDirectory.observeThread(hostB);
+    expect(
+      (await metadata.state
+              .waitFor((state) => state.frame != null)
+              .timeout(const Duration(seconds: 5)))
+          .frame
+          ?.thread
+          ?.id,
+      hostB,
+    );
     await _pump(tester, fixture);
+    await metadata.release();
     await pumpClientUntil(
       tester,
       () => find
@@ -1089,9 +1098,18 @@ void main() {
     const hostA = _rootId;
     const hostB = 'thread-alt';
     final client = fixture.graph.client;
-    final alternate = await transport.readThread(hostB);
-    client.threadDirectory.mergeOverlayThreads([alternate]);
+    final metadata = client.threadDirectory.observeThread(hostB);
+    expect(
+      (await metadata.state
+              .waitFor((state) => state.frame != null)
+              .timeout(const Duration(seconds: 5)))
+          .frame
+          ?.thread
+          ?.id,
+      hostB,
+    );
     await _pump(tester, fixture);
+    await metadata.release();
     await pumpClientUntil(
       tester,
       () => find

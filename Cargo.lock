@@ -4020,7 +4020,6 @@ dependencies = [
 name = "pl-provider-fixture"
 version = "0.1.0"
 dependencies = [
- "agent-client-protocol",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -4028,22 +4027,16 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
  "prost",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
- "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "url",
- "zip",
 ]
 
 [[package]]

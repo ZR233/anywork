@@ -61,6 +61,22 @@
       ]
     },
     {
+      id: 'dcsdk2',
+      name: 'dcsdk2',
+      path: '/data/work/dcsdk2',
+      sshAlias: 'dcsdk2',
+      isGit: true,
+      threads: []
+    },
+    {
+      id: 'xiaohu-home',
+      name: '小糊-家',
+      path: 'C:\\Users\\dev\\work\\xiaohu-home',
+      sshAlias: null,
+      isGit: true,
+      threads: []
+    },
+    {
       id: 'notes-plain-dir',
       name: 'design-notes',
       path: 'C:\\Users\\dev\\Documents\\design-notes',
@@ -733,7 +749,14 @@
       group: 'start',
       stage: 'start',
       label: '起始页 · 本地目录（默认）',
-      hint: '创建前外层环境栏完全可配：项目名旁通过紧凑下拉列表切换「本地目录 / 新建工作树」，右侧单层面板配置子智能体分发。'
+      hint: '直接点新建会话或从项目点击 + 均进入同一新会话页：外层左侧直接展示并可点击切换「无项目 / 已有项目（支持模糊搜索）/ 新建项目」，右侧切换「本地目录 / 新建工作树」与子智能体分发。'
+    },
+    {
+      id: 'project-picker',
+      group: 'start',
+      stage: 'start',
+      label: '起始页 · 项目选择器与模糊搜索',
+      hint: '点击外层环境栏项目选择器展开列表：可选择「无项目」、通过模糊搜索（如输入 plp / gpu / dcs / 家）快速定位「已有项目」，或点击底部「新建项目…」直接添加新项目。'
     },
     {
       id: 'worktree',
@@ -747,28 +770,28 @@
       group: 'start',
       stage: 'start',
       label: '起始页 · SSH 远程项目工作树',
-      hint: 'SSH 项目在外层展示远程主机徽标，工作区下拉列表支持在远端项目目录与远端新建工作树之间紧凑切换。'
+      hint: 'SSH 项目在外层项目选择器展示远程主机徽标，工作区下拉列表支持在远端项目目录与远端新建工作树之间紧凑切换。'
     },
     {
       id: 'standalone',
       group: 'start',
       stage: 'start',
-      label: '起始页 · 非项目独立会话',
-      hint: '全局「新会话」无需先添加项目，外层工作区位置收敛为不可交互的「固定本地目录」标签，不显示工作树下拉列表。'
+      label: '起始页 · 无项目新会话',
+      hint: '点击侧栏「新建会话」或在外层项目选择器切换为「无项目」，进入相同的新会话页：展示会话将开启在「无项目」（Documents/anywork），随时可点击切换至已有项目或新建项目。'
     },
     {
       id: 'preparing',
       group: 'start',
       stage: 'start',
       label: '起始页 · 首条请求环境准备中',
-      hint: '首条消息提交后欢迎区切换为四阶段准备卡片：此时外层工作区与分发已冻结锁定，但内层输入框仍允许提前编辑下一条草稿。'
+      hint: '首条消息提交后欢迎区切换为四阶段准备卡片：此时外层所属项目、工作区与分发已冻结锁定，但内层输入框仍允许提前编辑下一条草稿。'
     },
     {
       id: 'worktree-error',
       group: 'start',
       stage: 'start',
       label: '起始页 · 工作树准备失败保留草稿',
-      hint: '非 Git 目录尝试创建工作树失败时，原位保留提示词与附件草稿，提供一键「切换为本地目录」恢复入口。'
+      hint: '非 Git 目录尝试创建工作树失败时，原位保留提示词与附件草稿，提供一键「切换为本地目录」或改选其他项目恢复。'
     },
 
     // Group 2: Runtime Session Composer & Locked Configuration Matrix

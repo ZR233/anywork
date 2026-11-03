@@ -7,7 +7,7 @@ import 'package:test/test.dart';
 import 'support/accounts_test_runtime.dart';
 
 const _release = AcpInstallReleaseView(
-  version: '1.4.1',
+  version: '1.4.5',
   target: 'linux-x86_64',
   archiveUrl: 'https://dl.google.com/agy-extensions/releases/a.zip',
 );

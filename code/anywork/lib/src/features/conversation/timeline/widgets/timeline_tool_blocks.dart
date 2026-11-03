@@ -24,7 +24,7 @@ bool timelineIsWebSearch(TimelineToolPresentation item) {
 }
 
 /// 网页搜索同样是统一轻量行：默认只显示状态文案，查询、链接与结果在展开区。
-class TimelineWebSearchToolCard extends StatefulWidget {
+class TimelineWebSearchToolCard extends StatelessWidget {
   const TimelineWebSearchToolCard({
     required this.item,
     this.initiallyExpanded = false,
@@ -37,22 +37,8 @@ class TimelineWebSearchToolCard extends StatefulWidget {
   final ValueChanged<bool>? onExpansionChanged;
 
   @override
-  State<TimelineWebSearchToolCard> createState() =>
-      _TimelineWebSearchToolCardState();
-}
-
-class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
-  late bool _expanded;
-
-  @override
-  void initState() {
-    super.initState();
-    _expanded = widget.initiallyExpanded;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final item = widget.item;
+    final item = this.item;
     final data = _WebSearchCardData.fromTool(item);
     final error = item.error;
     final result = item.output;
@@ -122,31 +108,18 @@ class _TimelineWebSearchToolCardState extends State<TimelineWebSearchToolCard> {
           ),
         ),
     ];
-    return ExpansionTile(
+    return TimelineActivityDisclosure(
       key: ValueKey('timeline-tool-details:${item.id}'),
-      initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) {
-        setState(() => _expanded = expanded);
-        widget.onExpansionChanged?.call(expanded);
-      },
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(
-        left: TimelineActivityRow.contentIndent,
-        bottom: 8,
-      ),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      dense: true,
-      minTileHeight: 28,
-      showTrailingIcon: false,
-      title: TimelineActivityRow(
+      initiallyExpanded: initiallyExpanded,
+      onExpansionChanged: onExpansionChanged,
+      enabled: children.isNotEmpty,
+      titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: Icons.travel_explore,
         label: _webSearchLabel(context, item, data),
         active: _toolActiveStatuses.contains(item.statusString),
         isIssue: timelineIssueStatuses.contains(item.statusString),
+        expanded: expanded,
         expandable: children.isNotEmpty,
-        expanded: _expanded,
         tooltip: data.details.firstOrNull,
       ),
       children: children,
@@ -298,7 +271,7 @@ void _collectWebLinks(Object? value, Set<String> links) {
 ///
 /// 参数、结果、错误、退出码、拒绝原因与附件诊断按需展开，完整字段仍由详情查看器
 /// 读取；成功 workflow mutation 的内部 snapshot 继续隐藏（design/19 §19.9）。
-class TimelineToolDetails extends StatefulWidget {
+class TimelineToolDetails extends StatelessWidget {
   const TimelineToolDetails({
     required this.item,
     this.inline = false,
@@ -316,21 +289,8 @@ class TimelineToolDetails extends StatefulWidget {
   final bool inline;
 
   @override
-  State<TimelineToolDetails> createState() => _TimelineToolDetailsState();
-}
-
-class _TimelineToolDetailsState extends State<TimelineToolDetails> {
-  late bool _expanded;
-
-  @override
-  void initState() {
-    super.initState();
-    _expanded = widget.initiallyExpanded;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final item = widget.item;
+    final item = this.item;
     final tool = item;
     final hidePayload =
         item.statusString == 'succeeded' &&
@@ -384,32 +344,20 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
           ),
         ),
     ];
-    if (widget.inline) {
+    if (inline) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: children,
       );
     }
     final expandable = children.isNotEmpty;
-    final tile = ExpansionTile(
+    final tile = TimelineActivityDisclosure(
       key: ValueKey('timeline-tool-details:${item.id}'),
-      initiallyExpanded: _expanded,
-      onExpansionChanged: (expanded) {
-        setState(() => _expanded = expanded);
-        widget.onExpansionChanged?.call(expanded);
-      },
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(
-        left: TimelineActivityRow.contentIndent,
-        bottom: 8,
-      ),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      dense: true,
-      minTileHeight: 28,
-      showTrailingIcon: false,
-      title: _toolRow(context, expandable: expandable),
+      initiallyExpanded: initiallyExpanded,
+      onExpansionChanged: onExpansionChanged,
+      enabled: expandable,
+      titleBuilder: (context, expanded) =>
+          _toolRow(context, expanded: expanded, expandable: expandable),
       children: children,
     );
     if (tool.presentationContract != 'builtin.view_image@1') return tile;
@@ -419,8 +367,12 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
     );
   }
 
-  Widget _toolRow(BuildContext context, {required bool expandable}) {
-    final item = widget.item;
+  Widget _toolRow(
+    BuildContext context, {
+    required bool expanded,
+    required bool expandable,
+  }) {
+    final item = this.item;
     final category = _toolCategory(item);
     final targets = _toolRowTargets(context, item, category);
     // 只有 exec 的终态行附加本次调用耗时；write_stdin 是写输入而不是进程运行。
@@ -428,18 +380,15 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
         ? _toolElapsed(item)
         : null;
     return TimelineActivityRow(
-      icon: _toolCategoryIcon(category),
-      label: _toolRowLabel(
-        context,
-        item,
-        category,
-        targets.label,
-        meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
-      ),
+      icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
+          ? Icons.stop_circle_outlined
+          : _toolCategoryIcon(category),
+      label: _toolRowLabel(context, item, category, targets.label),
       active: _toolActiveStatuses.contains(item.statusString),
       isIssue: timelineIssueStatuses.contains(item.statusString),
+      expanded: expanded,
       expandable: expandable,
-      expanded: _expanded,
+      meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
       tooltip: targets.tooltip,
     );
   }

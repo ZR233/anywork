@@ -59,12 +59,17 @@ void main() {
       workspacePath: '/foreign',
       updatedAt: fixture.child.updatedAt,
     );
+    final wrongRoot = fixture.child.copyWith(
+      parentThreadId: fixture.other.id,
+      rootThreadId: fixture.other.id,
+    );
     for (final response in [
-      fixture.other,
-      fixture.child.copyWith(rootThreadId: fixture.other.id),
-      wrongProject,
+      (thread: fixture.other, frameThreadId: fixture.other.id),
+      (thread: wrongRoot, frameThreadId: fixture.child.id),
+      (thread: wrongProject, frameThreadId: fixture.child.id),
     ]) {
-      fixture.transport.respond = (_) async => response;
+      fixture.transport.frameThreadIdOverride = response.frameThreadId;
+      fixture.transport.respond = (_) async => response.thread;
       await expectLater(
         client.directoryCommands.selectAgentThread(fixture.child.id),
         throwsA(
@@ -76,18 +81,23 @@ void main() {
         ),
       );
       expect(client.selection.state.selectedThreadId, fixture.root.id);
-      expect(client.threadDirectory.state.overlayThreads, isEmpty);
+      expect(client.threadDirectory.observedWindows, isEmpty);
       expect(client.conversations.sessionStates, isEmpty);
     }
     fixture.transport.respond = (_) async =>
         throw StateError('saved metadata unavailable');
     await expectLater(
       client.directoryCommands.selectAgentThread(fixture.child.id),
-      throwsStateError,
+      throwsA(
+        isA<StudioFailure>().having(
+          (error) => error.code,
+          'code',
+          StudioFailureCode.internal,
+        ),
+      ),
     );
     expect(client.selection.state.selectedThreadId, fixture.root.id);
-    expect(client.threadDirectory.state.overlayThreads, isEmpty);
-    expect(client.threadDirectory.state.revision, 7);
+    expect(client.threadDirectory.observedWindows, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
     expect(fixture.transport.feeds, isEmpty);
   });
@@ -143,7 +153,7 @@ void main() {
         await pending;
         expect(client.selection.state, newerSelection, reason: invalidation);
         expect(
-          client.threadDirectory.state.overlayThreads,
+          client.threadDirectory.observedWindows,
           isEmpty,
           reason: invalidation,
         );
@@ -183,9 +193,14 @@ void main() {
       final client = fixture.graph.client;
       final entered = Completer<void>();
       final reply = Completer<StudioThread>();
-      fixture.transport.respond = (_) {
-        entered.complete();
-        return reply.future;
+      fixture.transport.respond = (threadId) {
+        if (threadId == fixture.child.id) {
+          entered.complete();
+          return reply.future;
+        }
+        return fixture.transport.savedThreads().then(
+          (threads) => threads.singleWhere((thread) => thread.id == threadId),
+        );
       };
       final oldNavigation = _outcome(
         client.directoryCommands.selectAgentThread(fixture.child.id),
@@ -239,9 +254,13 @@ void main() {
         isNot(contains(fixture.child.id)),
         reason: action,
       );
-      expect(fixture.transport.metadataReads, [
-        fixture.child.id,
-      ], reason: action);
+      expect(
+        fixture.transport.metadataReads,
+        action == 'root'
+            ? [fixture.child.id, fixture.other.id]
+            : [fixture.child.id],
+        reason: action,
+      );
       expect(fixture.transport.submitCalls, 0, reason: action);
     }
   });
@@ -334,7 +353,7 @@ void main() {
     await fixture.transport.newThreadEntered.future;
     oldReply.complete(fixture.child);
     expect(await oldNavigation, isNull);
-    expect(client.threadDirectory.state.overlayThreads, isEmpty);
+    expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
 
     final newer = client.directoryCommands.selectAgentThread(sibling.id);
@@ -592,7 +611,7 @@ Future<void> _expectLatestQueuedColdSelection({
   await newEntered.future;
   expect(client.selection.state.selectedThreadId, fixture.root.id);
   expect(
-    client.threadDirectory.state.overlayThreads,
+    client.threadDirectory.observedWindows,
     isEmpty,
     reason: 'An old read must not publish while the new command is still queued/reading',
   );
@@ -601,9 +620,16 @@ Future<void> _expectLatestQueuedColdSelection({
   expect(fixture.transport.feeds, isEmpty);
   if (newFails) {
     newReply.completeError(newError);
-    expect(await newNavigation, same(newError));
+    expect(
+      await newNavigation,
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'code',
+        StudioFailureCode.internal,
+      ),
+    );
     expect(client.selection.state.selectedThreadId, fixture.root.id);
-    expect(client.threadDirectory.state.overlayThreads, isEmpty);
+    expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
     expect(fixture.transport.feeds, isEmpty);
@@ -616,10 +642,7 @@ Future<void> _expectLatestQueuedColdSelection({
     await session.source.waitFor((state) => state.workspace != null);
     await session.content.state.waitFor((state) => state.snapshot == true);
     expect(client.selection.state.selectedThreadId, sibling.id);
-    expect(
-      client.threadDirectory.state.overlayThreads.map((thread) => thread.id),
-      [sibling.id],
-    );
+    expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
       sibling.id,
     ]);
@@ -630,7 +653,10 @@ Future<void> _expectLatestQueuedColdSelection({
   }
   expect(client.findThread(fixture.child.id), isNull);
   expect(client.conversations.existingSession(fixture.child.id), isNull);
-  expect(fixture.transport.metadataReads, [fixture.child.id, sibling.id]);
+  expect(fixture.transport.metadataReads.toSet(), {
+    fixture.child.id,
+    sibling.id,
+  }, reason: 'Only explicitly addressed Thread IDs use metadata observations');
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
 }
@@ -645,11 +671,6 @@ StudioThread _secondColdChild(_ColdFixture fixture) {
     role: 'executor',
   );
   fixture.transport.savedThreadOverrides[sibling.id] = sibling;
-  fixture.graph.client.threadDirectory.applyDelta(
-    revision: 8,
-    upserted: const [],
-    removed: [sibling.id],
-  );
   fixture.graph.client.project.applyAgentDirectory(
     AgentDirectoryState(
       revision: 2,
@@ -688,22 +709,16 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(client.selection.state.needsOpen, isFalse);
   expect(client.findThread(fixture.child.id)?.status, ThreadStatusView.closed);
   expect(
-    client.threadDirectory.state.window.threads.map((thread) => thread.id),
-    [fixture.root.id, fixture.other.id],
-  );
-  expect(
-    client.threadDirectory.state.overlayThreads.map((thread) => thread.id),
-    [fixture.child.id],
-  );
-  expect(
-    client.threadDirectory.state.revision,
-    7,
-    reason: 'A one-member metadata read does not advance the paged directory watermark',
+    client.threadDirectory.observedWindows,
+    isEmpty,
+    reason: 'Cold ID navigation does not create a broad list demand',
   );
   expect(client.conversations.sessionStates.map((state) => state.threadId), [
     fixture.child.id,
   ]);
-  expect(fixture.transport.metadataReads, [fixture.child.id]);
+  expect(fixture.transport.metadataReads.toSet(), {
+    fixture.child.id,
+  }, reason: 'The selected history observes only its own Thread ID');
   expect(fixture.transport.stateReads, [fixture.child.id]);
   expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
     fixture.child.id,
@@ -784,14 +799,19 @@ Future<_ColdFixture> _fixture() async {
   graph.client.project.applyAgentDirectory(
     AgentDirectoryState(revision: 1, values: agents),
   );
-  graph.client.threadDirectory.applyWindow(
-    ThreadDirectoryWindow(threads: [root, other], revision: 7),
-  );
   graph.client.selection.restoreStartup(
     workspaceId: root.workspaceId,
     threadId: root.id,
     needsOpen: true,
   );
+  final initialThread = graph.client.threadDirectory.observeThread(root.id);
+  await initialThread.state
+      .waitFor((state) => state.frame?.thread != null)
+      .timeout(const Duration(seconds: 5));
+  addTearDown(initialThread.release);
+  // Startup's actual root metadata read is established before per-action
+  // transport reads are measured by these tests.
+  transport.metadataReads.clear();
   return _ColdFixture(
     graph: graph,
     transport: transport,
@@ -826,6 +846,7 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   final metadataReads = <String>[];
   final stateReads = <String>[];
   final savedThreadOverrides = <String, StudioThread>{};
+  String? frameThreadIdOverride;
   Future<StudioThread> Function(String)? respond;
   Future<void> Function(String)? onActivate;
   Stream<NewThreadStartEvent>? newThreadEvents;
@@ -833,16 +854,37 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   var submitCalls = 0;
   var restoreCalls = 0;
 
-  Future<List<StudioThread>> savedThreads() async => [
-    await super.readThread('thread-main'),
-    await super.readThread('thread-reviewer'),
-    await super.readThread('thread-alt'),
-  ];
+  int _metadataRevision = 0;
+
+  Future<List<StudioThread>> savedThreads() async {
+    final threads = (await super.readBootstrap()).threadDirectory.threads;
+    return [
+      for (final id in ['thread-main', 'thread-reviewer', 'thread-alt'])
+        threads.singleWhere((thread) => thread.id == id),
+    ];
+  }
 
   @override
-  Future<StudioThread> readThread(String threadId) {
+  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
     metadataReads.add(threadId);
-    return respond?.call(threadId) ?? Future.value(child);
+    final override = savedThreadOverrides[threadId];
+    final response =
+        respond?.call(threadId) ??
+        (override != null
+            ? Future.value(override)
+            : threadId == child.id
+            ? Future.value(child)
+            : savedThreads().then(
+                (threads) =>
+                    threads.singleWhere((thread) => thread.id == threadId),
+              ));
+    final frameThreadId = frameThreadIdOverride ?? threadId;
+    frameThreadIdOverride = null;
+    return _ColdThreadObservation(
+      threadId: frameThreadId,
+      revision: ++_metadataRevision,
+      response: response,
+    );
   }
 
   @override
@@ -897,4 +939,96 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
     restoreCalls++;
     throw StateError('Selecting saved history must not restore execution');
   }
+}
+
+final class _ColdThreadObservation implements ThreadObservationHandle {
+  _ColdThreadObservation({
+    required this.threadId,
+    required this.revision,
+    required this.response,
+  }) {
+    response.then(
+      (thread) => _publish(
+        ThreadMetadataFrame(
+          threadId: threadId,
+          stamp: ResourceStamp(
+            resourceKey: 'thread-directory',
+            ownerEpoch: 'cold-selection',
+            revision: revision,
+          ),
+          thread: thread,
+        ),
+      ),
+      onError: (Object error, StackTrace stackTrace) =>
+          _publishError(error, stackTrace),
+    );
+  }
+
+  final String threadId;
+  final int revision;
+  final Future<StudioThread> response;
+  Completer<ThreadMetadataFrame?>? _waiting;
+  ThreadMetadataFrame? _queuedFrame;
+  Object? _queuedError;
+  StackTrace? _queuedStackTrace;
+  bool _hasQueuedResult = false;
+  bool _closed = false;
+
+  @override
+  Future<ThreadMetadataFrame?> next() {
+    if (_closed) return Future.value(null);
+    if (_hasQueuedResult) {
+      _hasQueuedResult = false;
+      final error = _queuedError;
+      if (error != null) {
+        final stackTrace = _queuedStackTrace!;
+        _queuedError = null;
+        _queuedStackTrace = null;
+        return Future.error(error, stackTrace);
+      }
+      final frame = _queuedFrame;
+      _queuedFrame = null;
+      return Future.value(frame);
+    }
+    return (_waiting = Completer<ThreadMetadataFrame?>()).future;
+  }
+
+  void _publish(ThreadMetadataFrame frame) {
+    if (_closed) return;
+    final waiting = _waiting;
+    if (waiting != null) {
+      _waiting = null;
+      waiting.complete(frame);
+    } else {
+      _queuedFrame = frame;
+      _hasQueuedResult = true;
+    }
+  }
+
+  void _publishError(Object error, StackTrace stackTrace) {
+    if (_closed) return;
+    final waiting = _waiting;
+    if (waiting != null) {
+      _waiting = null;
+      waiting.completeError(error, stackTrace);
+    } else {
+      _queuedError = error;
+      _queuedStackTrace = stackTrace;
+      _hasQueuedResult = true;
+    }
+  }
+
+  @override
+  void requestClose() {
+    _closed = true;
+    _hasQueuedResult = false;
+    _queuedFrame = null;
+    _queuedError = null;
+    _queuedStackTrace = null;
+    _waiting?.complete();
+    _waiting = null;
+  }
+
+  @override
+  Future<void> close() async => requestClose();
 }

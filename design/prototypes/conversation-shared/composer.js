@@ -11,11 +11,13 @@
       this.root = root;
       this.getWindowEl = getWindowEl;
       this.openId = null;
+      this.projectSearchQuery = '';
     }
 
     closeAll() {
       if (!this.openId) return;
       this.openId = null;
+      this.projectSearchQuery = '';
       this.root.querySelectorAll('.cv-menu').forEach(menu => { menu.hidden = true; });
       this.root.querySelectorAll('[data-menu-trigger][aria-expanded]').forEach(btn => {
         btn.setAttribute('aria-expanded', 'false');
@@ -33,7 +35,9 @@
         const winRect = winEl.getBoundingClientRect();
         const trigRect = triggerEl.getBoundingClientRect();
         const spaceBelow = winRect.bottom - trigRect.bottom;
-        const shouldOpenUp = preferUp ? spaceBelow < 280 : spaceBelow < 210;
+        const spaceAbove = trigRect.top - winRect.top;
+        const minBelow = preferUp ? 280 : (menuId === 'project' ? 230 : 210);
+        const shouldOpenUp = spaceBelow < minBelow && spaceAbove > spaceBelow;
         menuEl.classList.toggle('open-up', shouldOpenUp);
       }
     }
@@ -78,9 +82,9 @@
           ${icon('panel-left')}
         </button>
         <div class="cv-topbar-crumb">
-          <span>新会话草稿</span>
+          <span>新会话</span>
           <span>·</span>
-          <strong>${escape(proj ? proj.name : '非项目会话')}</strong>
+          <strong>${escape(proj ? proj.name : '无项目')}</strong>
           ${proj?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(proj.sshAlias)}</span>` : ''}
         </div>
       `;
@@ -822,7 +826,7 @@
           <div class="cv-prep-grid">
             <div class="cv-prep-kv">
               <small>项目</small>
-              <span>${escape(project ? project.name : '非项目会话')}</span>
+              <span>${escape(project ? project.name : '无项目')}</span>
             </div>
             <div class="cv-prep-kv">
               <small>冻结的会话工作区</small>
@@ -852,6 +856,189 @@
     `;
   }
 
+  /* ========================================================================
+     4b. Fuzzy Project Search & Start-Page Project Selector Helpers
+     ======================================================================== */
+  function scoreFuzzyText(text, pattern) {
+    if (!pattern) return { matched: true, score: 0, ranges: [] };
+    const hay = String(text || '');
+    const hayLower = hay.toLowerCase();
+    const patLower = pattern.toLowerCase();
+
+    // 1. Direct substring match (highest priority)
+    const subIdx = hayLower.indexOf(patLower);
+    if (subIdx !== -1) {
+      const boundaryBonus = subIdx === 0 || /[-_./\\:\s]/.test(hay[subIdx - 1]) ? 40 : 0;
+      const exactBonus = hayLower === patLower ? 60 : 0;
+      return {
+        matched: true,
+        score: 200 + exactBonus + boundaryBonus - subIdx,
+        ranges: [[subIdx, subIdx + patLower.length]]
+      };
+    }
+
+    // 2. Subsequence fuzzy match (e.g. "plp" -> "pure-lang-pure", "dn" -> "design-notes")
+    let pIdx = 0;
+    let score = 80;
+    let prevMatchIdx = -2;
+    const indices = [];
+    for (let i = 0; i < hayLower.length && pIdx < patLower.length; i++) {
+      if (hayLower[i] === patLower[pIdx]) {
+        indices.push(i);
+        if (i === 0 || /[-_./\\:\s]/.test(hay[i - 1])) {
+          score += 18;
+        }
+        if (i === prevMatchIdx + 1) {
+          score += 12;
+        } else if (prevMatchIdx >= 0) {
+          score -= Math.min(8, i - prevMatchIdx - 1);
+        }
+        prevMatchIdx = i;
+        pIdx++;
+      }
+    }
+
+    if (pIdx !== patLower.length) {
+      return { matched: false, score: -Infinity, ranges: [] };
+    }
+
+    const ranges = [];
+    for (const idx of indices) {
+      const last = ranges[ranges.length - 1];
+      if (last && last[1] === idx) last[1] = idx + 1;
+      else ranges.push([idx, idx + 1]);
+    }
+    return { matched: true, score, ranges };
+  }
+
+  function highlightRanges(text, ranges) {
+    const str = String(text ?? '');
+    if (!ranges || !ranges.length) return escape(str);
+    let out = '';
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+      if (start > cursor) out += escape(str.slice(cursor, start));
+      out += `<mark class="cv-fuzzy-mark">${escape(str.slice(start, end))}</mark>`;
+      cursor = end;
+    }
+    if (cursor < str.length) out += escape(str.slice(cursor));
+    return out;
+  }
+
+  function matchProjectForSearch(proj, rawQuery) {
+    const q = String(rawQuery || '').trim();
+    const sshLabel = proj.sshAlias ? `SSH · ${proj.sshAlias}` : '';
+    if (!q) {
+      return {
+        matched: true,
+        score: 0,
+        nameHTML: escape(proj.name),
+        sshHTML: escape(sshLabel),
+        pathHTML: escape(proj.path)
+      };
+    }
+
+    const tokens = q.split(/\s+/).filter(Boolean);
+    let totalScore = 0;
+    let nameRanges = [];
+    let sshRanges = [];
+    let pathRanges = [];
+
+    for (const token of tokens) {
+      const nameRes = scoreFuzzyText(proj.name, token);
+      const sshRes = sshLabel ? scoreFuzzyText(sshLabel, token) : { matched: false, score: -Infinity, ranges: [] };
+      const pathRes = scoreFuzzyText(proj.path, token);
+
+      if (!nameRes.matched && !sshRes.matched && !pathRes.matched) {
+        return { matched: false, score: -Infinity };
+      }
+
+      const bestFieldScore = Math.max(
+        nameRes.matched ? nameRes.score + 50 : -Infinity,
+        sshRes.matched ? sshRes.score + 25 : -Infinity,
+        pathRes.matched ? pathRes.score : -Infinity
+      );
+      totalScore += bestFieldScore;
+
+      if (nameRes.matched && !nameRanges.length) nameRanges = nameRes.ranges;
+      if (sshRes.matched && !sshRanges.length) sshRanges = sshRes.ranges;
+      if (pathRes.matched && !pathRanges.length) pathRanges = pathRes.ranges;
+    }
+
+    return {
+      matched: true,
+      score: totalScore,
+      nameHTML: highlightRanges(proj.name, nameRanges),
+      sshHTML: highlightRanges(sshLabel, sshRanges),
+      pathHTML: highlightRanges(proj.path, pathRanges)
+    };
+  }
+
+  function renderProjectMenuListHTML(controller, rawQuery) {
+    const projects = app.fixtures.projects || [];
+    const q = String(rawQuery || '').trim();
+    const s = controller.state;
+
+    const scored = [];
+    projects.forEach((proj, index) => {
+      const res = matchProjectForSearch(proj, q);
+      if (res.matched) {
+        scored.push({ proj, index, ...res });
+      }
+    });
+
+    if (q) {
+      scored.sort((a, b) => (b.score - a.score) || (a.index - b.index));
+    }
+
+    const countText = q
+      ? `匹配 ${scored.length} / ${projects.length}`
+      : `${projects.length} 个项目`;
+
+    if (scored.length === 0) {
+      return {
+        countText,
+        firstMatchId: null,
+        listHTML: `
+          <div class="cv-project-empty" role="status">
+            ${icon('search-x')}
+            <span>未找到匹配「${escape(q)}」的已有项目</span>
+            <small>可尝试输入名称、路径或 SSH 别名缩写，或点击上方「新建项目…」</small>
+          </div>
+        `
+      };
+    }
+
+    const listHTML = scored.map(({ proj, nameHTML, sshHTML, pathHTML }) => {
+      const selected = s.targetType === 'project' && s.projectId === proj.id;
+      return `
+        <button
+          type="button"
+          class="cv-menu-item cv-project-option ${selected ? 'is-selected' : ''}"
+          role="menuitemradio"
+          aria-checked="${selected}"
+          data-pick-project="${escape(proj.id)}">
+          <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+          <span class="cv-ws-item-icon">${icon(proj.sshAlias ? 'server' : 'folder')}</span>
+          <span class="cv-item-main">
+            <div class="cv-item-title-row">
+              <span class="cv-item-title">${nameHTML}</span>
+              ${proj.sshAlias ? `<span class="cv-ssh-pill">${sshHTML}</span>` : ''}
+              ${!proj.isGit ? `<span class="cv-cap-badge" title="普通文件夹（非 Git 仓库）">普通目录</span>` : ''}
+            </div>
+            <div class="cv-item-sub cv-mono">${pathHTML}</div>
+          </span>
+        </button>
+      `;
+    }).join('');
+
+    return {
+      countText,
+      firstMatchId: scored[0]?.proj.id || null,
+      listHTML
+    };
+  }
+
   function renderStartStage(host, controller, composerCard, menuManager, helpers) {
     const s = controller.state;
     const locks = controller.getLockState();
@@ -863,15 +1050,15 @@
 
     let subtitle = '';
     if (standalone) {
-      subtitle = '无需选择项目，工作文件会保存在 Documents/anywork 目录中。';
+      subtitle = '当前新会话将开启在「无项目」（保存在 Documents/anywork），也可点击下方切换至已有项目或新建项目。';
     } else if (project?.sshAlias) {
       subtitle = s.workspaceMode === 'worktree'
-        ? `将在远程主机 ${project.sshAlias} 上从仓库 HEAD 检出独立工作树隔离改动。`
-        : `已连接远程主机 ${project.sshAlias}，直接在远端项目目录中协作。`;
+        ? `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）从 HEAD 检出独立工作树隔离改动。`
+        : `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）目录中直接协作。`;
     } else {
       subtitle = s.workspaceMode === 'worktree'
-        ? '将从当前仓库 HEAD 新建独立 Git 工作树，代码修改与原工作区互不干扰。'
-        : '直接在当前项目目录中协作，或在外层一键切换为独立工作树。';
+        ? `当前新会话将在项目「${project.name}」从 HEAD 新建独立 Git 工作树，代码修改与原工作区互不干扰。`
+        : `当前新会话将在项目「${project.name}」中开启，可在下方切换为无项目、其他项目或新建工作树。`;
     }
 
     const heroHTML = s.preparation
@@ -885,6 +1072,8 @@
 
     const defaultModeName = controller.defaults.delegationMode === 'automatic' ? '自动选模' : '固定配置模板';
     const defaultPrefName = { economy: '经济', balanced: '平衡', fast: '快速' }[controller.defaults.delegationPreference];
+    const currentSearchQuery = menuManager.openId === 'project' ? (menuManager.projectSearchQuery || '') : '';
+    const initialProjMenu = renderProjectMenuListHTML(controller, currentSearchQuery);
 
     host.innerHTML = `
       <div class="cv-start-col">
@@ -901,11 +1090,96 @@
         <div class="cv-start-envelope" aria-label="新会话创建环境栏与输入卡">
           <div class="cv-env-bar">
             <div class="cv-env-left">
-              <span class="cv-project-anchor" title="${escape(standalone ? 'C:\\Users\\dev\\Documents\\anywork' : project.path)}">
-                ${icon(standalone ? 'file-box' : 'folder')}
-                <span class="cv-anchor-name">${escape(standalone ? '非项目会话' : project.name)}</span>
-                ${project?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(project.sshAlias)}</span>` : ''}
-              </span>
+              <div class="cv-menu-anchor">
+                ${locks.prepRunning ? `
+                  <span
+                    class="cv-quiet-trigger cv-project-trigger is-disabled"
+                    aria-disabled="true"
+                    title="正在准备新会话环境，所属项目已按提交快照固定">
+                    ${icon(standalone ? 'file-box' : (project?.sshAlias ? 'server' : 'folder'))}
+                    <span class="cv-anchor-name">${escape(standalone ? '无项目' : project.name)}</span>
+                    ${project?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(project.sshAlias)}</span>` : ''}
+                    <span class="cv-caret">${icon('chevron-down')}</span>
+                  </span>
+                ` : `
+                  <button
+                    type="button"
+                    class="cv-quiet-trigger cv-project-trigger ${standalone ? 'is-standalone' : 'is-project'}"
+                    data-menu-trigger="project"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    title="${escape(standalone
+                      ? '新会话将开启在：无项目（保存在 C:\\Users\\dev\\Documents\\anywork）· 点击可切换已有项目或新建项目'
+                      : `新会话将开启在项目：${project.name}（${project.path}）· 点击可切换为无项目、已有项目或新建项目`)}">
+                    ${icon(standalone ? 'file-box' : (project?.sshAlias ? 'server' : 'folder'))}
+                    <span class="cv-anchor-name">${escape(standalone ? '无项目' : project.name)}</span>
+                    ${project?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(project.sshAlias)}</span>` : ''}
+                    <span class="cv-caret">${icon('chevron-down')}</span>
+                  </button>
+
+                  <div class="cv-menu cv-menu-project align-left" data-menu-panel="project" role="menu" aria-label="选择新会话开启位置" hidden>
+                    <div class="cv-menu-head">
+                      <span>新会话开启位置</span>
+                      <small>会话创建时固定</small>
+                    </div>
+                    <button
+                      type="button"
+                      class="cv-menu-item ${standalone ? 'is-selected' : ''}"
+                      role="menuitemradio"
+                      aria-checked="${standalone}"
+                      data-pick-target="standalone">
+                      <span class="cv-check-slot">${standalone ? icon('check') : ''}</span>
+                      <span class="cv-ws-item-icon">${icon('file-box')}</span>
+                      <span class="cv-item-main">
+                        <div class="cv-item-title">无项目</div>
+                        <div class="cv-item-sub">不绑定代码仓库 · 默认保存在 Documents/anywork</div>
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="cv-menu-item cv-new-project-item"
+                      role="menuitem"
+                      data-pick-target="new-project">
+                      <span class="cv-check-slot">${icon('plus')}</span>
+                      <span class="cv-ws-item-icon is-accent">${icon('folder-plus')}</span>
+                      <span class="cv-item-main">
+                        <div class="cv-item-title">新建项目…</div>
+                        <div class="cv-item-sub">添加本地代码目录或连接 ~/.ssh/config 远程主机目录</div>
+                      </span>
+                    </button>
+
+                    <div class="cv-menu-divider"></div>
+
+                    <div class="cv-menu-head">
+                      <span>已有项目</span>
+                      <small data-project-count>${escape(initialProjMenu.countText)}</small>
+                    </div>
+                    <div class="cv-project-search-wrap">
+                      <span class="cv-project-search-icon">${icon('search')}</span>
+                      <input
+                        type="text"
+                        class="cv-project-search-input"
+                        value="${escape(currentSearchQuery)}"
+                        placeholder="模糊搜索已有项目（名称、路径、SSH）…"
+                        aria-label="模糊搜索已有项目"
+                        autocomplete="off"
+                        spellcheck="false">
+                      <button
+                        type="button"
+                        class="cv-project-search-clear"
+                        title="清除搜索"
+                        aria-label="清除搜索"
+                        ${currentSearchQuery ? '' : 'hidden'}>
+                        ${icon('x')}
+                      </button>
+                    </div>
+                    <div class="cv-project-list" role="group" aria-label="已有项目列表">
+                      ${initialProjMenu.listHTML}
+                    </div>
+                  </div>
+                `}
+              </div>
 
               <span class="cv-v-sep" aria-hidden="true"></span>
 
@@ -913,7 +1187,7 @@
                 <span
                   class="cv-quiet-trigger is-disabled is-static-label"
                   aria-disabled="true"
-                  title="非项目会话固定保存在 Documents/anywork，不提供 Git 工作树选项">
+                  title="无项目新会话固定保存在 Documents/anywork，不提供 Git 工作树选项">
                   ${icon('folder')}
                   <span>固定本地目录</span>
                 </span>
@@ -1067,6 +1341,91 @@
     host.querySelector('[data-start-action="switch-local"]')?.addEventListener('click', () => {
       controller.setWorkspaceMode('local');
       helpers.toast('已切换为「本地目录」，可直接点击发送');
+    });
+
+    // Project selector menu & fuzzy search bindings
+    const projTrig = host.querySelector('[data-menu-trigger="project"]');
+    const projPanel = host.querySelector('[data-menu-panel="project"]');
+    const projSearchInput = projPanel?.querySelector('.cv-project-search-input');
+    const projSearchClearBtn = projPanel?.querySelector('.cv-project-search-clear');
+    const projCountEl = projPanel?.querySelector('[data-project-count]');
+    const projListEl = projPanel?.querySelector('.cv-project-list');
+    let latestFirstMatchId = initialProjMenu.firstMatchId;
+
+    const syncProjectSearchList = query => {
+      menuManager.projectSearchQuery = query;
+      if (projSearchClearBtn) projSearchClearBtn.hidden = !query;
+      const rendered = renderProjectMenuListHTML(controller, query);
+      latestFirstMatchId = rendered.firstMatchId;
+      if (projCountEl) projCountEl.textContent = rendered.countText;
+      if (projListEl) {
+        projListEl.innerHTML = rendered.listHTML;
+        icons(projListEl);
+      }
+    };
+
+    projTrig?.addEventListener('click', () => {
+      menuManager.toggle('project', projTrig, projPanel, false);
+      if (projPanel && !projPanel.hidden) {
+        syncProjectSearchList(menuManager.projectSearchQuery || '');
+        if (projSearchInput) {
+          projSearchInput.value = menuManager.projectSearchQuery || '';
+          requestAnimationFrame(() => projSearchInput.focus({ preventScroll: true }));
+        }
+      }
+    });
+    menuManager.restoreIfOpen('project', projTrig, projPanel, false);
+
+    projSearchInput?.addEventListener('input', () => {
+      syncProjectSearchList(projSearchInput.value);
+    });
+
+    projSearchInput?.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape' && projSearchInput.value) {
+        event.preventDefault();
+        event.stopPropagation();
+        projSearchInput.value = '';
+        syncProjectSearchList('');
+      } else if (event.key === 'Enter' && projSearchInput.value.trim() && latestFirstMatchId) {
+        event.preventDefault();
+        event.stopPropagation();
+        const targetId = latestFirstMatchId;
+        menuManager.closeAll();
+        if (helpers.selectProjectOnStart) helpers.selectProjectOnStart(targetId);
+        else controller.selectProjectStart(targetId);
+      }
+    });
+
+    projSearchClearBtn?.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!projSearchInput) return;
+      projSearchInput.value = '';
+      syncProjectSearchList('');
+      projSearchInput.focus({ preventScroll: true });
+    });
+
+    projPanel?.addEventListener('click', event => {
+      const targetBtn = event.target.closest('[data-pick-target]');
+      if (targetBtn) {
+        const targetKind = targetBtn.dataset.pickTarget;
+        const pendingQuery = projSearchInput?.value.trim() || '';
+        menuManager.closeAll();
+        if (targetKind === 'standalone') {
+          if (helpers.selectStandaloneOnStart) helpers.selectStandaloneOnStart();
+          else controller.selectStandaloneStart();
+        } else if (targetKind === 'new-project') {
+          helpers.openAddProjectDialog?.(pendingQuery);
+        }
+        return;
+      }
+      const projBtn = event.target.closest('[data-pick-project]');
+      if (projBtn) {
+        const pid = projBtn.dataset.pickProject;
+        menuManager.closeAll();
+        if (helpers.selectProjectOnStart) helpers.selectProjectOnStart(pid);
+        else controller.selectProjectStart(pid);
+      }
     });
 
     const wsTrig = host.querySelector('[data-menu-trigger="workspace"]');

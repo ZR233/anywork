@@ -1,13 +1,13 @@
-//! `catalog.toml`: 轻量会话目录摘要的唯一事实源。
+//! `catalog.toml`: 轻量会话目录摘要的持久化所有者。
 //!
-//! 首屏列表、目录分页与搜索只从本文件构造 `Thread` 摘要，不读取任何会话
-//! `state.toml` 或 `history.sqlite`（design/17 §17.1、§17.2）。因此条目只保留
-//! 目录展示与 `ThreadDirectoryQuery` 判定所需的稳定字段：身份、标题、Mode、角色、
+//! 启动时为目录 owner 建立当前摘要，不读取任何会话
+//! `state.toml` 或 `history.sqlite`（design/17 §17.1、§17.2）。条目只保留
+//! 目录展示所需的稳定字段：身份、标题、Mode、角色、
 //! 工作区模式/地址、时间戳、归档状态与有界活动摘要。当前上下文、Turn、历史正文、
-//! 请求/工具结果与执行状态一律不在其中，活动指示器由内存热集合覆盖。
+//! 请求/工具结果与执行资源一律不在其中，当前展示由运行期目录 owner 交付。
 //!
-//! 文件使用版本化 schema、CAS revision 与原子写入；运行期热集合（`ProductEventBus`）
-//! 仍在内存中先行，本模块只承载已提交为目录事实的冷摘要。
+//! 文件使用版本化 schema、CAS revision 与原子写入；运行期目录（`ProductEventBus`）
+//! 与冻结保存批次分别负责当前查询和持久化，不在查询时合并两份当前态。
 
 mod schema;
 
@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Result, ensure};
-use pl_protocol::studio::{ThreadDirectoryMatchFields, ThreadDirectoryQuery};
 use pl_protocol::{Thread, ThreadModeId, ThreadStatus, ThreadWorkspaceMode};
 use version_migrate::Versioned;
 
@@ -208,52 +207,6 @@ impl CatalogStore {
             .cloned()
     }
 
-    /// 冷目录分页：`(last_user_message_at ?? created_at, id)` 降序 keyset；
-    /// 查询命中后才应用 cursor，保证搜索语义。
-    pub(in crate::studio) fn page(
-        &self,
-        query: &ThreadDirectoryQuery,
-        project_matches: &std::collections::HashSet<String>,
-        cursor: Option<&(i64, String)>,
-        limit: usize,
-    ) -> Vec<Thread> {
-        let matched = self
-            .lock()
-            .entries
-            .iter()
-            .filter(|entry| {
-                query.matches_fields(
-                    ThreadDirectoryMatchFields {
-                        parent_thread_id: entry.parent_thread_id.as_deref(),
-                        archived: entry.archived,
-                        workspace_id: &entry.workspace_id,
-                        title: &entry.title,
-                        status: entry.status,
-                    },
-                    project_matches.contains(&entry.workspace_id),
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        page_threads(matched, cursor, limit)
-    }
-
-    /// 未归档 root Thread 的冷分页（无搜索过滤）。
-    pub(in crate::studio) fn page_active(
-        &self,
-        cursor: Option<&(i64, String)>,
-        limit: usize,
-    ) -> Vec<Thread> {
-        let matched = self
-            .lock()
-            .entries
-            .iter()
-            .filter(|entry| !entry.archived && entry.parent_thread_id.is_none())
-            .cloned()
-            .collect::<Vec<_>>();
-        page_threads(matched, cursor, limit)
-    }
-
     /// 幂等写入/替换一个条目；内容不变时不推进 revision，也不落盘。
     ///
     /// 迟到快照不得使最近用户消息时间回退：写回时与既有条目取较新值，其余目录列
@@ -381,24 +334,11 @@ impl CatalogStore {
     fn lock(&self) -> std::sync::MutexGuard<'_, CatalogDocument> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
 
-fn page_threads(
-    mut entries: Vec<CatalogEntry>,
-    cursor: Option<&(i64, String)>,
-    limit: usize,
-) -> Vec<Thread> {
-    sort_desc(&mut entries);
-    entries
-        .into_iter()
-        .filter(|entry| {
-            cursor.is_none_or(|(sort_time, id)| {
-                (entry.directory_sort_time(), entry.id.as_str()) < (*sort_time, id.as_str())
-            })
-        })
-        .take(limit)
-        .map(|entry| entry.to_thread())
-        .collect()
+    #[cfg(test)]
+    pub(in crate::studio) fn test_hold_document(&self) -> impl Drop + '_ {
+        self.lock()
+    }
 }
 
 fn sort_desc(entries: &mut [CatalogEntry]) {

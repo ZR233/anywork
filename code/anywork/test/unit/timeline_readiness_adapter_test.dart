@@ -84,8 +84,12 @@ void main() {
     });
     expect(transport.feeds, isEmpty, reason: '读取session不隐式声明内容需求');
     graph.timeline.updateReadDemand(chatDemand);
-    final thread = graph.client.threadDirectory.state.window.threads
-        .singleWhere((thread) => thread.id == 'thread-main');
+    final metadata = graph.client.threadDirectory.observeThread('thread-main');
+    final metadataState = await metadata.state
+        .waitFor((state) => state.frame != null)
+        .timeout(const Duration(seconds: 5));
+    final thread = metadataState.frame!.thread!;
+    await metadata.release();
     graph.setConversationPageVisible(true);
     await graph.client.directoryCommands.selectThread(thread.id);
     final held = await opened.future;

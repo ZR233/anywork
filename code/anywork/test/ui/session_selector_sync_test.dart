@@ -34,16 +34,10 @@ import 'package:anywork_client/studio_client.dart'
         RecoveryIssueScope,
         RecoveryStateSnapshot,
         ModelRouteQueries,
-        ProductTopicBaselineFrame,
-        ProductTopicDataFrame,
-        ProductTopicEventEnvelope,
-        ProductTopicFrame,
         StudioBootstrap,
-        ThreadDirectoryBaseline,
-        ThreadDirectoryChangedPayload,
         ThreadDirectoryPage,
-        ThreadDirectoryTopic,
-        ThreadDirectoryWindow,
+        ThreadMetadataFrame,
+        ThreadObservationHandle,
         ThreadRuntimeUpdate;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
@@ -688,28 +682,35 @@ void main() {
         graph.client.conversations.session(createdThreadId).content.ready,
         'Enter submission observed through the visible conversation feed',
       );
-      final created = await pumpClientFuture(
-        tester,
-        graph.client.threadDirectory.source.waitFor(
-          (state) => state.window.threads.any(
-            (thread) => thread.id == createdThreadId,
-          ),
-        ),
-        'Enter submission canonical directory row',
+      final metadataDemand = graph.client.threadDirectory.observeThread(
+        createdThreadId,
       );
-      final provisionalTitle = created.window.threads
-          .firstWhere((thread) => thread.id == createdThreadId)
-          .title;
-      final titlePublished = graph.client.threadDirectory.source.waitFor(
-        (state) => state.window.threads.any(
-          (thread) =>
-              thread.id == createdThreadId && thread.title != provisionalTitle,
-        ),
-      );
-      // Drain Demo's 650ms title job through its actual directory publication;
-      // stopping the runtime only cancels its separately tracked prompt jobs.
-      await tester.pump(const Duration(milliseconds: 650));
-      await pumpClientFuture(tester, titlePublished, 'demo title publication');
+      try {
+        final created = await pumpClientFuture(
+          tester,
+          metadataDemand.state
+              .waitFor((state) => state.frame?.thread != null)
+              .timeout(const Duration(seconds: 5)),
+          'Enter submission canonical metadata observation',
+        );
+        final provisionalTitle = created.frame!.thread!.title;
+        final titlePublished = metadataDemand.state
+            .waitFor(
+              (state) =>
+                  state.frame?.thread?.title != null &&
+                  state.frame!.thread!.title != provisionalTitle,
+            )
+            .timeout(const Duration(seconds: 5));
+        // Drain Demo's title job through its actual ID metadata publication.
+        await tester.pump(const Duration(milliseconds: 650));
+        await pumpClientFuture(
+          tester,
+          titlePublished,
+          'demo title publication',
+        );
+      } finally {
+        await metadataDemand.release();
+      }
       await closeStartPageFixture(tester);
     },
   );
@@ -1133,20 +1134,28 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   ThreadRuntimeView _runtime(ThreadRuntimeView runtime) =>
       runtime.copyWith(workflow: _workflow(runtime));
 
+  @override
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId,
+  ) async => _WorkflowThreadObservation(
+    await super.openThreadObservation(threadId),
+    _thread,
+  );
+
   StudioThread _thread(StudioThread thread) =>
       thread.id == 'thread-main' && thread.status != threadStatus
       ? thread.copyWith(status: threadStatus)
       : thread;
 
-  /// Bootstrap 直接用返回的目录窗口初始化 store，不经 topic 流；这里同样注入
-  /// thread-main 的目录 status，保证初始事实与后续增量一致。
+  /// Bootstrap remains a protocol fixture; typed metadata observations receive
+  /// the same scenario status from the external feed fixture.
   @override
   Future<StudioBootstrap> readBootstrap() async {
     final snapshot = await super.readBootstrap();
     return StudioBootstrap(
       ownerEpoch: snapshot.ownerEpoch,
       projectDirectory: snapshot.projectDirectory,
-      threadDirectory: _window(snapshot.threadDirectory),
+      threadDirectory: _page(snapshot.threadDirectory),
       agentDirectory: snapshot.agentDirectory,
       settingsState: snapshot.settingsState,
       recoveryState: snapshot.recoveryState,
@@ -1163,11 +1172,6 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       selectedThreadId: snapshot.selectedThreadId,
     );
   }
-
-  ThreadDirectoryWindow _window(ThreadDirectoryWindow window) =>
-      window.copyWith(
-        threads: [for (final thread in window.threads) _thread(thread)],
-      );
 
   @override
   Future<ConversationFeed> openConversationFeed(
@@ -1201,49 +1205,34 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
     );
   }
 
-  @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    final stream = super.subscribeProductTopic(topic);
-    if (topic != const ThreadDirectoryTopic()) return stream;
-    return stream.map(
-      (frame) => switch (frame) {
-        ProductTopicBaselineFrame() => switch (frame.state) {
-          ThreadDirectoryBaseline(:final page) => ProductTopicBaselineFrame(
-            topic: frame.topic,
-            revision: frame.revision,
-            state: ThreadDirectoryBaseline(_page(page)),
-          ),
-          _ => frame,
-        },
-        ProductTopicDataFrame() => switch (frame.event.payload) {
-          ThreadDirectoryChangedPayload(
-            :final revision,
-            :final upserted,
-            :final removed,
-          ) =>
-            ProductTopicDataFrame(
-              topic: frame.topic,
-              event: ProductTopicEventEnvelope(
-                eventId: frame.event.eventId,
-                sequence: frame.event.sequence,
-                createdAt: frame.event.createdAt,
-                payload: ThreadDirectoryChangedPayload(
-                  revision: revision,
-                  upserted: [for (final thread in upserted) _thread(thread)],
-                  removed: removed,
-                ),
-              ),
-            ),
-          _ => frame,
-        },
-        _ => frame,
-      },
-    );
-  }
-
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
     threads: [for (final thread in page.threads) _thread(thread)],
     nextCursor: page.nextCursor,
     revision: page.revision,
   );
+}
+
+final class _WorkflowThreadObservation implements ThreadObservationHandle {
+  _WorkflowThreadObservation(this._inner, this._map);
+
+  final ThreadObservationHandle _inner;
+  final StudioThread Function(StudioThread) _map;
+
+  @override
+  Future<ThreadMetadataFrame?> next() async {
+    final frame = await _inner.next();
+    final thread = frame?.thread;
+    if (frame == null || thread == null) return frame;
+    return ThreadMetadataFrame(
+      threadId: frame.threadId,
+      stamp: frame.stamp,
+      thread: _map(thread),
+    );
+  }
+
+  @override
+  void requestClose() => _inner.requestClose();
+
+  @override
+  Future<void> close() => _inner.close();
 }

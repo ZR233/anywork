@@ -287,10 +287,6 @@ mod migration_tests {
             .await?;
         factory
             .services
-            .product_events
-            .warm_thread_index(vec![root.clone()]);
-        factory
-            .services
             .bots
             .install_workspace_migration_fixture("botA1234", &root.id, &root.workspace_id)
             .await?;
@@ -417,16 +413,14 @@ mod migration_tests {
         target.agent_path = target.id.clone();
         target.parent_thread_id = Some(root.id.clone());
         target.workspace_path = managed.to_string_lossy().into_owned();
-        store
-            .persist_directory_summaries(&crate::studio::store::directory::DirectoryDelta {
+        factory
+            .services
+            .product_events
+            .commit_directory(crate::studio::store::directory::DirectoryDelta {
                 thread_upserts: vec![target.clone()],
                 ..Default::default()
             })
             .await?;
-        factory
-            .services
-            .product_events
-            .warm_thread_index(vec![target.clone()]);
         store
             .bind_workspace_identity(&target.id, &local_identity(&managed).await?)
             .await?;
@@ -451,16 +445,14 @@ mod migration_tests {
         other.id = "different-root-reviewed".into();
         other.agent_path = other.id.clone();
         other.workspace_path = other_root.to_string_lossy().into_owned();
-        store
-            .persist_directory_summaries(&crate::studio::store::directory::DirectoryDelta {
+        factory
+            .services
+            .product_events
+            .commit_directory(crate::studio::store::directory::DirectoryDelta {
                 thread_upserts: vec![other.clone()],
                 ..Default::default()
             })
             .await?;
-        factory
-            .services
-            .product_events
-            .warm_thread_index(vec![other.clone()]);
         store
             .bind_workspace_identity(&other.id, &local_identity(&other_root).await?)
             .await?;

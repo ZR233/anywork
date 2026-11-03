@@ -128,3 +128,9 @@ SDK feed owner 唯一发送 ACK：Chat 在 applyBatch 完成并复核原 lease �
 传输端 `ConversationReader.watchContent` 返回显式 `ConversationContentWatch`，只提供 `windows` 单消费者 Stream、同步 `requestClose()` 与可重试 `close()`；SDK read scope 持有这个原观察句柄，页面侧 `ConversationQueryScope.watchContent` 仍只暴露 Stream。它复用现有显式观察资源模式，不增加内容来源或缓存。窗口流的取消先停止交付并请求取消，原生 join 由句柄的 `close()` 负责；SDK 收束订阅和原句柄两侧，任一失败仍尝试另一侧。不能用重复 `StreamSubscription.cancel()` 代替重试原 watch 的 join，也不能仅因 Stream done、取消 Future 结束或 facade 的其他侧成功就释放该观察预算。EOF、错误和退役均须收束原句柄；失败保留原身份与未决责任，后续明确重试 `close()`，不重开观察来冒充回收。
 
 页面销毁只解除自己的观察租约；最后观察退出才由领域 owner 收束共享 feed，不停止 Session、Turn、writer、后台任务或其他消费者。presentation detach 取消未接纳交付并退出对应观察，不提前 ACK。应用退出仍由唯一协调器负责，机器人发送确认遵循 [27](./27-bots.md)。
+
+## 7.11 可变目录的 pull 观察
+
+可变目录查询采用领域专用的不透明观察句柄，而不是连续推送的 StreamSink producer。open 绑定不可变 query/window 或 thread ID，并在首读前登记变化；next 每次只交付一份完整当前结果及其实际 stamp。SDK 验证目标并提交只读模型后才请求下一帧，同句柄拒绝并发 next，不引入目录 ACK 或无界中转。
+
+requestClose 同步封闭本观察的新准入并唤醒等待，close 汇合该句柄已准入的 next/read 和迟到 open；同查询如需恢复，重建的是原完整窗口，不从全局目录首页拼补。错误保留在原观察，不关闭业务 Session、其他消费者或独立会话内容 feed。该机制复用账号 pull 观察的生命周期，但不将两种领域泛化为通用同步总线；目录事实与窗口成本见 [18.7](./18-studio-state.md#187-项目侧栏)，Client 与呈现责任见 [25.6](./25-frontend-state.md#256-只读模型与细粒度呈现)。

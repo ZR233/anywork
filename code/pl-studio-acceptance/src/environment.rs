@@ -23,7 +23,11 @@ pub(crate) enum PresetKind {
 
 pub(crate) fn classify(preset: &str) -> PresetKind {
     match preset {
-        "wait-events" | "conversation-read-work" => PresetKind::Desktop,
+        "wait-events"
+        | "conversation-read-work"
+        | "question-history"
+        | "realtime-presentation"
+        | "sidebar-query" => PresetKind::Desktop,
         "shutdown" | "single-instance" => PresetKind::Native,
         _ => PresetKind::Manual,
     }

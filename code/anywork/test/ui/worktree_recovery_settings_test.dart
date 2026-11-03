@@ -144,9 +144,12 @@ void main() {
   testWidgets('归档会话可查看并复制原路径，不恢复或激活会话', (tester) async {
     final transport = _WorkspaceLookupTransport();
     final graph = await _bootstrap(tester, transport);
-    final root = graph.client.threadDirectory.state.window.threads.firstWhere(
-      (thread) => thread.isRoot,
-    );
+    final metadata = graph.client.threadDirectory.observeThread('thread-main');
+    final metadataState = await metadata.state
+        .waitFor((state) => state.frame != null)
+        .timeout(const Duration(seconds: 5));
+    final root = metadataState.frame!.thread!;
+    await metadata.release();
     await pumpClientFuture(
       tester,
       graph.client.threadCommands.archiveThread(root.id),

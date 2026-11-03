@@ -16,7 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'accounts_view_models_test.dart';
 
 const release = AcpInstallReleaseView(
-  version: '1.4.1',
+  version: '1.4.5',
   target: 'linux-x86_64',
   archiveUrl: 'https://dl.google.com/agy-extensions/release.zip',
 );
@@ -50,9 +50,12 @@ const creatingKey = AccountAcpKey(
 );
 
 void main() {
-  test('a saved account can explicitly check again after preparing its required installation', () async {
+  test('a cold saved account loads installation capabilities and can prepare then check again', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
+    h.acp.templates.publish(const AcpAccountCatalogView.empty());
+    h.acp.templateLoader = () async =>
+        const AcpAccountCatalogView(templates: [vmAcpTemplate]);
     publishVmAcp(
       h,
       const AcpFailedState(
@@ -65,6 +68,18 @@ void main() {
       ),
     );
     final owner = await listenVmAcp(h, vmAcpKey);
+    await h.container.pump();
+    expect(h.acp.templateLoads, 1);
+    expect(h.acp.starts, isEmpty);
+    expect(h.acp.authStarts, isEmpty);
+    expect(
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .availableActions,
+      contains(AcpAccountAction.prepare),
+    );
     final preparing = owner.prepare();
     publishInstall(
       h,
@@ -110,6 +125,52 @@ void main() {
           .phase,
       AcpPresentationPhase.connected,
     );
+  });
+  test('a failed capability read can retry without starting installation or authentication', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    h.acp.templates.publish(const AcpAccountCatalogView.empty());
+    h.acp.templateLoader = () async => throw const StudioFailure(
+      code: StudioFailureCode.unavailable,
+      message: 'Installation capabilities unavailable',
+      retryable: true,
+      correlationId: 'templates',
+    );
+    publishVmAcp(h, const AcpUncheckedState());
+    final owner = await listenVmAcp(h, vmAcpKey);
+    owner.setStrings(
+      const AccountStrings({'failed': 'Capabilities unavailable'}),
+    );
+    await h.container.pump();
+    final failed = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue
+        .panel;
+    expect(failed.error, 'Installation capabilities unavailable');
+    expect(failed.availableActions, contains(AcpAccountAction.retry));
+    expect(failed.primaryAction, AcpAccountAction.retry);
+    h.acp.templateLoader = () async => const AcpAccountCatalogView.empty();
+    await owner.retry();
+    expect(
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .error,
+      'Capabilities unavailable',
+    );
+    h.acp.templateLoader = () async =>
+        const AcpAccountCatalogView(templates: [vmAcpTemplate]);
+    await owner.retry();
+    final recovered = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue
+        .panel;
+    expect(recovered.error, isNull);
+    expect(recovered.primaryAction, AcpAccountAction.check);
+    expect(h.acp.templateLoads, 3);
+    expect(h.acp.starts, isEmpty);
+    expect(h.acp.authStarts, isEmpty);
   });
   test('selecting an ACP template waits for baseline and never implicitly claims shared Ready', () async {
     final h = AccountsVmHarness();
@@ -505,4 +566,79 @@ void main() {
       );
     },
   );
+  test('prepare awaits in-flight template load and projects recommended login method metadata', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    final templateCompleter = Completer<AcpAccountCatalogView>();
+    h.acp.templates.publish(const AcpAccountCatalogView.empty());
+    h.acp.templateLoader = () => templateCompleter.future;
+    final owner = await listenVmAcp(h, creatingKey);
+    owner.setStrings(accountStrings(AppLocalizationsZh()));
+    final preparing = owner.prepare();
+    expect(h.acp.templateLoads, 1);
+    expect(h.acp.starts, isEmpty);
+    templateCompleter.complete(
+      const AcpAccountCatalogView(templates: [vmAcpTemplate]),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(h.acp.starts, hasLength(1));
+    publishInstall(
+      h,
+      const AcpInstallReadyState(
+        operationId: 'ready-after-load',
+        server: server,
+      ),
+    );
+    h.acp.starts.single.complete(
+      installSnapshot(
+        const AcpInstallReadyState(
+          operationId: 'ready-after-load',
+          server: server,
+        ),
+      ),
+    );
+    await preparing;
+    expect(
+      h.container
+          .read(acpAccountViewModelProvider(creatingKey))
+          .requireValue
+          .preparedForEditor,
+      isTrue,
+    );
+
+    final savedOwner = await listenVmAcp(h, vmAcpKey);
+    savedOwner.setStrings(accountStrings(AppLocalizationsZh()));
+    publishVmAcp(
+      h,
+      const AcpRequiredState(
+        operationId: 'required-op',
+        server: null,
+        methods: [
+          AcpAuthMethodView(
+            id: 'oauth-personal',
+            name: 'Sign in with Google',
+            kind: AcpAuthMethodKindView.agent,
+          ),
+          AcpAuthMethodView(
+            id: 'gemini-api-key',
+            name: 'Use Gemini API Key',
+            kind: AcpAuthMethodKindView.agent,
+          ),
+        ],
+      ),
+    );
+    final panel = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue
+        .panel;
+    expect(panel.loginMethods, hasLength(2));
+    expect(panel.loginMethods[0].id, 'oauth-personal');
+    expect(panel.loginMethods[0].label, 'Sign in with Google');
+    expect(panel.loginMethods[0].recommended, isTrue);
+    expect(panel.loginMethods[0].description, isNotEmpty);
+    expect(panel.loginMethods[1].id, 'gemini-api-key');
+    expect(panel.loginMethods[1].label, 'Use Gemini API Key');
+    expect(panel.loginMethods[1].recommended, isFalse);
+    expect(panel.loginMethods[1].description, isNotEmpty);
+  });
 }

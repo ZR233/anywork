@@ -84,7 +84,14 @@ void main() {
         );
         expect(
           tester
-              .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+              .widget<TimelineActivityRow>(
+                find
+                    .descendant(
+                      of: card,
+                      matching: find.byType(TimelineActivityRow),
+                    )
+                    .first,
+              )
               .expanded,
           isTrue,
         );

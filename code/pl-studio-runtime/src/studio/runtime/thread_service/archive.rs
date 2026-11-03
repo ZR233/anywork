@@ -444,36 +444,18 @@ impl StudioRuntime {
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
             }
+            // The host temp is removed on every retry, not only before the durable receipt
+            // records it: resuming the archive reopens the session layout, which may re-create
+            // the directory this member already acknowledged as cleaned.
+            let current = self
+                .store
+                .session_paths(&member.workspace_id, &member.thread_id)?;
+            ensure!(
+                current.root() == member.host_session && current.temp_dir() == member.host_temp,
+                "archive host session binding changed"
+            );
+            clean_host_temp(&member.host_session, &member.host_temp).await?;
             if !member.host_cleaned {
-                let current = self
-                    .store
-                    .session_paths(&member.workspace_id, &member.thread_id)?;
-                ensure!(
-                    current.root() == member.host_session && current.temp_dir() == member.host_temp,
-                    "archive host session binding changed"
-                );
-                let anchor = member
-                    .host_session
-                    .ancestors()
-                    .last()
-                    .context("archive host path has no root")?;
-                path_safety::validate_path_for_write_async(anchor, &member.host_session).await?;
-                match tokio::fs::symlink_metadata(&member.host_temp).await {
-                    Ok(_) => {
-                        path_safety::validate_existing_path_async(
-                            &member.host_session,
-                            &member.host_temp,
-                        )
-                        .await?;
-                        path_safety::remove_dir_all_no_follow_async(
-                            &member.host_session,
-                            &member.host_temp,
-                        )
-                        .await?;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
                 operation.members[index].host_cleaned = true;
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
@@ -507,15 +489,15 @@ impl StudioRuntime {
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
             }
+            let current = self
+                .store
+                .session_paths(&member.identity.workspace_id, &member.identity.thread_id)?;
+            ensure!(
+                current.root() == member.host_session && current.temp_dir() == member.host_temp,
+                "private host binding changed"
+            );
+            clean_host_temp(&member.host_session, &member.host_temp).await?;
             if !member.host_cleaned {
-                let current = self
-                    .store
-                    .session_paths(&member.identity.workspace_id, &member.identity.thread_id)?;
-                ensure!(
-                    current.root() == member.host_session && current.temp_dir() == member.host_temp,
-                    "private host binding changed"
-                );
-                clean_host_temp(&member.host_session, &member.host_temp).await?;
                 operation.private_members[index].host_cleaned = true;
                 operation.changed()?;
                 self.store.save_thread_archive(operation).await?;
