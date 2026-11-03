@@ -84,7 +84,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Rust crate 名称统一以 `pl-` 开头，例如 `pl-core`、`pl-model`、`pl-studio-bridge`。
 - Flutter app 的 Dart package 名称是 `anywork`。
 - Flutter 项目根目录是 `code/anywork`。
-- SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；Client 命令通过 `cargo xtask verify-client` 在正确目录执行。
+- SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；本地 Client 命令通过 `cargo xtask verify-client` 在正确目录执行。CI 的无 Rust 前端验证可在该 package 目录直接使用官方 Dart SDK 命令，保留锁文件、SDK-only 边界与测试发现检查。
 - Client、AppGraph 与观察层的所有权和依赖边界见 [客户端与前端状态](design/25-frontend-state.md)。
 
 ### 会话文件与交付位置
@@ -99,6 +99,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。Flutter app 命令的工作目录必须是 `code/anywork`；纯 Client 命令由 `verify-client` 切换到 `code/anywork_client`。不得在 SDK 目录执行项目命令。
 - 从仓库根目录执行 Flutter/Dart 命令时，优先使用 `cargo flutter <args...>` 和 `cargo dart <args...>`；参数原样透传，包装命令会自动切换到 `code/anywork`。
 - 只有包装命令无法满足需求时，才可直接运行 `flutter` 或 `dart`，且必须先把工作目录切换到 `code/anywork`；不得把 SDK 目录当作项目目录。
+- CI 的 Linux 前端作业为避免引入 Cargo/FRB，可在 `code/anywork` 直接运行官方 Flutter/Dart 静态检查和无 bridge 测试，在 `code/anywork_client` 执行 SDK-only Client 检查；依赖安装使用 `--enforce-lockfile`，不绕过 Client/UI 边界或另行生成源码。该例外不放宽原生 GUI 构建入口。
 - 常用命令：
 
   ```powershell
@@ -118,6 +119,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   ```
 
 - `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。依赖升级必须手动运行对应的依赖更新命令并审查提交新的 lockfile。
+- CI 可直接执行同次源码预编译并已核验摘要、平台/环境与编译工作区身份的 xtask，继续使用其原生构建、生成与测试子命令；缺失或身份错误必须失败，不以重新编译或旧缓存掩盖交接失败。普通本地命令仍使用上述 Cargo 入口。
 - Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
 
 - 不支持直接执行 `flutter build windows|linux|macos` 或 `flutter run -d windows|linux|macos`，也不新增 PowerShell GUI wrapper。

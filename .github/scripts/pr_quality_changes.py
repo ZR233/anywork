@@ -13,16 +13,16 @@ from pathlib import Path
 OUTPUT_FLAGS = (
     "docs_policy",
     "release_configuration",
-    "rust_quality",
-    "rust_deterministic",
+    "rust_checks",
     "linux_environment",
-    "flutter_quality",
-    "flutter_ui",
+    "flutter_checks",
+    "gui_generated",
+    "linux_tools",
+    "remote_helpers",
     "linux_desktop",
-    "windows_desktop",
-    "macos_desktop",
     "linux_native",
-    "windows_native",
+    "windows_build",
+    "macos_build",
 )
 
 _ZERO_SHA = "0" * 40
@@ -93,21 +93,24 @@ _RUST_EXACT = frozenset(
 _RUST_PREFIXES = (
     "code/pl-",
     "code/anywork/rust/",
+    "code/anywork/lib/src/rust/",
 )
 
-_FLUTTER_PREFIXES = (
-    "code/anywork/",
-    "code/anywork_client/",
+_BRIDGE_EXACT = frozenset(
+    {
+        "code/anywork/lib/src/app/app_composition.dart",
+        "code/anywork/lib/src/app/frb_startup_host.dart",
+    }
 )
-
-_DESKTOP_PREFIXES = (
-    "code/anywork/integration_test/",
-    "code/anywork/linux/",
-    "code/anywork/macos/",
-    "code/anywork/runner_common/",
+_BRIDGE_PREFIXES = (
+    "code/pl-studio-bridge/",
     "code/anywork/rust/",
-    "code/anywork/tool/",
-    "code/anywork/windows/",
+    "code/anywork/lib/src/rust/",
+    "code/anywork/lib/src/infrastructure/frb/",
+    "code/anywork/test/unit/frb_adapter/",
+)
+
+_FULL_PREFIXES = (
     "code/pl-dev-support/",
     "code/pl-studio-acceptance/",
     "xtask/",
@@ -116,18 +119,8 @@ _DESKTOP_PREFIXES = (
 _NATIVE_EXACT = frozenset(
     {
         "code/anywork/lib/src/app/studio_host_lifecycle.dart",
-        "code/anywork/lib/src/app/app_composition.dart",
         "code/anywork/tool/native_fault_main.dart",
     }
-)
-_NATIVE_PREFIXES = (
-    "code/anywork/linux/",
-    "code/anywork/macos/",
-    "code/anywork/windows/",
-    "code/anywork/runner_common/",
-    "code/anywork/rust/",
-    "code/pl-dev-support/",
-    "code/pl-studio-acceptance/",
 )
 
 
@@ -154,12 +147,26 @@ def classify_path(path: str) -> frozenset[str]:
         tags.add("policy")
     if path in _RUST_EXACT or _has_prefix(path, _RUST_PREFIXES):
         tags.add("rust")
-    if _has_prefix(path, _FLUTTER_PREFIXES):
+    if path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES):
+        tags.add("bridge")
+    if _has_prefix(path, ("code/anywork/", "code/anywork_client/")):
         tags.add("flutter")
-    if _has_prefix(path, _DESKTOP_PREFIXES):
-        tags.add("desktop")
-    if path in _NATIVE_EXACT or _has_prefix(path, _NATIVE_PREFIXES):
-        tags.add("native")
+    if path in _NATIVE_EXACT:
+        tags.add("native_exact")
+    if path.startswith("code/anywork/linux/"):
+        tags.add("linux")
+    if path.startswith("code/anywork/windows/"):
+        tags.add("windows")
+    if path.startswith("code/anywork/macos/"):
+        tags.add("macos")
+    if path.startswith("code/anywork/runner_common/"):
+        tags.add("runner_common")
+    if path.startswith("code/anywork/integration_test/"):
+        tags.add("integration")
+    if path.startswith("code/anywork/tool/") and path not in _NATIVE_EXACT:
+        tags.add("tool")
+    if _has_prefix(path, _FULL_PREFIXES):
+        tags.add("full")
     if not tags:
         tags.add("unknown")
     return frozenset(tags)
@@ -189,7 +196,7 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
     for path in normalized:
         tags.update(classify_path(path))
 
-    if "unknown" in tags or "policy" in tags:
+    if "unknown" in tags or "policy" in tags or "full" in tags:
         flags = _full_flags()
         reason = "unknown path category or non-skippable policy/fixture/skill/CI path"
         return _finish(flags, event_name=event_name, plan="full", reason=reason)
@@ -208,25 +215,52 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
     if "docs" in tags:
         flags["docs_policy"] = True
     if "rust" in tags:
-        flags["rust_quality"] = True
-        flags["rust_deterministic"] = True
-        flags["linux_environment"] = True
+        flags["rust_checks"] = True
     if "flutter" in tags:
-        flags["flutter_quality"] = True
-        flags["flutter_ui"] = True
-    if "desktop" in tags:
+        flags["flutter_checks"] = True
+    if "bridge" in tags:
+        flags["flutter_checks"] = True
+        flags["gui_generated"] = True
         flags["linux_desktop"] = True
-        flags["windows_desktop"] = True
-        flags["macos_desktop"] = True
-        flags["linux_environment"] = True
-    if "native" in tags:
         flags["linux_native"] = True
-        flags["windows_native"] = True
-        flags["linux_environment"] = True
-        flags["macos_desktop"] = True
-    plan_name = "+".join(
-        name for name in ("docs", "rust", "flutter", "desktop", "native") if name in tags
+        flags["windows_build"] = True
+        flags["macos_build"] = True
+    if "native_exact" in tags:
+        flags["flutter_checks"] = True
+        flags["linux_native"] = True
+        flags["windows_build"] = True
+        flags["macos_build"] = True
+    if "linux" in tags:
+        flags["flutter_checks"] = True
+        flags["linux_desktop"] = True
+        flags["linux_native"] = True
+    if "windows" in tags:
+        flags["flutter_checks"] = True
+        flags["windows_build"] = True
+    if "macos" in tags:
+        flags["flutter_checks"] = True
+        flags["macos_build"] = True
+    if "runner_common" in tags:
+        flags["flutter_checks"] = True
+        flags["linux_desktop"] = True
+        flags["linux_native"] = True
+        flags["windows_build"] = True
+        flags["macos_build"] = True
+    if "integration" in tags:
+        flags["flutter_checks"] = True
+        flags["linux_desktop"] = True
+    if "tool" in tags:
+        flags["flutter_checks"] = True
+        flags["linux_desktop"] = True
+    flags["remote_helpers"] = any(
+        flags[name]
+        for name in ("linux_desktop", "linux_native", "windows_build", "macos_build")
     )
+    flags["linux_tools"] = flags["gui_generated"] or flags["remote_helpers"]
+    flags["linux_environment"] = (
+        flags["rust_checks"] or flags["linux_tools"]
+    )
+    plan_name = "+".join(name for name in OUTPUT_FLAGS if flags[name]) or "classified"
     return _finish(
         flags,
         event_name=event_name,
@@ -243,28 +277,22 @@ def _finish(
         required.append("docs-policy")
     if event_name == "pull_request":
         required.append("pr-title")
-    if flags["release_configuration"]:
-        required.append("release-configuration")
-    if flags["rust_quality"]:
-        required.append("rust-quality")
-    if flags["rust_deterministic"]:
-        required.append("rust-deterministic")
-    if flags["linux_environment"]:
-        required.extend(["linux-environment", "studio-server-linux"])
-    if flags["flutter_quality"]:
-        required.append("flutter-quality")
-    if flags["flutter_ui"]:
-        required.append("flutter-ui")
-    if flags["linux_desktop"]:
-        required.append("linux-desktop")
-    if flags["windows_desktop"]:
-        required.append("windows-desktop")
-    if flags["macos_desktop"]:
-        required.append("macos-desktop")
-    if flags["linux_native"]:
-        required.append("linux-native")
-    if flags["windows_native"]:
-        required.append("windows-native")
+    jobs_by_flag = (
+        ("release_configuration", "release-configuration"),
+        ("rust_checks", "rust-checks"),
+        ("linux_environment", "linux-environment"),
+        ("flutter_checks", "flutter-checks"),
+        ("gui_generated", "gui-generated"),
+        ("linux_tools", "linux-tools"),
+        ("remote_helpers", "remote-helpers"),
+        ("windows_build", "windows-build"),
+        ("macos_build", "macos-build"),
+    )
+    for flag, job in jobs_by_flag:
+        if flags[flag]:
+            required.append(job)
+    if flags["linux_desktop"] or flags["linux_native"]:
+        required.append("linux-integration")
     return {
         **flags,
         "required_jobs": tuple(required),

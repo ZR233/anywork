@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_quality_gate import evaluate  # noqa: E402
+from pr_quality_gate import KNOWN_JOBS, evaluate  # noqa: E402
 
 
 def _results(**overrides: str) -> dict[str, str]:
@@ -18,17 +18,15 @@ def _results(**overrides: str) -> dict[str, str]:
         "docs-policy": "skipped",
         "pr-title": "skipped",
         "release-configuration": "skipped",
-        "rust-quality": "skipped",
-        "rust-deterministic": "skipped",
+        "rust-checks": "skipped",
         "linux-environment": "skipped",
-        "studio-server-linux": "skipped",
-        "flutter-quality": "skipped",
-        "flutter-ui": "skipped",
-        "linux-desktop": "skipped",
-        "windows-desktop": "skipped",
-        "macos-desktop": "skipped",
-        "linux-native": "skipped",
-        "windows-native": "skipped",
+        "flutter-checks": "skipped",
+        "gui-generated": "skipped",
+        "linux-tools": "skipped",
+        "remote-helpers": "skipped",
+        "linux-integration": "skipped",
+        "windows-build": "skipped",
+        "macos-build": "skipped",
     }
     results.update(overrides)
     return results
@@ -44,24 +42,21 @@ class GateEvaluateTest(unittest.TestCase):
 
     def test_required_skip_from_upstream_fails(self):
         errors = evaluate(
-            ["changes", "rust-quality", "rust-deterministic", "linux-environment", "studio-server-linux"],
+            ["changes", "rust-checks", "linux-environment"],
             _results(
                 **{
-                    "rust-quality": "failure",
-                    "rust-deterministic": "skipped",
+                    "rust-checks": "failure",
                     "linux-environment": "skipped",
-                    "studio-server-linux": "skipped",
                 }
             ),
         )
         self.assertTrue(any("linux-environment" in item for item in errors))
-        self.assertTrue(any("studio-server-linux" in item for item in errors))
-        self.assertTrue(any("rust-quality" in item for item in errors))
+        self.assertTrue(any("rust-checks" in item for item in errors))
 
     def test_cancelled_required_job_fails(self):
         errors = evaluate(
-            ["changes", "flutter-quality"],
-            _results(**{"flutter-quality": "cancelled"}),
+            ["changes", "flutter-checks"],
+            _results(**{"flutter-checks": "cancelled"}),
         )
         self.assertTrue(any("cancelled" in item for item in errors))
 
@@ -79,9 +74,9 @@ class GateEvaluateTest(unittest.TestCase):
     def test_cancelled_optional_job_fails(self):
         errors = evaluate(
             ["changes", "docs-policy"],
-            _results(**{"docs-policy": "success", "macos-desktop": "cancelled"}),
+            _results(**{"docs-policy": "success", "macos-build": "cancelled"}),
         )
-        self.assertTrue(any("macos-desktop" in item for item in errors))
+        self.assertTrue(any("macos-build" in item for item in errors))
 
     def test_empty_required_jobs_fails(self):
         errors = evaluate([], _results())
@@ -93,6 +88,20 @@ class GateEvaluateTest(unittest.TestCase):
             _results(**{"docs-policy": ""}),
         )
         self.assertTrue(any("docs-policy" in item for item in errors))
+
+    def test_optional_planned_job_skip_passes(self):
+        errors = evaluate(["changes", "flutter-checks"], _results(
+            **{"flutter-checks": "success", "linux-integration": "skipped"}
+        ))
+        self.assertEqual(errors, [])
+
+    def test_retired_jobs_are_not_known(self):
+        self.assertFalse({
+            "rust-quality", "rust-deterministic", "flutter-quality", "flutter-ui",
+            "linux-desktop", "windows-desktop", "macos-desktop", "linux-native",
+            "windows-native",
+            "studio-server-linux",
+        } & set(KNOWN_JOBS))
 
 
 if __name__ == "__main__":
