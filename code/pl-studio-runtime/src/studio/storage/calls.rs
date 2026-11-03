@@ -447,6 +447,7 @@ struct CallsWriter {
     /// Encoded bytes of the batch currently being written; a read-only pressure observation.
     in_flight_bytes: AtomicU64,
     stopping: AtomicBool,
+    deleted_threads: Mutex<BTreeSet<String>>,
     last_error: Mutex<Option<String>>,
     statistics_gap: AtomicBool,
     #[cfg(test)]
@@ -595,6 +596,7 @@ impl CallsStore {
             .0,
             in_flight_bytes: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
+            deleted_threads: Mutex::new(BTreeSet::new()),
             statistics_gap: AtomicBool::new(false),
             last_error: Mutex::new(startup_error),
             #[cfg(test)]
@@ -630,6 +632,57 @@ impl CallsStore {
         let database = self.writer.db.close_by_ref().await;
         completion?;
         database?;
+        Ok(())
+    }
+
+    /// Permanently removes only these stopped Thread identities from the shared writer.
+    pub(crate) async fn delete_threads(&self, thread_ids: &[String]) -> Result<()> {
+        {
+            let _log = self.writer.log.lock().await;
+            self.writer
+                .deleted_threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(thread_ids.iter().cloned());
+        }
+        let target = self.admitted_ticket();
+        let mut processed = self.writer.processed_ticket.subscribe();
+        self.writer.work_notify.notify_one();
+        while *processed.borrow_and_update() < target {
+            ensure!(
+                !self.writer.stopping.load(Ordering::Acquire),
+                "calls writer stopped before deletion drain"
+            );
+            if let Some(error) = self.last_error() {
+                anyhow::bail!("calls deletion drain failed: {error}");
+            }
+            processed
+                .changed()
+                .await
+                .context("calls writer stopped before deletion drain")?;
+        }
+        let mut log = self.writer.log.lock().await;
+        let ids = thread_ids.iter().cloned().collect::<BTreeSet<_>>();
+        log.delete_threads(&ids).await?;
+        // Rebuild is also the crash recovery path for a segment replaced before its index commit.
+        log.rebuild_index(&self.writer.db).await?;
+        let tx = self.writer.db.begin().await?;
+        for id in thread_ids {
+            for table in [
+                "call_log_index",
+                "call_usage_summary",
+                "performance_samples",
+                "legacy_call_fences",
+                "legacy_auxiliary_usage",
+            ] {
+                tx.execute_raw(statement(
+                    &format!("DELETE FROM {table} WHERE thread_id=?"),
+                    vec![id.clone().into()],
+                ))
+                .await?;
+            }
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1229,13 +1282,13 @@ async fn apply_batch(
                 } else {
                     let (first, newest) = summaries[summary.thread_id.as_str()];
                     if first == index {
-                        apply_mutation(&mut log, &tx, &pending[newest].mutation).await
+                        apply_live_mutation(shared, &mut log, &tx, &pending[newest].mutation).await
                     } else {
                         Ok(MaterialChanges::default())
                     }
                 }
             }
-            _ => apply_mutation(&mut log, &tx, &entry.mutation).await,
+            _ => apply_live_mutation(shared, &mut log, &tx, &entry.mutation).await,
         };
         match result {
             Ok(change) => {
@@ -1405,6 +1458,29 @@ fn queue_pressure(shared: &CallsWriter) -> QueuePressure {
         bytes: queue.bytes,
         oldest_accepted_at: queue.front().map(|entry| entry.accepted_at),
     }
+}
+
+async fn apply_live_mutation(
+    shared: &CallsWriter,
+    log: &mut CallLog,
+    db: &DatabaseTransaction,
+    mutation: &CallMutation,
+) -> Result<MaterialChanges, BatchFailure> {
+    let id = match mutation {
+        CallMutation::Records(records) => records.first().map(|record| record.thread_id.as_str()),
+        CallMutation::Billing(record) => Some(record.thread_id.as_str()),
+        CallMutation::Summary(summary) => Some(summary.thread_id.as_str()),
+    };
+    if id.is_some_and(|id| {
+        shared
+            .deleted_threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }) {
+        return Ok(MaterialChanges::default());
+    }
+    apply_mutation(log, db, mutation).await
 }
 
 async fn apply_mutation(
@@ -1692,6 +1768,44 @@ fn is_retryable_write(message: &str) -> bool {
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn permanent_delete_calls_removes_all_body_revisions_and_preserves_neighbor_after_restart()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::open(&path).await?;
+        store.record_effect(&attempt_effect("deleted", "first", 1));
+        store.record_effect(&attempt_effect("neighbor", "retained", 1));
+        store.record_effect(&attempt_effect("deleted", "second", 2));
+        store.delete_threads(&["deleted".into()]).await?;
+        // A late producer uses the original writer; its stale fact must not recreate a body.
+        store.record_effect(&attempt_effect("deleted", "late", 3));
+        store.record_effect(&attempt_effect("neighbor", "new", 2));
+        store.close().await?;
+        let reopened = CallsStore::open(&path).await?;
+        let rows = reopened
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT thread_id,call_id FROM call_log_index",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| row.try_get::<String>("", "thread_id").unwrap() == "neighbor")
+        );
+        let mut logs = tokio::fs::read_dir(temp.path().join("logs")).await?;
+        while let Some(entry) = logs.next_entry().await? {
+            let text = tokio::fs::read_to_string(entry.path()).await?;
+            assert!(!text.contains("\"threadId\":\"deleted\""));
+            assert!(!text.contains("\"callId\":\"late\""));
+        }
+        reopened.close().await?;
+        Ok(())
+    }
 
     fn billing(thread: &str) -> Result<CallMutation> {
         Ok(CallMutation::Billing(Box::new(PreparedRecord::new(

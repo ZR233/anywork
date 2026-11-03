@@ -20,7 +20,7 @@ pub use self::handlers::{
     browse_remote_directories, cancel_acp_auth, cancel_acp_install, cancel_bot_registration,
     check_studio_update, close_remote_directory, compact_thread, continue_acp_auth,
     continue_thread, create_account, create_bot_conversation_thread, delete_ssh_server,
-    delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics,
+    delete_thread, delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics,
     get_delegation_model, init_app, list_bot_conversations, list_delegation_models,
     list_ssh_servers, load_account_catalog, load_acp_account_catalog, open_conversation_feed,
     open_project, open_remote_project, prepare_standalone_workspace, prepare_startup_attempt,

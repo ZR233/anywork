@@ -29,6 +29,7 @@ pub(super) struct ThreadDirectoryIndex {
     order: BTreeSet<(i64, String)>,
     projects: HashMap<String, String>,
     explicitly_closed: HashSet<String>,
+    deleted: HashSet<String>,
 }
 
 impl ThreadDirectoryIndex {
@@ -41,6 +42,7 @@ impl ThreadDirectoryIndex {
             order: BTreeSet::new(),
             projects: HashMap::new(),
             explicitly_closed: HashSet::new(),
+            deleted: HashSet::new(),
         };
         for thread in threads {
             if matches!(
@@ -57,6 +59,9 @@ impl ThreadDirectoryIndex {
 
     fn insert(&mut self, thread: Thread) -> Option<Thread> {
         let id = thread.id.clone();
+        if self.deleted.contains(&id) {
+            return None;
+        }
         let previous = self.rows.remove(&id);
         if let Some(previous) = &previous {
             self.order
@@ -433,6 +438,7 @@ impl ProductEventBus {
         removed: Vec<String>,
         archived: Vec<Thread>,
     ) -> StudioProductEventEnvelope {
+        upserted.retain(|thread| !index.deleted.contains(&thread.id));
         for thread in &mut upserted {
             Self::apply_explicit_close(index, thread);
             // 迟到快照不得使最近用户消息时间回退：目录命令携带的完整 Thread 可能
@@ -709,6 +715,7 @@ impl ProductEventBus {
                     .iter()
                     .flat_map(|removal| removal.thread_ids.iter().cloned()),
             )
+            .chain(delta.thread_deletions.iter().cloned())
             .collect::<Vec<_>>();
         let project_upserts = delta
             .project_upserts
@@ -731,6 +738,9 @@ impl ProductEventBus {
             let mut published_upserts = Vec::new();
             let mut frozen_rows = BTreeMap::new();
             for requested in &delta.thread_upserts {
+                if index.deleted.contains(&requested.id) {
+                    continue;
+                }
                 let mut merged = match thread_baselines.get(&requested.id) {
                     None => requested.clone(),
                     Some(baseline) => {
@@ -770,6 +780,10 @@ impl ProductEventBus {
                     index.insert(current.clone());
                     frozen_rows.insert(current.id.clone(), current);
                 }
+            }
+            for id in &delta.thread_deletions {
+                index.remove(id);
+                index.deleted.insert(id.clone());
             }
             if project_changed {
                 index.update_projects(&project_upserts, &delta.project_removals);

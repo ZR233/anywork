@@ -79,6 +79,18 @@ class ArchiveThreadResult {
   final StudioThread? nextRoot;
 }
 
+class DeleteThreadResult {
+  DeleteThreadResult({
+    required this.deletedRootId,
+    required Iterable<String> deletedThreadIds,
+    this.nextRoot,
+  }) : deletedThreadIds = List.unmodifiable(deletedThreadIds);
+
+  final String deletedRootId;
+  final List<String> deletedThreadIds;
+  final StudioThread? nextRoot;
+}
+
 // An identity belongs to one immutable submission; unchanged failed drafts reuse it.
 String newPromptInputId() {
   final random = Random.secure();

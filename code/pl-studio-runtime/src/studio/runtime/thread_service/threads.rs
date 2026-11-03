@@ -32,6 +32,9 @@ impl StudioRuntime {
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         let thread_id = thread_id.into();
+        self.store
+            .ensure_delete_execution_allowed(Some(&thread_id))
+            .await?;
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
                 existing.workspace_id == workspace_id,
@@ -685,7 +688,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_thread_archive_scope(
+    pub(super) async fn load_thread_archive_scope(
         &self,
         root_thread_id: &str,
     ) -> Result<Option<(ThreadRecord, Vec<ThreadRecord>, Vec<ThreadRecord>)>> {
@@ -787,7 +790,7 @@ impl StudioRuntime {
     /// 并发契约：`archive_thread` 与所有输入提交入口（`prompt_runner/submit.rs` 的
     /// `submit_prompt*`、`threads.rs` 的 `start_new_thread`）都在同一把 `lifecycle_lock`
     /// 下进入 owner mailbox，因此归档期间不会有并发新输入落入这棵树。
-    async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
+    pub(super) async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
         for thread_id in thread_ids {
             let Some(thread) = self.threads.observed_thread(thread_id) else {
                 // Cold history has no active work and must not be activated for archiving.

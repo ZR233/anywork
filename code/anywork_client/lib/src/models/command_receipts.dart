@@ -94,6 +94,13 @@ final class ArchiveThreadCommandReply {
   final StudioCommandReceipt receipt;
 }
 
+final class DeleteThreadCommandReply {
+  const DeleteThreadCommandReply({required this.result, required this.receipt});
+
+  final DeleteThreadResult result;
+  final StudioCommandReceipt receipt;
+}
+
 /// 精确停止的受理回执。
 ///
 /// [stopped] 只说明停止请求已被接受；目标执行及其清理仍然要离开规范状态才算生效。

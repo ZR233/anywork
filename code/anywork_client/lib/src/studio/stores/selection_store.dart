@@ -5,6 +5,8 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
 
   int _navigationGeneration = 0;
 
+  int get navigationGeneration => _navigationGeneration;
+
   /// Register intent before queued work starts, without changing selection or
   /// resource demand. Older navigation may finish, but can no longer publish.
   int beginNavigation() => ++_navigationGeneration;

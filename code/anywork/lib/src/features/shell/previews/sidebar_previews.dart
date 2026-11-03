@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../../../app/theme/material3_theme.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../l10n/studio_l10n.dart';
+import '../studio_shell.dart';
 import '../sidebar/sidebar_views.dart';
 import 'sidebar_preview_fixtures.dart';
 
@@ -180,6 +184,23 @@ Widget sidebarThreadRowPreview() => _sidebarPreviewHost(
       onSelect: () => recordSidebarPreviewIntent('select thread'),
       onAction: recordSidebarPreviewIntent,
     ),
+  ),
+);
+
+@Preview(name: '删除会话确认', group: 'Shell · Sidebar parts', size: Size(520, 360))
+Widget sidebarDeleteConfirmationPreview() => _sidebarPreviewHost(
+  Builder(
+    builder: (context) {
+      final pending = Completer<void>();
+      return ThreadDestructiveActionDialog(
+        title: context.l10n.sidebarDeleteSessionConfirmTitle('主会话'),
+        body: context.l10n.sidebarDeleteSessionConfirmBody,
+        actionLabel: context.l10n.sidebarDeleteSessionConfirmAction,
+        confirmKey: const ValueKey('sidebar-delete-preview-confirm'),
+        danger: true,
+        onConfirm: () => pending.future,
+      );
+    },
   ),
 );
 

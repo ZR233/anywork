@@ -200,6 +200,48 @@ pub struct BindingOperation {
 }
 
 impl BotStateStore {
+    pub(crate) async fn delete_threads(&self, ids: &[String]) -> Result<(), FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        for id in ids {
+            // Input identities and sends are tied to their original ledger rows, never inferred
+            // from an entire chat (a neighboring replacement binding may share that chat).
+            tx.execute_raw(statement(
+                "DELETE FROM send_operations WHERE operation_id IN
+                 (SELECT 'botreply:' || bot_id || ':' || chat_id || ':' || message_id
+                    FROM bot_card_streams WHERE thread_id=?)",
+                vec![id.clone().into()],
+            ))
+            .await
+            .map_err(storage)?;
+            tx.execute_raw(statement(
+                "DELETE FROM inbound_identities WHERE identity IN
+                 (SELECT identity FROM inbound_work WHERE creation_id=?)",
+                vec![id.clone().into()],
+            ))
+            .await
+            .map_err(storage)?;
+            for (table, predicate) in [
+                ("bot_card_streams", "thread_id=?"),
+                ("inbound_work", "creation_id=?"),
+                ("binding_operations", "thread_id=? OR creation_id=?"),
+                ("thread_bindings", "thread_id=? OR creation_id=?"),
+            ] {
+                let values = if predicate.contains(" OR ") {
+                    vec![id.clone().into(), id.clone().into()]
+                } else {
+                    vec![id.clone().into()]
+                };
+                tx.execute_raw(statement(
+                    &format!("DELETE FROM {table} WHERE {predicate}"),
+                    values,
+                ))
+                .await
+                .map_err(storage)?;
+            }
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(())
+    }
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
