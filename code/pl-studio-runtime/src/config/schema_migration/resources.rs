@@ -166,7 +166,7 @@ fn validate_profile(
     config: &StudioConfig,
     require_current: bool,
 ) -> Result<(u32, bool)> {
-    let loaded = load_profile(path, text(path, content, "agent-profile", 1)?)?;
+    let loaded = load_profile(path, text(path, content, "agent-profile", 2)?)?;
     if require_current {
         ensure!(
             !loaded.migrated,
@@ -175,7 +175,7 @@ fn validate_profile(
     }
     let source = loaded.source_version;
     let profile = loaded.document.into_profile().map_err(|error| {
-        migration_error(path, "agent-profile", Some(source), 1, "validate", error)
+        migration_error(path, "agent-profile", Some(source), 2, "validate", error)
     })?;
     let profile_id = path
         .file_stem()
@@ -183,23 +183,37 @@ fn validate_profile(
         .context("invalid Profile filename")?;
     crate::config::agent_profile::validate_user_agent_profile_id(profile_id)?;
     crate::config::agent_profile::validate_user_profile_fields(profile_id, &profile).map_err(
-        |error| migration_error(path, "agent-profile", Some(source), 1, "validate", error),
+        |error| migration_error(path, "agent-profile", Some(source), 2, "validate", error),
     )?;
     // Unchanged current Profiles retain editable declarations and catalog diagnostics even
     // when a normal settings command removed their route. Only migration candidates require
     // joint reference admission before commit; this also applies to disabled candidates.
     if loaded.migrated || require_current {
-        config
-            .models
-            .route_availability(&crate::config::ModelRouteConfig {
-                account_id: profile.account_id,
-                model_id: profile.model_id,
-                effort: profile.effort,
-            })
-            .map(|_| ())
-            .map_err(|error| {
-                migration_error(path, "agent-profile", Some(source), 1, "references", error)
-            })?;
+        let references = match &profile.binding {
+            pl_protocol::AgentBinding::Native(native) => {
+                let route = native
+                    .route
+                    .as_ref()
+                    .context("Native Profile route is required")?;
+                config
+                    .models
+                    .route_availability(&crate::config::ModelRouteConfig {
+                        account_id: crate::config::AccountId::new(route.account_id.clone())?,
+                        model_id: route.model_id.clone(),
+                        effort: route
+                            .effort
+                            .clone()
+                            .map(crate::config::ReasoningEffort::new),
+                    })
+                    .map(|_| ())
+            }
+            pl_protocol::AgentBinding::Acp(_) => {
+                crate::config::agent_profile::validate_user_profile(profile_id, &profile, config)
+            }
+        };
+        references.map_err(|error| {
+            migration_error(path, "agent-profile", Some(source), 2, "references", error)
+        })?;
     }
     Ok((source, loaded.migrated))
 }
@@ -333,15 +347,15 @@ fn encode_fallback_legacy_mcp_server(
         }
         table.insert("headers".into(), toml::Value::Table(headers));
     }
-    if let Some(secs) = server.startup_timeout_secs {
-        if let Ok(v) = i64::try_from(secs) {
-            table.insert("startup_timeout_secs".into(), toml::Value::Integer(v));
-        }
+    if let Some(secs) = server.startup_timeout_secs
+        && let Ok(v) = i64::try_from(secs)
+    {
+        table.insert("startup_timeout_secs".into(), toml::Value::Integer(v));
     }
-    if let Some(secs) = server.tool_timeout_secs {
-        if let Ok(v) = i64::try_from(secs) {
-            table.insert("tool_timeout_secs".into(), toml::Value::Integer(v));
-        }
+    if let Some(secs) = server.tool_timeout_secs
+        && let Ok(v) = i64::try_from(secs)
+    {
+        table.insert("tool_timeout_secs".into(), toml::Value::Integer(v));
     }
     if let Some(enabled_tools) = &server.enabled_tools {
         table.insert(
@@ -541,11 +555,11 @@ pub(super) fn prepare(
     names.sort();
     for path in names {
         let original = fs::read(&path)?;
-        let (_, migrated) = validate_profile(&path, &original, &config, false)?;
+        let (source, migrated) = validate_profile(&path, &original, &config, false)?;
         if !migrated {
             continue;
         }
-        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 1)?)?;
+        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 2)?)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -555,7 +569,12 @@ pub(super) fn prepare(
             original,
             candidate: loaded.document.encode()?.into_bytes(),
         };
-        resources.push(resource(&plan, DocumentFamily::Profile, None, 1));
+        resources.push(resource(
+            &plan,
+            DocumentFamily::Profile,
+            (source != 0).then_some(source),
+            2,
+        ));
         plans.push(plan);
     }
     if plans.is_empty() {
@@ -651,7 +670,9 @@ fn validate_resources(journal: &Journal) -> Result<()> {
             DocumentFamily::Profile => {
                 validate_profile_resource_path(&resource.relative_path)?;
                 ensure!(
-                    resource.source_version.is_none() && resource.target_version == 1,
+                    (resource.target_version == 1 && resource.source_version.is_none())
+                        || (resource.target_version == 2
+                            && resource.source_version.is_none_or(|source| source == 1)),
                     "invalid Profile resource versions"
                 );
             }
@@ -750,10 +771,20 @@ fn commit(
             DocumentFamily::Profile => {
                 let (source, migrated) = validate_profile(&path, &plan.original, &config, false)?;
                 ensure!(
-                    source == 0 && migrated,
+                    source == entry.source_version.unwrap_or(0) && migrated,
                     "Profile original contradicts import journal"
                 );
-                validate_profile(&path, &plan.candidate, &config, true)?;
+                if entry.target_version == 1 {
+                    // Finish an already protected V1 import, then the next scan upgrades it to V2.
+                    let (candidate_source, _) =
+                        validate_profile(&path, &plan.candidate, &config, false)?;
+                    ensure!(
+                        candidate_source == 1,
+                        "invalid protected V1 Profile candidate"
+                    );
+                } else {
+                    validate_profile(&path, &plan.candidate, &config, true)?;
+                }
             }
             DocumentFamily::Mcp => {
                 if !plan.original.is_empty() {
@@ -924,7 +955,7 @@ workspace_mode = "directory"
             operation_id: format!("schema-{}-profile-only", main_schema.unwrap_or_default()),
             phase: MigrationPhase::Prepared,
             unchanged_main_hash: main_bytes.as_deref().map(digest),
-            resources: vec![resource(&plan, DocumentFamily::Profile, None, 1)],
+            resources: vec![resource(&plan, DocumentFamily::Profile, None, 2)],
         };
         write_journal(&directory, &journal).unwrap();
         let journal_bytes = fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap();
@@ -1225,7 +1256,7 @@ workspace_mode = "directory"
         assert_eq!(journal.resources.len(), 1);
         assert_eq!(journal.resources[0].document, DocumentFamily::Profile);
         assert_eq!(journal.resources[0].source_version, None);
-        assert_eq!(journal.resources[0].target_version, 1);
+        assert_eq!(journal.resources[0].target_version, 2);
         assert_eq!(journal.unchanged_main_hash, Some(digest(&main_before)));
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
         let recovered = resume(paths, &credentials, &journal_bytes).unwrap();
@@ -1295,9 +1326,13 @@ workspace_mode = "directory"
                 .document
                 .into_profile()
                 .unwrap();
-            profile.account_id = account_id.clone();
+            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                panic!("imported Profile must be Native");
+            };
+            let route = native.route.as_mut().expect("imported Native route");
+            route.account_id = account_id.to_string();
             profile.enabled = enabled;
-            profile.effort = Some(crate::config::ReasoningEffort::new("high"));
+            route.effort = Some("high".into());
             let (saved, _) = runtime
                 .save_user_agent_profile(runtime.read().unwrap().revision, "saved", &profile)
                 .unwrap();
@@ -1324,9 +1359,19 @@ workspace_mode = "directory"
                     .catalog
                     .profiles
                     .iter()
-                    .find(|profile| profile.profile_id == "saved")
+                    .find(|profile| profile.definition.definition_id == "saved")
                     .expect("unavailable Profile stays in the editable settings catalog");
-                assert_eq!(saved.account_id, "profile-only");
+                let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+                    panic!("saved Profile must be Native");
+                };
+                assert_eq!(
+                    native
+                        .route
+                        .as_ref()
+                        .expect("saved Native route")
+                        .account_id,
+                    "profile-only"
+                );
                 assert_eq!(saved.enabled, enabled);
                 assert!(
                     snapshot
@@ -1341,7 +1386,7 @@ workspace_mode = "directory"
                         .unwrap()
                         .profiles
                         .iter()
-                        .any(|profile| profile.profile_id == "saved")
+                        .any(|profile| profile.definition.definition_id == "saved")
                 );
             };
             assert_unavailable(&runtime);
@@ -1366,7 +1411,14 @@ workspace_mode = "directory"
                     .starts_with("saved.toml.migrated.")
             }));
 
-            profile.account_id = crate::config::AccountId::new("deepseek").unwrap();
+            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+                panic!("saved Profile must be Native");
+            };
+            native
+                .route
+                .as_mut()
+                .expect("saved Native route")
+                .account_id = "deepseek".into();
             profile.description = "Repaired after account deletion".into();
             let (_, changed) = restarted
                 .save_user_agent_profile(restarted.read().unwrap().revision, "saved", &profile)
@@ -1384,11 +1436,21 @@ workspace_mode = "directory"
                 .catalog
                 .profiles
                 .iter()
-                .find(|profile| profile.profile_id == "saved")
+                .find(|profile| profile.definition.definition_id == "saved")
                 .unwrap();
-            assert_eq!(saved.account_id, "deepseek");
+            let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+                panic!("repaired Profile must be Native");
+            };
+            assert_eq!(
+                native
+                    .route
+                    .as_ref()
+                    .expect("repaired Native route")
+                    .account_id,
+                "deepseek"
+            );
             assert_eq!(saved.enabled, enabled);
-            assert_eq!(saved.description, profile.description);
+            assert_eq!(saved.definition.description, profile.description);
         }
     }
 
@@ -1645,7 +1707,7 @@ cwd = "sub/dir"
     }
 
     #[test]
-    fn schema_30_mcp_migration_recovers_idempotently_after_interrupted_commit() {
+    fn schema_30_mcp_and_v1_profile_migration_recovers_idempotently_after_interrupted_commit() {
         let (_directory, store) = fixture();
         let paths = store.paths();
         let mut table: toml::Table =
@@ -1663,6 +1725,15 @@ url = "https://example.com/mcp"
         table.insert("mcp".into(), mcp_table);
         let v30_bytes = toml::to_string_pretty(&table).unwrap().into_bytes();
         fs::write(paths.config_file(), &v30_bytes).unwrap();
+
+        let profile_path = paths.agents_dir().join("saved.toml");
+        let profile_v1 = format!(
+            "schema_version = 1\n{}",
+            IMPORT
+                .replace("provider =", "account_id =")
+                .replace("model =", "model_id =")
+        );
+        fs::write(&profile_path, profile_v1).unwrap();
 
         let credentials = MemoryCredentialStore::default();
         let writes = std::cell::Cell::new(0usize);
@@ -1687,7 +1758,38 @@ url = "https://example.com/mcp"
         let snapshot = catalog
             .read_catalog(paths, &recovered.models, &pl_protocol::McpScope::Host)
             .unwrap();
-        assert!(snapshot.entries.iter().any(|e| e.id == "alpha"));
+        let mcp_document = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.id == "alpha")
+            .and_then(|entry| entry.document.as_ref())
+            .expect("migrated server must retain its document identity");
+
+        let profile_bytes = fs::read_to_string(&profile_path).unwrap();
+        let loaded_profile = load_profile(&profile_path, &profile_bytes).unwrap();
+        assert_eq!(loaded_profile.source_version, 2);
+        assert!(!loaded_profile.migrated);
+        let profile = loaded_profile.document.into_profile().unwrap();
+        assert!(!profile.enabled);
+        let pl_protocol::AgentBinding::Native(native) = profile.binding else {
+            panic!("migrated Profile must retain its Native binding");
+        };
+        let route = native.route.unwrap();
+        assert_eq!(route.account_id, "deepseek");
+        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(
+            native.system_instructions.as_deref(),
+            Some("Saved instructions")
+        );
+
+        let main_bytes = fs::read(paths.config_file()).unwrap();
+        let mcp_path = crate::config::resolve_document_path(paths, mcp_document).unwrap();
+        let mcp_bytes = fs::read(&mcp_path).unwrap();
+        assert_eq!(store.load_for_startup().unwrap(), recovered);
+        assert_eq!(fs::read(paths.config_file()).unwrap(), main_bytes);
+        assert_eq!(fs::read_to_string(profile_path).unwrap(), profile_bytes);
+        assert_eq!(fs::read(mcp_path).unwrap(), mcp_bytes);
+        assert!(!operation_dir(paths).exists());
     }
 
     #[test]

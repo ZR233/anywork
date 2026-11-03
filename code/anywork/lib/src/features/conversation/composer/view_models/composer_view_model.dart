@@ -183,8 +183,8 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final metadata = ref.watch(threadMetadataStoreProvider(threadId));
     final attachments = ref.watch(attachmentDraftsProvider);
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final thread = metadata.frame?.thread;
-    final workspaceId = thread?.workspaceId;
+    final row = metadata.frame?.row;
+    final workspaceId = row?.workspaceId;
     // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
       recovery,
@@ -204,7 +204,7 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final commandBoardState = _observe(lifecycle, client.threadCommands.source);
     // 根可见子任务待决交互按宿主借用已安装的领域镜像；镜像由 Client 的主题
     // 需求创建，非宿主或未准备页面不观察、不产生第二事实源。
-    final childStore = (thread?.isRoot ?? false)
+    final childStore = (row?.isRootRow ?? false)
         ? client.existingChildInteractions(threadId)
         : null;
     final childInteractions = childStore == null
@@ -217,14 +217,17 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     final agents =
         ref.watch(projectStoreProvider).agents?.values ??
         const <StudioAgentView>[];
-    final children = AgentDirectoryQueries.forRoot(
-      rootThreadId: (thread?.isRoot ?? false) ? threadId : null,
+    final rootSessionId = switch (row) {
+      final value? when value.isRootRow => value.sessionId,
+      _ => null,
+    };
+    final children = AgentDirectoryQueries.forSession(
+      sessionId: rootSessionId,
       agents: agents,
-      threads: [?thread],
     );
     final storage = session.storage;
     return ComposerDockViewState(
-      thread: thread,
+      row: row,
       hasSnapshot: session.hasSnapshot,
       revision: session.revision,
       composer: draft,
@@ -240,10 +243,10 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       saveBlocked:
           storage != null && (storage.hasFault || storage.resumeRequired),
       recoveryIssue: recoveryBlocker,
-      // 目录 thread 与已加载 canonical workspace.thread 任一 closing/closed
+      // 目录行与已加载 canonical workspace.thread 任一 closing/closed
       // 都不显示执行入口；这是纯投影，事实源仍是两个 canonical 观察。
       executionClosed:
-          (thread?.status.blocksNewExecution ?? false) ||
+          (row?.status.blocksNewExecution ?? false) ||
           (session.workspace?.thread.status.blocksNewExecution ?? false),
       // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
       // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
@@ -261,10 +264,7 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
         for (final agent in children)
           agent.threadId: _childSourceLabel(
             agent,
-            ref
-                .watch(threadMetadataStoreProvider(agent.threadId))
-                .frame
-                ?.thread,
+            ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.row,
           ),
       },
       modelRoute: canonicalRoute,
@@ -400,8 +400,8 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       .removeAttachment(draftId);
 }
 
-String _childSourceLabel(StudioAgentView agent, StudioThread? thread) {
-  final title = thread?.title.trim() ?? '';
+String _childSourceLabel(StudioAgentView agent, SessionDirectoryRow? row) {
+  final title = row?.title.trim() ?? '';
   if (title.isNotEmpty) return title;
   final task = agent.task.trim();
   if (task.isNotEmpty) return task;

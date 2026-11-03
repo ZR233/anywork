@@ -228,8 +228,10 @@ void main() {
             ),
           );
 
-      final thread = StudioThread(
-        id: 'thread-main',
+      final row = SessionDirectoryRow(
+        sessionId: 'session-main',
+        agentId: 'agent-main',
+        threadId: 'thread-main',
         workspaceId: 'proj-main',
         title: 'Main Thread',
         mode: ThreadModeId.simple,
@@ -253,7 +255,7 @@ void main() {
                   width: 1000,
                   child: ThreadStatusBar(
                     threadId: 'thread-main',
-                    thread: thread,
+                    row: row,
                     accounts: const [],
                     lspServers: const [],
                     activeMcpServers: const ['postgres_prod', 'dcgm_metrics'],

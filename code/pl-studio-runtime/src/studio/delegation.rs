@@ -76,6 +76,32 @@ pub(crate) fn resolve_child_route(
     )
 }
 
+pub(crate) fn resolve_current_child_route(
+    config: &crate::StudioConfig,
+    profile: &pl_protocol::AgentProfile,
+) -> crate::Result<pl_model::config::ResolvedModelRoute> {
+    let pl_protocol::AgentBinding::Native(native) = &profile.binding else {
+        return Err(crate::PureError::ConfigError(
+            "ACP execution is not supported before S4".into(),
+        ));
+    };
+    let route = native.route.as_ref().ok_or_else(|| {
+        crate::PureError::ConfigError("child Native Profile has no model route".into())
+    })?;
+    resolve_child_selection(
+        config,
+        pl_model::config::AgentRoleId::new(profile.definition.definition_id.clone())?,
+        &pl_model::config::ModelRouteConfig {
+            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
+            model_id: route.model_id.clone(),
+            effort: route
+                .effort
+                .clone()
+                .map(pl_model::config::ReasoningEffort::new),
+        },
+    )
+}
+
 pub(crate) fn resolve_child_selection(
     config: &crate::StudioConfig,
     role: pl_model::config::AgentRoleId,

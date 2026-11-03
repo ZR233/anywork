@@ -14,6 +14,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
@@ -1100,22 +1101,22 @@ sealed class BridgeThreadDirectoryPage with _$BridgeThreadDirectoryPage {
 
 /// Thread directory 分页窗口页数据（按 `updatedAt` 倒序、id 倒序的 keyset cursor）。
 class BridgeThreadDirectoryPageData {
-  final List<BridgeThread> threads;
+  final List<BridgeSessionDirectoryRow> rows;
 
   /// `None` 表示没有更旧的页。
   final String? nextCursor;
 
-  const BridgeThreadDirectoryPageData({required this.threads, this.nextCursor});
+  const BridgeThreadDirectoryPageData({required this.rows, this.nextCursor});
 
   @override
-  int get hashCode => threads.hashCode ^ nextCursor.hashCode;
+  int get hashCode => rows.hashCode ^ nextCursor.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeThreadDirectoryPageData &&
           runtimeType == other.runtimeType &&
-          threads == other.threads &&
+          rows == other.rows &&
           nextCursor == other.nextCursor;
 }
 

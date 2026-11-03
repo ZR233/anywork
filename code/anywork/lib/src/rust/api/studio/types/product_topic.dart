@@ -19,6 +19,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'response.dart';
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 import 'updater.dart';

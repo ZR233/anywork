@@ -203,8 +203,8 @@ impl StudioStore {
                         |operation| operation.thread_ids.iter().any(|member| member == id)
                             || self
                                 .catalog()
-                                .get(id)
-                                .is_some_and(|record| record.root_thread_id == operation.root_id)
+                                .agent_by_thread(id)
+                                .is_some_and(|agent| agent.session_id == operation.root_id)
                     ),
                 "Thread permanent deletion has sealed execution"
             );

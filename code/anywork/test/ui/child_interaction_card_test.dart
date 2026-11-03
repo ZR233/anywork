@@ -347,12 +347,10 @@ List<StudioAgentView> _members() => [
     (_staleChild, 'Stale member'),
   ])
     StudioAgentView(
-      id: entry.$1,
+      agentId: entry.$1,
+      sessionId: _rootId,
+      parentAgentId: _rootId,
       threadId: entry.$1,
-      path: 'root/${entry.$1}',
-      parentPath: 'root',
-      rootThreadId: _rootId,
-      depth: 1,
       role: 'executor',
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
@@ -361,12 +359,10 @@ List<StudioAgentView> _members() => [
       updatedAt: DateTime.utc(2026, 1, 1),
     ),
   StudioAgentView(
-    id: _alternateChild,
+    agentId: _alternateChild,
+    sessionId: 'thread-alt',
+    parentAgentId: 'thread-alt',
     threadId: _alternateChild,
-    path: 'root-alt/member',
-    parentPath: 'root-alt',
-    rootThreadId: 'thread-alt',
-    depth: 1,
     role: 'executor',
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
@@ -962,8 +958,8 @@ void main() {
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5)))
           .frame
-          ?.thread
-          ?.id,
+          ?.row
+          ?.threadId,
       hostB,
     );
     await _pump(tester, fixture);
@@ -1104,8 +1100,8 @@ void main() {
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5)))
           .frame
-          ?.thread
-          ?.id,
+          ?.row
+          ?.threadId,
       hostB,
     );
     await _pump(tester, fixture);

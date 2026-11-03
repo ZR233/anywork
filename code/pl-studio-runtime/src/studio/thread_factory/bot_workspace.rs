@@ -276,7 +276,11 @@ mod migration_tests {
                 closed: false,
             },
         );
-        delta.thread_upserts.push(root.clone());
+        let (root_session, root_agent) = crate::studio::records::directory_facts_from_thread(&root);
+        delta
+            .session_upserts
+            .push(root_session.expect("root session facts"));
+        delta.agent_upserts.push(root_agent);
         store.persist_directory_summaries(&delta).await?;
         let fixture = close_factory(&store)?;
         let factory = &fixture.factory;
@@ -303,27 +307,30 @@ mod migration_tests {
         let route = config
             .models
             .resolve_route(crate::config::root_agent_route_id(), selector)?;
+        let frozen_profile = pl_protocol::AgentProfileSnapshot {
+            profile_id: "migration-child".into(),
+            display_name: "Migration child".into(),
+            description: "Workspace migration admission".into(),
+            when_to_use: "migration fault fixture".into(),
+            system_instructions: "Retain original workspace evidence".into(),
+            account_id: selector.account_id.as_str().into(),
+            model_id: selector.model_id.clone(),
+            effort: selector
+                .effort
+                .as_ref()
+                .map(|effort| effort.as_str().into()),
+            source: "fixture".into(),
+            revision: "1".into(),
+            content_hash: "fixture-profile".into(),
+            system: false,
+            enabled: true,
+            workspace_mode: AgentWorkspaceMode::Worktree,
+        };
         let mut profile = crate::config::ResolvedAgentProfile {
             revision: 1,
-            profile: pl_protocol::AgentProfileSnapshot {
-                profile_id: "migration-child".into(),
-                display_name: "Migration child".into(),
-                description: "Workspace migration admission".into(),
-                when_to_use: "migration fault fixture".into(),
-                system_instructions: "Retain original workspace evidence".into(),
-                account_id: selector.account_id.as_str().into(),
-                model_id: selector.model_id.clone(),
-                effort: selector
-                    .effort
-                    .as_ref()
-                    .map(|effort| effort.as_str().into()),
-                source: "fixture".into(),
-                revision: "1".into(),
-                content_hash: "fixture-profile".into(),
-                system: false,
-                enabled: true,
-                workspace_mode: AgentWorkspaceMode::Worktree,
-            },
+            definition: frozen_profile.definition(),
+            binding: frozen_profile.native_binding(),
+            profile: frozen_profile,
             config: config.clone(),
             route,
         };
@@ -417,7 +424,7 @@ mod migration_tests {
             .services
             .product_events
             .commit_directory(crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![target.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&target).1],
                 ..Default::default()
             })
             .await?;
@@ -449,7 +456,7 @@ mod migration_tests {
             .services
             .product_events
             .commit_directory(crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![other.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&other).1],
                 ..Default::default()
             })
             .await?;
@@ -493,7 +500,7 @@ mod migration_tests {
         old.role = profile.profile.profile_id.clone();
         store
             .persist_directory_summaries(&crate::studio::store::directory::DirectoryDelta {
-                thread_upserts: vec![old.clone()],
+                agent_upserts: vec![crate::studio::records::directory_facts_from_thread(&old).1],
                 ..Default::default()
             })
             .await?;
@@ -544,10 +551,10 @@ mod migration_tests {
                 factory,
                 ThreadPreparation {
                     workspace_owner: Default::default(),
-                    identity: ThreadActivation {
-                        id: old.id.clone(),
-                        parent_id: old.parent_thread_id.clone()
-                    },
+                    identity: ThreadActivation::native_test(
+                        &old.id,
+                        old.parent_thread_id.as_deref(),
+                    ),
                     cancellation: Default::default(),
                     agent_controls: vec![],
                     delegation: None

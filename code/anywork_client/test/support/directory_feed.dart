@@ -5,22 +5,27 @@ import 'package:anywork_client/studio_client.dart';
 mixin DirectoryFeedFixture on StudioTransport {
   String directoryOwnerEpoch = 'test-runtime';
   int directoryRevision = 1;
-  final Map<String, StudioThread?> directoryThreads = {};
+  final Map<String, SessionDirectoryRow?> directoryThreads = {};
   final List<DirectoryQuery> openedDirectoryQueries = [];
   final Map<String, List<_MetadataHandle>> _metadataHandles = {};
   final List<_ThreadsHandle> _threadsHandles = [];
   Object? directoryCloseFailure;
   int directoryCloseCalls = 0;
 
-  void seedThread(StudioThread thread) => directoryThreads[thread.id] = thread;
+  void seedThread(SessionDirectoryRow row) =>
+      directoryThreads[row.threadId] = row;
 
-  void emitThread(StudioThread? thread, String id, {required int revision}) {
+  void emitThread(
+    SessionDirectoryRow? row,
+    String id, {
+    required int revision,
+  }) {
     directoryRevision = revision;
-    directoryThreads[id] = thread;
+    directoryThreads[id] = row;
     final frame = ThreadMetadataFrame(
       threadId: id,
       stamp: _stamp(revision),
-      thread: thread,
+      row: row,
     );
     for (final handle in _metadataHandles[id] ?? const []) {
       handle.add(frame);
@@ -35,7 +40,7 @@ mixin DirectoryFeedFixture on StudioTransport {
       ThreadMetadataFrame(
         threadId: threadId,
         stamp: _stamp(directoryRevision),
-        thread: directoryThreads[threadId],
+        row: directoryThreads[threadId],
       ),
     );
     return handle;
@@ -54,8 +59,8 @@ mixin DirectoryFeedFixture on StudioTransport {
         query: query,
         window: window,
         stamp: _stamp(directoryRevision),
-        threads: directoryThreads.values
-            .whereType<StudioThread>()
+        rows: directoryThreads.values
+            .whereType<SessionDirectoryRow>()
             .take(window.limit)
             .toList(),
       ),

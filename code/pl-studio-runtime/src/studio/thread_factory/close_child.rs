@@ -217,9 +217,16 @@ impl StudioThreadFactory {
             } else {
                 pl_protocol::ThreadStatus::Closing
             };
+            let (_, agent) = self
+                .services
+                .product_events
+                .directory_facts(&thread.id)
+                .context("closing child is missing from the directory owner")?;
+            let mut projected_agent = agent.clone();
+            projected_agent.status = projected.status;
             self.services
                 .product_events
-                .commit_thread_update(baseline, projected)
+                .commit_agent_update(agent, projected_agent)
                 .await?;
             Ok::<_, anyhow::Error>(())
         }

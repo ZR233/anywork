@@ -1,6 +1,7 @@
 //! Shared physical tool assembly for new roots, children and cold restoration.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
+use super::mcp::ThreadMcpPreparation;
 use crate::resource_store::FileResourceStore;
 use crate::studio::WorkspaceRecord;
 use crate::thread_assembler::{
@@ -380,15 +381,15 @@ impl StudioThreadFactory {
         }
         if config.runtime.tool_capabilities.mcp {
             tools = tools.with_mcp(
-                self.prepare_thread_mcp(
+                self.prepare_thread_mcp(ThreadMcpPreparation {
                     thread_id,
                     lifetime,
                     project,
-                    &workspace,
-                    remote.as_ref(),
-                    &preparation,
+                    workspace: &workspace,
+                    remote: remote.as_ref(),
+                    preparation: &preparation,
                     cancellation,
-                )
+                })
                 .await?,
             )?;
         }

@@ -290,7 +290,7 @@ async fn grouped_and_flat_v2_preserve_sqlite_families_and_share_resources() -> R
         assert_eq!(
             store
                 .catalog()
-                .get(THREAD)
+                .get_session(THREAD)
                 .context("retained catalog")?
                 .last_user_message_at,
             None
@@ -579,7 +579,8 @@ async fn fresh_and_cache_only_v2_homes_create_complete_current_installations() -
         prepare(&paths).await?;
         prepare(&paths).await?;
         let store = StudioStore::prepare_database(&paths.database()).await?;
-        assert!(store.catalog().entries().is_empty());
+        assert!(store.catalog().sessions().is_empty());
+        assert!(store.catalog().agents().is_empty());
         assert!(paths.calls_database().exists());
         assert!(paths.database().exists());
         assert!(paths.layout_file().exists());
@@ -1249,10 +1250,11 @@ async fn proven_bot_root_and_child_relocate_only_typed_fields_on_demand() -> Res
         new_root
     );
     for (thread, child) in [(THREAD, false), ("bot-child", true)] {
+        // 工作区路径是会话级目录事实；两名成员共用同一会话记录。
         assert_eq!(
             store
                 .catalog()
-                .get(thread)
+                .get_session(THREAD)
                 .context("catalog")?
                 .workspace_path,
             new_root

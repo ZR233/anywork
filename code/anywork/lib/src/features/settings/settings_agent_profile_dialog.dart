@@ -35,24 +35,31 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
   void initState() {
     super.initState();
     final profile = widget.profile;
-    _id = TextEditingController(text: profile?.id);
-    _displayName = TextEditingController(text: profile?.displayName);
-    _description = TextEditingController(text: profile?.description);
-    _whenToUse = TextEditingController(text: profile?.whenToUse);
-    _instructions = TextEditingController(text: profile?.systemInstructions);
+    _id = TextEditingController(text: profile?.definition.definitionId);
+    _displayName = TextEditingController(text: profile?.definition.displayName);
+    _description = TextEditingController(text: profile?.definition.description);
+    _whenToUse = TextEditingController(text: profile?.definition.whenToUse);
     if (profile == null) {
       final route = ModelRouteQueries.newAgentProfileRoute(widget.accounts);
       _accountId = route.accountId;
       _model = route.modelId;
       _effort = route.effort;
     } else {
+      final binding = profile.binding;
+      if (binding is! NativeAgentBindingView ||
+          binding.route == null ||
+          binding.systemInstructions == null) {
+        throw ArgumentError('Only executable Native Profiles can be edited');
+      }
+      _instructions = TextEditingController(text: binding.systemInstructions);
       // 保留 canonical account/model/effort；不可解析时只在展示层标记
       // unavailable，不静默改为 options.first 或模型默认 effort，也不阻断
       // 其他字段的保存。
-      _accountId = profile.accountId;
-      _model = profile.modelId;
-      _effort = profile.effort;
+      _accountId = binding.route!.accountId;
+      _model = binding.route!.modelId;
+      _effort = binding.route!.effort;
     }
+    if (profile == null) _instructions = TextEditingController();
     _enabled = profile?.enabled ?? true;
     _workspaceMode = profile?.workspaceMode ?? AgentWorkspaceMode.directory;
   }
@@ -292,14 +299,23 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
     Navigator.pop(
       context,
       AgentProfileDraft(
-        id: _id.text.trim(),
-        displayName: _displayName.text.trim(),
-        description: _description.text.trim(),
-        whenToUse: _whenToUse.text.trim(),
-        systemInstructions: _instructions.text.trim(),
-        accountId: _accountId,
-        modelId: _model,
-        effort: _effort,
+        definition: AgentDefinitionView(
+          definitionId: _id.text.trim(),
+          displayName: _displayName.text.trim(),
+          description: _description.text.trim(),
+          whenToUse: _whenToUse.text.trim(),
+          source: widget.profile?.definition.source ?? '',
+          revision: widget.profile?.definition.revision ?? '',
+          contentHash: widget.profile?.definition.contentHash ?? '',
+        ),
+        binding: NativeAgentBindingView(
+          route: NewThreadModelRoute(
+            accountId: _accountId,
+            modelId: _model,
+            effort: _effort,
+          ),
+          systemInstructions: _instructions.text.trim(),
+        ),
         enabled: _enabled,
         workspaceMode: _workspaceMode,
       ),

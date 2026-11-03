@@ -24,15 +24,17 @@ final List<StudioProject> sidebarPreviewProjects = List.unmodifiable([
   ),
 ]);
 
-StudioThread sidebarPreviewThread({
+SessionDirectoryRow sidebarPreviewThread({
   required String id,
   required String title,
   required String workspaceId,
   ThreadStatusView status = ThreadStatusView.idle,
   bool archived = false,
   ThreadWorkspaceMode workspaceMode = ThreadWorkspaceMode.local,
-}) => StudioThread(
-  id: id,
+}) => SessionDirectoryRow(
+  sessionId: id,
+  agentId: id,
+  threadId: id,
   workspaceId: workspaceId,
   title: title,
   mode: ThreadModeId.simple,
@@ -45,7 +47,7 @@ StudioThread sidebarPreviewThread({
   workspacePath: '/work/pure-lang-pure',
 );
 
-final List<StudioThread> _localThreads = List.unmodifiable([
+final List<SessionDirectoryRow> _localThreads = List.unmodifiable([
   sidebarPreviewThread(
     id: 'thread-active',
     title: '实现侧栏搜索与归档交互',
@@ -76,12 +78,12 @@ final SidebarData sidebarPreviewData = SidebarData(
   projects: sidebarPreviewProjects,
   windows: {
     'project-local': SidebarWindow(
-      threads: _localThreads,
+      rows: _localThreads,
       loaded: true,
       hasMore: true,
     ),
     'project-ssh': SidebarWindow(
-      threads: [
+      rows: [
         sidebarPreviewThread(
           id: 'thread-ssh',
           title: '远端 GTK 环境检查',
@@ -92,7 +94,7 @@ final SidebarData sidebarPreviewData = SidebarData(
       loaded: true,
     ),
     'standalone': SidebarWindow(
-      threads: [
+      rows: [
         sidebarPreviewThread(
           id: 'thread-standalone',
           title: '查询济南今日天气',

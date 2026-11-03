@@ -22,7 +22,7 @@ pub struct McpFileV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpFileSpecV1 {
-    Server(McpServerConfig),
+    Server(Box<McpServerConfig>),
     Builtin {
         enabled: bool,
         builtin_id: String,
@@ -107,7 +107,7 @@ impl McpFileV1 {
         Self {
             schema_version: MCP_DOCUMENT_SCHEMA_VERSION,
             id: id.into(),
-            spec: McpFileSpecV1::Server(config),
+            spec: McpFileSpecV1::Server(Box::new(config)),
         }
     }
 
@@ -258,7 +258,7 @@ impl McpFileV1 {
                 Self {
                     schema_version: MCP_DOCUMENT_SCHEMA_VERSION,
                     id,
-                    spec: McpFileSpecV1::Server(config),
+                    spec: McpFileSpecV1::Server(Box::new(config)),
                 }
             }
             "builtin" => {

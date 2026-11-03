@@ -140,7 +140,7 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
 class SidebarThreadMenu extends StatefulWidget {
   const SidebarThreadMenu({
     super.key,
-    required this.thread,
+    required this.row,
     required this.canRetryRecovery,
     this.recoveryIssueId,
     this.recoveryIssue,
@@ -151,7 +151,7 @@ class SidebarThreadMenu extends StatefulWidget {
     required this.onAction,
   });
 
-  final StudioThread thread;
+  final SessionDirectoryRow row;
   final bool canRetryRecovery;
   final String? recoveryIssueId;
   final StudioRecoveryIssue? recoveryIssue;
@@ -190,14 +190,14 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
 
   @override
   Widget build(BuildContext context) {
-    final thread = widget.thread;
+    final row = widget.row;
     final blockReason = widget.recoveryIssue == null
         ? context.l10n.composerBlockedWorkspace
         : context.recoveryIssueLabel(widget.recoveryIssue!);
     return SizedBox.square(
       dimension: widget.minTarget,
       child: MenuAnchor(
-        key: StudioDriverKeys.threadMenu(thread.id),
+        key: StudioDriverKeys.threadMenu(row.threadId),
         controller: _controller,
         childFocusNode: _triggerFocus,
         // 受控紧凑宽度需要约束横轴；默认 UnconstrainedBox 会让长路径撑开内容。
@@ -215,7 +215,7 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
               child: Text(context.l10n.runtimeFatalRetry),
             ),
           MenuItemButton(
-            key: StudioDriverKeys.renameThread(thread.id),
+            key: StudioDriverKeys.renameThread(row.threadId),
             overflowAxis: Axis.vertical,
             onPressed: widget.blocked
                 ? null
@@ -224,13 +224,13 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
           ),
           MenuItemButton(
             // 归档不依赖工作区访问状态；物理工作树检查与归档相互独立。
-            key: StudioDriverKeys.archiveThread(thread.id),
+            key: StudioDriverKeys.archiveThread(row.threadId),
             overflowAxis: Axis.vertical,
             onPressed: () => _select(SidebarThreadAction.archive),
             child: Text(context.l10n.sidebarArchiveSession),
           ),
           MenuItemButton(
-            key: StudioDriverKeys.deleteThread(thread.id),
+            key: StudioDriverKeys.deleteThread(row.threadId),
             leadingIcon: const Icon(Icons.delete_outline, size: 18),
             style: ButtonStyle(
               foregroundColor: WidgetStatePropertyAll(context.colors.error),
@@ -240,20 +240,20 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
             child: Text(context.l10n.sidebarDeleteSession),
           ),
           MenuItemButton(
-            key: StudioDriverKeys.copyThreadWorkspace(thread.id),
+            key: StudioDriverKeys.copyThreadWorkspace(row.threadId),
             overflowAxis: Axis.vertical,
-            onPressed: thread.workspacePath.isEmpty
+            onPressed: row.workspacePath.isEmpty
                 ? null
                 : () => _select(SidebarThreadAction.copyWorkspace),
             child: Text(context.l10n.sidebarCopyPath),
           ),
           const Divider(key: ValueKey('thread-menu-workspace'), height: 1),
           SubmenuButton(
-            key: StudioDriverKeys.openThreadWorkspace(thread.id),
+            key: StudioDriverKeys.openThreadWorkspace(row.threadId),
             leadingIcon: const Icon(Icons.open_in_new, size: 18),
             menuChildren: [
               _workspaceMenuEntry(
-                key: StudioDriverKeys.openThreadVsCode(thread.id),
+                key: StudioDriverKeys.openThreadVsCode(row.threadId),
                 icon: HostAppArtwork(
                   bytes: widget.hostApps.vsCodeIcon,
                   fallback: Icons.code,
@@ -263,14 +263,14 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
                 available:
                     widget.hostApps.vsCode &&
                     !widget.blocked &&
-                    thread.workspacePath.isNotEmpty,
+                    row.workspacePath.isNotEmpty,
                 unavailableReason: widget.blocked
                     ? blockReason
                     : context.l10n.sessionVsCodeUnavailable,
                 onActivated: () => _select(SidebarThreadAction.openVsCode),
               ),
               _workspaceMenuEntry(
-                key: StudioDriverKeys.openThreadZed(thread.id),
+                key: StudioDriverKeys.openThreadZed(row.threadId),
                 icon: HostAppArtwork(
                   bytes: widget.hostApps.zedIcon,
                   fallback: Icons.code,
@@ -280,14 +280,14 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
                 available:
                     widget.hostApps.zed &&
                     !widget.blocked &&
-                    thread.workspacePath.isNotEmpty,
+                    row.workspacePath.isNotEmpty,
                 unavailableReason: widget.blocked
                     ? blockReason
                     : context.l10n.sessionZedUnavailable,
                 onActivated: () => _select(SidebarThreadAction.openZed),
               ),
               _workspaceMenuEntry(
-                key: StudioDriverKeys.openThreadTerminal(thread.id),
+                key: StudioDriverKeys.openThreadTerminal(row.threadId),
                 icon: HostAppArtwork(
                   bytes: widget.hostApps.terminalIcon,
                   fallback: Icons.terminal,
@@ -297,7 +297,7 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
                 available:
                     widget.hostApps.terminal &&
                     !widget.blocked &&
-                    thread.workspacePath.isNotEmpty,
+                    row.workspacePath.isNotEmpty,
                 unavailableReason: widget.blocked
                     ? blockReason
                     : widget.hostApps.terminalUnavailableReason,

@@ -52,12 +52,12 @@ class StudioSidebar extends StatefulWidget {
   final VoidCallback? onAddProject;
   final ValueChanged<StudioProject> onSelectProject;
   final ValueChanged<StudioProject> onNewProjectSession;
-  final ValueChanged<StudioThread> onSelectThread;
+  final ValueChanged<SessionDirectoryRow> onSelectThread;
   final void Function(StudioProject project, SidebarProjectAction action)
   onProjectAction;
   final void Function(
     StudioProject project,
-    StudioThread thread,
+    SessionDirectoryRow row,
     SidebarThreadAction action,
   )
   onThreadAction;
@@ -156,12 +156,12 @@ class _StudioSidebarState extends State<StudioSidebar> {
                 window?.loaded != true ||
                 window?.loading == true ||
                 window?.error != null ||
-                window!.threads.isNotEmpty ||
+                window!.rows.isNotEmpty ||
                 (pinsExpected &&
                     (pinnedWindow?.loaded != true ||
                         pinnedWindow?.loading == true ||
                         pinnedWindow?.error != null ||
-                        pinnedWindow!.threads.isNotEmpty))) {
+                        pinnedWindow!.rows.isNotEmpty))) {
               return true;
             }
             return !_archived &&
@@ -353,10 +353,10 @@ class _StudioSidebarState extends State<StudioSidebar> {
   Widget _threads(StudioProject project) {
     final window = widget.data.windows[project.id] ?? SidebarWindow();
     final pinnedWindow = widget.data.pinnedWindows[project.id];
-    final pinnedRows = pinnedWindow?.threads ?? const <StudioThread>[];
+    final pinnedRows = pinnedWindow?.rows ?? const <SessionDirectoryRow>[];
     final showOrdinaryEmpty =
         pinnedWindow == null ||
-        (pinnedWindow.loaded && pinnedWindow.threads.isEmpty);
+        (pinnedWindow.loaded && pinnedWindow.rows.isEmpty);
     // 第一列展开箭头宽度为 28px（触控 44px）：
     // 竖向引导线居中在第一列中心 x = 14px（触控 22px），
     // 会话行卡片从 x = 20px（触控 36px）起，配合 8px 左内边距使
@@ -377,20 +377,20 @@ class _StudioSidebarState extends State<StudioSidebar> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final thread in pinnedRows)
+              for (final row in pinnedRows)
                 SidebarThreadRow(
-                  key: ValueKey('sidebar-thread-${thread.id}'),
-                  thread: thread,
+                  key: ValueKey('sidebar-thread-${row.threadId}'),
+                  row: row,
                   project: project,
-                  selected: widget.data.selectedThreadId == thread.id,
-                  pinned: widget.data.pinnedThreadIds.contains(thread.id),
+                  selected: widget.data.selectedThreadId == row.threadId,
+                  pinned: widget.data.pinnedThreadIds.contains(row.threadId),
                   touchMode: _touchInput,
                   archived: _archived,
-                  recoveryIssue: widget.data.threadRecoveryIssues[thread.id],
+                  recoveryIssue: widget.data.threadRecoveryIssues[row.threadId],
                   hostApps: widget.hostApps,
-                  onSelect: () => widget.onSelectThread(thread),
+                  onSelect: () => widget.onSelectThread(row),
                   onAction: (action) =>
-                      widget.onThreadAction(project, thread, action),
+                      widget.onThreadAction(project, row, action),
                 ),
               if (pinnedWindow != null)
                 SidebarPageStatus(
@@ -402,20 +402,20 @@ class _StudioSidebarState extends State<StudioSidebar> {
                       ? null
                       : () => widget.onRetryPinned!(project.id),
                 ),
-              for (final thread in window.threads)
+              for (final row in window.rows)
                 SidebarThreadRow(
-                  key: ValueKey('sidebar-thread-${thread.id}'),
-                  thread: thread,
+                  key: ValueKey('sidebar-thread-${row.threadId}'),
+                  row: row,
                   project: project,
-                  selected: widget.data.selectedThreadId == thread.id,
-                  pinned: widget.data.pinnedThreadIds.contains(thread.id),
+                  selected: widget.data.selectedThreadId == row.threadId,
+                  pinned: widget.data.pinnedThreadIds.contains(row.threadId),
                   touchMode: _touchInput,
                   archived: _archived,
-                  recoveryIssue: widget.data.threadRecoveryIssues[thread.id],
+                  recoveryIssue: widget.data.threadRecoveryIssues[row.threadId],
                   hostApps: widget.hostApps,
-                  onSelect: () => widget.onSelectThread(thread),
+                  onSelect: () => widget.onSelectThread(row),
                   onAction: (action) =>
-                      widget.onThreadAction(project, thread, action),
+                      widget.onThreadAction(project, row, action),
                 ),
               SidebarPageStatus(
                 workspaceId: project.id,

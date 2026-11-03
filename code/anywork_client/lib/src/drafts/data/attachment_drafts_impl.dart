@@ -672,15 +672,14 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   }
 
   bool _threadTargetCurrent(String threadId) {
-    final thread = _lookupThread(threadId);
-    if (thread == null) {
-      final session = _dependencies.conversations.session(threadId).state;
-      return session.hasSnapshot && session.workspace?.thread.isRoot == true;
-    }
-    if (!thread.isRoot) return false;
+    final row = _dependencies.conversations
+        .session(threadId)
+        .state
+        .directoryRow;
+    if (row == null || row.isChildRow) return false;
     // faulted 可能只是模型或工具输入驱动失败，后端续接会重新启用驱动并创建新的
     // 执行轮次；只有类型化存储事实明确阻塞准入时，才沿用存储恢复闸门。
-    return switch (thread.status) {
+    return switch (row.status) {
       ThreadStatusView.closing || ThreadStatusView.closed => false,
       ThreadStatusView.faulted =>
         _dependencies.conversations
@@ -691,14 +690,6 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
             true,
       _ => true,
     };
-  }
-
-  StudioThread? _lookupThread(String threadId) {
-    return _dependencies.conversations
-        .session(threadId)
-        .state
-        .workspace
-        ?.thread;
   }
 
   bool _newThreadCurrent(String workspaceId) {

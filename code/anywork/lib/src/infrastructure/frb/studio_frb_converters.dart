@@ -9,7 +9,7 @@ ProductTopicEventPayload _productPayloadFromFrb(
     frb.BridgeProductEventPayload_ThreadDirectoryChanged(:final field0) =>
       ThreadDirectoryChangedPayload(
         revision: field0.revision.toInt(),
-        upserted: field0.upserted.map(_threadFromFrb).toList(),
+        upserted: field0.upserted.map(_sessionDirectoryRowFromFrb).toList(),
         removed: field0.removed.toList(),
       ),
     frb.BridgeProductEventPayload_AgentDirectoryChanged(:final field0) =>
@@ -289,11 +289,10 @@ StudioAgentView _agentDirectoryEntryFromFrb(
   frb.BridgeAgentDirectoryEntryDto agent,
 ) {
   return StudioAgentView(
-    id: agent.id,
+    agentId: agent.agentId,
+    sessionId: agent.sessionId,
+    parentAgentId: agent.parentAgentId,
     threadId: agent.threadId,
-    rootThreadId: agent.rootThreadId,
-    path: agent.path,
-    parentPath: agent.parentPath,
     role: agent.role,
     delegationMode: _delegationModeFromFrb(agent.delegationMode),
     delegationPreference: _delegationPreferenceFromFrb(
@@ -304,7 +303,6 @@ StudioAgentView _agentDirectoryEntryFromFrb(
         : _savedRouteFromFrb(agent.frozenModel!),
     task: agent.task,
     summary: agent.summary,
-    depth: agent.depth,
     state: _agentStateFromFrb(agent.state),
     updatedAt: _dateFromUnix(agent.updatedAt),
     execution: agent.execution == null
@@ -313,6 +311,86 @@ StudioAgentView _agentDirectoryEntryFromFrb(
     canStop: agent.canStop,
     awaitingScheduling: agent.awaitingScheduling,
   );
+}
+
+/// 目录行的 typed 身份转换：root/child 与成员归属只读这里的四元组字段。
+SessionDirectoryRow _sessionDirectoryRowFromFrb(
+  frb.BridgeSessionDirectoryRow value,
+) {
+  return SessionDirectoryRow(
+    sessionId: value.sessionId,
+    agentId: value.agentId,
+    parentAgentId: value.parentAgentId,
+    threadId: value.threadId,
+    workspaceId: value.workspaceId,
+    title: value.title,
+    mode: ThreadModeId.fromId(value.mode),
+    delegationMode: _delegationModeFromFrb(value.delegationMode),
+    delegationPreference: _delegationPreferenceFromFrb(
+      value.delegationPreference,
+    ),
+    workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
+    workspacePath: value.workspacePath,
+    role: value.role,
+    binding: agentBindingFromFrb(value.binding),
+    status: _threadStatusFromFrb(value.status),
+    createdAt: _dateFromUnix(value.createdAt),
+    updatedAt: _dateFromUnix(value.updatedAt),
+    lastUserMessageAt: value.lastUserMessageAt == null
+        ? null
+        : _dateFromUnix(value.lastUserMessageAt!),
+    archived: value.archived,
+  );
+}
+
+AgentBindingView agentBindingFromFrb(frb.BridgeAgentBinding value) {
+  return switch (value) {
+    frb.BridgeAgentBinding_Native(:final route, :final systemInstructions) =>
+      NativeAgentBindingView(
+        route: route == null ? null : _savedRouteFromFrb(route),
+        systemInstructions: systemInstructions,
+      ),
+    frb.BridgeAgentBinding_Acp(:final accountId, :final connectionRevision) =>
+      AcpAgentBindingView(
+        accountId: accountId,
+        connectionRevision: connectionRevision.toInt(),
+      ),
+  };
+}
+
+frb.BridgeAgentBinding agentBindingToFrb(AgentBindingView value) =>
+    switch (value) {
+      NativeAgentBindingView(:final route, :final systemInstructions) =>
+        frb.BridgeAgentBinding.native(
+          route: route == null
+              ? null
+              : frb.BridgeNewThreadModelRoute(
+                  accountId: route.accountId,
+                  modelId: route.modelId,
+                  effort: route.effort,
+                ),
+          systemInstructions: systemInstructions,
+        ),
+      AcpAgentBindingView(:final accountId, :final connectionRevision) =>
+        frb.BridgeAgentBinding.acp(
+          accountId: accountId,
+          connectionRevision: BigInt.from(connectionRevision),
+        ),
+    };
+
+ThreadStatusView _threadStatusFromFrb(frb.BridgeThreadStatus value) {
+  return switch (value) {
+    frb.BridgeThreadStatus.idle => ThreadStatusView.idle,
+    frb.BridgeThreadStatus.queued => ThreadStatusView.queued,
+    frb.BridgeThreadStatus.running => ThreadStatusView.running,
+    frb.BridgeThreadStatus.waitingTool => ThreadStatusView.waitingTool,
+    frb.BridgeThreadStatus.waitingInteraction =>
+      ThreadStatusView.waitingInteraction,
+    frb.BridgeThreadStatus.cancelling => ThreadStatusView.cancelling,
+    frb.BridgeThreadStatus.closing => ThreadStatusView.closing,
+    frb.BridgeThreadStatus.closed => ThreadStatusView.closed,
+    frb.BridgeThreadStatus.faulted => ThreadStatusView.faulted,
+  };
 }
 
 /// 目录行与主会话运行时的执行身份；阶段是规范枚举，不按轮次投影推导。
@@ -813,17 +891,16 @@ PersistenceQueueStateView _persistenceQueueStateFromFrb(
 
 AgentProfileView _agentProfileFromFrb(frb.BridgeAgentProfileDto profile) {
   return AgentProfileView(
-    id: profile.profileId,
-    displayName: profile.displayName,
-    description: profile.description,
-    whenToUse: profile.whenToUse,
-    systemInstructions: profile.systemInstructions,
-    accountId: profile.accountId,
-    modelId: profile.modelId,
-    effort: profile.effort,
-    source: profile.source,
-    revision: profile.revision,
-    contentHash: profile.contentHash,
+    definition: AgentDefinitionView(
+      definitionId: profile.definition.definitionId,
+      displayName: profile.definition.displayName,
+      description: profile.definition.description,
+      whenToUse: profile.definition.whenToUse,
+      source: profile.definition.source,
+      revision: profile.definition.revision,
+      contentHash: profile.definition.contentHash,
+    ),
+    binding: agentBindingFromFrb(profile.binding),
     system: profile.system,
     enabled: profile.enabled,
     workspaceMode: switch (profile.workspaceMode) {
@@ -914,7 +991,7 @@ ThreadDirectoryPage _threadDirectoryPageFromFrb(
     frb.BridgeThreadDirectoryPageData data,
     int revision,
   ) => ThreadDirectoryPage(
-    threads: data.threads.map(_threadFromFrb).toList(),
+    rows: data.rows.map(_sessionDirectoryRowFromFrb).toList(),
     nextCursor: data.nextCursor,
     revision: revision,
   );
@@ -936,7 +1013,7 @@ ThreadDirectoryPage _threadDirectoryPageFromFrb(
     frb.BridgeThreadDirectoryPage_Stopped(:final field0) =>
       _stoppedResource<ThreadDirectoryPage>(field0),
   };
-  return resource.value ?? const ThreadDirectoryPage(threads: []);
+  return resource.value ?? const ThreadDirectoryPage(rows: []);
 }
 
 ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
@@ -966,7 +1043,7 @@ ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
     ownerEpoch: value.stamp.ownerEpoch,
     revision: value.stamp.revision.toInt(),
   ),
-  threads: value.threads.map(_threadFromFrb).toList(),
+  rows: value.rows.map(_sessionDirectoryRowFromFrb).toList(),
   nextCursor: value.nextCursor,
 );
 
@@ -979,7 +1056,7 @@ ThreadMetadataFrame _threadMetadataFrameFromFrb(
     ownerEpoch: value.stamp.ownerEpoch,
     revision: value.stamp.revision.toInt(),
   ),
-  thread: value.thread == null ? null : _threadFromFrb(value.thread!),
+  row: value.row == null ? null : _sessionDirectoryRowFromFrb(value.row!),
 );
 
 AgentDirectoryState _agentDirectoryFromFrb(

@@ -292,18 +292,16 @@ pub struct BridgeFaultedAgent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAgentDirectoryEntryDto {
-    pub id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub parent_agent_id: Option<String>,
     pub thread_id: String,
-    pub root_thread_id: String,
-    pub path: String,
-    pub parent_path: Option<String>,
     pub role: String,
     pub delegation_mode: super::BridgeDelegationMode,
     pub delegation_preference: super::BridgeDelegationPreference,
     pub frozen_model: Option<super::BridgeNewThreadModelRoute>,
     pub task: String,
     pub summary: Option<String>,
-    pub depth: u32,
     pub state: BridgeAgentState,
     /// 该成员当前执行；未装载或无当前执行时为空。
     pub execution: Option<BridgeAgentExecution>,

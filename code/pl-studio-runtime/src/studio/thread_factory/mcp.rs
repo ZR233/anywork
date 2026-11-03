@@ -23,6 +23,16 @@ use crate::config::ResolvedThreadMcpServer;
 use crate::studio::{ProductEventBus, WorkspaceRecord};
 use crate::thread_assembler::ThreadAssemblyError;
 
+pub(super) struct ThreadMcpPreparation<'a> {
+    pub thread_id: &'a str,
+    pub lifetime: &'a Arc<ThreadToolLifetime>,
+    pub project: &'a WorkspaceRecord,
+    pub workspace: &'a ToolWorkspace,
+    pub remote: Option<&'a RemoteWorkspaceHost>,
+    pub preparation: &'a CatalogPreparation,
+    pub cancellation: &'a CancellationToken,
+}
+
 pub(crate) struct ThreadMcpOwner {
     pub(super) thread_id: String,
     pub(super) lifetime: Arc<ThreadToolLifetime>,
@@ -243,7 +253,7 @@ fn server_state_from_availability(
     availability: Option<&McpAvailabilitySnapshot>,
     override_lifecycle: Option<ThreadMcpLifecycleKind>,
 ) -> ThreadMcpServerState {
-    let lifecycle = override_lifecycle.unwrap_or_else(|| match availability {
+    let lifecycle = override_lifecycle.unwrap_or(match availability {
         Some(snapshot) => match snapshot.availability_kind {
             McpAvailabilityKind::Checking => ThreadMcpLifecycleKind::Connecting,
             McpAvailabilityKind::Available => ThreadMcpLifecycleKind::Available,
@@ -270,14 +280,17 @@ fn server_state_from_availability(
 impl StudioThreadFactory {
     pub(super) async fn prepare_thread_mcp(
         &self,
-        thread_id: &str,
-        lifetime: &Arc<ThreadToolLifetime>,
-        project: &WorkspaceRecord,
-        workspace: &ToolWorkspace,
-        remote: Option<&RemoteWorkspaceHost>,
-        preparation: &CatalogPreparation,
-        cancellation: &CancellationToken,
+        request: ThreadMcpPreparation<'_>,
     ) -> Result<McpTurnLease, ThreadAssemblyError> {
+        let ThreadMcpPreparation {
+            thread_id,
+            lifetime,
+            project,
+            workspace,
+            remote,
+            preparation,
+            cancellation,
+        } = request;
         let scope = match &project.ssh_alias {
             Some(alias) => McpScope::Ssh {
                 ssh_alias: alias.clone(),

@@ -68,9 +68,25 @@ impl StudioStore {
     /// `catalog.toml` 的 status 过滤，仍需按目录身份回读 checkpoint；这是恢复边界而非目录查询。
     pub async fn list_threads_with_transient_pending_interactions(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
-        for entry in self.catalog().entries() {
-            if !self.list_pending_interactions(&entry.id).await?.is_empty() {
-                ids.push(entry.id);
+        let catalog = self.catalog();
+        let sessions: std::collections::BTreeMap<_, _> = catalog
+            .sessions()
+            .into_iter()
+            .map(|session| (session.session_id.clone(), session))
+            .collect();
+        for agent in catalog.agents() {
+            let Some(session) = sessions.get(&agent.session_id) else {
+                continue;
+            };
+            if session.archived {
+                continue;
+            }
+            if !self
+                .list_pending_interactions(&agent.thread_id)
+                .await?
+                .is_empty()
+            {
+                ids.push(agent.thread_id);
             }
         }
         Ok(ids)

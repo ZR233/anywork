@@ -381,7 +381,7 @@ Future<void> _reportMissingQuestionControls({
             'loading': composer.isLoading,
             'hasError': composer.hasError,
             'error': composer.error?.toString(),
-            'threadId': composerValue?.thread?.id,
+            'threadId': composerValue?.row?.threadId,
             'executionClosed': composerValue?.executionClosed,
             'activeInteraction': composerValue?.activeInteraction == null
                 ? null

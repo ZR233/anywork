@@ -130,10 +130,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
     let activation = tokio::spawn(async move {
         activating
             .activate(
-                ThreadActivation {
-                    id: "root".into(),
-                    parent_id: None,
-                },
+                ThreadActivation::native_test("root", None),
                 CapturedPreparation {
                     entered: std::sync::Mutex::new(Some(entered)),
                 },
@@ -251,7 +248,11 @@ async fn register(
         last_opened_at: None,
         closed: false,
     });
-    delta.thread_upserts.push(protocol.clone());
+    let (session, agent) = crate::studio::records::directory_facts_from_thread(protocol);
+    if let Some(session) = session {
+        delta.session_upserts.push(session);
+    }
+    delta.agent_upserts.push(agent);
     store.persist_directory_summaries(&delta).await
 }
 

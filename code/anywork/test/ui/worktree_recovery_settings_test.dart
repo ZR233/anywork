@@ -148,11 +148,11 @@ void main() {
     final metadataState = await metadata.state
         .waitFor((state) => state.frame != null)
         .timeout(const Duration(seconds: 5));
-    final root = metadataState.frame!.thread!;
+    final root = metadataState.frame!.row!;
     await metadata.release();
     await pumpClientFuture(
       tester,
-      graph.client.threadCommands.archiveThread(root.id),
+      graph.client.threadCommands.archiveThread(root.threadId),
       'archive original workspace',
     );
     tester.view.physicalSize = const Size(1280, 900);
@@ -175,14 +175,18 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('sidebar-archived')));
     await tester.pumpAndSettle();
-    final lookup = find.byKey(ValueKey('thread-archived-workspace-${root.id}'));
+    final lookup = find.byKey(
+      ValueKey('thread-archived-workspace-${root.threadId}'),
+    );
     await tester.ensureVisible(lookup);
     final selected = graph.client.selection.state.selectedThreadId;
     final feeds = transport.feeds.length;
     await tester.tap(lookup);
     await tester.pumpAndSettle();
     expect(find.text(root.workspacePath), findsOneWidget);
-    await tester.tap(find.byKey(StudioDriverKeys.copyThreadWorkspace(root.id)));
+    await tester.tap(
+      find.byKey(StudioDriverKeys.copyThreadWorkspace(root.threadId)),
+    );
     await tester.pumpAndSettle();
     expect(copiedPath, root.workspacePath);
     expect(transport.restores, 0);
@@ -190,7 +194,10 @@ void main() {
     expect(graph.client.selection.state.selectedThreadId, selected);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
-    expect(find.byKey(ValueKey('thread-restore-${root.id}')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('thread-restore-${root.threadId}')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
     await _close(tester, graph);
   });

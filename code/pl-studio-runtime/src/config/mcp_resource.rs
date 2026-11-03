@@ -1516,7 +1516,7 @@ fn build_scoped_entry_and_server(
             let transport_label = config.transport.as_str().to_owned();
             let effective = EffectiveMcpServerConfig {
                 id: doc.id.clone(),
-                config: config.clone(),
+                config: config.as_ref().clone(),
                 source_kind: McpServerSourceKind::User,
                 source_label: "User".to_owned(),
                 source_detail: None,

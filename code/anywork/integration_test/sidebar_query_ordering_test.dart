@@ -72,8 +72,7 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () =>
-          owner.windows[_projectId]?.threads.singleOrNull?.title == 'Current A',
+      () => owner.windows[_projectId]?.rows.singleOrNull?.title == 'Current A',
       'second query A frame reaches production owner',
     );
 
@@ -88,7 +87,7 @@ void main() {
       () => firstA.closeCalled,
       'retired A close converges after its in-flight next',
     );
-    expect(owner.windows[_projectId]!.threads.single.title, 'Current A');
+    expect(owner.windows[_projectId]!.rows.single.title, 'Current A');
     expect(owner.windows[_projectId]!.error, isNull);
     expect(changes, greaterThan(0));
 
@@ -137,7 +136,7 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.threads.length == 20,
+      () => owner.windows[_projectId]?.rows.length == 20,
       'initial 20-row frame',
     );
 
@@ -162,7 +161,7 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.threads.length == 40,
+      () => owner.windows[_projectId]?.rows.length == 40,
       'expanded 40-row frame',
     );
 
@@ -188,12 +187,10 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () =>
-          owner.windows[_projectId]?.threads.firstOrNull?.title ==
-          'refreshed-0',
+      () => owner.windows[_projectId]?.rows.firstOrNull?.title == 'refreshed-0',
       'refreshed expanded frame',
     );
-    expect(owner.windows[_projectId]!.threads, hasLength(40));
+    expect(owner.windows[_projectId]!.rows, hasLength(40));
 
     owner.dispose();
     final report = await store.close();
@@ -270,14 +267,14 @@ void main() {
           owner.pinnedWindows[_projectId]?.loaded == true,
       'complete ordinary and pinned frames',
     );
-    expect(owner.windows[_projectId]!.threads.map((thread) => thread.id), [
+    expect(owner.windows[_projectId]!.rows.map((row) => row.threadId), [
       'ordinary-b',
       'ordinary-a',
     ]);
-    expect(
-      owner.pinnedWindows[_projectId]!.threads.map((thread) => thread.id),
-      ['pin-b', 'pin-a'],
-    );
+    expect(owner.pinnedWindows[_projectId]!.rows.map((row) => row.threadId), [
+      'pin-b',
+      'pin-a',
+    ]);
 
     owner.more(_projectId);
     await _pumpUntil(
@@ -304,13 +301,14 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.threads.firstOrNull?.id == 'ordinary-c',
+      () =>
+          owner.windows[_projectId]?.rows.firstOrNull?.threadId == 'ordinary-c',
       'expanded ordinary frame',
     );
-    expect(
-      owner.pinnedWindows[_projectId]!.threads.map((thread) => thread.id),
-      ['pin-b', 'pin-a'],
-    );
+    expect(owner.pinnedWindows[_projectId]!.rows.map((row) => row.threadId), [
+      'pin-b',
+      'pin-a',
+    ]);
     expect(pinned.closeRequested, isFalse);
 
     owner.configure(
@@ -352,8 +350,10 @@ void main() {
     await _pumpUntil(
       tester,
       () =>
-          owner.windows[_projectId]?.threads.singleOrNull?.id == 'ordinary-d' &&
-          owner.pinnedWindows[_projectId]?.threads.singleOrNull?.id == 'pin-c',
+          owner.windows[_projectId]?.rows.singleOrNull?.threadId ==
+              'ordinary-d' &&
+          owner.pinnedWindows[_projectId]?.rows.singleOrNull?.threadId ==
+              'pin-c',
       'replacement frames',
     );
 
@@ -387,7 +387,7 @@ Future<void> _pumpUntil(
 
 ThreadDirectoryFrame _frame(
   _ThreadsOpen request,
-  List<StudioThread> threads, {
+  List<SessionDirectoryRow> rows, {
   required int revision,
   String? nextCursor,
 }) => ThreadDirectoryFrame(
@@ -398,11 +398,11 @@ ThreadDirectoryFrame _frame(
     ownerEpoch: 'sidebar-owner-test',
     revision: revision,
   ),
-  threads: threads,
+  rows: rows,
   nextCursor: nextCursor,
 );
 
-List<StudioThread> _threads(int count, {required String prefix}) => [
+List<SessionDirectoryRow> _threads(int count, {required String prefix}) => [
   for (var index = 0; index < count; index++)
     _thread('$prefix-$index', '$prefix-$index', 2026),
 ];
@@ -414,18 +414,21 @@ const _project = StudioProject(
   path: '/synthetic/query-ordering',
 );
 
-StudioThread _thread(String id, String title, int year) => StudioThread(
-  id: id,
-  workspaceId: _projectId,
-  title: title,
-  mode: ThreadModeId.simple,
-  delegationMode: DelegationMode.profile,
-  delegationPreference: DelegationPreference.balanced,
-  updatedAt: DateTime.utc(year),
-  status: ThreadStatusView.idle,
-  workspaceMode: ThreadWorkspaceMode.local,
-  workspacePath: _project.path,
-);
+SessionDirectoryRow _thread(String id, String title, int year) =>
+    SessionDirectoryRow(
+      sessionId: id,
+      agentId: id,
+      threadId: id,
+      workspaceId: _projectId,
+      title: title,
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(year),
+      status: ThreadStatusView.idle,
+      workspaceMode: ThreadWorkspaceMode.local,
+      workspacePath: _project.path,
+    );
 
 final class _DirectoryFeed implements DirectoryFeedPort {
   final List<_ThreadsOpen> requests = [];

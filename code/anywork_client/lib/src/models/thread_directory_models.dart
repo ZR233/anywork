@@ -28,6 +28,8 @@ enum ThreadStatusView {
 
 enum WorkspaceKind { project, standalone }
 
+const Object _rowUnchanged = Object();
+
 class StudioProject {
   const StudioProject({
     required this.id,
@@ -52,6 +54,174 @@ class StudioProject {
 /// 不再重复写一遍角色比较，避免空白或措辞漂移出第二份事实。
 bool isRetiredAgentRole(String role) => role.trim() == 'planner';
 
+/// 成员执行绑定：目录行描述「这一成员由哪类后端执行」。
+///
+/// `native` 携带冻结模型 route；`acp` 携带账号与连接修订。判定只读 variant
+/// 与字段，不从身份字符串推断。
+sealed class AgentBindingView {
+  const AgentBindingView();
+}
+
+final class NativeAgentBindingView extends AgentBindingView {
+  const NativeAgentBindingView({this.route, this.systemInstructions});
+
+  final NewThreadModelRoute? route;
+  final String? systemInstructions;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NativeAgentBindingView &&
+          route == other.route &&
+          systemInstructions == other.systemInstructions;
+
+  @override
+  int get hashCode => Object.hash(runtimeType, route, systemInstructions);
+}
+
+final class AcpAgentBindingView extends AgentBindingView {
+  const AcpAgentBindingView({
+    required this.accountId,
+    required this.connectionRevision,
+  });
+
+  final String accountId;
+  final int connectionRevision;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpAgentBindingView &&
+          accountId == other.accountId &&
+          connectionRevision == other.connectionRevision;
+
+  @override
+  int get hashCode => Object.hash(runtimeType, accountId, connectionRevision);
+}
+
+/// 会话目录行：typed 身份四元组加目录事实，是 root/child 与成员归属的唯一判据。
+///
+/// `parentAgentId == null` 即 root 行；child 行的 `sessionId` 指向所属会话，
+/// 不从 Thread 快照或 ID 形状推导归属。
+class SessionDirectoryRow {
+  const SessionDirectoryRow({
+    required this.sessionId,
+    required this.agentId,
+    this.parentAgentId,
+    required this.threadId,
+    required this.workspaceId,
+    required this.title,
+    required this.mode,
+    required this.delegationMode,
+    required this.delegationPreference,
+    this.workspaceMode = ThreadWorkspaceMode.local,
+    required this.workspacePath,
+    this.role = 'planner',
+    this.binding = const NativeAgentBindingView(),
+    this.status = ThreadStatusView.idle,
+    this.createdAt,
+    required this.updatedAt,
+    this.lastUserMessageAt,
+    this.archived = false,
+  });
+
+  final String sessionId;
+  final String agentId;
+  final String? parentAgentId;
+  final String threadId;
+  final String workspaceId;
+  final String title;
+  final ThreadModeId mode;
+  final DelegationMode delegationMode;
+  final DelegationPreference delegationPreference;
+
+  /// Canonical 会话工作区模式，只读来自目录事实。
+  final ThreadWorkspaceMode workspaceMode;
+
+  /// Canonical 会话工作区地址；`local` 为项目目录，`worktree` 为工作树路径。
+  final String workspacePath;
+
+  /// 成员定义 ID：root 为内置根定义，child 为冻结 Profile ID。
+  final String role;
+
+  final AgentBindingView binding;
+  final ThreadStatusView status;
+  final DateTime? createdAt;
+  final DateTime updatedAt;
+
+  /// 服务端最近一次成功受理用户消息的时间；null 表示尚未有已受理用户消息。
+  final DateTime? lastUserMessageAt;
+  final bool archived;
+
+  bool get isRootRow => parentAgentId == null;
+
+  bool get isChildRow => parentAgentId != null;
+
+  /// 目录行的冻结模型只来自 Native 绑定的 route；ACP 绑定没有 Native route。
+  NewThreadModelRoute? get frozenModel => switch (binding) {
+    NativeAgentBindingView(:final route) => route,
+    AcpAgentBindingView() => null,
+  };
+
+  DateTime get effectiveCreatedAt => createdAt ?? updatedAt;
+
+  /// 会话目录排序键：最近用户消息时间，缺失时回落到创建时间（design/19 §19.1）。
+  DateTime get directorySortTime => lastUserMessageAt ?? effectiveCreatedAt;
+
+  /// 会话目录的 canonical 降序比较器：目录排序键降序，同秒按行 ID 降序破平。
+  static int compareDirectoryOrder(
+    SessionDirectoryRow a,
+    SessionDirectoryRow b,
+  ) {
+    final time = b.directorySortTime.compareTo(a.directorySortTime);
+    return time != 0 ? time : b.threadId.compareTo(a.threadId);
+  }
+
+  SessionDirectoryRow copyWith({
+    String? sessionId,
+    String? agentId,
+    Object? parentAgentId = _rowUnchanged,
+    String? threadId,
+    String? workspaceId,
+    String? title,
+    ThreadModeId? mode,
+    DateTime? createdAt,
+    DateTime? lastUserMessageAt,
+    DateTime? updatedAt,
+    String? role,
+    ThreadStatusView? status,
+    bool? archived,
+    String? workspacePath,
+  }) {
+    return SessionDirectoryRow(
+      sessionId: sessionId ?? this.sessionId,
+      agentId: agentId ?? this.agentId,
+      parentAgentId: identical(parentAgentId, _rowUnchanged)
+          ? this.parentAgentId
+          : parentAgentId as String?,
+      threadId: threadId ?? this.threadId,
+      workspaceId: workspaceId ?? this.workspaceId,
+      title: title ?? this.title,
+      mode: mode ?? this.mode,
+      delegationMode: delegationMode,
+      delegationPreference: delegationPreference,
+      workspaceMode: workspaceMode,
+      workspacePath: workspacePath ?? this.workspacePath,
+      role: role ?? this.role,
+      binding: binding,
+      status: status ?? this.status,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastUserMessageAt: lastUserMessageAt ?? this.lastUserMessageAt,
+      archived: archived ?? this.archived,
+    );
+  }
+}
+
+/// Native 执行域的 Thread 投影（会话快照/创建回执仍用它）。
+///
+/// 它是执行事实，不承担目录身份：root/child 判定、成员归属与会话归属一律读
+/// [SessionDirectoryRow] 或智能体目录的 `sessionId`/`parentAgentId`。
 class StudioThread {
   const StudioThread({
     required this.id,
@@ -104,6 +274,7 @@ class StudioThread {
   /// GUI 不推导工作树布局。
   final String workspacePath;
 
+  /// Native 执行投影自带的父子链接；只作执行事实展示，不用于成员归属判定。
   bool get isRoot => parentThreadId == null;
 
   bool get isAgent => parentThreadId != null;
@@ -111,18 +282,7 @@ class StudioThread {
   /// The former planner child role is retained for history, never execution.
   bool get isRetiredAgent => isAgent && isRetiredAgentRole(role);
 
-  String get effectiveRootThreadId => rootThreadId.isEmpty ? id : rootThreadId;
-
   DateTime get effectiveCreatedAt => createdAt ?? updatedAt;
-
-  /// 会话目录排序键：最近用户消息时间，缺失时回落到创建时间（design/19 §19.1）。
-  DateTime get directorySortTime => lastUserMessageAt ?? effectiveCreatedAt;
-
-  /// 会话目录的 canonical 降序比较器：目录排序键降序，同秒按 ID 降序破平。
-  static int compareDirectoryOrder(StudioThread a, StudioThread b) {
-    final time = b.directorySortTime.compareTo(a.directorySortTime);
-    return time != 0 ? time : b.id.compareTo(a.id);
-  }
 
   StudioThread copyWith({
     String? title,
@@ -165,12 +325,12 @@ class StudioThread {
 /// Bootstrap 的原始传输页；不注入或归约到 scoped 目录观察。
 class ThreadDirectoryPage {
   const ThreadDirectoryPage({
-    required this.threads,
+    required this.rows,
     this.nextCursor,
     this.revision = 0,
   });
 
-  final List<StudioThread> threads;
+  final List<SessionDirectoryRow> rows;
   final String? nextCursor;
   final int revision;
 
@@ -209,9 +369,9 @@ final class ThreadDirectoryFrame {
     required this.query,
     required this.window,
     required this.stamp,
-    required List<StudioThread> threads,
+    required List<SessionDirectoryRow> rows,
     this.nextCursor,
-  }) : threads = List.unmodifiable(threads) {
+  }) : rows = List.unmodifiable(rows) {
     if (stamp.resourceKey != 'thread-directory') {
       throw ArgumentError.value(stamp.resourceKey, 'stamp.resourceKey');
     }
@@ -220,7 +380,7 @@ final class ThreadDirectoryFrame {
   final DirectoryQuery query;
   final DirectoryWindow window;
   final ResourceStamp stamp;
-  final List<StudioThread> threads;
+  final List<SessionDirectoryRow> rows;
   final String? nextCursor;
 }
 
@@ -228,19 +388,19 @@ final class ThreadMetadataFrame {
   ThreadMetadataFrame({
     required this.threadId,
     required this.stamp,
-    required this.thread,
+    required this.row,
   }) {
     if (stamp.resourceKey != 'thread-directory') {
       throw ArgumentError.value(stamp.resourceKey, 'stamp.resourceKey');
     }
-    if (thread != null && thread!.id != threadId) {
-      throw ArgumentError.value(thread!.id, 'thread.id');
+    if (row != null && row!.threadId != threadId) {
+      throw ArgumentError.value(row!.threadId, 'row.threadId');
     }
   }
 
   final String threadId;
   final ResourceStamp stamp;
-  final StudioThread? thread;
+  final SessionDirectoryRow? row;
 }
 
 /// 关机阶段的只读分类；canonical 状态由 [StudioShutdownProgress] 的 sealed variant 表达。

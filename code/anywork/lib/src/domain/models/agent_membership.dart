@@ -11,4 +11,4 @@ import 'package:anywork_client/models.dart';
 /// 事实，角色字符串比较统一由 Client 导出的 [isRetiredAgentRole] 提供，这里只补
 /// 「是子成员」这一条件，不另写一份字符串判据。
 bool isRetiredAgentRow(StudioAgentView agent) =>
-    agent.parentPath != null && isRetiredAgentRole(agent.role);
+    agent.isChildAgent && isRetiredAgentRole(agent.role);

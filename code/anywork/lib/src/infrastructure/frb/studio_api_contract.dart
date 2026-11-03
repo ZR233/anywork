@@ -1654,13 +1654,10 @@ class FrbStudioTransport
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           profileId: draft.id,
           enabled: draft.enabled,
-          displayName: draft.displayName,
-          description: draft.description,
-          whenToUse: draft.whenToUse,
-          systemInstructions: draft.systemInstructions,
-          accountId: draft.accountId,
-          modelId: draft.modelId,
-          effort: draft.effort,
+          displayName: draft.definition.displayName,
+          description: draft.definition.description,
+          whenToUse: draft.definition.whenToUse,
+          binding: agentBindingToFrb(draft.binding),
           workspaceMode: switch (draft.workspaceMode) {
             AgentWorkspaceMode.unrestricted =>
               frb.BridgeAgentWorkspaceMode.unrestricted,

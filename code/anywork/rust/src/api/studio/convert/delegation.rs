@@ -70,6 +70,16 @@ impl From<pl_protocol::studio::NewThreadModelRoute> for BridgeNewThreadModelRout
     }
 }
 
+impl From<BridgeNewThreadModelRoute> for pl_protocol::studio::NewThreadModelRoute {
+    fn from(value: BridgeNewThreadModelRoute) -> Self {
+        Self {
+            account_id: value.account_id,
+            model_id: value.model_id,
+            effort: value.effort,
+        }
+    }
+}
+
 impl From<BridgeAgentTaskCategory> for pl_protocol::AgentTaskCategory {
     fn from(value: BridgeAgentTaskCategory) -> Self {
         match value {

@@ -76,19 +76,13 @@ final class ConversationSessionImpl implements ConversationSession {
     }
   }
 
-  StudioThread? get _identity => _directoryDemand.state.value.frame?.thread;
+  SessionDirectoryRow? get _identity => _directoryDemand.state.value.frame?.row;
 
   void _rebindDirectory() {
     if (_closed) return;
-    final workspace = state.workspace;
-    final identity = _identity;
-    if (workspace == null ||
-        identity == null ||
-        identical(workspace.thread, identity))
-      return;
-    _source.publish(
-      state.copyWith(workspace: workspace.copyWith(thread: identity)),
-    );
+    final row = _identity;
+    if (identical(state.directoryRow, row)) return;
+    _source.publish(state.copyWith(directoryRow: row));
   }
 
   void _onAttempt(AttemptId attemptId) {
@@ -125,7 +119,7 @@ final class ConversationSessionImpl implements ConversationSession {
         final candidate = applyThreadSnapshotState(
           state,
           workspace,
-          directoryThread: _identity,
+          directoryRow: _identity,
         );
         final eligible = _eligibleResync(attemptId);
         _source.publish(candidate);

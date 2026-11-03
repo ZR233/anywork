@@ -150,7 +150,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: mode.id);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = await _readThread(threadId);
+      final row = await _readThread(threadId);
       final runtime = _client.conversations.session(threadId).state.runtime;
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
@@ -159,9 +159,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         if (_isLatest(operation)) _fail(key, threadId, failure);
         throw failure;
       }
-      if (thread == null ||
-          !thread.isRoot ||
-          thread.status != ThreadStatusView.idle ||
+      if (row == null ||
+          !row.isRootRow ||
+          row.status != ThreadStatusView.idle ||
           (runtime?.hasActiveWorkflow ?? false)) {
         operation.reject(StateError('Thread mode change is unavailable'));
         if (_isLatest(operation)) _clear(key);
@@ -811,11 +811,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     var transportInvoked = false;
     return _lane.enqueue(() async {
       try {
-        final observedThread = await _readThread(intent.threadId);
-        if (observedThread != null && !observedThread.isRoot) {
+        final observedRow = await _readThread(intent.threadId);
+        if (observedRow != null && observedRow.isChildRow) {
           throw _childRequiresParentScheduling(intent.threadId);
         }
-        if (observedThread?.status.blocksNewExecution == true) {
+        if (observedRow?.status.blocksNewExecution == true) {
           throw _closedReadOnlyFailure;
         }
         if (resend) {
@@ -1090,7 +1090,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: title);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = await _readThread(threadId);
+      final row = await _readThread(threadId);
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
         final failure = recoveryIssue.blockedFailure();
@@ -1098,7 +1098,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         if (_isLatest(operation)) _fail(key, threadId, failure);
         throw failure;
       }
-      if (thread == null || !thread.isRoot) {
+      if (row == null || !row.isRootRow) {
         operation.reject(StateError('Thread rename is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return null;
@@ -1128,7 +1128,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     _begin(key, label: threadId);
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
-      final thread = await _readThread(threadId);
+      final row = await _readThread(threadId);
       final recoveryIssue = _accessBlockerForThread(threadId);
       if (recoveryIssue != null) {
         final failure = recoveryIssue.blockedFailure();
@@ -1136,7 +1136,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         if (_isLatest(operation)) _fail(key, threadId, failure);
         throw failure;
       }
-      if (thread == null || !thread.isRoot) {
+      if (row == null || !row.isRootRow) {
         operation.reject(StateError('Thread archive is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return;
@@ -1363,10 +1363,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return null;
   }
 
-  StudioThread? _directoryThread(String threadId) =>
+  SessionDirectoryRow? _directoryRow(String threadId) =>
       _client.threadDirectory.observedThread(threadId);
 
-  Future<StudioThread?> _readThread(String threadId) async {
+  Future<SessionDirectoryRow?> _readThread(String threadId) async {
     final observation = _client.threadDirectory.observeThread(threadId);
     try {
       var state = observation.state.value;
@@ -1374,7 +1374,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         state = await observation.state.waitFor((value) => !value.isLoading);
       }
       if (state.error case final error?) throw error;
-      return state.frame?.thread;
+      return state.frame?.row;
     } finally {
       await observation.release();
     }
@@ -1390,11 +1390,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return null;
   }
 
-  /// 子会话身份来自规范目录成员关系与 Thread 父子链接，不从界面选择推导。
+  /// 子会话身份只读目录行/智能体目录的 `parentAgentId`，不从 Thread 快照或
+  /// 界面选择推导。
   bool _isChildThread(String threadId) {
-    final thread = _directoryThread(threadId);
-    if (thread != null && !thread.isRoot) return true;
-    return _agentEntry(threadId)?.parentPath != null;
+    final row = _directoryRow(threadId);
+    if (row != null) return row.isChildRow;
+    return _agentEntry(threadId)?.isChildAgent ?? false;
   }
 
   StudioFailure _childRequiresParentScheduling(String threadId) =>
@@ -1519,7 +1520,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   }
 
   String? _workspaceIdForThread(String threadId) {
-    final directoryProjectId = _directoryThread(threadId)?.workspaceId;
+    final directoryProjectId = _directoryRow(threadId)?.workspaceId;
     if (directoryProjectId != null) return directoryProjectId;
     final workspaceProjectId = _client.conversations
         .existingSession(threadId)
@@ -1576,7 +1577,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   // A read-only gate must not admit a cold child owner. Missing local facts
   // remain unknown; the backend still authoritatively rejects retired targets.
   bool _isExecutionClosed(String threadId) =>
-      _directoryThread(threadId)?.status.blocksNewExecution == true ||
+      _directoryRow(threadId)?.status.blocksNewExecution == true ||
       _client.conversations
               .sessionState(threadId)
               ?.workspace

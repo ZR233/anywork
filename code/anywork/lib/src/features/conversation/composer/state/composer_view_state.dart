@@ -58,7 +58,7 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
   const ComposerDockViewState._();
 
   const factory ComposerDockViewState({
-    required StudioThread? thread,
+    required SessionDirectoryRow? row,
     required bool hasSnapshot,
     required int revision,
     required ComposerThreadState composer,
@@ -74,7 +74,7 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
     /// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
     required StudioRecoveryIssue? recoveryIssue,
 
-    /// 目录 thread 或已加载 canonical workspace.thread 已 closing/closed：
+    /// 目录行或已加载 canonical workspace.thread 已 closing/closed：
     /// 不显示执行入口，历史仍展示、草稿不清。
     required bool executionClosed,
     required List<ChildInteractionSummary> childInteractions,

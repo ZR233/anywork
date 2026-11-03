@@ -18,6 +18,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'product_topic.dart';
 import 'response.dart';
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
@@ -155,7 +156,7 @@ sealed class BridgeShutdownProgress with _$BridgeShutdownProgress {
 class BridgeThreadDirectoryDelta {
   final BigInt revision;
   final PlatformInt64 updatedAt;
-  final List<BridgeThread> upserted;
+  final List<BridgeSessionDirectoryRow> upserted;
   final List<String> removed;
 
   const BridgeThreadDirectoryDelta({

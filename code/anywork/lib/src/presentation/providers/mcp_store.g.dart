@@ -217,7 +217,7 @@ final class ThreadMcpProvider
   }
 }
 
-String _$threadMcpHash() => r'ef100c27fb1f900c908e6cf8a363a9021fddfd78';
+String _$threadMcpHash() => r'2601df1af413fb691122e65ac5669e37cc1bedb5';
 
 final class ThreadMcpFamily extends $Family
     with

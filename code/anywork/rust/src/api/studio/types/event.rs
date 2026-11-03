@@ -5,8 +5,8 @@ use super::{
     BridgeAgentDirectoryState, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
     BridgeMcpCatalogSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
     BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSettingsConfigStateSnapshot,
-    BridgeSkillsStateSnapshot, BridgeThread, BridgeThreadMcpStateSnapshot,
-    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeSkillsStateSnapshot, BridgeThreadMcpStateSnapshot, BridgeThreadModeCatalogSnapshot,
+    BridgeUpdaterStateSnapshot,
 };
 
 /// Flutter Bridge 的 Studio 产品事件信封。
@@ -54,7 +54,7 @@ pub enum BridgeProductEventPayload {
 pub struct BridgeThreadDirectoryDelta {
     pub revision: u64,
     pub updated_at: i64,
-    pub upserted: Vec<BridgeThread>,
+    pub upserted: Vec<crate::api::studio::types::BridgeSessionDirectoryRow>,
     pub removed: Vec<String>,
 }
 

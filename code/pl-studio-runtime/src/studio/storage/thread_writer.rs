@@ -2141,12 +2141,16 @@ impl ThreadStorageSink {
         thread: pl_protocol::Thread,
         restored_checkpoint: Option<&ThreadCheckpoint>,
     ) -> Result<Self> {
-        let registered = store
-            .catalog()
-            .get(&thread.id)
+        let catalog = store.catalog();
+        let registered = catalog
+            .agent_by_thread(&thread.id)
             .context("Thread is not registered in the Studio catalog")?;
+        let session_workspace = catalog
+            .get_session(&registered.session_id)
+            .map(|session| session.workspace_id)
+            .context("session is not registered in the Studio catalog")?;
         anyhow::ensure!(
-            registered.workspace_id == thread.workspace_id
+            session_workspace == thread.workspace_id
                 && store.workspaces().get(&thread.workspace_id).is_some(),
             "Thread {} Project identity is not registered in workspaces",
             thread.id
@@ -3347,7 +3351,11 @@ pub(crate) mod storage_fault_tests {
                 closed: false,
             },
         );
-        delta.thread_upserts = vec![thread.clone()];
+        let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+        if let Some(session) = session {
+            delta.session_upserts = vec![session];
+        }
+        delta.agent_upserts = vec![agent];
         store.persist_directory_summaries(&delta).await
     }
 
@@ -3693,7 +3701,11 @@ pub(crate) mod storage_fault_tests {
                     closed: false,
                 },
             );
-            delta.thread_upserts.push(thread.clone());
+            let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+            if let Some(session) = session {
+                delta.session_upserts.push(session);
+            }
+            delta.agent_upserts.push(agent);
             store.persist_directory_summaries(&delta).await
         }
         let temp = tempfile::tempdir()?;
@@ -3833,7 +3845,16 @@ pub(crate) mod storage_fault_tests {
             fixture.worktrees.record_durable(lease).await?;
         }
         for (thread, assignment) in cases {
-            store.prepare_session_manifest(&thread).await?;
+            let catalog = store.catalog();
+            let registered_agent = catalog
+                .get_agent(&thread.id)
+                .expect("registered projection agent");
+            let registered_session = catalog
+                .get_session(&registered_agent.session_id)
+                .expect("registered projection session");
+            store
+                .prepare_session_manifest(&registered_session, &registered_agent)
+                .await?;
             let execution = std::path::Path::new(&assignment.root)
                 .join(pl_tool::workspace::SessionFiles::new(&thread.id).root());
             tokio::fs::create_dir_all(&execution).await?;
@@ -5723,11 +5744,12 @@ pub(crate) mod storage_fault_tests {
         store: StudioStore,
         id: &str,
     ) -> tokio::task::JoinHandle<()> {
-        let thread = store
-            .catalog()
-            .get(id)
-            .expect("registered projection Thread")
-            .to_thread();
+        let catalog = store.catalog();
+        let agent = catalog.get_agent(id).expect("registered projection agent");
+        let session = catalog
+            .get_session(&agent.session_id)
+            .expect("registered projection session");
+        let thread = crate::studio::records::thread_projection(&session, &agent);
         spawn_projection(store, thread)
     }
 
@@ -6533,9 +6555,12 @@ pub(crate) mod storage_fault_tests {
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let parent = test_thread("parent");
+        register_test_thread(&store, &parent).await?;
         let id = "child-message";
         let mut thread = test_thread(id);
-        thread.parent_thread_id = Some("parent".into());
+        thread.root_thread_id = parent.id.clone();
+        thread.parent_thread_id = Some(parent.id.clone());
         register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
         let chat = store.chat_session(id).await?;

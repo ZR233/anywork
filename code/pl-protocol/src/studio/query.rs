@@ -74,7 +74,7 @@ pub struct ThreadDirectoryFrame {
     pub query: ThreadDirectoryQuery,
     pub window: ThreadDirectoryWindow,
     pub stamp: super::ResourceStamp,
-    pub threads: Vec<crate::Thread>,
+    pub rows: Vec<crate::SessionDirectoryRow>,
     pub next_cursor: Option<String>,
 }
 
@@ -84,7 +84,7 @@ pub struct ThreadDirectoryFrame {
 pub struct ThreadMetadataFrame {
     pub thread_id: String,
     pub stamp: super::ResourceStamp,
-    pub thread: Option<crate::Thread>,
+    pub row: Option<crate::SessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -119,37 +119,36 @@ impl ThreadDirectoryQuery {
         Ok(self)
     }
 
-    pub fn matches(&self, thread: &crate::Thread, project_matches: bool) -> bool {
+    pub fn matches(&self, row: &crate::SessionDirectoryRow, project_matches: bool) -> bool {
         use crate::ThreadStatus;
-        thread.parent_thread_id.is_none()
-            && thread.archived == self.archived
+        row.is_root_row()
+            && row.archived == self.archived
             && self
                 .thread_ids
                 .as_ref()
-                .is_none_or(|ids| ids.contains(&thread.id))
-            && !self.excluded_thread_ids.contains(&thread.id)
+                .is_none_or(|ids| ids.contains(&row.thread_id))
+            && !self.excluded_thread_ids.contains(&row.thread_id)
             && self
                 .workspace_id
                 .as_ref()
-                .is_none_or(|id| id.as_str() == thread.workspace_id)
+                .is_none_or(|id| id.as_str() == row.workspace_id)
             && (project_matches
                 || self.search.as_ref().is_none_or(|text| {
-                    thread
-                        .title
+                    row.title
                         .to_lowercase()
                         .contains(&text.trim().to_lowercase())
                 }))
             && match self.filter {
                 ThreadDirectoryFilter::All => true,
                 ThreadDirectoryFilter::Running => matches!(
-                    thread.status,
+                    row.status,
                     ThreadStatus::Queued
                         | ThreadStatus::Running
                         | ThreadStatus::WaitingTool
                         | ThreadStatus::Cancelling
                 ),
                 ThreadDirectoryFilter::Attention => matches!(
-                    thread.status,
+                    row.status,
                     ThreadStatus::WaitingInteraction | ThreadStatus::Faulted
                 ),
             }

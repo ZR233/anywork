@@ -3,11 +3,10 @@
 //! 本模块负责已提交摘要的持久化，不承担运行期目录查询；不读取任何会话
 //! `state.toml`/`history.sqlite`（design/17 §17.1、§17.2）。目录 mutation 的唯一
 //! 命令通道是 `ProductEventBus::commit_directory`：它同步写入本模块的 `catalog.toml`
-//! 事实，write-behind 队列再把同一 delta 异步落到 SQLite 镜像并幂等重放 TOML。
+//! 事实，write-behind 队列再幂等重放同一 TOML delta。
 
 use anyhow::Result;
 
-use crate::studio::catalog::CatalogEntry;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
 
@@ -34,8 +33,7 @@ impl StudioStore {
         delta: &DirectoryDelta,
         db: &impl sea_orm::ConnectionTrait,
     ) -> Result<()> {
-        // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
-        // write-behind mirrors for migration and diagnostics only.
+        // Workspace/Project TOML is the canonical directory fact.
         for project in &delta.project_upserts {
             self.prepare_workspace_manifest(&crate::studio::records::WorkspaceRecord {
                 id: project.id.clone(),
@@ -50,53 +48,36 @@ impl StudioStore {
         self.workspaces().apply_delta(delta).await?;
         let catalog = self.catalog();
         let deletions = Self::thread_deletes_on(db).await?;
-        for thread in &delta.thread_upserts {
-            if deletions.iter().any(|operation| {
+        let mut delta = delta.clone();
+        delta.session_upserts.retain(|session| {
+            !deletions.iter().any(|operation| {
                 operation.phase != super::thread_delete::DeletePhase::Sealed
-                    && operation.thread_ids.contains(&thread.id)
-            }) {
-                continue;
+                    && operation.root_id == session.session_id
+            })
+        });
+        delta.agent_upserts.retain(|agent| {
+            !deletions.iter().any(|operation| {
+                operation.phase != super::thread_delete::DeletePhase::Sealed
+                    && operation.thread_ids.contains(&agent.thread_id)
+            })
+        });
+        for session in &delta.session_upserts {
+            if let Some(root) = catalog.get_agent(&session.root_agent_id) {
+                self.prepare_session_manifest(session, &root).await?;
             }
-            self.prepare_session_manifest(thread).await?;
-            catalog.upsert(CatalogEntry::from_thread(thread)).await?;
         }
-        let archived_at = delta
-            .thread_removals
-            .iter()
-            .map(|removal| removal.archived_at)
-            .chain(
-                delta
-                    .project_removals
-                    .iter()
-                    .map(|removal| removal.closed_at),
-            )
-            .max();
-        let archived_ids = delta
-            .thread_removals
-            .iter()
-            .flat_map(|removal| removal.thread_ids.iter().cloned())
-            .chain(
-                delta
-                    .project_removals
-                    .iter()
-                    .flat_map(|removal| removal.thread_ids.iter().cloned()),
-            )
-            .collect::<Vec<_>>();
-        if let Some(archived_at) = archived_at {
-            catalog.archive(&archived_ids, archived_at).await?;
+        for agent in &delta.agent_upserts {
+            let session = delta
+                .session_upserts
+                .iter()
+                .find(|session| session.session_id == agent.session_id)
+                .cloned()
+                .or_else(|| catalog.get_session(&agent.session_id))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("agent session is not registered: {}", agent.session_id)
+                })?;
+            self.prepare_session_manifest(&session, agent).await?;
         }
-        if !delta.session_activity.is_empty() {
-            catalog.touch(&delta.session_activity).await?;
-        }
-        catalog.delete(&delta.thread_deletions).await?;
-        for fault in &delta.unregistered_faults {
-            let mut entry = catalog.get(&fault.thread_id).ok_or_else(|| {
-                anyhow::anyhow!("spawn compensation Thread not found: {}", fault.thread_id)
-            })?;
-            entry.status = fault.state.kind;
-            entry.updated_at = crate::studio::ids::unix_seconds();
-            catalog.upsert(entry).await?;
-        }
-        Ok(())
+        catalog.apply_delta(delta).await
     }
 }

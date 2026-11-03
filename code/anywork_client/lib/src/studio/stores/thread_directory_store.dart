@@ -55,8 +55,8 @@ final class ThreadDirectoryStore {
 
   /// Borrows metadata only from an active exact-ID observation already held by
   /// a consumer. This neither opens a demand nor searches list windows.
-  StudioThread? observedThread(String threadId) =>
-      _metadata[threadId]?.frame?.thread;
+  SessionDirectoryRow? observedThread(String threadId) =>
+      _metadata[threadId]?.frame?.row;
 
   DirectoryObservation<ThreadDirectoryFrame> observeThreads(
     DirectoryQuery query,
@@ -84,7 +84,7 @@ final class ThreadDirectoryStore {
               'Thread directory observation resource mismatch',
             );
           }
-          if (frame.threads.length > window.limit) {
+          if (frame.rows.length > window.limit) {
             throw _protocolFailure('Thread directory frame exceeds its window');
           }
         },
@@ -113,7 +113,7 @@ final class ThreadDirectoryStore {
               'Thread metadata observation identity mismatch',
             );
           }
-          if (frame.thread != null && frame.thread!.id != threadId) {
+          if (frame.row != null && frame.row!.threadId != threadId) {
             throw _protocolFailure('Thread metadata frame row mismatch');
           }
         },

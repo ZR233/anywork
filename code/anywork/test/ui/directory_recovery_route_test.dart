@@ -26,8 +26,8 @@ void main() {
   test('production sidebarViewProvider matches scope and prioritizes actual blockers', () async {
     final transport = RecordingDemoTransport();
     final bootstrap = await transport.readBootstrap();
-    final root = bootstrap.threadDirectory.threads
-        .where((thread) => thread.isRoot)
+    final root = bootstrap.threadDirectory.rows
+        .where((row) => row.isRootRow)
         .first;
 
     readProductionView(List<StudioRecoveryIssue> issues) {
@@ -57,7 +57,7 @@ void main() {
           selectionStoreProvider.overrideWithValue(
             SelectionStoreState(
               selectedProjectId: root.workspaceId,
-              selectedThreadId: root.id,
+              selectedThreadId: root.threadId,
               needsOpen: true,
             ),
           ),
@@ -89,7 +89,7 @@ void main() {
         impact: RecoveryIssueImpact.advisory,
         availableActions: const [RecoveryIssueAction.retry],
         workspaceId: null,
-        threadId: root.id,
+        threadId: root.threadId,
         detail: 'Thread observation is being retried',
       ),
     ]);
@@ -119,7 +119,7 @@ void main() {
       impact: RecoveryIssueImpact.advisory,
       availableActions: const [],
       workspaceId: root.workspaceId,
-      threadId: root.id,
+      threadId: root.threadId,
       detail: 'Root reminder',
     );
     final appWide = readProductionView([
@@ -175,7 +175,7 @@ void main() {
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [RecoveryIssueAction.retry],
       workspaceId: null,
-      threadId: root.id,
+      threadId: root.threadId,
       detail: 'The actual Thread resource is unavailable',
     );
     final exact = readProductionView([
@@ -197,7 +197,7 @@ void main() {
         impact: RecoveryIssueImpact.accessBlocked,
         availableActions: const [],
         workspaceId: '${root.workspaceId}-different',
-        threadId: root.id,
+        threadId: root.threadId,
         detail: 'A mismatched non-null project cannot grant a match',
       ),
     ]);
@@ -227,13 +227,13 @@ void main() {
     final directoryFrame = await directoryDemand.state
         .waitFor((state) => state.frame != null)
         .timeout(const Duration(seconds: 5));
-    final threads = directoryFrame.frame!.threads;
-    final healthy = threads.firstWhere((thread) => thread.isRoot);
-    final affected = threads.firstWhere(
-      (thread) =>
-          thread.isRoot &&
-          thread.workspaceId == healthy.workspaceId &&
-          thread.id != healthy.id,
+    final rows = directoryFrame.frame!.rows;
+    final healthy = rows.firstWhere((row) => row.isRootRow);
+    final affected = rows.firstWhere(
+      (row) =>
+          row.isRootRow &&
+          row.workspaceId == healthy.workspaceId &&
+          row.threadId != healthy.threadId,
     );
     var revision = client.recovery.state.revision;
     final projectExecution = StudioRecoveryIssue(
@@ -252,7 +252,7 @@ void main() {
       impact: RecoveryIssueImpact.executionBlocked,
       availableActions: const [],
       workspaceId: null,
-      threadId: affected.id,
+      threadId: affected.threadId,
       detail: 'The existing Thread still depends on the unavailable resource',
     );
     client.recovery.apply(
@@ -262,20 +262,20 @@ void main() {
       ),
     );
 
-    await client.directoryCommands.selectThread(healthy.id);
+    await client.directoryCommands.selectThread(healthy.threadId);
     await client.directoryCommands.openSelectedThread();
-    expect(client.selection.state.selectedThreadId, healthy.id);
-    await client.threadCommands.readChildInteractions(healthy.id);
-    await client.directoryCommands.resumeThreadHistory(healthy.id, 7);
-    expect(transport.reads, [healthy.id]);
-    expect(transport.resumes, [healthy.id]);
+    expect(client.selection.state.selectedThreadId, healthy.threadId);
+    await client.threadCommands.readChildInteractions(healthy.threadId);
+    await client.directoryCommands.resumeThreadHistory(healthy.threadId, 7);
+    expect(transport.reads, [healthy.threadId]);
+    expect(transport.resumes, [healthy.threadId]);
     expect(
       transport.activations,
       isEmpty,
       reason: 'Existing Thread navigation must not perform intermediate Project preparation',
     );
     await expectLater(
-      client.directoryCommands.resumeThreadHistory(affected.id, 7),
+      client.directoryCommands.resumeThreadHistory(affected.threadId, 7),
       throwsA(
         isA<StudioFailure>()
             .having(
@@ -295,7 +295,7 @@ void main() {
             ),
       ),
     );
-    expect(transport.resumes, [healthy.id]);
+    expect(transport.resumes, [healthy.threadId]);
 
     final projectAccess = StudioRecoveryIssue(
       id: 'project-access-unavailable',
@@ -313,7 +313,7 @@ void main() {
       impact: RecoveryIssueImpact.accessBlocked,
       availableActions: const [],
       workspaceId: healthy.workspaceId,
-      threadId: affected.id,
+      threadId: affected.threadId,
       detail: 'The affected Thread history is unreadable',
     );
     client.recovery.apply(
@@ -322,9 +322,9 @@ void main() {
         values: [projectAccess, threadAccess],
       ),
     );
-    await client.directoryCommands.selectThread(healthy.id);
-    await client.threadCommands.readChildInteractions(healthy.id);
-    expect(transport.reads, [healthy.id, healthy.id]);
+    await client.directoryCommands.selectThread(healthy.threadId);
+    await client.threadCommands.readChildInteractions(healthy.threadId);
+    expect(transport.reads, [healthy.threadId, healthy.threadId]);
     await expectLater(
       client.directoryCommands.selectProject(healthy.workspaceId),
       throwsA(
@@ -336,7 +336,7 @@ void main() {
       ),
     );
     await expectLater(
-      client.directoryCommands.selectThread(affected.id),
+      client.directoryCommands.selectThread(affected.threadId),
       throwsA(
         isA<StudioFailure>().having(
           (failure) => recoveryIssueFromFailure(failure)?.id,
@@ -345,7 +345,7 @@ void main() {
         ),
       ),
     );
-    expect(client.selection.state.selectedThreadId, healthy.id);
+    expect(client.selection.state.selectedThreadId, healthy.threadId);
   });
 
   testWidgets(
@@ -445,8 +445,8 @@ void main() {
         graph.client.bootstrap(),
         'sidebar recovery status bootstrap',
       );
-      final root = bootstrap.threadDirectory.threads.firstWhere(
-        (thread) => thread.isRoot,
+      final root = bootstrap.threadDirectory.rows.firstWhere(
+        (row) => row.isRootRow,
       );
       transport.seedThread(root);
       final recoveryRevision = graph.client.recovery.state.revision;
@@ -470,7 +470,7 @@ void main() {
               impact: RecoveryIssueImpact.advisory,
               availableActions: const [],
               workspaceId: root.workspaceId,
-              threadId: root.id,
+              threadId: root.threadId,
               detail: 'Root repository is retrying',
             ),
             StudioRecoveryIssue(
@@ -501,7 +501,7 @@ void main() {
           ),
         ),
       );
-      final rootRow = find.byKey(StudioDriverKeys.threadRow(root.id));
+      final rootRow = find.byKey(StudioDriverKeys.threadRow(root.threadId));
       final projectRow = find.byKey(
         StudioDriverKeys.projectRow(root.workspaceId),
       );
@@ -536,7 +536,7 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
       await tester.pump();
       transport.directoryRevision++;
-      transport.directoryThreads[root.id] = root.copyWith(
+      transport.directoryThreads[root.threadId] = root.copyWith(
         status: ThreadStatusView.running,
       );
       await pumpClientFuture(
@@ -547,17 +547,19 @@ void main() {
       await pumpClientUntil(
         tester,
         () =>
-            directoryDemand.state.value.frame?.threads.any(
-              (thread) =>
-                  thread.id == root.id &&
-                  thread.status == ThreadStatusView.running,
+            directoryDemand.state.value.frame?.rows.any(
+              (row) =>
+                  row.threadId == root.threadId &&
+                  row.status == ThreadStatusView.running,
             ) ==
             true,
         'running root frame is accepted',
       );
       await tester.pump(const Duration(milliseconds: 100));
 
-      final statusSlot = find.byKey(ValueKey('thread-status-slot-${root.id}'));
+      final statusSlot = find.byKey(
+        ValueKey('thread-status-slot-${root.threadId}'),
+      );
       expect(
         find.descendant(
           of: statusSlot,
@@ -633,7 +635,7 @@ void main() {
               impact: RecoveryIssueImpact.executionBlocked,
               availableActions: const [RecoveryIssueAction.retry],
               workspaceId: root.workspaceId,
-              threadId: root.id,
+              threadId: root.threadId,
               detail: 'Root execution is blocked',
             ),
             StudioRecoveryIssue(

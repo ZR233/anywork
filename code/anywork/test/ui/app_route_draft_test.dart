@@ -401,14 +401,14 @@ void main() {
           final directoryFrame = await directoryDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(directoryFrame.frame!.threads, isEmpty);
+          expect(directoryFrame.frame!.rows, isEmpty);
           final metadataDemand = graph.client.threadDirectory.observeThread(
             'thread-alt',
           );
           final metadataFrame = await metadataDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(metadataFrame.frame!.thread?.id, 'thread-alt');
+          expect(metadataFrame.frame!.row?.threadId, 'thread-alt');
           addTearDown(() async {
             await pumpClientFuture(
               tester,
@@ -461,6 +461,7 @@ void main() {
           );
           expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
+          expect(graph.client.existingThreadMcp('thread-alt'), isNull);
           expect(tester.takeException(), isNull);
           final failedFacts = queryStudioDriverFacts(
             graph.client,
@@ -474,7 +475,12 @@ void main() {
           expect(failedFacts.presentationThreadId, 'thread-alt');
           expect(failedFacts.visibleThreadId, isNull);
           expect(failedFacts.timeline!.threadId, 'thread-alt');
-          expect(failedFacts.workspace, isNull);
+          // S1：工作区视图由 typed 目录行驱动（目录观察不占 read-model 预算），
+          // 预算耗尽时仍显示会话工作区身份，但 Native 会话事实保持未装载。
+          expect(failedFacts.workspace, isNotNull);
+          expect(failedFacts.workspace!.row.threadId, 'thread-alt');
+          expect(failedFacts.workspace!.turn, isNull);
+          expect(failedFacts.workspace!.runtime.activeSkills, isEmpty);
           // A released permit must not resurrect a route that has already left.
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await tester.pumpAndSettle();
@@ -575,11 +581,9 @@ void main() {
           expect(observed['navigation']['isStartPage'], isFalse);
           // The visible Conversation owns exact-ID metadata even though the
           // independent sidebar query still has no matching rows.
-          expect(
-            graph.client.findThread('thread-alt'),
-            same(facts.workspace!.thread),
-          );
-          expect(directoryDemand.state.value.frame!.threads, isEmpty);
+          expect(graph.client.findThread('thread-alt'), isNotNull);
+          expect(facts.workspace!.threadId, 'thread-alt');
+          expect(directoryDemand.state.value.frame!.rows, isEmpty);
           expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
           expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(

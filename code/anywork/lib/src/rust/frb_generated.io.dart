@@ -49,6 +49,7 @@ import 'api/studio/types/mode_editor.dart';
 import 'api/studio/types/product_topic.dart';
 import 'api/studio/types/response.dart';
 import 'api/studio/types/runtime.dart';
+import 'api/studio/types/session_directory.dart';
 import 'api/studio/types/settings.dart';
 import 'api/studio/types/shutdown.dart';
 import 'api/studio/types/ssh.dart';
@@ -429,6 +430,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpUsageObservation dco_decode_box_autoadd_bridge_acp_usage_observation(
     dynamic raw,
   );
+
+  @protected
+  BridgeAgentBinding dco_decode_box_autoadd_bridge_agent_binding(dynamic raw);
 
   @protected
   BridgeAgentDirectoryData dco_decode_box_autoadd_bridge_agent_directory_data(
@@ -848,6 +852,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeSessionCostSnapshot dco_decode_box_autoadd_bridge_session_cost_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeSessionDirectoryRow dco_decode_box_autoadd_bridge_session_directory_row(
     dynamic raw,
   );
 
@@ -1455,6 +1464,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
+
+  @protected
+  BridgeAgentBinding dco_decode_bridge_agent_binding(dynamic raw);
+
+  @protected
+  BridgeAgentDefinitionSnapshot dco_decode_bridge_agent_definition_snapshot(
+    dynamic raw,
+  );
 
   @protected
   BridgeAgentDirectoryData dco_decode_bridge_agent_directory_data(dynamic raw);
@@ -2374,6 +2391,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeSessionCostsState dco_decode_bridge_session_costs_state(dynamic raw);
 
   @protected
+  BridgeSessionDirectoryRow dco_decode_bridge_session_directory_row(
+    dynamic raw,
+  );
+
+  @protected
   BridgeSetBotEnabledRequest dco_decode_bridge_set_bot_enabled_request(
     dynamic raw,
   );
@@ -3291,6 +3313,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeSessionDirectoryRow> dco_decode_list_bridge_session_directory_row(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeShutdownIssue> dco_decode_list_bridge_shutdown_issue(dynamic raw);
 
   @protected
@@ -3315,9 +3342,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeStudioRecoveryIssueDto>
   dco_decode_list_bridge_studio_recovery_issue_dto(dynamic raw);
-
-  @protected
-  List<BridgeThread> dco_decode_list_bridge_thread(dynamic raw);
 
   @protected
   List<BridgeThreadActivityToolEntry>
@@ -3650,6 +3674,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSessionCostSnapshot?
   dco_decode_opt_box_autoadd_bridge_session_cost_snapshot(dynamic raw);
+
+  @protected
+  BridgeSessionDirectoryRow?
+  dco_decode_opt_box_autoadd_bridge_session_directory_row(dynamic raw);
 
   @protected
   BridgeStartupRecovery? dco_decode_opt_box_autoadd_bridge_startup_recovery(
@@ -4232,6 +4260,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentBinding sse_decode_box_autoadd_bridge_agent_binding(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentDirectoryData sse_decode_box_autoadd_bridge_agent_directory_data(
     SseDeserializer deserializer,
   );
@@ -4779,6 +4812,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeSessionCostSnapshot sse_decode_box_autoadd_bridge_session_cost_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeSessionDirectoryRow sse_decode_box_autoadd_bridge_session_directory_row(
     SseDeserializer deserializer,
   );
 
@@ -5582,6 +5620,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeActiveTurn sse_decode_bridge_active_turn(SseDeserializer deserializer);
+
+  @protected
+  BridgeAgentBinding sse_decode_bridge_agent_binding(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAgentDefinitionSnapshot sse_decode_bridge_agent_definition_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAgentDirectoryData sse_decode_bridge_agent_directory_data(
@@ -6745,6 +6793,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeSessionDirectoryRow sse_decode_bridge_session_directory_row(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeSetBotEnabledRequest sse_decode_bridge_set_bot_enabled_request(
     SseDeserializer deserializer,
   );
@@ -7842,6 +7895,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeSessionDirectoryRow> sse_decode_list_bridge_session_directory_row(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeShutdownIssue> sse_decode_list_bridge_shutdown_issue(
     SseDeserializer deserializer,
   );
@@ -7870,11 +7928,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeStudioRecoveryIssueDto>
   sse_decode_list_bridge_studio_recovery_issue_dto(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<BridgeThread> sse_decode_list_bridge_thread(
     SseDeserializer deserializer,
   );
 
@@ -8291,6 +8344,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSessionCostSnapshot?
   sse_decode_opt_box_autoadd_bridge_session_cost_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeSessionDirectoryRow?
+  sse_decode_opt_box_autoadd_bridge_session_directory_row(
     SseDeserializer deserializer,
   );
 
@@ -8995,6 +9054,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_agent_binding(
+    BridgeAgentBinding self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_agent_directory_data(
     BridgeAgentDirectoryData self,
     SseSerializer serializer,
@@ -9603,6 +9668,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_session_cost_snapshot(
     BridgeSessionCostSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_session_directory_row(
+    BridgeSessionDirectoryRow self,
     SseSerializer serializer,
   );
 
@@ -10524,6 +10595,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_active_turn(
     BridgeActiveTurn self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_binding(
+    BridgeAgentBinding self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_definition_snapshot(
+    BridgeAgentDefinitionSnapshot self,
     SseSerializer serializer,
   );
 
@@ -11953,6 +12036,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_session_directory_row(
+    BridgeSessionDirectoryRow self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_set_bot_enabled_request(
     BridgeSetBotEnabledRequest self,
     SseSerializer serializer,
@@ -13282,6 +13371,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_session_directory_row(
+    List<BridgeSessionDirectoryRow> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_shutdown_issue(
     List<BridgeShutdownIssue> self,
     SseSerializer serializer,
@@ -13314,12 +13409,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_studio_recovery_issue_dto(
     List<BridgeStudioRecoveryIssueDto> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_bridge_thread(
-    List<BridgeThread> self,
     SseSerializer serializer,
   );
 
@@ -13785,6 +13874,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_session_cost_snapshot(
     BridgeSessionCostSnapshot? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_session_directory_row(
+    BridgeSessionDirectoryRow? self,
     SseSerializer serializer,
   );
 

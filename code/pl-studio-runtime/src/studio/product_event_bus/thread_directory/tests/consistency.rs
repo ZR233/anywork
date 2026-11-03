@@ -3,9 +3,9 @@ use futures::poll;
 
 #[tokio::test]
 async fn one_shot_page_returns_its_consistent_slice_without_waiting_for_quiet() -> Result<()> {
-    let row = thread("existing", "p1", 10);
+    let existing = row("existing", "p1", 10);
     let (_temp, events) = fixture(
-        vec![row],
+        vec![existing],
         vec![project("p1", "Project", "/workspace/project")],
     )
     .await?;
@@ -21,11 +21,11 @@ async fn one_shot_page_returns_its_consistent_slice_without_waiting_for_quiet() 
     let current = events.read_thread_directory_page(None, 10).await?;
     assert!(current.state.revision() > captured.state.revision());
     assert_eq!(
-        captured.state.value().unwrap().threads[0].last_user_message_at,
+        captured.state.value().unwrap().rows[0].last_user_message_at,
         Some(10)
     );
     assert_eq!(
-        current.state.value().unwrap().threads[0].last_user_message_at,
+        current.state.value().unwrap().rows[0].last_user_message_at,
         Some(20)
     );
 
@@ -35,7 +35,7 @@ async fn one_shot_page_returns_its_consistent_slice_without_waiting_for_quiet() 
 
 #[tokio::test]
 async fn legacy_page_matches_the_owner_snapshot_without_concurrency() -> Result<()> {
-    let rows = vec![thread("newer", "p1", 20), thread("older", "p1", 10)];
+    let rows = vec![row("newer", "p1", 20), row("older", "p1", 10)];
     let (_temp, events) =
         fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
 
@@ -44,8 +44,8 @@ async fn legacy_page_matches_the_owner_snapshot_without_concurrency() -> Result<
     assert_eq!(page.state.revision(), owner.state.revision());
     assert_eq!(page.state.updated_at(), owner.state.updated_at());
     assert_eq!(
-        page.state.value().unwrap().threads,
-        owner.state.value().unwrap().threads
+        page.state.value().unwrap().rows,
+        owner.state.value().unwrap().rows
     );
 
     events.writer.shutdown().await?;

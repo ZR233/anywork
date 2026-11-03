@@ -181,10 +181,14 @@ impl Environment {
                 display_name: EXECUTOR.into(),
                 description: "Identity integration".into(),
                 when_to_use: "Identity integration".into(),
-                system_instructions: "Follow the finite fixture script.".into(),
-                account_id: AccountId::new("child-fixture")?,
-                model_id: MODEL.into(),
-                effort: None,
+                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+                    route: Some(pl_protocol::studio::NewThreadModelRoute {
+                        account_id: "child-fixture".into(),
+                        model_id: MODEL.into(),
+                        effort: None,
+                    }),
+                    system_instructions: Some("Follow the finite fixture script.".into()),
+                }),
                 workspace_mode: AgentWorkspaceMode::Worktree,
             },
             &config,

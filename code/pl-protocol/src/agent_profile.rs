@@ -113,6 +113,97 @@ pub struct AgentProfileSnapshot {
     pub workspace_mode: AgentWorkspaceMode,
 }
 
+/// 当前可复用 Profile；定义、后端配置和派发资格分别表达，不持有运行资源。
+///
+/// 历史继续读取 [`AgentProfileSnapshot`]，不以本结构重写已经冻结的 Native 会话。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentProfile {
+    pub definition: crate::agent::AgentDefinitionSnapshot,
+    pub binding: crate::agent::AgentBinding,
+    pub system: bool,
+    pub enabled: bool,
+    pub workspace_mode: AgentWorkspaceMode,
+}
+
+impl AgentProfile {
+    /// 仅在 Native 创建期冻结边界构造既有历史载荷；ACP 不存在 Native 占位值。
+    pub fn freeze_native(&self) -> crate::Result<AgentProfileSnapshot> {
+        let crate::AgentBinding::Native(native) = &self.binding else {
+            return Err(crate::PureError::ConfigError(
+                "ACP execution is not supported before S4".into(),
+            ));
+        };
+        let route = native.route.as_ref().ok_or_else(|| {
+            crate::PureError::ConfigError("child Native Profile has no model route".into())
+        })?;
+        let instructions = native.system_instructions.as_ref().ok_or_else(|| {
+            crate::PureError::ConfigError("child Native Profile has no instructions".into())
+        })?;
+        Ok(AgentProfileSnapshot {
+            profile_id: self.definition.definition_id.clone(),
+            display_name: self.definition.display_name.clone(),
+            description: self.definition.description.clone(),
+            when_to_use: self.definition.when_to_use.clone(),
+            system_instructions: instructions.clone(),
+            account_id: route.account_id.clone(),
+            model_id: route.model_id.clone(),
+            effort: route.effort.clone(),
+            source: self.definition.source.clone(),
+            revision: self.definition.revision.clone(),
+            content_hash: self.definition.content_hash.clone(),
+            system: self.system,
+            enabled: self.enabled,
+            workspace_mode: self.workspace_mode,
+        })
+    }
+}
+
+impl From<AgentProfileSnapshot> for AgentProfile {
+    fn from(profile: AgentProfileSnapshot) -> Self {
+        Self {
+            definition: profile.definition(),
+            binding: profile.native_binding(),
+            system: profile.system,
+            enabled: profile.enabled,
+            workspace_mode: profile.workspace_mode,
+        }
+    }
+}
+
+impl AgentProfileSnapshot {
+    /// 从冻结 Profile 提取可复用定义快照。
+    ///
+    /// 定义身份、显示文本与内容修订进入 [`AgentDefinitionSnapshot`]；模型选择与
+    /// 指令冻结仍归各自 owner，不在定义内复制第二份事实。
+    pub fn definition(&self) -> crate::agent::AgentDefinitionSnapshot {
+        crate::agent::AgentDefinitionSnapshot {
+            definition_id: self.profile_id.clone(),
+            display_name: self.display_name.clone(),
+            description: self.description.clone(),
+            when_to_use: self.when_to_use.clone(),
+            source: self.source.clone(),
+            revision: self.revision.clone(),
+            content_hash: self.content_hash.clone(),
+        }
+    }
+
+    /// 从冻结 Profile 提取 Native 绑定。
+    ///
+    /// Profile 冻结的账号、模型与推理强度复用既有 [`NewThreadModelRoute`]，不
+    /// 重新定义一份模型路由；指令正文留在指令快照与 Profile 冻结域。
+    pub fn native_binding(&self) -> crate::agent::AgentBinding {
+        crate::agent::AgentBinding::Native(crate::agent::NativeAgentConfig {
+            route: Some(crate::studio::NewThreadModelRoute {
+                account_id: self.account_id.clone(),
+                model_id: self.model_id.clone(),
+                effort: self.effort.clone(),
+            }),
+            system_instructions: Some(self.system_instructions.clone()),
+        })
+    }
+}
+
 const fn default_true() -> bool {
     true
 }

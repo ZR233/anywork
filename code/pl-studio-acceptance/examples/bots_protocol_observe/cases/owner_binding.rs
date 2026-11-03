@@ -1091,10 +1091,10 @@ async fn list_thread_facts(session: &Session) -> Result<BTreeSet<ThreadFact>> {
             .state
             .value()
             .context("thread directory page had no canonical value")?;
-        for thread in &data.threads {
+        for row in &data.rows {
             facts.insert(ThreadFact {
-                id: thread.id.clone(),
-                workspace_id: thread.workspace_id.clone(),
+                id: row.thread_id.clone(),
+                workspace_id: row.workspace_id.clone(),
             });
         }
         ensure!(

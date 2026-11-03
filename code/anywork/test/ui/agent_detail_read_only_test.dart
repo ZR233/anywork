@@ -114,12 +114,10 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
       revision: 1,
       values: [
         StudioAgentView(
-          id: _childId,
+          agentId: _childId,
+          sessionId: 'thread-main',
+          parentAgentId: 'thread-main',
           threadId: _childId,
-          path: 'root/reviewer',
-          parentPath: 'root',
-          rootThreadId: 'thread-main',
-          depth: 1,
           role: 'reviewer',
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,

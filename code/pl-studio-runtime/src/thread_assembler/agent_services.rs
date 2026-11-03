@@ -96,7 +96,7 @@ struct Cursor {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Profiles<'a> {
-    profiles: &'a [pl_protocol::AgentProfileSnapshot],
+    profiles: &'a [pl_protocol::AgentProfile],
     diagnostics: &'a [crate::config::AgentProfileDiagnostic],
 }
 
@@ -239,6 +239,9 @@ impl AgentServices {
         caller: &str,
         target: &str,
     ) -> Result<()> {
+        // Typed directory/backend admission precedes Native ancestry, workspace, checkpoint and
+        // Recovery work. The same resolved activation is consumed by the assembler below.
+        let activation = self.factory.activation(target)?;
         self.authorize(caller, target).await?;
         self.store.ensure_agent_execution_allowed(target).await?;
         let record = self.record(target).await?;
@@ -264,15 +267,7 @@ impl AgentServices {
             record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
             "only an active direct child can be resumed"
         );
-        let activated = owner
-            .activate(
-                super::ThreadActivation {
-                    id: record.id.clone(),
-                    parent_id: record.parent_thread_id.clone(),
-                },
-                self.factory.clone(),
-            )
-            .await;
+        let activated = owner.activate(activation, self.factory.clone()).await;
         if let Err(error) = activated {
             // An internal scheduling activation is the same product fact as an explicit one, so its
             // failure publishes the member's Recovery diagnosis instead of only returning an error;
@@ -317,10 +312,7 @@ impl AgentServices {
         })?;
         owner
             .activate_verified_review(
-                super::ThreadActivation {
-                    id: checked.id,
-                    parent_id: checked.parent_thread_id,
-                },
+                self.factory.activation(&checked.id)?,
                 self.factory.clone(),
                 proof,
                 operation,
@@ -344,33 +336,46 @@ impl AgentServices {
         &self,
         caller: &str,
         target: &str,
-    ) -> Result<Vec<pl_protocol::ThreadId>> {
+    ) -> Result<Vec<pl_protocol::AgentId>> {
         let caller = self.record(caller).await?;
         let mut record = self.record(target).await?;
         let target_root = record.root_thread_id.clone();
-        let mut path = Vec::new();
+        let mut thread_path = Vec::new();
         loop {
-            if path
+            if thread_path
                 .iter()
                 .any(|id: &pl_protocol::ThreadId| id.as_str() == record.id)
             {
                 bail!("cyclic agent ancestry");
             }
-            path.push(pl_protocol::ThreadId::new(record.id.clone())?);
+            thread_path.push(pl_protocol::ThreadId::new(record.id.clone())?);
             let Some(parent) = record.parent_thread_id else {
                 break;
             };
             record = self.record(&parent).await?;
         }
-        validate_scope(&caller.id, &caller.root_thread_id, &target_root, &path)?;
-        path.reverse();
-        Ok(path)
+        validate_scope(
+            &caller.id,
+            &caller.root_thread_id,
+            &target_root,
+            &thread_path,
+        )?;
+        thread_path.reverse();
+        thread_path
+            .into_iter()
+            .map(|thread_id| {
+                self.events
+                    .agent_execution_identity(thread_id.as_str())
+                    .map(|(identity, _, _)| identity.agent_id)
+                    .context("agent directory identity is missing")
+            })
+            .collect()
     }
     async fn session_page(
         &self,
         owner: &StudioThreadAssembler,
         input: SessionInput,
-        path: Vec<pl_protocol::ThreadId>,
+        path: Vec<pl_protocol::AgentId>,
     ) -> Result<AgentSessionPage> {
         self.recovery
             .ensure_thread_read_access(&self.record(&input.target).await?)?;
@@ -431,7 +436,11 @@ impl AgentServices {
             None
         };
         Ok(AgentSessionPage {
-            agent_id: pl_protocol::ThreadId::new(input.target)?,
+            agent_id: self
+                .events
+                .agent_execution_identity(&input.target)
+                .map(|(identity, _, _)| identity.agent_id)
+                .context("agent directory identity is missing")?,
             path,
             through_sequence: through,
             order: match input.order {

@@ -200,11 +200,11 @@ void main() {
       DirectoryQuery(workspaceId: project.id, filter: DirectoryFilter.running),
     );
     expect(
-      runningFrame.threads.map((thread) => thread.id),
+      runningFrame.rows.map((row) => row.threadId),
       contains(fixture.runningThread.id),
     );
     expect(
-      runningFrame.threads.map((thread) => thread.id),
+      runningFrame.rows.map((row) => row.threadId),
       isNot(contains(fixture.attentionThread.id)),
     );
 
@@ -226,7 +226,7 @@ void main() {
       ),
     );
     expect(
-      attentionFrame.threads.map((thread) => thread.id),
+      attentionFrame.rows.map((row) => row.threadId),
       contains(fixture.attentionThread.id),
     );
 
@@ -458,7 +458,7 @@ void main() {
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
     expect(
-      archivedFrame.threads.map((thread) => thread.id),
+      archivedFrame.rows.map((row) => row.threadId),
       contains(fixture.thread.id),
     );
 
@@ -526,7 +526,7 @@ void main() {
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
     expect(
-      afterRestore.threads.map((thread) => thread.id),
+      afterRestore.rows.map((row) => row.threadId),
       isNot(contains(fixture.thread.id)),
     );
     await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
@@ -876,7 +876,7 @@ void main() {
           );
         }
         expect(
-          baselineFrame.threads.any((thread) => thread.id == deletedThreadId),
+          baselineFrame.rows.any((row) => row.threadId == deletedThreadId),
           isTrue,
           reason: 'the held canonical directory must first contain the target',
         );
@@ -1022,7 +1022,7 @@ void main() {
               final frame = state.frame;
               return frame != null &&
                   frame.stamp.covers(deletionStamp) &&
-                  frame.threads.every((thread) => thread.id != deletedThreadId);
+                  frame.rows.every((row) => row.threadId != deletedThreadId);
             })
             .timeout(const Duration(seconds: 60));
         if (deletedState.error case final error?) {
@@ -1036,9 +1036,7 @@ void main() {
         final deletedFrame = deletedState.frame;
         if (deletedFrame == null ||
             !deletedFrame.stamp.covers(deletionStamp) ||
-            deletedFrame.threads.any(
-              (thread) => thread.id == deletedThreadId,
-            )) {
+            deletedFrame.rows.any((row) => row.threadId == deletedThreadId)) {
           throw StateError(
             'Canonical directory did not confirm deletion of $deletedThreadId',
           );
@@ -1098,8 +1096,8 @@ Future<void> _writeArchiveTargetDiagnostic(
   Map<String, Object?> windows(Map<String, SidebarWindow> source) => {
     for (final entry in source.entries)
       entry.key: {
-        'threadIds': entry.value.threads
-            .map((thread) => thread.id)
+        'threadIds': entry.value.rows
+            .map((row) => row.threadId)
             .toList(growable: false),
         'loading': entry.value.loading,
         'error': entry.value.error,

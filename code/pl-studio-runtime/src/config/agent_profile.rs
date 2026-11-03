@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode};
+use pl_protocol::{
+    AgentBinding, AgentDefinitionSnapshot, AgentProfile, AgentProfileSnapshot, AgentWorkspaceMode,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{PureError, Result};
@@ -17,11 +19,7 @@ pub struct UserAgentProfile {
     pub display_name: String,
     pub description: String,
     pub when_to_use: String,
-    pub system_instructions: String,
-    pub account_id: AccountId,
-    pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<ReasoningEffort>,
+    pub binding: AgentBinding,
     #[serde(default)]
     pub workspace_mode: AgentWorkspaceMode,
 }
@@ -37,7 +35,7 @@ pub struct AgentProfileDiagnostic {
 /// 一次已发布扫描的 Profile 配置与诊断；派发视图还需排除禁用和不可执行项。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentProfileCatalog {
-    pub profiles: Vec<AgentProfileSnapshot>,
+    pub profiles: Vec<AgentProfile>,
     pub diagnostics: Vec<AgentProfileDiagnostic>,
     unavailable_profiles: BTreeSet<String>,
     directory_error: Option<String>,
@@ -73,8 +71,8 @@ impl AgentProfileCatalog {
                     super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
                         &path,
                         "agent-profile",
-                        Some(1),
-                        1,
+                        Some(2),
+                        2,
                         "validate",
                         error,
                     ))
@@ -93,8 +91,8 @@ impl AgentProfileCatalog {
                     super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
                         &path,
                         "agent-profile",
-                        Some(1),
-                        1,
+                        Some(2),
+                        2,
                         "validate",
                         error,
                     ))
@@ -122,22 +120,47 @@ impl AgentProfileCatalog {
     /// Automatic mode needs enabled roles, not the availability of their fixed model routes.
     pub(crate) fn executable(&self, mode: pl_protocol::DelegationMode) -> Result<Self> {
         let mut catalog = self.enabled_for_dispatch()?;
+        // Automatic selection may replace a Native route, not turn an unsupported backend into
+        // Native. ACP configurations remain visible in Settings but are never dispatch entries.
+        catalog
+            .profiles
+            .retain(|profile| matches!(profile.binding, AgentBinding::Native(_)));
         if mode == pl_protocol::DelegationMode::Profile {
-            catalog
-                .profiles
-                .retain(|profile| !self.unavailable_profiles.contains(&profile.profile_id));
+            catalog.profiles.retain(|profile| {
+                !self
+                    .unavailable_profiles
+                    .contains(&profile.definition.definition_id)
+            });
         }
         Ok(catalog)
     }
 
-    fn push_profile(&mut self, profile: AgentProfileSnapshot, config: &StudioConfig) {
-        if let Err(error) = crate::studio::delegation::resolve_child_route(config, &profile) {
-            self.unavailable_profiles.insert(profile.profile_id.clone());
+    fn push_profile(&mut self, profile: AgentProfile, config: &StudioConfig) {
+        let availability = match &profile.binding {
+            AgentBinding::Acp(acp) => config
+                .acp
+                .accounts
+                .get(&acp.account_id)
+                .ok_or_else(|| {
+                    PureError::ConfigError(format!("unknown ACP account `{}`", acp.account_id))
+                })
+                .and_then(super::acp::validate_acp_account)
+                .and_then(|_| {
+                    crate::studio::delegation::resolve_current_child_route(config, &profile)
+                        .map(|_| ())
+                }),
+            AgentBinding::Native(_) => {
+                crate::studio::delegation::resolve_current_child_route(config, &profile).map(|_| ())
+            }
+        };
+        if let Err(error) = availability {
+            self.unavailable_profiles
+                .insert(profile.definition.definition_id.clone());
             self.diagnostics.push(AgentProfileDiagnostic {
-                path: PathBuf::from(&profile.source),
+                path: PathBuf::from(&profile.definition.source),
                 message: format!(
                     "Agent Profile `{}` is unavailable: {error}",
-                    profile.profile_id
+                    profile.definition.definition_id
                 ),
             });
         }
@@ -207,22 +230,31 @@ impl AgentProfileCatalog {
     }
 }
 
-/// Resolves a frozen Profile against one configuration snapshot without changing stored routes.
+/// Resolves a current Native Profile against one configuration snapshot.
 ///
 /// # Errors
 /// Returns missing account/model bindings or invalid route parameters.
 pub fn resolve_profile_route(
     config: &crate::config::StudioConfig,
-    profile: &pl_protocol::AgentProfileSnapshot,
+    profile: &AgentProfile,
 ) -> Result<pl_model::config::ResolvedModelRoute> {
-    let role = pl_model::config::AgentRoleId::new(profile.profile_id.clone())?;
+    let AgentBinding::Native(native) = &profile.binding else {
+        return Err(PureError::ConfigError(
+            "ACP execution is not supported before S4".into(),
+        ));
+    };
+    let route = native
+        .route
+        .as_ref()
+        .ok_or_else(|| PureError::ConfigError("child Native Profile has no model route".into()))?;
+    let role = pl_model::config::AgentRoleId::new(profile.definition.definition_id.clone())?;
     let mut models = config.models.clone();
     models.routes.insert(
         role.clone(),
         pl_model::config::ModelRouteConfig {
-            account_id: pl_model::config::AccountId::new(profile.account_id.clone())?,
-            model_id: profile.model_id.clone(),
-            effort: profile
+            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
+            model_id: route.model_id.clone(),
+            effort: route
                 .effort
                 .as_ref()
                 .map(|effort| pl_model::config::ReasoningEffort::new(effort.clone())),
@@ -240,7 +272,7 @@ pub fn save_user_agent_profile(
 ) -> Result<bool> {
     validate_user_agent_profile_id(profile_id)?;
     validate_user_profile(profile_id, profile, config)?;
-    let content = super::document_migration::ProfileV1::from_current(profile)
+    let content = super::document_migration::ProfileV2::from_current(profile)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!(
@@ -312,7 +344,7 @@ fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfil
 fn system_profile(
     definition: &crate::agent::catalog::BuiltinAgentDefinition,
     config: &StudioConfig,
-) -> Result<AgentProfileSnapshot> {
+) -> Result<AgentProfile> {
     let route = effective_system_profile_route(config, &definition.identity.id)?;
     let agent = crate::agent::definition::ResolvedAgentDefinition::from_builtin(definition);
     let snapshot = AgentProfileSnapshot {
@@ -339,13 +371,13 @@ fn system_profile(
             ))
         })?,
     };
-    Ok(with_content_hash(snapshot))
+    Ok(with_content_hash(snapshot).into())
 }
 
 pub(crate) fn system_agent_profile(
     config: &StudioConfig,
     profile_id: &str,
-) -> Result<AgentProfileSnapshot> {
+) -> Result<AgentProfile> {
     let definition = crate::agent::catalog::definition(profile_id)?
         .ok_or_else(|| PureError::ConfigError(format!("unknown bundled Agent `{profile_id}`")))?;
     if definition.identity.scope != crate::agent::definition::AgentDefinitionScope::Child {
@@ -356,7 +388,7 @@ pub(crate) fn system_agent_profile(
     system_profile(definition, config)
 }
 
-pub(crate) fn system_agent_profiles(config: &StudioConfig) -> Result<Vec<AgentProfileSnapshot>> {
+pub(crate) fn system_agent_profiles(config: &StudioConfig) -> Result<Vec<AgentProfile>> {
     crate::agent::catalog::definitions()?
         .iter()
         .filter(|definition| {
@@ -387,7 +419,7 @@ pub(crate) fn effective_system_profile_route(
     ))
 }
 
-fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<AgentProfileSnapshot>> {
+fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<AgentProfile>> {
     let profile_id = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -407,24 +439,28 @@ fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<Agent
             })?
             .as_bytes(),
     );
-    let snapshot = AgentProfileSnapshot {
-        profile_id: profile_id.to_string(),
-        display_name: profile.display_name,
-        description: profile.description,
-        when_to_use: profile.when_to_use,
-        system_instructions: profile.system_instructions,
-        account_id: profile.account_id.as_str().to_string(),
-        model_id: profile.model_id,
-        effort: profile.effort.map(|effort| effort.as_str().to_string()),
-        source: path.to_string_lossy().into_owned(),
-        // Revision describes the business Profile, independent of its TOML schema header.
-        revision,
-        content_hash: String::new(),
+    let mut current = AgentProfile {
+        definition: AgentDefinitionSnapshot {
+            definition_id: profile_id.to_string(),
+            display_name: profile.display_name,
+            description: profile.description,
+            when_to_use: profile.when_to_use,
+            source: path.to_string_lossy().into_owned(),
+            revision,
+            content_hash: String::new(),
+        },
+        binding: profile.binding,
         system: false,
         enabled: profile.enabled,
         workspace_mode: profile.workspace_mode,
     };
-    Ok(Some(with_content_hash(snapshot)))
+    current.definition.content_hash = match &current.binding {
+        AgentBinding::Native(_) => with_content_hash(current.freeze_native()?).content_hash,
+        AgentBinding::Acp(_) => pl_core::context::content_hash(
+            &serde_json::to_vec(&current).expect("Agent Profile must serialize"),
+        ),
+    };
+    Ok(Some(current))
 }
 
 fn parse_profile_content(profile_id: &str, content: &str) -> Result<UserAgentProfile> {
@@ -436,23 +472,36 @@ fn parse_profile_content(profile_id: &str, content: &str) -> Result<UserAgentPro
     Ok(profile)
 }
 
-fn validate_user_profile(
+pub(super) fn validate_user_profile(
     profile_id: &str,
     profile: &UserAgentProfile,
     config: &StudioConfig,
 ) -> Result<()> {
     validate_user_profile_fields(profile_id, profile)?;
-    config
-        .models
-        .resolve_route(
-            pl_model::config::AgentRoleId::new(profile_id)?,
-            &ModelRouteConfig {
-                account_id: profile.account_id.clone(),
-                model_id: profile.model_id.clone(),
-                effort: profile.effort.clone(),
-            },
-        )
-        .map(|_| ())
+    match &profile.binding {
+        AgentBinding::Native(native) => {
+            let route = native.route.as_ref().ok_or_else(|| {
+                PureError::ConfigError("child Native Profile has no model route".into())
+            })?;
+            config
+                .models
+                .resolve_route(
+                    AgentRoleId::new(profile_id)?,
+                    &ModelRouteConfig {
+                        account_id: AccountId::new(route.account_id.clone())?,
+                        model_id: route.model_id.clone(),
+                        effort: route.effort.clone().map(ReasoningEffort::new),
+                    },
+                )
+                .map(|_| ())
+        }
+        AgentBinding::Acp(acp) => {
+            let account = config.acp.accounts.get(&acp.account_id).ok_or_else(|| {
+                PureError::ConfigError(format!("unknown ACP account `{}`", acp.account_id))
+            })?;
+            super::acp::validate_acp_account(account)
+        }
+    }
 }
 
 pub(super) fn validate_user_profile_fields(
@@ -463,14 +512,31 @@ pub(super) fn validate_user_profile_fields(
         ("display_name", profile.display_name.as_str()),
         ("description", profile.description.as_str()),
         ("when_to_use", profile.when_to_use.as_str()),
-        ("system_instructions", profile.system_instructions.as_str()),
-        ("model", profile.model_id.as_str()),
     ] {
         if value.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
                 "Agent Profile `{profile_id}` has empty {field}"
             )));
         }
+    }
+    match &profile.binding {
+        AgentBinding::Native(native) => {
+            let route = native.route.as_ref().ok_or_else(|| {
+                PureError::ConfigError("child Native Profile has no model route".into())
+            })?;
+            AccountId::new(route.account_id.clone())?;
+            if route.model_id.trim().is_empty()
+                || native
+                    .system_instructions
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(PureError::ConfigError(format!(
+                    "Agent Profile `{profile_id}` requires Native model and instructions"
+                )));
+            }
+        }
+        AgentBinding::Acp(acp) => super::acp::validate_acp_account_id(&acp.account_id)?,
     }
     Ok(())
 }

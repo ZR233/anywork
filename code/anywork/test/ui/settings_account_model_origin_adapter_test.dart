@@ -158,8 +158,10 @@ void main() {
       reasoningEfforts: [],
       typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
     );
-    final thread = StudioThread(
-      id: 'thread',
+    final thread = SessionDirectoryRow(
+      sessionId: 'thread',
+      agentId: 'thread',
+      threadId: 'thread',
       workspaceId: 'project',
       title: 'Thread',
       mode: ThreadModeId.simple,
@@ -170,8 +172,8 @@ void main() {
     );
     StudioComposerProjection projection(AccountModelView value) =>
         StudioComposerProjection(
-          thread: thread,
-          rootThread: thread,
+          row: thread,
+          rootRow: thread,
           syncState: AgentWorkspaceSyncState.ready,
           loadError: null,
           composer: const ComposerThreadState.idle(),

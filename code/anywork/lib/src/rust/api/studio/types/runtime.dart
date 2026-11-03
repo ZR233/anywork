@@ -31,18 +31,16 @@ class BridgeActiveTurn {
 }
 
 class BridgeAgentDirectoryEntryDto {
-  final String id;
+  final String agentId;
+  final String sessionId;
+  final String? parentAgentId;
   final String threadId;
-  final String rootThreadId;
-  final String path;
-  final String? parentPath;
   final String role;
   final BridgeDelegationMode delegationMode;
   final BridgeDelegationPreference delegationPreference;
   final BridgeNewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
-  final int depth;
   final BridgeAgentState state;
 
   /// 该成员当前执行；未装载或无当前执行时为空。
@@ -56,18 +54,16 @@ class BridgeAgentDirectoryEntryDto {
   final PlatformInt64 updatedAt;
 
   const BridgeAgentDirectoryEntryDto({
-    required this.id,
+    required this.agentId,
+    required this.sessionId,
+    this.parentAgentId,
     required this.threadId,
-    required this.rootThreadId,
-    required this.path,
-    this.parentPath,
     required this.role,
     required this.delegationMode,
     required this.delegationPreference,
     this.frozenModel,
     required this.task,
     this.summary,
-    required this.depth,
     required this.state,
     this.execution,
     required this.canStop,
@@ -77,18 +73,16 @@ class BridgeAgentDirectoryEntryDto {
 
   @override
   int get hashCode =>
-      id.hashCode ^
+      agentId.hashCode ^
+      sessionId.hashCode ^
+      parentAgentId.hashCode ^
       threadId.hashCode ^
-      rootThreadId.hashCode ^
-      path.hashCode ^
-      parentPath.hashCode ^
       role.hashCode ^
       delegationMode.hashCode ^
       delegationPreference.hashCode ^
       frozenModel.hashCode ^
       task.hashCode ^
       summary.hashCode ^
-      depth.hashCode ^
       state.hashCode ^
       execution.hashCode ^
       canStop.hashCode ^
@@ -100,18 +94,16 @@ class BridgeAgentDirectoryEntryDto {
       identical(this, other) ||
       other is BridgeAgentDirectoryEntryDto &&
           runtimeType == other.runtimeType &&
-          id == other.id &&
+          agentId == other.agentId &&
+          sessionId == other.sessionId &&
+          parentAgentId == other.parentAgentId &&
           threadId == other.threadId &&
-          rootThreadId == other.rootThreadId &&
-          path == other.path &&
-          parentPath == other.parentPath &&
           role == other.role &&
           delegationMode == other.delegationMode &&
           delegationPreference == other.delegationPreference &&
           frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
-          depth == other.depth &&
           state == other.state &&
           execution == other.execution &&
           canStop == other.canStop &&

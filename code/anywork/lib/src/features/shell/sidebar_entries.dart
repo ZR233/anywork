@@ -21,19 +21,19 @@ Future<void> _archiveThreadFromSidebar(
 Future<void> _deleteThreadFromSidebar(
   BuildContext context,
   AnyworkClient client,
-  StudioThread thread,
+  SessionDirectoryRow row,
 ) async {
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
     builder: (context) => ThreadDestructiveActionDialog(
-      key: StudioDriverKeys.deleteThreadDialog(thread.id),
-      title: context.l10n.sidebarDeleteSessionConfirmTitle(thread.title),
+      key: StudioDriverKeys.deleteThreadDialog(row.threadId),
+      title: context.l10n.sidebarDeleteSessionConfirmTitle(row.title),
       body: context.l10n.sidebarDeleteSessionConfirmBody,
       actionLabel: context.l10n.sidebarDeleteSessionConfirmAction,
-      confirmKey: StudioDriverKeys.deleteThreadConfirm(thread.id),
+      confirmKey: StudioDriverKeys.deleteThreadConfirm(row.threadId),
       danger: true,
-      onConfirm: () => client.threadCommands.deleteThread(thread.id),
+      onConfirm: () => client.threadCommands.deleteThread(row.threadId),
     ),
   );
 }
@@ -139,15 +139,15 @@ class _ThreadDestructiveActionDialogState
 Future<void> _renameThreadFromSidebar(
   BuildContext context,
   AnyworkClient client,
-  StudioThread thread,
+  SessionDirectoryRow row,
 ) async {
   final title = await showDialog<String>(
     context: context,
-    builder: (context) => _RenameThreadDialog(thread: thread),
+    builder: (context) => _RenameThreadDialog(row: row),
   );
   if (title == null || !context.mounted) return;
   try {
-    await client.threadCommands.renameThread(thread.id, title);
+    await client.threadCommands.renameThread(row.threadId, title);
   } on Object {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -157,9 +157,9 @@ Future<void> _renameThreadFromSidebar(
 }
 
 class _RenameThreadDialog extends StatefulWidget {
-  const _RenameThreadDialog({required this.thread});
+  const _RenameThreadDialog({required this.row});
 
-  final StudioThread thread;
+  final SessionDirectoryRow row;
 
   @override
   State<_RenameThreadDialog> createState() => _RenameThreadDialogState();
@@ -167,7 +167,7 @@ class _RenameThreadDialog extends StatefulWidget {
 
 class _RenameThreadDialogState extends State<_RenameThreadDialog> {
   late final TextEditingController _controller = TextEditingController(
-    text: widget.thread.title,
+    text: widget.row.title,
   );
   String? _error;
 
@@ -193,10 +193,10 @@ class _RenameThreadDialogState extends State<_RenameThreadDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      key: StudioDriverKeys.renameThreadDialog(widget.thread.id),
+      key: StudioDriverKeys.renameThreadDialog(widget.row.threadId),
       title: Text(context.l10n.sidebarRenameSessionTitle),
       content: TextField(
-        key: StudioDriverKeys.renameThreadInput(widget.thread.id),
+        key: StudioDriverKeys.renameThreadInput(widget.row.threadId),
         controller: _controller,
         autofocus: true,
         maxLength: 80,
@@ -213,7 +213,7 @@ class _RenameThreadDialogState extends State<_RenameThreadDialog> {
           child: Text(context.l10n.commonCancel),
         ),
         FilledButton(
-          key: StudioDriverKeys.renameThreadSave(widget.thread.id),
+          key: StudioDriverKeys.renameThreadSave(widget.row.threadId),
           onPressed: _submit,
           child: Text(context.l10n.commonSave),
         ),

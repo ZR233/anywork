@@ -39,15 +39,15 @@ class SidebarQuerySelection {
 @immutable
 class SidebarWindow {
   SidebarWindow({
-    List<StudioThread> threads = const [],
+    List<SessionDirectoryRow> rows = const [],
     this.loading = false,
     this.error,
     this.hasMore = false,
     this.hasPrevious = false,
     this.loaded = false,
-  }) : threads = List.unmodifiable(threads);
+  }) : rows = List.unmodifiable(rows);
 
-  final List<StudioThread> threads;
+  final List<SessionDirectoryRow> rows;
   final bool loading;
   final String? error;
   final bool hasMore;

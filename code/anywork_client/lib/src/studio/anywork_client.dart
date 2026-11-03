@@ -81,7 +81,7 @@ class AnyworkClient {
     );
     conversations = conversationOwner;
     _childInteractionVisibleWatch = conversationOwner.visibleThreadId.watch(
-      _onChildInteractionVisibleMirror,
+      _onVisibleThreadMirror,
     );
     drafts = DraftsRepositoryImpl(
       DraftsDependencies(
@@ -327,7 +327,75 @@ class AnyworkClient {
   String? _childInteractionPageHost;
   BridgeTopicLease? _childInteractionPageLease;
   Observation? _childInteractionPageWatch;
+  String? _threadMcpPageThread;
+  BridgeTopicLease? _threadMcpPageLease;
   late final Observation _childInteractionVisibleWatch;
+
+  void _onVisibleThreadMirror(String? threadId) {
+    _onThreadMcpVisibleMirror(threadId);
+    _onChildInteractionVisibleMirror(threadId);
+  }
+
+  void _onThreadMcpVisibleMirror(String? threadId) {
+    if (_closed) return;
+    if (threadId == _threadMcpPageThread) return;
+    _releaseThreadMcpPageDemand();
+    if (threadId == null) return;
+    _threadMcpPageThread = threadId;
+    _acquireThreadMcpPageLease(threadId);
+  }
+
+  void _acquireThreadMcpPageLease(String threadId) {
+    if (_closed ||
+        _threadMcpPageThread != threadId ||
+        _threadMcpPageLease != null) {
+      return;
+    }
+    try {
+      _threadMcpPageLease = channels.acquireThreadMcp(threadId);
+      final failure = resourceFailure.value;
+      if (failure?.owner == 'thread-mcp-page:$threadId') {
+        resourceFailure.publish(null);
+      }
+    } catch (error) {
+      resourceFailure.publish(
+        UnresolvedResource(
+          owner: 'thread-mcp-page:$threadId',
+          attemptId: const AttemptId(0),
+          reason: error,
+        ),
+      );
+    }
+  }
+
+  void _releaseThreadMcpPageDemand() {
+    final threadId = _threadMcpPageThread;
+    _threadMcpPageThread = null;
+    final lease = _threadMcpPageLease;
+    _threadMcpPageLease = null;
+    if (lease == null) return;
+    // The registry retains the exact handle and permit if cancel fails.
+    unawaited(
+      lease.release().catchError((Object error) {
+        resourceFailure.publish(
+          UnresolvedResource(
+            owner: 'thread-mcp-page:${threadId!}',
+            attemptId: const AttemptId(0),
+            reason: error,
+          ),
+        );
+      }),
+    );
+  }
+
+  void _retryThreadMcpPageDemand(String threadId) {
+    if (_closed ||
+        _threadMcpPageThread != threadId ||
+        _threadMcpPageLease != null) {
+      return;
+    }
+    _acquireThreadMcpPageLease(threadId);
+  }
 
   void _onChildInteractionVisibleMirror(String? threadId) {
     if (_closed) return;
@@ -350,9 +418,9 @@ class AnyworkClient {
     var settled = false;
     void evaluate(ThreadSessionState state) {
       if (settled || _closed) return;
-      if (!state.hasSnapshot) return;
-      final thread = state.workspace?.thread;
-      if (thread == null || !thread.isRoot) {
+      final row = state.directoryRow;
+      if (row == null) return;
+      if (row.isChildRow) {
         // 非宿主页面没有子交互主题需求；不再等待该会话的进一步变化。
         settled = true;
         _childInteractionPageWatch?.cancel();
@@ -440,11 +508,12 @@ class AnyworkClient {
   void retryResource(ProductTopic topic) {
     _ensureOpen();
     final selected = selection.state;
-    final selectedRoot = findThread(selected.selectedThreadId ?? '')
-        ?.effectiveRootThreadId;
+    final selectedSession = threadDirectory
+        .observedThread(selected.selectedThreadId ?? '')
+        ?.sessionId;
     if (topic is SkillsTopic &&
             topic.workspaceId == selected.selectedProjectId ||
-        topic is SessionCostsTopic && topic.rootThreadId == selectedRoot) {
+        topic is SessionCostsTopic && topic.rootThreadId == selectedSession) {
       // Admission may have failed before a topic owner existed. Retry logical
       // demand here rather than asking an observer to create that owner.
       _selectionChanged(selected);
@@ -452,6 +521,13 @@ class AnyworkClient {
     if (topic is ChildInteractionsTopic) {
       // Same admission-failure case: the page share re-arms its own owner.
       _retryChildInteractionPageDemand(topic.hostThreadId);
+    }
+    if (topic is ThreadMcpTopic &&
+        conversations.visibleThreadId.value == topic.threadId &&
+        _threadMcpPageLease == null) {
+      _retryThreadMcpPageDemand(topic.threadId);
+      // A newly admitted page starts its connection once; only an existing lease reconnects.
+      return;
     }
     channels.retryTopic(topic);
   }
@@ -588,15 +664,16 @@ class AnyworkClient {
   void _selectionChanged(SelectionStoreState next) {
     if (_closed) return;
     final workspaceId = next.selectedProjectId;
-    final rootId = AgentDirectoryQueries.rootThreadId(
+    final sessionId = AgentDirectoryQueries.sessionId(
       threadId: next.selectedThreadId,
       agents: project.state.agents?.values ?? const [],
-      threads: [
-        if (findThread(next.selectedThreadId ?? '') case final selected?)
-          selected,
+      rows: [
+        if (threadDirectory.observedThread(next.selectedThreadId ?? '')
+            case final row?)
+          row,
       ],
     );
-    final topicKey = '$workspaceId/$rootId';
+    final topicKey = '$workspaceId/$sessionId';
     if (_selectionTopicKey != topicKey) {
       final previous = _selectionTopics;
       _selectionTopics = null;
@@ -618,7 +695,7 @@ class AnyworkClient {
       try {
         _selectionTopics = channels.acquireTopics([
           if (workspaceId != null) SkillsTopic(workspaceId: workspaceId),
-          if (rootId != null) SessionCostsTopic(rootThreadId: rootId),
+          if (sessionId != null) SessionCostsTopic(rootThreadId: sessionId),
         ]);
         _selectionTopicKey = topicKey;
         resourceFailure.publish(null);
@@ -660,6 +737,7 @@ class AnyworkClient {
     _closed = true;
     _selectionObservation.cancel();
     _childInteractionVisibleWatch.cancel();
+    _releaseThreadMcpPageDemand();
     _releaseChildInteractionPageDemand();
     _queries.seal();
     // Both domains seal synchronously before independent close joins await.

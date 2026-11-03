@@ -19,6 +19,7 @@ import 'types/mcp.dart';
 import 'types/product_topic.dart';
 import 'types/response.dart';
 import 'types/runtime.dart';
+import 'types/session_directory.dart';
 import 'types/settings.dart';
 import 'types/thread_stream.dart';
 import 'types/updater.dart';

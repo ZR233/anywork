@@ -1,12 +1,13 @@
 import '../support/chat_fixtures.dart';
-import '../support/mapped_conversation_feed.dart';
 
 import '../support/test_statistics_feed.dart';
 
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/recording_demo_transport.dart';
@@ -18,13 +19,74 @@ void main() {
     final fixture = await _fixture();
     final client = fixture.graph.client;
     // A member of another root is not a target of the current root's menu.
-    await client.directoryCommands.selectAgentThread(fixture.other.id);
+    await client.directoryCommands.selectAgentThread(fixture.other.threadId);
     expect(fixture.transport.metadataReads, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
 
-    await client.directoryCommands.selectAgentThread(fixture.child.id);
+    await client.directoryCommands.selectAgentThread(fixture.child.threadId);
     await _expectSelectedHistory(fixture);
   });
+
+  test(
+    'shell resolves child root metadata through the root agent thread ID',
+    () async {
+      final fixture = await _fixture(distinctRootIdentity: true);
+      final graph = fixture.graph;
+      final root = fixture.root;
+      final child = fixture.child;
+      expect((root.sessionId, root.agentId, root.threadId), ('S', 'A', 'T'));
+      expect(child.parentAgentId, 'A');
+      expect(child.sessionId, 'S');
+      expect(child.threadId, 'C');
+      expect(
+        fixture.agents.singleWhere((agent) => agent.agentId == 'A').threadId,
+        'T',
+      );
+
+      final childObservation = graph.client.threadDirectory.observeThread(
+        child.threadId,
+      );
+      await childObservation.state
+          .waitFor((state) => state.frame?.row != null)
+          .timeout(const Duration(seconds: 5));
+      addTearDown(childObservation.release);
+
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final header = container.listen(headerViewProvider, (_, _) {});
+      final workspace = container.listen(
+        conversationWorkspaceProvider(root.threadId),
+        (_, _) {},
+      );
+      addTearDown(header.close);
+      addTearDown(workspace.close);
+
+      expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(
+        container
+            .read(conversationWorkspaceProvider(root.threadId))
+            ?.rootRow
+            .threadId,
+        'T',
+      );
+
+      graph.client.selection.restoreStartup(
+        workspaceId: root.workspaceId,
+        threadId: 'C',
+        needsOpen: true,
+      );
+      await container.pump();
+      expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(
+        container.read(conversationWorkspaceProvider('C'))?.rootRow.threadId,
+        'T',
+      );
+      expect(fixture.transport.metadataReads, isNot(contains('S')));
+      expect(fixture.transport.metadataReads, contains('C'));
+    },
+  );
 
   test(
     'restored cold selection stays unopened until its explicit open command',
@@ -33,7 +95,7 @@ void main() {
       final client = fixture.graph.client;
       client.selection.restoreStartup(
         workspaceId: fixture.root.workspaceId,
-        threadId: fixture.child.id,
+        threadId: fixture.child.threadId,
         needsOpen: true,
       );
       expect(fixture.transport.metadataReads, isEmpty);
@@ -47,31 +109,23 @@ void main() {
   test('cold metadata failures and wrong identity cannot change selection or directory', () async {
     final fixture = await _fixture();
     final client = fixture.graph.client;
-    final wrongProject = StudioThread(
-      id: fixture.child.id,
+    final wrongProject = fixture.child.copyWith(
       workspaceId: 'foreign-project',
-      title: fixture.child.title,
-      mode: fixture.child.mode,
-      delegationMode: fixture.child.delegationMode,
-      delegationPreference: fixture.child.delegationPreference,
-      parentThreadId: fixture.root.id,
-      rootThreadId: fixture.root.id,
       workspacePath: '/foreign',
-      updatedAt: fixture.child.updatedAt,
     );
     final wrongRoot = fixture.child.copyWith(
-      parentThreadId: fixture.other.id,
-      rootThreadId: fixture.other.id,
+      parentAgentId: fixture.other.threadId,
+      sessionId: fixture.other.threadId,
     );
     for (final response in [
-      (thread: fixture.other, frameThreadId: fixture.other.id),
-      (thread: wrongRoot, frameThreadId: fixture.child.id),
-      (thread: wrongProject, frameThreadId: fixture.child.id),
+      (row: fixture.other, frameThreadId: fixture.other.threadId),
+      (row: wrongRoot, frameThreadId: fixture.child.threadId),
+      (row: wrongProject, frameThreadId: fixture.child.threadId),
     ]) {
       fixture.transport.frameThreadIdOverride = response.frameThreadId;
-      fixture.transport.respond = (_) async => response.thread;
+      fixture.transport.respond = (_) async => response.row;
       await expectLater(
-        client.directoryCommands.selectAgentThread(fixture.child.id),
+        client.directoryCommands.selectAgentThread(fixture.child.threadId),
         throwsA(
           isA<StudioFailure>().having(
             (error) => error.code,
@@ -80,14 +134,14 @@ void main() {
           ),
         ),
       );
-      expect(client.selection.state.selectedThreadId, fixture.root.id);
+      expect(client.selection.state.selectedThreadId, fixture.root.threadId);
       expect(client.threadDirectory.observedWindows, isEmpty);
       expect(client.conversations.sessionStates, isEmpty);
     }
     fixture.transport.respond = (_) async =>
         throw StateError('saved metadata unavailable');
     await expectLater(
-      client.directoryCommands.selectAgentThread(fixture.child.id),
+      client.directoryCommands.selectAgentThread(fixture.child.threadId),
       throwsA(
         isA<StudioFailure>().having(
           (error) => error.code,
@@ -96,7 +150,7 @@ void main() {
         ),
       ),
     );
-    expect(client.selection.state.selectedThreadId, fixture.root.id);
+    expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
     expect(fixture.transport.feeds, isEmpty);
@@ -114,13 +168,13 @@ void main() {
         final fixture = await _fixture();
         final client = fixture.graph.client;
         final entered = Completer<void>();
-        final reply = Completer<StudioThread>();
+        final reply = Completer<SessionDirectoryRow>();
         fixture.transport.respond = (_) {
           entered.complete();
           return reply.future;
         };
         final pending = client.directoryCommands.selectAgentThread(
-          fixture.child.id,
+          fixture.child.threadId,
         );
         await entered.future;
         switch (invalidation) {
@@ -133,7 +187,7 @@ void main() {
           case 'root':
             client.selection.restoreStartup(
               workspaceId: fixture.other.workspaceId,
-              threadId: fixture.other.id,
+              threadId: fixture.other.threadId,
               needsOpen: true,
             );
           case 'project':
@@ -143,7 +197,7 @@ void main() {
               AgentDirectoryState(
                 revision: 2,
                 values: fixture.agents
-                    .where((agent) => agent.threadId != fixture.child.id)
+                    .where((agent) => agent.threadId != fixture.child.threadId)
                     .toList(),
               ),
             );
@@ -162,7 +216,7 @@ void main() {
           isEmpty,
           reason: invalidation,
         );
-        expect(fixture.transport.metadataReads, [fixture.child.id]);
+        expect(fixture.transport.metadataReads, [fixture.child.threadId]);
         expect(fixture.transport.stateReads, isEmpty, reason: invalidation);
         expect(fixture.transport.feeds, isEmpty, reason: invalidation);
       }
@@ -192,18 +246,18 @@ void main() {
       final fixture = await _fixture();
       final client = fixture.graph.client;
       final entered = Completer<void>();
-      final reply = Completer<StudioThread>();
+      final reply = Completer<SessionDirectoryRow>();
       fixture.transport.respond = (threadId) {
-        if (threadId == fixture.child.id) {
+        if (threadId == fixture.child.threadId) {
           entered.complete();
           return reply.future;
         }
         return fixture.transport.savedThreads().then(
-          (threads) => threads.singleWhere((thread) => thread.id == threadId),
+          (rows) => rows.singleWhere((row) => row.threadId == threadId),
         );
       };
       final oldNavigation = _outcome(
-        client.directoryCommands.selectAgentThread(fixture.child.id),
+        client.directoryCommands.selectAgentThread(fixture.child.threadId),
       );
       addTearDown(() async {
         if (!reply.isCompleted) reply.complete(fixture.child);
@@ -212,12 +266,12 @@ void main() {
       await entered.future;
       final commands = client.directoryCommands;
       final next = _outcome(switch (action) {
-        'root' => commands.selectThread(fixture.other.id),
+        'root' => commands.selectThread(fixture.other.threadId),
         'project' => commands.selectProject(fixture.root.workspaceId),
         'project-failure' => commands.selectProject('foreign-project'),
         'new-session' => commands.beginNewThread(),
         'startup-open' => commands.openSelectedThread(),
-        'restore-failure' => commands.restoreThread(fixture.root.id),
+        'restore-failure' => commands.restoreThread(fixture.root.threadId),
         'open-project' => commands.openProject('/saved/another-project'),
         'open-remote' =>
           commands
@@ -233,32 +287,32 @@ void main() {
         action.endsWith('-failure') ? isStateError : isNull,
         reason: action,
       );
-      expect(client.findThread(fixture.child.id), isNull, reason: action);
+      expect(client.findThread(fixture.child.threadId), isNull, reason: action);
       expect(
-        client.conversations.existingSession(fixture.child.id),
+        client.conversations.existingSession(fixture.child.threadId),
         isNull,
         reason: action,
       );
       expect(
         client.selection.state.selectedThreadId,
-        isNot(fixture.child.id),
+        isNot(fixture.child.threadId),
         reason: action,
       );
       expect(
         fixture.transport.stateReads,
-        isNot(contains(fixture.child.id)),
+        isNot(contains(fixture.child.threadId)),
         reason: action,
       );
       expect(
         fixture.transport.feeds.map((timeline) => timeline.threadId),
-        isNot(contains(fixture.child.id)),
+        isNot(contains(fixture.child.threadId)),
         reason: action,
       );
       expect(
         fixture.transport.metadataReads,
         action == 'root'
-            ? [fixture.child.id, fixture.other.id]
-            : [fixture.child.id],
+            ? [fixture.child.threadId, fixture.other.threadId]
+            : [fixture.child.threadId],
         reason: action,
       );
       expect(fixture.transport.submitCalls, 0, reason: action);
@@ -284,23 +338,25 @@ void main() {
         await draftNavigation;
       });
       await entered.future;
-      final newer = client.directoryCommands.selectThread(fixture.other.id);
+      final newer = client.directoryCommands.selectThread(
+        fixture.other.threadId,
+      );
       activation.complete();
       expect(await draftNavigation, isNull);
       await newer;
       fixture.graph.timeline.updateReadDemand(chatDemand);
       fixture.graph.setConversationPageVisible(true);
-      await client.conversations.session(fixture.other.id).content.ready;
+      await client.conversations.session(fixture.other.threadId).content.ready;
       expect(
         client.selection.state.selectedProjectId,
         fixture.other.workspaceId,
       );
-      expect(client.selection.state.selectedThreadId, fixture.other.id);
+      expect(client.selection.state.selectedThreadId, fixture.other.threadId);
       expect(
         client.conversations.sessionStates.map((state) => state.threadId),
-        [fixture.other.id],
+        [fixture.other.threadId],
       );
-      expect(fixture.transport.stateReads, [fixture.other.id]);
+      expect(fixture.transport.stateReads, [fixture.other.threadId]);
     },
   );
 
@@ -309,11 +365,11 @@ void main() {
     final sibling = _secondColdChild(fixture);
     final client = fixture.graph.client;
     final oldEntered = Completer<void>();
-    final oldReply = Completer<StudioThread>();
+    final oldReply = Completer<SessionDirectoryRow>();
     final newEntered = Completer<void>();
-    final newReply = Completer<StudioThread>();
+    final newReply = Completer<SessionDirectoryRow>();
     fixture.transport.respond = (id) {
-      if (id == fixture.child.id) {
+      if (id == fixture.child.threadId) {
         oldEntered.complete();
         return oldReply.future;
       }
@@ -323,7 +379,7 @@ void main() {
     final creation = StreamController<NewThreadStartEvent>();
     fixture.transport.newThreadEvents = creation.stream;
     final oldNavigation = _outcome(
-      client.directoryCommands.selectAgentThread(fixture.child.id),
+      client.directoryCommands.selectAgentThread(fixture.child.threadId),
     );
     await oldEntered.future;
     final created = client.threadCommands.submitNewThread(
@@ -356,14 +412,14 @@ void main() {
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
 
-    final newer = client.directoryCommands.selectAgentThread(sibling.id);
+    final newer = client.directoryCommands.selectAgentThread(sibling.threadId);
     await newEntered.future;
     // Creation is a real accepted operation, but its automatic navigation is
     // obsolete even though the newer metadata read has not changed selection.
     final result = StartNewThreadResult(
-      thread: fixture.root,
+      thread: _nativeThreadOf(fixture.root),
       receipt: SubmitPromptReceipt(
-        threadId: fixture.root.id,
+        threadId: fixture.root.threadId,
         inputId: 'create-input',
         cursor: 1,
       ),
@@ -376,20 +432,20 @@ void main() {
     await newer;
     fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
-    await client.conversations.session(sibling.id).content.ready;
-    expect(client.selection.state.selectedThreadId, sibling.id);
+    await client.conversations.session(sibling.threadId).content.ready;
+    expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
-      sibling.id,
+      sibling.threadId,
     ]);
-    expect(fixture.transport.stateReads, [sibling.id]);
-    expect(client.findThread(fixture.child.id), isNull);
+    expect(fixture.transport.stateReads, [sibling.threadId]);
+    expect(client.findThread(fixture.child.threadId), isNull);
   });
 
   test('the agent directory publishes each row execution and stop qualification, and a stale page cannot replace it', () async {
     final fixture = await _fixture();
     final client = fixture.graph.client;
     final row = fixture.agents.firstWhere(
-      (agent) => agent.threadId == fixture.child.id,
+      (agent) => agent.threadId == fixture.child.threadId,
     );
     final execution = AgentExecutionView(
       id: 'child-execution',
@@ -402,14 +458,12 @@ void main() {
           revision: 3,
           values: [
             for (final agent in fixture.agents)
-              if (agent.threadId == fixture.child.id)
+              if (agent.threadId == fixture.child.threadId)
                 StudioAgentView(
-                  id: agent.id,
+                  agentId: agent.agentId,
+                  sessionId: agent.sessionId,
+                  parentAgentId: agent.parentAgentId,
                   threadId: agent.threadId,
-                  path: agent.path,
-                  parentPath: agent.parentPath,
-                  rootThreadId: agent.rootThreadId,
-                  depth: agent.depth,
                   role: agent.role,
                   task: agent.task,
                   summary: agent.summary,
@@ -430,7 +484,7 @@ void main() {
       isTrue,
     );
     final published = client.project.state.agents!.values.firstWhere(
-      (agent) => agent.threadId == fixture.child.id,
+      (agent) => agent.threadId == fixture.child.threadId,
     );
     expect(published.execution, execution);
     expect(published.canStop, isTrue);
@@ -456,14 +510,12 @@ void main() {
           revision: 2,
           values: [
             for (final agent in fixture.agents)
-              if (agent.threadId == fixture.child.id)
+              if (agent.threadId == fixture.child.threadId)
                 StudioAgentView(
-                  id: agent.id,
+                  agentId: agent.agentId,
+                  sessionId: agent.sessionId,
+                  parentAgentId: agent.parentAgentId,
                   threadId: agent.threadId,
-                  path: agent.path,
-                  parentPath: agent.parentPath,
-                  rootThreadId: agent.rootThreadId,
-                  depth: agent.depth,
                   role: agent.role,
                   task: agent.task,
                   delegationMode: agent.delegationMode,
@@ -482,19 +534,19 @@ void main() {
     );
     expect(
       client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
           .execution,
       execution,
     );
     expect(
       client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
           .canStop,
       isTrue,
     );
     expect(
       client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.id)
+          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
           .awaitingScheduling,
       isTrue,
       reason: 'A stale page never clears the newer scheduling fact',
@@ -507,14 +559,12 @@ void main() {
           revision: 4,
           values: [
             for (final agent in fixture.agents)
-              if (agent.threadId == fixture.child.id)
+              if (agent.threadId == fixture.child.threadId)
                 StudioAgentView(
-                  id: agent.id,
+                  agentId: agent.agentId,
+                  sessionId: agent.sessionId,
+                  parentAgentId: agent.parentAgentId,
                   threadId: agent.threadId,
-                  path: agent.path,
-                  parentPath: agent.parentPath,
-                  rootThreadId: agent.rootThreadId,
-                  depth: agent.depth,
                   role: agent.role,
                   task: agent.task,
                   delegationMode: agent.delegationMode,
@@ -533,7 +583,7 @@ void main() {
       isTrue,
     );
     final scheduled = client.project.state.agents!.values.firstWhere(
-      (agent) => agent.threadId == fixture.child.id,
+      (agent) => agent.threadId == fixture.child.threadId,
     );
     expect(scheduled.awaitingScheduling, isFalse);
     expect(
@@ -552,7 +602,7 @@ void main() {
     expect(stopping == execution, isFalse);
     // Listing never opens a member: the row facts come from the directory.
     expect(client.conversations.sessionStates, isEmpty);
-    expect(client.selection.state.selectedThreadId, fixture.root.id);
+    expect(client.selection.state.selectedThreadId, fixture.root.threadId);
   });
 }
 
@@ -570,28 +620,28 @@ Future<void> _expectLatestQueuedColdSelection({
   final client = fixture.graph.client;
   final oldEntered = Completer<void>();
   final newEntered = Completer<void>();
-  final oldReply = Completer<StudioThread>();
-  final newReply = Completer<StudioThread>();
+  final oldReply = Completer<SessionDirectoryRow>();
+  final newReply = Completer<SessionDirectoryRow>();
   final oldError = StateError('superseded metadata read failed');
   final newError = StateError('latest metadata read failed');
   fixture.transport.respond = (id) {
-    if (id == fixture.child.id) {
+    if (id == fixture.child.threadId) {
       oldEntered.complete();
       return oldReply.future;
     }
-    if (id == sibling.id) {
+    if (id == sibling.threadId) {
       newEntered.complete();
       return newReply.future;
     }
     throw StateError('Unexpected metadata read: $id');
   };
   final oldNavigation = _outcome(
-    client.directoryCommands.selectAgentThread(fixture.child.id),
+    client.directoryCommands.selectAgentThread(fixture.child.threadId),
   );
   await oldEntered.future;
   // This is the same public command used by the real menu, not a store write.
   final newNavigation = _outcome(
-    client.directoryCommands.selectAgentThread(sibling.id),
+    client.directoryCommands.selectAgentThread(sibling.threadId),
   );
   addTearDown(() async {
     if (!oldReply.isCompleted) oldReply.complete(fixture.child);
@@ -609,7 +659,7 @@ Future<void> _expectLatestQueuedColdSelection({
     reason: 'Superseded errors must not reach the menu error handler',
   );
   await newEntered.future;
-  expect(client.selection.state.selectedThreadId, fixture.root.id);
+  expect(client.selection.state.selectedThreadId, fixture.root.threadId);
   expect(
     client.threadDirectory.observedWindows,
     isEmpty,
@@ -628,7 +678,7 @@ Future<void> _expectLatestQueuedColdSelection({
         StudioFailureCode.internal,
       ),
     );
-    expect(client.selection.state.selectedThreadId, fixture.root.id);
+    expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
@@ -638,51 +688,62 @@ Future<void> _expectLatestQueuedColdSelection({
     expect(await newNavigation, isNull);
     fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
-    final session = client.conversations.existingSession(sibling.id)!;
+    final session = client.conversations.existingSession(sibling.threadId)!;
     await session.source.waitFor((state) => state.workspace != null);
     await session.content.state.waitFor((state) => state.snapshot == true);
-    expect(client.selection.state.selectedThreadId, sibling.id);
+    expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
-      sibling.id,
+      sibling.threadId,
     ]);
-    expect(fixture.transport.stateReads, [sibling.id]);
+    expect(fixture.transport.stateReads, [sibling.threadId]);
     expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
-      sibling.id,
+      sibling.threadId,
     ]);
   }
-  expect(client.findThread(fixture.child.id), isNull);
-  expect(client.conversations.existingSession(fixture.child.id), isNull);
+  expect(client.findThread(fixture.child.threadId), isNull);
+  expect(client.conversations.existingSession(fixture.child.threadId), isNull);
   expect(fixture.transport.metadataReads.toSet(), {
-    fixture.child.id,
-    sibling.id,
+    fixture.child.threadId,
+    sibling.threadId,
   }, reason: 'Only explicitly addressed Thread IDs use metadata observations');
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
 }
 
+/// 创建回执仍携带 Native Thread 投影；测试用目录行事实重建等价的执行行。
+StudioThread _nativeThreadOf(SessionDirectoryRow row) => StudioThread(
+  id: row.threadId,
+  workspaceId: row.workspaceId,
+  title: row.title,
+  mode: row.mode,
+  delegationMode: row.delegationMode,
+  delegationPreference: row.delegationPreference,
+  frozenModel: row.frozenModel,
+  workspaceMode: row.workspaceMode,
+  workspacePath: row.workspacePath,
+  updatedAt: row.updatedAt,
+);
+
 // Reuse a second real Demo history as the external saved sibling fixture.
 // Client remains responsible for canonical membership, reads and navigation.
-StudioThread _secondColdChild(_ColdFixture fixture) {
+SessionDirectoryRow _secondColdChild(_ColdFixture fixture) {
   final sibling = fixture.other.copyWith(
-    parentThreadId: fixture.root.id,
-    rootThreadId: fixture.root.id,
-    agentPath: 'opaque-sibling-path',
+    parentAgentId: fixture.root.agentId,
+    sessionId: fixture.root.sessionId,
     role: 'executor',
   );
-  fixture.transport.savedThreadOverrides[sibling.id] = sibling;
+  fixture.transport.savedThreadOverrides[sibling.threadId] = sibling;
   fixture.graph.client.project.applyAgentDirectory(
     AgentDirectoryState(
       revision: 2,
       values: [
-        ...fixture.agents.where((agent) => agent.threadId != sibling.id),
+        ...fixture.agents.where((agent) => agent.threadId != sibling.threadId),
         StudioAgentView(
-          id: sibling.id,
-          threadId: sibling.id,
-          path: sibling.agentPath,
-          parentPath: fixture.root.agentPath,
-          rootThreadId: fixture.root.id,
-          depth: 1,
+          agentId: sibling.agentId,
+          sessionId: sibling.sessionId,
+          parentAgentId: fixture.root.agentId,
+          threadId: sibling.threadId,
           role: sibling.role,
           task: sibling.title,
           state: const IdleStudioAgent(),
@@ -702,37 +763,54 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
   fixture.graph.timeline.updateReadDemand(chatDemand);
   fixture.graph.setConversationPageVisible(true);
-  final session = client.conversations.existingSession(fixture.child.id)!;
+  final session = client.conversations.existingSession(fixture.child.threadId)!;
   await session.source.waitFor((state) => state.workspace != null);
   await session.content.state.waitFor((state) => state.snapshot == true);
-  expect(client.selection.state.selectedThreadId, fixture.child.id);
+  expect(client.selection.state.selectedThreadId, fixture.child.threadId);
   expect(client.selection.state.needsOpen, isFalse);
-  expect(client.findThread(fixture.child.id)?.status, ThreadStatusView.closed);
+  expect(
+    session.state.directoryRow?.status,
+    ThreadStatusView.closed,
+    reason: '目录行的 typed 状态是关闭事实的来源',
+  );
   expect(
     client.threadDirectory.observedWindows,
     isEmpty,
     reason: 'Cold ID navigation does not create a broad list demand',
   );
   expect(client.conversations.sessionStates.map((state) => state.threadId), [
-    fixture.child.id,
+    fixture.child.threadId,
   ]);
   expect(fixture.transport.metadataReads.toSet(), {
-    fixture.child.id,
+    fixture.child.threadId,
   }, reason: 'The selected history observes only its own Thread ID');
-  expect(fixture.transport.stateReads, [fixture.child.id]);
+  expect(fixture.transport.stateReads, [fixture.child.threadId]);
   expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
-    fixture.child.id,
+    fixture.child.threadId,
   ]);
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
 }
 
-Future<_ColdFixture> _fixture() async {
+Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
   final transport = _ColdSelectionTransport();
   final saved = await transport.savedThreads();
-  final root = saved[0];
-  final child = saved[1].copyWith(status: ThreadStatusView.closed);
+  final root = distinctRootIdentity
+      ? saved[0].copyWith(sessionId: 'S', agentId: 'A', threadId: 'T')
+      : saved[0];
+  final child = distinctRootIdentity
+      ? saved[1].copyWith(
+          status: ThreadStatusView.closed,
+          threadId: 'C',
+          sessionId: root.sessionId,
+          parentAgentId: root.agentId,
+        )
+      : saved[1].copyWith(status: ThreadStatusView.closed);
   final other = saved[2];
+  transport.rowOverrides.addAll({
+    saved[0].threadId: root,
+    saved[1].threadId: child,
+  });
   transport.child = child;
   final graph = AppGraph(
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -742,35 +820,31 @@ Future<_ColdFixture> _fixture() async {
   addTearDown(
     () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
   );
-  StudioAgentView agent(StudioThread thread, {String? parent, int depth = 0}) =>
+  StudioAgentView agent(SessionDirectoryRow row, {String? parentAgentId}) =>
       StudioAgentView(
-        id: thread.id,
-        threadId: thread.id,
-        path: thread.agentPath,
-        parentPath: parent,
-        rootThreadId: thread.effectiveRootThreadId,
-        depth: depth,
-        role: thread.role,
-        task: thread.title,
-        delegationMode: thread.delegationMode,
-        delegationPreference: thread.delegationPreference,
-        frozenModel: thread.frozenModel,
-        state: thread.status == ThreadStatusView.closed
+        agentId: row.agentId,
+        sessionId: row.sessionId,
+        parentAgentId: parentAgentId,
+        threadId: row.threadId,
+        role: row.role,
+        task: row.title,
+        delegationMode: row.delegationMode,
+        delegationPreference: row.delegationPreference,
+        frozenModel: row.frozenModel,
+        state: row.status == ThreadStatusView.closed
             ? const ClosedStudioAgent()
             : const IdleStudioAgent(),
-        updatedAt: thread.updatedAt,
+        updatedAt: row.updatedAt,
       );
   final agents = [
     agent(root),
-    agent(child, parent: root.agentPath, depth: 1),
+    agent(child, parentAgentId: root.agentId),
     agent(other),
     StudioAgentView(
-      id: 'cold-sibling',
+      agentId: 'cold-sibling',
+      sessionId: root.sessionId,
+      parentAgentId: root.agentId,
       threadId: 'cold-sibling',
-      path: 'opaque-sibling',
-      parentPath: root.agentPath,
-      rootThreadId: root.id,
-      depth: 1,
       role: 'executor',
       task: 'Another cold member',
       state: const IdleStudioAgent(),
@@ -801,12 +875,14 @@ Future<_ColdFixture> _fixture() async {
   );
   graph.client.selection.restoreStartup(
     workspaceId: root.workspaceId,
-    threadId: root.id,
+    threadId: root.threadId,
     needsOpen: true,
   );
-  final initialThread = graph.client.threadDirectory.observeThread(root.id);
+  final initialThread = graph.client.threadDirectory.observeThread(
+    root.threadId,
+  );
   await initialThread.state
-      .waitFor((state) => state.frame?.thread != null)
+      .waitFor((state) => state.frame?.row != null)
       .timeout(const Duration(seconds: 5));
   addTearDown(initialThread.release);
   // Startup's actual root metadata read is established before per-action
@@ -833,21 +909,21 @@ class _ColdFixture {
   });
   final AppGraph graph;
   final _ColdSelectionTransport transport;
-  final StudioThread root;
-  final StudioThread child;
-  final StudioThread other;
+  final SessionDirectoryRow root;
+  final SessionDirectoryRow child;
+  final SessionDirectoryRow other;
   final List<StudioAgentView> agents;
 }
 
 // Only the external metadata response and a saved closed-state frame are
 // scripted; membership, selection, overlays and content ownership use Client.
 final class _ColdSelectionTransport extends RecordingDemoTransport {
-  late StudioThread child;
+  late SessionDirectoryRow child;
   final metadataReads = <String>[];
   final stateReads = <String>[];
-  final savedThreadOverrides = <String, StudioThread>{};
+  final savedThreadOverrides = <String, SessionDirectoryRow>{};
   String? frameThreadIdOverride;
-  Future<StudioThread> Function(String)? respond;
+  Future<SessionDirectoryRow> Function(String)? respond;
   Future<void> Function(String)? onActivate;
   Stream<NewThreadStartEvent>? newThreadEvents;
   final newThreadEntered = Completer<void>();
@@ -855,12 +931,13 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   var restoreCalls = 0;
 
   int _metadataRevision = 0;
+  final rowOverrides = <String, SessionDirectoryRow>{};
 
-  Future<List<StudioThread>> savedThreads() async {
-    final threads = (await super.readBootstrap()).threadDirectory.threads;
+  Future<List<SessionDirectoryRow>> savedThreads() async {
+    final rows = (await super.readBootstrap()).threadDirectory.rows;
     return [
       for (final id in ['thread-main', 'thread-reviewer', 'thread-alt'])
-        threads.singleWhere((thread) => thread.id == id),
+        rowOverrides[id] ?? rows.singleWhere((row) => row.threadId == id),
     ];
   }
 
@@ -872,11 +949,10 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
         respond?.call(threadId) ??
         (override != null
             ? Future.value(override)
-            : threadId == child.id
+            : threadId == child.threadId
             ? Future.value(child)
             : savedThreads().then(
-                (threads) =>
-                    threads.singleWhere((thread) => thread.id == threadId),
+                (rows) => rows.singleWhere((row) => row.threadId == threadId),
               ));
     final frameThreadId = frameThreadIdOverride ?? threadId;
     frameThreadIdOverride = null;
@@ -912,16 +988,7 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
     required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
-    final saved =
-        savedThreadOverrides[threadId] ?? (threadId == child.id ? child : null);
-    return MappedConversationFeed(
-      await super.openConversationFeed(threadId, scope: scope, demand: demand),
-      (frame) => switch (frame) {
-        ThreadSnapshotFrame(:final workspace) when saved != null =>
-          ThreadSnapshotFrame(workspace: workspace.copyWith(thread: saved)),
-        _ => frame,
-      },
-    );
+    return super.openConversationFeed(threadId, scope: scope, demand: demand);
   }
 
   @override
@@ -948,7 +1015,7 @@ final class _ColdThreadObservation implements ThreadObservationHandle {
     required this.response,
   }) {
     response.then(
-      (thread) => _publish(
+      (row) => _publish(
         ThreadMetadataFrame(
           threadId: threadId,
           stamp: ResourceStamp(
@@ -956,7 +1023,7 @@ final class _ColdThreadObservation implements ThreadObservationHandle {
             ownerEpoch: 'cold-selection',
             revision: revision,
           ),
-          thread: thread,
+          row: row,
         ),
       ),
       onError: (Object error, StackTrace stackTrace) =>
@@ -966,7 +1033,7 @@ final class _ColdThreadObservation implements ThreadObservationHandle {
 
   final String threadId;
   final int revision;
-  final Future<StudioThread> response;
+  final Future<SessionDirectoryRow> response;
   Completer<ThreadMetadataFrame?>? _waiting;
   ThreadMetadataFrame? _queuedFrame;
   Object? _queuedError;

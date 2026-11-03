@@ -17,17 +17,18 @@ async fn cold_child(
     runtime: &StudioRuntime,
     root: &crate::studio::ThreadRecord,
 ) -> Result<pl_protocol::Thread> {
-    let mut child = pl_protocol::Thread::placeholder("delete-archived-child");
+    let mut child = pl_protocol::Thread::placeholder("delete-cold-child");
     child.agent_path = format!("{}/{}", root.id, child.id);
     child.workspace_id = root.workspace_id.clone();
     child.workspace_path = root.workspace_path.clone();
     child.root_thread_id = root.id.clone();
     child.parent_thread_id = Some(root.id.clone());
+    let (_, agent) = crate::studio::records::directory_facts_from_thread(&child);
     runtime
         .agent_facility
         .product_events
         .commit_directory(DirectoryDelta {
-            thread_upserts: vec![child.clone()],
+            agent_upserts: vec![agent],
             ..Default::default()
         })
         .await?;
@@ -43,11 +44,8 @@ async fn cold_child(
         .stop_and_join()
         .await?;
     projection.await?;
-    runtime
-        .agent_facility
-        .product_events
-        .commit_directory(DirectoryDelta::archive_threads(vec![child.id.clone()]))
-        .await?;
+    // S1 archive belongs to the Session, not independently to a child. The caller exercises
+    // both active and archived Session trees while this child stays cold in either case.
     Ok(child)
 }
 
@@ -227,7 +225,11 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             runtime.config_runtime.read()?.config.ui.pinned_thread_ids,
             vec![neighbor.id.clone()]
         );
-        let mut delayed = pl_protocol::Thread::from(root.clone());
+        let (session, agent) = crate::studio::records::directory_facts_from_thread(
+            &pl_protocol::Thread::from(root.clone()),
+        );
+        let mut delayed =
+            crate::studio::records::row_projection(&session.expect("root session"), &agent);
         delayed.title = "late metadata must not restore deletion".into();
         runtime
             .agent_facility
@@ -628,20 +630,23 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
             .record_durable(lease)
             .await?;
         let root = if root_owned {
-            let (delta, protocol) = DirectoryDelta::register_root_thread(
+            let (delta, session, agent) = DirectoryDelta::register_session(
                 "owned-root".into(),
                 &project.id,
                 "owned",
                 pl_protocol::ThreadModeId::simple(),
                 pl_protocol::ThreadWorkspaceMode::Worktree,
                 identity.root.clone(),
+                crate::config::ROOT_AGENT_ROUTE_KEY,
             );
             runtime
                 .agent_facility
                 .product_events
                 .commit_directory(delta)
                 .await?;
-            let root = crate::studio::ThreadRecord::from_directory_thread(protocol);
+            let root = crate::studio::ThreadRecord::from_directory_thread(
+                crate::studio::records::thread_projection(&session, &agent),
+            );
             runtime.register_new_thread(root.clone()).await?;
             root
         } else {
