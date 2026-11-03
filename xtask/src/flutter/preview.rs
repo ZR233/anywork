@@ -12,14 +12,25 @@ use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use pl_dev_support::{paths, process};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_norway::Value;
 
 #[derive(Default, Deserialize, Serialize)]
 struct DependencyOverrides {
     // Pub treats pubspec_overrides.yaml as replacement fields, not a package
     // merge. None and an explicitly empty mapping therefore differ.
+    #[serde(default, deserialize_with = "declared_overrides")]
     dependency_overrides: Option<BTreeMap<String, Value>>,
+}
+
+fn declared_overrides<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<BTreeMap<String, Value>>, D::Error> {
+    // An omitted field inherits the manifest; an explicit null clears it just
+    // like an empty Pub dependency map.
+    Ok(Some(
+        Option::<BTreeMap<String, Value>>::deserialize(deserializer)?.unwrap_or_default(),
+    ))
 }
 
 pub(crate) fn run(args: &[OsString]) -> Result<()> {
@@ -35,6 +46,18 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     }
     super::ensure_flutter_dependencies_for_build(&workspace, &app)?;
     prepare_overrides(&app)?;
+    // Flutter's cached start reads package_config.json directly and does not
+    // resolve changes to pubspec_overrides.yaml. Let Pub refresh that existing
+    // root, including after an interrupted resolution, without clearing builds.
+    if app.join(".widget_preview/pubspec.yaml").is_file() {
+        let pub_args = ["pub", "get", "--directory", ".widget_preview"].map(OsString::from);
+        let mut pub_command = process::path_command("flutter", &pub_args);
+        pub_command.current_dir(&app);
+        process::run_checked(
+            &mut pub_command,
+            &process::display_command("flutter", &pub_args),
+        )?;
+    }
     process::run_resident_checked(&mut command, &display)
 }
 
@@ -123,17 +146,16 @@ mod tests {
         );
         assert_eq!(resolved["hosted_package"], Value::String("^2.0.0".into()));
         assert_eq!(resolved["git_package"]["git"]["path"], "packages/git");
-        fs::write(
-            app.join("pubspec_overrides.yaml"),
-            "dependency_overrides: {}\n",
-        )?;
-        prepare_overrides(app)?;
-        assert!(
-            read_overrides(&output)?
-                .dependency_overrides
-                .unwrap()
-                .is_empty()
-        );
+        for cleared in ["dependency_overrides: {}\n", "dependency_overrides:\n"] {
+            fs::write(app.join("pubspec_overrides.yaml"), cleared)?;
+            prepare_overrides(app)?;
+            assert!(
+                read_overrides(&output)?
+                    .dependency_overrides
+                    .unwrap()
+                    .is_empty()
+            );
+        }
         Ok(())
     }
 

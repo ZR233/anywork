@@ -31,6 +31,10 @@ Headless native GUI observation also requires Xvfb:
 sudo apt-get install -y libgtk-3-dev xvfb
 ```
 
+无头 widget 测试无需 Xvfb，但依赖中的 `cnativeapi` native-assets hook 仍会编译 C++。
+Linux 需要可用 C++ 编译器、`pkg-config`、`libgtk-3-dev`、`libx11-dev` 和 `libxi-dev`；
+CI 前端作业安装这些宿主依赖，仍不构建 Rust bridge 或启动原生窗口。
+
 ```powershell
 # Run from repository root. xtask invokes Flutter with
 # code/anywork as the working directory.

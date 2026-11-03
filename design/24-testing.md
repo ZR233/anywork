@@ -15,6 +15,10 @@
 
 Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
 
+无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业为
+`cnativeapi` 准备 C++、pkg-config、GTK 3 / X11 / Xi 开发依赖；这不引入 Rust bridge 或原生 GUI
+测试。宿主头文件缺失应作为环境错误修复，不跳过 hooks 或误报为组件断言失败。
+
 始终运行的 `ci-gate`（`if: always()`）只接受分类计划明确允许的 skipped；必需作业因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动配置 required check。
 
 ## 24.1 现有测试基础设施

@@ -14,6 +14,8 @@ cargo xtask preview-gui --help -v
 - 入口先以 `pub get --enforce-lockfile` 准备应用，再将应用的有效 `dependency_overrides`
   写入官方 `.widget_preview/pubspec_overrides.yaml`，本地包路径转为绝对路径。
   应用 `pubspec_overrides.yaml` 中显式覆盖的字段遵循 Pub 的替换语义；不要手改生成的缓存配置。
+- 已有 scaffold 启动前由官方 Pub 刷新其依赖解析，使覆盖变化实际进入 `package_config.json`；
+  只写 YAML 不代表已切换依赖。此步骤保留预览构建缓存，解析失败原样返回。
 - 编译、发现、缓存和热更新由官方工具负责。首次失败留下不完整 scaffold 时，在停止所属服务后
   使用 `cargo flutter widget-preview clean`，再运行同一入口；不修改 SDK 或 manifest 哈希。
 - 复用生产纯 View、主题、本地化和不可变合成数据，不在预览创建 AppGraph、Client、FRB 或第二套 UI。

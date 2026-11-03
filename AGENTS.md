@@ -140,6 +140,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - `cargo xtask run-gui --capture` 在正常 debug 应用上开启只读 Flutter 内容捕获（`ext.anywork.capture`）；发布构建不注册该 extension。宿主落盘使用 `code/anywork/tool/capture_ui.dart`。
 - `cargo xtask run-gui --inspect` 使用独立 debug 入口注册官方 Flutter Driver extension，供 Dart MCP 的 `widget_inspector` 和 `flutter_driver_command` 读取布局、点击、输入、滚动及截图；与 release/profile 和自定义 native target 互斥，不改变正式应用入口或 `integration_test` binding。隔离人工观察用 `cargo xtask manual-gui --preset gui --inspect`；截图成功仍需检查真实画面和资源退出。
 - UI 自动化在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，不准备 Rust/bridge。
+- 无显示环境的 widget 测试仍会运行依赖包的官方 native-assets hooks。当前 `cnativeapi` 在 Linux 需要 C++ 编译器、pkg-config 以及 GTK 3 / X11 / Xi 开发文件；缺少时按 hook 原始错误补齐宿主依赖，不禁用 hooks 或用额外 UI 实现代替。
 - `cargo xtask manual-gui` 启动隔离的原生 Studio 和本地模拟供应商，记录截图、快照、请求与日志供人工判定；场景参数是 `--preset`。真实供应商人工验收用 `cargo xtask run-gui` 直接读取用户已有配置，不修改其凭据。
   此命令仅按需编译并调用独立的 `pl-studio-acceptance`，参数由验收工具解析；普通 xtask、
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
