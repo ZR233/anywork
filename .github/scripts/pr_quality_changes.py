@@ -216,6 +216,8 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["docs_policy"] = True
     if "rust" in tags:
         flags["rust_checks"] = True
+        flags["windows_build"] = True
+        flags["macos_build"] = True
     if "flutter" in tags:
         flags["flutter_checks"] = True
     if "bridge" in tags:

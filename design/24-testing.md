@@ -7,13 +7,13 @@
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
 | Flutter 静态、Client 和组件集成 | 只在 Linux 安装锁定依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
-| Rust 质量与公共语义 | 只在 Linux 执行一次 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；不在 Windows/macOS 重复这些命令 |
+| Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 桌面与原生集成 | 在相同工作区复用工程工具、helper、acceptance 与对应配置的 bridge；desktop full 与所需 native full 分别提供功能和生命周期信号，不因共用 harness 删除独特断言 |
-| Windows/macOS 应用编译 | 各自在原生宿主编译真实生产 Flutter 程序并确认可执行文件产出，不运行 PR 语义测试、desktop smoke、native lifecycle 或发布打包验收 |
+| Windows/macOS 应用检查 | Rust 改动同时选择两个宿主的 Rust clippy、测试和生产 Flutter 编译，复用各平台同一作业的工具链与构建目录；仅平台 runner 等非 Rust 改动只选择相应编译。两个宿主均不重复运行 Flutter UI、desktop smoke、native lifecycle 或发布打包验收 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
-公共语义集中到 Linux 不证明 Windows 原子文件替换、进程与窗口生命周期或 macOS AppKit 终止等平台行为等效通过。Windows/macOS 编译成功只证明当前源码可生成对应宿主程序，不证明启动、运行、签名或发布验收；平台专属测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
+Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
 
 始终运行的 `ci-gate`（`if: always()`）只接受分类计划明确允许的 skipped；必需作业因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动配置 required check。
 
@@ -102,7 +102,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行，Windows/macOS 仅承担应用编译门禁。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役，人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
+PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役，人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 

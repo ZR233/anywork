@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_quality_gate import KNOWN_JOBS, evaluate  # noqa: E402
+from pr_quality_changes import plan_from_paths  # noqa: E402
 
 
 def _results(**overrides: str) -> dict[str, str]:
@@ -94,6 +95,15 @@ class GateEvaluateTest(unittest.TestCase):
             **{"flutter-checks": "success", "linux-integration": "skipped"}
         ))
         self.assertEqual(errors, [])
+
+    def test_rust_plan_cannot_skip_either_native_platform(self):
+        plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="push")
+        results = _results(**{job: "success" for job in plan["required_jobs"]})
+        self.assertEqual(evaluate(plan["required_jobs"], results), [])
+        for job in ("windows-build", "macos-build"):
+            with self.subTest(job=job):
+                errors = evaluate(plan["required_jobs"], {**results, job: "skipped"})
+                self.assertTrue(any(job in error for error in errors))
 
     def test_retired_jobs_are_not_known(self):
         self.assertFalse({

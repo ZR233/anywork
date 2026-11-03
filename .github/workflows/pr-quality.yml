@@ -433,7 +433,7 @@ jobs:
           ' -- "$PR_QUALITY_XTASK" "$RUN_DESKTOP" "$RUN_NATIVE"
 
   windows-build:
-    name: Production application compilation (windows)
+    name: Native Rust and application checks (windows)
     needs: [changes, remote-helpers]
     if: needs.changes.outputs.windows_build == 'true'
     runs-on: windows-latest
@@ -460,6 +460,15 @@ jobs:
           flutter-version: 3.47.7
           channel: stable
           cache: true
+      - name: Prepare Clippy for Rust changes
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: rustup component add clippy
+      - name: Check Rust on Windows
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test Rust on Windows with the locked SQLite profile
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         shell: bash
         run: |
@@ -468,7 +477,7 @@ jobs:
           test -f dist/anywork-release/anywork.exe
 
   macos-build:
-    name: Production application compilation (macos)
+    name: Native Rust and application checks (macos)
     needs: [changes, remote-helpers]
     if: needs.changes.outputs.macos_build == 'true'
     runs-on: macos-15
@@ -495,6 +504,15 @@ jobs:
           flutter-version: 3.47.7
           channel: stable
           cache: true
+      - name: Prepare Clippy for Rust changes
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: rustup component add clippy
+      - name: Check Rust on macOS
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test Rust on macOS with the locked SQLite profile
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         shell: bash
         run: |

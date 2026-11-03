@@ -59,18 +59,23 @@ class PlanFromPathsTest(unittest.TestCase):
         plan = plan_from_paths(["design/README.md"], event_name="push")
         self.assertEqual(plan["required_jobs"], ("changes", "docs-policy"))
 
-    def test_rust_only_selects_rust_and_linux(self):
+    def test_rust_only_requires_native_platform_checks_and_builds(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="pull_request")
-        self.assertTrue(plan["rust_checks"])
-        self.assertTrue(plan["linux_environment"])
-        self.assertTrue(plan["linux_environment"])
+        for flag in (
+            "rust_checks", "linux_environment", "linux_tools",
+            "remote_helpers", "windows_build", "macos_build",
+        ):
+            self.assertTrue(plan[flag], flag)
         self.assertFalse(plan["release_configuration"])
         self.assertFalse(plan["flutter_checks"])
+        self.assertFalse(plan["gui_generated"])
         self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["linux_native"])
         self.assertFalse(plan["docs_policy"])
-        self.assertIn("rust-checks", plan["required_jobs"])
-        self.assertIn("linux-environment", plan["required_jobs"])
+        self.assertEqual(set(plan["required_jobs"]), {
+            "changes", "pr-title", "rust-checks", "linux-environment",
+            "linux-tools", "remote-helpers", "windows-build", "macos-build",
+        })
 
     def test_ui_only_selects_flutter(self):
         plan = plan_from_paths(
@@ -82,6 +87,8 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertFalse(plan["linux_environment"])
         self.assertFalse(plan["linux_desktop"])
         self.assertFalse(plan["linux_native"])
+        self.assertFalse(plan["windows_build"])
+        self.assertFalse(plan["macos_build"])
         self.assertEqual(plan["required_jobs"], ("changes", "pr-title", "flutter-checks"))
 
     def test_platform_directories_follow_platform_boundaries(self):
@@ -107,6 +114,7 @@ class PlanFromPathsTest(unittest.TestCase):
                     {name for name in heavy_flags if plan[name]},
                     set(selected),
                 )
+                self.assertFalse(plan["rust_checks"])
 
     def test_bridge_dependency_closure_and_native_exact(self):
         bridge = plan_from_paths(
@@ -177,6 +185,8 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(plan["rust_checks"])
         self.assertTrue(plan["linux_environment"])
         self.assertTrue(plan["flutter_checks"])
+        self.assertTrue(plan["windows_build"])
+        self.assertTrue(plan["macos_build"])
         self.assertFalse(plan["gui_generated"])
         self.assertFalse(plan["linux_desktop"])
 
