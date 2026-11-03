@@ -18,7 +18,7 @@ use crate::flutter;
 use crate::studio_acceptance;
 
 /// Desktop smoke is the unique subset of the discovered full set.
-const DESKTOP_SMOKE_IDS: &[&str] = &["wait_events"];
+const DESKTOP_SMOKE_IDS: &[&str] = &["wait_events", "chatgpt_auth"];
 /// Native smoke covers the current automatic exit/reopen preset.
 const NATIVE_SMOKE_IDS: &[&str] = &["shutdown"];
 
@@ -241,6 +241,7 @@ fn desktop_env_ready(id: &str) -> bool {
                 && env_present("ANYWORK_SIDEBAR_ARTIFACTS")
         }
         "acp_real_login" => env_present("ANYWORK_ACP_ACCEPTANCE"),
+        "chatgpt_real_login" => env_present("ANYWORK_CHATGPT_ACCEPTANCE"),
         _ => true,
     }
 }
@@ -250,7 +251,7 @@ fn env_present(name: &str) -> bool {
 }
 
 fn desktop_opt_in(id: &str) -> bool {
-    matches!(id, "acp_real_login")
+    matches!(id, "acp_real_login" | "chatgpt_real_login")
 }
 
 fn wait_acceptance_preset(executable: &Path, preset: &str, output: Option<&Path>) -> Result<()> {
@@ -503,10 +504,14 @@ mod tests {
         let discovered = vec![
             desktop_case("conversation_read_work"),
             desktop_case("wait_events"),
+            desktop_case("chatgpt_auth"),
         ];
         let full = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Full, None)?;
         let smoke = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Smoke, None)?;
-        assert_eq!(case_ids(&full), ["conversation_read_work", "wait_events"]);
+        assert_eq!(
+            case_ids(&full),
+            ["conversation_read_work", "wait_events", "chatgpt_auth"]
+        );
         assert_eq!(case_ids(&smoke), DESKTOP_SMOKE_IDS);
         Ok(())
     }

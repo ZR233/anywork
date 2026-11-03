@@ -19,6 +19,7 @@ AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
   'duplicateModel': l10n.accountsDuplicateModel,
   'savedConnectionFailed': l10n.accountsSavedConnectionFailed,
   'chatGptApiKeyRequired': l10n.accountsChatGptApiKeyRequired,
+  'chatGptNotConnected': l10n.accountsChatGptNotConnected,
   'chatGptOpenLinkFailed': l10n.accountsChatGptOpenLinkFailed,
   'chatGptOpenUsageFailed': l10n.accountsChatGptOpenUsageFailed,
   'setDefaultOnCreate': l10n.accountsSetDefaultOnCreate,

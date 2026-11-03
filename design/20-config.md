@@ -32,12 +32,15 @@
 - **版本 `26 → 27`**：将各账号旧 `disabled_models` 成员转换为 `model_enabled_overrides` 中值为 `false` 的条目，移除旧字段；未明确禁用的模型保持自动，不批量写入 `true`。转换保持账号身份、凭据关联、路由及其余覆盖不变，并沿用启动期备份、原子提交与中断恢复边界；正常读写仅消费新映射。
 - **版本 `27 → 28`**：为已有账号明确补入 `authentication = "apiKey"`，不从计费类别推断订阅登录；端点、环境变量引用、受保护凭据关联、路由及模型覆盖保持不变。ChatGPT 注册仅来自新版本中用户完成并保存的授权，升级本身不读取 Codex 凭据或自动创建订阅连接。
 - **版本 `28 → 29`**：移除旧 `skills.user_dir`，保留其余技能设置、账号认证身份及凭据关联；旧技能内容原样保留，不复制或覆盖标准用户技能目录。
+- **版本 `29 → 30`**：允许已验证的 Codex workspace 和套餐元数据；已有 API、SIWC 账号、资源、凭据关联和模型选择保持原样，不自动转换或重新登录。新字段只随用户完成并保存的授权写入。
 
 所有设置变更命令（Settings command）均须携带 `expectedSettingsRevision`，成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 
 ### 20.1.1 设置变更的资源边界
 
 模型接入协议统一使用 `accounts`、`accountId`、`modelId` 与 `templateId`；模板目录使用 `templates`，与账号实例目录分离。账号配置中的 `template` 为可选模板引用，`protocol` 为明确的厂商协议适配器。账号编辑通过稳定 `id` 定位同一资源，不提供重命名账号 ID 的路径。模型选择、工作模式或角色路由以及会话路由统一使用 `(accountId, modelId)`；`defaultModelId` 与 `suggestedModelId` 仅作为目录或新建路由的展示投影，不构成账号运行时的第二份模型选择。
+
+界面创建原生或 ACP 账号时，以模板 ID 加 128 位安全随机后缀分配新的稳定身份，不按当前配置中的可见账号递增编号。系统凭据命名空间由操作系统用户共享，另一份配置中不可见的同名账号仍可能拥有凭据；新建操作不能覆盖或认领该关联。已有账号 ID、凭据和路由保持原样，编辑仍复用原稳定身份。
 
 写入接口按最小业务资源划分，不将整个 `StudioSettings` 快照作为补丁提交：标量设置、列表设置、单个 MCP 字段、单个工作模式的模型或推理强度、单个智能体角色的模型或推理强度各自使用独立的类型化变更命令（typed mutation），请求仅携带目标标识与新值，其余字段由配置所有者从最新权威状态解析。
 
@@ -301,33 +304,33 @@ extensions = [".purelang"]
 
 ## 20.18 OpenAI API 与 ChatGPT 订阅认证
 
-本节定义原生 OpenAI 账号的认证契约。ChatGPT 接入采用 OpenAI 面向开源应用的 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)，不借用 Codex 的客户端身份、凭据文件或私有推理端点。线上可用性以实际授权和推理证据为准，协议实现或模拟通过本身不证明账号已获订阅权限。
+本节定义原生 OpenAI 账号的认证契约。新登录采用 [Codex 的 ChatGPT 认证与额度流程](https://learn.chatgpt.com/docs/app-server)，在既有 OAuth/OIDC 和模型协议边界内接入，不启动另一个 Codex 服务，不读取操作者的 Codex 凭据文件。协议参考 [Pi 的 Codex OAuth](https://github.com/earendil-works/pi/blob/c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8/packages/ai/src/auth/oauth/openai-codex.ts) 和 [CPA 的 Codex OAuth](https://github.com/router-for-me/CLIProxyAPI/blob/7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc/internal/auth/codex/openai_auth.go)。授权、额度与推理的线上可用性分别以实际证据判定。
 
 ### 认证、注册与保存
 
 - 账号显式保存 `authentication`，取值为 `apiKey` 或 `chatGpt`，与计费类别正交。旧配置通过版本迁移成为 `apiKey`，保留账号 ID、路由、模型覆盖、端点与原凭据关联，不从订阅计费标记或 URL 猜认证方式。
-- `chatGpt` 只适用于 `openai` 模板及 OpenAI 官方 API 资源。API 方式继续支持已有自定义端点和环境变量凭据；切换到订阅时不向自定义端点发送 OAuth 令牌。订阅默认计费类别为 `subscription`，不覆盖用户显式的计费选择，也不代表套餐有效或额度充足。
-- 每个已连接账号保留经验证的 issuer、subject、issued client ID 和可选 email；email 仅用于显示，不是账号、工作区或注册的唯一键。登录操作及账号详情只发布不含令牌的连接信息和订阅使用资格。重新登录必须维持原注册的 client ID 与已验证 subject；换一个账号应创建独立账号实例。
-- 新增和编辑使用同一认证意图：`keep` 保留当前认证，`apiKey` 显式选择 API，`chatGpt` 携带本次成功的 `loginId`。开始登录不会创建账号或更改已保存连接。只有账号 create/patch 的设置 CAS 与凭据事务成功，登录结果才成为 canonical 连接；不得把 OAuth 成功当作账号已保存。
-- 登录结果绑定 `loginId + editorId + accountId`。保存只能认领属于该账号与编辑意图、已经完成且仍有效的结果；丢弃、切换认证、替换模板或关闭编辑意图后，旧结果不得被重新认领。保存失败保留原连接及明确结果，不盲目重发创建或授权码交换。
-- API 密钥与 ChatGPT 受保护凭据分别按认证类型解码，不能把一个 OAuth 记录当作 API Key。选择 API 时不得因 `preserve` 意图保留并发送旧订阅令牌；选择订阅也不读取旧 API Key 充当 OAuth 凭据。账号显示名变化不改变身份和凭据关联。
+- `chatGpt` 只适用于 `openai` 模板及已验证凭据对应的官方资源。新 Codex 连接绑定 `https://chatgpt.com/backend-api/codex`；已有 SIWC 注册继续绑定 `https://api.openai.com/v1` 和自身 issued client ID，不混用令牌。API 方式继续支持自定义端点和环境变量凭据；切换订阅后不会向自定义端点发送 OAuth 令牌。默认计费类别为 `subscription`，保留用户显式选择，不代表额度充足。
+- 账号保留经验证的 issuer、subject、client ID、可选 email，以及 Codex workspace account ID 和可选套餐；列表和详情只发布这些无令牌的身份。email 仅用于显示，不是注册或工作区的唯一键。Codex 重新登录必须维持 issuer、subject 和 workspace，套餐可以变化；换一个身份应创建独立账号。原 SIWC 账号显式重新登录并保存后才转换为同 subject 的 Codex 连接，失败或丢弃保留原连接。
+- 开始登录不会创建账号或更改已保存连接。新增／编辑意图分别为 `keep`、`apiKey` 和携带成功 `loginId` 的 `chatGpt`；只有设置 CAS 和凭据事务成功才成为 canonical。登录结果绑定 `loginId + editorId + accountId`，不得跨账号或编辑意图认领。丢弃、切换认证、替换模板和关闭编辑意图使旧结果失效；失败保存保留原连接和明确结果，不盲目重发。
+- API 密钥与 OAuth 凭据分别解码。选择 API 不得把 `preserve` 解释为沿用 OAuth 令牌；选择订阅不读取旧 API Key。同一草稿往返保留原 API 地址，已保存订阅切回 API 时采用模板的当前默认 API 地址，不能沿用 Codex 资源。显示名变化不改变身份和凭据关联。
 
 ### 授权操作与生命周期
 
-- Studio 持有登录操作、编辑意图绑定、保存资格和关闭责任；模型协议层持有 OAuth/OIDC 交换与校验。登录通过类型化命令开始和取消，通过按 `loginId` 定位的账号领域观察发布 canonical 状态，不建立 Flutter 私有认证事实源。
-- 登录状态依次为准备、等待浏览器、交换授权码及成功；拒绝、失败、超时和取消为明确终态。每个编辑意图至多一个活跃登录，全部在途登录最多 16 个，等待浏览器的期限为 15 分钟；取消须等待自身 listener 和网络等待收束，不宣称已撤销远端注册。应用关闭拒绝新登录并取消、汇合全部在途操作。
-- 安装在首次登录前原子保存唯一 `urn:uuid:…` host ID，后续账号与重启复用它。首次授权使用 `dynamic_agent_client` 和实际应用名 `anywork`；回调返回的 issued client ID 才可用于交换及后续重新登录。初始入口标识绝不能当成已注册 client ID 保存。
-- 授权只打开 OpenAI 官方 HTTPS 地址。先绑定 `127.0.0.1` 的 `/auth/callback`，再生成授权 URL；每次生成全新 state、OIDC nonce 和 S256 PKCE。授权与 code 交换使用完全相同的回调 URI，随机可用端口只允许改变端口，不改为 `localhost` 或其他路径。无效或不匹配的回调不得触发令牌交换或完成另一操作。
-- 校验 ID token 的签名、issuer、issued client ID audience、有效期和 nonce，使用成熟 OIDC/JWKS 组件，不仅解码 JWT 载荷。重新登录还校验已保存的 subject。只有实际 token response 授予 `chatgpt.tokens.use.direct` 才允许保存为可调用订阅连接；身份有效但缺少权限时给出明确指引，不自动改成 API 或绕过授权。
-- 登录/刷新 HTTP 禁止自动重试和重定向；单次网络操作总期限为 30 秒、响应体上限 1 MiB。一次性 code 或轮换 refresh token 的响应丢失不能解释为“未提交”，不得自动重放。诊断不包含完整回调、授权 URL、code、state、nonce 或令牌；重新授权不通过 Dart 转发 `id_token_hint`。
+- Studio 持有登录操作、保存资格和关闭责任；模型协议层持有 OAuth/OIDC 交换与校验。类型化命令开始和取消，按 `loginId` 定位的领域观察发布权威状态，Flutter 不建立第二份认证事实源。
+- 登录依次为准备、等待浏览器、交换和成功；拒绝、失败、取消为明确终态。每个编辑意图至多一个活跃登录，总计最多 16 个。等待浏览器没有人为固定期限，回调、取消、配置撤代和应用关闭驱动收束；成功结果的保存资格受实际 access token 到期时间约束。取消等待自身 listener 和网络请求汇合，不宣称撤销远端授权。关闭拒绝新登录并汇合所有操作；取消等待者不会丢失 worker 的汇合责任。
+- 新登录使用 Codex 的公开 native client ID、`/oauth/authorize` 和 `/oauth/token`，请求 `openid profile email offline_access`、`id_token_add_organizations=true`、`codex_cli_simplified_flow=true`、`originator=anywork`。本地稳定 `urn:uuid:…` host ID 仍作为凭据归属元数据保存，Codex 授权不发送它。
+- 先绑定 `127.0.0.1:1455`，不可用时绑定 `1457`，再生成官方 HTTPS 授权链接；回调为 `http://localhost:<实际端口>/auth/callback`，与交换参数完全一致。每次生成全新 state、OIDC nonce 和 S256 PKCE。无效或不匹配的回调不得触发交换或完成另一操作。
+- 成熟 OIDC/JWKS 组件校验 ID token 的签名、issuer、client ID audience、有效期、nonce 和存在时的 access-token hash。Codex 必须含非空的已签名 workspace account ID，不要求 SIWC 专属 `chatgpt.tokens.use.direct` scope；已有 SIWC 注册仍校验自身 grant 和刷新语义。两者都不自动改成 API 或借用别的账号。
+- 交换／刷新禁止自动重试和重定向，共享单次 30 秒网络预算及 1 MiB 响应上限。一次性 code 或轮换 refresh 的响应丢失不得解释为未提交或自动重放。诊断不包含完整回调、授权 URL、code、state、nonce 或令牌，Dart 不转发 `id_token_hint`。
 
 ### 凭据、刷新与执行
 
-- access、refresh、ID token、实际 granted scopes 和到期信息只存于 Rust 受保护凭据记录，复用系统凭据库服务及 `account:<id>` 关联；不写入配置、数据库、DTO 或日志。持久保存与只在当前进程有效的凭据租约必须保持可区分，不能把 lease 回读当作持久化成功。
-- 请求按所选账号的同一共享凭据所有者解析有效 access token，临近到期时刷新；同一注册的刷新串行化，成功后把 access、轮换 refresh、scope 与期限作为一个完整记录提交并回读，再发布供新请求使用。遵循服务返回的 `earliest_refresh_at`；缺少权限、身份冲突、轮换失败或存储失败均可见，不借用别的账号或旧 API Key。
-- 凭据轮换不改变账号或注册身份，不重算历史费用、不改变已冻结的模型选择。账号替换或删除撤销旧凭据所有者的后续提交资格；迟到刷新不得覆盖新连接。共享会话凭据的进程必须受同一刷新互斥保护，不能各自缓存 refresh token 后并发使用。
-- 订阅推理继续走唯一模型运行时，当前接入范围为官方 `/v1/responses` 的 HTTP 流及同资源的模型目录；工具投影、最终请求限制与失败诊断遵循 [6.4 的订阅方言](./06-model.md#chatgpt-订阅的-responses-http-方言)。不因有 OAuth token 就推定 API Key 专属 Files、Images、独立搜索或其他传输能力可用。API 方式的既有能力不受此限制。目录不是套餐权限检查，真实请求成功才证明该次模型可调用。
-- 用量入口可链接 [ChatGPT 用量设置](https://chatgpt.com/settings/usage)，不伪造余额、套餐或剩余额度。
+- access、refresh、ID token、granted scopes 和到期信息只存于 Rust 受保护记录，复用系统凭据库与 `account:<id>` 关联，不写入配置、数据库、DTO 或日志。耐久保存和进程凭据租约必须可区分，不能把 lease 回读当持久化成功。
+- 每次请求由所选账号的共享凭据所有者解析有效 token，临近到期时串行刷新。轮换记录整体耐久提交并回读后才发布新 token，遵循 `earliest_refresh_at`；不确定刷新保留在途标记并要求重新登录，不跨重启重放旧 refresh。账号替换／删除撤销旧所有者，迟到刷新不得覆盖新连接；跨进程使用同一锁和严格回读。
+- 订阅继续走唯一模型运行时。Codex 使用绑定资源的 `/responses` HTTP 流及 `/models?client_version=…`，Authorization 与 `chatgpt-account-id` 都来自同一账号，自定义头不能覆盖。已有 SIWC 使用自身 `/v1/responses` 与目录。工具和请求限制见 [6.4](./06-model.md#chatgpt-订阅的-responses-http-方言)，不推定 Files、Images、独立搜索或其他传输能力。目录成功不证明推理成功。
+- Codex 额度由该共享会话执行一次 `GET https://chatgpt.com/backend-api/wham/usage`，携带同一 bearer 和 workspace ID，复用刷新、查询去重和撤代规则。可选响应 account ID 不符则拒绝。保留主／次窗口、附加额度组、已用百分比、窗口长度、实际 reset 时间及套餐；空窗口显示未报告限额，不解释为无限额度。HTTP、认证或解析失败可见，不自动登录或重发。已有 SIWC 没有该额度能力，可通过官方重新登录转换。
+- 用量发布已有共享 `subscription` 形态，列表与详情复用额度进度和重置组件。当前 Runtime、HTTP、FRB、Client 的 `zhipuCodingPlan` 命名替换为 `subscription`；历史存档仍只在原迁移边界解码。百分比不伪造货币余额，用户仍可在 [ChatGPT 用量设置](https://chatgpt.com/settings/usage) 管理套餐。
+- 用量缓存的私有查询身份包含保存的 OAuth 注册代次，不包含访问令牌或刷新令牌。重启与正常刷新保留同一归属；显式重新登录撤代，不能沿用旧授权的额度事实。
 
 ### 凭据代际与可恢复提交
 
@@ -340,5 +343,7 @@ extensions = [".purelang"]
 - 配置替换、凭据完整写入及回读均确认后，耐久记录 `committed`，随后才允许发布成功与认领登录。写入函数返回错误不等于 rename 未发生；在 `prepared` 失败时，按已核验的旧配置和受保护旧凭据恢复两侧，完整验证后记录 `rolledBack`，不能只回滚其中一侧。恢复失败保留记录、材料与共享标记，明确报告需要恢复，不宣称已回滚或已保存。
 - 启动和显式重载在发布配置、装配凭据与允许新提交前，先收束本数据根的在途凭据事务。`staged` 仅清理本事务准备物，`prepared` 恢复旧状态，终态只完成自身清理；对不符合已记录原件／候选摘要的外部修改保持失败关闭并保留现场。其他数据根遇到同关联的待恢复标记时拒绝使用，不擅自接管其恢复。
 - 终态先耐久记录，再解除共享标记，最后清理本事务专属快照与文件；中断后不得重放终态的旧凭据快照、撤销后续合法刷新或新注册。仅删除本事务已确认拥有的关联，不清理其他账号、未知条目或 Codex 数据。
+
+Windows Credential Manager 的单项载荷上限为 2560 字节。超过限制的账号记录和事务快照通过当前用户的官方 DPAPI（`CRYPTPROTECT_UI_FORBIDDEN`，不使用 machine scope）保护，密文原子保存于系统用户 local-data 的 `anywork/credential-payloads/<关联键 SHA-256>.bin`，凭据库中只存版本化引用。关联键作为附加 entropy，跨账号替换密文不能解密；仅持有密文文件不构成有效凭据。既有小载荷仍从原凭据项读取，首次需要时转为受保护引用；已转入的关联保持同一拥有路径，通过现有账号锁、事务快照与待恢复标记约束替换。删除须先确认凭据引用消失，再删除自己拥有的密文；失败保留关联身份供恢复重试，不扫描或删除未知材料。载荷明文不写入文件，损坏、丢失、解密失败与不可访问不能降级为临时 lease。
 
 这些规则不把纯 API 账号现有的进程凭据租约改称持久化成功；需要受保护事务的路径若无法严格保存快照，则拒绝该次认证变更并保留原连接。

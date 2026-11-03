@@ -5362,6 +5362,12 @@ pub(crate) mod storage_fault_tests {
                     &next_write.checkpoint.state,
                 )
                 .await?;
+            sink.0
+                .channel
+                .set_projection_retention(ProjectionRetention {
+                    resident_bytes: projection.retained_bytes(),
+                    pending: None,
+                })?;
             // The later fact has also left the live window; only its new unsaved obligation
             // must keep the reconstructed identity resident until the writer reaches it.
             index.retain(&Default::default(), &Default::default());
@@ -5385,6 +5391,10 @@ pub(crate) mod storage_fault_tests {
             assert_eq!(saved.created_at, old_placement.created_at);
             assert_eq!(history.watermark().await?, 3);
             assert_eq!(index.retained_bytes(), 0);
+            assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+            // The live Current snapshot retains metadata even after all writes drain.
+            drop(projection);
+            sink.0.channel.release_projection_retention();
             assert_eq!(sink.pressure(id).thread_bytes, 0);
             assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
             sink.0.channel.stop_and_join().await?;
@@ -5488,6 +5498,9 @@ pub(crate) mod storage_fault_tests {
             })?;
         sink.flush(id, 21).await?;
         assert_eq!(index.retained_bytes(), 0);
+        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+        drop(projection);
+        sink.0.channel.release_projection_retention();
         assert_eq!(sink.pressure(id).thread_bytes, 0);
         assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
         assert_eq!(chat.head_seq(), 1620);
@@ -5622,6 +5635,9 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(chat.durable_seq(), 1);
         drop(lease);
         sink.flush(id, 3).await?;
+        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
+        drop(projection);
+        sink.0.channel.release_projection_retention();
         assert_eq!(sink.pressure(id).thread_bytes, 0);
         sink.0.channel.stop_and_join().await?;
         Ok(())

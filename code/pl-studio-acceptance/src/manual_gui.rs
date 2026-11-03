@@ -339,8 +339,6 @@ struct WebSearchScenario<'a> {
     output: &'a Path,
     fixture_log: &'a Path,
     requests_file: &'a Path,
-    accounts: Option<&'a str>,
-    models: Option<&'a str>,
     probe_mode: &'a str,
     interrupt: &'a mpsc::Receiver<()>,
 }
@@ -1195,8 +1193,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
-                accounts: options.web_search_accounts.as_deref(),
-                models: options.web_search_models.as_deref(),
                 probe_mode: options.web_search_probe.as_deref().unwrap_or("fixture"),
                 interrupt: &interrupt_rx,
             },
@@ -2437,7 +2433,7 @@ fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
 }
 
 /// 等待被 `ext.anywork.requestExit` 协调关闭的 GUI 自然退出，并返回真实退出状态。
-pub(super) fn wait_for_gui_exit(
+fn wait_for_gui_exit(
     gui: &mut OwnedProcess,
     timeout: Duration,
     phase: &str,
@@ -2726,7 +2722,7 @@ fn write_config_with_profile(
 /// Private to `manual_gui`: only the descendant `shutdown` module calls it, and
 /// keeping the visibility here means the private [`FixtureReady`] parameter does
 /// not leak past its own visibility.
-pub(super) fn write_config_with_mcp_server(
+fn write_config_with_mcp_server(
     home: &Path,
     ready: &FixtureReady,
     server_id: &str,
@@ -2792,7 +2788,7 @@ pub(super) struct LspServerSpec<'a> {
 ///
 /// Private to `manual_gui` (only the descendant `shutdown` module uses it) so
 /// the private [`FixtureReady`] parameter stays within its own visibility.
-pub(super) fn write_config_with_lsp_server(
+fn write_config_with_lsp_server(
     home: &Path,
     ready: &FixtureReady,
     spec: &LspServerSpec<'_>,
@@ -3331,7 +3327,7 @@ pub(super) fn request_app_exit(
 }
 
 /// Waits for the operator to type `done` while the GUI and optional fixture stay up.
-pub(super) fn wait_operator_done(
+fn wait_operator_done(
     prompt: &str,
     gui: &mut OwnedProcess,
     mut fixture: Option<&mut OwnedProcess>,
@@ -3388,7 +3384,7 @@ pub(super) fn wait_operator_done(
 }
 
 /// Operator runbook, then a coordinated capture and native exit.
-pub(super) fn observe_capture_exit(
+fn observe_capture_exit(
     app_dir: &Path,
     vm_url: &str,
     output: &Path,

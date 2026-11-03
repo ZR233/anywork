@@ -1,13 +1,20 @@
-//! Official Sign in with ChatGPT. Secrets remain in this Rust-only boundary.
+//! Codex ChatGPT authentication and existing SIWC sessions. Secrets stay in Rust.
 mod authorization;
 mod http;
 mod session;
+mod usage;
 
 pub use authorization::ChatGptAuthorization;
 pub use session::{ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession};
+pub use usage::{CodexQuotaWindow, CodexUsage, CodexUsageError};
 
 pub const CHATGPT_RESOURCE: &str = "https://api.openai.com/v1";
 pub const CHATGPT_ISSUER: &str = "https://auth.openai.com";
+pub const CODEX_RESOURCE: &str = "https://chatgpt.com/backend-api/codex";
+// Public native-client registration used by Codex and Pi's openai-codex flow.
+pub const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
+const CODEX_TOKEN: &str = "https://auth.openai.com/oauth/token";
 const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
 const DIRECT_SCOPE: &str = "chatgpt.tokens.use.direct";
@@ -62,14 +69,39 @@ fn oauth_client(
     oauth2::EndpointNotSet,
     oauth2::EndpointSet,
 > {
+    let (authorize, token) = if client_id == CODEX_CLIENT_ID {
+        (CODEX_AUTHORIZE, CODEX_TOKEN)
+    } else {
+        (AUTHORIZE, TOKEN)
+    };
     oauth2::Client::new(oauth2::ClientId::new(client_id.to_owned()))
-        .set_auth_uri(oauth2::AuthUrl::new(AUTHORIZE.into()).expect("static authorization URL"))
-        .set_token_uri(oauth2::TokenUrl::new(TOKEN.into()).expect("static token URL"))
+        .set_auth_uri(oauth2::AuthUrl::new(authorize.into()).expect("static authorization URL"))
+        .set_token_uri(oauth2::TokenUrl::new(token.into()).expect("static token URL"))
 }
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct IdentityClaims {
+    #[serde(rename = "https://api.openai.com/auth", default)]
+    auth: Option<CodexIdentityClaims>,
+}
+impl openidconnect::AdditionalClaims for IdentityClaims {}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct CodexIdentityClaims {
+    chatgpt_account_id: Option<String>,
+    chatgpt_plan_type: Option<String>,
+}
+
+type IdToken = openidconnect::IdToken<
+    IdentityClaims,
+    openidconnect::core::CoreGenderClaim,
+    openidconnect::core::CoreJweContentEncryptionAlgorithm,
+    openidconnect::core::CoreJwsSigningAlgorithm,
+>;
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 struct TokenExtras {
-    id_token: Option<openidconnect::core::CoreIdToken>,
+    id_token: Option<IdToken>,
     earliest_refresh_at: Option<i64>,
 }
 

@@ -109,18 +109,28 @@ enum AcpPresentationPhase {
 enum AccountLeaveChoice { save, discard, cancel }
 
 final class ChatGptAccountInfo {
-  const ChatGptAccountInfo({this.email, required this.planUsageEnabled});
+  const ChatGptAccountInfo({
+    this.email,
+    this.workspaceId,
+    this.planType,
+    required this.planUsageEnabled,
+  });
   final String? email;
+  final String? workspaceId;
+  final String? planType;
   final bool planUsageEnabled;
 
   @override
   bool operator ==(Object other) =>
       other is ChatGptAccountInfo &&
       email == other.email &&
+      workspaceId == other.workspaceId &&
+      planType == other.planType &&
       planUsageEnabled == other.planUsageEnabled;
 
   @override
-  int get hashCode => Object.hash(email, planUsageEnabled);
+  int get hashCode =>
+      Object.hash(email, workspaceId, planType, planUsageEnabled);
 }
 
 final class ChatGptLoginSnapshot {
@@ -242,6 +252,9 @@ abstract class AccountUsagePresentation with _$AccountUsagePresentation {
     @Default(<AccountCurrencyBalance>[]) List<AccountCurrencyBalance> balances,
     @Default(<AccountQuotaPresentation>[])
     List<AccountQuotaPresentation> quotas,
+    String? levelLabel,
+    String? emptyLabel,
+    String? missingCredentialLabel,
     String? updatedLabel,
     String? error,
 
@@ -258,6 +271,7 @@ sealed class AccountRowContent with _$AccountRowContent {
     required AccountBilling billing,
     required AccountUsagePresentation usage,
     String? displayEndpoint,
+    String? accountLabel,
   }) = NativeAccountRowContent;
   const factory AccountRowContent.acp({
     required String status,
@@ -459,6 +473,7 @@ abstract class NativeAccountDetailsPresentation
     required AccountCatalogPresentation catalog,
     required AccountUsagePresentation usage,
     @Default(<AccountDisplayFact>[]) List<AccountDisplayFact> advanced,
+    String? identityLabel,
   }) = _NativeAccountDetailsPresentation;
 }
 

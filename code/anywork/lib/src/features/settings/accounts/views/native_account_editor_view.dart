@@ -379,6 +379,8 @@ class _ChatGptConnection extends StatelessWidget {
       null => l10n.accountsChatGptNotConnected,
     };
     final email = login?.account?.email ?? value.savedChatGptAccount?.email;
+    final plan =
+        login?.account?.planType ?? value.savedChatGptAccount?.planType;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -404,6 +406,7 @@ class _ChatGptConnection extends StatelessWidget {
           const SizedBox(height: 4),
           Text(email, style: Theme.of(context).textTheme.bodySmall),
         ],
+        if (succeeded && plan != null) Text('ChatGPT $plan'),
         const SizedBox(height: 12),
         Wrap(
           spacing: 8,
@@ -420,12 +423,14 @@ class _ChatGptConnection extends StatelessWidget {
                 phase == ChatGptLoginPhase.failed ||
                 (succeeded && !hasPermission))
               FilledButton.icon(
+                key: const ValueKey('chatgpt-login-start'),
                 onPressed: onStart,
                 icon: const Icon(Icons.login),
                 label: Text(l10n.accountsChatGptLogin),
               ),
             if (busy || waiting)
               OutlinedButton(
+                key: const ValueKey('chatgpt-login-cancel'),
                 onPressed: onCancel,
                 child: Text(l10n.accountsChatGptCancel),
               ),

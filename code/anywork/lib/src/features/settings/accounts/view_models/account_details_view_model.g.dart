@@ -56,7 +56,7 @@ final class AccountDetailsViewModelProvider
 }
 
 String _$accountDetailsViewModelHash() =>
-    r'6db26aa97403c5753631d8e2f511f49905cdd224';
+    r'afb3fbda24f38c4a4a3279600d7bf29d44685eea';
 
 final class AccountDetailsViewModelFamily extends $Family
     with

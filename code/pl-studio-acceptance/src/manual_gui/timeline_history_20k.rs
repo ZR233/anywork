@@ -473,9 +473,10 @@ fn run_phase(
             status.success(),
             "timeline-history-20k {phase} GUI failed: {status}"
         );
-        let native: Value = serde_json::from_slice(&fs::read(&native_exit).with_context(|| {
-            format!("missing native exit report {}", native_exit.display())
-        })?)?;
+        let native: Value =
+            serde_json::from_slice(&fs::read(&native_exit).with_context(|| {
+                format!("missing native exit report {}", native_exit.display())
+            })?)?;
         let gui_pid = native["pid"]
             .as_u64()
             .context("timeline-history-20k native exit report has no pid")?;

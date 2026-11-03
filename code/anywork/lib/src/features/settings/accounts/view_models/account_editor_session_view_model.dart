@@ -452,18 +452,12 @@ final class AccountEditorSessionOwner {
       _publish();
       return null;
     }
-    final used = {
-      for (final account in source.accounts)
-        if (displayIdentity(account.identity).kind == template.kind)
-          account.identity.accountId,
-    };
-    var id = template.id;
-    for (var suffix = 2; used.contains(id); suffix++) {
-      id = '${template.id}-$suffix';
-    }
     return AccountEditorKey(
       editorId: _ids.next(),
-      target: AccountDisplayKey(kind: template.kind, id: id),
+      target: AccountDisplayKey(
+        kind: template.kind,
+        id: _ids.newAccount(template.id),
+      ),
       template: template,
       creating: true,
     );

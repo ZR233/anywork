@@ -2105,6 +2105,7 @@ fn native_report_path(working: &Path, label: &str) -> PathBuf {
 }
 
 /// Optional thin native-test assembly for a shutdown scene.
+#[derive(Default)]
 struct NativeLaunch<'a> {
     env: &'a [(&'a str, &'a str)],
     fault: Option<&'a str>,
@@ -2114,21 +2115,6 @@ struct NativeLaunch<'a> {
     second_prompt: Option<&'a str>,
     tmpdir: Option<&'a Path>,
     output: Option<&'a Path>,
-}
-
-impl Default for NativeLaunch<'_> {
-    fn default() -> Self {
-        Self {
-            env: &[],
-            fault: None,
-            phase: None,
-            project: None,
-            prompt: None,
-            second_prompt: None,
-            tmpdir: None,
-            output: None,
-        }
-    }
 }
 
 /// Starts a native GUI for [anywork_home].

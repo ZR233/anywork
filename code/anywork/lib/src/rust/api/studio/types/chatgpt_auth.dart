@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'chatgpt_auth.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeAccountAuthenticationIntent
@@ -48,6 +48,7 @@ class BridgeChatGptAccountInfo {
   final String clientId;
   final String? email;
   final bool planUsageEnabled;
+  final BridgeCodexAccountInfo? codex;
 
   const BridgeChatGptAccountInfo({
     required this.issuer,
@@ -55,6 +56,7 @@ class BridgeChatGptAccountInfo {
     required this.clientId,
     this.email,
     required this.planUsageEnabled,
+    this.codex,
   });
 
   @override
@@ -63,7 +65,8 @@ class BridgeChatGptAccountInfo {
       subject.hashCode ^
       clientId.hashCode ^
       email.hashCode ^
-      planUsageEnabled.hashCode;
+      planUsageEnabled.hashCode ^
+      codex.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -74,7 +77,8 @@ class BridgeChatGptAccountInfo {
           subject == other.subject &&
           clientId == other.clientId &&
           email == other.email &&
-          planUsageEnabled == other.planUsageEnabled;
+          planUsageEnabled == other.planUsageEnabled &&
+          codex == other.codex;
 }
 
 class BridgeChatGptLoginCommandReply {
@@ -188,4 +192,22 @@ class BridgeChatGptLoginSnapshot {
           expiresAt == other.expiresAt &&
           account == other.account &&
           failure == other.failure;
+}
+
+class BridgeCodexAccountInfo {
+  final String accountId;
+  final String? planType;
+
+  const BridgeCodexAccountInfo({required this.accountId, this.planType});
+
+  @override
+  int get hashCode => accountId.hashCode ^ planType.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCodexAccountInfo &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          planType == other.planType;
 }

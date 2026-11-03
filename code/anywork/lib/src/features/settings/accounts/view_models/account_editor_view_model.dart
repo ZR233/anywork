@@ -310,7 +310,12 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     }
     _releaseChatGptLogin();
     _authenticationError = null;
-    _raw = draft.withAuthentication(authentication);
+    _raw = draft.withAuthentication(
+      authentication,
+      defaultApiEndpoint: _accounts.state.value.templates
+          .template(draft.templateId ?? '')
+          ?.baseUrl,
+    );
     _revision++;
     _publish();
   }
@@ -1237,6 +1242,8 @@ ChatGptAccountInfo? _chatGptAccountPresentation(
     : ChatGptAccountInfo(
         email: account.email,
         planUsageEnabled: account.planUsageEnabled,
+        workspaceId: account.codex?.accountId,
+        planType: account.codex?.planType,
       );
 
 ChatGptLoginSnapshot? _chatGptLoginPresentation(

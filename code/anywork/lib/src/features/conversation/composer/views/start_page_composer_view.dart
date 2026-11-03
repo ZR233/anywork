@@ -1,7 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/studio_client.dart';
+
 import '../../../../platform/dropped_file.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -59,7 +61,8 @@ class StartPageComposerView extends StatelessWidget {
   final ValueChanged<Object> onReportFailure;
   final Future<void> Function(List<ModelInputCapabilityView>, bool Function())
   onPickLocalAttachments;
-  final Future<void> Function(List<DroppedFileTransfer>, bool Function()) onDropAttachments;
+  final Future<void> Function(List<DroppedFileTransfer>, bool Function())
+  onDropAttachments;
   final Future<void> Function(List<String>) onAddLocal;
   final Future<void> Function(String) onAddUrl;
   final Future<void> Function(String) onRemoveAttachment;

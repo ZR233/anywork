@@ -42,10 +42,7 @@ final class FlutterContentCaptureMeta {
 }
 
 final class FlutterContentCaptureResult {
-  const FlutterContentCaptureResult({
-    required this.png,
-    required this.meta,
-  });
+  const FlutterContentCaptureResult({required this.png, required this.meta});
 
   final Uint8List png;
   final FlutterContentCaptureMeta meta;
@@ -60,7 +57,11 @@ Future<FlutterContentCaptureResult> capturePaintedBoundary({
   double pixelRatio = kCaptureDefaultPixelRatio,
 }) async {
   if (!(pixelRatio.isFinite && pixelRatio > 0)) {
-    throw ArgumentError.value(pixelRatio, 'pixelRatio', 'must be a finite positive number');
+    throw ArgumentError.value(
+      pixelRatio,
+      'pixelRatio',
+      'must be a finite positive number',
+    );
   }
   final size = boundary.size;
   if (!size.isFinite || size.width <= 0 || size.height <= 0) {
@@ -116,8 +117,5 @@ Future<FlutterContentCaptureResult> captureFlutterContent({
   if (renderObject is! RenderRepaintBoundary) {
     throw StateError('Capture key is not a RepaintBoundary');
   }
-  return capturePaintedBoundary(
-    boundary: renderObject,
-    pixelRatio: pixelRatio,
-  );
+  return capturePaintedBoundary(boundary: renderObject, pixelRatio: pixelRatio);
 }

@@ -25,7 +25,7 @@ void main() {
   final projectsRoot = Platform.environment['ANYWORK_SIDEBAR_PROJECTS'];
   if (Platform.environment['ANYWORK_HOME'] case final home?
       when home.trim().isNotEmpty) {
-    // AppGraph.production consumes this isolated home.
+    // The production composition consumes this isolated home.
   } else {
     throw StateError('Supply an isolated ANYWORK_HOME');
   }

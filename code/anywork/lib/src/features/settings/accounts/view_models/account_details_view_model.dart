@@ -219,6 +219,9 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
         content: _key.kind == AccountKind.native
             ? AccountDetailsContent.native(
                 NativeAccountDetailsPresentation(
+                  identityLabel:
+                      native?.chatgptAccount?.email ??
+                      native?.chatgptAccount?.codex?.accountId,
                   authentication:
                       native?.authentication ==
                           account_domain.AccountAuthenticationMethod.chatGpt

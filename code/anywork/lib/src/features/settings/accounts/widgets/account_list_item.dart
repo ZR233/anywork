@@ -32,7 +32,8 @@ class AccountListItem extends StatelessWidget {
       isDefault: value.isDefault,
       subtitleLayout: AccountIdentitySubtitleLayout.singleLine,
       subtitle: switch (value.content) {
-        NativeAccountRowContent(:final displayEndpoint) => displayEndpoint,
+        NativeAccountRowContent(:final displayEndpoint, :final accountLabel) =>
+          accountLabel ?? displayEndpoint,
         AcpAccountRowContent() => null,
       },
     );

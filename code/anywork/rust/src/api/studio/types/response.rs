@@ -651,7 +651,7 @@ pub enum BridgeAccountUsageState {
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum BridgeAccountUsageData {
     DeepSeekBalance(DeepSeekBalanceDto),
-    ZhipuCodingPlan(ZhipuCodingPlanUsageDto),
+    Subscription(SubscriptionUsageDto),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -672,14 +672,14 @@ pub struct DeepSeekBalanceInfoDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ZhipuCodingPlanUsageDto {
+pub struct SubscriptionUsageDto {
     pub level: Option<String>,
-    pub limits: Vec<ZhipuQuotaLimitDto>,
+    pub limits: Vec<SubscriptionQuotaLimitDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ZhipuQuotaLimitDto {
+pub struct SubscriptionQuotaLimitDto {
     pub window: String,
     pub label: String,
     pub percentage: f64,
@@ -687,12 +687,12 @@ pub struct ZhipuQuotaLimitDto {
     pub total: Option<f64>,
     pub remaining: Option<f64>,
     pub next_reset_at: Option<i64>,
-    pub usage_details: Vec<ZhipuToolUsageDetailDto>,
+    pub usage_details: Vec<SubscriptionUsageDetailDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ZhipuToolUsageDetailDto {
+pub struct SubscriptionUsageDetailDto {
     pub name: String,
     pub current_value: Option<f64>,
     pub total: Option<f64>,

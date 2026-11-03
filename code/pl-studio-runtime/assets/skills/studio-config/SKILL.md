@@ -166,9 +166,9 @@ Edit a threshold in the account's model list or model information page: typing a
 ## Credentials
 
 Native OpenAI accounts offer API and ChatGPT subscription authentication in the same
-create/edit form. Subscription sign-in uses OpenAI's public Sign in with ChatGPT flow,
-not the operator's Codex credentials. Complete browser authorization and verify the
-granted plan-use permission before saving; a successful sign-in is still an unsaved
+create/edit form. New subscription sign-ins use Codex's official browser OAuth flow
+with PKCE and a validated signed workspace identity. Never import the operator's
+Codex credential files. A successful sign-in is still an unsaved
 editor result until the account transaction is confirmed. Cancelling, discarding or
 switching authentication invalidates that editor's pending result.
 
@@ -181,7 +181,12 @@ do not copy tokens or alter a refresh-in-flight marker to repair an uncertain re
 Subscription authentication only sends credentials to the official OpenAI resource;
 switching back to API requires an API credential, not preservation of OAuth material.
 Authentication and billing intent are independent, and neither login nor the model
-catalog proves remaining quota. Users manage plan access in ChatGPT usage settings.
+catalog proves remaining quota. Codex accounts query the official usage endpoint
+with their own bearer token and workspace ID. Lists and details show the reported
+plan, quota windows, remaining percentages and reset times; missing limits do not
+mean unlimited usage. Existing SIWC registrations retain their resource and
+credentials until an explicit successful reconnection is saved. Users can also
+manage plan access in ChatGPT usage settings.
 
 Authentication changes coordinate configuration and credential generations. Pending
 recovery keeps a non-secret, independently versioned journal under

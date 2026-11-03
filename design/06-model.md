@@ -60,7 +60,7 @@ Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入�
 
 ### ChatGPT 订阅的 Responses HTTP 方言
 
-ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，依据已解析账号的 ChatGPT 会话能力选择方言，不按模型名称、显示名或 URL 猜测。API Key 及其他厂商的既有编码保持不变；线上限制以 [SIWC 预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) 为依据。
+ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，依据已解析账号的 ChatGPT 会话能力选择方言，不按模型名称、显示名或 URL 猜测。新 Codex 连接与已保存 SIWC 注册分别绑定各自的官方资源、令牌及 workspace／grant 校验，见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。API Key 及其他厂商编码保持不变；SIWC 注册的附加限制仍以其 [预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) 为依据。
 
 - **基本形状与上下文**：HTTP 请求使用 `store: false`、`stream: true` 和数组形态的 `input`，发送本次所需完整上下文，不使用 HTTP `previous_response_id` 或服务端会话保存。受信指令仍按本产品的单一 `developer` 消息契约发送，不新增并行的顶层 `instructions` 通道。
 - **流式响应媒体类型**：已验证的官方 ChatGPT 会话路由允许成功 HTTP 响应缺少 `Content-Type`，以兼容官方端点已观察到的无媒体类型 SSE 流；这是该路由的窄传输适配，不是对其他 API 或 Compatible 端点的通用回退。响应头明确存在时仍必须是 `text/event-stream`，空值、非法值或其他媒体类型均按原有有界错误路径处理。缺失头时直接复用现有 SSE framing、事件解码与终态校验，不嗅探正文选择新解析器，不把 JSON、空正文或无完整终态的流当成功，也不新增自动重试。推理成功仍须取得 `response.completed`；`response.failed`、`response.incomplete` 和断流保持原失败语义。

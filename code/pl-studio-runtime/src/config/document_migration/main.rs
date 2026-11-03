@@ -499,13 +499,24 @@ type BeforeEnablement = Document<Models<Account26<wire::ModelInfo>>, Route, wire
 type BeforeAuthentication = Document<Models<Account27<wire::ModelInfo>>, Route, wire::AcpConfig>;
 type BeforeSkillDirectoryRemoval =
     Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig>;
-type Current =
+type BeforeCodex =
     Document<Models<Account28<wire::ModelInfo>>, Route, wire::AcpConfig, wire::SkillsConfigCurrent>;
+
+type Current =
+    Document<Models<Account30<wire::ModelInfo>>, Route, wire::AcpConfig, wire::SkillsConfigCurrent>;
 
 account!(Account28,
     authentication: wire::AuthenticationMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     chatgpt_account: Option<wire::ChatGptAccountInfo>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_enabled_overrides: BTreeMap<String, bool>,
+);
+
+account!(Account30,
+    authentication: wire::AuthenticationMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chatgpt_account: Option<wire::ChatGptAccountInfo30>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_enabled_overrides: BTreeMap<String, bool>,
 );
@@ -536,7 +547,8 @@ version!(MainV25, "25.0.0", BeforePricing);
 version!(MainV26, "26.0.0", BeforeEnablement);
 version!(MainV27, "27.0.0", BeforeAuthentication);
 version!(MainV28, "28.0.0", BeforeSkillDirectoryRemoval);
-version!(MainV29, "29.0.0", Current);
+version!(MainV29, "29.0.0", BeforeCodex);
+version!(MainV30, "30.0.0", Current);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -834,6 +846,46 @@ impl MigratesTo<MainV29> for MainV28 {
     }
 }
 
+impl MigratesTo<MainV30> for MainV29 {
+    fn migrate(self) -> MainV30 {
+        MainV30(self.0.map(
+            |models| {
+                Models {
+                    accounts: models
+                        .accounts
+                        .into_iter()
+                        .map(|(id, account)| {
+                            (
+                                id,
+                                Account30 {
+                                    protocol: account.protocol,
+                                    template: account.template,
+                                    name: account.name,
+                                    base_url: account.base_url,
+                                    bearer_token: account.bearer_token,
+                                    bearer_token_env: account.bearer_token_env,
+                                    http_headers: account.http_headers,
+                                    tool_wire_policy: account.tool_wire_policy,
+                                    apply_patch_tool_type: account.apply_patch_tool_type,
+                                    capabilities: account.capabilities,
+                                    catalog: account.catalog,
+                                    billing_kind: account.billing_kind,
+                                    model_enabled_overrides: account.model_enabled_overrides,
+                                    authentication: account.authentication,
+                                    chatgpt_account: account.chatgpt_account.map(Into::into),
+                                },
+                            )
+                        })
+                        .collect(),
+                    routes: models.routes,
+                }
+            },
+            std::convert::identity,
+            std::convert::identity,
+        ))
+    }
+}
+
 impl IntoDomain<MainV27> for MainV27 {
     fn into_domain(self) -> Self {
         self
@@ -875,19 +927,19 @@ impl MainV27 {
     }
 }
 
-impl IntoDomain<MainV29> for MainV29 {
+impl IntoDomain<MainV30> for MainV30 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl MainV29 {
+impl MainV30 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 29.into());
+            .insert(VERSION_KEY.into(), 30.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -933,18 +985,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV27>()
                 .step::<MainV28>()
                 .step::<MainV29>()
-                .into::<MainV29>(),
+                .step::<MainV30>()
+                .into::<MainV30>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV29>> {
-    toml_schema::load::<MainV18, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV30>> {
+    toml_schema::load::<MainV18, MainV30>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV29> {
-    toml_schema::load::<MainV29, MainV29>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV30> {
+    toml_schema::load::<MainV30, MainV30>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -1014,8 +1067,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 29);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 29);
+        assert_eq!(loaded.migrated, version != 30);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 30);
     }
 
     #[test]
@@ -1044,6 +1097,74 @@ enabled = false
         round_trip(&v28);
         let v29: MainV29 = v28.migrate();
         round_trip(&v29);
+        let v30: MainV30 = v29.migrate();
+        round_trip(&v30);
+    }
+
+    #[test]
+    fn codex_identity_round_trips_and_schema_29_preserves_siwc_and_api_choices() {
+        use pl_model::protocol::chatgpt::{CODEX_CLIENT_ID, CODEX_RESOURCE};
+        use pl_protocol::studio::{
+            AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo,
+        };
+        let mut config = crate::config::StudioConfig::default_config().unwrap();
+        let routes = config.mode_model_routes.clone();
+        let mut account = pl_model::config::builtin_account_catalog()
+            .unwrap()
+            .templates
+            .into_iter()
+            .find(|entry| entry.id.as_str() == "openai")
+            .unwrap()
+            .account;
+        account.authentication = AccountAuthenticationMethod::ChatGpt;
+        account.bearer_token_env = None;
+        account.base_url = CODEX_RESOURCE.into();
+        account.chatgpt_account = Some(ChatGptAccountInfo {
+            issuer: "https://auth.openai.com".into(),
+            subject: "saved-subject".into(),
+            client_id: CODEX_CLIENT_ID.into(),
+            email: Some("saved@example.test".into()),
+            plan_usage_enabled: true,
+            codex: Some(CodexAccountInfo {
+                account_id: "verified-workspace".into(),
+                plan_type: Some("pro".into()),
+            }),
+        });
+        let id = pl_model::config::AccountId::new("saved-oauth").unwrap();
+        config.models.accounts.insert(id.clone(), account);
+        let encoded = MainV30::from_config(&config).unwrap().encode().unwrap();
+        let current = load_current_main(Path::new("codex.toml"), &encoded)
+            .unwrap()
+            .into_config()
+            .unwrap();
+        assert_eq!(
+            current.models.accounts[&id].chatgpt_account,
+            config.models.accounts[&id].chatgpt_account
+        );
+        assert!(
+            load_main(
+                Path::new("invalid29.toml"),
+                &encoded.replacen("schema_version = 30", "schema_version = 29", 1)
+            )
+            .is_err()
+        );
+
+        let old = config.models.accounts.get_mut(&id).unwrap();
+        old.base_url = "https://api.openai.com/v1".into();
+        let info = old.chatgpt_account.as_mut().unwrap();
+        info.client_id = "old-issued-client".into();
+        info.plan_usage_enabled = true;
+        info.codex = None;
+        let historical = MainV30::from_config(&config)
+            .unwrap()
+            .encode()
+            .unwrap()
+            .replacen("schema_version = 30", "schema_version = 29", 1);
+        let loaded = load_main(Path::new("siwc29.toml"), &historical).unwrap();
+        assert!(loaded.migrated);
+        let migrated = loaded.document.into_config().unwrap();
+        assert_eq!(migrated.models.accounts, config.models.accounts);
+        assert_eq!(migrated.mode_model_routes, routes);
     }
 
     #[test]
@@ -1067,7 +1188,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV29::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV30::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1084,7 +1205,7 @@ enabled = false
             "",
             "schema_version=0\n",
             "schema_version=17\n",
-            "schema_version=30\n",
+            "schema_version=31\n",
             "schema_version=-1\n",
             "schema_version=4294967296\n",
             "schema_version='27'\n",
@@ -1237,13 +1358,13 @@ enabled = false
             .insert("user_dir".into(), "/custom/skills".into());
         assert!(
             load_current_main(
-                Path::new("v29.toml"),
+                Path::new("v30.toml"),
                 &toml::to_string(&invalid_current).unwrap()
             )
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 29);
+        assert_eq!(migrated.schema_version, 30);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);
