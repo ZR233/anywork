@@ -24,16 +24,10 @@ Apple Silicon archives on `macos-15`; `release-gui stage` packages the prebuilt 
 as a ZIP plus SHA-256, and `verify` extracts it to check version, arm64 and signatures.
 
 
-On Linux, install the GTK runner dependency before the first native build.
-Headless native GUI observation also requires Xvfb:
-
-```bash
-sudo apt-get install -y libgtk-3-dev xvfb
-```
-
-无头 widget 测试无需 Xvfb，但依赖中的 `cnativeapi` native-assets hook 仍会编译 C++。
-Linux 需要可用 C++ 编译器、`pkg-config`、`libgtk-3-dev`、`libx11-dev` 和 `libxi-dev`；
-CI 前端作业安装这些宿主依赖，仍不构建 Rust bridge 或启动原生窗口。
+Linux 构建和 CI 使用项目的 [Docker 环境](../../docker/linux/README.md)，GTK 3 / X11 / Xi、
+C++ 工具及 Xvfb 由镜像统一提供，消费镜像的作业不再执行 `apt-get` 补装。
+无头 widget 测试无需 Xvfb，但依赖中的 `cnativeapi` native-assets hook 仍会编译 C++；
+前端 CI 在该镜像内执行官方命令，不构建 Rust bridge 或启动原生窗口。
 
 ```powershell
 # Run from repository root. xtask invokes Flutter with
@@ -99,11 +93,14 @@ Flutter / Dart 官方技能安装在用户主目录 `.agents/skills/`，不放�
 `launch_app` 绕过项目的 bridge/helper 准备。
 
 先读取已安装 MCP 的 schema，`dtd.connect` 使用本次日志中的 DTD URI，`appUri` 使用
-应用的 VM Service URI；两者不能混用。原生直启仅有 VM Service 时使用官方
-`vm_service.connect` 或 Flutter Driver SDK 附着。使用
+应用的 VM Service URI；两者不能混用。热重载使用普通 `run-gui --inspect` 的常驻 Flutter
+工具，`--native-launch` 的直接产物运行不作为热重载入口。使用
 `widget_inspector` 的 `get_widget_tree` 发现控件，再用 `flutter_driver_command` 获取布局诊断、
 点击、输入、滚动和 `screenshot`。多应用显式指定 `appUri`。截图返回后实际查看画面，结合
 运行时错误和 canonical 状态判断；复用热更新缩短迭代，不把工具调用成功当作行为断言通过。
+修改 Dart 呈现后用 MCP `hot_reload` 检查实际变化与草稿保留；Rust/FRB/原生修改仍须经 xtask
+构建并完整重开。切换宿主和容器时先结束原运行，避免同一 checkout 的 `.dart_tool` SDK 路径
+被另一环境覆盖。官方 Driver binding 与正式入口、`integration_test` binding 保持分离。
 
 这些 Flutter 接口在 Windows 和 Linux 共用。Linux SSH 没有显示服务时，使用
 `GDK_BACKEND=x11 xvfb-run -a` 包装原生入口；人工 preset 还需要可写 TTY。

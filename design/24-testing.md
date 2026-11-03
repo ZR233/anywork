@@ -2,11 +2,11 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。轻量路径分类决定适用职责：说明文档只需文档策略；普通 Flutter/Dart 界面、资源及测试只需 Linux 前端验证；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。混合变更取职责并集，未知路径、无法分类的差异、协作规则、CI、工具链、fixture、依赖锁文件及高影响配置保守选择完整适用检查。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。轻量路径分类决定适用职责：说明文档只需文档策略；普通 Flutter/Dart 界面、资源及测试只选择 Linux 前端验证及其镜像解析；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。混合变更取职责并集，未知路径、无法分类的差异、协作规则、CI、工具链、fixture、依赖锁文件及高影响配置保守选择完整适用检查。
 
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
-| Flutter 静态、Client 和组件集成 | 只在 Linux 安装锁定依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
+| Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 桌面与原生集成 | 在相同工作区复用工程工具、helper、acceptance 与对应配置的 bridge；desktop full 与所需 native full 分别提供功能和生命周期信号，不因共用 harness 删除独特断言 |
@@ -15,9 +15,10 @@
 
 Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
 
-无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业为
-`cnativeapi` 准备 C++、pkg-config、GTK 3 / X11 / Xi 开发依赖；这不引入 Rust bridge 或原生 GUI
-测试。宿主头文件缺失应作为环境错误修复，不跳过 hooks 或误报为组件断言失败。
+无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业消费
+同次解析并校验的项目 Docker 镜像；`cnativeapi` 所需 C++、pkg-config、GTK 3 / X11 / Xi
+开发依赖在镜像制作时预装和验证，不在消费作业中补装。这不引入 Rust bridge 或原生 GUI
+测试；纯 UI 变更只增加环境解析依赖，不选择 Rust、helper 或桌面构建作业。
 
 始终运行的 `ci-gate`（`if: always()`）只接受分类计划明确允许的 skipped；必需作业因上游失败或取消被连带 skipped 时 gate 失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动配置 required check。
 

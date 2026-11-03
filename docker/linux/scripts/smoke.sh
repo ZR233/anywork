@@ -93,14 +93,18 @@ cat > CMakeLists.txt <<'CMAKE'
 cmake_minimum_required(VERSION 3.16)
 project(environment_smoke LANGUAGES CXX)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0 x11 xi)
 add_executable(gtk-smoke main.cpp)
 target_link_libraries(gtk-smoke PRIVATE PkgConfig::GTK)
 CMAKE
 cat > main.cpp <<'CPP'
 #include <gtk/gtk.h>
+#include <X11/Xlib.h>
+#include <X11/extensions/XInput2.h>
 #include <iostream>
 int main() {
+    XInitThreads();
+    static_assert(XI_2_Major >= 2, "XInput2 headers are required");
     std::cout << gtk_get_major_version() << '\n';
     return gtk_get_major_version() == 3 ? 0 : 1;
 }

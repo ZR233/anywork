@@ -174,7 +174,7 @@ jobs:
   # Frontend-only changes never depend on the Rust image or native tools.
   flutter-checks:
     name: Flutter and Client (Linux, no bridge)
-    needs: changes
+    needs: [changes, linux-environment]
     if: needs.changes.outputs.flutter_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -185,20 +185,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
         with:
-          flutter-version: 3.47.7
-          channel: stable
-          cache: true
-      # Flutter's native-assets hooks run even for flutter-tester with no
-      # display or Rust bridge. cnativeapi needs these host headers to compile.
-      - name: Install Flutter native-asset build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang pkg-config libgtk-3-dev libx11-dev libxi-dev
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Check frontend contracts and production UI components
-        run: bash .github/scripts/pr-quality-flutter.sh
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash .github/scripts/pr-quality-flutter.sh
 
   linux-environment:
     name: Prepare exact Linux build environment
@@ -239,7 +234,7 @@ jobs:
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
             # Library tests run outside the Flutter bundle and need the
-            # current-source stdio supervisor on this container's PATH.
+            # current-source stdio supervisor on the container PATH.
             cargo install --locked --path code/pl-remote-helper --root "$HOME/.quality-tools" --force
             export PATH="$HOME/.quality-tools/bin:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite

@@ -100,6 +100,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 从仓库根目录执行 Flutter/Dart 命令时，优先使用 `cargo flutter <args...>` 和 `cargo dart <args...>`；参数原样透传，包装命令会自动切换到 `code/anywork`。
 - 只有包装命令无法满足需求时，才可直接运行 `flutter` 或 `dart`，且必须先把工作目录切换到 `code/anywork`；不得把 SDK 目录当作项目目录。
 - CI 的 Linux 前端作业为避免引入 Cargo/FRB，可在 `code/anywork` 直接运行官方 Flutter/Dart 静态检查和无 bridge 测试，在 `code/anywork_client` 执行 SDK-only Client 检查；依赖安装使用 `--enforce-lockfile`，不绕过 Client/UI 边界或另行生成源码。该例外不放宽原生 GUI 构建入口。
+- Linux CI（包括前端）统一消费同次解析、校验的项目 Docker 构建镜像。系统开发依赖在 `docker/linux/Dockerfile` 维护并由镜像 smoke 验证，消费作业不执行 `apt-get` 补装；与本次源码绑定的 helper 仍在作业内构建。
 - 常用命令：
 
   ```powershell
@@ -115,6 +116,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 界面对照按场景选择最小充分入口：纯组件先用 `cargo xtask preview-gui --headless --no-devtools`；实际页面与业务使用隔离原生应用及官方 MCP；可重复断言使用 `test/ui` 或 `integration_test`。先固定场景、实际视口、主题和字号，再检查组件树、交互与截图，复用同次运行的热更新，不为每次布局修改重跑完整构建和业务套件。
 - `preview-gui` 透传官方 `widget-preview start` 参数，先按锁文件准备应用依赖，再从应用 Pub overrides 生成官方缓存中的覆盖配置；Flutter 负责发现、编译、缓存和热更新。恢复不完整缓存用官方 `cargo flutter widget-preview clean`，下次启动自动准备；不手改 SDK 或缓存 manifest。
 - Dart MCP 使用官方 `dart mcp-server`，项目 roots 按当前工作区注册。MCP 的 stdio 启动直接使用实际 Dart SDK 可执行文件，不能套用会向 stdout 打印日志的 Cargo 包装；项目工作命令仍遵循上面的入口。先读取实际工具 schema，再连接 xtask 启动的应用，不用 MCP `launch_app` 绕过 bridge/helper 准备。
+- Dart 界面修改后使用 MCP 热重载/重启并检查真实界面及运行时错误；普通 `run-gui --inspect` 保持 Flutter 工具常驻，`--native-launch` / release 不作为热重载入口。Rust、FRB 或原生代码变化须经 xtask 构建并完整重开。宿主与容器不要同时改写同一 checkout 的 Pub/生成缓存，切换环境前结束原运行或使用独立 checkout。
 
 ### 桌面 GUI
 
@@ -134,7 +136,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 不支持直接执行 `flutter build windows|linux|macos` 或 `flutter run -d windows|linux|macos`，也不新增 PowerShell GUI wrapper。
 - `run-gui --release` 直接启动已有 `dist/anywork-release` 原生程序，不执行构建或依赖解析；缺失时提示先执行 `build-gui`。它与 `--demo`、`--capture`、`--inspect`、`--profile` 互斥，并沿用平台进程树管理。
 - macOS 使用完整 Xcode 与 Flutter 官方 Swift Package Manager 集成，构建当前宿主架构的 `.app`；Rust bridge 由 xtask 预构建后放入 `Contents/Frameworks/`，SSH helper 放入 `Contents/Resources/data/remote-helper/`。构建收集保留 framework 符号链接，`run-gui --release` 启动 `dist/anywork-release/anywork.app/Contents/MacOS/anywork`。本地使用 ad-hoc 签名，不包含 Developer ID、公证或稳定发布授权。
-- Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件；Debian/Ubuntu 示例为 `sudo apt-get install -y clang cmake ninja-build pkg-config build-essential libgtk-3-dev`。xtask 必须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
+- Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件，由项目 Docker 镜像提供。宿主原生运行时，xtask 仍须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask test-project --suite desktop` 复用 bridge/helper 构建与进程树管理，运行官方桌面 `integration_test`；与 demo、capture、profile/native-launch 和 release 模式互斥。测试用 `WidgetTester` 操作真实生产组件。`wait_events` 的隔离 provider 由 `manual-gui --preset wait-events` 持有；`conversation_read_work` 的关闭 SQLite 预置由 `--preset conversation-read-work` 持有。`test-project` 在对应环境变量未齐时调用这些 preset。
 - `cargo xtask test-project --suite native` 在进程外裁判真实退出码、重开和第二实例；薄故障装配是 `tool/native_fault_main.dart`。
 - `cargo xtask run-gui --capture` 在正常 debug 应用上开启只读 Flutter 内容捕获（`ext.anywork.capture`）；发布构建不注册该 extension。宿主落盘使用 `code/anywork/tool/capture_ui.dart`。

@@ -123,8 +123,9 @@ bots-env conversations prepare-pages
 临时目录。
 
 1. 读取当前 Dart MCP 的工具 schema；`dtd.connect` 使用启动日志中的 DTD URI，
-   `appUri` 使用已连接应用的 VM Service URI，不能混用两者。仅有 VM Service 的原生直启
-   可按官方 `vm_service.connect` 的 schema 附着，或直接使用 Flutter Driver SDK。
+   `appUri` 使用已连接应用的 VM Service URI，不能混用两者。热重载使用普通
+   `run-gui --inspect` 的常驻 Flutter 工具；`--native-launch` 是直接运行构建产物的
+   原生退出观察入口，不作为本项目的 MCP 热重载入口。
    用 `widget_inspector` 的 `get_widget_tree` 发现真实控件；用 `flutter_driver_command` 的
    `get_diagnostics_tree` / `get_offset`、`tap`、`enter_text`、`scroll` 和 `screenshot`
    检查布局、交互与画面。多应用时显式指定 `appUri`，不猜定位器。自动化断言使用
@@ -180,6 +181,22 @@ bots-env conversations prepare-pages
 富文本选择与复制：排版截图正确不代表复制正确。覆盖中文与行内代码、连续代码片段、长路径、
 标题后有/无空行，在正常/窄窗口及不同文字缩放下执行真实选择与复制，逐字核对剪贴板。
 不得直接写入期望文本伪造成功。
+
+## 热重载与官方技能的项目适配
+
+- 上游技能中的 `launch_app` / 直接 `flutter run` 在本项目映射到 xtask 启动，之后由
+  MCP 附着本次 DTD；不要再启动第二个应用。xtask 持有进程树和控制管道，MCP 使用
+  Flutter 的 reload 服务，两者职责独立。
+- 修改 Dart 呈现后调用 `hot_reload`，核对目标控件的新文本或布局、已有草稿/展开态及
+  `get_runtime_errors`。工具返回成功之外，还需要真实界面变化；验证探针恢复后再次 reload。
+- `main()`、静态初始化或 binding 变化按 Flutter 限制选择重新启动；Rust、FRB 和原生 runner
+  变化通过 xtask 重新生成所需绑定、构建并完整关闭/重开应用。`hot_restart` 不替换已加载的
+  Rust 动态库。`--release` 不提供开发热重载。
+- 官方 Driver extension 只装配在 `tool/inspect_main.dart`，不要按通用技能示例注入正式
+  `lib/main.dart`，也不要与 `IntegrationTestWidgetsFlutterBinding` 混用。
+- 同一 checkout 的宿主与容器 Pub 会生成包含各自 SDK 路径的 `.dart_tool` 配置；先结束
+  一侧运行再切换环境，或使用独立 checkout。生成命令也须完成后再启动分析和热重载；
+  不通过新增锁或复制 SDK 配置掩盖并发覆盖。
 
 ## 结束、回收与判定
 

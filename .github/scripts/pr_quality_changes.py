@@ -260,7 +260,7 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
     )
     flags["linux_tools"] = flags["gui_generated"] or flags["remote_helpers"]
     flags["linux_environment"] = (
-        flags["rust_checks"] or flags["linux_tools"]
+        flags["flutter_checks"] or flags["rust_checks"] or flags["linux_tools"]
     )
     plan_name = "+".join(name for name in OUTPUT_FLAGS if flags[name]) or "classified"
     return _finish(

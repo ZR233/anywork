@@ -59,6 +59,12 @@ RUN bash /opt/anywork-image/scripts/install-tools.sh \
     && chmod -R a+rwX /opt/flutter/bin/cache
 COPY --from=flutter-tools-env /opt/flutter/packages/flutter_tools/.dart_tool /opt/flutter/packages/flutter_tools/.dart_tool
 COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
+# Native-assets hooks run for headless widget tests too. Keep these explicit
+# consumer dependencies after SDK preparation so SDK cache layers remain reusable.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libx11-dev libxi-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY --chmod=644 docker/linux/versions.env /opt/anywork-image/versions.env
 COPY --chmod=755 docker/linux/scripts/entrypoint.sh docker/linux/scripts/smoke.sh /opt/anywork-image/scripts/
 COPY --from=git-env /opt/git-source /opt/anywork-image/git-source
