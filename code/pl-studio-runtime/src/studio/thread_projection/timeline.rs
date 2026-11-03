@@ -321,10 +321,6 @@ impl TimelineProjection {
         &self.database_id
     }
 
-    pub(in crate::studio) fn next_position(&self) -> u64 {
-        self.next_position
-    }
-
     /// Restores the open fragments from the persisted current projection. Every
     /// current item must resolve to its member facts; a missing member is a
     /// projection fault, not a reason to invent a new group.
@@ -577,10 +573,12 @@ impl TimelineProjection {
         std::mem::take(&mut self.committed)
     }
 
+    #[cfg(test)]
     pub(in crate::studio) fn committed(&self) -> &[TimelineItem] {
         &self.committed
     }
 
+    #[cfg(test)]
     pub(in crate::studio) fn current_members(&self) -> Vec<ChatAtom> {
         let mut members: BTreeMap<&str, &Member> = BTreeMap::new();
         for item in &self.items {

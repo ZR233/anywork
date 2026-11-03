@@ -329,6 +329,8 @@ pub(in crate::studio) struct PreparedEffect {
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
         Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+    /// Top-level Timeline display items this effect newly committed, in history order.
+    pub(in crate::studio) timeline: Vec<pl_protocol::TimelineItem>,
 }
 
 fn review_delivery_facts(
@@ -446,6 +448,13 @@ impl PreparedEffect {
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
             .saturating_add(completions)
+            .saturating_add(self.timeline.iter().fold(0_u64, |bytes, item| {
+                bytes
+                    .saturating_add(
+                        serde_json::to_vec(item).map_or(u64::MAX, |bytes| bytes.len() as u64),
+                    )
+                    .saturating_add(RETAINED_ITEM_OVERHEAD)
+            }))
             .saturating_add(self.completion_drafts.as_ref().map_or(0, |drafts| {
                 drafts.iter().fold(0_u64, |bytes, draft| {
                     bytes
@@ -458,6 +467,36 @@ impl PreparedEffect {
                         ))
                 })
             }))
+    }
+}
+
+/// A text/status item carries its original payload, inline while it still fits a
+/// small envelope and by stable item reference otherwise. Media and large bodies
+/// keep their existing content-reference owners.
+const TIMELINE_INLINE_PAYLOAD: usize = 8 * 1024;
+
+fn timeline_payload(
+    database_id: &str,
+    atom: &pl_protocol::ChatAtom,
+    payload: &[u8],
+) -> pl_protocol::PayloadData {
+    if payload.len() <= TIMELINE_INLINE_PAYLOAD {
+        pl_protocol::PayloadData::Inline {
+            bytes: payload.to_vec(),
+        }
+    } else {
+        pl_protocol::PayloadData::Deferred {
+            reference: pl_protocol::ContentRef {
+                database_id: database_id.into(),
+                target: pl_protocol::ContentTarget::ItemPayload {
+                    item_id: atom
+                        .completion_item_id
+                        .clone()
+                        .unwrap_or_else(|| atom.id.clone()),
+                },
+            },
+            byte_length: payload.len() as u64,
+        }
     }
 }
 
@@ -1239,6 +1278,9 @@ pub(in crate::studio) struct LiveProjection {
     execution_history: Option<crate::studio::storage::history::HistoryStore>,
     current: super::current::CurrentOwner,
     main_through: u64,
+    /// Single Studio Timeline display projection. Live effects, restart recovery
+    /// and derived-data rebuild all run this same fold.
+    timeline: Option<super::TimelineProjection>,
 }
 
 impl LiveProjection {
@@ -1266,6 +1308,7 @@ impl LiveProjection {
             execution_history: None,
             current: Default::default(),
             main_through: 0,
+            timeline: None,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1294,7 +1337,17 @@ impl LiveProjection {
     ) -> Result<(), ProjectionError> {
         self.current
             .bind(database_id)
-            .map_err(|error| ProjectionError::History(error.to_string()))
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        self.ensure_timeline_owner();
+        Ok(())
+    }
+
+    fn ensure_timeline_owner(&mut self) {
+        if self.timeline.is_none()
+            && let Some(database_id) = self.current.database_id()
+        {
+            self.timeline = Some(super::TimelineProjection::new(database_id.to_owned(), 0));
+        }
     }
 
     async fn ensure_database_identity(&mut self) -> Result<(), ProjectionError> {
@@ -1315,6 +1368,7 @@ impl LiveProjection {
                 .bind(database_id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
+        self.ensure_timeline_owner();
         Ok(())
     }
 
@@ -1355,6 +1409,40 @@ impl LiveProjection {
         self.current
             .freeze(thread, state, sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))
+    }
+
+    /// Runs the one Timeline fold over this effect's current facts and frozen
+    /// completions. Returns the items that became history in this effect.
+    fn advance_timeline(
+        &mut self,
+        drafts: &[ChatDraft],
+        current: &pl_protocol::CurrentProjection,
+    ) -> Result<Vec<pl_protocol::TimelineItem>, ProjectionError> {
+        self.ensure_timeline_owner();
+        let timeline = self.timeline.as_mut().ok_or_else(|| {
+            ProjectionError::History("timeline projection has no database identity".into())
+        })?;
+        for atom in &current.atoms {
+            timeline.observe(atom, None);
+        }
+        for draft in drafts {
+            let atom: pl_protocol::ChatAtom =
+                serde_json::from_slice(&draft.metadata).map_err(|error| {
+                    ProjectionError::History(format!("invalid frozen timeline atom: {error}"))
+                })?;
+            let payload = timeline_payload(timeline.database_id(), &atom, &draft.payload);
+            timeline.complete(atom, 0, Some(payload));
+        }
+        for state in &current.sources {
+            if matches!(
+                state.lifecycle,
+                pl_protocol::ChatSourceLifecycle::Ended { .. }
+            ) {
+                timeline.end_source(&state.source);
+            }
+        }
+        timeline.commit_ready();
+        Ok(timeline.take_committed())
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -1537,6 +1625,14 @@ impl LiveProjection {
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
+        let timeline = self.advance_timeline(&completion_drafts, &current.projection)?;
+        let live_items = self
+            .timeline
+            .as_ref()
+            .map(super::TimelineProjection::current_items)
+            .unwrap_or_default();
+        Arc::make_mut(&mut current).projection.items = live_items.clone();
+        let current_state = super::CurrentState::with_items(current_state, live_items);
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -1555,6 +1651,7 @@ impl LiveProjection {
             parent_report: None,
             terminal_retention: None,
             review_delivery,
+            timeline,
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1596,6 +1693,14 @@ impl LiveProjection {
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
+        let timeline = self.advance_timeline(&completion_drafts, &current.projection)?;
+        let live_items = self
+            .timeline
+            .as_ref()
+            .map(super::TimelineProjection::current_items)
+            .unwrap_or_default();
+        Arc::make_mut(&mut current).projection.items = live_items.clone();
+        let current_state = super::CurrentState::with_items(current_state, live_items);
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -1614,6 +1719,7 @@ impl LiveProjection {
             parent_report: None,
             terminal_retention: None,
             review_delivery,
+            timeline,
         });
         self.retain(state);
         Ok(prepared)

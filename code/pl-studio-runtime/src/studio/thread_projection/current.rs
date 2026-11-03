@@ -628,6 +628,27 @@ impl CurrentOwner {
 }
 
 impl CurrentState {
+    /// Rebuilds the snapshot with the single Timeline projection's current items.
+    /// The fold runs after the current cut is frozen; this keeps the published
+    /// state and its prepared current projection on the same item set.
+    pub(super) fn with_items(state: Arc<Self>, items: Vec<pl_protocol::TimelineItem>) -> Arc<Self> {
+        if state.projection.items == items {
+            return state;
+        }
+        let mut projection = state.projection.clone();
+        projection.items = items;
+        Arc::new(Self {
+            projection,
+            source_states: state.source_states.clone(),
+            contents: state.contents.clone(),
+            materialized: OnceLock::new(),
+            entries: state.entries.clone(),
+            by_position: state.by_position.clone(),
+            active_turn: state.active_turn.clone(),
+            interactions: state.interactions.clone(),
+        })
+    }
+
     fn materialized_contents(&self) -> Arc<ChatContents> {
         self.materialized
             .get_or_init(|| {
