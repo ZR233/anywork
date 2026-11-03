@@ -8,7 +8,8 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
-import '../view_models/timeline_message_controller.dart';
+import '../view_models/timeline_member_controller.dart';
+import 'timeline_member_atom.dart';
 import '../widgets/timeline_children_view.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
@@ -17,17 +18,29 @@ import 'timeline_media_connector.dart';
 class TimelineChildrenConnector extends StatefulWidget {
   const TimelineChildrenConnector({
     super.key,
-    required this.repository,
+    this.repository,
     required this.threadId,
     required this.parentId,
+    this.membersRef,
+    this.openMembers,
+    this.monotonicMicros,
+    this.onContentLayout,
     this.readAttachment,
     this.registerDisplay,
     this.isParentActive,
     this.parentRetirement,
-  });
-  final ConversationRepository repository;
+  }) : assert(
+         membersRef == null
+             ? repository != null && openMembers == null
+             : repository == null && openMembers != null,
+       );
+  final ConversationRepository? repository;
   final String threadId;
   final String parentId;
+  final TimelineMembersRef? membersRef;
+  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)? openMembers;
+  final int Function()? monotonicMicros;
+  final void Function(String, int)? onContentLayout;
   final Future<Uint8List> Function(String id)? readAttachment;
   final VoidCallback Function(TimelineChildrenDisplay display)? registerDisplay;
   final bool Function()? isParentActive;
@@ -44,7 +57,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   late final TimelineImageResources _images = TimelineImageResources(
     threadId: widget.threadId,
   );
-  TimelineMessageController? _adapter;
+  TimelineMemberController? _adapter;
   ConversationContent? _content;
   ConversationQueryScope? _queries;
   Observation? _consumer;
@@ -55,6 +68,8 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   bool _retired = false;
   bool _opening = false;
   Future<void>? _older;
+  Future<void>? _closing;
+  Future<void>? _retrying;
   late ReadDemand _demand;
   late final Future<void> _opened;
   final _openingDone = Completer<void>();
@@ -69,11 +84,14 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   late final ValueListenable<bool>? _parentRetirement;
   late final String _originalThreadId;
   late final String _originalParentId;
+  late final TimelineMembersRef? _originalMembersRef;
   VoidCallback? _unregisterDisplay;
+  final Set<TimelineMemberDisplay> _members = {};
 
   bool get _parentActive =>
       widget.threadId == _originalThreadId &&
       widget.parentId == _originalParentId &&
+      widget.membersRef == _originalMembersRef &&
       identical(widget.parentRetirement, _parentRetirement) &&
       !(_parentRetirement?.value ?? false) &&
       (_isParentActive?.call() ?? true);
@@ -108,6 +126,13 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   int get appliedPrepends => _appliedPrepends;
   @override
   int get appliedAppends => _appliedAppends;
+  @override
+  Iterable<TimelineCurrentWindowDisplay> get windows sync* {
+    if (!isCurrent) return;
+    for (final member in _members) {
+      yield* member.windows;
+    }
+  }
 
   void _unregister() {
     final unregister = _unregisterDisplay;
@@ -159,6 +184,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     super.initState();
     _originalThreadId = widget.threadId;
     _originalParentId = widget.parentId;
+    _originalMembersRef = widget.membersRef;
     // Borrow only the original parent lease; widget rebuilds never transfer this
     // State or an old callback into a newly selected lease.
     _registerDisplay = widget.registerDisplay;
@@ -169,20 +195,18 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     } else {
       _parentRetirement?.addListener(_parentRetired);
     }
-    _adapter = TimelineMessageController(
-      _controller!,
-      generation: 1,
-      imageResources: _images,
-      groupForeground: false,
-    );
+    _adapter = TimelineMemberController(_controller!);
     _opened = _openingDone.future;
   }
 
   void _parentRetired() {
     if (!(_parentRetirement?.value ?? false) || _retired) return;
+    _retired = true;
+    _images.retire();
     _consumer?.cancel();
     _connection?.cancel();
     _retireQueries();
+    unawaited(_closeOwned());
   }
 
   @override
@@ -212,11 +236,14 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   Future<void> _open() async {
     try {
-      final content = await widget.repository.openChildren(
-        threadId: _originalThreadId,
-        parentId: _originalParentId,
-        demand: _demand,
-      );
+      final reference = _originalMembersRef;
+      final content = reference == null
+          ? await widget.repository!.openChildren(
+              threadId: _originalThreadId,
+              parentId: _originalParentId,
+              demand: _demand,
+            )
+          : await widget.openMembers!(reference, _demand);
       _content = content;
       if (_retired || !_parentActive) return;
       _connection = content.state.watch((state) {
@@ -323,6 +350,10 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
         try {
           scope = _scope(content, controller, attempt, generation);
           await scope.loadOlder(before: before, demand: _demand);
+          if (_eligibleDisplay(content, controller, attempt, generation) &&
+              scope.isActive && identical(scope, _queries) && _before == before) {
+            throw const ConversationContinuityError('Member page did not advance');
+          }
         } catch (error) {
           if (_eligibleDisplay(content, controller, attempt, generation) &&
               (scope == null ||
@@ -346,18 +377,33 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     final content = _content;
     final attempt = _attempt;
     final generation = _displayGeneration;
-    if (_error != null) return Text(_error.toString());
     if (!_ready || controller == null || content == null) {
+      if (_error != null) return _failure();
       return const SizedBox(
         height: 48,
         child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
       );
     }
     bool active() => _eligibleDisplay(content, controller, attempt, generation);
-    return TimelineChildrenView(
+    final members = TimelineChildrenView(
       controller: controller,
       generation: generation,
       isDisplayActive: active,
+      atomBuilder: (atom) => TimelineMemberAtom(
+        key: ValueKey((generation, atom.id)),
+        atom: atom,
+        content: content,
+        retirement: _parentRetirement,
+        isActive: active,
+        images: _images,
+        readAttachment: widget.readAttachment,
+        monotonicMicros: widget.monotonicMicros,
+        onContentLayout: widget.onContentLayout,
+        registerDisplay: (display) {
+          _members.add(display);
+          return () => _members.remove(display);
+        },
+      ),
       onLoadOlder: _before == null
           ? null
           : () => _loadOlder(content, controller, attempt, generation),
@@ -384,6 +430,43 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
         isActive: active,
       ),
     );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [if (_error != null) _failure(), members],
+    );
+  }
+
+  Widget _failure() => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(_error.toString()),
+      TextButton(
+        key: const ValueKey('timeline-members-retry'),
+        onPressed: _retired || !_parentActive || _retrying != null ? null : _retry,
+        child: const Text('重试读取'),
+      ),
+    ],
+  );
+
+  void _retry() {
+    if (_retired || !_parentActive || _retrying != null) return;
+    setState(() => _error = null);
+    final content = _content;
+    final controller = _controller;
+    if (_ready && content != null && controller != null && _before != null) {
+      unawaited(_loadOlder(content, controller, _attempt, _displayGeneration));
+    } else if (content != null) {
+      content.refresh();
+    } else {
+      final request = _open();
+      _retrying = request;
+      unawaited(request.whenComplete(() {
+        if (identical(_retrying, request)) _retrying = null;
+        if (mounted && !_retired) setState(() {});
+      }));
+    }
   }
 
   @override
@@ -394,8 +477,11 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     _connection?.cancel();
     _retireQueries();
     _releaseController();
-    unawaited(
-      _close().catchError((Object error, StackTrace stack) {
+    unawaited(_closeOwned());
+    super.dispose();
+  }
+
+  Future<void> _closeOwned() => _closing ??= _close().catchError((Object error, StackTrace stack) {
         FlutterError.reportError(
           FlutterErrorDetails(
             exception: error,
@@ -403,13 +489,11 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             context: ErrorDescription('closing expanded conversation contents'),
           ),
         );
-      }),
-    );
-    super.dispose();
-  }
+      });
 
   Future<void> _close() async {
     await _opened;
+    await _retrying;
     final content = _content;
     await content?.close();
     _queries = null;

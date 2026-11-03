@@ -163,6 +163,7 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
         0,
         &PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             projection: current.clone(),
             changes: changes.into(),

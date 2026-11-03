@@ -167,6 +167,7 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
         2,
         &super::super::current::PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             projection: current.clone(),
             changes: Arc::from([]),
@@ -205,6 +206,7 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
         3,
         &super::super::current::PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             projection: current.clone(),
             changes: Arc::from([]),

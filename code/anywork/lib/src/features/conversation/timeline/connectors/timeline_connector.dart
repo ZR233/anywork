@@ -14,6 +14,7 @@ import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
+import 'timeline_group_members_connector.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -188,6 +189,15 @@ class _TimelineConnectorBody extends ConsumerWidget {
       threadId: threadId,
       view: view,
       controls: lease,
+      groupMembersBuilder: (unit) => TimelineGroupMembersConnector(
+        unit: unit,
+        threadId: threadId,
+        readAttachment: (id) => ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        monotonicMicros: () => owner.monotonicMicros,
+        onContentLayout: (itemId, micros) {
+          if (active()) owner.recordContentLayout(lease, itemId, micros);
+        },
+      ),
       monotonicMicros: () => owner.monotonicMicros,
       isDisplayActive: active,
       onContentLayout: (itemId, completedMicros) {

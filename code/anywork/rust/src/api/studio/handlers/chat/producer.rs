@@ -245,6 +245,7 @@ mod tests {
                         tool: None,
                         wait: None,
                         text_channel: None,
+                        content_present: None,
                         started_at: None,
                         finished_at: None,
                         contents: Vec::new(),

@@ -5,7 +5,7 @@ use super::{Observation, config, http, saved, wire};
 use crate::cases::replies::chat_turn_outcome;
 use crate::support::{
     CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes,
-    completed_atom_payload, payload_bytes,
+    completed_timeline_payload, payload_bytes,
 };
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
@@ -230,12 +230,15 @@ impl Observation<'_> {
                 .open_chat(child, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
-            for atom in page.entries.iter().filter_map(|entry| match entry {
-                ChatEntry::Atom(atom) => Some(atom),
-                ChatEntry::Source(_) => None,
+            for item in page.entries.iter().filter_map(|entry| match entry {
+                ChatEntry::Item(item) => Some(item),
+                ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
             }) {
+                if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
+                    continue;
+                }
                 let Some(payload) =
-                    completed_atom_payload(&read, atom, &mut remaining, deadline).await?
+                    completed_timeline_payload(&read, item, &mut remaining, deadline).await?
                 else {
                     continue;
                 };

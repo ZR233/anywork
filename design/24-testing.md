@@ -64,13 +64,13 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
-[#272 A01–A28](https://github.com/ZR233/anywork/issues/272) 分层证明：以 Rust 为主——Studio Timeline 投影验 item 类别/边界/成员归属/顺序（含空正文、附件-only、读图不拆组、晚终态、逆序终态、后台结果独立、current 多片段与同批退役），HistoryStore 验派生表 apply/verify/rebuild、投影版本与迁移，reader 验 Main item 键集分页、`GroupMembers` 独立 cursor 与内存足页零 SQL；Dart 只验机械映射、一条 item 一条 Message、成员窗口与局部 UI/资源资格；纯 Flutter 验 controller 操作及真实布局需求，不依赖 FRB；少量官方原生集成证明跨层、中途打开、credit 与重开。不在 Dart 重测分组规则，也不把合成组件通过当保存链路通过。
+[#272 A01–A34](https://github.com/ZR233/anywork/issues/272) 分层证明：Rust Studio 投影负责 item 类别、可靠边界、成员归属/顺序、空正文、纯附件、读图归属、逆序终态、后台交错、多 current 片段与同批退役；存储/读取证明同事务、原事实独立、来源输入依据、维护重建及原队列接续、版本、旧库和 RAM/SQLite 交接。Dart 只验机械映射、一条 item 一条 Message、成员窗口及局部 UI/资源资格；纯 Flutter 验布局与交互，少量官方原生集成穿过真实跨层、持久化、credit 与重开。不在 Dart 重测分组算法，不以截图或旧派生缓存代证完整源事实重建。
 
 新增分页证据须含超过 8 页未满、页内 item 均为折叠摘要或高度不变时继续；短页/字节截页、空末页、cursor 无进展、读取失败与显式重试恢复；窗口/输入区/实时区/展开状态变化、零尺寸与不可见暂停；自动补载/滚动/Append 共用同方向 single-flight，旧页不覆盖新 current。全折叠历史可读到 EOF 后仍不满屏并保留空白，首批内容不等末页。Main item 键集页与 `GroupMembers` 成员页各有独立 cursor，不得互换或把成员页当主历史页；item 顺序与成员顺序来自 Rust 投影，客户端不重排。
 
-已观察完成位置之后的成员/普通原子窗口须证明可沿原 read lease 有界读取，后续页保持窗口切面及 anchor，拒绝跨 lease/epoch/scope 或混用主历史 item cursor；无工作组成员筛选、隐藏全文预读或 flush。查询接纳沿同一 Flutter applyBatch，不能覆盖主历史 item cursor 或 current，失效期间的晚返回不得应用到新 owner。
+成员窗口从原库/版本/item 绑定的类型化引用打开，后续页保持原 scope 和切面，拒绝跨 lease/epoch/版本或混用 Main cursor；只按成员关联索引选组内项，不扫描其他来源找组头，不预读隐藏全文或 flush。活动成员更新只改本窗口；折叠和引用退役同步撤销正文/媒体资格，晚返回不得应用到新 owner。折叠组的详情和隐藏媒体读取为零，巨大组的 Main 查询工作量不随成员数增长，须由真实读取入口计数而非 Widget 隐藏推断。
 
-条数门禁须覆盖展示 item、成员 Atom 与独立 Source 混合交付，包含 maxItems=1 的真实分批及 currentAfter 退役；普通页来源注解不增加额外 entry。冷 Main 的 current-only 来源、不同成员来源的紧字节/Deferred 页，以及 Children 不读取全局 current 来源分别取证，不放宽需求或在越限后裁剪事实。
+条数门禁按 scope 覆盖 Main 的展示 item、成员/Children 的 Atom 与可靠 Source，包含 maxItems=1 的真实分批及展示 item 前缀对应的 currentAfter 退役；Main 不混入原子条目。普通页来源注解不增加额外 entry。无新完成 atom 的封组边界仍应交付，长组跨 credit 窗口不延迟接纳或提高限额。成员紧字节/Deferred 页及 Children 不读取全局 current 来源分别取证，不在越限后裁剪事实。
 
 十三个概念场景使用同故事本次原生页面对照。工具一个语义入口、思考组展开即读，真实多附件与三次单图调用区分；读图调用及图片/文字/错误结果证明留在原工作组成员内、不拆组。工具读取失败和媒体加载失败分别证明。性能分别报告首批有效内容可见（参考 p95≤500ms）与填满/EOF 总耗时、item 页数、成员页数、原子数/字节、正文加载量。长历史按展示 item 逐页经过；折叠组只占一条 item、成员页单独计成本，不将首批目标外推整体补满常数成本；不为填屏预读隐藏成员全文/媒体、COUNT 或 flush。
 
@@ -87,7 +87,7 @@ native launcher 与退出报告关联运行器 PID、实际 GUI PID 和 `anywork
 检查子孙及强制回收记录；超时清理仍须保留，不能改报自行收束。旧 realtime Driver 已退役，其历史
 失败或局部通过不代替新的 credit／原生退出证据，也不冒充同场官方集成的 OS 退出证据。
 
-未提交资源回归须包含一个晚终态首成员与持续交替的完成正文/工作段：Studio 投影保持 current 有界片段与成员事实，客户端不重算归属；按总条数、实际编码字节及 item/成员引用核验，而非只测一个连续工作组。被释放的成员窗口沿 `GroupMembers` 或 read_at 位置逐页恢复，验证成员身份、原 payload、空正文边界、来源顺序及独立后台结果；非 EOF 的未知不能当协议错误或吞页。保留成功/失败/取消及折叠后迟到回调的资格证据，报告实际恢复页数和重复读，不用末尾几项成功代替完整恢复证明。
+未提交资源回归包含晚终态首成员与持续交替的正文/工作段：Studio 保持有界 current 小状态与增量成员索引，客户端不重算归属；同时核验原预算、实际编码字节及全部持有者，不只测一个连续组。释放的成员窗口按同一 `GroupMembers` 引用重新有界打开，验证原成员/载荷身份及资源退出。删除全部派生数据后分别验证完整输入等价性和旧缺失输入的明确结果；重建事务失败/取消保全源内容，维护期间新事实由原队列准确接续。报告真实页数、重复读取、派生写入及重建成本，不以末尾几项或旧快照冒完整证明。
 
 视觉证据必须来自本次相关运行，并标明原生平台或合成预览、视口及覆盖状态。截图复用当前 Flutter 渲染捕获入口，不为本任务新增平台桌面截图链路，不为截图创建第二份产品状态；采集成功后仍须人工检查实际画面。概念稿仅作视觉参照，模拟 provider 和合成预览均不证明真实模型兼容，图片附件交付也不代替自动化断言和资源退出证据。
 

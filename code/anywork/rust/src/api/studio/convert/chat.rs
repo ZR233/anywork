@@ -1,5 +1,4 @@
-//! One-to-one fact and ordinary-page mappings. Runtime owns facts/pages; Flutter owns grouping,
-//! presentation and presentation admission.
+//! Mechanical mappings of Studio display items and independently read members.
 use pl_protocol as protocol;
 
 use crate::api::studio::types::*;
@@ -14,6 +13,13 @@ pub(crate) fn demand(value: BridgeReadDemand) -> protocol::ReadDemand {
 pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
     match value {
         BridgeChatScope::Main => protocol::ChatScope::Main,
+        BridgeChatScope::GroupMembers { reference } => protocol::ChatScope::GroupMembers {
+            reference: protocol::TimelineMembersRef {
+                database_id: reference.database_id,
+                projection_version: reference.projection_version,
+                item_id: reference.item_id,
+            },
+        },
         BridgeChatScope::Children { parent_id } => protocol::ChatScope::Children { parent_id },
     }
 }
@@ -128,6 +134,102 @@ fn terminal_outcome(value: protocol::ChatTerminalOutcome) -> BridgeChatTerminalO
     }
 }
 
+fn atom_kind(value: protocol::ChatAtomKind) -> BridgeChatAtomKind {
+    match value {
+        protocol::ChatAtomKind::Input => BridgeChatAtomKind::Input,
+        protocol::ChatAtomKind::Text => BridgeChatAtomKind::Text,
+        protocol::ChatAtomKind::Reasoning => BridgeChatAtomKind::Reasoning,
+        protocol::ChatAtomKind::ToolCall => BridgeChatAtomKind::ToolCall,
+        protocol::ChatAtomKind::FileChange => BridgeChatAtomKind::FileChange,
+        protocol::ChatAtomKind::Skill => BridgeChatAtomKind::Skill,
+        protocol::ChatAtomKind::Interaction => BridgeChatAtomKind::Interaction,
+        protocol::ChatAtomKind::Plan => BridgeChatAtomKind::Plan,
+        protocol::ChatAtomKind::Compaction => BridgeChatAtomKind::Compaction,
+        protocol::ChatAtomKind::TurnReceipt => BridgeChatAtomKind::TurnReceipt,
+        protocol::ChatAtomKind::Receipt => BridgeChatAtomKind::Receipt,
+        protocol::ChatAtomKind::Unknown => BridgeChatAtomKind::Unknown,
+    }
+}
+
+fn delivery(value: protocol::ChatDeliveryKind) -> BridgeChatDeliveryKind {
+    match value {
+        protocol::ChatDeliveryKind::Foreground => BridgeChatDeliveryKind::Foreground,
+        protocol::ChatDeliveryKind::BackgroundHandoff => BridgeChatDeliveryKind::BackgroundHandoff,
+        protocol::ChatDeliveryKind::Independent => BridgeChatDeliveryKind::Independent,
+    }
+}
+
+fn text_channel(value: protocol::ThreadTextChannel) -> BridgeThreadTextChannel {
+    match value {
+        protocol::ThreadTextChannel::User => BridgeThreadTextChannel::User,
+        protocol::ThreadTextChannel::ParentAgent => BridgeThreadTextChannel::ParentAgent,
+        protocol::ThreadTextChannel::Commentary => BridgeThreadTextChannel::Commentary,
+        protocol::ThreadTextChannel::Final => BridgeThreadTextChannel::FinalAnswer,
+    }
+}
+
+fn atom_content(value: protocol::ChatAtomContent) -> BridgeChatAtomContent {
+    BridgeChatAtomContent {
+        role: match value.role {
+            protocol::ChatContentRole::Body => BridgeChatContentRole::Body,
+            protocol::ChatContentRole::ReasoningSummary => BridgeChatContentRole::ReasoningSummary,
+            protocol::ChatContentRole::ToolArguments => BridgeChatContentRole::ToolArguments,
+            protocol::ChatContentRole::ToolOutput => BridgeChatContentRole::ToolOutput,
+        },
+        reference: content_ref(value.reference),
+    }
+}
+
+fn timeline_item(value: protocol::TimelineItem) -> BridgeTimelineItem {
+    BridgeTimelineItem {
+        id: value.id,
+        kind: match value.kind {
+            protocol::TimelineItemKind::Text => BridgeTimelineItemKind::Text,
+            protocol::TimelineItemKind::WorkGroup => BridgeTimelineItemKind::WorkGroup,
+            protocol::TimelineItemKind::Status => BridgeTimelineItemKind::Status,
+        },
+        source: source_id(value.source),
+        atom_kind: value.atom_kind.map(atom_kind),
+        delivery: delivery(value.delivery),
+        outcome: value.outcome.map(terminal_outcome),
+        text_channel: value.text_channel.map(text_channel),
+        turn_id: value.turn_id,
+        started_at: value.started_at,
+        finished_at: value.finished_at,
+        summary: value.summary.map(|summary| BridgeTimelineGroupSummary {
+            member_count: summary.member_count,
+            active_count: summary.active_count,
+            failed_count: summary.failed_count,
+            cancelled_count: summary.cancelled_count,
+            categories: summary.categories.into_iter().map(|count| BridgeTimelineCategoryCount {
+                category: match count.category {
+                    protocol::TimelineCategory::Thinking => BridgeTimelineCategory::Thinking,
+                    protocol::TimelineCategory::Read => BridgeTimelineCategory::Read,
+                    protocol::TimelineCategory::Image => BridgeTimelineCategory::Image,
+                    protocol::TimelineCategory::Command => BridgeTimelineCategory::Command,
+                    protocol::TimelineCategory::Search => BridgeTimelineCategory::Search,
+                    protocol::TimelineCategory::Edit => BridgeTimelineCategory::Edit,
+                    protocol::TimelineCategory::Wait => BridgeTimelineCategory::Wait,
+                    protocol::TimelineCategory::Other => BridgeTimelineCategory::Other,
+                },
+                count: count.count,
+            }).collect(),
+            started_at: summary.started_at,
+            finished_at: summary.finished_at,
+        }),
+        members: value.members.map(|reference| BridgeTimelineMembersRef {
+            database_id: reference.database_id,
+            projection_version: reference.projection_version,
+            item_id: reference.item_id,
+        }),
+        contents: value.contents.into_iter().map(atom_content).collect(),
+        payload: value.payload.map(payload),
+        content_item_id: value.content_item_id,
+        position: value.position,
+        admission_closed: value.admission_closed,
+    }
+}
+
 fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
     BridgeChatAtom {
         id: value.id,
@@ -136,27 +238,8 @@ fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
         source: source_id(value.source),
         source_state: value.source_state.map(source_state),
         source_order: value.source_order,
-        kind: match value.kind {
-            protocol::ChatAtomKind::Input => BridgeChatAtomKind::Input,
-            protocol::ChatAtomKind::Text => BridgeChatAtomKind::Text,
-            protocol::ChatAtomKind::Reasoning => BridgeChatAtomKind::Reasoning,
-            protocol::ChatAtomKind::ToolCall => BridgeChatAtomKind::ToolCall,
-            protocol::ChatAtomKind::FileChange => BridgeChatAtomKind::FileChange,
-            protocol::ChatAtomKind::Skill => BridgeChatAtomKind::Skill,
-            protocol::ChatAtomKind::Interaction => BridgeChatAtomKind::Interaction,
-            protocol::ChatAtomKind::Plan => BridgeChatAtomKind::Plan,
-            protocol::ChatAtomKind::Compaction => BridgeChatAtomKind::Compaction,
-            protocol::ChatAtomKind::TurnReceipt => BridgeChatAtomKind::TurnReceipt,
-            protocol::ChatAtomKind::Receipt => BridgeChatAtomKind::Receipt,
-            protocol::ChatAtomKind::Unknown => BridgeChatAtomKind::Unknown,
-        },
-        delivery: match value.delivery {
-            protocol::ChatDeliveryKind::Foreground => BridgeChatDeliveryKind::Foreground,
-            protocol::ChatDeliveryKind::BackgroundHandoff => {
-                BridgeChatDeliveryKind::BackgroundHandoff
-            }
-            protocol::ChatDeliveryKind::Independent => BridgeChatDeliveryKind::Independent,
-        },
+        kind: atom_kind(value.kind),
+        delivery: delivery(value.delivery),
         lifecycle: match value.lifecycle {
             protocol::ChatAtomLifecycle::Active { started, status } => {
                 BridgeChatAtomLifecycle::Active {
@@ -184,31 +267,11 @@ fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
             name: tool.name,
         }),
         wait: value.wait.map(super::thread_stream::wait_presentation),
-        text_channel: value.text_channel.map(|channel| match channel {
-            protocol::ThreadTextChannel::User => BridgeThreadTextChannel::User,
-            protocol::ThreadTextChannel::ParentAgent => BridgeThreadTextChannel::ParentAgent,
-            protocol::ThreadTextChannel::Commentary => BridgeThreadTextChannel::Commentary,
-            protocol::ThreadTextChannel::Final => BridgeThreadTextChannel::FinalAnswer,
-        }),
+        text_channel: value.text_channel.map(text_channel),
         started_at: value.started_at,
         finished_at: value.finished_at,
-        contents: value
-            .contents
-            .into_iter()
-            .map(|content| BridgeChatAtomContent {
-                role: match content.role {
-                    protocol::ChatContentRole::Body => BridgeChatContentRole::Body,
-                    protocol::ChatContentRole::ReasoningSummary => {
-                        BridgeChatContentRole::ReasoningSummary
-                    }
-                    protocol::ChatContentRole::ToolArguments => {
-                        BridgeChatContentRole::ToolArguments
-                    }
-                    protocol::ChatContentRole::ToolOutput => BridgeChatContentRole::ToolOutput,
-                },
-                reference: content_ref(content.reference),
-            })
-            .collect(),
+        content_present: value.content_present,
+        contents: value.contents.into_iter().map(atom_content).collect(),
         payload: value.payload.map(payload),
     }
 }
@@ -230,6 +293,7 @@ fn source_state(value: protocol::ChatSourceState) -> BridgeChatSourceState {
 
 fn entry(value: protocol::ChatEntry) -> BridgeChatEntry {
     match value {
+        protocol::ChatEntry::Item(value) => BridgeChatEntry::Item(Box::new(timeline_item(*value))),
         protocol::ChatEntry::Atom(value) => BridgeChatEntry::Atom(Box::new(atom(*value))),
         protocol::ChatEntry::Source(value) => BridgeChatEntry::Source(source_state(value)),
     }
@@ -283,6 +347,7 @@ fn current(value: protocol::CurrentProjection) -> BridgeCurrentProjection {
         }),
         sources: value.sources.into_iter().map(source_state).collect(),
         atoms: value.atoms.into_iter().map(atom).collect(),
+        items: value.items.into_iter().map(timeline_item).collect(),
         plan: value.plan.map(|head| BridgeCurrentPlanHead {
             revision: head.revision,
             phase: super::thread_stream::plan_phase(head.phase),
@@ -384,6 +449,87 @@ pub(crate) fn collection_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_items_and_member_qualification_are_mapped_without_atom_reconstruction() {
+        let reference = protocol::TimelineMembersRef {
+            database_id: "original-db".into(),
+            projection_version: 7,
+            item_id: "stable-item".into(),
+        };
+        let group = protocol::TimelineItem {
+            id: reference.item_id.clone(),
+            kind: protocol::TimelineItemKind::WorkGroup,
+            source: protocol::ChatSourceId::ForegroundTurn { turn_id: "turn".into() },
+            atom_kind: None,
+            delivery: protocol::ChatDeliveryKind::Foreground,
+            outcome: None,
+            text_channel: None,
+            turn_id: Some("turn".into()),
+            started_at: Some(100),
+            finished_at: None,
+            summary: Some(protocol::TimelineGroupSummary {
+                member_count: 11,
+                active_count: 2,
+                failed_count: 1,
+                cancelled_count: 3,
+                categories: vec![protocol::TimelineCategoryCount {
+                    category: protocol::TimelineCategory::Wait, count: 11,
+                }],
+                started_at: Some(100),
+                finished_at: None,
+            }),
+            members: Some(reference.clone()),
+            contents: vec![],
+            payload: None,
+            content_item_id: None,
+            position: Some(23),
+            admission_closed: true,
+        };
+        let mut projection = protocol::CurrentProjection::empty(41, protocol::ThreadStatus::Running);
+        let mut live = group.clone();
+        live.position = None;
+        projection.items.push(live);
+        let mapped = batch(protocol::ChatBatch {
+            placement: protocol::ChatPlacement::Set,
+            entries: vec![protocol::ChatEntry::Item(Box::new(group.clone()))],
+            before: Some("opaque-item-cursor".into()),
+            current: Some(projection),
+        });
+        let BridgeChatEntry::Item(item) = &mapped.entries[0] else { panic!("not an item"); };
+        assert_eq!(item.kind, BridgeTimelineItemKind::WorkGroup);
+        assert_eq!(item.position, Some(23));
+        assert!(item.payload.is_none() && item.contents.is_empty());
+        assert!(item.outcome.is_none());
+        let summary = item.summary.as_ref().unwrap();
+        assert_eq!((summary.member_count, summary.active_count, summary.failed_count, summary.cancelled_count),
+            (11, 2, 1, 3));
+        assert_eq!(summary.categories[0].category, BridgeTimelineCategory::Wait);
+        let members = item.members.clone().unwrap();
+        assert_eq!(scope(BridgeChatScope::GroupMembers { reference: members }),
+            protocol::ChatScope::GroupMembers { reference });
+        let current = mapped.current.unwrap();
+        assert_eq!(current.items[0].id, "stable-item");
+        assert_eq!(current.items[0].position, None);
+        assert!(current.atoms.is_empty());
+        for kind in [protocol::TimelineItemKind::Text, protocol::TimelineItemKind::Status] {
+            let mapped = timeline_item(protocol::TimelineItem {
+                kind,
+                atom_kind: Some(protocol::ChatAtomKind::Text),
+                outcome: Some(protocol::ChatTerminalOutcome::Cancelled),
+                text_channel: Some(protocol::ThreadTextChannel::Commentary),
+                summary: None,
+                members: None,
+                payload: Some(protocol::PayloadData::Inline { bytes: vec![0, 255, b' '] }),
+                content_item_id: Some("original-content".into()),
+                ..group.clone()
+            });
+            assert_eq!(mapped.outcome, Some(BridgeChatTerminalOutcome::Cancelled));
+            assert_eq!(mapped.text_channel, Some(BridgeThreadTextChannel::Commentary));
+            assert_eq!(mapped.content_item_id.as_deref(), Some("original-content"));
+            assert!(matches!(mapped.payload, Some(BridgePayloadData::Inline { bytes }) if bytes == [0, 255, b' ']));
+        }
+    }
 
     #[test]
     fn current_text_channels_preserve_unknown_and_the_original_producer_channel() {
@@ -504,6 +650,7 @@ mod tests {
                     tool: None,
                     wait: None,
                     text_channel: None,
+                    content_present: None,
                     started_at: None,
                     finished_at: None,
                     contents: vec![],

@@ -20,7 +20,8 @@ import 'package:flutter_chat_core/flutter_chat_core.dart'
 import 'package:flutter_chat_ui/flutter_chat_ui.dart' show Chat;
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart';
+import '../../../anywork_client/test/support/timeline_transport.dart' hide chatMessage, chatSet;
+import '../../../anywork_client/test/support/timeline_transport.dart' as main_fixtures show chatMessage;
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
@@ -75,7 +76,7 @@ void main() {
         repository.requests.last.$2.complete(current);
         await tester.pump();
         await current.consumer!.applyBatch(
-          chatSet(messages: [chatMessage(id: 'B')]),
+          memberSet(messages: [memberMessage(id: 'B')]),
         );
         await tester.pump();
         final displayB = displays.single;
@@ -117,7 +118,7 @@ void main() {
     (tester) async {
       final controller = InMemoryChatController(
         messages: [
-          _controllerMessage(chatMessage(id: 'short', body: '短的真实子内容')),
+          _controllerMessage(memberMessage(id: 'short', body: '短的真实子内容')),
         ],
       );
       var pages = 0;
@@ -160,7 +161,7 @@ void main() {
 
       await controller.setMessages([
         for (var i = 0; i < 40; i++)
-          _controllerMessage(chatMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
+          _controllerMessage(memberMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
       ], animated: false);
       await tester.pumpAndSettle();
       expect(tester.getSize(children).height, 320);
@@ -232,7 +233,7 @@ void main() {
       await tester.pump();
       expect(displays, isEmpty);
       transport.feed.send(
-        ConversationChatEvent(batch: chatSet(before: 'before')),
+        ConversationChatEvent(batch: memberSet(before: 'before')),
       );
       await tester.pump();
       await tester.pump();
@@ -279,7 +280,7 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(chatMessage(id: 'append'))],
+            entries: [ChatAtomEntry(memberMessage(id: 'append'))],
           ),
         ),
       );
@@ -289,7 +290,7 @@ void main() {
       page.complete(
         ChatBatch(
           placement: ChatPlacement.prepend,
-          entries: [ChatAtomEntry(chatMessage(id: 'older'))],
+          entries: [ChatAtomEntry(memberMessage(id: 'older'))],
         ),
       );
       await pumpClientUntil(
@@ -321,7 +322,7 @@ void main() {
       retireDuringSet = true;
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(messages: [chatMessage(id: 'retired-during-Set')]),
+          batch: memberSet(messages: [memberMessage(id: 'retired-during-Set')]),
         ),
       );
       await tester.pump();
@@ -339,8 +340,8 @@ void main() {
       );
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(
-            messages: [chatMessage(id: 'replacement', body: '旧 Children 正文')],
+          batch: memberSet(
+            messages: [memberMessage(id: 'replacement', body: '旧 Children 正文')],
           ),
         ),
       );
@@ -357,8 +358,8 @@ void main() {
       final generationBeforeSet = display.generation;
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(
-            messages: [chatMessage(id: 'replacement', body: '新 Children 正文')],
+          batch: memberSet(
+            messages: [memberMessage(id: 'replacement', body: '新 Children 正文')],
           ),
         ),
       );
@@ -428,7 +429,7 @@ void main() {
       );
       await tester.pump();
       expect(transport.opened.isCompleted, isTrue);
-      transport.feed.send(ConversationChatEvent(batch: chatSet()));
+      transport.feed.send(ConversationChatEvent(batch: memberSet()));
       await tester.pump();
       await tester.pump();
       expect(transport.feed.acknowledgements, [1]);
@@ -523,7 +524,7 @@ void main() {
         await tester.pump();
         transport.feed.send(
           ConversationChatEvent(
-            batch: chatSet(before: 'old-before', messages: [_deferred()]),
+            batch: memberSet(before: 'old-before', messages: [_deferred()]),
           ),
         );
         await tester.pump();
@@ -578,7 +579,7 @@ void main() {
         expect(newLoads, 0);
         replacement.send(
           ConversationChatEvent(
-            batch: chatSet(before: 'new-before', messages: [_deferred()]),
+            batch: memberSet(before: 'new-before', messages: [_deferred()]),
           ),
         );
         await tester.pump();
@@ -632,7 +633,7 @@ void main() {
             placement: ChatPlacement.prepend,
             entries: [
               ChatAtomEntry(
-                chatMessage(
+                memberMessage(
                   id: 'replacement-older',
                   body: 'older from new feed',
                 ),
@@ -797,3 +798,15 @@ final class _Transport implements ConversationTransport {
     return next;
   }
 }
+
+// Real business Children carry raw atoms, not Main TimelineItems.
+ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
+  id: id, completionItemId: id, source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null, kind: ChatAtomKind.text, delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(started: null, ended: null, outcome: ChatTerminalOutcome.completed),
+  contents: const [], payload: main_fixtures.chatMessage(id: id, body: body).payload,
+);
+ChatBatch memberSet({List<ChatAtom>? messages, String? before, CurrentProjection? current}) => ChatBatch(
+  placement: ChatPlacement.set, entries: (messages ?? [memberMessage()]).map(ChatAtomEntry.new).toList(),
+  before: before, current: current,
+);

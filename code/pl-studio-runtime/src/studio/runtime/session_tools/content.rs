@@ -409,17 +409,9 @@ pub(super) async fn get(
             }
         }
         let execution=batch.entries.into_iter().rev().filter_map(|entry| {
-            let pl_protocol::ChatEntry::Atom(message) = entry else { return None; };
-            let payload = message.payload?;
-            match payload {
-                pl_protocol::PayloadData::Deferred { .. }=>Some(serde_json::json!({"id":message.id,"kind":"deferred"})),
-                pl_protocol::PayloadData::Inline { bytes }=>match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    Ok(value) if matches!(value["type"].as_str(),Some("turn"|"inference"))=>Some(serde_json::json!({"id":message.id,"kind":value["type"],
-                        "turnId":value.get("turnId"),"sourceEffectSeq":value.get("sourceEffectSeq"),"sealedAt":value.get("sealedAt")})),
-                    Err(_)=>Some(serde_json::json!({"id":message.id,"kind":"malformed"})),
-                    _=>None,
-                },
-            }
+            let pl_protocol::ChatEntry::Item(item) = entry else { return None; };
+            Some(serde_json::json!({"id":item.id,"kind":item.kind,"turnId":item.turn_id,
+                "startedAt":item.started_at,"finishedAt":item.finished_at,"outcome":item.outcome,"summary":item.summary}))
         }).take(4).collect::<Vec<_>>();
         // No ContentRef/collection continuation escapes this short-lived Get qualification.
         output(&serde_json::json!({"thread":snapshot.thread,"activeTurn":current.active_turn,"activity":current.active,
@@ -733,8 +725,8 @@ pub(super) async fn search(
                 };
                 let end = page.before.is_none();
                 let Some(item) = page.entries.iter().find_map(|entry| match entry {
-                    pl_protocol::ChatEntry::Atom(atom) if atom.completion_item_id.is_some() => {
-                        Some(atom)
+                    pl_protocol::ChatEntry::Item(item) if item.content_item_id.is_some() => {
+                        Some(item)
                     }
                     _ => None,
                 }) else {
@@ -745,7 +737,7 @@ pub(super) async fn search(
                     cancel,
                     text_reference(
                         &reader,
-                        item.completion_item_id
+                        item.content_item_id
                             .as_deref()
                             .context("completed item owner")?,
                     ),
@@ -757,7 +749,7 @@ pub(super) async fn search(
                 };
                 cursor.pending = Some(PendingText {
                     item_id: item
-                        .completion_item_id
+                        .content_item_id
                         .clone()
                         .context("completed item owner")?,
                     reference,

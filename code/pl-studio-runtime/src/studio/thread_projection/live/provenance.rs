@@ -40,6 +40,7 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
+        self.ensure_timeline_position().await?;
         let history = self
             .execution_history
             .clone()
@@ -424,6 +425,7 @@ impl LiveProjection {
                 let atom = ChatAtom {
                     id: item_id.clone(),
                     completion_item_id: None,
+                    content_present: None,
                     completion_seq: None,
                     source,
                     source_state: None,

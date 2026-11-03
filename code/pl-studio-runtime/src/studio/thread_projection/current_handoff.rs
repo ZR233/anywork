@@ -13,6 +13,8 @@ pub(in crate::studio) struct CurrentRetirement {
 /// Does not retain current bodies, full collections, or the prepared effect's completion payloads.
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct CurrentHandoff {
+    pub sources: Arc<[pl_protocol::ChatSourceState]>,
+    pub members: Arc<[super::timeline::MemberChange]>,
     /// Main's proven completed frontier, not the global Session head.
     pub main_through: u64,
     pub before: Arc<CurrentProjection>,
@@ -23,6 +25,21 @@ pub(in crate::studio) struct CurrentHandoff {
 }
 
 impl CurrentHandoff {
+    /// Display handoff is a separate order domain from atomic completion seq.
+    /// A split frame retires only its delivered display prefix.
+    pub fn projection_after_items(&self, delivered: usize) -> CurrentProjection {
+        let mut current = self.after.as_ref().clone();
+        let mut suffix = self.entries.iter().skip(delivered).filter_map(|entry| {
+            if let ChatEntry::Item(item) = entry {
+                let mut item = item.as_ref().clone();
+                item.position = None;
+                Some(item)
+            } else { None }
+        }).collect::<Vec<_>>();
+        suffix.append(&mut current.items);
+        current.items = suffix;
+        current
+    }
     /// A partial delivery may retire only the previews actually covered by its completed prefix.
     /// Collection handles retain their normal mutable-revision qualification; they are not snapshots.
     pub fn projection_at(&self, through: u64) -> CurrentProjection {

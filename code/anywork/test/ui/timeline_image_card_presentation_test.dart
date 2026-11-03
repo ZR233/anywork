@@ -88,6 +88,11 @@ void main() {
           ),
         ),
       );
+      expect(reads, 0);
+      for (final item in items) {
+        await tester.tap(find.byKey(ValueKey('timeline-tool-details:${item.id}')));
+        await tester.pump(const Duration(milliseconds: 300));
+      }
       await pumpClientUntil(
         tester,
         () => find.byType(Image).evaluate().length == 2,
@@ -138,6 +143,9 @@ void main() {
             ),
           ),
         );
+        expect(reads, 0);
+        await tester.tap(find.byKey(const ValueKey(('item-disclosure', 'unknown'))));
+        await tester.pump(const Duration(milliseconds: 300));
         await pumpClientUntil(
           tester,
           () => find.byType(Image).evaluate().isNotEmpty,

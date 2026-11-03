@@ -125,6 +125,7 @@ final class TimelineItemFacts {
     this.diagnostic,
     this.payloadByteLength,
     this.atomic,
+    this.timeline,
   }) : details = List.unmodifiable(details),
        attachments = List.unmodifiable(attachments);
 
@@ -149,6 +150,7 @@ final class TimelineItemFacts {
   final String? diagnostic;
   final int? payloadByteLength;
   final Map<String, Object?>? atomic;
+  final Map<String, Object?>? timeline;
 }
 
 /// 已完成 Plan 自己的身份和有界字段预览，不读取或回填当前 Plan。
@@ -1327,6 +1329,7 @@ abstract final class StudioDriverState {
       {
         'id': item.id,
         'atomic': item.atomic,
+        'timeline': item.timeline,
         'sealedAt': item.sealedAt,
         'compatibility': item.compatibility,
         'presentationContract': item.presentationContract,

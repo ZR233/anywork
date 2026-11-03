@@ -10,6 +10,7 @@ import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
+import '../state/timeline_display_unit.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../widgets/chat_item_view.dart';
@@ -39,6 +40,7 @@ class TimelineView extends StatefulWidget {
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
+    this.groupMembersBuilder,
   });
   final String threadId;
   final TimelineSessionViewState view;
@@ -59,6 +61,7 @@ class TimelineView extends StatefulWidget {
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
+  final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -518,7 +521,7 @@ class _TimelineViewState extends State<TimelineView> {
                                         monotonicMicros: widget.monotonicMicros,
                                         onContentLayout: widget.onContentLayout,
                                         isDisplayActive: widget.isDisplayActive,
-                                        onLoadEarlierGroup: widget.onLoadOlder,
+                                        groupMembersBuilder: widget.groupMembersBuilder,
                                       ),
                                 ),
                               ),

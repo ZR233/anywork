@@ -50,9 +50,6 @@ class ConversationActivityConnector extends ConsumerWidget {
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
       registerDisplay: lease.registerCurrentDisplay,
       units: lease.liveUnits,
-      activity: lease.activity,
-      loadActivity: () =>
-          timeline.loadActivity(threadId, generation: lease.generation),
       images: lease.imageResources,
       readAttachment: (id) =>
           ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),

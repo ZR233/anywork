@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
+import 'package:anywork_client/conversation.dart';
 
 import '../state/chat_item_presentation.dart';
 import 'chat_item_view.dart';
@@ -19,6 +20,7 @@ class TimelineChildrenView extends StatefulWidget {
     required this.isDisplayActive,
     this.onLoadOlder,
     this.attachmentBuilder,
+    this.atomBuilder,
   });
 
   final InMemoryChatController controller;
@@ -26,6 +28,7 @@ class TimelineChildrenView extends StatefulWidget {
   final Future<void> Function()? onLoadOlder;
   final ChatContentRangeBuilder contentRangeBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
+  final Widget Function(ChatAtom atom)? atomBuilder;
   final bool Function() isDisplayActive;
 
   @override
@@ -62,13 +65,20 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
               index, {
               required bool isSentByMe,
               MessageGroupStatus? groupStatus,
-            }) => ChatItemView(
+            }) {
+              final presentation = chatItemPresentationOf(message)!;
+              final atom = presentation.atom;
+              if (atom != null && widget.atomBuilder != null) {
+                return widget.atomBuilder!(atom);
+              }
+              return ChatItemView(
               key: ValueKey((widget.generation, message.id)),
               item: chatItemPresentationOf(message)!,
               isDisplayActive: widget.isDisplayActive,
               contentRangeBuilder: widget.contentRangeBuilder,
               attachmentBuilder: widget.attachmentBuilder,
-            ),
+              );
+            },
         chatAnimatedListBuilder: (context, itemBuilder) =>
             StreamBuilder<ChatOperation>(
               stream: widget.controller.operationsStream,

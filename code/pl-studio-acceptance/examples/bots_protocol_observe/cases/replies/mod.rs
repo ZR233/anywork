@@ -13,11 +13,11 @@ mod runtime_stop;
 mod send_outcomes;
 
 use super::Session;
-use crate::support::{CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, chat_payload};
-use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    ChatAtomKind, ChatAtomLifecycle, ChatEntry, ChatScope, ChatSourceId, ContentTarget, PayloadData,
+use crate::support::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload,
 };
+use anyhow::{Context, Result, ensure};
+use pl_protocol::{ChatAtomKind, ChatEntry, ChatScope, ChatSourceId};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
 
@@ -134,44 +134,29 @@ pub(super) async fn wait_cancelled_turn(
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
             for entry in page.entries.iter().rev() {
-                let ChatEntry::Atom(atom) = entry else {
+                let ChatEntry::Item(item) = entry else {
                     continue;
                 };
-                if !matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
-                    || !matches!(atom.kind, ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown)
-                {
+                if !matches!(
+                    item.atom_kind,
+                    Some(ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown)
+                ) {
                     continue;
                 }
-                let completion_id = atom
-                    .completion_item_id
-                    .as_deref()
-                    .filter(|id| !id.is_empty())
-                    .context("terminal Chat atom omitted its frozen completion identity")?;
-                let frozen = atom
-                    .payload
-                    .as_ref()
-                    .context("terminal Chat atom omitted its frozen payload")?;
-                if let PayloadData::Deferred { reference, .. } = frozen {
+                let Some(payload) =
+                    completed_timeline_payload(&read, item, &mut remaining, deadline).await?
+                else {
+                    continue;
+                };
+                if let ChatSourceId::ForegroundTurn { turn_id } = &item.source {
                     ensure!(
-                        matches!(&reference.target,
-                            ContentTarget::ItemPayload { item_id } if item_id == completion_id),
-                        "terminal Chat payload reference conflicts with its completion identity"
-                    );
-                }
-                let payload = chat_payload(&read, frozen, &mut remaining, deadline).await?;
-                ensure!(
-                    payload["turnId"].as_str() == atom.turn_id.as_deref(),
-                    "terminal Chat metadata and frozen payload Turn conflict"
-                );
-                if let ChatSourceId::ForegroundTurn { turn_id } = &atom.source {
-                    ensure!(
-                        atom.turn_id.as_deref() == Some(turn_id.as_str()),
-                        "terminal Chat source and Turn identity conflict"
+                        item.turn_id.as_deref() == Some(turn_id.as_str()),
+                        "Timeline source and Turn identity conflict"
                     );
                 }
                 ensure!(
-                    atom.kind != ChatAtomKind::TurnReceipt || payload["type"] == "turn",
-                    "terminal Chat metadata and frozen payload domain conflict"
+                    item.atom_kind != Some(ChatAtomKind::TurnReceipt) || payload["type"] == "turn",
+                    "Timeline metadata and original payload domain conflict"
                 );
                 if payload["type"] != "turn" || payload["turnId"].as_str() != Some(turn_id) {
                     continue;

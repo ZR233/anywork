@@ -341,7 +341,7 @@ void main() {
                 'image-only',
                 '![](https://example.invalid/only-image.png)',
               ),
-            ]).map(sdk.ChatAtomEntry.new).toList(),
+            ]).map(_mainEntry).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -413,7 +413,7 @@ void main() {
                 'text-and-image',
                 '**实际正文** ![](https://example.invalid/lazy.png)',
               ),
-            ]).map(sdk.ChatAtomEntry.new).toList(),
+            ]).map(_mainEntry).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -504,7 +504,7 @@ void main() {
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([_unknown('placeholder')])
-              .map(sdk.ChatAtomEntry.new)
+              .map(_mainEntry)
               .toList(),
         ),
       );
@@ -529,7 +529,7 @@ void main() {
           entries: ([
             _text('actual-body', '正文布局见证'),
             _text('empty-body', ''),
-          ]).map(sdk.ChatAtomEntry.new).toList(),
+          ]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpAndSettle();
@@ -651,7 +651,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          entries: ([message('old')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([message('old')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpWidget(
@@ -723,7 +723,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          entries: ([message('new')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([message('new')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pump();
@@ -785,7 +785,7 @@ void main() {
           entries: ([
             _text('text', '正文'),
             _unknown('unknown'),
-          ]).map(sdk.ChatAtomEntry.new).toList(),
+          ]).map(_mainEntry).toList(),
           before: 'opaque',
         ),
       );
@@ -815,13 +815,13 @@ void main() {
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.prepend,
-          entries: ([_text('older', '旧页')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([_text('older', '旧页')]).map(_mainEntry).toList(),
         ),
       );
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          entries: ([_text('new', '新内容')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([_text('new', '新内容')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpAndSettle(
@@ -873,7 +873,7 @@ void main() {
                 byteLength: 900000,
               ),
             ),
-          ]).map(sdk.ChatAtomEntry.new).toList(),
+          ]).map(_mainEntry).toList(),
         ),
       );
       final requests = <sdk.ContentRange>[];
@@ -935,7 +935,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          entries: ([_unknown('initial')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
       var loads = 0;
@@ -997,7 +997,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          entries: ([_unknown('initial')]).map(sdk.ChatAtomEntry.new).toList(),
+          entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
       var loads = 0;
@@ -1025,7 +1025,7 @@ void main() {
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
           entries: ([for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')])
-              .map(sdk.ChatAtomEntry.new)
+              .map(_mainEntry)
               .toList(),
         ),
       );
@@ -1130,7 +1130,6 @@ final class _Controls implements TimelineUiControllers {
   late final adapter = TimelineMessageController(
     controller,
     generation: 1,
-    imageResources: images,
   );
   @override
   Key get chatKey => const ValueKey('chat');
@@ -1150,3 +1149,11 @@ final class _Controls implements TimelineUiControllers {
     await ended.future;
   }
 }
+
+// Every envelope in these component stories is an explicitly independent Main
+// status/text item. This helper does not classify, join or reorder atoms.
+sdk.ItemChatEntry _mainEntry(sdk.ChatAtom atom) => sdk.ItemChatEntry(sdk.TimelineItem(
+  id: atom.id, kind: sdk.TimelineItemKind.status, source: atom.source,
+  atomKind: atom.kind, delivery: sdk.ChatDeliveryKind.independent,
+  contents: atom.contents, payload: atom.payload, admissionClosed: true,
+));

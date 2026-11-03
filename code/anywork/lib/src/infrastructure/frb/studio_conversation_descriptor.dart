@@ -1,5 +1,79 @@
 part of 'studio_api.dart';
 
+frb_timeline_types.BridgeTimelineMembersRef _timelineMembersToFrb(
+  TimelineMembersRef value,
+) => frb_timeline_types.BridgeTimelineMembersRef(
+  databaseId: value.databaseId,
+  projectionVersion: value.projectionVersion,
+  itemId: value.itemId,
+);
+
+TimelineItem _timelineItemFromFrb(
+  frb_timeline_types.BridgeTimelineItem value,
+) => TimelineItem(
+  id: value.id,
+  kind: TimelineItemKind.values.byName(value.kind.name),
+  source: _chatSourceFromFrb(value.source),
+  atomKind: value.atomKind == null
+      ? null
+      : ChatAtomKind.values.byName(value.atomKind!.name),
+  delivery: ChatDeliveryKind.values.byName(value.delivery.name),
+  outcome: value.outcome == null
+      ? null
+      : ChatTerminalOutcome.values.byName(value.outcome!.name),
+  textChannel: value.textChannel == null
+      ? null
+      : ThreadTextChannel.values.byName(value.textChannel!.name),
+  turnId: value.turnId,
+  startedAt: value.startedAt == null
+      ? null
+      : _exactSignedTimelineInt(value.startedAt!),
+  finishedAt: value.finishedAt == null
+      ? null
+      : _exactSignedTimelineInt(value.finishedAt!),
+  summary: value.summary == null
+      ? null
+      : TimelineGroupSummary(
+          memberCount: value.summary!.memberCount,
+          activeCount: value.summary!.activeCount,
+          failedCount: value.summary!.failedCount,
+          cancelledCount: value.summary!.cancelledCount,
+          categories: [
+            for (final count in value.summary!.categories)
+              TimelineCategoryCount(
+                category: TimelineCategory.values.byName(count.category.name),
+                count: count.count,
+              ),
+          ],
+          startedAt: value.summary!.startedAt == null
+              ? null
+              : _exactSignedTimelineInt(value.summary!.startedAt!),
+          finishedAt: value.summary!.finishedAt == null
+              ? null
+              : _exactSignedTimelineInt(value.summary!.finishedAt!),
+        ),
+  members: value.members == null
+      ? null
+      : TimelineMembersRef(
+          databaseId: value.members!.databaseId,
+          projectionVersion: value.members!.projectionVersion,
+          itemId: value.members!.itemId,
+        ),
+  contents: [
+    for (final content in value.contents)
+      ChatAtomContent(
+        role: ChatContentRole.values.byName(content.role.name),
+        reference: _contentRefFromFrb(content.reference),
+      ),
+  ],
+  payload: value.payload == null ? null : _payloadFromFrb(value.payload!),
+  contentItemId: value.contentItemId,
+  position: value.position == null
+      ? null
+      : _exactTimelineInt(value.position!, 'item position'),
+  admissionClosed: value.admissionClosed,
+);
+
 frb_chat_types.BridgeReadDemand _readDemandToFrb(ReadDemand value) =>
     frb_chat_types.BridgeReadDemand(
       maxItems: value.maxItems,
@@ -38,6 +112,8 @@ ChatFactPosition _chatPositionFromFrb(
 );
 ChatEntry _chatEntryFromFrb(frb_chat_types.BridgeChatEntry value) =>
     switch (value) {
+      frb_chat_types.BridgeChatEntry_Item(:final field0) =>
+        ItemChatEntry(_timelineItemFromFrb(field0)),
       frb_chat_types.BridgeChatEntry_Atom(:final field0) => ChatAtomEntry(
         _chatAtomFromFrb(field0),
       ),
@@ -103,6 +179,7 @@ ChatAtom _chatAtomFromFrb(frb_chat_types.BridgeChatAtom value) => ChatAtom(
   textChannel: value.textChannel == null
       ? null
       : ThreadTextChannel.values.byName(value.textChannel!.name),
+  contentPresent: value.contentPresent,
   startedAt: value.startedAt == null
       ? null
       : _exactSignedTimelineInt(value.startedAt!),
@@ -207,6 +284,7 @@ CurrentProjection _currentFromFrb(
   logicalStatus: ThreadStatusView.values.byName(value.logicalStatus.name),
   executionPresent: value.executionPresent,
   sources: value.sources.map(_chatSourceStateFromFrb).toList(),
+  items: value.items.map(_timelineItemFromFrb).toList(),
   atoms: value.atoms.map(_chatAtomFromFrb).toList(),
   active: value.active == null ? null : _currentActivityFromFrb(value.active!),
   activeTurn: value.activeTurn == null
@@ -297,42 +375,6 @@ final class _FrbConversationReader implements ConversationReader {
     return FrbStudioTransport._bridgeCall(
       () async => _chatBatchFromFrb(
         await _feed._native.loadOlder(
-          before: before,
-          demand: _readDemandToFrb(demand),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) async {
-    _checkOpen();
-    return FrbStudioTransport._bridgeCall(
-      () async => _chatBatchFromFrb(
-        await _feed._native.readBefore(
-          completionSeq: BigInt.from(completionSeq),
-          before: before,
-          demand: _readDemandToFrb(demand),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) async {
-    _checkOpen();
-    return FrbStudioTransport._bridgeCall(
-      () async => _chatBatchFromFrb(
-        await _feed._native.readAt(
-          completionSeq: BigInt.from(completionSeq),
           before: before,
           demand: _readDemandToFrb(demand),
         ),

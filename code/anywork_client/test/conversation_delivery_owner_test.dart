@@ -23,7 +23,7 @@ Future<TestConversationFeed> _open(
 
 ChatBatch _append(String id, {CurrentProjection? current}) => ChatBatch(
   placement: ChatPlacement.append,
-  entries: [ChatAtomEntry(chatMessage(id: id))],
+  entries: [ItemChatEntry(chatMessage(id: id))],
   current: current,
 );
 
@@ -98,7 +98,7 @@ void main() {
       final ioStarted = Completer<void>();
       final older = ChatBatch(
         placement: ChatPlacement.prepend,
-        entries: [ChatAtomEntry(chatMessage(id: 'older'))],
+        entries: [ItemChatEntry(chatMessage(id: 'older'))],
       );
       feed.reader.onOlder = (before, demand) async {
         expect(before, 'opaque');
@@ -160,7 +160,7 @@ void main() {
     );
     final older = ChatBatch(
       placement: ChatPlacement.prepend,
-      entries: [ChatAtomEntry(chatMessage(id: 'retired-page'))],
+      entries: [ItemChatEntry(chatMessage(id: 'retired-page'))],
     );
     reply.complete(older);
     // The SDK reader's await was registered first on this very Future. Its
@@ -360,8 +360,8 @@ void main() {
     await feed.requestCloseStarted.future;
     expect(
       (fixture.consumers['thread']!.batches.last.entries.single
-              as ChatAtomEntry)
-          .atom
+              as ItemChatEntry)
+          .item
           .id,
       'accepted',
     );

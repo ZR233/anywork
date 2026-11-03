@@ -266,8 +266,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(conversation::older))
-        .routes(routes!(conversation::before))
-        .routes(routes!(conversation::at))
         .routes(routes!(conversation::manifest))
         .routes(routes!(conversation::read))
         .routes(routes!(conversation::current))

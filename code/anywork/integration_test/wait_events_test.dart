@@ -204,7 +204,7 @@ void main() {
       after: prepareTurn,
       outcome: 'cancelled',
     );
-    expect(stopped.atom!.kind, ChatAtomKind.turnReceipt);
+    expect(scene.observed.unit(stopped.id).item.atomKind, ChatAtomKind.turnReceipt);
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -316,8 +316,10 @@ final class _Scene {
     String outcome = 'completed',
   }) async {
     final original = await waitForTurn(after: after, outcome: outcome);
-    expect(original.atom!.kind, ChatAtomKind.turnReceipt);
-    expect(observed.workFor(original.atom!.source), isNotEmpty);
+    final item = observed.unit(original.id).item;
+    expect(item.kind, TimelineItemKind.status);
+    expect(item.atomKind, ChatAtomKind.turnReceipt);
+    expect(observed.workFor(item.source), isNotEmpty);
     // A terminal receipt identifies the real source, not a synthetic container.
     // A later tool lookup opens its exact ordinary work segment.
     return original;
@@ -328,11 +330,13 @@ final class _Scene {
     String prefix, {
     String status = 'succeeded',
   }) async {
-    final groups = observed.workFor(turn.atom!.source).toList();
+    final source = observed.unit(turn.id).item.source;
+    final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
-    final matches = groups
-        .expand((group) => group.members)
-        .where((atom) => atom.tool?.callId.startsWith(prefix) == true)
+    await observed.openSourceGroups(source);
+    final matches = observed.mountedMembers
+        .where((atom) => atom.source == source &&
+            atom.tool?.callId.startsWith(prefix) == true)
         .map(ChatItemPresentation.decode)
         .where((item) {
           final reading = item.toolCard;
@@ -343,9 +347,9 @@ final class _Scene {
         .toList();
     expect(matches, hasLength(1), reason: '$prefix / $status');
     final item = matches.single;
-    final display = await observed.revealAtom(item.atom!);
-    expect(display, isNotNull);
-    expect(display!.expanded, isTrue);
+    final reference = observed.unitForMember(item.atom!.id).item.members!;
+    final display = await observed.revealMember(item.atom!, reference: reference);
+    expect(display.expanded, isTrue);
     expect(
       display.atoms.where(
         (atom) =>
@@ -359,7 +363,7 @@ final class _Scene {
   }
 
   Future<void> closeTurn(ChatItemPresentation turn) async {
-    await observed.closeSource(turn.atom!.source);
+    await observed.closeSource(observed.unit(turn.id).item.source);
     await until(
       () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
       'ordinary group scopes released; only original Main handle remains',
@@ -368,23 +372,24 @@ final class _Scene {
 
   Future<void> currentWaiting(String prefix) async {
     await until(
+      () => observed.live.any((unit) => unit.item.kind == TimelineItemKind.workGroup),
+      'live work item with explicit member reference',
+    );
+    await observed.openLiveGroups();
+    await until(
       () =>
-          observed.live
-              .expand((unit) => unit.members)
+          observed.mountedMembers
               .where((atom) => atom.tool?.callId.startsWith(prefix) == true)
               .length ==
           1,
       'exact live wait atom',
     );
-    final unit = observed.live.singleWhere(
-      (unit) => unit.members.any(
-        (atom) => atom.tool?.callId.startsWith(prefix) == true,
-      ),
-    );
-    final atom = unit.members.singleWhere(
+    final atom = observed.mountedMembers.singleWhere(
       (atom) => atom.tool?.callId.startsWith(prefix) == true,
     );
+    final unit = observed.unitForMember(atom.id);
     expect(atom.lifecycle, isA<ActiveChatAtom>());
+    expect(atom.wait?.state, ThreadWaitStateView.waiting);
     await observed.openGroup(unit.id);
     final panel = find.byWidgetPredicate(
       (widget) =>
@@ -397,8 +402,7 @@ final class _Scene {
       'typed production Waiting panel',
     );
     expect(
-      observed.live
-          .expand((unit) => unit.members)
+      observed.mountedMembers
           .singleWhere((member) => member.id == atom.id)
           .lifecycle,
       isA<ActiveChatAtom>(),

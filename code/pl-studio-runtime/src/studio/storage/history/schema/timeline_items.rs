@@ -32,6 +32,7 @@ impl MigrationTrait for TimelineItems {
                 .await?
                 .context("timeline migration has no history identity")?;
             let database_id: String = identity.try_get("", "database_id")?;
+            timeline::normalize_legacy(db).await?;
             timeline::rebuild(db, &database_id).await?;
             timeline::validate_tables(db).await?;
             set_version(db, 15).await?;
@@ -47,6 +48,7 @@ pub(super) async fn validate_source(db: &impl ConnectionTrait) -> Result<()> {
         "timeline_items",
         "timeline_item_members",
         "timeline_projection_state",
+        "conversation_atom_facts",
     ] {
         ensure!(
             db.query_one_raw(statement(

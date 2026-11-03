@@ -16,6 +16,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'support/timeline_observation.dart';
+
 // An explicit, closed synthetic home is prepared outside the app and supplied
 // through ANYWORK_HOME. This suite never edits SQLite or copies a message stream.
 // Run with cargo xtask test-project --suite desktop --case conversation_read_work.
@@ -118,6 +120,7 @@ void main() {
             'same-generation actual content layout',
           );
           final display = lease()!;
+          final observed = TimelineObservation(tester, () => display);
           final first = display.firstContentLayout!;
           expect(display.appliedSets, 1);
           expect(display.loadedCount, greaterThan(0));
@@ -127,14 +130,19 @@ void main() {
           final mounted = find.byType(ChatItemView).evaluate().length;
           expect(mounted, lessThanOrEqualTo(initial));
           expect(display.hasOlder, isTrue);
-          final ids = display.controller.messages
-              .map((item) => item.id)
-              .toList();
+          final ids = observed.main.map((unit) => unit.item.id).toList();
+          expect(ids, hasLength(display.loadedCount));
+          expect(observed.mountedMembers, isEmpty,
+              reason: 'folded Main admission must not open member windows');
+          final beforeCursor = display.olderCursor;
           final view = tester.widget<TimelineView>(find.byType(TimelineView));
           await view.onLoadOlder();
           await tester.pump();
           expect(identical(display, lease()), isTrue);
           expect(display.loadedCount, greaterThan(initial));
+          expect(display.olderCursor, isNot(beforeCursor));
+          expect(observed.main.map((unit) => unit.item.id).toSet(),
+              hasLength(display.loadedCount));
           expect(
             display.controller.messages
                 .skip(display.loadedCount - initial)

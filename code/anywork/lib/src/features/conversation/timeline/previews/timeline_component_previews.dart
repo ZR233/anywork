@@ -148,51 +148,26 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
   late final groups = [
     for (var index = 0; index < (widget.live ? 1 : 2); index++)
       TimelineDisplayUnit(
-        id: 'preview-group-$index',
-        source: source,
-        kind: TimelineUnitKind.work,
-        members: [
-          ChatAtom(
-            id: 'preview-reasoning-$index',
-            source: source,
-            sourceOrder: index * 3 + 1,
-            kind: ChatAtomKind.reasoning,
-            delivery: ChatDeliveryKind.foreground,
-            lifecycle: const TerminalChatAtom(
-              started: null,
-              ended: null,
-              outcome: ChatTerminalOutcome.completed,
-            ),
-            contents: const [],
-          ),
-          if (index == 0)
-            ChatAtom(
-              id: 'preview-command',
-              source: source,
-              sourceOrder: 2,
-              kind: ChatAtomKind.toolCall,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              contents: const [],
-            ),
-        ],
         live: widget.live,
-        closedForAdmission: !widget.live,
-        memberCount: index == 0 ? 2 : 1,
-        activeCount: 0,
-        failedCount: 0,
-        stoppedCount: 0,
-        sourceLifecycle: widget.live
-            ? const ActiveChatSource()
-            : const EndedChatSource(outcome: ChatTerminalOutcome.completed),
-        categories: {
-          TimelineProcessKind.thinking: 1,
-          if (index == 0) TimelineProcessKind.command: 1,
-        },
+        item: TimelineItem(
+          id: 'preview-group-$index',
+          kind: TimelineItemKind.workGroup,
+          source: source,
+          delivery: ChatDeliveryKind.foreground,
+          admissionClosed: !widget.live,
+          contents: const [],
+          members: TimelineMembersRef(databaseId: 'preview', projectionVersion: 1, itemId: 'preview-group-$index'),
+          summary: TimelineGroupSummary(
+            memberCount: index == 0 ? 2 : 1,
+            activeCount: widget.live ? 1 : 0,
+            failedCount: 0,
+            cancelledCount: 0,
+            categories: [
+              const TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
+              if (index == 0) const TimelineCategoryCount(category: TimelineCategory.command, count: 1),
+            ],
+          ),
+        ),
       ),
   ];
 
@@ -213,11 +188,11 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
           TimelineDisplayUnitView(
             key: ValueKey(groups[index].id),
             unit: groups[index],
-            memberBuilder: (atom) => _chatItem(
-              atom.kind == ChatAtomKind.reasoning
-                  ? TimelinePreviewFixtures.reasoning
-                  : TimelinePreviewFixtures.tool,
-            ),
+            childBuilder: (_) => Column(children: [
+              _chatItem(TimelinePreviewFixtures.reasoning),
+              if (index == 0) _chatItem(TimelinePreviewFixtures.tool),
+            ]),
+          ),
           ),
           if (!widget.live)
             _chatItem(

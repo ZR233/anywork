@@ -28,16 +28,18 @@ final class TimelineConceptImageInput {
   final String inputId;
   final List<AttachmentDraftView> drafts;
 
-  /// Call with the atom and attachment refs from ONE real controller item.
+  /// Call with the TimelineItem and attachment refs from ONE Main message.
   /// Returns identities to archive alongside the later layout assertions.
   Map<String, Object?> verifyItem(
-    ChatAtom atom,
+    TimelineItem item,
     List<ThreadAttachmentView> attachments,
   ) {
-    expect(atom.kind, ChatAtomKind.input);
-    expect(atom.source, InputChatSource(inputId: inputId));
-    expect(atom.completionItemId, isNotNull);
-    expect(atom.completionItemId, isNotEmpty);
+    expect(item.kind, TimelineItemKind.text);
+    expect(item.atomKind, ChatAtomKind.input);
+    expect(item.source, InputChatSource(inputId: inputId));
+    expect(item.contentItemId, isNotNull);
+    expect(item.contentItemId, isNotEmpty);
+    expect(item.position, isNotNull);
     expect(attachments, hasLength(3));
     expect(attachments.map((item) => item.id).toSet(), hasLength(3));
     for (var index = 0; index < attachments.length; index++) {
@@ -52,8 +54,8 @@ final class TimelineConceptImageInput {
     }
     return {
       ...toJson(),
-      'atomId': atom.id,
-      'completionItemId': atom.completionItemId,
+      'itemId': item.id,
+      'contentItemId': item.contentItemId,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
     };
   }
@@ -62,12 +64,12 @@ final class TimelineConceptImageInput {
   /// No dependency on an in-flight owner/key/Driver DTO contract.
   Map<String, Object?> verifyHorizontalLayout(
     WidgetTester tester, {
-    required ChatAtom atom,
+    required TimelineItem item,
     required List<ThreadAttachmentView> attachments,
     required Finder itemFinder,
     required Finder Function(String resourceId) thumbnailFinder,
   }) {
-    final evidence = verifyItem(atom, attachments);
+    final evidence = verifyItem(item, attachments);
     expect(itemFinder, findsOneWidget);
     final rectangles = <Rect>[];
     for (final attachment in attachments) {

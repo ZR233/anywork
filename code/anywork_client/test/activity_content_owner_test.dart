@@ -13,6 +13,28 @@ CurrentProjection _active(int source) => CurrentProjection(
   logicalStatus: ThreadStatusView.running,
   executionPresent: true,
   sources: const [],
+  items: [
+    TimelineItem(
+      id: 'active-work',
+      kind: TimelineItemKind.workGroup,
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
+      delivery: ChatDeliveryKind.foreground,
+      summary: TimelineGroupSummary(
+        memberCount: 1,
+        activeCount: 1,
+        failedCount: 0,
+        cancelledCount: 0,
+        categories: const [
+          TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
+        ],
+      ),
+      members: const TimelineMembersRef(
+        databaseId: 'database', projectionVersion: 1, itemId: 'active-work',
+      ),
+      contents: const [],
+      admissionClosed: false,
+    ),
+  ],
   atoms: const [],
   active: const CurrentActivityHead(
     id: 'activity',
@@ -46,7 +68,7 @@ void main() {
       final retired = emptyCurrent();
       final completion = ChatBatch(
         placement: ChatPlacement.append,
-        entries: [ChatAtomEntry(chatMessage(id: 'completed-member'))],
+        entries: [ItemChatEntry(chatMessage(id: 'completed-member'))],
         current: retired,
       );
       feed.send(ConversationChatEvent(batch: completion));
@@ -74,7 +96,7 @@ void main() {
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: [ChatAtomEntry(chatMessage(id: 'completed'))],
+          entries: [ItemChatEntry(chatMessage(id: 'completed'))],
         ),
       ),
     );
@@ -156,7 +178,7 @@ void main() {
       open.result.complete(child);
       final set = ChatBatch(
         placement: ChatPlacement.set,
-        entries: [ChatAtomEntry(chatMessage(id: 'tool'))],
+        entries: [ChatAtomEntry(fixtureMember('tool'))],
       );
       await child.deliver(ConversationChatEvent(batch: set));
       await children.ready;
@@ -166,6 +188,55 @@ void main() {
       expect((await children.close()).complete, isTrue);
       expect(main.requestCloseCalls, 0);
       expect(fixture.session().current.value, same(mainCurrent));
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
+
+  test(
+    'GroupMembers forwards typed identity and owns a separate consumer and cursor',
+    () async {
+      final fixture = ConversationFixture();
+      final mainCurrent = _active(1);
+      final main = await fixture.open(
+        initial: chatSet(current: mainCurrent, before: 'main-cursor'),
+        demand: _demand,
+      );
+      const reference = TimelineMembersRef(
+        databaseId: 'database',
+        projectionVersion: 7,
+        itemId: 'stable-group',
+      );
+      final members = await fixture.repository.openGroupMembers(
+        threadId: 'thread',
+        reference: reference,
+        demand: _demand,
+      );
+      expect(fixture.transport.opens, hasLength(1));
+      final consumer = ControlledBatchConsumer();
+      members.attachConsumer(consumer, demand: _demand);
+      await fixture.transport.opened(1);
+      final open = fixture.transport.opens[1];
+      expect((open.scope as GroupMembersChatScope).reference, same(reference));
+      final feed = TestConversationFeed(subscriptionId: 'members');
+      open.result.complete(feed);
+      final set = ChatBatch(
+        placement: ChatPlacement.set,
+        entries: [ChatAtomEntry(fixtureMember('real-member'))],
+        before: 'member-cursor',
+      );
+      final gate = Completer<void>();
+      consumer.onApply = (_) => gate.future;
+      feed.send(ConversationChatEvent(batch: set));
+      await consumer.waitForCount(1);
+      expect(feed.acknowledgements, isEmpty);
+      gate.complete();
+      await feed.acknowledged(1);
+      expect(consumer.batches.single.atoms.single.id, 'real-member');
+      expect(consumer.batches.single.items, isEmpty);
+      expect(fixture.session().current.value, same(mainCurrent));
+      expect(fixture.consumers['thread']!.batches.single.before, 'main-cursor');
+      expect((await members.close()).complete, isTrue);
+      expect(main.requestCloseCalls, 0);
       expect((await fixture.close()).complete, isTrue);
     },
   );

@@ -31,8 +31,8 @@ final class ConversationCreditObservation {
   final StreamIterator<ConversationFrame> _events;
   final _frames = <Map<String, Object?>>[];
   final _operations = <Map<String, Object?>>[];
-  List<String> _setAtomIds = const [];
-  List<String> _setCompletionItemIds = const [];
+  List<String> _setItemIds = const [];
+  List<String> _setContentItemIds = const [];
   int _acknowledged = 0;
   bool _joined = false;
   bool _cancelled = false;
@@ -68,26 +68,27 @@ final class ConversationCreditObservation {
     };
     switch (event) {
       case ConversationChatEvent(:final batch):
-        final atoms = batch.entries.whereType<ChatAtomEntry>().map(
-          (entry) => entry.atom,
-        );
-        final ids = [for (final atom in atoms) atom.id];
-        final completionIds = [
-          for (final atom in atoms) ?atom.completionItemId,
+        final items = batch.items;
+        if (items.length != batch.entries.length) {
+          throw StateError('Credit Main delivered a non-item entry');
+        }
+        final ids = [for (final item in items) item.id];
+        final contentIds = [
+          for (final item in items) ?item.contentItemId,
         ];
         if (sequence == 1) {
           if (batch.placement != ChatPlacement.set) {
             throw StateError('Credit first frame is not the original Set');
           }
-          _setAtomIds = List.unmodifiable(ids);
-          _setCompletionItemIds = List.unmodifiable(completionIds);
-          evidence['heldSetAtomIds'] = _setAtomIds;
-          evidence['heldSetCompletionItemIds'] = _setCompletionItemIds;
+          _setItemIds = List.unmodifiable(ids);
+          _setContentItemIds = List.unmodifiable(contentIds);
+          evidence['heldSetItemIds'] = _setItemIds;
+          evidence['heldSetContentItemIds'] = _setContentItemIds;
         }
         observation.addAll({
           'event': 'chat',
           'placement': batch.placement.name,
-          'atomIds': ids,
+          'itemIds': ids,
           'entryCount': batch.entries.length,
         });
       case ConversationStateEvent(:final frame):
@@ -147,18 +148,17 @@ final class ConversationCreditObservation {
     await _rejectFuture(2);
   }
 
-  Future<void> queryCompletedText(ChatAtom atom) async {
-    final itemId = atom.completionItemId;
+  Future<void> queryCompletedText(TimelineItem item) async {
+    final itemId = item.contentItemId;
     if (_frames.length != 1 ||
         _acknowledged != 0 ||
-        atom.kind != ChatAtomKind.text ||
-        atom.lifecycle is! TerminalChatAtom ||
-        (atom.lifecycle as TerminalChatAtom).outcome !=
-            ChatTerminalOutcome.completed ||
+        item.kind != TimelineItemKind.text ||
+        item.atomKind != ChatAtomKind.text ||
+        item.position == null ||
+        item.outcome != ChatTerminalOutcome.completed ||
         itemId == null ||
-        _setAtomIds.contains(atom.id) ||
-        _setAtomIds.contains(itemId) ||
-        _setCompletionItemIds.contains(itemId)) {
+        _setItemIds.contains(item.id) ||
+        _setContentItemIds.contains(itemId)) {
       throw StateError('Credit query requires a new, truly completed text');
     }
     final manifest = await _reader
@@ -198,8 +198,10 @@ final class ConversationCreditObservation {
     }
     final query = <String, Object?>{
       'operation': 'query-completed-text',
-      'atomId': atom.id,
-      'completionItemId': itemId,
+      'timelineItemId': item.id,
+      'contentItemId': itemId,
+      'itemPosition': item.position,
+      'outcome': item.outcome!.name,
       'absentFromHeldSet': true,
       'readerSource': 'original-held-feed',
       'databaseId': body.reference.databaseId,

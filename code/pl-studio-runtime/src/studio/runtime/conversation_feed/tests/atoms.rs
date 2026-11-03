@@ -177,6 +177,7 @@ async fn reliable_starts_empty_text_and_reverse_completion_share_the_real_feed()
             starts.extend(batch.entries.into_iter().filter_map(|entry| match entry {
                 ChatEntry::Atom(atom) => Some(atom),
                 ChatEntry::Source(_) => { source_events += 1; None },
+                ChatEntry::Item(_) => panic!("member scope received a display item"),
             }));
         }
         assert_eq!(source_events, 1, "read annotations swallowed the reliable source start");

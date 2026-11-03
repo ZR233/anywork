@@ -127,7 +127,8 @@ pub struct ChatAtom {
     pub completion_seq: Option<u64>,
     pub source: ChatSourceId,
     /// Actual source state at this read cut, not frozen into completion metadata.
-    /// Reliable source changes are delivered independently as `ChatEntry::Source`.
+    /// Member/child scopes may deliver reliable source changes independently.
+    /// Main delivers only Studio Timeline items and its same-cut current snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_state: Option<ChatSourceState>,
     /// Stable actual source position, not a dense UI index. Legacy absence stays unknown.
@@ -145,6 +146,11 @@ pub struct ChatAtom {
     pub text_channel: Option<crate::ThreadTextChannel>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// For a text/input fact, whether accepted text or attachments exist.
+    /// `Some(false)` proves a real empty part, which still separates work
+    /// segments. Legacy absence is unknown, not permission to discard content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_present: Option<bool>,
     pub contents: Vec<ChatAtomContent>,
     /// Absent for an active fact. Frozen payload ownership stays with the original item.
     pub payload: Option<PayloadData>,
@@ -176,6 +182,8 @@ pub struct ChatSourceState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum ChatEntry {
+    /// One self-contained Main Timeline display item; never a raw member atom.
+    Item(Box<super::TimelineItem>),
     /// Member entry inside a work-group member scope or a real business child page.
     Atom(Box<ChatAtom>),
     /// A reliable lifecycle event, not an extra row of per-page source evidence.

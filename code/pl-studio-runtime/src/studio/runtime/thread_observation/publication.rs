@@ -101,6 +101,8 @@ impl ConversationPublication {
         let handoff = handoff.unwrap_or_else(|| {
             let projection = Arc::new(current.projection.clone());
             Arc::new(CurrentHandoff {
+                sources: std::sync::Arc::from([]),
+                members: std::sync::Arc::from([]),
                 main_through: latest
                     .as_ref()
                     .map_or(0, |source| source.handoff.main_through),
@@ -149,6 +151,8 @@ impl ConversationPublication {
                 "before":source.handoff.before,
                 "after":source.handoff.after,
                 "entries":source.handoff.entries,
+                "members":source.handoff.members,
+                "sources":source.handoff.sources,
                 "retirements":retirements,
             }))?
             .len()

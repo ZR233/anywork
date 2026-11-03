@@ -1,17 +1,18 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
-/// Actual mounted expanded ordinary-atom window. No query is started by these
+/// Actual mounted expanded GroupMembers window. No query is started by these
 /// synchronous borrows; business Children keeps its independent parent domain.
 abstract interface class TimelineGroupDisplay {
   String get unitId;
   bool get isCurrent;
   bool get expanded;
-  int? get completionAnchor;
+  TimelineMembersRef? get membersRef;
   String? get before;
   bool get loading;
   Object? get error;
   Iterable<ChatAtom> get atoms;
+  Iterable<TimelineCurrentWindowDisplay> get windows;
 }
 
 /// A borrow of the real expanded Children display, never a second message collection.
@@ -30,6 +31,12 @@ abstract interface class TimelineChildrenDisplay {
   int get appliedSets;
   int get appliedPrepends;
   int get appliedAppends;
+  Iterable<TimelineCurrentWindowDisplay> get windows;
+}
+
+/// A borrow of a mounted member renderer's actual body resources.
+abstract interface class TimelineMemberDisplay {
+  Iterable<TimelineCurrentWindowDisplay> get windows;
 }
 
 /// A borrow of the mounted current display and its already admitted bounded resources.

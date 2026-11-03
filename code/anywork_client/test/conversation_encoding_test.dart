@@ -41,6 +41,122 @@ Map<String, Object?> _expectedAtom(Object? wait) => {
 };
 
 void main() {
+  test('Main item encoding preserves summary, typed ref, order and optional ownership', () {
+    const reference = TimelineMembersRef(
+      databaseId: 'database',
+      projectionVersion: 3,
+      itemId: 'work',
+    );
+    final item = TimelineItem(
+      id: 'work',
+      kind: TimelineItemKind.workGroup,
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
+      delivery: ChatDeliveryKind.foreground,
+      turnId: 'turn',
+      summary: TimelineGroupSummary(
+        memberCount: 12,
+        activeCount: 2,
+        failedCount: 1,
+        cancelledCount: 3,
+        categories: const [
+          TimelineCategoryCount(category: TimelineCategory.read, count: 7),
+          TimelineCategoryCount(category: TimelineCategory.wait, count: 5),
+        ],
+        startedAt: 100,
+      ),
+      members: reference,
+      contents: const [],
+      position: 9,
+      admissionClosed: true,
+    );
+    final encoded = chatEntryToJson(ItemChatEntry(item));
+    expect(encoded, {
+      'kind': 'item',
+      'value': {
+        'id': 'work',
+        'kind': 'workGroup',
+        'source': {'kind': 'foregroundTurn', 'turnId': 'turn'},
+        'delivery': 'foreground',
+        'turnId': 'turn',
+        'startedAt': null,
+        'finishedAt': null,
+        'summary': {
+          'memberCount': 12,
+          'activeCount': 2,
+          'failedCount': 1,
+          'cancelledCount': 3,
+          'categories': [
+            {'category': 'read', 'count': 7},
+            {'category': 'wait', 'count': 5},
+          ],
+          'startedAt': 100,
+          'finishedAt': null,
+        },
+        'members': {
+          'databaseId': 'database',
+          'projectionVersion': 3,
+          'itemId': 'work',
+        },
+        'position': 9,
+        'admissionClosed': true,
+      },
+    });
+    final batch = ChatBatch(placement: ChatPlacement.append, entries: [ItemChatEntry(item)]);
+    expect(batch.items.single, same(item));
+    expect(batch.atoms, isEmpty);
+    expect(reference, const TimelineMembersRef(
+      databaseId: 'database', projectionVersion: 3, itemId: 'work',
+    ));
+    expect(reference, isNot(const TimelineMembersRef(
+      databaseId: 'database', projectionVersion: 4, itemId: 'work',
+    )));
+  });
+
+  test('content presence preserves explicit false separately from legacy unknown', () {
+    final atom = ChatAtom(
+      id: 'empty',
+      source: const InputChatSource(inputId: 'input'),
+      sourceOrder: null,
+      kind: ChatAtomKind.input,
+      delivery: ChatDeliveryKind.independent,
+      lifecycle: const ActiveChatAtom(started: null, status: ChatActiveStatus.running),
+      contentPresent: false,
+      contents: const [],
+    );
+    expect(chatAtomToJson(atom)['contentPresent'], isFalse);
+    expect(chatAtomToJson(_activeWait(null)), isNot(contains('contentPresent')));
+  });
+
+  test('text/status outcome is lightweight and does not require payload decoding', () {
+    for (final kind in [TimelineItemKind.text, TimelineItemKind.status]) {
+      final item = TimelineItem(
+        id: 'interrupted',
+        kind: kind,
+        source: const ForegroundTurnChatSource(turnId: 'turn'),
+        atomKind: ChatAtomKind.text,
+        delivery: ChatDeliveryKind.foreground,
+        outcome: ChatTerminalOutcome.cancelled,
+        textChannel: ThreadTextChannel.finalAnswer,
+        contents: const [],
+        contentItemId: 'original-content',
+        payload: DeferredPayload(
+          reference: const ContentRef(
+            databaseId: 'database',
+            target: ItemPayloadTarget(itemId: 'original-content'),
+          ),
+          byteLength: 1000000,
+        ),
+        admissionClosed: true,
+      );
+      final encoded = timelineItemToJson(item);
+      expect(encoded['outcome'], 'cancelled');
+      expect(encoded['textChannel'], 'final');
+      expect(encoded['contentItemId'], 'original-content');
+      expect((encoded['payload'] as Map)['kind'], 'deferred');
+      expect(encoded, isNot(contains('members')));
+    }
+  });
+
   test('event wait uses canonical Rust serde shape and counts target facts', () {
     final wait = ThreadWaitPresentationView(
       intent: ThreadWaitEventsIntentView(

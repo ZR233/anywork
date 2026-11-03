@@ -3,7 +3,7 @@
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatEntry, ChatSourceId,
+    ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatEntry, ChatSourceId,
     ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
     ThreadTextChannel, TurnState,
 };
@@ -85,40 +85,34 @@ pub(super) async fn decode_entry(
     entry: &ChatEntry,
     turn_id: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    let atom = match entry {
-        ChatEntry::Atom(atom) => atom,
+    let (atom, id, payload) = match entry {
+        ChatEntry::Item(item) => {
+            if item.is_work_group() { return Ok(None); }
+            if item.position.is_none() { return Ok(None); }
+            let kind = item.atom_kind.ok_or_else(|| gap("reply item has no domain kind"))?;
+            let id = item.content_item_id.as_deref().filter(|id| !id.is_empty())
+                .ok_or_else(|| gap("reply item has no frozen content owner"))?;
+            let payload = item.payload.as_ref().ok_or_else(|| gap("reply item has no payload"))?;
+            (ReplyMetadata { id: item.id.clone(), source: item.source.clone(), turn_id: item.turn_id.clone(),
+                kind, tool: None, text_channel: item.text_channel, contents: item.contents.clone() }, id, payload)
+        }
+        ChatEntry::Atom(atom) => {
+            if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) { return Ok(None); }
+            let id = atom.completion_item_id.as_deref().filter(|id| !id.is_empty())
+                .ok_or_else(|| gap("terminal reply atom has no frozen completion identity"))?;
+            if atom.completion_seq.is_none_or(|seq| seq == 0) { return Err(gap("terminal reply atom has no completion publication position")); }
+            let payload = atom.payload.as_ref().ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
+            (ReplyMetadata { id: atom.id.clone(), source: atom.source.clone(), turn_id: atom.turn_id.clone(),
+                kind: atom.kind, tool: atom.tool.clone(), text_channel: atom.text_channel, contents: atom.contents.clone() }, id, payload)
+        }
         ChatEntry::Source(source) => {
-            if source_identity(&source.source).is_empty() {
-                return Err(gap("reply source fact has no identity"));
-            }
+            if source_identity(&source.source).is_empty() { return Err(gap("reply source fact has no identity")); }
             return Ok(None);
         }
     };
-    if atom.id.is_empty() || source_identity(&atom.source).is_empty() {
-        return Err(gap("reply atom has no member or source identity"));
-    }
+    if atom.id.is_empty() || source_identity(&atom.source).is_empty() { return Err(gap("reply item has no identity")); }
     if let ChatSourceId::ForegroundTurn { turn_id } = &atom.source
-        && atom.turn_id.as_deref() != Some(turn_id)
-    {
-        return Err(gap("reply source and Turn identity conflict"));
-    }
-    if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
-        return Ok(None);
-    }
-    let id = atom
-        .completion_item_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| gap("terminal reply atom has no frozen completion identity"))?;
-    if atom.completion_seq.is_none_or(|seq| seq == 0) {
-        return Err(gap(
-            "terminal reply atom has no completion publication position",
-        ));
-    }
-    let payload = atom
-        .payload
-        .as_ref()
-        .ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
+        && atom.turn_id.as_deref() != Some(turn_id) { return Err(gap("reply source and Turn identity conflict")); }
     if let PayloadData::Deferred { reference, .. } = payload
         && (reference.database_id.is_empty()
             || !matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == id))
@@ -147,7 +141,7 @@ pub(super) async fn decode_entry(
             byte_length,
         } => read_bytes(reader, reference, *byte_length, true).await?,
     };
-    decode_envelope(reader, atom, id, &bytes, turn_id).await
+    decode_envelope(reader, &atom, id, &bytes, turn_id).await
 }
 
 fn source_identity(source: &ChatSourceId) -> &str {
@@ -160,9 +154,19 @@ fn source_identity(source: &ChatSourceId) -> &str {
     }
 }
 
+struct ReplyMetadata {
+    id: String,
+    source: ChatSourceId,
+    turn_id: Option<String>,
+    kind: ChatAtomKind,
+    tool: Option<pl_protocol::ChatToolIdentity>,
+    text_channel: Option<ThreadTextChannel>,
+    contents: Vec<pl_protocol::ChatAtomContent>,
+}
+
 async fn decode_envelope(
     reader: &ConversationReader,
-    atom: &ChatAtom,
+    atom: &ReplyMetadata,
     id: &str,
     bytes: &[u8],
     target: &str,
@@ -459,7 +463,7 @@ impl Coverage {
         self.atoms = self.atoms.saturating_add(
             entries
                 .iter()
-                .filter(|entry| matches!(entry, ChatEntry::Atom(_)))
+                .filter(|entry| matches!(entry, ChatEntry::Item(_) | ChatEntry::Atom(_)))
                 .count(),
         );
         if self.inspected > MAX_TURN_CONTENT_ITEMS

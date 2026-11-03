@@ -610,23 +610,37 @@ CREATE TABLE conversation_view_entries (
     UNIQUE (collection, entry_id)
 ) WITHOUT ROWID;
 
--- Timeline 展示 item 派生读模型：可删除，并由原完成事实与已保存 current 切面重放同一投影重建。
+-- 轻量真实来源事实，不保存 token、展示组或正文；随原可靠 effect 保存。
+CREATE TABLE conversation_atom_facts (
+    effect_seq INTEGER NOT NULL,
+    suborder   INTEGER NOT NULL,
+    atom_id    TEXT NOT NULL,
+    phase      TEXT NOT NULL,
+    metadata   BLOB NOT NULL,
+    PRIMARY KEY (effect_seq, suborder, atom_id, phase),
+    UNIQUE (atom_id, phase)
+) WITHOUT ROWID;
+
+-- Timeline 展示 item 派生读模型：可删除，由保留的真实来源事实重建。
 CREATE TABLE timeline_items (
-    position           INTEGER PRIMARY KEY,
-    item_id            TEXT NOT NULL UNIQUE,
+    item_id            TEXT NOT NULL PRIMARY KEY,
     kind               TEXT NOT NULL,
-    commit_seq         INTEGER NOT NULL,
+    location           TEXT NOT NULL,
+    position           INTEGER UNIQUE,
+    commit_seq         INTEGER,
     metadata           BLOB NOT NULL,
     projection_version INTEGER NOT NULL
 );
 CREATE INDEX timeline_items_by_commit
     ON timeline_items(commit_seq, position);
+CREATE INDEX timeline_items_by_location_position
+    ON timeline_items(location, position);
 
 CREATE TABLE timeline_item_members (
     item_id            TEXT NOT NULL,
     member_order       INTEGER NOT NULL,
     member_id          TEXT NOT NULL,
-    completion_item_id TEXT NOT NULL,
+    completion_item_id TEXT,
     PRIMARY KEY (item_id, member_order),
     UNIQUE (item_id, member_id)
 ) WITHOUT ROWID;
@@ -634,19 +648,24 @@ CREATE TABLE timeline_item_members (
 CREATE TABLE timeline_projection_state (
     singleton_id       INTEGER PRIMARY KEY CHECK (singleton_id = 1),
     projection_version INTEGER NOT NULL,
-    next_position      INTEGER NOT NULL
+    next_position      INTEGER NOT NULL,
+    source_effect_seq  INTEGER NOT NULL
 );
 ```
 
 item 表保存普通查询/排序/身份、原始 UTF-8 JSON payload 及轻量原子 metadata；每会话已有独立库，不重复 thread_id。metadata 由产品 producer 冻结，含无需解码 payload 即可取得的真实归属、顺序、生命周期和内容引用，不复制正文，也不含展示 item 或成员归属；Core 仅将其视为 opaque header bytes，产品按实际编码计入单页预算。不另设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
 
-timeline_items 以 position 为历史 item_order 主键、item_id 唯一，按 commit_seq 索引；metadata 保存有界 TimelineItem 信封（类别、来源/turn、时间、摘要、内容引用、成员引用与准入关闭资格；current 成员身份只存在于 current 快照，不写入历史行），正文仍以 Deferred 引用指回原完成项。timeline_item_members 以 `(item_id, member_order)` 固定成员顺序并记录成员原子与原完成项身份；timeline_projection_state 单例保存当前投影版本与 next_position。writer 在原完成/current 同一事务中 apply 本批 item、成员与状态，重试按身份、position 与冻结字节幂等 verify，冲突明确失败；迁移或维护性重建先删除派生行，再按同一 Studio 投影重放原完成事实与保存 current 切面并校验顺序、唯一性和成员引用，不触碰原完成事实。
+`conversation_atom_facts` 只保存规范来源实际接纳的开始/终态及必要身份、位置、计时、内容存在性和引用，不保存正文、工具 payload 或 token。原完成 payload/内容仍各只有一份；同一真实身份/阶段重试幂等、冲突拒绝。旧事实只在正式准备边界规范化，缺少的开始/时间保持未知。重建按已索引的可靠位置逐批读小元信息，不先读全 payload 再排序，也不把最新 `history_items` 或检查点当完整日志。
+
+`timeline_items` 以稳定 item_id 为身份键；`location=current` 的 position/commit_seq 为空，关闭准入与进入历史分别表达，历史行按 position（item_order）键集读取。metadata 保存有界信封、摘要、引用及必要的未交接小状态，不保存全量成员 ID。成员关系在准入时增量写入 `timeline_item_members`，完成后同身份接纳原 completion 引用；member_order 来自真实来源顺序，不能按字符串 ID 或完成顺序排序。组交接只冻结摘要/顺序，不重写整个组成员列表。current 小状态、已提交 item 和未落盘增量仍归同一产品/read owner 及原可靠预算，不长期保留已保存成员正文。
+
+投影版本与 source_effect_seq 覆盖包括“无新完成 atom 的正文开始”在内的可靠输入，不能以完成 seq 代替派生处理位置。writer 在原事实/current 同一事务 apply 派生增量，重试核验实际冻结字节及身份，失败沿原保存故障/背压保留责任。完整重建遵循 [26.11](./26-timeline-content.md#2611-重建输入与维护暂停)：维护暂停、原 writer 连续 durable 切点、原输入队列、一致源快照、同算法有界重建、完整事务替换及原句柄换代；失败或取消回滚且不改原事实，不新增异步投影服务或补偿队列。
 
 contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 显式提交 manifest，不从未知业务 payload 猜引用。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文。active item 内容在 seal 时移交已有共享块与 manifest；目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留，current 内容归原 owner 退役且允许已接纳短读结束，不另建全局 GC。
 
 执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-view singleton 只含 sourceEffectSeq、逻辑摘要、真实 source 状态、有序未交接 items 与成员 atoms、active turn/Plan/交互有界头部和引用；不镜像已完成历史 item、成员正文或展示前缀。可能增长的集合按 collection/position 按需读，游标绑定集合 revision。不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。产品 owner 随真实事实维护，PreparedEffect 冻结原 effect 的 current/变更，writer 按序保存，不能提交时读取最新 live 替代而越过提交前缀。
+view singleton 只含 sourceEffectSeq、逻辑摘要、真实 source 状态、有序未交接 item 轻量片段、必要活动 atoms、active turn/Plan/交互有界头部和引用；不镜像已提交历史、完整成员 ID 或正文。成员关联保存在成员表，已终态但尚待交接的组仍是 current。可能增长的集合按原分页机制读取，游标绑定对应 scope/版本，不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。PreparedEffect 冻结同 effect 的 current/派生增量，writer 按序保存，不能提交时采样最新 live 越过前缀。
 
 冷打开在一个短读快照中取得轻量水位、current、Main 展示 item 初始页和这些已选择 item/成员/current 涉及的真实 source 状态；source 查询只按有界身份及捕获的 current.sourceEffectSeq 作 as-of 读取，不异时另查最新状态拼接切面，较晚结束不提前生效，切点内开始也不能丢失。不调用完整 checkpoint decoder；普通版本/身份准入不执行 quick_check、不读 current_context、不触发 flush。完整性检查、迁移和执行恢复分别有显式边界；轻量投影缺失进入明确修复/迁移错误，不回退恢复全 checkpoint。独立只读池与 writer 同属 HistoryStore，保留创建/迁移及数据库身份屏障，不使用 immutable 忽略活跃写入。
 

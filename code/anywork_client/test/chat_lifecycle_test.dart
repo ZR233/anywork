@@ -9,7 +9,7 @@ const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
 ChatBatch _appendMessage(String id) => ChatBatch(
   placement: ChatPlacement.append,
-  entries: [ChatAtomEntry(chatMessage(id: id))],
+  entries: [ItemChatEntry(chatMessage(id: id))],
 );
 
 void main() {
@@ -720,7 +720,7 @@ void main() {
       expect(
         consumer.batches.last,
         isA<ChatBatch>().having(
-          (batch) => (batch.entries.single as ChatAtomEntry).atom.id,
+          (batch) => (batch.entries.single as ItemChatEntry).item.id,
           'message identity',
           'item-9',
         ),

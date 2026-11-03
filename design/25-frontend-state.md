@@ -398,11 +398,11 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权和恢复边界，不要求五个 Session/连接。Main Chat.current 是活动展示的唯一写入口，State 保留其他现役领域，Children 不写全局 current。共享 owner 不另存可写全量镜像；loadOlder 和内容查询用独立 read lease，在应用队列外执行，不竞争 recv/credit 锁。transport/ACK 仍只归 feed owner，见 [07](./07-streaming.md)。
 
-原 query scope 的 `readBefore(completionSeq, before?, demand)` 读取已观察位置之前的普通原子窗口；`readAt` 使用相同参数读取包含该位置自身的窗口，供已释放完成片段或成员窗口的合法重取。两者支持原 H0 之后新增的完成事实，不开启另一条 feed，也不自动更新 SDK 主历史 consumer。返回结果由 Flutter 原展示 lease 的既有串行 mutation 入口交给同一 applyBatch；主历史 item 游标/current 与成员窗口、普通原子窗口游标分开，不以临时选择或另一个 owner 接纳旧结果。普通窗口边界及资格见 [26](./26-timeline-content.md)。
+Main 只读取统一展示 item，工作组详情通过原库、投影版本和 item 身份绑定的 `GroupMembers` 引用打开独立成员 scope；真实业务 Children 保留真实 parent。删除为客户端分组恢复加入的公开 `readBefore`／`readAt` 原子扫描路径。成员窗口自身的 cursor、接纳和真实活动成员更新不覆盖 Main cursor/current，也不经临时选择或另一个 owner 接纳旧结果；引用与窗口资格见 [26](./26-timeline-content.md)。
 
 未提交展示片段是 Studio 投影的有界 current，不是客户端可增长的工作集：Flutter 只接纳 `CurrentProjection.items` 与成员 atoms，不计算成员归属、不另设每段展示预算，也不为显示条数丢弃未终态 part。已完成但尚未满足提交条件的片段仍属 current；成员正文与媒体只在展开时按 `GroupMembers` 或原 lease 逐页读取，未物化内容不保留每成员/每段的永久骨架。真实未终态事实和已交给 controller 的 item 分别沿各自原 owner 管理，ACK 不等待物化；细节及局部 UI 资格见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
 
-普通 Atom 的可空 `sourceState` 是相同读取切面的真实来源状态，不是独立完成项；SDK/FRB 机械保留，原呈现接纳入口按身份校验后与 `current.sources`、可靠 Source 事件使用同一来源归约。所有独立 entries、展示 item 与成员窗口页都计入相应 maxItems，不为来源证据增加一套事件流、信用或组范围模型。
+成员/Children Atom 的可空 `sourceState` 是同一读取切面的真实来源状态；SDK/FRB 机械保留，客户端不据此推导组边界或顺序。Main 只接纳展示 Item 与同切面 current，不混入 Atom/Source。各 scope 的 entries 计入自身 maxItems 与编码字节预算，不为来源证据增加事件流、信用或客户端组状态。
 
 生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 使用 UI 词汇而不保存资源；Connector 绑定现有 owner 只读投影，纯 View 不读业务 Provider/Repository/生成代码。TimelinePresentationOwner 只机械接纳 Studio 已确定的展示 item、维护当前片段与 controller 操作，不计算成员归属、不封组、不拼展示前缀；ConversationCurrentOwner 保留内容窗口/订阅职责，不独立决定 item 生命周期。旧 Flutter 分组归约、封组与展示前缀/交接 reducer 删除，不保留兼容分支、旧展示单元或第二套分组规则。两者不归约原始 token，不持第二权威历史。View 只根据每批实际布局和尺寸变化请求普通旧页，复用原 single-flight，未满且 item cursor 前进就继续，无总页数上限；ACK 在呈现接纳后推进，不等 item 提交、布局或填屏。
 

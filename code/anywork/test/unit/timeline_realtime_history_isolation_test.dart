@@ -11,7 +11,7 @@ import '../support/test_statistics_feed.dart';
 
 // Main Chat.current and State facts traverse the real SDK and display owner.
 // Empty-message Append must not touch the historical component collection. A
-// real Demo seed Append below is the positive control for operation observation.
+// explicit producer-item Append below is the positive control for operation observation.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -84,6 +84,7 @@ void main() {
     final current = CurrentProjection(
       sources: const [],
       atoms: const [],
+      items: const [],
       sourceEffectSeq: 17,
       logicalStatus: ThreadStatusView.running,
       executionPresent: true,
@@ -231,9 +232,11 @@ void main() {
     expect(framesBeforeUpdates, lessThan(feed.deliveredFrames));
     expect(session.content.state.value, isA<ChatReady<bool>>());
 
-    // Positive control: the official Demo seed traverses a real Chat Append.
+    // Positive control: an explicit producer item traverses the same SDK/ACK path.
     final acksBeforeSeed = feed.acknowledgements.length;
-    transport.seedChatAtoms(threadId, [chatMessage('isolation-completed')]);
+    await feed.emitAndWait(ConversationChatEvent(batch: chatBatch(
+      [chatMessage('isolation-completed')], placement: ChatPlacement.append,
+    )));
     await operationSeen.future.timeout(const Duration(seconds: 5));
     await feed
         .waitForAcknowledgements(acksBeforeSeed + 1)

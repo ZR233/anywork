@@ -139,6 +139,7 @@ final class ChatAtom {
     this.tool,
     this.wait,
     this.textChannel,
+    this.contentPresent,
     this.startedAt,
     this.finishedAt,
     required List<ChatAtomContent> contents,
@@ -160,6 +161,9 @@ final class ChatAtom {
   final ChatToolIdentity? tool;
   final ThreadWaitPresentationView? wait;
   final ThreadTextChannel? textChannel;
+
+  /// Whether accepted text or attachments exist; `null` means unknown.
+  final bool? contentPresent;
   final int? startedAt;
   final int? finishedAt;
   final List<ChatAtomContent> contents;
@@ -198,6 +202,11 @@ final class ChatSourceState {
 
 sealed class ChatEntry {
   const ChatEntry();
+}
+
+final class ItemChatEntry extends ChatEntry {
+  const ItemChatEntry(this.item);
+  final TimelineItem item;
 }
 
 final class ChatAtomEntry extends ChatEntry {

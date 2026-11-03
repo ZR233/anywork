@@ -20,19 +20,6 @@ abstract interface class ConversationReader {
     required ReadDemand demand,
   });
 
-  /// Reads an ordinary window before an observed completion, on this same lease.
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  });
-
-  /// Reads an ordinary window including the observed completion, on this lease.
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  });
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,

@@ -18,6 +18,7 @@ pub struct ConversationReader {
     pub(super) inner: Arc<ReadLease>,
 }
 pub(super) struct ReadLease {
+    member_window: std::sync::Mutex<std::collections::BTreeMap<String, ChatSourceId>>,
     pub id: String,
     pub thread_id: String,
     pub scope: ChatScope,
@@ -71,6 +72,7 @@ impl std::fmt::Debug for ConversationReader {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
+    projection_version: u32,
     lease: String,
     database: Option<String>,
     scope: ChatScope,
@@ -147,6 +149,7 @@ impl ConversationReader {
     ) -> Self {
         Self {
             inner: Arc::new(ReadLease {
+                member_window: std::sync::Mutex::new(Default::default()),
                 thread_id: resources.thread.id.clone(),
                 id,
                 scope,
@@ -165,6 +168,19 @@ impl ConversationReader {
     }
     pub fn subscription_id(&self) -> &str {
         &self.inner.id
+    }
+    pub(super) fn select_member_window(&self, entries: &[ChatEntry]) {
+        if !matches!(self.inner.scope, ChatScope::GroupMembers { .. }) { return; }
+        let mut window = self.inner.member_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *window = entries.iter().filter_map(|entry| {
+            if let ChatEntry::Atom(atom) = entry { Some((atom.id.clone(), atom.source.clone())) } else { None }
+        }).collect();
+    }
+    pub(super) fn observes_member(&self, id: &str) -> bool {
+        self.inner.member_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(id)
+    }
+    pub(super) fn observes_source(&self, source: &ChatSourceId) -> bool {
+        self.inner.member_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().any(|value| value == source)
     }
     pub(super) fn ensure(&self) -> Result<()> {
         if self.inner.resync.load(Ordering::Acquire) {
@@ -216,6 +232,7 @@ impl ConversationReader {
     }
     fn token(&self, resources: &ReadResources, kind: CursorKind) -> Result<String> {
         Ok(serde_json::to_string(&Cursor {
+            projection_version: TIMELINE_PROJECTION_VERSION,
             lease: self.inner.id.clone(),
             database: resources.database_id.clone(),
             scope: self.inner.scope.clone(),
@@ -234,6 +251,7 @@ impl ConversationReader {
         })?;
         ensure!(
             cursor.lease == self.inner.id
+                && cursor.projection_version == TIMELINE_PROJECTION_VERSION
                 && cursor.database == resources.database_id
                 && cursor.scope == self.inner.scope
                 && cursor.epoch == resources.session.epoch().as_str()
@@ -291,7 +309,8 @@ impl ConversationReader {
         self.ensure()
     }
 
-    /// Ordinary exclusive-seq window for a position observed after the original H0.
+    /// Exclusive window at an observed scope position: Main item_order, group
+    /// member_order, or the original atomic completion seq for business Children.
     /// Its continuation never belongs to load_older's original history chain.
     pub async fn read_before(
         &self,
@@ -303,7 +322,7 @@ impl ConversationReader {
             .await
     }
 
-    /// Ordinary inclusive window, including the observed completion itself when in scope.
+    /// Inclusive scope-position window; its continuation is independent of load_older.
     /// The continuation is independent of both read_before and the original H0.
     pub async fn read_at(
         &self,
@@ -335,6 +354,26 @@ impl ConversationReader {
         tracing::debug!(target: "conversation_work", "read started");
         let guard = self.resources().await?;
         let resources = guard.as_ref().ok_or_else(cancelled)?;
+        if !matches!(self.inner.scope, ChatScope::Children { .. }) {
+            let initial = completion_seq.checked_add(u64::from(inclusive))
+                .ok_or(core::ChatError::InvalidArgument("display position overflow".into()))?;
+            let (boundary, effect_cut) = match before {
+                Some(token) => match self.cursor(resources, token)? {
+                    CursorKind::ObservedPosition { anchor, boundary, effect_cut, inclusive: token_inclusive }
+                        if anchor == completion_seq && token_inclusive == inclusive && boundary <= initial =>
+                        (boundary, effect_cut),
+                    _ => return Err(core::ChatError::InvalidArgument("not a display continuation".into()).into()),
+                },
+                None => {
+                    let source = resources.source.as_ref().and_then(|source| source.current_conversation());
+                    let cut = source.as_ref().map_or(self.inner.effect_cut, |source| source.current.projection.source_effect_seq);
+                    let head = resources.history.timeline_head_at(&self.inner.scope, cut).await?;
+                    ensure!(completion_seq < head, core::ChatError::InvalidArgument("display anchor is outside the observed cut".into()));
+                    (initial, cut)
+                },
+            };
+            return self.display_window(resources, boundary, initial, effect_cut, demand, Some((completion_seq, inclusive))).await;
+        }
         let source = resources
             .source
             .as_ref()
@@ -471,6 +510,9 @@ impl ConversationReader {
             boundary > 0 && boundary <= self.inner.ceiling,
             core::ChatError::InvalidArgument("invalid exclusive boundary".into())
         );
+        if !matches!(self.inner.scope, ChatScope::Children { .. }) {
+            return self.display_older(r, boundary, demand).await;
+        }
         let budget = JsonBudget::new(
             r.database_id.clone().unwrap_or_default(),
             None,
@@ -529,6 +571,32 @@ impl ConversationReader {
         );
         Ok(batch)
     }
+    async fn display_older(&self, resources: &ReadResources, boundary: u64, demand: ReadDemand) -> Result<ChatBatch> {
+        self.display_window(resources, boundary, self.inner.ceiling, self.inner.effect_cut, demand, None).await
+    }
+    async fn display_window(&self, resources: &ReadResources, boundary: u64, ceiling: u64,
+        effect_cut: u64, demand: ReadDemand, observed: Option<(u64, bool)>) -> Result<ChatBatch> {
+        let cursor = |boundary| match observed {
+            Some((anchor, inclusive)) => CursorKind::ObservedPosition { anchor, boundary, effect_cut, inclusive },
+            None => CursorKind::Before { boundary },
+        };
+        let token = self.token(resources, cursor(i64::MAX as u64))?;
+        let budget = JsonBudget::new(resources.database_id.clone().unwrap_or_default(), None, token);
+        let page = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            page = resources.history.timeline_page(&self.inner.scope, Some(boundary), ceiling,
+                effect_cut, demand, core::ChatBudget::fixed_bytes(&budget)) => page?,
+        };
+        let mut batch = ChatBatch {
+            placement: ChatPlacement::Prepend, entries: page.entries,
+            before: page.before.map(|boundary| self.token(resources, cursor(boundary))).transpose()?,
+            current: None,
+        };
+        annotate_sources(&mut batch.entries, &resources.history, &[], effect_cut).await?;
+        self.select_member_window(&batch.entries);
+        self.finish_batch(batch, demand)
+    }
+
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
         self.ensure()?;
         batch.validate_for(&self.inner.scope)?;

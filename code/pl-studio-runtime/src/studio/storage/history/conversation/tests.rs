@@ -21,7 +21,7 @@ impl ChatBudget for Budget {
     }
 }
 
-async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
+pub(super) async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("history.sqlite");
     let mut options = sea_orm::ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
@@ -55,6 +55,7 @@ pub(super) fn metadata(id: &str) -> Arc<[u8]> {
     serde_json::to_vec(&pl_protocol::ChatAtom {
         id: id.into(),
         completion_item_id: Some(id.into()),
+        content_present: None,
         completion_seq: None,
         source_state: None,
         source: pl_protocol::ChatSourceId::Receipt {
@@ -644,6 +645,7 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
     let body: Arc<[u8]> = Arc::from(vec![255; 64 * 1024]);
     let prepared = current::PreparedCurrent {
         timeline: std::sync::Arc::from([]),
+        timeline_update: std::sync::Arc::new(Default::default()),
         timeline_commit: 0,
         source_changes: Arc::from([]),
         projection,
@@ -800,6 +802,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
             });
         Ok(current::PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             source_changes: Arc::from([]),
             projection,
@@ -1255,6 +1258,7 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
     };
     let prepared = current::PreparedCurrent {
         timeline: std::sync::Arc::from([]),
+        timeline_update: std::sync::Arc::new(Default::default()),
         timeline_commit: 0,
         source_changes: Arc::from([source_state.clone()]),
         projection,
@@ -1326,6 +1330,7 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         1,
         &current::PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             source_changes: std::sync::Arc::from([]),
             projection: prepared.projection.clone(),

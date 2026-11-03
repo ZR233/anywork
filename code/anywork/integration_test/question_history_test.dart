@@ -505,11 +505,21 @@ Future<ChatItemPresentation> _questionReceipt(
     final threadId = graph.client.selection.state.selectedThreadId!;
     return graph.timeline.lease(threadId)!;
   });
+  TimelineItem? turn;
+  await _until(tester, () {
+    turn = observed.items.where(
+      (item) => item.kind == TimelineItemKind.status &&
+          item.atomKind == ChatAtomKind.turnReceipt,
+    ).lastOrNull;
+    return turn != null;
+  }, 'question Turn item and its real source');
+  await observed.openSourceGroups(turn!.source);
   ChatAtom? target;
   await _until(tester, () {
-    final matches = observed.atoms
+    final matches = observed.mountedMembers
         .where(
           (atom) =>
+              atom.source == turn!.source &&
               atom.kind == ChatAtomKind.interaction &&
               atom.tool?.name == 'request_user_input' &&
               atom.tool?.callId == _questionCallId,
@@ -526,8 +536,9 @@ Future<ChatItemPresentation> _questionReceipt(
   );
   // Main owns display units, not one Message per atom. Open the owning work
   // segment through its real header before observing this receipt's own tile.
-  await observed.revealAtom(atom);
-  final receipt = tester.widget<ChatItemView>(observed.atomRow(atom.id)).item;
+  final reference = observed.unitForMember(atom.id).item.members!;
+  await observed.revealMember(atom, reference: reference);
+  final receipt = tester.widget<ChatItemView>(observed.memberRow(atom.id)).item;
   expect(receipt.id, atom.id);
   expect(receipt.atom?.source, atom.source);
   expect(receipt.atom?.tool?.callId, _questionCallId);

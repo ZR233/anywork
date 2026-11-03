@@ -53,6 +53,7 @@ final class ChatItemPresentation {
   /// Structural empty text still exists in owner metadata. Deferred/unknown
   /// content is never assumed empty.
   bool get isKnownEmptyText =>
+      atom?.contentPresent == false &&
       type == 'text' &&
       compatibility == ChatItemCompatibility.current &&
       bodies.every((body) => body.byteLength == 0) &&
@@ -100,16 +101,47 @@ final class ChatItemPresentation {
     );
   }
 
-  static ChatItemPresentation forUnit(TimelineDisplayUnit unit) =>
-      ChatItemPresentation(
-        id: unit.id,
+  static ChatItemPresentation forUnit(TimelineDisplayUnit unit) {
+    final item = unit.item;
+    final author = switch (item.textChannel) {
+      ThreadTextChannel.user => 'user',
+      ThreadTextChannel.parentAgent => 'parentAgent',
+      ThreadTextChannel.commentary || ThreadTextChannel.finalAnswer => 'assistant',
+      null => null,
+    };
+    final finishedAt = item.finishedAt;
+    final time = finishedAt != null &&
+        finishedAt >= -8640000000000 && finishedAt <= 8640000000000
+        ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
+        : null;
+    if (item.kind == TimelineItemKind.workGroup || item.payload == null) {
+      return ChatItemPresentation(
+        id: item.id,
         compatibility: ChatItemCompatibility.current,
         type: 'displayUnit',
         data: const {},
         bodies: const [],
-        authorId: 'assistant',
         displayUnit: unit,
+        authorId: author ?? 'unknown',
+        createdAt: time,
       );
+    }
+    final value = decodePayload(item.id, item.payload!);
+    return ChatItemPresentation(
+      id: item.id,
+      compatibility: value.compatibility,
+      type: value.type,
+      data: value.data,
+      bodies: value.bodies,
+      raw: value.raw,
+      reference: value.reference,
+      byteLength: value.byteLength,
+      createdAt: value.createdAt ?? time,
+      authorId: author ?? value.authorId,
+      presentationContract: value.presentationContract,
+      diagnostic: value.diagnostic,
+    );
+  }
 
   static ChatItemPresentation decodePayload(String id, PayloadData payload) {
     if (payload is DeferredPayload) {

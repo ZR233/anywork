@@ -5,42 +5,51 @@ import 'package:anywork_client/studio_client.dart';
 
 import 'directory_feed.dart';
 
-ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
-    ChatAtom(
+ChatAtom fixtureMember(String id) => ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: ChatAtomKind.receipt,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+);
+
+TimelineItem fixtureItem({required String id, required PayloadData payload}) =>
+    TimelineItem(
       id: id,
-      completionItemId: id,
+      contentItemId: id,
       source: ReceiptChatSource(receiptId: id),
-      sourceOrder: null,
-      kind: ChatAtomKind.receipt,
+      kind: TimelineItemKind.status,
+      atomKind: ChatAtomKind.receipt,
       delivery: ChatDeliveryKind.independent,
-      lifecycle: const TerminalChatAtom(
-        started: null,
-        ended: null,
-        outcome: ChatTerminalOutcome.completed,
-      ),
+      outcome: ChatTerminalOutcome.completed,
+      admissionClosed: true,
       contents: const [],
       payload: payload,
     );
 
-ChatAtom chatMessage({
+TimelineItem chatMessage({
   String id = 'item',
   String body = 'body',
   String? turnId = 'turn',
   String channel = 'final',
 }) {
   final inline = utf8.encode(body);
-  return ChatAtom(
+  return TimelineItem(
     id: id,
-    completionItemId: id,
+    contentItemId: id,
     source: ReceiptChatSource(receiptId: id),
-    sourceOrder: null,
-    kind: ChatAtomKind.text,
+    kind: TimelineItemKind.text,
+    atomKind: ChatAtomKind.text,
     delivery: ChatDeliveryKind.independent,
-    lifecycle: const TerminalChatAtom(
-      started: null,
-      ended: null,
-      outcome: ChatTerminalOutcome.completed,
-    ),
+    outcome: ChatTerminalOutcome.completed,
+    admissionClosed: true,
     contents: const [],
     payload: InlinePayload(
       bytes: utf8.encode(
@@ -70,18 +79,19 @@ CurrentProjection emptyCurrent() => CurrentProjection(
   logicalStatus: ThreadStatusView.idle,
   executionPresent: false,
   sources: const [],
+  items: const [],
   atoms: const [],
   previews: const [],
   collections: const [],
 );
 
 ChatBatch chatSet({
-  List<ChatAtom>? messages,
+  List<TimelineItem>? messages,
   String? before,
   CurrentProjection? current,
 }) => ChatBatch(
   placement: ChatPlacement.set,
-  entries: (messages ?? [chatMessage()]).map(ChatAtomEntry.new).toList(),
+  entries: (messages ?? [chatMessage()]).map(ItemChatEntry.new).toList(),
   before: before,
   current: current ?? emptyCurrent(),
 );
@@ -219,34 +229,6 @@ class TestConversationReader implements ConversationReader {
   @override
   final String threadId;
   Future<ChatBatch> Function(String before, ReadDemand demand)? onOlder;
-  Future<ChatBatch> Function(
-    int completionSeq,
-    String? before,
-    ReadDemand demand,
-  )?
-  onBefore;
-  Future<ChatBatch> Function(
-    int completionSeq,
-    String? before,
-    ReadDemand demand,
-  )?
-  onAt;
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) =>
-      onAt?.call(completionSeq, before, demand) ??
-      Future.error(UnsupportedError('Unscripted readAt'));
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) =>
-      onBefore?.call(completionSeq, before, demand) ??
-      Future.error(UnsupportedError('Unscripted readBefore'));
   Future<ContentManifestPage> Function(
     String itemId,
     String? continuation,

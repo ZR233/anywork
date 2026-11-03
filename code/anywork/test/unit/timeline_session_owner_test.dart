@@ -1,14 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:anywork_client/conversation_encoding.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
@@ -18,805 +15,42 @@ import '../support/chat_fixtures.dart';
 // the doubles here only expose explicit completion and page handoff barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  for (final lateError in [false, true]) {
-    test(
-      'merged recovery revokes its old cut; retry and selection reject late ${lateError ? 'failure' : 'success'}',
-      () async {
-        final h = _Harness();
-        h.owner.updateReadDemand(
-          const ReadDemand(maxItems: 1, maxBytes: 32768),
-        );
-        ChatAtom part(String turn, int order, int? seq, {bool ended = false}) {
-          final source = ForegroundTurnChatSource(turnId: turn);
-          return ChatAtom(
-            id: '$turn-$order',
-            completionItemId: seq == null ? null : 'payload-$turn-$order',
-            completionSeq: seq,
-            source: source,
-            sourceOrder: order * 10,
-            sourceState: ChatSourceState(
-              source: source,
-              lifecycle: ended
-                  ? const EndedChatSource(
-                      outcome: ChatTerminalOutcome.completed,
-                    )
-                  : const ActiveChatSource(),
-              started: null,
-              ended: null,
-            ),
-            kind: order.isEven ? ChatAtomKind.text : ChatAtomKind.reasoning,
-            delivery: ChatDeliveryKind.foreground,
-            contents: const [],
-            lifecycle: seq == null
-                ? const ActiveChatAtom(
-                    started: null,
-                    status: ChatActiveStatus.running,
-                  )
-                : const TerminalChatAtom(
-                    started: null,
-                    ended: null,
-                    outcome: ChatTerminalOutcome.completed,
-                  ),
-          );
-        }
-
-        h.owner.select('a');
-        await h.a.deliver(
-          ChatBatch(
-            placement: ChatPlacement.set,
-            before: 'H0',
-            entries: [ChatAtomEntry(part('T', 1, null))],
-          ),
-        );
-        final display = h.owner.lease('a')!;
-        for (final atom in [
-          part('T', 2, 1),
-          part('T', 3, 2),
-          part('T', 1, 3, ended: true),
-        ]) {
-          await h.a.deliver(
-            ChatBatch(
-              placement: ChatPlacement.append,
-              entries: [ChatAtomEntry(atom)],
-            ),
-          );
-        }
-        final first = h.owner.loadActivity('a', generation: display.generation);
-        final firstRejected = expectLater(
-          first,
-          throwsA(isA<StaleConversationScope>()),
-        );
-        final old = h.a.scopes.last;
-        expect(old.windowAnchor, 1);
-        for (final atom in [
-          part('U', 1, null),
-          part('U', 2, 4),
-          part('U', 3, 5),
-          part('U', 1, 6, ended: true),
-        ]) {
-          await h.a.deliver(
-            ChatBatch(
-              placement: ChatPlacement.append,
-              entries: [ChatAtomEntry(atom)],
-            ),
-          );
-        }
-        expect(old.isActive, isFalse);
-        expect(old.closeCalls, 1);
-        expect(old.closed, isFalse, reason: 'Retirement is not native join');
-        old.window.complete(
-          ChatBatch(
-            placement: ChatPlacement.prepend,
-            entries: [ChatAtomEntry(part('T', 2, 1, ended: true))],
-          ),
-        );
-        await firstRejected;
-        expect(
-          display.controller.messages.any((message) => message.id == 'T-2'),
-          isFalse,
-        );
-        final failure = h.owner.loadOlder('a', generation: display.generation);
-        final fresh = h.a.scopes.last;
-        expect(fresh, isNot(same(old)));
-        expect(fresh.windowAnchor, 4);
-        expect(fresh.windowBefore, isNull);
-        fresh.window.completeError(StateError('recovery transport error'));
-        await failure;
-        expect(h.owner.source.value!.olderError, isA<StateError>());
-        expect(display.olderCursor, 'H0');
-        fresh.window = Completer<ChatBatch>();
-        final retry = h.owner.retryOlder('a', generation: display.generation);
-        expect(fresh.windowAnchor, 4);
-        expect(fresh.windowBefore, isNull);
-        fresh.window.complete(
-          ChatBatch(
-            placement: ChatPlacement.prepend,
-            before: 'fixed-cut-before',
-            entries: [ChatAtomEntry(part('U', 2, 4, ended: true))],
-          ),
-        );
-        await retry;
-        expect(h.owner.source.value!.olderError, isNull);
-        fresh.window = Completer<ChatBatch>();
-        final late = h.owner.loadActivity('a', generation: display.generation);
-        final rejected = expectLater(
-          late,
-          throwsA(
-            lateError ? isA<StateError>() : isA<StaleConversationScope>(),
-          ),
-        );
-        // A distinct intent queues behind the same physical read slot. It must
-        // revalidate selection before publishing any loading state.
-        final queued = h.owner.loadOlder('a', generation: display.generation);
-        expect(fresh.windowBefore, 'fixed-cut-before');
-        h.owner.select('b');
-        await h.b.deliver(chatBatch([_text('b', 1)]));
-        final replacement = h.owner.lease('b')!;
-        expect(fresh.isActive, isFalse);
-        if (lateError) {
-          fresh.window.completeError(StateError('late retired failure'));
-        } else {
-          fresh.window.complete(
-            ChatBatch(
-              placement: ChatPlacement.prepend,
-              entries: [ChatAtomEntry(part('T', 2, 1, ended: true))],
-            ),
-          );
-        }
-        await rejected;
-        await queued;
-        expect(h.owner.lease('b'), same(replacement));
-        expect(replacement.controller.messages.single.id, 'b-1');
-        expect(h.owner.source.value!.olderError, isNull);
-        expect(h.owner.source.value!.isLoadingOlder, isFalse);
-        expect((await h.owner.close()).complete, isTrue);
-      },
-    );
-  }
-
-  for (final outcome in [
-    ChatTerminalOutcome.completed,
-    ChatTerminalOutcome.failed,
-    ChatTerminalOutcome.cancelled,
-  ]) {
-    test(
-      'global completed props stay bounded and all 81 segments recover after $outcome',
-      () async {
-        final h = _Harness();
-        h.owner.updateReadDemand(
-          const ReadDemand(maxItems: 2, maxBytes: 32768),
-        );
-        const source = ForegroundTurnChatSource(turnId: 'blocked');
-        List<int> payloadBytes(int order) => utf8.encode(
-          jsonEncode({
-            'contract': 'anywork.chat/1',
-            'type': order.isEven ? 'text' : 'thinking',
-            'data': {},
-            'bodies': [
-              {
-                'key': 'body',
-                'byteLength': order == 4 ? 0 : 1024,
-                'inline': order == 4 ? [] : List.filled(1024, 65),
-              },
-            ],
-          }),
-        );
-        h.a.payloads.addAll({
-          for (var order = 1; order <= 81; order++)
-            'payload-$order': payloadBytes(order),
-        });
-        ChatAtom member(int order, {int? seq, bool deferred = false}) =>
-            ChatAtom(
-              id: 'member-$order',
-              completionItemId: seq == null ? null : 'payload-$order',
-              completionSeq: seq,
-              source: source,
-              sourceOrder: order * 10,
-              kind: order.isEven ? ChatAtomKind.text : ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              sourceState: ChatSourceState(
-                source: source,
-                lifecycle: seq == 82 || deferred
-                    ? EndedChatSource(outcome: outcome)
-                    : const ActiveChatSource(),
-                started: null,
-                ended: null,
-              ),
-              lifecycle: seq == null
-                  ? const ActiveChatAtom(
-                      started: null,
-                      status: ChatActiveStatus.running,
-                    )
-                  : TerminalChatAtom(
-                      started: null,
-                      ended: null,
-                      outcome: order == 1
-                          ? outcome
-                          : ChatTerminalOutcome.completed,
-                    ),
-              contents: const [],
-              payload: seq == null
-                  ? null
-                  : deferred
-                  ? DeferredPayload(
-                      reference: ContentRef(
-                        databaseId: 'db',
-                        target: ItemPayloadTarget(itemId: 'payload-$order'),
-                      ),
-                      byteLength: payloadBytes(order).length,
-                    )
-                  : InlinePayload(bytes: payloadBytes(order)),
-            );
-        h.owner.select('a');
-        await h.a.deliver(
-          ChatBatch(
-            placement: ChatPlacement.set,
-            before: 'main-H0',
-            entries: [ChatAtomEntry(member(1))],
-          ),
-        );
-        final lease = h.owner.lease('a')!;
-        final key = lease.liveUnits.value.single.id;
-        var maximumItems = 0, maximumBytes = 0;
-        var maximumPageBytes = 0;
-        void checkPage(ChatBatch batch) {
-          final bytes = utf8
-              .encode(
-                jsonEncode({
-                  'placement': batch.placement.name,
-                  'entries': batch.entries.map(chatEntryToJson).toList(),
-                  'before': batch.before,
-                  'current': null,
-                }),
-              )
-              .length;
-          maximumPageBytes = bytes > maximumPageBytes
-              ? bytes
-              : maximumPageBytes;
-          expect(batch.entries.length, lessThanOrEqualTo(2));
-          expect(bytes, lessThanOrEqualTo(32768));
-        }
-
-        for (var order = 2; order <= 81; order++) {
-          final completion = ChatBatch(
-            placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(member(order, seq: order - 1))],
-          );
-          checkPage(completion);
-          await h.a.deliver(completion);
-          final (items, bytes) = lease.retainedCompletedBudget;
-          maximumItems = items > maximumItems ? items : maximumItems;
-          maximumBytes = bytes > maximumBytes ? bytes : maximumBytes;
-          expect(items, lessThanOrEqualTo(2));
-          expect(bytes, lessThanOrEqualTo(32768));
-          final holders = <ChatAtom>{
-            for (final unit in lease.liveUnits.value) ...[
-              ...unit.members.where(
-                (atom) => atom.lifecycle is TerminalChatAtom,
-              ),
-              if (unit.lastCompletion != null) unit.lastCompletion!,
-              ...unit.expansion.current!.members.where(
-                (atom) => atom.lifecycle is TerminalChatAtom,
-              ),
-            ],
-          };
-          for (final unit in lease.liveUnits.value) {
-            expect(unit.expansion.current, same(unit));
-            expect(unit.expansion.committedMessage, isNull);
-            expect(
-              unit.expansion.completionAnchor,
-              isNull,
-              reason: 'No hidden expansion or anchor object for evicted props',
-            );
-          }
-          expect(holders.length, items);
-          final canonicalBytes = holders.fold<int>(
-            0,
-            (n, atom) => n + chatAtomEntryEncodedLength(atom),
-          );
-          expect(canonicalBytes, lessThanOrEqualTo(32768));
-          expect(
-            canonicalBytes,
-            lessThanOrEqualTo(bytes),
-            reason: 'Decoded UI values are additional to the full canonical entries',
-          );
-          expect(
-            holders
-                .where((atom) => atom.payload is InlinePayload)
-                .fold<int>(
-                  0,
-                  (n, atom) => n + (atom.payload as InlinePayload).bytes.length,
-                ),
-            lessThanOrEqualTo(bytes),
-          );
-          expect(
-            lease.liveUnits.value
-                .expand((unit) => unit.members)
-                .where((atom) => atom.lifecycle is ActiveChatAtom)
-                .map((atom) => atom.id),
-            ['member-1'],
-          );
-        }
-        expect(lease.activity.value.hasMore, isTrue);
-        expect(lease.liveUnits.value.length, lessThanOrEqualTo(3));
-        expect(lease.controller.messages, isEmpty);
-        final background = ChatAtom(
-          id: 'B',
-          completionItemId: 'payload-B',
-          completionSeq: 81,
-          source: const BackgroundResultChatSource(messageId: 'B'),
-          sourceOrder: 1,
-          kind: ChatAtomKind.toolCall,
-          delivery: ChatDeliveryKind.independent,
-          lifecycle: const TerminalChatAtom(
-            started: null,
-            ended: null,
-            outcome: ChatTerminalOutcome.completed,
-          ),
-          contents: const [],
-        );
-        await h.a.deliver(
-          ChatBatch(
-            placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(background)],
-          ),
-        );
-        expect(lease.controller.messages.single.id, 'B');
-        await h.a.deliver(
-          ChatBatch(
-            placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(member(1, seq: 82))],
-          ),
-        );
-        expect(
-          lease.controller.messages.any((message) => message.id == key),
-          isTrue,
-        );
-        final canonical = [
-          for (var order = 2; order <= 81; order++)
-            member(order, seq: order - 1, deferred: true),
-        ];
-        var pages = 0, repeats = 0;
-        final readPositions = <int>{};
-        while (lease.activity.value.hasMore) {
-          if (h.a.scopes.isNotEmpty) {
-            h.a.scopes.last.window = Completer<ChatBatch>();
-          }
-          final reading = h.owner.loadOlder('a', generation: lease.generation);
-          final scope = h.a.scopes.last;
-          final anchor = scope.windowAnchor!;
-          final end = scope.windowBefore == null
-              ? anchor
-              : int.parse(scope.windowBefore!.split(':').last);
-          final selected = canonical
-              .where((atom) => atom.completionSeq! <= end)
-              .toList();
-          final atoms = selected
-              .skip(selected.length > 2 ? selected.length - 2 : 0)
-              .toList();
-          for (final atom in atoms) {
-            if (!readPositions.add(atom.completionSeq!)) repeats++;
-          }
-          final ordinaryPage = ChatBatch(
-            placement: ChatPlacement.prepend,
-            entries: atoms.map(ChatAtomEntry.new).toList(),
-            before: selected.length <= 2
-                ? null
-                : 'ordinary:${atoms.first.completionSeq! - 1}',
-          );
-          checkPage(ordinaryPage);
-          scope.window.complete(ordinaryPage);
-          await reading;
-          expect(h.owner.source.value!.olderError, isNull);
-          expect(lease.olderCursor, 'main-H0');
-          expect(lease.retainedCompletedBudget.$1, lessThanOrEqualTo(2));
-          expect(lease.retainedCompletedBudget.$2, lessThanOrEqualTo(32768));
-          pages++;
-        }
-        final restored = [
-          for (final message in lease.controller.messages)
-            ...(message.metadata![timelineDisplayUnitKey]
-                    as TimelineDisplayUnit)
-                .members,
-        ];
-        expect(restored.map((atom) => atom.id).toSet(), {
-          for (var order = 1; order <= 81; order++) 'member-$order',
-          'B',
-        });
-        expect(
-          restored
-              .where((atom) => atom.source == source)
-              .map((atom) => atom.sourceOrder),
-          [for (var order = 1; order <= 81; order++) order * 10],
-        );
-        final bodies = lease.queries!;
-        for (final atom in restored.where((atom) => atom.id != 'B')) {
-          final PayloadData materialized;
-          if (atom.payload case DeferredPayload(
-            :final reference,
-            :final byteLength,
-          )) {
-            expect(
-              (reference.target as ItemPayloadTarget).itemId,
-              atom.completionItemId,
-            );
-            final window = await bodies.readContent(
-              reference: reference,
-              range: const ContentRange(offset: 0, maxBytes: 32768),
-            );
-            expect(window.bytes.length, byteLength);
-            materialized = InlinePayload(bytes: window.bytes);
-          } else {
-            materialized = atom.payload!;
-          }
-          final presentation = ChatItemPresentation.decodePayload(
-            atom.id,
-            materialized,
-          );
-          expect(
-            presentation.inlineText('body'),
-            atom.id == 'member-4' ? '' : 'A' * 1024,
-          );
-          if (atom.id == 'member-4') {
-            expect(presentation.isKnownEmptyText, isTrue);
-          }
-        }
-        expect(lease.liveUnits.value, isEmpty);
-        expect(pages, 40);
-        expect(repeats, 0);
-        debugPrint(
-          'F3 $outcome: retained=$maximumItems/$maximumBytes; maxPageBytes=$maximumPageBytes; recoveryPages=$pages; repeatedAtoms=$repeats',
-        );
-        expect((await h.owner.close()).complete, isTrue);
-      },
-    );
-  }
-
   for (final failClose in [false, true]) {
-    test(
-      'R2 permanent merge joins only its body scope and preserves ${failClose ? 'close failure' : 'Main'}',
-      () async {
-        final h = _Harness();
-        h.owner.updateReadDemand(
-          const ReadDemand(maxItems: 2, maxBytes: 32768),
-        );
-        const source = ForegroundTurnChatSource(turnId: 'T');
-        ContentRef body(int order) => ContentRef(
-          databaseId: 'db',
-          target: BodyContentTarget(
-            owner: ItemContentOwner(itemId: 'original-$order'),
-            key: 'body',
-          ),
-        );
-        ChatAtom member(int order, int seq) => ChatAtom(
-          id: 'member-$order',
-          completionItemId: 'original-$order',
-          completionSeq: seq,
-          source: source,
-          sourceOrder: order,
-          kind: ChatAtomKind.reasoning,
-          delivery: ChatDeliveryKind.foreground,
-          sourceState: const ChatSourceState(
-            source: source,
-            lifecycle: EndedChatSource(outcome: ChatTerminalOutcome.completed),
-            started: null,
-            ended: null,
-          ),
-          lifecycle: const TerminalChatAtom(
-            started: null,
-            ended: null,
-            outcome: ChatTerminalOutcome.completed,
-          ),
-          contents: [
-            ChatAtomContent(role: ChatContentRole.body, reference: body(order)),
-          ],
-          payload: InlinePayload(
-            bytes: utf8.encode(
-              jsonEncode({
-                'contract': 'anywork.chat/1',
-                'type': 'thinking',
-                'data': {},
-                'bodies': [
-                  {
-                    'key': 'body',
-                    'byteLength': 4,
-                    'reference': contentRefToJson(body(order)),
-                  },
-                ],
-              }),
-            ),
-          ),
-        );
-        h.owner.select('a');
-        final atoms = [member(10, 1), member(30, 2)];
-        expect(
-          atoms.fold<int>(0, (n, atom) => n + chatAtomEntryEncodedLength(atom)),
-          lessThan(32768),
-        );
-        await h.a.deliver(
-          ChatBatch(
-            placement: ChatPlacement.set,
-            before: 'unknown',
-            entries: atoms.map(ChatAtomEntry.new).toList(),
-          ),
-        );
-        final lease = h.owner.lease('a')!;
-        final main = lease.queries!;
-        final removed =
-            lease.controller.messages.last.metadata![timelineDisplayUnitKey]
-                as TimelineDisplayUnit;
-        final intent = removed.expansion;
-        final token = Object();
-        intent.setBodyVisible(token, true);
-        final pending = intent.readBody!(
-          intent.bodyGeneration,
-          body(30),
-          const ContentRange(offset: 0, maxBytes: 32768),
-        );
-        final rejected = expectLater(
-          pending,
-          throwsA(isA<StaleConversationScope>()),
-        );
-        final original = h.a.scopes.last..failClose = failClose;
-        await h.a.deliver(
-          ChatBatch(placement: ChatPlacement.prepend, entries: const []),
-        );
-        expect(intent.isRetired, isTrue);
-        expect(original.isActive, isFalse);
-        expect(original.closeCalls, 1);
-        expect(original.closed, isFalse, reason: 'Retirement is not IO join');
-        expect(main.isActive, isTrue);
-        expect(lease.isRetired, isFalse);
-        original.bodyRequests.single.complete(
-          ContentWindow(
-            offset: 0,
-            bytes: utf8.encode('late'),
-            generation: 'g',
-            availableThrough: 4,
-            sealed: true,
-          ),
-        );
-        await rejected;
-        Object? originalCleanupError;
-        if (failClose) {
-          await expectLater(
-            lease.closeDetailQueries(original),
-            throwsStateError,
-          );
-          expect(lease.queryCleanupError, isA<StateError>());
-          expect(
-            lease.queryCleanupError.toString(),
-            contains('native close failed'),
-          );
-          originalCleanupError = lease.queryCleanupError;
-          original.failClose = false;
-        }
-        await lease.closeDetailQueries(original);
-        expect(original.closed, isTrue);
-        expect(
-          lease.queryCleanupError,
-          failClose ? same(originalCleanupError) : isNull,
-          reason: 'The existing owner retains cleanup diagnostics until all its scopes settle',
-        );
-        expect(main.isActive, isTrue);
-        expect(lease.isRetired, isFalse);
-        final retained =
-            lease.controller.messages.single.metadata![timelineDisplayUnitKey]
-                as TimelineDisplayUnit;
-        expect(retained.expansion.isRetired, isFalse);
-        expect((await h.owner.close()).complete, isTrue);
-        expect(lease.queryCleanupError, isNull);
-      },
-    );
+    test('group body fold revokes synchronously and retains original IO/close responsibility (failure: $failClose)', () async {
+      final h = _Harness();
+      await h.openA([workItem('group')], hasOlder: true);
+      final lease = h.owner.lease('a')!;
+      final unit = lease.controller.messages.single.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
+      final token = Object();
+      unit.expansion.setBodyVisible(token, true);
+      final generation = unit.expansion.bodyGeneration;
+      const reference = ContentRef(databaseId: 'database', target: ItemPayloadTarget(itemId: 'member-body'));
+      final original = unit.expansion.readBody!(generation, reference, const ContentRange(offset: 0, maxBytes: 100));
+      final rejected = expectLater(original, throwsA(isA<StaleConversationScope>()));
+      final scope = h.a.scopes.single..failClose = failClose;
+      unit.expansion.setBodyVisible(token, false);
+      expect(scope.isActive, isFalse);
+      expect(scope.closed, isFalse);
+      expect(lease.olderCursor, 'before-3');
+      scope.bodyRequests.single.complete(ContentWindow(bytes: const [65], offset: 0, generation: 'g', availableThrough: 1, sealed: true));
+      await rejected;
+      await Future<void>.delayed(Duration.zero);
+      if (failClose) {
+        expect(lease.queryCleanupError, isNotNull);
+        scope.failClose = false;
+        await lease.closeDetailQueries(scope);
+      }
+      expect(scope.closed, isTrue);
+      unit.expansion.setBodyVisible(token, true);
+      final freshRead = unit.expansion.readBody!(unit.expansion.bodyGeneration, reference, const ContentRange(offset: 0, maxBytes: 100));
+      final fresh = h.a.scopes.last;
+      expect(fresh, isNot(same(scope)));
+      fresh.bodyRequests.single.complete(ContentWindow(bytes: const [66], offset: 0, generation: 'fresh', availableThrough: 1, sealed: true));
+      expect((await freshRead).bytes, [66]);
+      unit.expansion.setBodyVisible(token, false);
+      expect((await h.owner.close()).complete, isTrue);
+    });
   }
-  test('history body fold revokes only its local scope, joins IO, and reopens a new generation', () async {
-    final h = _Harness();
-    h.owner.select('a');
-    const source = ForegroundTurnChatSource(turnId: 'T');
-    await h.a.deliver(
-      ChatBatch(
-        placement: ChatPlacement.set,
-        entries: [
-          const ChatSourceEntry(
-            ChatSourceState(
-              source: source,
-              lifecycle: EndedChatSource(
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              started: null,
-              ended: null,
-            ),
-          ),
-          ChatAtomEntry(
-            ChatAtom(
-              id: 'R',
-              completionItemId: 'R',
-              completionSeq: 1,
-              source: source,
-              sourceOrder: 10,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              contents: const [],
-            ),
-          ),
-        ],
-      ),
-    );
-    final lease = h.owner.lease('a')!;
-    final main = lease.queries!;
-    final unit =
-        lease.controller.messages.single.metadata![timelineDisplayUnitKey]
-            as TimelineDisplayUnit;
-    final intent = unit.expansion;
-    final token = Object();
-    const reference = ContentRef(
-      databaseId: 'db',
-      target: BodyContentTarget(
-        owner: ItemContentOwner(itemId: 'R'),
-        key: 'body',
-      ),
-    );
-    intent.setBodyVisible(token, true);
-    final generation = intent.bodyGeneration;
-    final pending = intent.readBody!(
-      generation,
-      reference,
-      const ContentRange(offset: 0, maxBytes: 32768),
-    );
-    final stale = expectLater(pending, throwsA(isA<StaleConversationScope>()));
-    final original = h.a.scopes.last;
-    intent.setBodyVisible(token, false);
-    expect(original.isActive, isFalse);
-    expect(original.closeCalls, 1);
-    expect(main.isActive, isTrue);
-    expect(lease.isRetired, isFalse);
-    intent.setBodyVisible(token, true);
-    expect(intent.bodyGeneration, isNot(same(generation)));
-    final fresh = intent.readBody!(
-      intent.bodyGeneration,
-      reference,
-      const ContentRange(offset: 0, maxBytes: 32768),
-    );
-    final replacement = h.a.scopes.last;
-    expect(replacement, isNot(same(original)));
-    original.bodyRequests.single.complete(
-      ContentWindow(
-        offset: 0,
-        bytes: [1],
-        generation: 'old',
-        availableThrough: 1,
-        sealed: true,
-      ),
-    );
-    await stale;
-    await Future<void>.delayed(Duration.zero);
-    expect(original.closed, isTrue);
-    expect(replacement.isActive, isTrue);
-    final admitted = ContentWindow(
-      offset: 0,
-      bytes: [2],
-      generation: 'new',
-      availableThrough: 1,
-      sealed: true,
-    );
-    replacement.bodyRequests.single.complete(admitted);
-    expect(await fresh, same(admitted));
-    intent.setBodyVisible(token, false);
-    await Future<void>.delayed(Duration.zero);
-    expect(replacement.closed, isTrue);
-    expect(main.isActive, isTrue);
-    await h.owner.close();
-  });
-
-  test('expanded ordinary window uses the same reducer without moving Main cursor; retry preserves window cursor', () async {
-    final h = _Harness();
-    h.owner.updateReadDemand(const ReadDemand(maxItems: 1, maxBytes: 32768));
-    const source = ForegroundTurnChatSource(turnId: 'T');
-    ChatAtom member(int order) => ChatAtom(
-      id: 'R$order',
-      completionItemId: 'R$order',
-      completionSeq: order,
-      source: source,
-      sourceOrder: order,
-      kind: ChatAtomKind.reasoning,
-      delivery: ChatDeliveryKind.foreground,
-      lifecycle: const TerminalChatAtom(
-        started: null,
-        ended: null,
-        outcome: ChatTerminalOutcome.completed,
-      ),
-      contents: const [],
-    );
-    h.owner.select('a');
-    await h.a.deliver(
-      ChatBatch(
-        placement: ChatPlacement.set,
-        before: 'main-before',
-        entries: const [],
-      ),
-    );
-    // These members were reliably admitted after the opening cut, rather than
-    // inferring a complete source range from consecutive numeric fixture IDs.
-    await h.a.deliver(
-      ChatBatch(
-        placement: ChatPlacement.append,
-        entries: [
-          const ChatSourceEntry(
-            ChatSourceState(
-              source: source,
-              lifecycle: EndedChatSource(
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              started: null,
-              ended: null,
-            ),
-          ),
-          for (var i = 1; i <= 3; i++) ChatAtomEntry(member(i)),
-        ],
-      ),
-    );
-    final lease = h.owner.lease('a')!;
-    final unit =
-        lease.controller.messages.single.metadata![timelineDisplayUnitKey]
-            as TimelineDisplayUnit;
-    expect(unit.members.map((atom) => atom.id), ['R3']);
-    final visibility = Object();
-    unit.expansion.onVisibilityChanged!(visibility, true);
-    final reading = unit.expansion.readEarlier!();
-    final scope = h.a.scopes.single;
-    expect(scope.windowAnchor, 3);
-    expect(scope.windowBefore, isNull);
-    scope.window.complete(
-      ChatBatch(
-        placement: ChatPlacement.prepend,
-        before: 'window-before',
-        entries: [ChatAtomEntry(member(1))],
-      ),
-    );
-    await reading;
-    expect(lease.olderCursor, 'main-before');
-    final updated =
-        lease.controller.messages.single.metadata![timelineDisplayUnitKey]
-            as TimelineDisplayUnit;
-    expect(updated.id, unit.id);
-    expect(updated.members.map((atom) => atom.id), ['R1', 'R3']);
-    expect(updated.memberCount, 3);
-    expect(unit.expansion.before, 'window-before');
-    expect(lease.liveUnits.value, isEmpty);
-
-    scope.window = Completer<ChatBatch>();
-    final failing = unit.expansion.readEarlier!();
-    final rejected = expectLater(failing, throwsStateError);
-    scope.window.completeError(StateError('window failed'));
-    await rejected;
-    expect(unit.expansion.before, 'window-before');
-    expect(lease.olderCursor, 'main-before');
-    expect(unit.expansion.error, isA<StateError>());
-
-    scope.window = Completer<ChatBatch>();
-    final retry = unit.expansion.readEarlier!();
-    expect(scope.windowBefore, 'window-before');
-    scope.window.complete(
-      ChatBatch(
-        placement: ChatPlacement.prepend,
-        entries: [ChatAtomEntry(member(2))],
-      ),
-    );
-    await retry;
-    expect(unit.expansion.before, isNull);
-    expect(unit.expansion.error, isNull);
-    unit.expansion.onVisibilityChanged!(visibility, false);
-    expect(scope.isActive, isFalse);
-    expect(lease.olderCursor, 'main-before');
-    expect((await h.owner.close()).complete, isTrue);
-  });
-
   test('selection alone does not attach; first viewport demand attaches only the latest selection', () async {
     final h = _Harness(viewport: false);
     h.owner.select('a');
@@ -1046,7 +280,7 @@ void main() {
         entries: ([
           _text('a', 1),
           _text('a', 2),
-        ]).map(ChatAtomEntry.new).toList(),
+        ]).map(ItemChatEntry.new).toList(),
         before: 'before-1',
       ),
     );
@@ -1080,7 +314,7 @@ void main() {
     scope.reply.complete(
       ChatBatch(
         placement: ChatPlacement.prepend,
-        entries: ([_text('a', 1)]).map(ChatAtomEntry.new).toList(),
+        entries: ([_text('a', 1)]).map(ItemChatEntry.new).toList(),
         before: null,
       ),
     );
@@ -1230,7 +464,7 @@ void main() {
       scope.reply.complete(
         ChatBatch(
           placement: ChatPlacement.prepend,
-          entries: ([_text('a', 2)]).map(ChatAtomEntry.new).toList(),
+          entries: ([_text('a', 2)]).map(ItemChatEntry.new).toList(),
           before: null,
         ),
       );
@@ -1293,7 +527,7 @@ void main() {
   );
 }
 
-ChatAtom _text(String thread, int seq) =>
+TimelineItem _text(String thread, int seq) =>
     chatMessage('$thread-$seq', body: 'body-$seq', completionSeq: seq);
 
 final class _Harness {
@@ -1307,7 +541,7 @@ final class _Harness {
   final b = _Content('b');
   final repository = _Repository();
   late final TimelineSessionOwner owner;
-  Future<void> openA(List<ChatAtom> items, {bool hasOlder = false}) async {
+  Future<void> openA(List<TimelineItem> items, {bool hasOlder = false}) async {
     owner.select('a');
     await a.deliver(chatBatch(items, before: hasOlder ? 'before-3' : null));
   }
@@ -1436,35 +670,6 @@ final class _Scope extends Fake implements ConversationQueryScope {
   Completer<ChatBatch> reply = Completer<ChatBatch>();
   Future<void>? _reading;
   final boundaries = <String?>[];
-  Completer<ChatBatch> window = Completer<ChatBatch>();
-  int? windowAnchor;
-  String? windowBefore;
-  @override
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) {
-    windowAnchor = completionSeq;
-    windowBefore = before;
-    final result = window.future;
-    _reading = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    return result;
-  }
-
-  @override
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  }) {
-    windowAnchor = completionSeq;
-    windowBefore = before;
-    final result = window.future;
-    _reading = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    return result;
-  }
-
   @override
   Future<ChatBatch> loadOlder({
     required String before,

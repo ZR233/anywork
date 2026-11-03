@@ -44,6 +44,7 @@ fn atom(id: &str, turn: Option<&str>, kind: ChatAtomKind, payload: PayloadData) 
     ChatEntry::Atom(Box::new(ChatAtom {
         id: id.into(),
         completion_item_id: Some(id.into()),
+        content_present: None,
         completion_seq: Some(1),
         source: turn.map_or_else(
             || ChatSourceId::Receipt {

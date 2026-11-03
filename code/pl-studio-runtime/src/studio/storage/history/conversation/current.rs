@@ -41,20 +41,14 @@ pub(crate) struct CurrentContentWrite {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PreparedTimelineMember {
-    pub member_id: String,
-    pub completion_item_id: String,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct PreparedTimelineItem {
     /// Payload is always deferred; the atomic completion item remains the only body copy.
     pub item: pl_protocol::TimelineItem,
-    pub members: Arc<[PreparedTimelineMember]>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedCurrent {
+    pub timeline_update: Arc<crate::studio::thread_projection::timeline::TimelineUpdate>,
     pub projection: CurrentProjection,
     pub changes: Arc<[CurrentEntryChange]>,
     pub contents: Arc<[CurrentContentWrite]>,
@@ -64,7 +58,7 @@ pub(crate) struct PreparedCurrent {
     /// with their ordered member references. Persisted in the same transaction
     /// as the atomic facts and current cut.
     pub timeline: Arc<[PreparedTimelineItem]>,
-    /// Completion sequence at which the committed items above became visible.
+    /// Source effect at which the committed items above became visible.
     /// Set on publication; zero for effects that committed no display item.
     pub timeline_commit: u64,
 }

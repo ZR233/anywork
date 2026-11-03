@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -36,11 +36,7 @@ void main() {
     );
     final controller = InMemoryChatController();
     final images = TimelineImageResources(threadId: 'thread');
-    final adapter = TimelineMessageController(
-      controller,
-      generation: 1,
-      imageResources: images,
-    );
+    final adapter = TimelineMemberController(controller);
     final consumer = children.attachConsumer(adapter, demand: chatDemand);
     addTearDown(() async {
       transport.childReader.failClose = false;
@@ -302,7 +298,7 @@ void main() {
 }
 
 final class _Harness {
-  _Harness(List<ChatAtom> messages, {String? before})
+  _Harness(List<TimelineItem> messages, {String? before})
     : transport = _LeaseTransport(
         chatBatch(messages, before: before, current: chatCurrent()),
       ) {
@@ -336,7 +332,7 @@ final class _Harness {
     await transport.feed.accepted(1);
   }
 
-  Future<void> append(List<ChatAtom> messages) async {
+  Future<void> append(List<TimelineItem> messages) async {
     transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }
@@ -408,7 +404,7 @@ final class _ScopedTransport extends Fake implements StudioTransport {
     threadId: 'thread',
     subscriptionId: 'child',
     reader: childReader,
-    initial: () => chatBatch([chatMessage('child')]),
+    initial: () => ChatBatch(placement: ChatPlacement.set, entries: [ChatAtomEntry(chatAtomMessage('child'))]),
   );
   final scopes = <ChatScope>[];
   @override

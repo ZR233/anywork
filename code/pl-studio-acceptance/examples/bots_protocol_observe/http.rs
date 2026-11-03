@@ -64,6 +64,22 @@ impl std::fmt::Display for StudioHttpFailure {
 impl std::error::Error for StudioHttpFailure {}
 
 impl ChatRead {
+    pub async fn open_members(
+        &self,
+        reference: &pl_protocol::TimelineMembersRef,
+        demand: ReadDemand,
+    ) -> Result<(ChatRead, ChatBatch)> {
+        self.http
+            .open_chat(
+                &self.thread_id,
+                ChatScope::GroupMembers {
+                    reference: reference.clone(),
+                },
+                demand,
+            )
+            .await
+    }
+
     pub async fn load_older(&self, before: &str, demand: ReadDemand) -> Result<ChatBatch> {
         let batch: ChatBatch = self
             .post(
@@ -342,8 +358,20 @@ impl StudioHttp {
             query
                 .append_pair("maxItems", &demand.max_items.to_string())
                 .append_pair("maxBytes", &demand.max_bytes.to_string());
-            if let ChatScope::Children { parent_id } = &scope {
-                query.append_pair("parentId", parent_id);
+            match &scope {
+                ChatScope::Main => {}
+                ChatScope::Children { parent_id } => {
+                    query.append_pair("parentId", parent_id);
+                }
+                ChatScope::GroupMembers { reference } => {
+                    query
+                        .append_pair("membersDatabaseId", &reference.database_id)
+                        .append_pair(
+                            "membersProjectionVersion",
+                            &reference.projection_version.to_string(),
+                        )
+                        .append_pair("membersItemId", &reference.item_id);
+                }
             }
         }
         let request = client

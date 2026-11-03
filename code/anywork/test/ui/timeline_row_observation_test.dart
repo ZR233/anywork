@@ -126,8 +126,7 @@ void main() {
         final adapter = TimelineMessageController(
           controller,
           generation: 1,
-          imageResources: resources,
-        );
+            );
         addTearDown(() {
           adapter.dispose();
           resources.release();
@@ -135,7 +134,7 @@ void main() {
         });
         await adapter.applyBatch(
           chatBatch([
-            chatEnvelope(
+            statusItem(chatEnvelope(
               type,
               type: type,
               data: reasoning ? const {} : const {'decision': 'approved'},
@@ -145,7 +144,7 @@ void main() {
                   body,
                 ),
               ],
-            ),
+            )),
           ]),
         );
         Widget build() => rowApp(

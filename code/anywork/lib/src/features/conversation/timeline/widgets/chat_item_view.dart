@@ -10,6 +10,7 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
+import '../state/timeline_display_unit.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
@@ -38,7 +39,8 @@ class ChatItemView extends StatefulWidget {
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
-    this.onLoadEarlierGroup,
+    this.groupMembersBuilder,
+    this.onToolExpansionChanged,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
@@ -48,7 +50,8 @@ class ChatItemView extends StatefulWidget {
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
-  final Future<void> Function()? onLoadEarlierGroup;
+  final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
+  final ValueChanged<bool>? onToolExpansionChanged;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -112,24 +115,29 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget build(BuildContext context) {
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     if (item.displayUnit case final unit?) {
+      if (unit.item.kind != TimelineItemKind.workGroup) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (unit.item.contents.isEmpty) const Text('内容状态未知'),
+            for (var index = 0; index < unit.item.contents.length; index++)
+              widget.contentRangeBuilder?.call(
+                unit.id,
+                'content-$index',
+                '查看内容',
+                unit.item.contents[index].reference,
+                _contentWitness,
+              ) ?? const Text('内容读取尚未就绪'),
+          ],
+        );
+      }
       return KeyedSubtree(
         key: ValueKey('chat-item:${unit.id}'),
         child: TimelineDisplayUnitView(
           key: ValueKey(unit.id),
           unit: unit,
-          onLoadEarlier: widget.onLoadEarlierGroup,
-          memberBuilder: (atom) => atom.payload == null
-              ? const Text('内容状态未知')
-              : ChatItemView(
-                  key: ValueKey(atom.id),
-                  item: ChatItemPresentation.decode(atom),
-                  bodyBuilder: widget.bodyBuilder,
-                  contentRangeBuilder: widget.contentRangeBuilder,
-                  attachmentBuilder: widget.attachmentBuilder,
-                  isDisplayActive: widget.isDisplayActive,
-                  monotonicMicros: widget.monotonicMicros,
-                  onContentLayout: widget.onContentLayout,
-                ),
+          childBuilder: (_) => widget.groupMembersBuilder?.call(unit) ??
+              const Text('成员读取尚未就绪'),
         ),
       );
     }
@@ -276,13 +284,17 @@ class _ChatItemViewState extends State<ChatItemView> {
                 content.role == ChatContentRole.toolOutput,
           )
           .toList();
+      final wait = item.atom?.wait ?? tool.wait;
       final details = TimelineToolDetails(
         item: tool,
+        inline: wait != null,
+        onExpansionChanged: widget.onToolExpansionChanged,
+        additionalContentBuilder: item.attachments.isEmpty ? null : (_) => _media(),
         declaredContents: contents == null || contents.isEmpty
             ? null
             : [
                 for (final content in contents)
-                  widget.contentRangeBuilder?.call(
+                  TimelineBodyReadIntent(child: widget.contentRangeBuilder?.call(
                         item.id,
                         content.role.name,
                         content.role == ChatContentRole.toolArguments
@@ -291,20 +303,22 @@ class _ChatItemViewState extends State<ChatItemView> {
                         content.reference,
                         _contentWitness,
                       ) ??
-                      const Text('内容读取尚未就绪'),
+                      const Text('内容读取尚未就绪')),
                 if (tool.error != null) Text(tool.error!),
               ],
       );
       card = TimelineActivityTileTheme(
-        child: tool.wait != null
+        child: wait != null
             ? TimelineWaitPanel(
                 identity: item.id,
-                presentation: tool.wait!,
+                presentation: wait,
                 diagnostics: details,
+                onExpansionChanged: widget.onToolExpansionChanged,
               )
             : timelineIsWebSearch(tool) &&
+                  item.attachments.isEmpty &&
                   (contents == null || contents.isEmpty)
-            ? TimelineWebSearchToolCard(item: tool)
+            ? TimelineWebSearchToolCard(item: tool, onExpansionChanged: widget.onToolExpansionChanged)
             : details,
       );
     } else {
@@ -321,15 +335,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       };
       card = _unavailable(label, unavailable.reason);
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        card,
-        _media(),
-        // References are explicit producer entries; no private receipt or arbitrary
-        // JSON-field search is used to discover a body.
-      ],
-    );
+    return card;
   }
 
   Widget _turn(BuildContext context) {
@@ -586,6 +592,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (diagnostic != null) Text(diagnostic),
       for (final body in _publicBodies) _body(body, code: item.type == 'tool'),
       _publicEnvelope(),
+      if (item.type == 'tool') Builder(builder: (_) => _media()),
     ],
   );
   Widget _disclosure(
@@ -596,6 +603,7 @@ class _ChatItemViewState extends State<ChatItemView> {
   }) => TimelineActivityTileTheme(
     child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
+      onExpansionChanged: item.type == 'tool' ? widget.onToolExpansionChanged : null,
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: icon,
         label: title,

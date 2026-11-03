@@ -216,20 +216,41 @@ pub(crate) struct ConversationQuery {
     max_items: u32,
     max_bytes: u32,
     parent_id: Option<String>,
+    members_database_id: Option<String>,
+    members_projection_version: Option<u32>,
+    members_item_id: Option<String>,
 }
 
 impl ConversationQuery {
-    fn scope_demand(self) -> (pl_protocol::ChatScope, pl_protocol::ReadDemand) {
-        let scope = self
-            .parent_id
-            .map_or(pl_protocol::ChatScope::Main, |parent_id| {
-                pl_protocol::ChatScope::Children { parent_id }
-            });
+    fn scope_demand(self) -> Result<(pl_protocol::ChatScope, pl_protocol::ReadDemand), ApiError> {
+        let scope = match (
+            self.parent_id,
+            self.members_database_id,
+            self.members_projection_version,
+            self.members_item_id,
+        ) {
+            (None, None, None, None) => pl_protocol::ChatScope::Main,
+            (Some(parent_id), None, None, None) => pl_protocol::ChatScope::Children { parent_id },
+            (None, Some(database_id), Some(projection_version), Some(item_id)) => {
+                pl_protocol::ChatScope::GroupMembers {
+                    reference: pl_protocol::TimelineMembersRef {
+                        database_id,
+                        projection_version,
+                        item_id,
+                    },
+                }
+            }
+            _ => return Err(ApiError(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::InvalidArgument,
+                "Use Main, a real parentId, or a complete Timeline members reference, never mixed scopes",
+                false,
+            ))),
+        };
         let demand = pl_protocol::ReadDemand {
             max_items: self.max_items,
             max_bytes: self.max_bytes,
         };
-        (scope, demand)
+        Ok((scope, demand))
     }
 }
 
@@ -242,7 +263,10 @@ impl ConversationQuery {
         ("thread_id" = String, Path, description = "Thread ID"),
         ("maxItems" = u32, Query, description = "Requested bounded item count"),
         ("maxBytes" = u32, Query, description = "Requested encoded byte budget"),
-        ("parentId" = Option<String>, Query, description = "Children scope; omit for Main")
+        ("parentId" = Option<String>, Query, description = "Real business Children parent; cannot be combined with members fields"),
+        ("membersDatabaseId" = Option<String>, Query, description = "GroupMembers reference databaseId; all three members fields are required together"),
+        ("membersProjectionVersion" = Option<u32>, Query, description = "GroupMembers reference projectionVersion"),
+        ("membersItemId" = Option<String>, Query, description = "GroupMembers reference itemId; omit all scope fields for Main display items")
     ),
     responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream",
         headers(("X-Anywork-Conversation" = String, description = "Original feed read capability"))))
@@ -252,7 +276,7 @@ pub(crate) async fn thread_events(
     Path(thread_id): Path<String>,
     ApiQuery(query): ApiQuery<ConversationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (scope, demand) = query.scope_demand();
+    let (scope, demand) = query.scope_demand()?;
     let permit = state
         .streams
         .clone()

@@ -78,6 +78,9 @@ impl std::fmt::Debug for HistoryStoreShare {
 }
 
 struct HistoryStoreState {
+    /// Read-side index of the original reliable queue's prepared allocations.
+    /// Removed only after that same writer transaction is durable.
+    timeline_pending: std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<conversation::current::PreparedCurrent>>>,
     path: PathBuf,
     thread_id: String,
     /// The single writer connection, opened on the first write.
@@ -117,6 +120,10 @@ struct HistoryStoreState {
         )>,
     >,
 }
+
+#[path = "history/timeline_read.rs"]
+mod timeline_read;
+pub(in crate::studio) use timeline_read::TimelinePage;
 
 /// One live connection plus the database identity it validated.
 struct HistoryConnection {
@@ -225,6 +232,7 @@ pub(crate) struct CheckpointEffect<'a> {
 }
 
 pub(in crate::studio) struct ColdConversation {
+    pub timeline: Option<TimelinePage>,
     pub database_id: String,
     pub head: u64,
     pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
@@ -258,6 +266,7 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
+                timeline_pending: std::sync::Mutex::new(Default::default()),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
                 writer: tokio::sync::OnceCell::new(),
@@ -285,6 +294,10 @@ impl HistoryStore {
     /// The existing database identity after the shared initialization/reader barrier. This never
     /// creates a store, starts a writer, flushes execution or loads recovery state.
     pub(in crate::studio) async fn conversation_database_id(&self) -> Result<Option<String>> {
+        if let Some(writer) = self.state.writer.get() {
+            ensure!(writer.schema_version == HISTORY_SCHEMA_VERSION, "history requires explicit storage preparation");
+            return Ok(Some(writer.database_id.clone()));
+        }
         Ok(self
             .reader()
             .await?
@@ -611,6 +624,9 @@ impl HistoryStore {
             );
         }
         tx.commit().await?;
+        if let Some(last) = effects.last() {
+            self.timeline_saved(last.effect.sequence);
+        }
         Ok(results)
     }
 
@@ -1444,6 +1460,11 @@ impl HistoryStore {
         Ok(next)
     }
 
+    pub(crate) async fn timeline_recovery(&self) -> Result<Option<Vec<u8>>> {
+        let Some(connection) = self.reader().await? else { return Ok(None); };
+        Ok(Some(conversation::timeline::recovery(&connection.db).await?))
+    }
+
     /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
     pub(crate) async fn conversation_sources(
         &self,
@@ -1477,6 +1498,25 @@ impl HistoryStore {
     pub(in crate::studio) async fn cold_conversation(
         &self,
         query: pl_core::chat::ChatQuery,
+        demand: pl_core::chat::ReadDemand,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ColdConversation>> {
+        self.cold_conversation_in(query, None, demand, budget).await
+    }
+
+    pub(in crate::studio) async fn cold_timeline(
+        &self,
+        scope: &pl_protocol::ChatScope,
+        demand: pl_core::chat::ReadDemand,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ColdConversation>> {
+        self.cold_conversation_in(pl_core::chat::ChatQuery::new(scope.query_class(), None), Some(scope), demand, budget).await
+    }
+
+    async fn cold_conversation_in(
+        &self,
+        query: pl_core::chat::ChatQuery,
+        scope: Option<&pl_protocol::ChatScope>,
         demand: pl_core::chat::ReadDemand,
         budget: &dyn ChatBudget,
     ) -> Result<Option<ColdConversation>> {
@@ -1523,15 +1563,50 @@ impl HistoryStore {
             ceiling: head,
             demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
         };
-        let page = conversation::page(&tx, &request, budget, false).await?;
+        let (page, timeline) = if let Some(scope) = scope {
+            conversation::timeline::next_position(&tx).await?;
+            if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
+                conversation::timeline::validate_members_ref(&tx, &connection.database_id, reference).await?;
+            }
+            let rows = conversation::timeline::page_rows(
+                &tx, scope, None, i64::MAX as u64, current.source_effect_seq, demand.max_items + 1,
+            ).await?;
+            let mut entries = Vec::new();
+            let mut size = fixed;
+            let mut before = None;
+            for (order, entry) in rows {
+                let length = conversation::timeline::entry_bytes(&entry)?;
+                if entries.len() == demand.max_items || size + length > demand.max_bytes {
+                    ensure!(!entries.is_empty(), ChatError::InvalidDemand("cold timeline envelope cannot fit demand".into()));
+                    before = entries.last().map(|(order, _)| *order);
+                    break;
+                }
+                size += length;
+                entries.push((order, entry));
+            }
+            let ceiling = entries.first().map_or(0, |(order, _)| order + 1);
+            entries.reverse();
+            (ChatHistoryPage { items: Vec::new(), exhausted: true }, Some(TimelinePage {
+                entries: entries.into_iter().map(|(_, entry)| entry).collect(), before, ceiling,
+            }))
+        } else {
+            (conversation::page(&tx, &request, budget, false).await?, None)
+        };
         ensure!(
             page.exhausted || !page.items.is_empty(),
             ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
         );
-        let sources =
+        let mut sources =
             conversation::sources::read_selected(&tx, &page, &current, include_current).await?;
+        if let Some(page) = &timeline {
+            let ids = page.entries.iter().filter_map(|entry| {
+                if let pl_protocol::ChatEntry::Atom(atom) = entry { Some(atom.source.clone()) } else { None }
+            }).collect::<Vec<_>>();
+            sources.extend(conversation::sources::read(&tx, &ids, current.source_effect_seq).await?);
+        }
         tx.commit().await?;
         Ok(Some(ColdConversation {
+            timeline,
             database_id: connection.database_id.clone(),
             head,
             current,
@@ -2871,6 +2946,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
     conversation::current::PreparedCurrent {
         timeline: std::sync::Arc::from([]),
+        timeline_update: std::sync::Arc::new(Default::default()),
         timeline_commit: 0,
         source_changes: std::sync::Arc::from([]),
         projection: pl_protocol::CurrentProjection::empty(

@@ -33,7 +33,7 @@ Studio Timeline 投影是展示分组的唯一实现：live effect、重启恢�
 
 Inference 调用诊断不作为用户过程成员、不产生诊断专用工作组或分隔；完整执行/调用历史和旧原件继续保留。未知工具、Deferred 和敏感问答沿原格式、引用及遮蔽契约处理。新聊天不复制诊断步骤，存量只在必要迁移中标明普通展示资格，不删除原件。
 
-**持久化边界**：数据库只持久化可重建的派生 item 读模型（`timeline_items`、`timeline_item_members`）与投影版本/恢复状态；原会话历史、正文和工具输出仍是事实源，派生行可由原原子事实与已保存 current 切面重放同一投影重建。原可靠完成项仍按原保存链立即落盘，展示 item 与成员行在同一 writer 事务提交。Core、pending reader、FRB/SDK 不保存或查询另一份组成员关系与组关闭状态，也不得把这些改名为 ready 区间、来源范围证明或展示排序；分组变化或改成平铺不要求原完成事实变化，组交接不产生额外业务写入（事务与迁移边界见 [17](./17-studio-storage.md)）。
+**持久化边界**：原会话历史、正文、工具输出和真实来源元信息是事实源；`timeline_items`、`timeline_item_members` 与小恢复状态是可删除重建的产品读模型。Studio 的原 read owner 统一读取派生 RAM 尾部和 SQLite 前缀，Core Session 仍只认识原子事实。FRB/SDK 只传递投影，不维护第二份成员关系。可靠完成项立即沿原链保存，不等工作组交接；展示增量、来源元信息和原 current 在同一 writer 事务保存。只有原子完成项与最新 current 不足以重放全部真实开始边界，重建依据和维护边界见 §26.11，事务与迁移见 [17](./17-studio-storage.md)。
 
 ### 模型成员的可靠封口与交接
 
@@ -47,7 +47,7 @@ Runtime 沿同一 prepared handoff 和可靠预算封口；最终回执再次含
 
 ### 按作用域的 current 交接前缀
 
-完成记录分配 seq 后，产品 owner 冻结可靠 current 交接信息：本次 Main 完成前沿、交接前后的小 `CurrentProjection`（含 `items` 与 `atoms`）、本次新增或可提交的展示 item delta 及成员引用。此信息归原 prepared/publication owner，只保存有界信封与身份，不保存另一份完成正文或全部成员集合；它与原 publication 队列一起计量，不能提高帧数或字节上限。
+原产品 owner 在可靠 effect 的同一发布边界冻结本次展示 item 前沿、交接前后的小 `CurrentProjection` 及派生增量。即使没有新完成 atom 的真实 text-start，也可以提交前一工作组；因此不能用原子完成 seq 或 Session head 代替 item 发布进度。交接信息只保存有界信封/引用，不复制正文或全部成员集合，计入原 prepared/publication 保留责任，不提高帧数或字节上限。
 
 Feed 只消费该类型化交接信息，不解析 payload 判断完成或分组。一个 Append 被条数或字节预算截断时，按已交付展示前缀退役 current 中对应 item，保留未交付 item；已交付 item 与 currentAfter 必须来自同一投影切面，禁止先发 item 后补 current 或跨切面拼接。不得用全局 H 相等作为 Main current 退出的必要条件，也不得在第一小批直接附上清空所有未交接 item 的 post-current。current 信封预算包含本批实际可能交付的 item/成员有界前缀，不在发出后再丢弃 current 凑预算。
 
@@ -61,7 +61,7 @@ Feed 只消费该类型化交接信息，不解析 payload 判断完成或分组
 
 query_class 由写入/迁移确定，未知 payload 保留原类别，不因 renderer 不认识而隐藏。Main 查询类为 `timeline`，按派生 `timeline_items.position` 键集读取展示 item；成员窗口与真实业务 Children 使用 `conversation` 查询类，成员窗口经 `timeline_item_members` 关联有界读取。item 资格在 LIMIT 前由派生索引选择，不扫描完整原子集合再分组；不按客户端展开或分组状态筛选。parent_id 只表达真实业务父域，不是工作组身份，Children 只服务真实嵌套业务。来源身份、领域类别、来源内部顺序、完成发布 seq、Timeline item_order、真实生命周期与内容引用以轻量元信息交付，不要求解码大 payload。
 
-来源顺序、可靠事实位置、Timeline item_order 和 feed delivery sequence 不同：来源顺序保持前台与并行成员的实际位置，可靠 effect/批内稳定顺序说明何时接纳真实事实，item_order 说明展示 item 进入历史的位置，delivery 只服务本句柄 ACK。后台 acknowledgement 结清原前台义务但不表示成功，最终 Inbox 结果是独立 `status` item，不按旧调用开始位置回填。T 开始→B 完成→T 完成时 T 仍 live、B 立即历史，最终 B→T，普通完成 seq 足以重建此例；前台 item 的来源顺序与提交顺序由 Rust 投影唯一确定，客户端不维护自建的来源排序或可提交前缀。
+来源顺序、可靠事实位置、Timeline item_order 和 feed delivery sequence 不同：来源顺序保持同一前台与并行成员的实际位置，可靠 effect/批内稳定顺序记录事实接纳位置，item_order 决定 Main 历史顺序，delivery 只服务句柄 ACK。后台交接结清前台义务但不表示任务成功；最终结果是独立 `status`，不回填旧组。T 开始→B 完成→T 完成时，T 仍 live、B 立即进入历史，最终 B→T；完整来源事实重建须保持此结果，旧缺失输入采用 §26.11 的明确限制。前台顺序与可提交前缀只由 Rust 计算。
 
 item 进入历史的时刻由提交条件决定，不等于原子完成顺序；冷读只对已加载事实与已保存 current 切面投影。同一完整事实在 live、首屏、旧页和重启后必须有相同 item 身份、成员归属与 item_order，因为四者复用同一 Studio 投影；Flutter 不重放跨来源 UI 插入时刻，也不在客户端重新分组。部分范围保持部分/未知：未加载的 item 不显示为已确认邻居，`GroupMembers` 页只承担该 item 的成员事实，不能据此推断顶层 item 之外的结构，也不据此跨缺口合组或伪造旧时刻。
 
@@ -81,7 +81,7 @@ Main 分页以 Studio 投影生成的展示 item 为单位：`max_items` 限制�
 
 Main 的 item 键集由 `timeline_items.position` 递增序确定。首个 Set 固定 item 位置上界与该切面的 current；Append 只交付切点后新提交的 item 与 currentAfter；Prepend 交付更早的 item 页并替换 continuation。`before` 是绑定原库身份、`ChatScope::Main`、item 排他位置与读取作用域的不透明字符串，Flutter 原样回传，不解析来源、seq 或 position。
 
-`GroupMembers { item_id }` 是独立读取作用域：展开工作组时按 `timeline_item_members.member_order` 有界读取该 item 的成员原子与真实来源状态，使用自己的 Set/Prepend/Append 与 continuation；不读取 Main 的 `before`，主历史也不复用成员页 cursor。成员顺序来自投影冻结的成员引用，不要求 Flutter 按来源位置发现归属或重新排序；折叠组不读取成员与媒体。
+`GroupMembers { reference }` 是独立读取作用域：类型化引用含 `database_id`、`projection_version`、`item_id`，原 owner 校验后按成员关联索引的 `member_order` 有界读取。该 scope 自有 Set/Prepend/Append、continuation 和活动窗口更新，不复用 Main cursor。成员顺序与归属由投影决定，Flutter 不重排或发现成员；折叠不读取成员与媒体，引用不能跨库或投影版本使用。
 
 成员/Children 的原子页不将每个来源的读取证据再追加为独立 entry：`ChatAtom.source_state` 可携带该原子来源在读取切点的真实 `ChatSourceState`，身份必须与 `atom.source` 一致；其成本纳入原 entry 编码预算，不是工作组或范围证明。冻结完成 metadata 的 `source_state` 必须为 None 且不编码该字段，reader 才按同切面事实填入，不能把较晚来源结束永久写回旧完成项。仅 current 涉及的源直接由已计量的 `current.sources` 交付。真实 start/end 仍沿原可靠 handoff 以 `ChatEntry::Source` 发布并按条数、字节分批，不因存在读取注解而合并或吞掉可靠事实。
 
@@ -96,22 +96,22 @@ Main latest 捕获固定 item 位置上界与完成水位 H0；before 还要求 
 
 before 是绑定原库身份、scope、排他位置和读取作用域的不透明字符串，Flutter 原样回传、不解析来源或 seq。不返回 totalCount，不 COUNT，不为 UI 计算全历史空占位。非空 before 仅表示可继续请求，不保证下一页非空。只有内存和库均已确认耗尽才返回 null；内存恰好够页时不为精确 hasOlder 额外查库。允许一次空末页返回 null，非空页 cursor 必须前进，空页不得原地 continuation；短页和字节截页不自动表示 EOF，item 页只含折叠摘要也不表示成员已经加载完毕。
 
-## 26.5 唯一原子批次与真实生命周期
+## 26.5 按 scope 的批次与真实生命周期
 
 Rust 产品契约统一归 pl-protocol，FRB/HTTP 同语义；Core 仅持产品无关完成记录。
 
 | 类型 | 字段/语义 |
 | --- | --- |
 | 原子 envelope | 稳定成员 item 与完成载荷身份、实际来源/turn/attempt/part/call、完成 seq/来源顺序、领域类别、终态、内容引用及动态 payload |
-| 展示 item `TimelineItem` | 稳定 item id、`text`／`workGroup`／`status` 类别、真实来源/turn、delivery 与文本频道、时间、成员引用（`GroupMembers { item_id }`）、有界摘要、内容引用、可选 Inline/Deferred payload、current 成员身份、历史 `position` 与准入关闭资格 |
+| 展示 item `TimelineItem` | 稳定 item id、`text`／`workGroup`／`status` 类别、真实来源/turn、delivery 与文本频道、时间、Text/Status 原子确知的可空 terminal outcome、类型化成员引用、有界摘要、内容引用、可选 Inline/Deferred payload、可空历史 `position` 与准入关闭状态；组不合成整体成功、不含全量成员 ID |
 | PayloadData | `Inline(bytes)` 或 `Deferred(reference,byte_length)` |
 | ChatBatch | `placement`、有界展示 item/成员原子/真实生命周期 `entries`、scope 自有 `before`、可选同切面 `current` |
 | ChatPlacement | Set、Prepend、Append |
-| CurrentProjection | source effect、真实来源/attempt 状态、有界 active turn/活动、Plan/交互头部、内容/集合引用，以及有序未交接 `items` 与其成员 `atoms` 的具体快照；不是未提交工作组范围或客户端分组输入 |
+| CurrentProjection | source effect、真实来源/attempt 状态、有界 active turn/活动、Plan/交互头部、内容/集合引用，以及有序未交接 `items` 和预算内必要活动 `atoms`；不以成员数组镜像完成长组 |
 
 完成 seq、来源位置与 item_order 按各自语义交付，H/D、source incarnation 和 opaque cursor 解析仍归 Rust。`Message.custom` 是 Flutter 自己的类型，不复制 Flyer 联合、oldMessage/index 或任意 UI diff。无后端工作组 PageContext、closedThrough/terminalThrough、readyAt 或组范围协议；`admission_closed` 只表达准入是否被真实后继边界关闭，不是历史提交或终态资格。真实生命周期只补领域确实发生的开始/终态，不增加一套可查询事件存储来替代原 effect/current owner。
 
-成员窗口与 Children 的当前协议统一为 `ChatEntry::Atom(ChatAtom)` / `ChatEntry::Source(ChatSourceState)`；Main 以展示 item 为分页条目，item 自带内容引用与有界摘要，成员细节另按 `GroupMembers` 读取。Atom 的 payload 可在真实开始时缺省，完成时引用原 item；completion_seq 由完成 header 取得，与可空的 source_order 分开，缺来源位置不伪造。SourceState 只表示实际来源 Active/Ended/Unknown 与确有的开始/终态位置。CurrentProjection 只含有界真实 source 状态、有序未交接 item 及其成员 atom，不含已完成尾组或展示范围。部分页的 source 状态来自同切面的实际生命周期，不能用“未加载”补成 Ended。Main 派生 item 进入 `timeline` 查询类，成员窗口与 Children 进入 `conversation` 查询类并保真实 parent/item 身份；诊断单独保留，不改完成 seq。
+Main entries 只有 `ChatEntry::Item(TimelineItem)`；成员/Children 才是 `Atom`／`Source`，scope 不混接。原子 payload 在开始时可缺省，完成后仍归原 item；completion_seq 与可空 source_order 分开，未知不伪造。SourceState 仅说明真实来源 Active/Ended/Unknown，不从未加载推断 Ended。current 的 item 可以已经全部成员终态但等待后继边界，或边界已定但前一成员未终态；成员细节经 typed 引用按需读取，不在快照镜像完整长组。诊断不进入用户工作步骤，原完成 seq 不因展示改变。
 
 活动 `wait`／`sleep` 原子的 `wait` 可选字段直接交付原工具投影已产生的 `ThreadWaitPresentation`，
 绑定同一 atom/call 和同 effect 切面，不依赖尚不存在的完成 payload。运行中等待、超时参数、计时器时长及
@@ -171,23 +171,19 @@ ContentRef 区分 ItemPayload(itemId) 与 Body(owner,key)，绑定原库/读取�
 
 current 只推有界预览和引用；展开时订阅所需正文范围，Rust 组装窗口，Flutter 不归约原始文本 delta。折叠/未订阅正文不推全文。manifest 由 producer 明确提交，不解析未知 payload 查引用；完成内容随 item 保留，current 随 owner 退役且保障已接纳短读结束，不另建全局 GC。存储布局、内容发布屏障和缺失投影处理见 [17](./17-studio-storage.md)。
 
-`CurrentProjection.activeTurn` 保留真实 Turn 身份与阶段，不能作为工作组容器。`CurrentProjection.items` 是有序未交接片段（`text`／`workGroup`／`status`），实时工作组与历史组共用同一成员引用契约：item 身份、成员身份和顺序来自同一投影，`atoms` 只承载这些片段当前成员的事实；完成 part 退出 Rust active 后不复活过期 current revision，客户端持有的 item 内容引用仍沿稳定 item 身份读取。多个未终态 part 不限队首显示；空预览不是来源终态，不能清空已接纳的 current item。
+`CurrentProjection.activeTurn` 保留真实 Turn 身份与阶段，不能作为工作组容器。`CurrentProjection.items` 是有界、有序的未交接片段（`text`／`workGroup`／`status`）。工作组只含摘要与 `TimelineMembersRef`，不在 item/current 中重复传输随组增长的全部成员 ID。该引用绑定原库、投影版本和稳定 item 身份；展开后在独立 `GroupMembers` 窗口读取实际成员。`atoms` 仅保留原 current 预算内确有需要的活动事实，不充当组成员索引。多个未终态 part 不限队首显示；正文在前一思考尚未终态时仍可读，空预览不是来源终态。
 
-工作组展开按 `GroupMembers { item_id }` 有界读取成员：Rust 依据 `timeline_item_members` 冻结的成员身份和顺序执行窗口，读取条件可能交错其他来源，但只返回属于该 item 的成员；Flutter 不自行发现成员归属、不找组头、不要求后端凑组或给完整范围证明。折叠组不读成员与媒体，展开成员页不等于业务成员准入。真实业务嵌套仍可用 Children；未展开详情不建额外 reader，引用/选择退役先同步撤资格再 cancel/join。工具摘要、参数、输出通过生产者明确的 call 关联和内容角色归到一个语义入口，不解析内部 ID 或任意 JSON 猜归属。诊断只借实际挂载内容，不触发 IO。
+工作组展开按 `GroupMembers { reference }` 有界读取成员：Rust 依据成员关联索引选择组内稳定顺序，只返回属于该 item 的成员。current 与 history 使用同一引用和读取契约；活动成员的窗口变化由原有界观察机制交付，同一成员 ID 的真实进度/终态更新只替换该窗口的成员，不改变 Main item。历史成员顺序及归属冻结。Flutter 不发现成员、不找组头、不推断封口。折叠时不读成员与媒体，展开也不改变业务准入；先同步撤销窗口、正文与媒体资格，再 cancel/join。真实业务 Children 继续保留，不以整个 Turn 冒充组。工具参数、结果及附件按真实 call 和内容角色归在一个入口，诊断只借已挂载内容。
 
-原打开切面的旧页 `before` 只覆盖原 H0，不能用于读取其后的完成原子，也不能由 Flutter 将 completion seq 自行编码成不透明 cursor。原 read lease 提供通用 `read_before(completion_seq, before?, demand) -> ChatBatch`：首调用以已观察的实际 completion seq 为排他上界，复用原发布 owner 捕获当前可查询前缀及 source effect 切面，拒绝零值或超出该已发布前缀的位置；只返回成员/普通原子窗口，不按来源或展示 item 资格筛选。该窗口固定自己的完成上界及 source effect cut，后续使用返回的 opaque cursor；cursor 绑定原 lease、数据库、scope、epoch 和原始 anchor，不能混入 Main 的 item continuation 链。每页仍受原 demand 约束，显式 EOF、无进展和错误语义不变，不找组头、不扫描完整来源、不 flush。
-
-这类查询返回普通 `Prepend`、`current=None`，仅提供窗口自身的 `before`，不推进或替换会话主历史 item 游标。SDK 的 `readBefore` 是原 query scope 内的有界只读操作，不自动应用到主历史 consumer；Flutter 原展示 lease 通过已有 `_mutate` 串行入口将结果交给同一个 `applyBatch`，保留主历史 item cursor/current，并在 await 前后核验原代次资格。原子事实、展示 item 与成员关系仍各只有一个投影/写入入口，不能为展开再建 feed、全历史镜像或另一套 reducer。展开窗口位置及加载状态随实际借用和展示对象存活，退役时同步撤销。
+Main 的旧页 cursor 固定打开时的 item 切面，不用于任意原子窗口。Flutter 不接收 completion seq 作为分组恢复锚点，不拼装 cursor，不通过旧 `readBefore`／`readAt` 原子扫描接口补组。工作组详情只按 typed `GroupMembers` 引用读取；真实业务 Children 和正文范围保持各自原资格，旧页及成员窗口均不覆盖 Main current。
 
 `CurrentContentPreview.role` 只是展示分类，不是文本频道或出站许可。预览以可空的 `textChannel` 保留原 canonical 文本条目的 `ThreadTextChannel`；非文本或无法证明频道时为未知，缺失也只表示未知，不能由 `Response`、正文、ID 或所属活动补成 `Final`。该事实沿原 current owner、存储与 FRB／HTTP／Client 映射交付，不新增旁路查询或状态镜像；同样计入原有编码和传输预算，不改变正文引用、generation 或完成边界。[机器人出站契约](./27-bots.md)的 Final 资格必须由明确频道及原目标 Turn 共同证明，未知与 Commentary 都不能授权创建或更新回复卡片。
-
-`read_at(completion_seq, before?, demand)` 使用同一个原 read lease，提供包含已观察锚点自身的普通完成窗口。首调用拒绝零值和超过原 owner 已发布前缀的位置，以该完成 seq 为包含式上界，并捕获同一次 source effect 切面；匹配原 scope 的锚点和更早原子按原 Core 普通页交付。返回普通 Prepend、current=None 和该窗口自己的 opaque continuation；条数、字节、资格、取消及关闭责任均与 read_before 相同，cursor 另绑定包含式查询种类，不能与排他窗口或 Main 的 item continuation 混用。它用于重新取得已观察完成位置的原 Atom，包括合法 Inline/Deferred payload，不从 member ID 构造内容引用、不使用 seq+1、自编码 cursor 或扫描组头；Rust 仍不按客户端展开状态选择 item 或成员。
 
 ## 26.8 Flutter 薄接纳与组件消息集合
 
 使用已有 InMemoryChatController，不另写 ChatController；已提交 Message 仅由它持有，Chat 负责 Widget 惰性构建/释放。`applyBatch`/owner 只机械接纳 Studio 已确定的展示 item：一条 item 对应一条 `Message.custom`，不分类、不合组、不改 item 顺序、不计算成员归属。Set 一次设置已加载 item 投影与 current；Append 只插入新提交的展示 item 并替换 current；普通 Prepend 按 item 键集插入更早页，不固定 index=0。token/运行进度不修改历史，保存 ACK 不重复插入，初始/旧页不做新增动画，不重置整表或手动重复发组件 operation。
 
-`text`、`workGroup`、`status` 都是顶层 item，各自一条 Message；组内成员只在该 item 展开后由 `WorkGroupView` 经 `GroupMembers` 有界读取，折叠时只显示有界摘要。展示 key 使用稳定 item id：live→history、前后插补和重开继续同对象/key 与展开意图；冷读部分 item 可用已加载身份建立对象，重开按同一投影重建。作者/时间只用可靠值，未知/Deferred 不丢轻量归属但不补造时间；单项未知/损坏不破坏邻居或读取错误语义。已加载历史不另存全量 rawAtoms/items/groups 或无界 ID map，只持需求内 item 片段、普通读取位置、成员页位置和必要汇总。
+`text`、`workGroup`、`status` 各对应一条顶层 Message；工作组展开后才读取成员，折叠只显示摘要。key 使用稳定 item id，live→history 沿用展示身份；本次观察可按 ID 保留局部展开意图，但跨父树不假定 Widget State 自动保留，重开也不承诺同一内存对象或展开偏好。作者/时间只取可靠值，未知/Deferred 不丢轻量归属或补造时间，单项降级不吞读取错误。历史 Message 只由原 controller 持有，不另存全量 rawAtoms/items/groups、永久成员索引或无界 ID map。
 
 实时、首屏、旧页和重开共用同一 Studio 投影的 item 身份/顺序/成员，不共用第二套客户端规则。R start→T start→T complete→R complete 等交错由投影 fold 一次确定；普通 Prepend 不要求 Flutter 推断显示邻接，也不跨未知缺口合组。满屏后不为找组头继续读取。controller 同步 getter 不经异步 FRB；SDK 纯 Dart、机械映射，不依赖 Flyer 或 app 生成代码；SDK 不分类/分组、不保存历史尾部。
 
@@ -205,7 +201,7 @@ current 只推有界预览和引用；展开时订阅所需正文范围，Rust �
 
 ### 26.8.1 展示 item 自足与成员按需读取
 
-Main 页中的每个展示 item 自带类别、顺序、有界摘要和内容引用，不依赖相邻页拼接才能成立。成员细节不是顶层 item 的成立条件：折叠组不读成员，展开后才按 `GroupMembers { item_id }` 有界读取，成员页可能与其他来源交错，但不能改变已提交的顶层 item、顺序或归属。冷读部分 item 可用已加载身份建立对象，重开按稳定 item id 重建；不保存每页原始 DTO、cursor 栈或全历史成员索引来“证明”相邻。统计只表述实际已加载内容，未知前缀不伪装完整组或精确总数。
+Main 页的每个 item 自带类别、顺序、有界摘要和引用，不依赖相邻页或成员详情才成立。展开按 `GroupMembers { reference }` 读有界成员页，不改变已提交 item 的顺序、身份或归属，不保存页 DTO 栈或全历史成员索引来“证明”相邻。组总数与结果统计直接来自投影摘要，不能被当前成员窗口的已加载数量覆盖；窗口加载进度另行表达。
 
 真实结构分隔、可靠开始事实和同一投影的在手事实决定 item；Flutter 不根据显示邻接推断，也不因成员页缺失把 item 标为不完整。未知/损坏/Deferred 成员在展开时局部降级，不破坏 item 摘要、邻居或读取错误语义。
 
@@ -246,3 +242,21 @@ AppGraph 在规范的可见选择目标成立、发出该目标读取 demand 之
 通用内容范围查看器浏览一个有界字节窗口，下一段只在显式操作时请求。复制操作明确标为“复制当前段”，仅复制当前实际显示的窗口文本；不将它标作全文复制，也不为旧全文断言自动追读所有段。完整公开原文仍可通过同一稳定引用逐段读取。验收脚本分别证明窗口读取、显式续读及当前段复制，未提供的全文复制能力明确列为不适用，不能用窗口成功冒充全文成功或伪造旧详情接口。
 
 需覆盖内存足页零 SQL、提交/清 pending 交错、固定切点/持续新增、并发上翻、源 ABA、同批 item 与 currentAfter 退役、超长内容、未知工具、慢消费者、独立 query、A→B→A、空正文结构边界、附件-only 消息、读图不拆组、逆序终态、后台结果独立、投影版本重建与派生表恢复、成员页独立 cursor、关闭/保存故障和非空迁移。原生、模拟供应商、真实供应商及各平台证据分开，不以日志采集、组件成功或文档目标冒充验收通过。
+
+## 26.11 重建输入与维护暂停
+
+正常增量和重建只调用同一个 Studio 投影算法。输入必须来自原规范来源接纳的真实事实，不从日志、UI 文案、raw token、旧派生组缓存或最新检查点猜出过去的开始/结束。
+
+| 规范输入 | 可证明依据与缺失语义 |
+| --- | --- |
+| Atom、turn/attempt/part/call 身份、语义类别与频道 | 原可靠模型成员端口、工具/输入/交互 owner 及冻结原子 metadata；工具输出按来源归属，不按 MIME 或 JSON 外观分类 |
+| 来源位置与可靠接纳位置 | 原来源 ordinal、`ChatFactPosition` 的 effect/suborder；原子完成 seq、effect/write seq、展示 item_order 与 feed deliverySequence 分属不同顺序域 |
+| 真实开始、空正文及可靠终态 | 保存必要的开始/终态元信息；正文 `contentPresent=false` 仅在文字和附件确实都为空时成立，未知不省略、空白字符不裁剪 |
+| 后台交接、最终结果和来源结束 | 原调用交接/Inbox/Turn/attempt 的 typed 事实；交接不冒最终成功，页面关闭不制造终态 |
+| 时间与内容 | 原始可证明起止以及稳定内容/附件引用；未知时间不填零，不按成员顺序选择“最后完成”，不计 UI 媒体加载耗时 |
+
+这些轻量来源元信息沿原可靠 effect 保存；只记录真实结构/生命周期，不记录 token，也不增加第二个 writer、事件总线或重建队列。最新 `history_items`、`last_write_seq` 与 current/checkpoint 都不是完整事件日志。旧数据在正式准备边界一次规范化：优先可证明来源顺序及消息/终态边界，确无顺序时保留完成顺序，无法证明归属时保留中性独立信息，未知不伪造；随后仍进入同一个投影算法。
+
+派生缺失、版本变化或明确损坏才触发维护重建。先在原产品 owner 的可靠处理边界暂停派生推进，提交已准备连续 writer 前缀取得 durable effect 切点 C；C 之后的输入仍由原队列、原预算与背压承担。按 C 的一致源快照逐批重建，正文/图片不载入内存，内存不攒全会话事件、payload 或全量成员 ID；派生行、版本及多个未交接片段的小恢复状态在同一事务完整替换，失败/取消回滚，原事实与旧完整版本保全。
+
+成功后唯一 owner 接管新状态，再接纳原队列 C 之后的输入。旧查询句柄、cursor 和成员引用按原代际退役，新句柄从 Set 开始，不混用投影版本。维护暂停和失败属于当前加载/连接状态，不插入业务历史，不取消模型/工具；不以失败回退客户端分组。正常命中只查小版本/恢复状态及 item 索引，不重复扫描原历史；重建耗时单独报告。

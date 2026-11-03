@@ -7,7 +7,7 @@ use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentManifestPage,
-    ContentOwner, ContentTarget, ContentWindow, CurrentCollectionPage, CurrentContentRole,
+    ContentOwner, ContentTarget, ContentWindow, CurrentContentRole,
     CurrentProjection, PayloadData, ReadDemand, ThreadItemKind, ThreadNotification,
     ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{
@@ -194,13 +194,41 @@ impl Environment {
         parent: Option<&str>,
         items: u32,
     ) -> Result<(String, SseBody)> {
+        let scope = match parent {
+            Some(parent_id) => ChatScope::Children { parent_id: parent_id.to_owned() },
+            None => ChatScope::Main,
+        };
+        self.open_scope(thread, scope, items).await
+    }
+
+    async fn open_group(
+        &self,
+        thread: &str,
+        reference: &pl_protocol::TimelineMembersRef,
+        items: u32,
+    ) -> Result<(String, SseBody)> {
+        self.open_scope(thread, ChatScope::GroupMembers { reference: reference.clone() }, items).await
+    }
+
+    async fn open_scope(
+        &self,
+        thread: &str,
+        scope: ChatScope,
+        items: u32,
+    ) -> Result<(String, SseBody)> {
         let mut url = url::Url::parse(&format!("{}/api/v1/threads/{thread}/events", self.base))?;
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("maxItems", &items.to_string());
             query.append_pair("maxBytes", &demand(items).max_bytes.to_string());
-            if let Some(parent) = parent {
-                query.append_pair("parentId", parent);
+            match scope {
+                ChatScope::Main => {},
+                ChatScope::Children { parent_id } => { query.append_pair("parentId", &parent_id); },
+                ChatScope::GroupMembers { reference } => {
+                    query.append_pair("membersDatabaseId", &reference.database_id);
+                    query.append_pair("membersProjectionVersion", &reference.projection_version.to_string());
+                    query.append_pair("membersItemId", &reference.item_id);
+                }
             }
         }
         let request = self
@@ -400,6 +428,25 @@ async fn payload(
         .payload
         .as_ref()
         .context("completed atom omitted its frozen payload")?;
+    decode_payload(env, thread, capability, payload).await
+}
+
+async fn item_payload(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    item: &pl_protocol::TimelineItem,
+) -> Result<Value> {
+    decode_payload(env, thread, capability,
+        item.payload.as_ref().context("text/status item omitted its original payload")?).await
+}
+
+async fn decode_payload(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    payload: &PayloadData,
+) -> Result<Value> {
     let bytes = match payload {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
@@ -427,50 +474,56 @@ async fn payload(
     Ok(value)
 }
 
-async fn all_history(
+async fn all_entries(
     env: &Environment,
     thread: &str,
     capability: &str,
     first: ChatBatch,
-) -> Result<Vec<ChatAtom>> {
-    let mut messages = first
-        .entries
-        .into_iter()
-        .filter_map(|entry| match entry {
-            ChatEntry::Atom(atom) => Some(*atom),
-            ChatEntry::Source(_) => None,
-        })
-        .collect::<Vec<_>>();
+) -> Result<Vec<ChatEntry>> {
+    let mut entries = first.entries;
     let mut before = first.before;
     for _ in 0..32 {
-        let Some(cursor) = before else {
-            let ids = messages.iter().map(|atom| &atom.id).collect::<HashSet<_>>();
-            ensure!(ids.len() == messages.len(), "duplicate completed item");
-            return Ok(messages);
-        };
-        let batch: ChatBatch = env
-            .query(
-                thread,
-                capability,
-                "chat/older",
-                &json!({"before": cursor, "demand": demand(3)}),
-            )
-            .await?;
+        let Some(cursor) = before else { return Ok(entries); };
+        let batch: ChatBatch = env.query(thread, capability, "chat/older",
+            &json!({"before": cursor, "demand": demand(3)})).await?;
         ensure!(batch.placement == ChatPlacement::Prepend && batch.current.is_none());
-        ensure!(
-            batch.before.as_ref() != Some(&cursor),
-            "nonadvancing cursor"
-        );
-        messages.splice(
-            0..0,
-            batch.entries.into_iter().filter_map(|entry| match entry {
-                ChatEntry::Atom(atom) => Some(*atom),
-                ChatEntry::Source(_) => None,
-            }),
-        );
+        ensure!(batch.before.as_ref() != Some(&cursor), "nonadvancing cursor");
+        entries.splice(0..0, batch.entries);
         before = batch.before;
     }
     bail!("fixture history did not reach EOF within its finite budget")
+}
+
+async fn all_history(
+    env: &Environment, thread: &str, capability: &str, first: ChatBatch,
+) -> Result<Vec<ChatAtom>> {
+    let entries = all_entries(env, thread, capability, first).await?;
+    let mut atoms = Vec::new();
+    for entry in entries {
+        match entry {
+            ChatEntry::Atom(atom) => atoms.push(*atom),
+            ChatEntry::Source(_) => {},
+            ChatEntry::Item(_) => bail!("member/Children scope returned a display item"),
+        }
+    }
+    let ids = atoms.iter().map(|atom| &atom.id).collect::<HashSet<_>>();
+    ensure!(ids.len() == atoms.len(), "duplicate member identity");
+    Ok(atoms)
+}
+
+async fn all_items(
+    env: &Environment, thread: &str, capability: &str, first: ChatBatch,
+) -> Result<Vec<pl_protocol::TimelineItem>> {
+    let entries = all_entries(env, thread, capability, first).await?;
+    let mut items = Vec::new();
+    for entry in entries {
+        let ChatEntry::Item(item) = entry else { bail!("Main returned an atom/source"); };
+        items.push(*item);
+    }
+    let ids = items.iter().map(|item| &item.id).collect::<HashSet<_>>();
+    ensure!(ids.len() == items.len(), "duplicate display item identity");
+    ensure!(items.windows(2).all(|pair| pair[0].position < pair[1].position));
+    Ok(items)
 }
 
 async fn assert_execution_history_members(
@@ -649,27 +702,46 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         complete(&env.runtime, &thread, &first_stage, FIRST).await?;
         let (capability, mut main) = env.open(&thread, None, 1).await?;
         let first = main.chat().await?;
-        let first_atoms = first
+        let first_items = first
             .entries
             .iter()
-            .filter(|entry| matches!(entry, ChatEntry::Atom(_)))
+            .filter(|entry| matches!(entry, ChatEntry::Item(_)))
             .count();
-        ensure!(first.placement == ChatPlacement::Set && first_atoms > 0);
+        ensure!(first.placement == ChatPlacement::Set && first_items > 0);
         first.validate_for(&ChatScope::Main)?;
         let original = env.lease(&thread, &capability)?;
         ensure!(original.owner.reader.subscription_id() == capability);
         drop(original);
-        let history = all_history(&env, &thread, &capability, first.clone()).await?;
+        let history = all_items(&env, &thread, &capability, first.clone()).await?;
         ensure!(
-            history.len() > first_atoms,
+            history.len() > first_items,
             "older never returned real completed history"
         );
         let mut parent = None;
         let mut completed_body = None;
+        let mut group_member_ids = HashSet::new();
+        let mut group_completion_ids = HashSet::new();
         let mut main_thinking = 0;
         let mut main_inference = 0;
         for message in &history {
-            let value = payload(&env, &thread, &capability, message).await?;
+            if message.kind == pl_protocol::TimelineItemKind::WorkGroup {
+                ensure!(message.payload.is_none() && message.contents.is_empty());
+                let reference = message.members.as_ref().context("group reference")?;
+                ensure!(reference.item_id == message.id);
+                let (group_cap, mut group) = env.open_group(&thread, reference, 1).await?;
+                let set = group.chat().await?;
+                set.validate_for(&ChatScope::GroupMembers { reference: reference.clone() })?;
+                let members = all_history(&env, &thread, &group_cap, set).await?;
+                ensure!(members.len() == message.summary.as_ref().context("summary")?.member_count as usize);
+                for member in &members {
+                    group_member_ids.insert(member.id.clone());
+                    if let Some(id) = &member.completion_item_id { group_completion_ids.insert(id.clone()); }
+                    if member.kind == ChatAtomKind::Reasoning { main_thinking += 1; }
+                    ensure!(member.kind != ChatAtomKind::Unknown);
+                }
+                continue;
+            }
+            let value = item_payload(&env, &thread, &capability, message).await?;
             match value["type"].as_str() {
                 Some("thinking") => main_thinking += 1,
                 Some("inference") => main_inference += 1,
@@ -677,7 +749,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             }
             if value["type"] == "turn" {
                 ensure!(
-                    message.kind == ChatAtomKind::TurnReceipt,
+                    message.atom_kind == Some(ChatAtomKind::TurnReceipt),
                     "Turn payload was not labeled as a TurnReceipt atom"
                 );
                 let turn_id = message
@@ -691,9 +763,9 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 parent = Some((turn_parent_key(turn_id), turn_id.to_owned()));
             }
             let completion_item_id = message
-                .completion_item_id
+                .content_item_id
                 .as_deref()
-                .context("completed atom omitted completion item identity")?;
+                .context("display item omitted original content identity")?;
             let manifest: ContentManifestPage = env
                 .query(
                     &thread,
@@ -714,7 +786,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         }
         ensure!(
             main_thinking == 1 && main_inference == 0,
-            "Main must contain exactly one real thinking atom and no copied inference: \
+            "Main and explicit member scopes must expose exactly one real thinking member and no copied inference: \
              thinking={main_thinking}, inference={main_inference}"
         );
         let reference = completed_body.context("real completed response manifest")?;
@@ -742,12 +814,14 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         );
         let main_member_ids = history
             .iter()
-            .map(|atom| atom.id.clone())
+            .filter_map(|item| item.content_item_id.clone())
+            .chain(group_member_ids)
             .collect::<HashSet<_>>();
-        let main_ids = main_member_ids.clone();
+        let main_ids = history.iter().map(|item| item.id.clone()).collect::<HashSet<_>>();
         let main_completion_ids = history
             .iter()
-            .filter_map(|atom| atom.completion_item_id.clone())
+            .filter_map(|item| item.content_item_id.clone())
+            .chain(group_completion_ids)
             .collect::<HashSet<_>>();
         let mut thinking = 0;
         let mut inferences = 0;
@@ -818,22 +892,11 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         let paused_first = paused.chat().await?;
         ensure!(paused_first.placement == ChatPlacement::Set && paused_first.before.is_some());
         let paused_current = paused_first.current.as_ref().context("paused current")?;
-        let collection = paused_current
-            .collections
-            .iter()
-            .find(|reference| reference.collection == "members")
-            .context("real current members collection")?;
-        let page: CurrentCollectionPage = env
-            .query(
-                &thread,
-                &paused_cap,
-                "current/page",
-                &json!({
-                    "reference": collection, "continuation": null, "demand": demand(8),
-                }),
-            )
-            .await?;
-        ensure!(page.revision == collection.revision && !page.entries.is_empty());
+        let paused_text = paused_current.items.iter().find(|item|
+            item.kind == pl_protocol::TimelineItemKind::Text &&
+            item.contents.iter().any(|content| content.reference == response_ref))
+            .context("live text item with its original content reference")?;
+        ensure!(paused_text.position.is_none() && paused_text.outcome.is_none());
         let older: ChatBatch = env
             .query(
                 &thread,
@@ -849,7 +912,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 && older
                     .entries
                     .iter()
-                    .any(|entry| matches!(entry, ChatEntry::Atom(_)))
+                    .any(|entry| matches!(entry, ChatEntry::Item(_)))
                 && older.current.is_none()
         );
         let active_id = match &response_ref.target {
@@ -935,12 +998,12 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             let batch = main.chat().await?;
             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
             for entry in &batch.entries {
-                if let ChatEntry::Atom(atom) = entry {
+                if let ChatEntry::Item(atom) = entry {
                     ensure!(!main_ids.contains(&atom.id) && appended.insert(atom.id.clone()));
-                    if let Some(completion_item_id) = &atom.completion_item_id {
+                    if let Some(completion_item_id) = &atom.content_item_id {
                         ensure!(appended_completion_ids.insert(completion_item_id.clone()));
                     }
-                    if atom.completion_item_id.as_deref() == Some(active_id.as_str()) {
+                    if atom.content_item_id.as_deref() == Some(active_id.as_str()) {
                         response_seen = true;
                     }
                 }
@@ -966,12 +1029,12 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .iter()
             .rev()
             .find_map(|entry| match entry {
-                ChatEntry::Atom(atom)
-                    if atom.kind == ChatAtomKind::TurnReceipt && atom.payload.is_some() =>
+                ChatEntry::Item(atom)
+                    if atom.atom_kind == Some(ChatAtomKind::TurnReceipt) && atom.payload.is_some() =>
                 {
                     Some(atom)
                 }
-                ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
+                ChatEntry::Item(_) | ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
             })
             .context("latest completed Turn")?;
         let next_turn_identity = terminal_atom
@@ -980,7 +1043,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .context("latest TurnReceipt atom omitted its actual Turn identity")?
             .to_owned();
         let next_parent = turn_parent_key(&next_turn_identity);
-        let terminal = payload(&env, &thread, &latest_cap, terminal_atom).await?;
+        let terminal = item_payload(&env, &thread, &latest_cap, terminal_atom).await?;
         ensure!(
             terminal["type"] == "turn" && terminal["data"]["inputId"] == format!("input-{NEXT}")
         );
@@ -1006,14 +1069,6 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             ensure!(
                 message.turn_id.as_deref() == Some(next_turn),
                 "second Children scope returned another Turn's atom metadata"
-            );
-            ensure!(
-                appended.contains(&message.id)
-                    || message
-                        .completion_item_id
-                        .as_ref()
-                        .is_some_and(|id| appended_completion_ids.contains(id)),
-                "second Children atom was not a stable member/completion identity in Main"
             );
             let value = payload(&env, &thread, &next_cap, message).await?;
             ensure!(

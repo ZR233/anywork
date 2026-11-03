@@ -1,6 +1,8 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::{BridgeError, BridgeThreadSubscriptionUpdate};
+use super::{
+    BridgeError, BridgeThreadSubscriptionUpdate, BridgeTimelineItem, BridgeTimelineMembersRef,
+};
 
 #[derive(Debug, Clone)]
 pub struct BridgeConversationFrame {
@@ -33,6 +35,7 @@ pub struct BridgeReadDemand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatScope {
     Main,
+    GroupMembers { reference: BridgeTimelineMembersRef },
     Children { parent_id: String },
 }
 
@@ -65,6 +68,7 @@ pub struct BridgeChatBatch {
 
 #[derive(Debug, Clone)]
 pub enum BridgeChatEntry {
+    Item(Box<BridgeTimelineItem>),
     Atom(Box<BridgeChatAtom>),
     Source(BridgeChatSourceState),
 }
@@ -85,6 +89,7 @@ pub struct BridgeChatAtom {
     pub tool: Option<BridgeChatToolIdentity>,
     pub wait: Option<super::BridgeThreadWaitPresentation>,
     pub text_channel: Option<BridgeThreadTextChannel>,
+    pub content_present: Option<bool>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub contents: Vec<BridgeChatAtomContent>,
@@ -228,6 +233,7 @@ pub struct BridgeCurrentProjection {
     pub active: Option<BridgeCurrentActivityHead>,
     pub active_turn: Option<BridgeCurrentTurnHead>,
     pub sources: Vec<BridgeChatSourceState>,
+    pub items: Vec<BridgeTimelineItem>,
     pub atoms: Vec<BridgeChatAtom>,
     pub plan: Option<BridgeCurrentPlanHead>,
     pub interactions: Option<BridgeCurrentCollectionRef>,

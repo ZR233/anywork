@@ -16,7 +16,7 @@ open 先登记被动接收者，再捕获完成上界、Main 展示 item 上界�
 
 展示 item 的可靠发布以 Studio 投影的提交结果为单位：同一 effect 串行边界冻结本批新增 item、成员引用与交接后的 current（currentAfter），Feed 按条数/字节分批交付；Append 被预算截断时只退役已交付展示前缀对应的 current 片段，未交付 item 留到后继批，不得先发 item 后补 current 或跨切面拼接。current 允许多个有界未交接片段并保持投影顺序，客户端不得自行拼接、重排或补组。批次、current 与内容引用共用原编码预算；取消或关闭先封闭新准入，再按原所有权收束批与 current 发布责任，不把未交付事实计入已 ACK 前缀。
 
-前台展示阻挡不构成传输背压条件：接纳后的完成片段可以退出客户端物化集合，原子与展示 item 事实仍留在原完成集合和 Studio 投影中。原 read lease 的排他 read_before 与包含锚点的 read_at 使用普通独立窗口恢复所需成员/原子页，不能为恢复扩大 current、延迟 ACK 或另开可靠 feed；范围、成员页和资源规则见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
+前台展示阻挡不延迟可靠事实接纳：原子完成保存在原事实集合，展示未交接片段与成员关系由 Studio 投影维护。客户端通过类型化 `GroupMembers` 引用按需读取成员，不以原子完成位置扫描恢复组，不扩大 current、延迟 ACK 或建立第二个分组器。窗口、预算和资源规则见 [26](./26-timeline-content.md#2682-current-片段与成员展开的资源边界)。
 
 ## 7.2 领域版本与实时内容
 
@@ -71,20 +71,19 @@ FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，�
 
 ### HTTP 读取资格的传递
 
-会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选参数选择真实业务 Children 或展示工作组成员窗口（`GroupMembers { item_id }`），省略时选择 Main。成功打开后，响应头 `X-Anywork-Conversation` 返回该原生 feed 的订阅身份。后续独立查询必须在同名请求头携带它，并与路径中的 Thread 一起校验；它只定位原 feed 持有的 read lease，不替代调用方的访问授权，也不作为完成游标。
+会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选参数互斥地选择真实业务 Children 或完整类型化 `GroupMembers` 引用（原库、投影版本、item 身份），省略时选择 Main。成功打开后，响应头 `X-Anywork-Conversation` 返回原生 feed 的订阅身份。后续独立查询在同名请求头携带它，并与 Thread 一起校验；它只定位原 read lease，不替代访问授权或完成游标。
 
 HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
 
 | 方法与 Thread 内路径 | 请求内容 | 返回内容 |
 | --- | --- | --- |
 | `POST /chat/older` | before、demand | Prepend ChatBatch |
-| `POST /chat/before` | completionSeq、可选 before、demand | 已观察完成位置之前的普通 Prepend 窗口；不改变原 H0 游标 |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |
 | `POST /current/page` | reference、continuation、demand | CurrentCollectionPage |
 
-这些路径均以 `/api/v1/threads/{thread_id}` 为前缀，复用 [26](./26-timeline-content.md) 的同形请求字段和产品结果。`/chat/older` 对 Main 以展示 item 位置分页、对 `GroupMembers` 以成员顺序分页，两类 continuation 不互换；Main 的 `before` 是 item 键集游标，`/chat/before` 是独立的完成窗口，不改写主历史 item cursor。它们直接借原 read lease，等待不会占用会话 SSE 的发送位置或信用；内容 watch 结束只关闭自身观察。会话 SSE 发送继续使用有界单帧背压，独立查询不确认会话流的数据帧。
+这些路径均以 `/api/v1/threads/{thread_id}` 为前缀，复用 [26](./26-timeline-content.md) 的产品契约。`/chat/older` 对 Main 按 item 位置、对成员 scope 按组内顺序分页，continuation 不互换；旧完成位置扫描路由退出。查询直接借原 read lease，不占 SSE 的发送位置或信用；内容 watch 只关闭自身观察。会话流保持单未确认普通批次，独立查询不释放或确认其 credit。
 
 ## 7.7 实时运行事实与前端细粒度投影
 

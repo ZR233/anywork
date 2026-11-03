@@ -8,6 +8,7 @@ import 'thread_wait_models.dart';
 import 'turn_models.dart';
 
 part 'chat_atom_models.dart';
+part 'timeline_item_models.dart';
 
 /// The caller's item and encoded-byte demand, mechanically mapped to the Rust protocol.
 final class ReadDemand {
@@ -29,6 +30,12 @@ final class ChildrenChatScope extends ChatScope {
   const ChildrenChatScope({required this.parentId});
 
   final String parentId;
+}
+
+final class GroupMembersChatScope extends ChatScope {
+  const GroupMembersChatScope({required this.reference});
+
+  final TimelineMembersRef reference;
 }
 
 sealed class PayloadData {
@@ -64,6 +71,13 @@ final class ChatBatch {
   final List<ChatEntry> entries;
   final String? before;
   final CurrentProjection? current;
+
+  Iterable<TimelineItem> get items =>
+      entries.whereType<ItemChatEntry>().map((entry) => entry.item);
+
+  /// Only member/Children windows carry atoms; Main carries display items.
+  Iterable<ChatAtom> get atoms =>
+      entries.whereType<ChatAtomEntry>().map((entry) => entry.atom);
 }
 
 final class ContentRef {
@@ -165,12 +179,14 @@ final class CurrentProjection {
     this.active,
     this.activeTurn,
     required List<ChatSourceState> sources,
+    required List<TimelineItem> items,
     required List<ChatAtom> atoms,
     this.plan,
     this.interactions,
     required List<CurrentContentPreview> previews,
     required List<CurrentCollectionRef> collections,
   }) : sources = List.unmodifiable(sources),
+       items = List.unmodifiable(items),
        atoms = List.unmodifiable(atoms),
        previews = List.unmodifiable(previews),
        collections = List.unmodifiable(collections);
@@ -181,6 +197,7 @@ final class CurrentProjection {
   final CurrentActivityHead? active;
   final CurrentTurnHead? activeTurn;
   final List<ChatSourceState> sources;
+  final List<TimelineItem> items;
   final List<ChatAtom> atoms;
   final CurrentPlanHead? plan;
   final CurrentCollectionRef? interactions;

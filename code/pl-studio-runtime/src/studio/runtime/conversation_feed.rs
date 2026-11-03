@@ -39,6 +39,7 @@ pub struct ConversationFeed {
     slot_changed: watch::Receiver<u64>,
     cut: Option<Arc<ConversationCut>>,
     cut_entry: usize,
+    cut_entries: Option<Vec<ChatEntry>>,
     delivered: u64,
     seen_serial: u64,
     current: Option<CurrentProjection>,
@@ -92,6 +93,8 @@ impl StudioRuntime {
         self.check_thread_read_access(&thread)?;
         let history = self.store.history(thread_id).await?;
         let main = matches!(scope, ChatScope::Main);
+        let derived = !matches!(scope, ChatScope::Children { .. });
+        let mut display_page = None;
         let mut cuts = None;
         let mut progress = None;
         let mut state = None;
@@ -165,7 +168,11 @@ impl StudioRuntime {
                 current.clone(),
                 continuation_reserve(&id, &scope, &database_id, source.session.epoch().as_str()),
             );
-            let page = source
+            let page = if derived {
+                display_page = Some(history.timeline_page(&scope, None, i64::MAX as u64,
+                    state_effect_floor, demand, core::ChatBudget::fixed_bytes(&budget)).await?);
+                core::ChatPage { epoch: source.session.epoch(), ceiling: source.head, items: Vec::new(), before: None }
+            } else { source
                 .session
                 .page(
                     core::ChatPageRequest {
@@ -176,7 +183,7 @@ impl StudioRuntime {
                     },
                     &budget,
                 )
-                .await?;
+                .await? };
             cuts = Some(cut_rx);
             progress = Some(progress_rx);
             state = Some(state_rx);
@@ -212,11 +219,15 @@ impl StudioRuntime {
                     session.epoch().as_str(),
                 ),
             );
-            match history
-                .cold_conversation(scope_query, core_demand(demand)?, &budget)
-                .await?
+            let cold = if derived {
+                history.cold_timeline(&scope, core_demand(demand)?, &budget).await?
+            } else {
+                history.cold_conversation(scope_query, core_demand(demand)?, &budget).await?
+            };
+            match cold
             {
                 Some(cold) => {
+                    display_page = cold.timeline;
                     ensure!(
                         database_id.as_deref() == Some(cold.database_id.as_str()),
                         resync()
@@ -256,7 +267,11 @@ impl StudioRuntime {
         if !slot.is_current(position.epoch) {
             return Err(resync());
         }
-        let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
+        let (mut initial_entries, boundary, read_ceiling) = if let Some(page) = display_page {
+            (page.entries, page.before, page.ceiling)
+        } else {
+            (entries(items, database_id.as_deref().unwrap_or_default())?, boundary, head)
+        };
         if let Some(sources) = cold_sources {
             annotate_atoms(&mut initial_entries, &sources)?;
         } else {
@@ -271,7 +286,7 @@ impl StudioRuntime {
         let reader = ConversationReader::new(
             id,
             scope,
-            head,
+            read_ceiling,
             state_effect_floor,
             slot,
             position.epoch,
@@ -291,6 +306,7 @@ impl StudioRuntime {
             current: current.clone(),
         };
         let initial = reader.finish_batch(initial, demand)?;
+        reader.select_member_window(&initial.entries);
         tracing::debug!(
             target: "conversation_work",
             returned = initial.entries.len(),
@@ -345,6 +361,7 @@ impl StudioRuntime {
             slot_changed,
             cut: None,
             cut_entry: 0,
+            cut_entries: None,
             delivered: head,
             seen_serial: initial_serial,
             current,
@@ -366,7 +383,7 @@ impl StudioRuntime {
     }
 }
 fn continuation_reserve(lease: &str, scope: &ChatScope, database: &str, epoch: &str) -> String {
-    serde_json::json!({"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
+    serde_json::json!({"projection_version":TIMELINE_PROJECTION_VERSION,"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
 }
 impl ConversationFeed {
     pub fn thread_id(&self) -> &str {
@@ -396,6 +413,7 @@ impl ConversationFeed {
         self.storage = None;
         self.last_turn = None;
         self.cut = None;
+        self.cut_entries = None;
         self.initial = None;
         self.pending.clear();
         self.current = None;
@@ -580,130 +598,84 @@ impl ConversationFeed {
             if let Some(cut) = self.cut.clone() {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;
+                    self.cut_entries = None;
                     continue;
                 }
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
-                if main && self.cut_entry < cut.handoff.entries.len() {
+                if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
+                    if self.cut_entries.is_none() {
+                        let candidates = if main {
+                        cut.handoff.entries.to_vec()
+                    } else {
+                        let ChatScope::GroupMembers { reference } = &self.reader.inner.scope else { unreachable!() };
+                        cut.handoff.members.iter().filter(|member| member.item_id == reference.item_id && self.reader.observes_member(&member.atom.id))
+                            .map(|member| {
+                                let mut atom = member.atom.clone();
+                                if let (Some(id), Some(bytes)) = (&atom.completion_item_id, member.payload_bytes) {
+                                    atom.payload = Some(PayloadData::Deferred {
+                                        reference: ContentRef { database_id: reference.database_id.clone(), target: ContentTarget::ItemPayload { item_id: id.clone() } },
+                                        byte_length: bytes,
+                                    });
+                                }
+                                ChatEntry::Atom(Box::new(atom))
+                            }).chain(cut.handoff.sources.iter().filter(|state| self.reader.observes_source(&state.source)).cloned().map(ChatEntry::Source)).collect()
+                        };
+                        self.cut_entries = Some(candidates);
+                    }
+                    let candidates = self.cut_entries.as_ref().expect("captured member/item frame");
+                    let total = candidates.len();
                     let mut product = ChatBatch {
-                        placement: ChatPlacement::Append,
-                        entries: Vec::new(),
-                        before: None,
-                        current: Some(cut.handoff.projection_at(self.delivered)),
+                        placement: ChatPlacement::Append, entries: Vec::new(), before: None,
+                        current: main.then(|| cut.handoff.projection_after_items(self.cut_entry)),
                     };
                     let mut next = self.cut_entry;
-                    for entry in cut
-                        .handoff
-                        .entries
-                        .iter()
-                        .skip(next)
-                        .take(self.demand.max_items as usize)
-                    {
+                    for entry in candidates.iter().skip(next).take(self.demand.max_items as usize) {
                         product.entries.push(entry.clone());
+                        product.current = main.then(|| cut.handoff.projection_after_items(next + 1));
                         if product.encoded_len()? > self.demand.max_bytes as usize {
                             product.entries.pop();
-                            ensure!(
-                                !product.entries.is_empty(),
-                                core::ChatError::InvalidDemand(
-                                    "start/source envelope cannot fit demand".into()
-                                )
-                            );
+                            product.current = main.then(|| cut.handoff.projection_after_items(next));
+                            ensure!(!product.entries.is_empty(), core::ChatError::InvalidDemand("display handoff cannot fit demand".into()));
                             break;
                         }
                         next += 1;
                     }
-                    let product = self.reader.finish_batch(product, self.demand)?;
                     self.cut_entry = next;
-                    self.current = product.current.clone();
-                    return Ok(Some(ConversationEvent::Chat {
-                        batch: Box::new(product),
-                    }));
-                }
-                if main && self.delivered >= cut.handoff.main_through {
-                    // The owner proves this suffix contains no further Main completion.
-                    self.delivered = self.delivered.max(cut.head);
+                    if next == total {
+                        self.delivered = cut.head;
+                        self.seen_serial = cut.serial;
+                        self.cut = None;
+                        self.cut_entry = 0;
+                        self.cut_entries = None;
+                    }
+                    if !product.entries.is_empty() || product.current != self.current {
+                        self.reader.annotate_source_states(&mut product.entries, &cut.handoff.after.sources, cut.handoff.after.source_effect_seq).await?;
+                        let product = self.reader.finish_batch(product, self.demand)?;
+                        self.current = product.current.clone();
+                        self.state_turn = true;
+                        return Ok(Some(ConversationEvent::Chat { batch: Box::new(product) }));
+                    }
+                    continue;
                 }
                 if cut.head > self.delivered {
-                    let budget = if main {
-                        // A prefix only removes previews from `before`. Its source stamp is the
-                        // reliable effect's stamp, so reserve that envelope and the final one.
-                        let mut before = cut.handoff.before.as_ref().clone();
-                        before.source_effect_seq = cut.handoff.after.source_effect_seq;
-                        let before = self.reader.budget(Some(before)).await?;
-                        let after = self
-                            .reader
-                            .budget(Some(cut.handoff.after.as_ref().clone()))
-                            .await?;
-                        if core::ChatBudget::fixed_bytes(&before)
-                            >= core::ChatBudget::fixed_bytes(&after)
-                        {
-                            before
-                        } else {
-                            after
-                        }
-                    } else {
-                        self.reader.budget(None).await?
-                    };
-                    let batch = cut
-                        .session
-                        .completed_after(
-                            core::ChatCompletionCursor::new(cut.session.epoch(), self.delivered),
-                            Some(query(&self.reader.inner.scope)?),
-                            Some(cut.head),
-                            core_demand(self.demand)?,
-                            &budget,
-                        )
-                        .await?;
+                    let budget = self.reader.budget(None).await?;
+                    let batch = cut.session.completed_after(
+                        core::ChatCompletionCursor::new(cut.session.epoch(), self.delivered),
+                        Some(query(&self.reader.inner.scope)?), Some(cut.head), core_demand(self.demand)?, &budget,
+                    ).await?;
                     self.reader.ensure()?;
                     ensure!(batch.through_seq > self.delivered, resync());
                     self.delivered = batch.through_seq;
-                    let current = main.then(|| cut.handoff.projection_at(self.delivered));
-                    if main && self.delivered >= cut.handoff.main_through {
-                        self.delivered = cut.head;
-                    }
-                    if !batch.items.is_empty() || current.is_some() {
-                        let mut product = ChatBatch {
-                            placement: ChatPlacement::Append,
-                            entries: entries(batch.items, &budget.database_id)?,
-                            before: None,
-                            current: current.clone(),
-                        };
-                        self.reader
-                            .annotate_source_states(
-                                &mut product.entries,
-                                &cut.handoff.after.sources,
-                                cut.handoff.after.source_effect_seq,
-                            )
-                            .await?;
+                    if !batch.items.is_empty() {
+                        let mut product = ChatBatch { placement: ChatPlacement::Append,
+                            entries: entries(batch.items, &budget.database_id)?, before: None, current: None };
+                        self.reader.annotate_source_states(&mut product.entries, &cut.handoff.after.sources,
+                            cut.handoff.after.source_effect_seq).await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
-                        if let Some(current) = current {
-                            self.current = Some(current);
-                        }
-                        if self.delivered == cut.head {
-                            self.seen_serial = cut.serial;
-                            self.cut = None;
-                            self.cut_entry = 0;
-                        }
                         self.state_turn = true;
-                        return Ok(Some(ConversationEvent::Chat {
-                            batch: Box::new(product),
-                        }));
+                        return Ok(Some(ConversationEvent::Chat { batch: Box::new(product) }));
                     }
-                } else if main && self.current.as_ref() != Some(cut.handoff.after.as_ref()) {
-                    let product = ChatBatch {
-                        placement: ChatPlacement::Append,
-                        entries: Vec::new(),
-                        before: None,
-                        current: Some(cut.handoff.after.as_ref().clone()),
-                    };
-                    let product = self.reader.finish_batch(product, self.demand)?;
-                    self.current = product.current.clone();
-                    self.seen_serial = cut.serial;
-                    self.cut = None;
-                    self.cut_entry = 0;
-                    self.state_turn = true;
-                    return Ok(Some(ConversationEvent::Chat {
-                        batch: Box::new(product),
-                    }));
+                    continue;
                 }
                 self.seen_serial = cut.serial;
                 self.cut = None;

@@ -5,86 +5,11 @@ use super::*;
 use crate::api::studio::{
     handlers::chat::tests::MODEL,
     types::{
-        BridgeChatActiveStatus, BridgeChatAtom, BridgeChatAtomKind, BridgeChatAtomLifecycle,
-        BridgeChatBatch, BridgeChatDeliveryKind, BridgeChatPlacement, BridgeChatSourceId,
-        BridgeChatTerminalOutcome, BridgeContentRange, BridgeCurrentContentRole,
+        BridgeChatBatch, BridgeChatPlacement,
+        BridgeContentRange, BridgeCurrentContentRole,
     },
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
-
-fn is_terminal(atom: &BridgeChatAtom) -> bool {
-    matches!(&atom.lifecycle, BridgeChatAtomLifecycle::Terminal { .. })
-}
-
-fn completed_payload_item_id(atom: &BridgeChatAtom) -> Option<&str> {
-    match (&atom.lifecycle, atom.completion_item_id.as_deref()) {
-        (BridgeChatAtomLifecycle::Terminal { .. }, Some(item_id)) => Some(item_id),
-        _ => None,
-    }
-}
-
-fn record_member(
-    atom: &BridgeChatAtom,
-    active_members: &mut HashSet<String>,
-    completed_members: &mut HashSet<String>,
-) -> Result<()> {
-    if is_terminal(atom) {
-        active_members.remove(&atom.id);
-        ensure!(
-            completed_members.insert(atom.id.clone()),
-            "repeated completed member identity"
-        );
-    } else {
-        // Active snapshots can repeat and may transition to Terminal with this same member ID.
-        active_members.insert(atom.id.clone());
-    }
-    Ok(())
-}
-
-#[test]
-fn active_member_can_transition_to_terminal_but_duplicate_terminal_is_rejected() {
-    let mut atom = BridgeChatAtom {
-        id: "stable-member-id".into(),
-        completion_item_id: None,
-        completion_seq: None,
-        source: BridgeChatSourceId::Input {
-            input_id: "input-id".into(),
-        },
-        source_state: None,
-        source_order: Some(1),
-        kind: BridgeChatAtomKind::Input,
-        delivery: BridgeChatDeliveryKind::Independent,
-        lifecycle: BridgeChatAtomLifecycle::Active {
-            started: None,
-            status: BridgeChatActiveStatus::Waiting,
-        },
-        turn_id: None,
-        attempt_id: None,
-        tool: None,
-        wait: None,
-        text_channel: None,
-        started_at: None,
-        finished_at: None,
-        contents: Vec::new(),
-        payload: None,
-    };
-    let mut active_members = HashSet::new();
-    let mut completed_members = HashSet::new();
-
-    record_member(&atom, &mut active_members, &mut completed_members).unwrap();
-    assert!(active_members.contains("stable-member-id"));
-    assert!(completed_members.is_empty());
-
-    atom.lifecycle = BridgeChatAtomLifecycle::Terminal {
-        started: None,
-        ended: None,
-        outcome: BridgeChatTerminalOutcome::Completed,
-    };
-    record_member(&atom, &mut active_members, &mut completed_members).unwrap();
-    assert!(active_members.is_empty());
-    assert!(completed_members.contains("stable-member-id"));
-    assert!(record_member(&atom, &mut active_members, &mut completed_members).is_err());
-}
 
 async fn chat(
     owner: &ConversationOwner,
@@ -152,27 +77,20 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             max_items: 16, max_bytes: 64 * 1024,
         }).await?;
         ensure!(old.placement == BridgeChatPlacement::Prepend && old.current.is_none());
-        let mut active_members = HashSet::new();
-        let mut completed_members = HashSet::new();
+        let mut completed_items = HashSet::new();
         for entry in &initial.entries {
-            if let crate::api::studio::types::BridgeChatEntry::Atom(atom) = entry {
-                record_member(atom, &mut active_members, &mut completed_members)?;
-            }
-        }
-        if let Some(current) = &initial.current {
-            for atom in &current.atoms {
-                record_member(atom, &mut active_members, &mut completed_members)?;
-            }
+            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
+                anyhow::bail!("Main must contain display items");
+            };
+            ensure!(completed_items.insert(item.id.clone()));
         }
         let mut historical = None;
         for entry in old.entries {
-            let crate::api::studio::types::BridgeChatEntry::Atom(atom) = entry else {
+            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
                 continue;
             };
-            record_member(&atom, &mut active_members, &mut completed_members)?;
-            if is_terminal(&atom)
-                && let Some(item_id) = completed_payload_item_id(&atom)
-            {
+            ensure!(completed_items.insert(item.id.clone()));
+            if let Some(item_id) = item.content_item_id.as_deref() {
                 let manifest = facade
                     .list_contents(
                         item_id.to_owned(),
@@ -202,14 +120,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
             for entry in batch.entries {
-                if let crate::api::studio::types::BridgeChatEntry::Atom(atom) = entry {
-                    record_member(&atom, &mut active_members, &mut completed_members)?;
-                }
-            }
-            if let Some(current) = &batch.current {
-                for atom in &current.atoms {
-                    record_member(atom, &mut active_members, &mut completed_members)?;
-                }
+                let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
+                    anyhow::bail!("Main appended an atom instead of an item");
+                };
+                ensure!(completed_items.insert(item.id));
             }
             if let Some(preview) = batch.current.as_ref().and_then(|current| current.previews.iter()
                 .find(|preview| preview.role == BridgeCurrentContentRole::Response))
@@ -266,14 +180,11 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
             for entry in batch.entries {
-                let crate::api::studio::types::BridgeChatEntry::Atom(atom) = entry else {
+                let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
                     continue;
                 };
-                record_member(&atom, &mut active_members, &mut completed_members)?;
-                if !is_terminal(&atom) {
-                    continue;
-                }
-                if let Some(item_id) = completed_payload_item_id(&atom) {
+                ensure!(completed_items.insert(item.id.clone()));
+                if let Some(item_id) = item.content_item_id.as_deref() {
                     let manifest = facade
                         .list_contents(
                             item_id.to_owned(),

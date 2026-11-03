@@ -27,14 +27,12 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.content,
     this.selectionId,
     this.selectionStartedMicros,
-    this.readGroup,
+    required this.openMembers,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
       _controller!,
       generation: generation,
-      imageResources: imageResources,
-      displayDemand: demand,
       onUnitCreated: _bindUnit,
       onUnitRetired: _retireUnit,
     );
@@ -46,11 +44,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ConversationContent content;
   final int? selectionId;
   final int? selectionStartedMicros;
-  final Future<void> Function(
-    TimelineDisplayLease lease,
-    TimelineExpansionIntent intent,
-  )?
-  readGroup;
+  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand) openMembers;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
@@ -59,15 +53,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   TimelineMessageController? _presentation;
   ValueListenable<List<TimelineDisplayUnit>> get liveUnits =>
       _presentation!.live;
-  (int, int) get retainedCompletedBudget =>
-      _presentation?.retainedCompletedBudget ?? (0, 0);
-  final activity = ValueNotifier<({bool hasMore, bool loading, Object? error})>(
-    (hasMore: false, loading: false, error: null),
-  );
-  _TimelineRecoveryRead? _recovery;
   final Set<TimelineGroupDisplay> _groupDisplays = {};
-  final Map<String, Set<Object>> _visibleGroups = {};
-  final Map<String, _TimelineGroupRead> _groupReads = {};
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   final Set<ConversationQueryScope> _ownedQueries = {};
@@ -99,7 +85,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   void _bindUnit(TimelineDisplayUnit unit) {
     final intent = unit.expansion;
-    final unitId = unit.id;
     ConversationQueryScope? bodyScope;
     Object? bodyGeneration;
     intent.retireBody = () {
@@ -146,192 +131,16 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.readEarlier = readGroup == null
-        ? null
-        : () => readGroup!(this, intent);
-    intent.onVisibilityChanged = (token, visible) {
-      if (_retired) return;
-      final mounted = _visibleGroups.putIfAbsent(unitId, () => {});
-      if (visible) {
-        mounted.add(token);
-      } else {
-        mounted.remove(token);
+    intent.openMembers = (reference, demand) {
+      if (_retired || intent.isRetired || !intent.bodyActive) {
+        throw const StaleConversationScope();
       }
-      if (mounted.isNotEmpty) return;
-      _visibleGroups.remove(unitId);
-      final read = _groupReads.remove(unitId);
-      if (read != null) {
-        read.scope.retire(); // revoke synchronously, join on the original lease
-        unawaited(_settleQueries(read.scope));
-      }
-      intent
-        ..completionAnchor = null
-        ..before = null
-        ..hasPage = false
-        ..loading = false
-        ..error = null;
+      return openMembers(reference, demand);
     };
   }
 
   void _retireUnit(TimelineDisplayUnit unit) {
     _groupDisplays.removeWhere((display) => display.unitId == unit.id);
-    _visibleGroups.remove(unit.id);
-    final read = _groupReads.remove(unit.id);
-    if (read != null) {
-      read.scope.retire();
-      unawaited(_settleQueries(read.scope));
-    }
-  }
-
-  void _syncRecovery() {
-    final range = _presentation?.recoveryRange;
-    final previous = _recovery;
-    if (previous != null && !identical(previous.identity, range?.$1)) {
-      _recovery = null;
-      previous.scope.retire();
-      unawaited(_settleQueries(previous.scope));
-    }
-    activity.value = (
-      hasMore: range != null,
-      loading: _recovery?.loading ?? false,
-      error: _recovery?.error,
-    );
-  }
-
-  Future<void> _readRecovery(
-    Future<void> Function(Future<void> Function()) admit,
-  ) async {
-    final range = _presentation?.recoveryRange;
-    if (_retired || range == null) return;
-    _syncRecovery();
-    var read = _recovery;
-    if (read == null) {
-      final scope = openDetailQueries();
-      if (scope == null) throw const StaleConversationScope();
-      read = _TimelineRecoveryRead(scope, range.$1, range.$2, range.$3);
-      _recovery = read;
-    }
-    final original = read;
-    bool eligible() =>
-        !_retired &&
-        identical(_recovery, original) &&
-        original.scope.isActive &&
-        identical(_presentation?.recoveryRange?.$1, original.identity);
-    original
-      ..loading = true
-      ..error = null;
-    _syncRecovery();
-    try {
-      final batch = await original.scope.readAt(
-        completionSeq: original.upper,
-        before: original.before,
-        demand: demand,
-      );
-      if (!eligible()) throw const StaleConversationScope();
-      if (batch.placement != ChatPlacement.prepend ||
-          batch.current != null ||
-          original.before != null && original.before == batch.before) {
-        throw const ConversationContinuityError(
-          'Invalid ordinary recovery page',
-        );
-      }
-      await admit(() async {
-        if (!eligible()) throw const StaleConversationScope();
-        await _mutate(() async {
-          await _presentation!.applyBatch(
-            batch,
-            windowRange: original.identity,
-          );
-          if (!eligible()) {
-            return; // bounds expanded: the new fixed cut owns demand
-          }
-          original.before = batch.before;
-          final positions = batch.entries
-              .whereType<ChatAtomEntry>()
-              .map((entry) => entry.atom.completionSeq)
-              .whereType<int>();
-          if (batch.before == null ||
-              positions.any((seq) => seq <= original.lower)) {
-            _presentation!.finishRecovery(original.identity);
-          }
-        });
-      });
-    } catch (error) {
-      if (eligible()) original.error = error;
-      rethrow;
-    } finally {
-      original.loading = false;
-      if (!_retired) _syncRecovery();
-    }
-  }
-
-  bool _groupEligible(TimelineExpansionIntent intent) =>
-      !_retired &&
-      intent.current != null &&
-      (_visibleGroups[intent.current!.id]?.isNotEmpty ?? false);
-
-  Future<void> _readGroup(
-    TimelineExpansionIntent intent,
-    Future<void> Function(Future<void> Function()) admit,
-  ) async {
-    if (!_groupEligible(intent)) throw const StaleConversationScope();
-    final unitId = intent.current!.id;
-    var read = _groupReads[unitId];
-    if (read == null) {
-      final anchor = intent.current!.completionThrough;
-      if (anchor == null) {
-        throw StateError('No observed completion position for this group');
-      }
-      final scope = openDetailQueries();
-      if (scope == null) throw const StaleConversationScope();
-      read = _TimelineGroupRead(scope, anchor);
-      _groupReads[unitId] = read;
-    }
-    final original = read;
-    if (original.hasPage && original.before == null) return;
-    bool eligible() =>
-        _groupEligible(intent) &&
-        identical(_groupReads[unitId], original) &&
-        original.scope.isActive;
-    intent
-      ..loading = true
-      ..error = null
-      ..completionAnchor = original.anchor;
-    intent.changed();
-    try {
-      final batch = await original.scope.readBefore(
-        completionSeq: original.anchor,
-        before: original.before,
-        demand: demand,
-      );
-      if (!eligible()) throw const StaleConversationScope();
-      if (batch.placement != ChatPlacement.prepend ||
-          batch.current != null ||
-          (original.before != null && batch.before == original.before)) {
-        throw const ConversationContinuityError('Invalid ordinary detail page');
-      }
-      await admit(() async {
-        if (!eligible()) throw const StaleConversationScope();
-        await _mutate(
-          () => _presentation!.applyBatch(batch, windowIntent: intent),
-        );
-        if (!eligible()) throw const StaleConversationScope();
-        original
-          ..before = batch.before
-          ..hasPage = true;
-        intent
-          ..before = batch.before
-          ..hasPage = true;
-      });
-    } catch (error) {
-      if (eligible()) intent.error = error;
-      rethrow;
-    } finally {
-      if (eligible()) {
-        intent.loading = false;
-        intent.changed();
-      }
-    }
   }
 
   Iterable<TimelineChildrenDisplay> get childrenDisplays sync* {
@@ -387,7 +196,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   bool get isReleased => _released.isCompleted;
   TimelineDisplayMode get mode => _mode;
   String? get olderCursor => _before;
-  bool get hasOlder => _hasOlder || _presentation?.hasRecoveryDemand == true;
+  bool get hasOlder => _hasOlder;
   int get loadedCount => _controller?.messages.length ?? 0;
   Future<void> get released => _released.future;
 
@@ -437,7 +246,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       return await operation();
     } finally {
       _mutations--;
-      if (!_retired) _syncRecovery();
       _releaseIfReady();
     }
   }
@@ -445,11 +253,9 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   Future<void> retire() {
     if (!_retired) {
       _retired = true;
+      _presentation?.retireDisplays();
       _childrenDisplays.clear();
       _groupDisplays.clear();
-      _visibleGroups.clear();
-      _groupReads.clear();
-      _recovery = null;
       _currentDisplay = null;
       imageResources.retire();
       retirement.value = true;
@@ -510,7 +316,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     _presentation = null;
     imageResources.release();
     retirement.dispose();
-    activity.dispose();
     controller.dispose();
     _controller = null;
     _scrollController.dispose();
@@ -784,7 +589,11 @@ final class TimelineSessionOwner {
       generation: ++_generation,
       demand: _readDemand!,
       content: session.content,
-      readGroup: _requestGroup,
+      openMembers: (reference, demand) => client.conversations.openGroupMembers(
+        threadId: session.threadId,
+        reference: reference,
+        demand: demand,
+      ),
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
@@ -887,21 +696,6 @@ final class TimelineSessionOwner {
       _requestOlder(threadId, generation: generation, retry: false);
   Future<void> retryOlder(String threadId, {required int generation}) =>
       _requestOlder(threadId, generation: generation, retry: true);
-  Future<void> loadActivity(String threadId, {required int generation}) {
-    final display = lease(threadId);
-    if (display == null || display.generation != generation) {
-      return Future.value();
-    }
-    return _readSlot((display, 'recovery'), () async {
-      if (!identical(_current, display) || display.isRetired) return;
-      try {
-        await display._readRecovery(_serialize);
-      } finally {
-        if (identical(_current, display) && !display.isRetired) _publishState();
-      }
-    });
-  }
-
   Future<void> _requestOlder(
     String threadId, {
     required int generation,
@@ -917,20 +711,7 @@ final class TimelineSessionOwner {
     ), () => _loadOlder(current, retry: retry));
   }
 
-  Future<void> _requestGroup(
-    TimelineDisplayLease display,
-    TimelineExpansionIntent intent,
-  ) {
-    return _readSlot((display, intent), () async {
-      if (!identical(_current, display) || display.isRetired) {
-        throw const StaleConversationScope();
-      }
-      await display._readGroup(intent, _serialize);
-    });
-  }
-
-  /// Global paging and local ordinary windows share the existing read slot.
-  /// Same intent joins; a distinct intent queues then revalidates its lease.
+  /// Main paging is single-flight and revalidates the captured display lease.
   Future<void> _readSlot(Object key, Future<void> Function() operation) {
     final existing = _olderInFlight;
     if (existing != null) {
@@ -968,21 +749,6 @@ final class TimelineSessionOwner {
     // A different read intent may have queued this operation before selection
     // retired its lease. Revalidate before publishing loading on the new page.
     if (!identical(_current, current) || current.isRetired) return;
-    if (current._presentation?.hasRecoveryDemand == true) {
-      if (!retry && source.value?.olderError != null) return;
-      _publishState(isLoadingOlder: true, olderError: null);
-      try {
-        await current._readRecovery(_serialize);
-        if (identical(_current, current) && !current.isRetired) {
-          _publishState(isLoadingOlder: false, olderError: null);
-        }
-      } catch (error) {
-        if (identical(_current, current) && !current.isRetired) {
-          _publishState(isLoadingOlder: false, olderError: error);
-        }
-      }
-      return;
-    }
     if (!current.hasOlder ||
         current._before == null ||
         (!retry && source.value?.olderError != null)) {
@@ -1107,23 +873,4 @@ final class _TimelineConsumer implements ConversationBatchConsumer {
   @override
   Future<void> applyBatch(ChatBatch batch) =>
       owner._accept(selection, session, batch);
-}
-
-final class _TimelineGroupRead {
-  _TimelineGroupRead(this.scope, this.anchor);
-  final ConversationQueryScope scope;
-  final int anchor;
-  String? before;
-  bool hasPage = false;
-}
-
-final class _TimelineRecoveryRead {
-  _TimelineRecoveryRead(this.scope, this.identity, this.lower, this.upper);
-  final ConversationQueryScope scope;
-  final Object identity;
-  final int lower;
-  final int upper;
-  String? before;
-  bool loading = false;
-  Object? error;
 }

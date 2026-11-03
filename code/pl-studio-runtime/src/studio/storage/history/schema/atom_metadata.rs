@@ -258,6 +258,7 @@ async fn completed_metadata(
     let atom = ChatAtom {
         id: member_id,
         completion_item_id: Some(id.into()),
+        content_present: None,
         completion_seq: None,
         source_state: None,
         source,
@@ -455,6 +456,7 @@ async fn active_atoms(
             ChatAtom {
                 id: preview.id.clone(),
                 completion_item_id: None,
+                content_present: None,
                 completion_seq: None,
                 source_state: None,
                 source: ChatSourceId::ForegroundTurn {
@@ -521,6 +523,7 @@ async fn active_atoms(
                 ChatAtom {
                     id: id.clone(),
                     completion_item_id: None,
+                    content_present: None,
                     completion_seq: None,
                     source_state: None,
                     source: ChatSourceId::ForegroundTurn {

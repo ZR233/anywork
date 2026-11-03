@@ -1273,6 +1273,11 @@ impl LiveOwner {
             self.projection
                 .publish_prepared(&self.chat, &mut pending.prepared)
                 .await?;
+        }
+        // Publication's derived member/item increment is now concrete. Charge
+        // that same retained slot before exposing its display cut.
+        self.publish_retained()?;
+        if let Some(pending) = self.pending.as_mut() {
             if let Some(current) = pending.prepared.current_state.as_ref() {
                 let handoff = pending
                     .prepared
@@ -4623,6 +4628,7 @@ mod storage_fault_tests {
         );
         let current = crate::studio::storage::history::conversation::current::PreparedCurrent {
             timeline: std::sync::Arc::from([]),
+            timeline_update: std::sync::Arc::new(Default::default()),
             timeline_commit: 0,
             projection: pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
             changes: Arc::from([]),

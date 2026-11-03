@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatSourceId, ContentRange, ContentRef,
-    ContentTarget, PayloadData, ReadDemand, TurnState,
+    ContentTarget, PayloadData, ReadDemand, TimelineItem, TimelineItemKind, TurnState,
 };
 use std::time::Instant;
 
@@ -11,15 +11,6 @@ pub(crate) const CHAT_DEMAND: ReadDemand = ReadDemand {
     max_bytes: 256 * 1024,
 };
 pub(crate) const CHAT_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
-
-/// Canonical Core `ChatKey::new("turn", id)` encoding for the Children query field.
-pub(crate) fn turn_parent_key(turn_id: &str) -> Result<String> {
-    ensure!(
-        !turn_id.is_empty(),
-        "cannot scope Children to an empty Turn identity"
-    );
-    Ok(format!("{}:turn{turn_id}", "turn".len()))
-}
 
 pub(crate) fn charge_chat_batch(batch: &ChatBatch, remaining: &mut usize) -> Result<()> {
     ensure!(
@@ -164,6 +155,157 @@ pub(crate) async fn chat_payload(
         );
     }
     Ok(value)
+}
+
+/// Read a terminal Main text/status item's original payload, preserving the
+/// owning completion identity instead of manufacturing a member atom.
+pub(crate) async fn completed_timeline_payload(
+    read: &crate::http::ChatRead,
+    item: &TimelineItem,
+    remaining: &mut usize,
+    deadline: Instant,
+) -> Result<Option<serde_json::Value>> {
+    ensure!(
+        matches!(item.kind, TimelineItemKind::Text | TimelineItemKind::Status),
+        "only a text/status Timeline item can carry a terminal payload"
+    );
+    ensure!(
+        item.members.is_none(),
+        "text/status Timeline item unexpectedly carried a members reference"
+    );
+    let Some(outcome) = item.outcome else {
+        ensure!(
+            item.payload.is_none() && item.content_item_id.is_none(),
+            "nonterminal Timeline item carried terminal payload ownership"
+        );
+        return Ok(None);
+    };
+    let payload_data = item
+        .payload
+        .as_ref()
+        .context("terminal Timeline item omitted its original payload")?;
+    let content_item_id = item
+        .content_item_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .context("terminal Timeline item omitted content_item_id")?;
+    if let PayloadData::Deferred { reference, .. } = payload_data {
+        ensure!(
+            matches!(
+                &reference.target,
+                ContentTarget::ItemPayload { item_id } if item_id == content_item_id
+            ),
+            "Deferred Timeline payload identity did not match content_item_id"
+        );
+    }
+    let payload = chat_payload(read, payload_data, remaining, deadline).await?;
+    if let Some(turn_id) = item.turn_id.as_deref() {
+        ensure!(
+            payload["turnId"].as_str() == Some(turn_id),
+            "Timeline metadata and original payload Turn conflict"
+        );
+    }
+    if let ChatSourceId::ForegroundTurn { turn_id } = &item.source {
+        ensure!(
+            item.turn_id.as_deref() == Some(turn_id),
+            "Timeline source and Turn identity conflict"
+        );
+    }
+    if let Some(channel) = &item.text_channel {
+        ensure!(
+            payload["type"] == "text"
+                && payload["data"]["channel"] == serde_json::to_value(channel)?,
+            "Timeline channel and original text payload disagree"
+        );
+    }
+    ensure!(
+        matches!(
+            outcome,
+            pl_protocol::ChatTerminalOutcome::Completed
+                | pl_protocol::ChatTerminalOutcome::Failed
+                | pl_protocol::ChatTerminalOutcome::Cancelled
+                | pl_protocol::ChatTerminalOutcome::Transferred
+        ),
+        "unknown terminal Timeline outcome"
+    );
+    Ok(Some(payload))
+}
+
+/// Read a work group's real members only through its typed reference. The
+/// member window is independently paged and charged against the caller's
+/// existing byte and deadline budgets.
+pub(crate) async fn group_member_atoms(
+    read: &crate::http::ChatRead,
+    item: &TimelineItem,
+    remaining: &mut usize,
+    deadline: Instant,
+) -> Result<Vec<ChatAtom>> {
+    ensure!(
+        item.kind == TimelineItemKind::WorkGroup,
+        "GroupMembers requested for a non-work-group Timeline item"
+    );
+    ensure!(
+        item.payload.is_none() && item.content_item_id.is_none(),
+        "work group unexpectedly carried a terminal payload"
+    );
+    let reference = item
+        .members
+        .as_ref()
+        .context("work group omitted its typed members reference")?;
+    let (members_read, mut page) = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        read.open_members(reference, CHAT_DEMAND),
+    )
+    .await
+    .context("opening GroupMembers exceeded observation deadline")??;
+    let mut atoms = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for page_index in 0..256 {
+        let has_more = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            async {
+                charge_chat_batch(&page, remaining)?;
+                ensure!(
+                    page.entries.iter().all(|entry| {
+                        matches!(
+                            entry,
+                            pl_protocol::ChatEntry::Atom(_) | pl_protocol::ChatEntry::Source(_)
+                        )
+                    }),
+                    "GroupMembers scope returned a display item"
+                );
+                for entry in &page.entries {
+                    if let pl_protocol::ChatEntry::Atom(atom) = entry {
+                        atoms.push((**atom).clone());
+                    }
+                }
+                if let Some(before) = page.before.take() {
+                    ensure!(
+                        page_index + 1 < 256,
+                        "GroupMembers scope exceeded bounded page budget"
+                    );
+                    ensure!(
+                        seen.insert(before.clone()),
+                        "GroupMembers continuation did not advance"
+                    );
+                    page = members_read.load_older(&before, CHAT_DEMAND).await?;
+                } else {
+                    return Ok::<bool, anyhow::Error>(false);
+                }
+                Ok(true)
+            },
+        )
+        .await
+        .context("GroupMembers read exceeded observation deadline")??;
+        if !has_more {
+            break;
+        }
+    }
+    ensure!(
+        page.before.is_none(),
+        "GroupMembers scope exceeded bounded page budget"
+    );
+    Ok(atoms)
 }
 
 /// Decode only actual terminal atoms; Source and Active are facts, never results.

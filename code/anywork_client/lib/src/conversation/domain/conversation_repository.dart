@@ -17,6 +17,14 @@ abstract interface class ConversationRepository {
     required String parentId,
     required ReadDemand demand,
   });
+  /// Opens an independently owned member window for [reference].
+  ///
+  /// Its consumer, continuation and close lifecycle never replace Main state.
+  Future<ConversationContent> openGroupMembers({
+    required String threadId,
+    required TimelineMembersRef reference,
+    required ReadDemand demand,
+  });
   Future<CloseReport> close({DateTime? deadline});
   Future<CloseReport> retryCleanup({DateTime? deadline});
 }
@@ -66,19 +74,6 @@ abstract interface class ConversationQueryScope {
     required ReadDemand demand,
   });
 
-  /// Does not apply the returned window to the main history consumer or cursor.
-  Future<ChatBatch> readBefore({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  });
-
-  /// Includes the observed completion; does not apply to the main consumer.
-  Future<ChatBatch> readAt({
-    required int completionSeq,
-    String? before,
-    required ReadDemand demand,
-  });
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,

@@ -227,6 +227,7 @@ impl CurrentOwner {
         Ok((
             Arc::new(PreparedCurrent {
                 timeline: std::sync::Arc::from([]),
+                timeline_update: std::sync::Arc::new(Default::default()),
                 timeline_commit: 0,
                 projection: snapshot.projection.clone(),
                 changes: changes.into(),

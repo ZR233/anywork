@@ -22,12 +22,13 @@ ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
       payload: payload,
     );
 
-ChatAtom chatMessage(String id, {String body = '中文 🐱', int? completionSeq}) =>
+ChatAtom chatAtomMessage(String id, {String body = '中文 🐱', int? completionSeq, bool? contentPresent}) =>
     ChatAtom(
       id: id,
       source: ReceiptChatSource(receiptId: id),
       sourceOrder: null,
       completionSeq: completionSeq,
+      contentPresent: contentPresent,
       completionItemId: id,
       kind: ChatAtomKind.text,
       delivery: ChatDeliveryKind.independent,
@@ -69,6 +70,7 @@ CurrentProjection chatCurrent({int sequence = 0}) => CurrentProjection(
   executionPresent: false,
   sources: const [],
   atoms: const [],
+  items: const [],
   previews: const [],
   collections: const [],
 );
@@ -113,13 +115,55 @@ Map<String, Object?> inlineBody(String key, String text) => {
 };
 
 ChatBatch chatBatch(
-  List<ChatAtom> messages, {
+  List<TimelineItem> messages, {
   ChatPlacement placement = ChatPlacement.set,
   String? before,
   CurrentProjection? current,
 }) => ChatBatch(
   placement: placement,
-  entries: messages.map(ChatAtomEntry.new).toList(),
+  entries: messages.map(ItemChatEntry.new).toList(),
   before: before,
   current: current,
+);
+
+/// Explicit text Main item. Atomic member fixtures use chatAtomMessage instead.
+TimelineItem chatMessage(String id, {String body = '中文 🐱', int? completionSeq}) => TimelineItem(
+  id: id,
+  kind: TimelineItemKind.text,
+  source: ReceiptChatSource(receiptId: id),
+  atomKind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.independent,
+  textChannel: ThreadTextChannel.finalAnswer,
+  contents: const [],
+  payload: chatAtomMessage(id, body: body).payload,
+  position: completionSeq,
+  admissionClosed: true,
+);
+
+/// An explicitly independent status fixture, not an atom classification rule.
+TimelineItem statusItem(ChatAtom atom) => TimelineItem(
+  id: atom.id,
+  kind: TimelineItemKind.status,
+  source: atom.source,
+  atomKind: atom.kind,
+  delivery: ChatDeliveryKind.independent,
+  contents: atom.contents,
+  payload: atom.payload,
+  admissionClosed: true,
+);
+
+TimelineItem workItem(String id, {bool closed = true, int active = 0,
+  int count = 3, int failed = 0, int cancelled = 0, int? start, int? end}) => TimelineItem(
+  id: id,
+  kind: TimelineItemKind.workGroup,
+  source: const ForegroundTurnChatSource(turnId: 'T'),
+  delivery: ChatDeliveryKind.foreground,
+  admissionClosed: closed,
+  contents: const [],
+  members: TimelineMembersRef(databaseId: 'database', projectionVersion: 1, itemId: id),
+  summary: TimelineGroupSummary(
+    memberCount: count, activeCount: active, failedCount: failed,
+    cancelledCount: cancelled, startedAt: start, finishedAt: end,
+    categories: const [TimelineCategoryCount(category: TimelineCategory.thinking, count: 1)],
+  ),
 );

@@ -4345,7 +4345,7 @@ class DemoStudioTransport extends StudioTransport
   void seedChatAtoms(
     String threadId,
     Iterable<ChatAtom> atoms, {
-    ChatScope scope = const MainChatScope(),
+    required ChatScope scope,
     List<ChatSourceState> sources = const [],
   }) {
     _ensureDemoRunning();
@@ -4357,6 +4357,23 @@ class DemoStudioTransport extends StudioTransport
     }
     for (final atom in atoms) {
       changed = history.accept(atom, scope) || changed;
+    }
+    if (changed) _publishContent(threadId);
+  }
+
+  @visibleForTesting
+  String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
+
+  /// Explicit display fixtures and their already chosen member scopes. No atom
+  /// grouping or payload-based membership inference is performed by Demo.
+  @visibleForTesting
+  void seedTimelineItems(String threadId, Iterable<TimelineItem> items) {
+    _ensureDemoRunning();
+    _demoWorkspace(threadId);
+    final history = _historyOf(threadId);
+    var changed = false;
+    for (final item in items) {
+      changed = history.acceptDisplay(item) || changed;
     }
     if (changed) _publishContent(threadId);
   }
@@ -5451,6 +5468,9 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: now,
         content: (
           kind: _DemoContentKind.completed,
+          itemKind: TimelineItemKind.status,
+          category: null,
+          contentPresent: null,
           textChannel: null,
           descriptor: {
             'type': 'tool',

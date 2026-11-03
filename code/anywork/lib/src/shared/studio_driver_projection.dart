@@ -287,7 +287,14 @@ TimelineDisplayFacts? _timelineFacts(
         {
           'unitId': display.unitId,
           'expanded': display.expanded,
-          'completionAnchor': display.completionAnchor,
+          'membersRef': switch (display.membersRef) {
+            final reference? => {
+              'databaseId': reference.databaseId,
+              'projectionVersion': reference.projectionVersion,
+              'itemId': reference.itemId,
+            },
+            null => null,
+          },
           'before': display.before,
           'loading': display.loading,
           'error': display.error?.toString(),
@@ -424,28 +431,22 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-  if (unit?.kind == TimelineUnitKind.work) {
+  if (unit?.item.kind == TimelineItemKind.workGroup) {
+    final projected = unit!.item;
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: unit!.finishedAt,
+      sealedAt: projected.finishedAt,
       compatibility: 'current',
       omittedBytes: null,
       kind: 'workGroup',
-      status: unit.live ? 'running' : 'completed',
+      status: unit.live ? 'current' : 'history',
       text: '',
       channel: null,
-      atomic: {
-        'source': _sourceFacts(unit.source),
-        'firstOrder': unit.firstOrder,
-        'lastOrder': unit.lastOrder,
-        'completionThrough': unit.completionThrough,
-        'loadedCount': unit.memberCount,
-        'memberIds': unit.members.map((atom) => atom.id).toList(),
-      },
+      timeline: _timelineEnvelopeFacts(projected),
     );
   }
   final item = chatItemPresentationOf(message);
-  if (item != null) return _timelineItemFacts(item);
+  if (item != null) return _timelineItemFacts(item, timeline: unit?.item);
   return TimelineItemFacts(
     id: message.id,
     sealedAt: null,
@@ -458,6 +459,38 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
     diagnostic: 'Message has no current chat metadata',
   );
 }
+
+Map<String, Object?> _timelineEnvelopeFacts(TimelineItem item) => {
+  'kind': item.kind.name,
+  'source': _sourceFacts(item.source),
+  'position': item.position,
+  'contentItemId': item.contentItemId,
+  'admissionClosed': item.admissionClosed,
+  'outcome': item.outcome?.name,
+  'membersRef': switch (item.members) {
+    final reference? => {
+      'databaseId': reference.databaseId,
+      'projectionVersion': reference.projectionVersion,
+      'itemId': reference.itemId,
+    },
+    null => null,
+  },
+  'summary': switch (item.summary) {
+    final summary? => {
+      'memberCount': summary.memberCount,
+      'activeCount': summary.activeCount,
+      'failedCount': summary.failedCount,
+      'cancelledCount': summary.cancelledCount,
+      'startedAt': summary.startedAt,
+      'finishedAt': summary.finishedAt,
+      'categories': [
+        for (final count in summary.categories)
+          {'category': count.category.name, 'count': count.count},
+      ],
+    },
+    null => null,
+  },
+};
 
 TimelineItemFacts _atomFacts(ChatAtom atom) {
   if (atom.payload != null) {
@@ -534,9 +567,12 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
+TimelineItemFacts _timelineItemFacts(
+  ChatItemPresentation item, {
+  TimelineItem? timeline,
+}) {
   try {
-    return _loadedItemFacts(item);
+    return _loadedItemFacts(item, timeline: timeline);
   } on FormatException catch (error) {
     // Only the current in-memory presentation is inspected here; no I/O error
     // can be relabelled by this per-item diagnostic boundary.
@@ -551,11 +587,15 @@ TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
       channel: null,
       presentationContract: item.presentationContract,
       diagnostic: error.toString(),
+      timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
     );
   }
 }
 
-TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
+TimelineItemFacts _loadedItemFacts(
+  ChatItemPresentation item, {
+  TimelineItem? timeline,
+}) {
   final data = item.data;
   final outcome = _diagnosticObject(data['outcome']);
   final state = _diagnosticObject(data['state']);
@@ -584,6 +624,7 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
       'unknown';
   return TimelineItemFacts(
     id: item.id,
+    timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
     atomic: item.atom == null
         ? null
         : {

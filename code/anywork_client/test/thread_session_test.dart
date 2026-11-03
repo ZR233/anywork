@@ -267,8 +267,8 @@ void main() {
     expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
       (fixture.consumers['thread']!.batches.single.entries.single
-              as ChatAtomEntry)
-          .atom
+              as ItemChatEntry)
+          .item
           .id,
       'item-100',
     );
@@ -276,7 +276,7 @@ void main() {
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: [ChatAtomEntry(chatMessage(id: 'next'))],
+          entries: [ItemChatEntry(chatMessage(id: 'next'))],
         ),
       ),
     );
@@ -586,8 +586,8 @@ void main() {
       await session.content.ready;
       expect(
         (fixture.consumers['thread']!.batches.single.entries.single
-                as ChatAtomEntry)
-            .atom
+                as ItemChatEntry)
+            .item
             .id,
         'item-2',
       );
@@ -674,7 +674,7 @@ void main() {
       ),
     );
     expect(
-      (consumer.batches.single.entries.single as ChatAtomEntry).atom.id,
+      (consumer.batches.single.entries.single as ItemChatEntry).item.id,
       'item-9',
     );
     observation.cancel();
@@ -706,7 +706,7 @@ void main() {
       ),
     );
     expect(
-      (consumer.batches.single.entries.single as ChatAtomEntry).atom.id,
+      (consumer.batches.single.entries.single as ItemChatEntry).item.id,
       'item-4',
     );
     observation.cancel();

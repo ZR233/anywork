@@ -124,7 +124,7 @@ void main() {
         reason: 'Settings navigation does not create a Thread',
       );
 
-      transport.seedChatAtoms('thread-main', [
+      transport.seedTimelineItems('thread-main', [
         for (var i = 0; i < 40; i++) chatMessage('route-item-$i'),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));

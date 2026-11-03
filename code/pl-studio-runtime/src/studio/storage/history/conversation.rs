@@ -22,7 +22,7 @@ pub(in super::super) mod sources;
 #[path = "conversation/tests.rs"]
 mod tests;
 #[path = "conversation/timeline.rs"]
-pub(in super::super) mod timeline;
+pub(in crate::studio) mod timeline;
 pub(super) use content::{list_contents, read_contents, write_contents};
 pub(super) use range::read_content;
 

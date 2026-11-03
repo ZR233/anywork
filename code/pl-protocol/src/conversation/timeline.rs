@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{ChatAtomContent, ChatAtomKind, ChatDeliveryKind, ChatSourceId, PayloadData};
+use super::{
+    ChatAtomContent, ChatAtomKind, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, PayloadData,
+};
 
 /// Bumped whenever the grouping rules change. A stored projection of another
 /// version is rebuilt instead of being mixed with current items.
@@ -72,11 +74,14 @@ pub struct TimelineGroupSummary {
     pub finished_at: Option<i64>,
 }
 
-/// Typed member scope. The item identity is the only durable reference; the
-/// members themselves are read through `ChatScope::GroupMembers` in bounded pages.
+/// Typed member scope of one projection in one conversation database.
+/// The original read owner validates this reference before opening a bounded
+/// member window; clients never derive membership from an atom range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimelineMembersRef {
+    pub database_id: String,
+    pub projection_version: u32,
     pub item_id: String,
 }
 
@@ -101,6 +106,10 @@ pub struct TimelineItem {
     pub turn_id: Option<String>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// The original text/status atom's terminal outcome, when known. A mixed
+    /// work group uses its result counts instead of an invented overall outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ChatTerminalOutcome>,
     /// Only work groups carry a summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<TimelineGroupSummary>,
@@ -118,10 +127,6 @@ pub struct TimelineItem {
     /// item. A derived row stores only this reference, never a second body copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_item_id: Option<String>,
-    /// Current fragments only: the exact member identities this item owns. The
-    /// client never discovers membership; the typed member scope resolves it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub current_members: Vec<String>,
     /// `item_order` once the item entered history; `None` while still current.
     pub position: Option<u64>,
     /// Admission is closed by a real following boundary. A closed item can still
@@ -137,8 +142,6 @@ impl TimelineItem {
     pub fn member_count(&self) -> usize {
         self.summary
             .as_ref()
-            .map_or(self.current_members.len(), |summary| {
-                summary.member_count as usize
-            })
+            .map_or(1, |summary| summary.member_count as usize)
     }
 }

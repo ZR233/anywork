@@ -7,17 +7,18 @@ import 'package:anywork_client/src/conversation/data/conversation_content_impl.d
 import 'package:anywork_client/src/lifecycle/resource_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import '../support/chat_fixtures.dart' show workItem;
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
-CurrentProjection _current(int source) => CurrentProjection(
+CurrentProjection _current(int source, {List<TimelineItem> items = const []}) => CurrentProjection(
   sourceEffectSeq: source,
   logicalStatus: ThreadStatusView.idle,
   executionPresent: false,
   sources: const [],
   atoms: const [],
+  items: items,
   previews: const [],
   collections: const [],
 );
@@ -116,34 +117,27 @@ void main() {
     final presentation = TimelineMessageController(
       controller,
       generation: 1,
-      imageResources: TimelineImageResources(threadId: 'thread'),
     );
     h.attach(presentation);
     final feed = await h.opened();
     feed.send(
       1,
-      ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+      ConversationChatEvent(batch: ChatBatch(
+        placement: ChatPlacement.set,
+        entries: const [],
+        current: _current(1, items: [workItem('group', closed: false, active: 1, count: 1)]),
+      )),
     );
     await feed.ack(1).timeout(const Duration(seconds: 2));
-    expect(presentation.live.value.single.memberCount, 1);
+    expect(presentation.live.value.single.item.summary!.memberCount, 1);
     expect(controller.messages, isEmpty);
     feed.send(
       2,
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: const [
-            ChatSourceEntry(
-              ChatSourceState(
-                source: ForegroundTurnChatSource(turnId: 'turn'),
-                lifecycle: EndedChatSource(
-                  outcome: ChatTerminalOutcome.completed,
-                ),
-                started: null,
-                ended: null,
-              ),
-            ),
-          ],
+          entries: [ItemChatEntry(workItem('group', count: 1))],
+          current: _current(2),
         ),
       ),
     );

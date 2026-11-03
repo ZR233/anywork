@@ -168,6 +168,7 @@ final class _AckObservedFeed extends RecordingConversationFeed {
         'entries': [
           for (final entry in batch.entries)
             switch (entry) {
+              ItemChatEntry(:final item) => {'itemId': item.id},
               ChatAtomEntry(:final atom) => {'atomId': atom.id},
               ChatSourceEntry(:final state) => {
                 'source': state.source.toString(),

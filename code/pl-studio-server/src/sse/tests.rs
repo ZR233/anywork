@@ -13,7 +13,7 @@ async fn conversation_query(uri: &str) -> Result<(ChatScope, ReadDemand), ApiErr
     let (mut parts, _) = Request::builder().uri(uri).body(()).unwrap().into_parts();
     let ApiQuery(query) =
         ApiQuery::<ConversationQuery>::from_request_parts(&mut parts, &()).await?;
-    Ok(query.scope_demand())
+    query.scope_demand()
 }
 
 async fn product_topic(uri: &str) -> Result<pl_studio_runtime::StudioProductTopic, ApiError> {
@@ -96,6 +96,13 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         conversation_query("/?maxItems=3&maxBytes=4096&parentId=parent-a").await,
         Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
     ));
+    assert!(matches!(
+        conversation_query("/?maxItems=3&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a").await,
+        Ok((ChatScope::GroupMembers { reference }, _))
+            if reference.database_id == "db"
+                && reference.projection_version == 1
+                && reference.item_id == "group-a"
+    ));
     for uri in [
         "/",
         "/?maxItems=7",
@@ -107,6 +114,9 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         "/?maxItems=7&maxBytes=4096&parent_id=parent-a",
         "/?maxItems=7&maxBytes=4096&unknown=1",
         "/?maxItems=7&maxItems=8&maxBytes=4096",
+        "/?maxItems=7&maxBytes=4096&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersItemId=group-a",
+        "/?maxItems=7&maxBytes=4096&parentId=parent-a&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a",
     ] {
         let Err(error) = conversation_query(uri).await else {
             panic!("invalid conversation query admitted: {uri}");
@@ -147,6 +157,7 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
                 tool: None,
                 wait: None,
                 text_channel: Some(pl_protocol::ThreadTextChannel::Final),
+                content_present: Some(true),
                 started_at: None,
                 finished_at: None,
                 contents: Vec::new(),
@@ -183,6 +194,7 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
                     None,
                 )),
                 text_channel: None,
+                content_present: None,
                 started_at: None,
                 finished_at: None,
                 contents: Vec::new(),
@@ -241,10 +253,17 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
             .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
     );
     assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
+    for name in ["membersDatabaseId", "membersProjectionVersion", "membersItemId"] {
+        assert!(params.iter().any(|param| param["name"] == name && param["required"] == false));
+    }
+    let schemas = &document["components"]["schemas"];
+    assert!(schemas["TimelineItem"]["properties"]["members"].is_object());
+    assert!(schemas["TimelineItem"]["properties"].get("currentMembers").is_none());
+    assert!(schemas["TimelineMembersRef"]["properties"]["databaseId"].is_object());
+    assert!(schemas["TimelineMembersRef"]["properties"]["projectionVersion"].is_object());
+    assert!(schemas["TimelineMembersRef"]["properties"]["itemId"].is_object());
     for suffix in [
         "chat/older",
-        "chat/before",
-        "chat/at",
         "contents/manifest",
         "contents/read",
         "contents/watch",
@@ -268,6 +287,52 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
     // Unrelated execution/receipt APIs remain available.
     assert!(paths.contains_key("/api/v1/threads/{thread_id}/turns"));
     assert!(paths.contains_key("/api/v1/threads/{thread_id}/prompts"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member_payloads() -> Result<()> {
+    let batch: ChatBatch = serde_json::from_value(serde_json::json!({
+        "placement": "set",
+        "entries": [
+            {"kind": "item", "value": {
+                "id": "group", "kind": "workGroup",
+                "source": {"kind": "foregroundTurn", "turnId": "turn"},
+                "delivery": "foreground", "turnId": "turn",
+                "startedAt": 100, "finishedAt": 110,
+                "summary": {
+                    "memberCount": 20, "activeCount": 0, "failedCount": 1, "cancelledCount": 2,
+                    "categories": [{"category": "command", "count": 20}],
+                    "startedAt": 100, "finishedAt": 110
+                },
+                "members": {"databaseId": "db", "projectionVersion": 1, "itemId": "group"},
+                "position": 4, "admissionClosed": true
+            }},
+            {"kind": "item", "value": {
+                "id": "interrupted-text", "kind": "text",
+                "source": {"kind": "foregroundTurn", "turnId": "turn"},
+                "atomKind": "text", "delivery": "foreground", "outcome": "cancelled",
+                "textChannel": "final", "turnId": "turn",
+                "startedAt": 111, "finishedAt": 112,
+                "payload": {"kind": "deferred", "reference": {
+                    "databaseId": "db",
+                    "target": {"kind": "itemPayload", "itemId": "original-content"}
+                }, "byteLength": 1000000},
+                "contentItemId": "original-content", "position": 5, "admissionClosed": true
+            }}
+        ],
+        "before": "opaque-item-page",
+        "current": serde_json::to_value(pl_protocol::CurrentProjection::empty(43, pl_protocol::ThreadStatus::Idle))?
+    }))?;
+    batch.validate_for(&ChatScope::Main)?;
+    let event = encode_conversation_event(&ConversationEvent::Chat { batch: Box::new(batch.clone()) })?;
+    let response = Sse::new(futures::stream::iter([Ok::<_, Infallible>(event)])).into_response();
+    let bytes = to_bytes(response.into_body(), 8192).await?;
+    let wire = std::str::from_utf8(&bytes)?;
+    let data = wire.lines().find_map(|line| line.strip_prefix("data: ")).context("missing Main chat")?;
+    let decoded: ChatBatch = serde_json::from_str(data)?;
+    assert_eq!(decoded, batch);
+    assert!(!wire.contains("currentMembers"));
     Ok(())
 }
 

@@ -201,6 +201,7 @@ pub(in super::super) async fn seed_current(
         .try_get::<String>("", "database_id")?;
     let mut prepared = PreparedCurrent {
         timeline: std::sync::Arc::from([]),
+        timeline_update: std::sync::Arc::new(Default::default()),
         timeline_commit: 0,
         source_changes: std::sync::Arc::from([]),
         projection: CurrentProjection::empty(watermark, ThreadStatus::Idle),

@@ -400,17 +400,18 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         }
     };
     let reader = feed.reader().clone();
-    let count_atoms = |batch: &pl_protocol::ChatBatch| {
-        batch
-            .entries
-            .iter()
-            .filter(|entry| matches!(entry, pl_protocol::ChatEntry::Atom(_)))
-            .count()
+    let count_items = |batch: &pl_protocol::ChatBatch| -> Result<usize> {
+        batch.validate_for(&ChatScope::Main)?;
+        Ok(batch.entries.len())
     };
-    let mut total = count_atoms(&batch);
+    let mut total = count_items(&batch)?;
     while let Some(before) = batch.before {
         batch = reader.load_older(&before, demand).await?;
-        total += count_atoms(&batch);
+        ensure!(
+            batch.before.as_deref() != Some(before.as_str()),
+            "Main item continuation did not advance"
+        );
+        total += count_items(&batch)?;
     }
     feed.close().await?;
     ensure!(

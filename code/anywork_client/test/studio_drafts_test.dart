@@ -294,12 +294,12 @@ final class _DraftConnection extends ScriptedConversationFeed {
     required super.states,
     ChatBatch? initial,
   }) : super(initial: initial ?? chatSet(messages: const []));
-  Future<void> emitItem(ChatAtom item) async {
+  Future<void> emitItem(TimelineItem item) async {
     await deliver(
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: ([item]).map(ChatAtomEntry.new).toList(),
+          entries: ([item]).map(ItemChatEntry.new).toList(),
         ),
       ),
     );
@@ -1876,13 +1876,13 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: ([terminal]).map(ChatAtomEntry.new).toList(),
+            entries: ([terminal]).map(ItemChatEntry.new).toList(),
           ),
         ),
       );
       expect(
-        consumer.batches.last.entries.whereType<ChatAtomEntry>().map(
-          (entry) => entry.atom,
+        consumer.batches.last.entries.whereType<ItemChatEntry>().map(
+          (entry) => entry.item,
         ),
         [terminal],
       );

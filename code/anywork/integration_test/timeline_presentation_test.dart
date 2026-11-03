@@ -24,6 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
+import 'support/timeline_observation.dart';
 
 const _seedPrompt = 'Generate the local timeline history fixture';
 const _streamPrompt = 'Stream the local timeline reading fixture';
@@ -389,7 +390,8 @@ final class _TimelineScene {
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
 
   List<String> ids(TimelineDisplayLease display) =>
-      display.controller.messages.map((item) => item.id).toList();
+      TimelineObservation(tester, () => display).main
+          .map((unit) => unit.item.id).toList();
 
   Future<void> until(
     bool Function() ready,
@@ -553,12 +555,14 @@ final class _TimelineScene {
     final display = lease;
     expect(display.appliedSets, 1);
     expect(display.loadedCount, greaterThan(0));
+    expect(ids(display), hasLength(display.loadedCount));
     expect(find.byType(ChatItemView), findsWidgets);
     return display;
   }
 
   Future<void> loadOlder(TimelineDisplayLease display) async {
     final before = display.loadedCount;
+    final cursor = display.olderCursor;
     final view = tester.widget<TimelineView>(find.byType(TimelineView));
     await view.onLoadOlder();
     await until(
@@ -566,6 +570,8 @@ final class _TimelineScene {
       'older timeline page ${display.appliedPrepends + 1}',
     );
     expect(identical(display, lease), isTrue);
+    expect(display.olderCursor, isNot(cursor));
+    expect(ids(display).toSet(), hasLength(display.loadedCount));
   }
 
   Future<List<List<String>>> readDeepPages(TimelineDisplayLease display) async {
