@@ -27,12 +27,14 @@ import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
 import 'support/fixture_gate.dart';
+import 'support/timeline_observation.dart';
 
 const _prompt =
     'Local GUI question history fixture: confirm the release note wording';
 const _styleAnswer = '轻量回执';
 const _notesAnswer = '第一行：发布说明保留两句结论与一条风险提示。\n第二行：这一段用来核对自由文本的换行与复制。';
 const _secretAnswer = 'sk-question-history-fixture';
+const _questionCallId = 'question-history-call';
 const _finalAnswer = '收到：按轻量回执整理发布说明，风险提示单独成句。';
 const _preservedDraft = '（回答完问题后继续沿用这段暂存草稿）\n保留换行与未发送状态。';
 
@@ -498,27 +500,80 @@ Future<ChatItemPresentation> _questionReceipt(
   WidgetTester tester,
   AppGraph graph,
 ) async {
-  ChatItemPresentation? receipt;
+  final observed = TimelineObservation(
+    tester,
+    () {
+      final threadId = graph.client.selection.state.selectedThreadId!;
+      return graph.timeline.lease(threadId)!;
+    },
+  );
+  ChatAtom? target;
   await _until(tester, () {
-    final threadId = graph.client.selection.state.selectedThreadId;
-    final display = threadId == null ? null : graph.timeline.lease(threadId);
-    if (display == null) return false;
-    receipt = display.controller.messages
-        .map(chatItemPresentationOf)
-        .whereType<ChatItemPresentation>()
+    final matches = observed.atoms
         .where(
-          (item) =>
-              item.type == 'tool' &&
-              item.data['userInput'] is Map<String, Object?>,
+          (atom) =>
+              atom.kind == ChatAtomKind.interaction &&
+              atom.tool?.name == 'request_user_input' &&
+              atom.tool?.callId == _questionCallId,
         )
-        .lastOrNull;
-    return receipt != null &&
-        find
-            .byKey(StudioDriverKeys.timelineUserInput(receipt!.id))
-            .evaluate()
-            .isNotEmpty;
+        .toList();
+    expect(matches.length, lessThanOrEqualTo(1));
+    target = matches.singleOrNull;
+    return target?.payload != null &&
+        target?.lifecycle is TerminalChatAtom;
+  }, 'exact completed question interaction in Main work members');
+  final atom = target!;
+  expect(
+    (atom.lifecycle as TerminalChatAtom).outcome,
+    ChatTerminalOutcome.completed,
+  );
+  // Main owns display units, not one Message per atom. Open the owning work
+  // segment through its real header before observing this receipt's own tile.
+  await observed.revealAtom(atom);
+  final receipt = tester.widget<ChatItemView>(observed.atomRow(atom.id)).item;
+  expect(receipt.id, atom.id);
+  expect(receipt.atom?.source, atom.source);
+  expect(receipt.atom?.tool?.callId, _questionCallId);
+  expect(receipt.compatibility, ChatItemCompatibility.current);
+  expect(receipt.type, 'tool');
+  final invocation = receipt.data['invocation'] as Map<String, Object?>;
+  expect(invocation['toolCallId'], _questionCallId);
+  expect(invocation['name'], 'request_user_input');
+  final input = receipt.data['userInput'] as Map<String, Object?>;
+  final questions = (input['questions'] as List).cast<Map<String, Object?>>();
+  expect(questions.map((question) => question['id']), [
+    'style',
+    'notes',
+    'token',
+  ]);
+  final state = input['state'] as Map<String, Object?>;
+  expect(state['kind'], 'resolved');
+  final answers = (state['answers'] as List).cast<Map<String, Object?>>();
+  expect(answers.map((answer) => answer['questionId']), [
+    'style',
+    'notes',
+    'token',
+  ]);
+  expect(answers.last['redacted'], isTrue);
+  expect(answers.last['answerCount'], 0);
+  expect(
+    receipt.bodies.where(
+      (body) => body.key.startsWith('tool.user-input.answer.2.'),
+    ),
+    isEmpty,
+  );
+  for (final body in receipt.bodies) {
+    if (body.inline case final bytes?) {
+      expect(utf8.decode(bytes), isNot(contains(_secretAnswer)));
+    }
+  }
+  await _until(tester, () {
+    return find
+        .byKey(StudioDriverKeys.timelineUserInput(receipt.id))
+        .evaluate()
+        .isNotEmpty;
   }, 'laid out question history receipt');
-  return receipt!;
+  return receipt;
 }
 
 Future<void> _submitPrompt(WidgetTester tester, String prompt) async {

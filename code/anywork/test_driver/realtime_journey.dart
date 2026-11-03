@@ -5,6 +5,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
+import 'timeline_group_observation.dart';
 import 'timeline_observation.dart';
 import 'tool_probe.dart';
 import 'window_control.dart';
@@ -69,8 +70,8 @@ const _historyScrollStep = 160.0;
 /// assistant row is reported from its real geometry instead of hanging.
 const _maxHistoryScrollSteps = 60;
 
-/// The activity details panel's documented height ceiling (`conversation_activity_bar.dart`).
-const _maxActivityDetailsHeight = 320.0;
+/// The mounted current-work viewport ceiling (`conversation_current_connector.dart`).
+const _maxActivityDetailsHeight = 220.0;
 
 /// The minimum usable height of the expanded activity details panel.
 ///
@@ -364,9 +365,9 @@ class RealtimeJourney {
   String stage = 'created';
   String? shutdownError;
 
-  /// The activity identity that was expanded during the reasoning stream, kept so
-  /// the next live activity can prove a different identity starts collapsed.
-  String? expandedActivityIdentity;
+  /// The actual reasoning work unit, retained so the next tool stream proves a
+  /// different live unit is independently admitted and starts expanded.
+  String? expandedWorkUnitId;
 
   /// 快照轮询样本：只作为 UI 就绪观察，永不作发布顺序判定输入（design/24 实时验收、
   /// design/26 §26.9）。真实发布证据只来自 Driver-only 记录器的实际 Client 发布回调。
@@ -381,10 +382,6 @@ class RealtimeJourney {
   /// 记录器身份：start 时固定，stop 时用同一身份严格校验响应对应的就是这一次 run。
   String? _runtimePublishThreadId;
   String? _runtimePublishTurnId;
-
-  /// Whether the previous live activity was left actually expanded, so the
-  /// cross-identity reset has a real expanded reference to reset.
-  bool activityLeftExpanded = false;
 
   /// Evidence that could not be asserted yet, kept explicit so a partial
   /// observation is never reported as a pass. The integrated UI contract adds
@@ -626,6 +623,22 @@ class RealtimeJourney {
     );
   }
 
+  Future<void> _tapReasoningWorkHeader(String unitId) async {
+    final title = find.descendant(
+      of: find.byValueKey('source-unit-header:$unitId'),
+      matching: find.text('思考中'),
+      firstMatchOnly: true,
+    );
+    await driver.sendCommand(
+      ScrollIntoView(
+        title,
+        alignment: 0.5,
+        timeout: const Duration(seconds: 5),
+      ),
+    );
+    await driver.rawTap(title, timeout: const Duration(seconds: 10));
+  }
+
   Future<void> _delayedFirstToken() async {
     final context = await submitPrompt(
       'Realtime delayed first token',
@@ -720,9 +733,7 @@ class RealtimeJourney {
     // The live reasoning is this turn's first content, so the time-to-first-content
     // stamp is taken here, before the activity-bar contract spends time observing.
     final firstContentAt = DateTime.now().millisecondsSinceEpoch;
-    // The activity bar is exercised while reasoning is really running: only a
-    // live activity exposes expandable details, and this is the long "Thinking"
-    // window where the bar's latest summary line is on screen.
+    // Exercise the actual live work group while reasoning is still running.
     await _activityContractDuringBusy('reasoning', narrowLayout: true);
     // The activity contract can consume most of the pacing window, so this
     // observation accepts either the answer row appearing or this turn reaching a
@@ -788,11 +799,11 @@ class RealtimeJourney {
     final toolRunningAt = DateTime.now().millisecondsSinceEpoch;
     await observe('long_command_tool_running', toolRunning);
     // One immediate loop, starting from the first running snapshot: it samples
-    // the running call's typed stdout *and* the cross-identity activity reset in
+    // the running call's typed stdout and the new live unit's default expansion in
     // the same poll, so neither is lost to the other's cost and no screenshot is
-    // taken before the first live sample. The previous activity was left expanded
-    // during reasoning, so this turn's tool activity must publish a different
-    // identity collapsed. A version jump or a `running` status alone is never
+    // taken before the first live sample. The reasoning work unit was observed
+    // expanded, so the tool atom must belong to a different live unit which is
+    // independently admitted expanded. A `running` status alone is never
     // accepted; the final line result is still verified below.
     await _longCommandLiveContract(toolRunning);
 
@@ -896,50 +907,52 @@ class RealtimeJourney {
   /// * the running `exec` call's ordered output parts must change content across
   ///   multiple observations of the same activity and call identity; state and
   ///   byte counters alone do not satisfy this; and
-  /// * a *different* live activity identity must be published collapsed, i.e. the
-  ///   expand state must reset when the activity identity switches.
+  /// * the exact tool atom must be mounted under a *different* live unit which
+  ///   independently starts expanded.
   ///
   /// Both are recorded the moment they are observed. A build without the typed
   /// in-flight fields, or a run that never exposed the activity field, records an
   /// explicit pending gap instead of a pass.
   Future<void> _longCommandLiveContract(Map<String, dynamic> first) async {
     const callId = 'realtime-long-call';
-    final previousIdentity = expandedActivityIdentity;
-    final wantIdentityReset = previousIdentity != null && activityLeftExpanded;
+    final previousUnitId = expandedWorkUnitId;
+    final wantUnitSwitch = previousUnitId != null;
     final samples = <Map<String, Object?>>[];
     var activityOutputPartsSeen = false;
     var activityFieldSeen = false;
     var observedGrowth = false;
-    var identityResetObserved = false;
+    var unitSwitchObserved = false;
     var activityToolOpened = false;
     String? openedActivityIdentity;
+    String? openedToolItemId;
     var activityDetailGrowth = false;
     int? previousDetailLines;
     final activityDetailSamples = <Map<String, Object?>>[];
-    final activityToolOutput = find.byValueKey(
-      'live-tool-output-$callId-command-output',
-    );
     Map<String, Object?>? previous;
     var latest = first;
     final deadline = DateTime.now().add(const Duration(seconds: 40));
     while (DateTime.now().isBefore(deadline)) {
       final snapshot = latest;
-      // (a) Cross-identity reset: recorded the moment a different live identity
-      // is published collapsed, never awaited after the window has closed.
+      // (a) A different live work unit is independently admitted expanded.
+      // Unlike the retired global bar, a new live group defaults expanded.
       final activity = conversationActivity(snapshot);
       if (activity != null) activityFieldSeen = true;
-      if (wantIdentityReset &&
-          !identityResetObserved &&
-          activity != null &&
-          activity['identity'] is String &&
-          activity['identity'] != previousIdentity &&
-          activity['expanded'] == false) {
-        identityResetObserved = true;
+      final actualTool = timelineToolGroupMember(
+        snapshot,
+        callId,
+        name: 'exec',
+      );
+      if (wantUnitSwitch &&
+          !unitSwitchObserved &&
+          actualTool != null &&
+          actualTool.group['unitId'] != previousUnitId &&
+          actualTool.group['expanded'] == true) {
+        unitSwitchObserved = true;
         // Only the lightweight observation file is written here: the loop must
         // not block on a screen capture (which costs seconds) before it samples
         // the running call's stdout. Every screenshot is taken after the loop.
-        await observe('long_command_activity_identity_switch', snapshot);
-        checks['activityIdentityResetsCollapse'] = true;
+        await observe('long_command_work_unit_switch', snapshot);
+        checks['newLiveWorkGroupStartsExpanded'] = true;
       }
       // (b) In-flight typed stdout growth of the same call identity.
       if (_activityExposesOutputParts(snapshot, callId)) {
@@ -975,8 +988,11 @@ class RealtimeJourney {
       final toolTerminal =
           tool != null && _terminalToolStatuses.contains(tool['status']);
       final activityIdentity = activity?['identity'] as String?;
-      if (activityToolOpened && activityIdentity != openedActivityIdentity) {
+      if (activityToolOpened &&
+          (activityIdentity != openedActivityIdentity ||
+              actualTool?.item['id'] != openedToolItemId)) {
         activityToolOpened = false;
+        openedToolItemId = null;
         previousDetailLines = null;
       }
       // Open after this fixture's real foreground wait has appeared. The exec
@@ -992,11 +1008,10 @@ class RealtimeJourney {
           sample != null &&
           waitTool != null &&
           activity != null &&
-          (!wantIdentityReset || identityResetObserved)) {
-        if (activity['expanded'] != true) {
-          await _tap('conversation-activity');
-        }
-        final row = find.byValueKey('live-tool-row-$callId');
+          actualTool != null &&
+          (!wantUnitSwitch || unitSwitchObserved)) {
+        final itemId = actualTool.item['id'] as String;
+        final row = find.byValueKey('timeline-tool-details:$itemId');
         await driver.waitFor(row, timeout: const Duration(seconds: 5));
         final rowState = await driver.sendCommand(ToolProbe(row, 'observe'));
         final rowSample = (rowState['samples'] as List).last as Map;
@@ -1004,26 +1019,18 @@ class RealtimeJourney {
           throw StateError('live tool row exposes no real expansion state');
         }
         if (rowSample['expanded'] == false) {
-          // This is still the collapsed header. ToolProbe's historical `tap`
-          // deliberately samples 24 later frames, which can outlive a live
-          // tool; dispatch the existing hit-tested tap without that recording.
-          await driver.rawTap(row, timeout: const Duration(seconds: 5));
+          await driver.sendCommand(ToolProbe(row, 'tap'));
         }
-        await driver.waitFor(
-          activityToolOutput,
-          timeout: const Duration(seconds: 5),
-        );
-        await driver.sendCommand(
-          ScrollIntoView(
-            activityToolOutput,
-            alignment: 1,
-            timeout: const Duration(seconds: 5),
-          ),
-        );
+        await driver.sendCommand(ToolProbe(row, 'revealHeader'));
         activityToolOpened = true;
         openedActivityIdentity = activityIdentity;
+        openedToolItemId = itemId;
       }
-      if (!toolTerminal && activityToolOpened) {
+      if (!toolTerminal && activityToolOpened && openedToolItemId != null) {
+        final itemId = openedToolItemId;
+        final activityToolOutput = find.byValueKey(
+          'timeline-tool-details:$itemId',
+        );
         final Map<String, dynamic> rendered;
         try {
           rendered = await driver.sendCommand(
@@ -1074,7 +1081,7 @@ class RealtimeJourney {
       final growthSettled =
           (observedGrowth && activityDetailGrowth) || toolTerminal;
       final identitySettled =
-          !wantIdentityReset || identityResetObserved || toolTerminal;
+          !wantUnitSwitch || unitSwitchObserved || toolTerminal;
       if (growthSettled && identitySettled) break;
       await Future<void>.delayed(const Duration(milliseconds: 100));
       latest = await this.snapshot();
@@ -1088,11 +1095,11 @@ class RealtimeJourney {
     if (observedGrowth) {
       await shot('long-command-tool-progress-grown');
     }
-    if (identityResetObserved) {
+    if (unitSwitchObserved) {
       observations['longCommandActivityIdentityFrame'] =
-          'screenshot long-command-activity-identity-current.png is the state '
+          'screenshot long-command-work-unit-current.png is the state '
           'current after the live loop, not the switch-time frame';
-      await shot('long-command-activity-identity-current');
+      await shot('long-command-work-unit-current');
     }
     counts['longCommandProgressSamples'] = samples.length;
     observations['longCommandProgress'] = samples;
@@ -1106,23 +1113,23 @@ class RealtimeJourney {
     } else {
       checks['longCommandInFlightOutputGrows'] = observedGrowth;
     }
-    if (!wantIdentityReset) {
+    if (!wantUnitSwitch) {
       if (!activityFieldSeen) {
         pendingEvidence.add(
-          'activity bar: the snapshot exposes no conversationActivity field, so '
-          'the cross-identity reset is pending an integrated Driver build',
+          'live tool output: the snapshot exposes no conversationActivity field, '
+          'so typed in-flight output remains pending',
         );
       } else {
         pendingEvidence.add(
-          'activity bar: the live details were not left expanded by the previous '
-          'activity, so the cross-identity reset has no expanded reference',
+          'atomic work group: the previous reasoning unit identity was not '
+          'observed, so the next live unit has no identity-switch reference',
         );
       }
-    } else if (!identityResetObserved) {
-      // The window closed before a different identity was published collapsed.
+    } else if (!unitSwitchObserved) {
+      // The window closed before a different live unit was published expanded.
       // This is a real failure, recorded as a failing check and the last real
       // observation instead of an unbounded wait that only times out.
-      checks['activityIdentityResetsCollapse'] = false;
+      checks['newLiveWorkGroupStartsExpanded'] = false;
       observations['longCommandActivityIdentity'] = summarize(latest);
     }
   }
@@ -1892,15 +1899,13 @@ class RealtimeJourney {
         true;
     await shot('user-assistant-bubbles');
 
-    // The activity bar is projected only while a turn is active, so the settled
-    // projection carries no activity by design. The live contract is exercised
-    // during the reasoning stream (expand / same-identity persistence / collapse)
-    // and the cross-identity reset during the running tool; this terminal snapshot
-    // must not be read as "the activity field is missing".
+    // Current work is projected only while a turn is active. The live contract
+    // exercised initial expansion, same-unit update persistence, fold persistence
+    // and reopen; the running tool independently proved a new expanded live unit.
     pendingEvidence.add(
-      'activity bar: live expand/persistence/collapse ran during the reasoning '
-      'stream and the cross-identity reset during the running tool; the settled '
-      'projection intentionally carries no activity',
+      'atomic work group: live default expansion/update/fold/reopen ran during '
+      'reasoning and the tool stream admitted a different expanded live unit; '
+      'the settled projection intentionally carries no current work',
     );
     pendingEvidence.add(
       'session switch: this scenario keeps one thread by design; multi-session '
@@ -2233,26 +2238,27 @@ class RealtimeJourney {
     }
   }
 
-  /// Records the real rectangles while the activity details are expanded and
+  /// Records the real rectangles while the atomic work group is expanded and
   /// asserts the composer and its action button are still completely inside the
   /// window viewport and that the details panel stays bounded.
   ///
   /// Existing is not the same as usable: each rect is read from the live layout,
   /// and a rect that cannot be read at all fails the check with the reason.
-  Future<void> _activityLayoutContract(String label) async {
+  Future<void> _activityLayoutContract(String label, String unitId) async {
     final viewport = await _readRect('studio-shell');
     final composer = await _readRect('composer-input');
     final actionKey = isBusy(await snapshot())
         ? 'composer-stop'
         : 'composer-submit';
     final action = await _readRect(actionKey);
-    final details = await _readRect('conversation-activity-details');
+    final details = await _readRect(unitId);
     final evidence = <String, Object?>{
       'viewport': viewport?.toJson(),
       'composerInput': composer?.toJson(),
       'actionButtonKey': actionKey,
       'actionButton': action?.toJson(),
-      'details': details?.toJson(),
+      'workUnitId': unitId,
+      'workGroup': details?.toJson(),
       'detailsHeightCeiling': _maxActivityDetailsHeight,
       'detailsHeightFloor': _minActivityDetailsHeight,
     };
@@ -2267,8 +2273,7 @@ class RealtimeJourney {
         readable && viewport.contains(composer);
     checks['${label}_actionButtonInsideViewport'] =
         readable && viewport.contains(action);
-    // The details panel is bounded exactly like the UI documents: at most the
-    // fixed ceiling, and never taller than the window itself.
+    // The current-work viewport is bounded by its production connector.
     checks['${label}_detailsBounded'] =
         readable &&
         details.height > 0 &&
@@ -2282,10 +2287,10 @@ class RealtimeJourney {
         readable && details.height >= _minActivityDetailsHeight - _rectEpsilon;
   }
 
-  /// Narrows the real GUI window while the activity details are expanded, records
+  /// Narrows the real GUI window while the work group is expanded, records
   /// the narrow layout evidence, then restores exactly the geometry read before
   /// the request. The restore runs even when the narrow observation fails.
-  Future<void> _narrowDuringActivity(String label) async {
+  Future<void> _narrowDuringActivity(String label, String unitId) async {
     final guiPid = await _guiProcessId();
     if (guiPid == null) {
       pendingEvidence.add(
@@ -2320,7 +2325,7 @@ class RealtimeJourney {
       );
       counts['activityNarrowShellWidth'] = narrowedShell?.width;
       await shot('$label-activity-narrow');
-      await _activityLayoutContract('${label}_narrow');
+      await _activityLayoutContract('${label}_narrow', unitId);
     } finally {
       final restored = resizeOwnedWindow(
         guiPid: guiPid,
@@ -2339,63 +2344,35 @@ class RealtimeJourney {
     }
   }
 
-  /// Expands the live activity bar, keeps it expanded across streaming updates
-  /// of the same identity, collapses it, then leaves it expanded again so the
-  /// cross-identity reset can be observed on the next live activity.
-  ///
-  /// Only a snapshot without the typed `conversationActivity` field is pending (a
-  /// baseline gap). Once the field exists, every observation below is asserted
-  /// for real: the activity must expose an identity, be `expandable`, show its
-  /// pushed content, keep the same identity expanded across a *new* update,
-  /// collapse to `expanded=false`, and stay collapsed across a further update.
+  /// A live atomic work group starts expanded. Observe its real member and keep
+  /// that exact unit expanded across new pushed content; never toggle an already
+  /// expanded group closed just to exercise the retired activity-bar journey.
   Future<void> _activityContractDuringBusy(
     String label, {
     bool narrowLayout = false,
   }) async {
     await mark('${label}_activity_expand');
-    final snapshot = await this.snapshot();
-    if (!snapshot.containsKey('conversationActivity')) {
-      pendingEvidence.add(
-        'activity bar: the snapshot exposes no conversationActivity field during '
-        '$label, so expand/collapse is pending an integrated Driver build',
-      );
-      return;
+    final activityTurn = turnId(await snapshot());
+    if (activityTurn == null) {
+      throw StateError('live work group has no running Turn');
     }
-    // The typed field exists: wait for the live, expandable activity of this
-    // stream. A missing one is a real behaviour failure, not a pending gap.
     final live = await waitFor(
-      (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] is String &&
-            activity['expandable'] == true;
-      },
-      '${label}_activity_expandable',
+      (current) => _reasoningGroupMember(current, activityTurn) != null,
+      '${label}_work_group_mounted',
       timeout: const Duration(seconds: 20),
       abort: turnFailed,
     );
-    final identity = conversationActivity(live)!['identity'] as String;
-    final activityTurn = turnId(live);
-    if (activityTurn == null) {
-      throw StateError('expandable activity has no running Turn');
-    }
-    checks['activityIdentityExposed'] = true;
-    checks['activityExpandableDuringActiveTurn'] = true;
-    // Expansion reveals already-pushed content; it must not query live details.
-    await _tap('conversation-activity');
-    await driver.waitFor(
-      find.byValueKey('conversation-activity-details'),
-      timeout: const Duration(seconds: 15),
-    );
-    // `expanded` is the *actual* expand state published by the activity bar;
-    // `expandable` is only the capability and is never read as the state. The
-    // mounted details container and actual pushed reasoning are checked together.
+    final member = _reasoningGroupMember(live, activityTurn)!;
+    final unitId = member.group['unitId'] as String;
+    final itemId = member.item['id'] as String;
+    checks['workGroupIdentityExposed'] = unitId.isNotEmpty && itemId.isNotEmpty;
+    checks['liveWorkGroupInitiallyExpanded'] = member.group['expanded'] == true;
     final expanded = await waitFor(
       (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] == identity &&
-            activity['expanded'] == true &&
+        final actual = _reasoningGroupMember(current, activityTurn);
+        return actual?.group['unitId'] == unitId &&
+            actual?.item['id'] == itemId &&
+            actual?.group['expanded'] == true &&
             _liveTextPresent(current, activityTurn, 'reasoningParts');
       },
       '${label}_activity_expanded',
@@ -2404,14 +2381,8 @@ class RealtimeJourney {
     );
     await observe('${label}_activity_expanded', expanded);
     await shot('$label-activity-expanded');
-    await driver.waitFor(
-      find.byValueKey('conversation-activity-details'),
-      timeout: const Duration(seconds: 5),
-    );
-    final expandedView = conversationActivity(expanded);
-    // `expandable` (capability) is recorded for evidence only: the assertions use
-    // the actual `expanded` state.
-    counts['activityExpandableCapability'] = expandedView?['expandable'];
+    counts['reasoningWorkUnitId'] = unitId;
+    counts['reasoningWorkMemberId'] = itemId;
     // The same identity must stay expanded across a *new* update. Require a
     // changed observation of actual ordered content parts, not a synthetic
     // revision or a status/byte-counter change.
@@ -2421,9 +2392,10 @@ class RealtimeJourney {
     final contentBefore = _activityContentObservation(expanded);
     final advanced = await waitFor(
       (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] == identity &&
+        final actual = _reasoningGroupMember(current, activityTurn);
+        return actual?.group['unitId'] == unitId &&
+            actual?.item['id'] == itemId &&
+            turnId(current) == activityTurn &&
             conversationActivityContentChanged(
               contentBefore,
               _activityContentObservation(current),
@@ -2433,84 +2405,65 @@ class RealtimeJourney {
       timeout: const Duration(seconds: 20),
       abort: turnFailed,
     );
-    checks['activityExpandedAcrossUpdates'] =
-        conversationActivity(advanced)?['expanded'] == true;
-    // The activity identity the update was confirmed against is the same one left
-    // expanded for the cross-identity reset.
-    expandedActivityIdentity = identity;
+    checks['workGroupExpandedAcrossUpdates'] =
+        timelineMountedGroup(advanced, unitId)?['expanded'] == true;
+    // Retain this exact unit identity for the next live unit admission check.
+    expandedWorkUnitId = unitId;
     counts['activityPartsBefore'] = _activityContentObservation(expanded);
     counts['activityPartsAfter'] = _activityContentObservation(advanced);
     // The real expanded layout is recorded while the details are open: the wide
     // window first, then the narrow window (restored immediately after). Both are
     // still on the same identity that was just confirmed expanded across updates.
-    await _activityLayoutContract('${label}_wide');
+    await _activityLayoutContract('${label}_wide', unitId);
     if (narrowLayout) {
-      await _narrowDuringActivity(label);
+      await _narrowDuringActivity(label, unitId);
     }
-    // Collapse: it must publish the real `expanded=false` state, not merely hide
-    // the details widget.
-    await _tap('conversation-activity');
-    await driver.waitForAbsent(
-      find.byValueKey('conversation-activity-details'),
-      timeout: const Duration(seconds: 15),
-    );
+    // Fold the real title. Live defaults to expanded, but explicit reader intent
+    // must still persist across later updates of this exact unit.
+    await _tapReasoningWorkHeader(unitId);
     final collapsed = await waitFor(
-      (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] == identity &&
-            activity['expanded'] == false;
-      },
-      '${label}_activity_collapsed',
+      (current) => timelineMountedGroup(current, unitId)?['expanded'] == false,
+      '${label}_work_group_collapsed',
       timeout: const Duration(seconds: 10),
       abort: turnFailed,
     );
     await shot('$label-activity-collapsed');
-    checks['activityCollapse'] =
-        conversationActivity(collapsed)?['expanded'] == false;
-    // Collapsing must persist across a further update of the same identity: the
+    checks['workGroupCollapse'] =
+        timelineMountedGroup(collapsed, unitId)?['expanded'] == false;
+    // Collapsing must persist across a further update of the same unit: the
     // real content must change and the state must stay `expanded=false`.
     final collapseContent = _activityContentObservation(collapsed);
     counts['activityCollapseContentBefore'] = collapseContent;
     final recollapsed = await waitFor(
       (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] == identity &&
-            activity['expanded'] == false &&
+        return timelineMountedGroup(current, unitId)?['expanded'] == false &&
             conversationActivityContentChanged(
               collapseContent,
               _activityContentObservation(current),
             );
       },
-      '${label}_activity_collapsed_update',
+      '${label}_work_group_collapsed_update',
       timeout: const Duration(seconds: 20),
       abort: turnFailed,
     );
-    checks['activityCollapsePersists'] =
-        conversationActivity(recollapsed)?['expanded'] == false;
+    checks['workGroupCollapsePersists'] =
+        timelineMountedGroup(recollapsed, unitId)?['expanded'] == false;
     counts['activityCollapseContentAfter'] = _activityContentObservation(
       recollapsed,
     );
-    // Leave the live activity expanded again so the cross-identity contract
-    // observes a real reset on the next activity rather than asserting that an
-    // already-collapsed bar stays collapsed.
-    await _tap('conversation-activity');
+    // Reopen the same real title. No completed-member disclosure is introduced.
+    await _tapReasoningWorkHeader(unitId);
     final reexpanded = await waitFor(
-      (current) {
-        final activity = conversationActivity(current);
-        return activity != null &&
-            activity['identity'] == identity &&
-            activity['expanded'] == true;
-      },
-      '${label}_activity_reexpanded',
+      (current) =>
+          timelineMountedGroup(current, unitId)?['expanded'] == true &&
+          _reasoningGroupMember(current, activityTurn)?.item['id'] == itemId,
+      '${label}_work_group_reexpanded',
       timeout: const Duration(seconds: 10),
       abort: turnFailed,
     );
     await shot('$label-activity-reexpanded');
-    checks['activityExpandedBeforeSwitch'] =
-        conversationActivity(reexpanded)?['expanded'] == true;
-    activityLeftExpanded = true;
+    checks['workGroupReopened'] =
+        timelineMountedGroup(reexpanded, unitId)?['expanded'] == true;
   }
 
   /// Scrolls up into history and confirms the user's anchor is retained.
@@ -2932,6 +2885,17 @@ bool _liveTextPresent(
             (part['text'] as String).isNotEmpty,
       );
 }
+
+({Map<String, dynamic> group, Map<String, dynamic> item})?
+_reasoningGroupMember(Map<String, dynamic> snapshot, String turnId) =>
+    timelineGroupMemberWhere(snapshot, (item) {
+      if (item['kind'] != 'reasoning') return false;
+      final atomic = item['atomic'];
+      final source = atomic is Map ? atomic['source'] : null;
+      return source is Map &&
+          source['kind'] == 'foregroundTurn' &&
+          source['turnId'] == turnId;
+    });
 
 bool _retainsCompletedFacts(
   TimelineObservation before,

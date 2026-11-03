@@ -10,6 +10,74 @@ List<Map<String, dynamic>> timelineGroupDisplays(
   return [for (final value in timeline['groups'] as List) _group(value)];
 }
 
+/// An already mounted member and its actual display identity, never a guessed
+/// source/unit ID or a query that materializes a hidden group.
+({Map<String, dynamic> group, Map<String, dynamic> item})?
+timelineGroupMemberWhere(
+  Map<String, dynamic> snapshot,
+  bool Function(Map<String, dynamic> item) matches,
+) {
+  ({Map<String, dynamic> group, Map<String, dynamic> item})? found;
+  for (final group in timelineGroupDisplays(snapshot)) {
+    if (group['error'] != null) {
+      throw StateError('Mounted group failed: ${group['error']}');
+    }
+    if (group['loading'] == true || group['expanded'] != true) continue;
+    for (final raw in group['items'] as List) {
+      if (raw is! Map || raw['id'] is! String) {
+        throw StateError('Mounted member has no actual identity');
+      }
+      final item = raw.cast<String, dynamic>();
+      if (!matches(item)) continue;
+      if (found != null) {
+        throw StateError('Ambiguous mounted group member');
+      }
+      found = (group: group, item: item);
+    }
+  }
+  return found;
+}
+
+/// Tool identity has two canonical representations: decoded immutable payload
+/// facts, or the actual header of a current atom without an immutable payload.
+/// This is not an old/new UI fallback; neither branch fabricates a call mapping.
+({Map<String, dynamic> group, Map<String, dynamic> item})?
+timelineToolGroupMember(
+  Map<String, dynamic> snapshot,
+  String callId, {
+  required String name,
+}) => timelineGroupMemberWhere(snapshot, (item) {
+  final tool = item['tool'];
+  final atomic = item['atomic'];
+  final actualCall = tool is Map
+      ? tool['callId']
+      : atomic is Map
+      ? atomic['toolCallId']
+      : null;
+  if (actualCall != callId) return false;
+  final actualName = tool is Map ? tool['name'] : (atomic as Map)['toolName'];
+  if (actualName != name) {
+    throw StateError('Tool $callId has name $actualName, expected $name');
+  }
+  return true;
+});
+
+Map<String, dynamic>? timelineMountedGroup(
+  Map<String, dynamic> snapshot,
+  String unitId,
+) {
+  final groups = timelineGroupDisplays(snapshot)
+      .where((group) => group['unitId'] == unitId)
+      .toList();
+  if (groups.length > 1) throw StateError('Duplicate mounted unit $unitId');
+  if (groups.isEmpty) return null;
+  final group = groups.single;
+  if (group['error'] != null) {
+    throw StateError('Mounted unit $unitId failed: ${group['error']}');
+  }
+  return group;
+}
+
 Map<String, dynamic> _group(Object? value) {
   if (value is! Map ||
       value['unitId'] is! String ||

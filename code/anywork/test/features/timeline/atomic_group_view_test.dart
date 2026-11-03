@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
@@ -45,6 +46,47 @@ Widget host(Widget child) => MaterialApp(
   home: Scaffold(body: SingleChildScrollView(child: child)),
 );
 void main() {
+  testWidgets('preview selection cannot retain another scene group State', (
+    tester,
+  ) async {
+    await tester.pumpWidget(timelineAtomicLiveGroupPreview());
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      tester
+          .widgetList<TimelineDisplayUnitView>(
+            find.byType(TimelineDisplayUnitView),
+          )
+          .single
+          .unit
+          .live,
+      isTrue,
+    );
+    await tester.pumpWidget(timelineAtomicStoryPreview());
+    await tester.pump(const Duration(milliseconds: 300));
+    final history = tester.widgetList<TimelineDisplayUnitView>(
+      find.byType(TimelineDisplayUnitView),
+    );
+    expect(history, hasLength(2));
+    expect(history.every((view) => !view.unit.live), isTrue);
+    expect(find.text('已确认共享组件与交接边界，接下来检查收尾。'), findsOneWidget);
+    expect(find.text('收尾检查完成，工作组与正文分别保留。'), findsOneWidget);
+    await tester.pumpWidget(timelineAtomicLiveGroupPreview());
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      tester
+          .widgetList<TimelineDisplayUnitView>(
+            find.byType(TimelineDisplayUnitView),
+          )
+          .single
+          .unit
+          .live,
+      isTrue,
+    );
+    expect(find.text('收尾检查完成，工作组与正文分别保留。'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'group-idle to text handoff rebuilds a shared intent without locked-tree errors',
     (tester) async {

@@ -26,8 +26,8 @@ typedef ChatContentRangeBuilder = Widget Function(
   Widget Function(String text, Widget child) witness,
 );
 
-/// One immutable producer item, one custom Message. Disclosures and decoded
-/// presentation stay on this row; no cross-item grouping or historical cache.
+/// Renders one admitted item or display unit. Grouping belongs to the sole
+/// presentation owner; this view owns only disclosure and decoded presentation.
 class ChatItemView extends StatefulWidget {
   const ChatItemView({
     super.key,

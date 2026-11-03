@@ -184,7 +184,10 @@ void main() {
       await scene.closeLatestTurnGroups();
 
       await scene.submit('Realtime long command');
-      await scene.untilLaidOutCurrentTools(minimum: 2);
+      await scene.untilLaidOutCurrentTools(
+        minimum: 2,
+        toolCallIds: const {'realtime-long-call', 'realtime-long-wait-call'},
+      );
       await capturePresentation(tester, 'realtime-exec-wait.png');
       await scene.completed(answer: 'realtime long command complete');
 
@@ -321,9 +324,9 @@ final class _RealtimeScene {
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
 
-  List<ChatItemPresentation> get items => lease.controller.messages
-      .map(chatItemPresentationOf)
-      .whereType<ChatItemPresentation>()
+  List<ChatItemPresentation> get items => observed.atoms
+      .where((atom) => atom.payload != null)
+      .map(ChatItemPresentation.decode)
       .toList();
 
   Future<ChatItemPresentation> openLatestTurnThinking() async {
@@ -776,7 +779,10 @@ final class _RealtimeScene {
     return accepted!;
   }
 
-  Finder currentToolCard(ChatAtom atom) => atom.tool?.name == 'wait'
+  // Live atoms without a completion payload use the real tool disclosure,
+  // including wait. Only a completed wait payload has a TimelineWaitPanel.
+  Finder currentToolCard(ChatAtom atom) =>
+      atom.payload != null && atom.tool?.name == 'wait'
       ? find.byWidgetPredicate(
           (widget) => widget is TimelineWaitPanel && widget.identity == atom.id,
         )
@@ -784,11 +790,13 @@ final class _RealtimeScene {
           (widget) =>
               widget is TimelineToolDetails &&
               widget.item.id == atom.id &&
-              widget.item.toolCallId == atom.tool?.callId,
+              widget.item.toolCallId == atom.tool?.callId &&
+              widget.item.name == atom.tool?.name,
         );
 
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
+    Set<String> toolCallIds = const {},
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
   }) async {
@@ -817,18 +825,21 @@ final class _RealtimeScene {
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
-        final required = runningExecCallIds.isEmpty
+        final expectedCallIds = {...toolCallIds, ...runningExecCallIds};
+        final required = expectedCallIds.isEmpty
             ? tools
             : tools
-                  .where(
-                    (atom) => runningExecCallIds.contains(atom.tool?.callId),
-                  )
+                  .where((atom) => expectedCallIds.contains(atom.tool?.callId))
                   .toList();
         final laidOut = required
             .where((atom) => _laidOut(currentToolCard(atom)))
             .length;
         if (tools.length >= minimum &&
             required.isNotEmpty &&
+            required
+                .map((atom) => atom.tool?.callId)
+                .toSet()
+                .containsAll(expectedCallIds) &&
             laidOut == required.length &&
             running.containsAll(runningExecCallIds)) {
           if (!settled) {
@@ -836,6 +847,29 @@ final class _RealtimeScene {
             expect(tester.takeException(), isNull);
             settled = true;
             continue;
+          }
+          expect(
+            required.map((atom) => atom.tool?.callId).toSet(),
+            hasLength(required.length),
+          );
+          for (final atom in required) {
+            final title = find.descendant(
+              of: currentToolCard(atom),
+              matching: find.byType(TimelineActivityRow),
+            );
+            expect(title, findsOneWidget);
+            expect(_laidOut(title), isTrue);
+            final row = tester.widget<TimelineActivityRow>(title);
+            expect(row.label.trim(), isNotEmpty);
+            // A full-width row's center can be empty space. The real title
+            // inside this exact atom's tool card must remain readable/hittable.
+            final label = find.descendant(
+              of: title,
+              matching: find.text(row.label),
+            );
+            expect(label, findsOneWidget);
+            expect(_laidOut(label), isTrue);
+            expect(label.hitTestable(), findsOneWidget);
           }
           for (final call in runningExecCallIds) {
             final atom = required.singleWhere(
@@ -883,11 +917,7 @@ final class _RealtimeScene {
     if (threadId == null) return null;
     final display = graph.timeline.lease(threadId);
     if (display == null) return null;
-    return display.controller.messages
-        .map(chatItemPresentationOf)
-        .whereType<ChatItemPresentation>()
-        .where((item) => item.type == 'turn')
-        .lastOrNull;
+    return items.where((item) => item.type == 'turn').lastOrNull;
   }
 }
 

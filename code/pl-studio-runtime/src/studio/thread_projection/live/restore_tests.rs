@@ -37,6 +37,226 @@ async fn save(
         .await
 }
 
+#[tokio::test]
+async fn compaction_current_restores_without_an_item_and_settles_each_real_outcome()
+-> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use pl_core::thread::{ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome};
+    use pl_protocol::{
+        ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry,
+        ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
+        ThreadActivityKind,
+    };
+
+    let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let thread = pl_protocol::Thread::from(
+            env.runtime
+                .create_thread(&env.project.id, "compaction restore")
+                .await?,
+        );
+        for (case, outcome, terminal, associated) in [
+            (
+                "changed",
+                Outcome::Changed {
+                    context_revision: 9,
+                },
+                ChatTerminalOutcome::Completed,
+                true,
+            ),
+            (
+                "unchanged",
+                Outcome::Unchanged,
+                ChatTerminalOutcome::Completed,
+                false,
+            ),
+            (
+                "failed",
+                Outcome::Failed {
+                    message: "provider refused".into(),
+                },
+                ChatTerminalOutcome::Failed,
+                true,
+            ),
+            (
+                "cancelled",
+                Outcome::Cancelled,
+                ChatTerminalOutcome::Cancelled,
+                false,
+            ),
+        ] {
+            let history = HistoryStore::open(
+                &env._temp.path().join(format!("compaction-{case}.sqlite")),
+                &thread.id,
+            )
+            .await?;
+            history.prepare_write().await?;
+            let database = history
+                .conversation_database_id()
+                .await?
+                .context("database")?;
+            let session = Session::new(history.clone(), TimelineEpoch::new(case)?);
+            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            let mut projection = LiveProjection::new();
+            projection.bind_execution_history(channel.order_index(), history.clone())?;
+            projection.bind_conversation_identity(database.clone())?;
+            let state = ThreadSnapshot::default();
+            let turn_id = associated.then(|| "actual-turn".to_owned());
+            let attempt_id = associated.then(|| "actual-attempt".to_owned());
+            let start_position = ChatFactPosition {
+                effect_seq: 1,
+                suborder: 1,
+            };
+            let source = ChatSourceId::Operation {
+                operation_id: case.into(),
+            };
+            let effect = ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 1,
+                committed_at: 10,
+                context_compactions: vec![Event::Started {
+                    operation_id: case.into(),
+                    turn_id: turn_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                }]
+                .into(),
+                ..Default::default()
+            };
+            let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
+            projection.publish_prepared(&session, &mut prepared).await?;
+            assert_eq!(session.head_seq(), 0);
+            assert!(prepared.items.is_empty() && prepared.completions.is_empty());
+            let active = prepared
+                .current
+                .projection
+                .atoms
+                .first()
+                .context("active compaction")?
+                .clone();
+            assert_eq!(active.kind, ChatAtomKind::Compaction);
+            assert_eq!(active.source, source);
+            assert_eq!(active.delivery, ChatDeliveryKind::Independent);
+            assert_eq!(active.turn_id, turn_id);
+            assert_eq!(active.attempt_id, attempt_id);
+            assert_eq!(
+                active.lifecycle,
+                ChatAtomLifecycle::Active {
+                    started: Some(start_position),
+                    status: ChatActiveStatus::Running,
+                }
+            );
+            assert!(active.completion_seq.is_none() && active.payload.is_none());
+            save(&history, &effect, &prepared).await?;
+            drop(projection);
+            // The original persisted current suffices; no canonical business item was saved at start.
+            let saved = history
+                .conversation_current()
+                .await?
+                .context("saved current")?;
+            assert_eq!(saved.atoms, vec![active.clone()]);
+            assert_eq!(
+                saved.active.as_ref().context("saved head")?.kind,
+                ThreadActivityKind::Compacting
+            );
+            let mut restored = LiveProjection::new();
+            restored.bind_execution_history(channel.order_index(), history.clone())?;
+            restored.bind_conversation_identity(database)?;
+            restored.restore_current(&session, &thread, &state).await?;
+            assert_eq!(
+                restored
+                    .current_state()
+                    .context("restored current")?
+                    .projection
+                    .atoms,
+                vec![active.clone()]
+            );
+            let unchanged = ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 2,
+                committed_at: 11,
+                ..Default::default()
+            };
+            let mut prepared = restored
+                .prepare_committed(&thread, &unchanged, &state)
+                .await?;
+            restored.publish_prepared(&session, &mut prepared).await?;
+            assert!(
+                prepared
+                    .current_handoff
+                    .as_ref()
+                    .context("handoff")?
+                    .entries
+                    .is_empty()
+            );
+            assert_eq!(prepared.current.projection.atoms, vec![active.clone()]);
+            let effect = ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 3,
+                committed_at: 12,
+                context_compactions: vec![Event::Finished {
+                    operation_id: case.into(),
+                    outcome,
+                }]
+                .into(),
+                ..Default::default()
+            };
+            let (_, mut prepared) = restored.prepare(&thread, &effect, &state, false).await?;
+            restored.publish_prepared(&session, &mut prepared).await?;
+            assert_eq!(session.head_seq(), 1);
+            assert_eq!(prepared.completions.len(), 1);
+            let atom: ChatAtom = serde_json::from_slice(&prepared.completions[0].header.metadata)?;
+            assert_eq!(atom.id, active.id);
+            assert_eq!(atom.source, source);
+            assert_eq!(atom.delivery, ChatDeliveryKind::Independent);
+            assert_eq!(atom.turn_id, turn_id);
+            assert_eq!(atom.attempt_id, attempt_id);
+            assert_eq!(atom.started_at, Some(10));
+            let end_position = ChatFactPosition {
+                effect_seq: 3,
+                suborder: 1,
+            };
+            assert_eq!(
+                atom.lifecycle,
+                ChatAtomLifecycle::Terminal {
+                    started: Some(start_position),
+                    ended: Some(end_position),
+                    outcome: terminal,
+                }
+            );
+            assert!(prepared.current.projection.atoms.is_empty());
+            assert!(prepared.current.projection.active.is_none());
+            assert!(
+                prepared
+                    .current_handoff
+                    .as_ref()
+                    .context("end handoff")?
+                    .entries
+                    .iter()
+                    .any(
+                        |entry| matches!(entry, ChatEntry::Source(state) if state.source == source
+                    && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })
+                    )
+            );
+            save(&history, &effect, &prepared).await?;
+            assert!(
+                history
+                    .conversation_current()
+                    .await?
+                    .context("terminal saved current")?
+                    .atoms
+                    .is_empty()
+            );
+            let (_, mut repeated) = restored.prepare(&thread, &effect, &state, false).await?;
+            restored.publish_prepared(&session, &mut repeated).await?;
+            assert!(repeated.completions.is_empty());
+            assert_eq!(session.head_seq(), 1);
+        }
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Settlement {
     Completed,

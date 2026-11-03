@@ -859,7 +859,16 @@ final class _ConceptScene {
   Future<void> expand(TimelineDisplayUnit unit) async {
     await showUnit(unit.id);
     final header = find.byKey(ValueKey('source-unit-header:${unit.id}'));
-    if (unit.expansion.expanded != true) await tap(header);
+    if (unit.expansion.expanded != true) {
+      expect(header, findsOneWidget);
+      final row = tester.widget<TimelineActivityRow>(header);
+      final title = find.descendant(of: header, matching: find.text(row.label));
+      expect(title, findsOneWidget);
+      await tester.ensureVisible(title);
+      await tester.pump();
+      expect(title.hitTestable(), findsOneWidget);
+      await tap(title);
+    }
     await _until(
       tester,
       () => lease.groupDisplays.any(
@@ -1034,6 +1043,16 @@ final class _ConceptScene {
     await release('before-turn-end');
     await idle();
     final firstGroup = main.singleWhere((unit) => unit.id == g1);
+    final terminalReceipt = main.singleWhere(
+      (unit) =>
+          unit.source == firstGroup.source &&
+          unit.members.any((atom) => atom.kind == ChatAtomKind.turnReceipt),
+    );
+    expect(
+      main.indexOf(terminalReceipt),
+      greaterThan(main.indexWhere((unit) => unit.id == b)),
+      reason: 'The Turn terminal receipt follows its work and completed text',
+    );
     await expand(firstGroup);
     final reasoningBody = find.descendant(
       of: find.descendant(
@@ -1264,14 +1283,62 @@ final class _ConceptScene {
     );
     await tap(control);
     await hover.moveTo(Offset.zero);
-    await reach('compacting', () {
-      final active = activeCompactions();
-      final units = owner.liveUnits.value;
-      return active.length == 1 &&
-          units.length == 1 &&
-          units.single.members.any((atom) => atom.id == active.single.id) &&
-          currentRows(units.single).evaluate().length == 1;
-    });
+    try {
+      await reach('compacting', () {
+        final active = activeCompactions();
+        final units = owner.liveUnits.value;
+        return active.length == 1 &&
+            units.length == 1 &&
+            units.single.members.any((atom) => atom.id == active.single.id) &&
+            currentRows(units.single).evaluate().length == 1;
+      });
+    } on Object {
+      // Preserve each real predicate input before shutdown retires the owner.
+      // This observation starts no read, advances no gate, and relaxes nothing.
+      Map<String, Object?> atomObservation(ChatAtom atom) => {
+        'id': atom.id,
+        'kind': atom.kind.name,
+        'lifecycle': '${atom.lifecycle.runtimeType}',
+        'source': '${atom.source}',
+      };
+      report['compactionFailure'] = {
+        'sameOwner': identical(lease, owner),
+        'ownerGeneration': owner.generation,
+        'selectedGeneration': lease.generation,
+        'currentConnectorCount': currentConnector.evaluate().length,
+        'activeHead': owner.content.current.value?.active?.kind.name,
+        'currentAtoms': [
+          for (final atom in owner.content.current.value?.atoms ?? <ChatAtom>[])
+            atomObservation(atom),
+        ],
+        'liveUnits': [
+          for (final unit in owner.liveUnits.value)
+            {
+              'id': unit.id,
+              'kind': unit.kind.name,
+              'live': unit.live,
+              'members': unit.members.map(atomObservation).toList(),
+              'matchingViewCount': currentUnit(unit).evaluate().length,
+              'matchingRowCount': currentRows(unit).evaluate().length,
+            },
+        ],
+        'currentRows': [
+          for (final row in tester.widgetList<TimelineActivityRow>(
+            find.descendant(
+              of: currentConnector,
+              matching: find.byType(TimelineActivityRow),
+            ),
+          ))
+            {
+              'label': row.label,
+              'active': row.active,
+              'expandable': row.expandable,
+              'icon': row.icon?.codePoint,
+            },
+        ],
+      };
+      rethrow;
+    }
     expect(lease, same(owner));
     expect(threadId, selectedThread);
     final active = activeCompactions().single;

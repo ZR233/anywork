@@ -1,8 +1,8 @@
 //! Actual lifecycle folded by the existing projection owner. No display ranges or group state.
 use super::*;
 use pl_protocol::{
-    ChatActiveStatus, ChatAtom, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry, ChatFactPosition,
-    ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
+    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry,
+    ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 
 type Changes = (Vec<ChatEntry>, Vec<ChatSourceState>);
@@ -71,6 +71,21 @@ impl LiveProjection {
                 ));
             }
             if self.items.get(&atom.id).is_some_and(completion_ready) {
+                continue;
+            }
+            // An operation start owns provenance only, not a provisional business item or body.
+            // Restore it from the same saved current without inventing canonical execution content.
+            if atom.kind == ChatAtomKind::Compaction {
+                if !matches!(&atom.source, ChatSourceId::Operation { operation_id }
+                    if atom.id == super::super::order::compaction_id(operation_id))
+                    || atom.delivery != ChatDeliveryKind::Independent
+                    || !atom.contents.is_empty()
+                {
+                    return Err(ProjectionError::History(
+                        "saved active compaction has invalid operation provenance".into(),
+                    ));
+                }
+                self.atom_starts.insert(atom.id.clone(), atom);
                 continue;
             }
             let shape = match atom.kind {
@@ -375,20 +390,51 @@ impl LiveProjection {
                     }),
                 ),
             };
-            self.source_change(
-                ChatSourceId::Operation {
-                    operation_id: id.clone(),
-                },
-                outcome,
-                outcome.is_none(),
-                position(
-                    effect,
-                    1_usize
-                        .saturating_add(effect.inputs.len())
-                        .saturating_add(index),
-                )?,
-                &mut changes,
+            let source = ChatSourceId::Operation {
+                operation_id: id.clone(),
+            };
+            let at = position(
+                effect,
+                1_usize
+                    .saturating_add(effect.inputs.len())
+                    .saturating_add(index),
             )?;
+            self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut changes)?;
+            if let Event::Started {
+                turn_id,
+                attempt_id,
+                ..
+            } = event
+            {
+                let item_id = super::super::order::compaction_id(id);
+                if self.atom_starts.contains_key(&item_id) || self.identity_is_terminal(&item_id) {
+                    continue;
+                }
+                let atom = ChatAtom {
+                    id: item_id.clone(),
+                    completion_item_id: None,
+                    completion_seq: None,
+                    source,
+                    source_state: None,
+                    source_order: None,
+                    kind: ChatAtomKind::Compaction,
+                    delivery: ChatDeliveryKind::Independent,
+                    lifecycle: ChatAtomLifecycle::Active {
+                        started: Some(at),
+                        status: ChatActiveStatus::Running,
+                    },
+                    turn_id: turn_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    tool: None,
+                    text_channel: None,
+                    started_at: Some(effect.committed_at),
+                    finished_at: None,
+                    contents: Vec::new(),
+                    payload: None,
+                };
+                self.atom_starts.insert(item_id, atom.clone());
+                changes.0.push(ChatEntry::Atom(Box::new(atom)));
+            }
         }
         for (index, start) in effect.model_member_starts.iter().enumerate() {
             let (id, field, shape) = observation_start(
@@ -666,7 +712,8 @@ impl LiveProjection {
                         operation_id: operation_id.clone(),
                     };
                     let source = self.source_states.get(&atom.source);
-                    atom.started_at = None;
+                    atom.delivery = ChatDeliveryKind::Independent;
+                    atom.turn_id = old.as_ref().and_then(|atom| atom.turn_id.clone());
                     atom.lifecycle = ChatAtomLifecycle::Terminal {
                         started: source.and_then(|source| source.started),
                         ended: source.and_then(|source| source.ended),

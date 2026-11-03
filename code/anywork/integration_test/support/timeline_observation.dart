@@ -42,8 +42,26 @@ final class TimelineObservation {
   Finder atomRow(String id) => find.byWidgetPredicate(
     (widget) => widget is ChatItemView && widget.item.atom?.id == id,
   );
-  Finder groupHeader(String id) =>
-      find.byKey(ValueKey('source-unit-header:$id'));
+  Finder groupHeader(String id) => find.descendant(
+    of: groupRow(id),
+    matching: find.byKey(ValueKey('source-unit-header:$id')),
+  );
+
+  Finder _groupTitle(String id) {
+    final header = groupHeader(id);
+    expect(header, findsOneWidget);
+    // The header's Align/Row can have its centre in a Spacer, outside its
+    // children's hit path. Target the real title inside this exact unit, not
+    // the disclosure's body or another group's identically labelled header.
+    return find.descendant(
+      of: header,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            widget.data == tester.widget<TimelineActivityRow>(header).label,
+      ),
+    );
+  }
 
   Future<void> until(bool Function() ready, String description) async {
     final clock = Stopwatch()..start();
@@ -104,19 +122,22 @@ final class TimelineObservation {
   }
 
   Future<TimelineGroupDisplay> openGroup(String id) async {
+    final originalLease = lease;
     final value = unit(id);
     final originalController = lease.controller;
     final originalGeneration = lease.generation;
     final mainSets = lease.appliedSets;
     expect(value.kind, TimelineUnitKind.work);
-    if (value.live) {
-      await until(() => groupRow(id).evaluate().isNotEmpty, 'live group $id');
-    } else {
-      await reveal(groupRow(id), id);
-    }
     final header = groupHeader(id);
+    if (value.live) {
+      await until(() => header.evaluate().isNotEmpty, 'live group $id');
+    } else {
+      await reveal(header, id);
+    }
     expect(header, findsOneWidget);
-    if (!tester.widget<TimelineActivityRow>(header).expanded) await tap(header);
+    if (!tester.widget<TimelineActivityRow>(header).expanded) {
+      await tap(_groupTitle(id));
+    }
     TimelineGroupDisplay? display;
     await until(() {
       display = lease.groupDisplays
@@ -127,6 +148,7 @@ final class TimelineObservation {
     }, 'mounted original ordinary group $id');
     expect(display!.atoms, isNotEmpty);
     expect(display!.atoms.map((atom) => atom.source).toSet(), {value.source});
+    expect(lease, same(originalLease));
     expect(lease.controller, same(originalController));
     expect(lease.generation, originalGeneration);
     expect(
@@ -155,8 +177,8 @@ final class TimelineObservation {
 
   Future<void> closeGroup(TimelineGroupDisplay display) async {
     if (display.isCurrent && display.expanded) {
-      await reveal(groupRow(display.unitId), display.unitId);
-      await tap(groupHeader(display.unitId));
+      await reveal(groupHeader(display.unitId), display.unitId);
+      await tap(_groupTitle(display.unitId));
     }
     await until(
       () =>

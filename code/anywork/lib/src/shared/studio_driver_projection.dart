@@ -480,6 +480,8 @@ TimelineItemFacts _atomFacts(ChatAtom atom) {
       'completionSeq': atom.completionSeq,
       'sourceOrder': atom.sourceOrder,
       'completionItemId': atom.completionItemId,
+      'toolCallId': atom.tool?.callId,
+      'toolName': atom.tool?.name,
     },
   );
 }

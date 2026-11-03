@@ -27,10 +27,19 @@ pub const REQUIRED_STEPS: usize = 9;
 // Distinct production assets, copied by the isolated harness for ONE input.
 // All are below production's 2000px / 5MiB base64 normalization limits;
 // together they also fit the fixture's existing 1MiB request-body limit.
-const INPUT_PNG_SHA256: [&str; 3] = [
-    "e75b8140cad993ca5a23db4170bf70d3a4db3d7af55c9e8b43d432022aa58cd4",
-    "316558a02d6a9d35fc19480c9397cdab46a0b1ff83132e25fa184af837e4cfc2",
-    "eee576e2d47e68f0b0a185080f6b6e063d43cdee506cd6df180bd598a4034929",
+const INPUT_IMAGES: [(&str, &str); 3] = [
+    (
+        "concept-input-a.png",
+        "e75b8140cad993ca5a23db4170bf70d3a4db3d7af55c9e8b43d432022aa58cd4",
+    ),
+    (
+        "concept-input-b.png",
+        "316558a02d6a9d35fc19480c9397cdab46a0b1ff83132e25fa184af837e4cfc2",
+    ),
+    (
+        "concept-input-c.png",
+        "eee576e2d47e68f0b0a185080f6b6e063d43cdee506cd6df180bd598a4034929",
+    ),
 ];
 const OVERLAP_STAGES: &[&str] = &[
     "a07-reasoning-start",
@@ -247,7 +256,10 @@ impl Control {
                 protocol: Protocol::ResponsesHttp,
                 request: RequestMatch::PromptImages {
                     text: IMAGE_PROMPT.into(),
-                    png_sha256: INPUT_PNG_SHA256.iter().map(|hash| (*hash).into()).collect(),
+                    images: INPUT_IMAGES.iter().map(|(filename, hash)| PromptImage {
+                        filename: (*filename).into(),
+                        png_sha256: (*hash).into(),
+                    }).collect(),
                     step,
                 },
                 reply: Reply::Sse(events),
@@ -256,11 +268,13 @@ impl Control {
         });
         script.add(|step| Step {
             protocol: Protocol::ResponsesHttp,
-            request: RequestMatch::ToolOutputs {
+            request: RequestMatch::ToolImages {
+                images: ["concept-image-a", "concept-image-b", "concept-image-c"]
+                    .iter().map(|call_id| ToolImage {
+                        call_id: (*call_id).into(),
+                        png_sha256: "0a23b4c2e99e7de221fedb9e4e96d910c786d32385a17dc44dbc1138c13a2b4b".into(),
+                    }).collect(),
                 outputs: vec![
-                    ("concept-image-a".into(), "concept-image-a.png".into()),
-                    ("concept-image-b".into(), "concept-image-b.png".into()),
-                    ("concept-image-c".into(), "concept-image-c.png".into()),
                     ("concept-image-failed".into(), "image source is not a regular file".into()),
                 ],
                 step,

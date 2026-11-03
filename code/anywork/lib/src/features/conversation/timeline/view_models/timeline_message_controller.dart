@@ -264,6 +264,17 @@ final class TimelineMessageController implements ConversationBatchConsumer {
         unit,
   ];
   int _order(TimelineDisplayUnit a, TimelineDisplayUnit b) {
+    if (a.source == b.source && a.source is ForegroundTurnChatSource) {
+      // A Turn reserves its stable source position before model parts exist.
+      // Its terminal receipt closes that source, not the position of its start.
+      final aTerminal = a.members.any(
+        (atom) => atom.kind == ChatAtomKind.turnReceipt,
+      );
+      final bTerminal = b.members.any(
+        (atom) => atom.kind == ChatAtomKind.turnReceipt,
+      );
+      if (aTerminal != bTerminal) return aTerminal ? 1 : -1;
+    }
     if (a.source == b.source && a.firstOrder != null && b.firstOrder != null) {
       return a.firstOrder!.compareTo(b.firstOrder!);
     }

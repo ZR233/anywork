@@ -71,6 +71,22 @@ Waiting 不再由一条串行宿主 Driver 长旅程同时裁判并发语义、�
 
 手工布局诊断优先使用官方 [DevTools Inspector](https://docs.flutter.dev/tools/devtools/inspector)，AI 辅助运行时检查可使用官方 [Dart/Flutter MCP](https://docs.flutter.dev/ai/tools)。可重复功能交互采用 [integration_test](https://docs.flutter.dev/testing/integration-tests)，不把人工调试能力与自动化测试运行器混为一谈；MCP 暴露的 Driver 操作仍属于 Driver，不因接入 MCP 就声称完成 [Driver 迁移](https://docs.flutter.dev/release/breaking-changes/flutter-driver-migration)。截图须核对当前 SDK 和目标平台的实际支持：通过官方渲染 API（如 `RepaintBoundary.toImage`）取得的应用渲染表面不包含原生窗口装饰、系统菜单或平台视图，需要这些内容时另用平台截图能力。替换旧入口时只迁移已证明覆盖等价的范围，不为截图新增私有调试协议或修改用户工具配置。
 
+### 24.1.4 官方无头工具与界面设计对齐
+
+界面设计对齐优先使用 Flutter 官方无头工具，直接复用生产组件、主题、本地化和品牌资源，不为预览复制界面或建立业务运行时。布局与原生集成是不同的证明边界：
+
+| 目标 | 优先入口与证据 |
+| --- | --- |
+| 尺寸、溢出、可见性、展开、滚动及布局驱动的读取需求 | 官方 `flutter_test`／`WidgetTester` 无头挂载生产组件，读取实际布局并断言交互结果；需要图片回归时使用官方 golden matcher |
+| 对照概念稿检查层级、排版、颜色及宽窄布局 | 官方 Widget Previewer 与无头 Chrome，使用薄的合成呈现值包装和成熟浏览器工具截图、交互；不依赖 X11/Xvfb |
+| FRB、持久化、原生插件、窗口、输入法及真实进程退出 | 独立的真实原生集成或相应专项；无桌面的 Linux 可用隔离 Xvfb，但不为纯样式迭代反复启动完整原生旅程 |
+
+这是一项按风险选择入口的建议，不要求每次改动依次运行全部层级。预览先确认目标场景、实际组件约束、字体、主题和展开态，再与同故事设计参照对齐；相同浏览器画布大小不自动表示组件获得相同视口。截图成功、静态分析或热更新连接成功均不能代替人工核图和实际交互结果。
+
+证据标注合成组件预览或真实原生、平台、视口和覆盖范围；合成预览不能替代明确要求的原生产品截图。Widget 测试的虚拟时间、浏览器预览或截图耗时不作为原生打开/填屏性能。实际命令、缓存及依赖准备见应用说明和 `flutter-studio-build`。
+
+官方依据：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、[Widget 测试](https://docs.flutter.dev/cookbook/testing/widget/introduction)、[`matchesGoldenFile`](https://api.flutter.dev/flutter/flutter_test/matchesGoldenFile.html)。现役 SDK 的具体参数以其 CLI 帮助为准。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。

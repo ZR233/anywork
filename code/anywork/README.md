@@ -77,7 +77,17 @@ GUI 交互通过 `cargo xtask manual-gui` 的隔离模拟服务人工验收；�
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
 
-## 账号组件预览
+## 官方无头界面对齐与组件预览
+
+界面设计对齐建议优先使用官方无头工具，而不是为排版调整反复启动 X11/Xvfb 原生应用：
+
+- 布局、溢出、展开和滚动行为通过 `cargo flutter test <相关测试路径>` 的生产组件 Widget 测试验证，无需桌面显示服务。
+- 人工对照概念稿时，使用 `cargo flutter widget-preview start --headless --no-devtools`，由官方工具启动无头 Chrome，配合成熟浏览器工具检查实际组件、截图和交互；不用另建预览 UI。
+- 先核对当前 `cargo flutter widget-preview start --help -v`，并完成下文现有依赖覆盖准备。浏览器、分析服务和 DTD 随本次预览收束，不占用 `1420`。
+
+时间线已有 `features/conversation/timeline/previews/` 下的生产组件预览，覆盖内容、实时状态与回执，可与账号预览复用同一官方入口。`Timeline · 原子工作组` 直接使用共享的 `TimelineDisplayUnitView`，提供实时等待、工作与正文交替和窄窗 160% 字体三个入口；只检查已给定呈现值的布局与展开，不模拟分组接纳或业务完成。按实际目标选择组件约束、主题、语言和状态，不把合成数据或局部回调当作真实业务结果。原生集成、产品截图和性能的证明边界见[测试与人工验收](../../design/24-testing.md#2414-官方无头工具与界面设计对齐)。
+
+### 账号预览入口
 
 账号组件的官方预览分为三组入口：
 

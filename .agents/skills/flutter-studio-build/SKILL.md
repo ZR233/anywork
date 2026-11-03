@@ -1,6 +1,6 @@
 ---
 name: flutter-studio-build
-description: Use when building anywork on Windows, Linux or macOS, validating pure widgets with the official Widget Previewer, manually validating the native GUI with Flutter Driver (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
+description: Use when building anywork, aligning UI designs with official headless Flutter tests or Widget Previewer, validating native desktop integration, debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
 category: guides
 platforms: [windows, linux, macos]
 ---
@@ -9,6 +9,15 @@ platforms: [windows, linux, macos]
 
 涉及跨层分工、状态与资源所有权或页面路由时，先使用 `flutter-frb-rust-design`；
 本技能只维护生成、构建与运行观察方法。
+
+## 界面设计对齐优先无头工具
+
+建议先用官方 `flutter_test`／`WidgetTester` 检查生产组件布局与交互，用官方 Widget Previewer
+配合无头 Chrome 对齐概念稿、核图及迭代；这些工作无需 X11/Xvfb。复用真实组件、主题和本地化，
+不复制预览 UI 或建立第二份业务状态。操作见 [Widget Previewer 指南](references/widget-preview.md)。
+
+FRB、原生插件、持久化、真实窗口和进程退出仍由相应原生入口证明；无头工具不替代明确要求的
+产品原生截图或性能采样。按变化选择最小充分边界，不把无头与原生入口排成每轮必跑清单。
 
 ## 会话临时文件
 

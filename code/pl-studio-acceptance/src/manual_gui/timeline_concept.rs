@@ -202,6 +202,13 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
         .iter()
         .filter(|row| row["accepted"] == false)
         .count();
+    // The fixture exits successfully only after FixtureReport::verify confirms
+    // all required script steps. Accepted requests also include completion waits
+    // that do not advance the script, so their count alone is not completion.
+    let completed = fixture_result.as_ref().is_ok_and(|status| status.success());
+    let required_steps_consumed = completed
+        && accepted >= pl_provider_fixture::timeline_concept::REQUIRED_STEPS
+        && rejected == 0;
     fs::write(
         context.output.join("fixture-status.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -210,18 +217,19 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
             "runner": "flutter.integration_test",
             "runnerExitCode": runner_exit.and_then(|status| status.code()),
             "acceptedRequests": accepted,
+            "acceptedRequestsMeaning": "raw provider requests, including completion waits; not script steps",
             "rejectedRequests": rejected,
-            "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
-            "requiredStepsConsumed": accepted >= pl_provider_fixture::timeline_concept::REQUIRED_STEPS,
+            "completed": completed,
+            "requiredStepsConsumed": required_steps_consumed,
         }))?,
     )?;
     suite?;
     ensure!(
-        fixture_result.is_ok_and(|status| status.success()),
+        completed,
         "timeline-concept fixture did not exit successfully"
     );
     ensure!(
-        accepted >= pl_provider_fixture::timeline_concept::REQUIRED_STEPS && rejected == 0,
+        required_steps_consumed,
         "timeline-concept fixture requests were incomplete: \
          accepted={accepted} rejected={rejected}"
     );

@@ -287,6 +287,23 @@ impl CurrentOwner {
                     state: tool.state,
                 }),
         });
+        // Idle compaction has an admitted operation but no Turn or model-execution snapshot.
+        // Its original current atom is the activity fact; do not borrow a previous Turn.
+        if let Some(atom) = projection.atoms.iter().find(|atom| {
+            atom.kind == ChatAtomKind::Compaction
+                && matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+        }) {
+            projection.active = Some(CurrentActivityHead {
+                id: atom.id.clone(),
+                kind: ThreadActivityKind::Compacting,
+                summary: String::new(),
+                thinking_summary: None,
+                thinking_seconds: None,
+                tool_count: 0,
+                background_tool_count: 0,
+                latest_tool: None,
+            });
+        }
         let active_turn = super::project_active_turn(&thread.id, state, thread.updated_at)?;
         projection.active_turn = active_turn
             .as_ref()

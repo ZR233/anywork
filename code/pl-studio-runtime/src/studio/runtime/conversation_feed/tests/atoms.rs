@@ -300,6 +300,23 @@ async fn reliable_starts_empty_text_and_reverse_completion_share_the_real_feed()
         assert!(operation_start.entries.iter().any(|entry| matches!(entry,
             ChatEntry::Source(source) if matches!(&source.source, ChatSourceId::Operation { operation_id }
                 if operation_id == operation) && source.lifecycle == ChatSourceLifecycle::Active)));
+        let current = operation_start.current.as_ref().context("operation current")?;
+        let active_operation = current.atoms.iter().find(|atom| atom.kind == ChatAtomKind::Compaction)
+            .context("Started must publish an active compaction atom")?.clone();
+        assert_eq!(current.active.as_ref().context("compacting head")?.kind, ThreadActivityKind::Compacting);
+        assert_eq!(active_operation.source, ChatSourceId::Operation { operation_id: operation.into() });
+        assert_eq!(active_operation.delivery, ChatDeliveryKind::Independent);
+        assert!(active_operation.turn_id.is_none() && active_operation.attempt_id.is_none());
+        assert!(active_operation.completion_seq.is_none() && active_operation.completion_item_id.is_none());
+        assert!(active_operation.payload.is_none() && active_operation.contents.is_empty());
+        let operation_position = ChatFactPosition { effect_seq: 4, suborder: 1 };
+        assert_eq!(active_operation.lifecycle, ChatAtomLifecycle::Active {
+            started: Some(operation_position), status: ChatActiveStatus::Running,
+        });
+        let operation_member = chat(&mut feed).await?;
+        assert!(operation_member.entries.iter().any(|entry| matches!(entry,
+            ChatEntry::Atom(atom) if atom.as_ref() == &active_operation)));
+        assert!(operation_member.encoded_len()? <= demand().max_bytes as usize);
         let effect = ThreadEffectBatch {
             thread_id: thread.id.clone(), sequence: 5, committed_at: 14,
             context_compactions: vec![ContextCompactionEvent::Finished {
@@ -312,6 +329,15 @@ async fn reliable_starts_empty_text_and_reverse_completion_share_the_real_feed()
         let _operation_end = chat(&mut feed).await?;
         let batch = chat(&mut feed).await?;
         let operation_atom = completed_atoms(&batch).next().context("operation terminal")?;
+        assert_eq!(operation_atom.id, active_operation.id);
+        assert_eq!(operation_atom.completion_item_id.as_deref(), Some(active_operation.id.as_str()));
+        assert_eq!(operation_atom.delivery, ChatDeliveryKind::Independent);
+        assert_eq!(operation_atom.source, active_operation.source);
+        assert!(operation_atom.payload.is_some());
+        assert_eq!(operation_atom.started_at, active_operation.started_at);
+        let current = batch.current.as_ref().context("operation retired current")?;
+        assert!(!current.atoms.iter().any(|atom| atom.id == active_operation.id));
+        assert_ne!(current.active.as_ref().map(|head| head.kind), Some(ThreadActivityKind::Compacting));
         assert_eq!(operation_atom.kind, ChatAtomKind::Compaction);
         assert!(operation_atom.turn_id.is_none(), "idle operation borrowed an old Turn");
         assert!(matches!(operation_atom.lifecycle, ChatAtomLifecycle::Terminal {

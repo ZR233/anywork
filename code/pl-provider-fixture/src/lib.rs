@@ -1176,6 +1176,20 @@ impl Protocol {
     }
 }
 
+/// An attachment caption and the exact PNG bytes expected in one user input.
+#[derive(Debug, Clone)]
+pub struct PromptImage {
+    pub filename: String,
+    pub png_sha256: String,
+}
+
+/// One image result's committed call identity and original PNG content.
+#[derive(Debug, Clone)]
+pub struct ToolImage {
+    pub call_id: String,
+    pub png_sha256: String,
+}
+
 /// An exact JSON body or a strict prompt plus ordinal step match.
 #[derive(Debug, Clone)]
 pub enum RequestMatch {
@@ -1194,10 +1208,10 @@ pub enum RequestMatch {
         text: String,
         step: usize,
     },
-    /// One real user message must contain the text and these ordered PNG bodies.
+    /// One real user message contains the prompt followed by ordered caption/PNG pairs.
     PromptImages {
         text: String,
-        png_sha256: Vec<String>,
+        images: Vec<PromptImage>,
         step: usize,
     },
     /// Exact answers plus the real client's opaque, nonempty decision identity.
@@ -1240,6 +1254,12 @@ pub enum RequestMatch {
     },
     /// Every named foreground result must be present in the same continuation.
     ToolOutputs {
+        outputs: Vec<(String, String)>,
+        step: usize,
+    },
+    /// Requires committed image calls, their ordered media deliveries, and text results.
+    ToolImages {
+        images: Vec<ToolImage>,
         outputs: Vec<(String, String)>,
         step: usize,
     },
@@ -4574,11 +4594,9 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                     RequestMatch::InteractionAnswers { text, step } => {
                         *step == index && question_history::matches_answers(prompt(body), text)
                     }
-                    RequestMatch::PromptImages {
-                        text,
-                        png_sha256,
-                        step,
-                    } => *step == index && prompt_images_match(body, text, png_sha256),
+                    RequestMatch::PromptImages { text, images, step } => {
+                        *step == index && prompt_images_match(body, text, images)
+                    }
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
                             && body["input"]
@@ -4600,6 +4618,16 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                             && !outputs.is_empty()
                             && outputs.iter().all(|(call_id, marker)| {
                                 tool_output_contains(body, call_id, marker)
+                            })
+                    }
+                    RequestMatch::ToolImages {
+                        images,
+                        outputs,
+                        step,
+                    } => {
+                        *step == index
+                            && tool_images_pending(body, images, outputs).is_some_and(|pending| {
+                                pending.is_empty() || tool_scroll_wait_count(body, index) < 32
                             })
                     }
                     RequestMatch::ToolCompletion {
@@ -4630,10 +4658,14 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
         diagnostic,
     });
     let index = selected.ok_or(())?;
-    if let RequestMatch::ToolScrollCompletion { call_ids, .. } = script.steps[index].request.base()
-        && let Some(pending) = tool_scroll_pending(body, call_ids)
-        && !pending.is_empty()
-    {
+    let pending = match script.steps[index].request.base() {
+        RequestMatch::ToolScrollCompletion { call_ids, .. } => tool_scroll_pending(body, call_ids),
+        RequestMatch::ToolImages {
+            images, outputs, ..
+        } => tool_images_pending(body, images, outputs),
+        _ => None,
+    };
+    if let Some(pending) = pending.filter(|pending| !pending.is_empty()) {
         let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
         let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
         return Ok(Reply::Sse(responses_tool_calls(
@@ -4694,6 +4726,16 @@ fn reject_diagnostic(
                     .join(","),
             ),
         ),
+        Some(RequestMatch::ToolImages { images, .. }) => (
+            "tool_images",
+            Some(
+                images
+                    .iter()
+                    .map(|image| image.call_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => ("tool_completion", Some(format!("{call_id}:{marker}"))),
@@ -4706,9 +4748,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
-        Some(RequestMatch::PromptImages {
-            text, png_sha256, ..
-        }) => prompt_images_match(body, text, png_sha256),
+        Some(RequestMatch::PromptImages { text, images, .. }) => {
+            prompt_images_match(body, text, images)
+        }
         Some(RequestMatch::InteractionAnswers { text, .. }) => {
             question_history::matches_answers(actual, text)
         }
@@ -4722,6 +4764,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutputs { outputs, .. }) => outputs
             .iter()
             .all(|(id, marker)| tool_output_contains(body, id, marker)),
+        Some(RequestMatch::ToolImages {
+            images, outputs, ..
+        }) => tool_images_match(body, images, outputs),
         Some(RequestMatch::ToolCompletion {
             call_id,
             tool_id,
@@ -4755,6 +4800,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolImages {
+            images, outputs, ..
+        }) => tool_images_match(body, images, outputs),
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
@@ -4791,8 +4839,8 @@ fn reject_diagnostic(
     }
 }
 
-fn prompt_images_match(body: &Value, text: &str, png_sha256: &[String]) -> bool {
-    if png_sha256.is_empty() || prompt(body) != Some(text) {
+fn prompt_images_match(body: &Value, text: &str, images: &[PromptImage]) -> bool {
+    if images.is_empty() || prompt(body) != Some(text) {
         return false;
     }
     let Some(content) = body["input"]
@@ -4808,27 +4856,149 @@ fn prompt_images_match(body: &Value, text: &str, png_sha256: &[String]) -> bool 
         return false;
     };
     // Count only this input, never images from earlier inputs or tool results.
-    content.len() == png_sha256.len() + 1
+    // Production retains each filename as its own text part immediately before
+    // the image. Match that actual structure, not an invented captionless wire.
+    content.len() == images.len() * 2 + 1
         && content[0]["type"] == "input_text"
-        && content
+        && content[1..]
+            .as_chunks::<2>()
+            .0
             .iter()
-            .skip(1)
-            .zip(png_sha256)
-            .all(|(part, digest)| {
-                part["type"] == "input_image"
-                    && part["image_url"]
-                        .as_str()
-                        .and_then(|url| url.strip_prefix("data:image/png;base64,"))
-                        .and_then(|encoded| {
-                            base64::engine::general_purpose::STANDARD
-                                .decode(encoded)
-                                .ok()
-                        })
-                        .is_some_and(|bytes| {
-                            bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                                && hex::encode(Sha256::digest(&bytes)) == *digest
-                        })
+            .zip(images)
+            .all(|(parts, image)| {
+                parts[0]["type"] == "input_text"
+                    && parts[0]["text"] == format!("Attachment: {}", image.filename)
+                    && png_image_matches(&parts[1], &image.png_sha256)
             })
+}
+
+fn png_image_matches(part: &Value, digest: &str) -> bool {
+    part["type"] == "input_image"
+        && part["image_url"]
+            .as_str()
+            .and_then(|url| url.strip_prefix("data:image/png;base64,"))
+            .and_then(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .is_some_and(|bytes| {
+                bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                    && hex::encode(Sha256::digest(&bytes)) == digest
+            })
+}
+
+fn tool_images_match(body: &Value, images: &[ToolImage], outputs: &[(String, String)]) -> bool {
+    tool_images_pending(body, images, outputs).is_some_and(|pending| pending.is_empty())
+}
+
+/// A running receipt is not an image result. Immediate media and task-owned
+/// completion media both retain their real call and original PNG identity.
+fn tool_images_pending(
+    body: &Value,
+    images: &[ToolImage],
+    outputs: &[(String, String)],
+) -> Option<Vec<String>> {
+    let items = body["input"].as_array()?;
+    if images.is_empty()
+        || !outputs
+            .iter()
+            .all(|(id, marker)| tool_output_contains(body, id, marker))
+    {
+        return None;
+    }
+    let last_user = items.iter().rposition(|item| item["role"] == "user")?;
+    let mut last_user_verified = false;
+    let mut pending = Vec::new();
+    let mut previous_result = None;
+    let mut previous_media = None;
+    let mut immediate_media = Vec::new();
+    for image in images {
+        let mut results = items.iter().enumerate().filter(|(_, item)| {
+            item["type"] == "function_call_output" && item["call_id"] == image.call_id
+        });
+        let (position, result) = results.next()?;
+        if results.next().is_some() || previous_result.is_some_and(|before| position <= before) {
+            return None;
+        }
+        previous_result = Some(position);
+        let output = result["output"].as_str()?;
+        if output.is_empty() {
+            let label = format!(
+                "Image from view_image call {}: pl.studio.resource:{}",
+                image.call_id, image.png_sha256
+            );
+            let mut found = None;
+            for (message_index, item) in items.iter().enumerate() {
+                if item["role"] != "user" {
+                    continue;
+                }
+                let Some(parts) = item["content"].as_array() else {
+                    continue;
+                };
+                for (part_index, pair) in parts.windows(2).enumerate() {
+                    if pair[0]["type"] == "input_text" && pair[0]["text"] == label {
+                        if found.is_some() || !png_image_matches(&pair[1], &image.png_sha256) {
+                            return None;
+                        }
+                        found = Some((message_index, part_index));
+                    }
+                }
+            }
+            let position = found?;
+            if position.0 <= previous_result?
+                || previous_media.is_some_and(|before| position <= before)
+            {
+                return None;
+            }
+            previous_media = Some(position);
+            immediate_media.push(position);
+        } else if output == tool_running_receipt(&image.call_id) {
+            let prefix = format!("Task task:{} for tool view_image finished: ", image.call_id);
+            let deliveries = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item["role"] == "user")
+                .filter(|(_, item)| user_text(item).is_some_and(|text| text.starts_with(&prefix)))
+                .collect::<Vec<_>>();
+            if deliveries.is_empty() {
+                pending.push(image.call_id.clone());
+                continue;
+            }
+            let &(delivery_index, delivery) = deliveries.first()?;
+            let parts = delivery["content"].as_array()?;
+            if deliveries.len() != 1
+                || delivery_index <= position
+                || parts.len() != 2
+                || parts[0]["type"] != "input_text"
+                || parts[0]["text"] != format!("{prefix}Succeeded.")
+                || !png_image_matches(&parts[1], &image.png_sha256)
+            {
+                return None;
+            }
+            last_user_verified |= delivery_index == last_user;
+        } else {
+            return None;
+        }
+    }
+    for &(message_index, part_index) in &immediate_media {
+        let expected_pairs = immediate_media
+            .iter()
+            .filter(|(index, _)| *index == message_index)
+            .count();
+        if part_index % 2 != 0
+            || items[message_index]["content"].as_array()?.len() != expected_pairs * 2
+        {
+            return None;
+        }
+        last_user_verified |= message_index == last_user;
+    }
+    // Old media cannot complete this step after an unrelated new input.
+    // Before a first delivery, the original input precedes the tool receipts.
+    if !last_user_verified && (pending.is_empty() || last_user > previous_result?) {
+        return None;
+    }
+    Some(pending)
 }
 
 fn prompt(body: &Value) -> Option<&str> {

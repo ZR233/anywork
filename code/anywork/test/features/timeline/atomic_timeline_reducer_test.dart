@@ -379,6 +379,74 @@ void main() {
     ]);
     expect(owner.live.value, isEmpty);
   });
+  for (final reading in ['live', 'cold', 'prepend']) {
+    test('Turn terminal receipt follows its content in $reading admission', () async {
+      final atoms = [
+        part('R1', 4, terminal: true, seq: 2),
+        part('A', 10, kind: ChatAtomKind.text, terminal: true, seq: 6),
+        part('R2', 11, terminal: true, seq: 7),
+        part('B', 12, kind: ChatAtomKind.text, terminal: true, seq: 8),
+        // The real Turn reserves its ordinal before any model members, but its
+        // terminal receipt is published after them. Neither fact is rewritten.
+        part(
+          'turn-receipt',
+          2,
+          kind: ChatAtomKind.turnReceipt,
+          delivery: ChatDeliveryKind.independent,
+          terminal: true,
+          seq: 9,
+        ),
+      ];
+      if (reading == 'live') {
+        await owner.applyBatch(
+          page(const [], placement: ChatPlacement.set, sources: [state()]),
+        );
+        for (final atom in atoms) {
+          await owner.applyBatch(
+            page([
+              atom,
+            ], sources: atom == atoms.last ? [state(ended: true)] : []),
+          );
+        }
+      } else if (reading == 'cold') {
+        await owner.applyBatch(
+          page(
+            atoms,
+            placement: ChatPlacement.set,
+            sources: [state(ended: true)],
+          ),
+        );
+      } else {
+        await owner.applyBatch(
+          page(
+            [atoms.last],
+            placement: ChatPlacement.set,
+            sources: [state(ended: true)],
+            before: 'older',
+          ),
+        );
+        await owner.applyBatch(
+          page(
+            atoms.take(4).toList(),
+            placement: ChatPlacement.prepend,
+            sources: [state(ended: true)],
+          ),
+        );
+      }
+      expect(
+        controller.messages
+            .map(unit)
+            .expand((value) => value.members)
+            .map((atom) => atom.id),
+        ['R1', 'A', 'R2', 'B', 'turn-receipt'],
+      );
+      final receipt = unit(controller.messages.last).members.single;
+      expect(receipt.sourceOrder, 2);
+      expect(receipt.completionSeq, 9);
+      expect(owner.live.value, isEmpty);
+    });
+  }
+
   test('real empty text keeps the two work records separate without a rendered empty card', () async {
     final empty = part(
       'empty',
