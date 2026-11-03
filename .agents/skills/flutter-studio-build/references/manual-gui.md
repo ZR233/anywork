@@ -2,7 +2,7 @@
 
 ## 入口与范围
 
-- 从仓库根目录运行 `cargo xtask manual-gui --preset`，由 harness 创建隔离的 `ANYWORK_HOME`、
+- 从仓库根目录运行 `cargo xtask manual-gui --preset gui --inspect`，由 harness 创建隔离的 `ANYWORK_HOME`、
   本地模拟供应商和真实 bridge GUI，不修改用户配置或凭据。不要用 demo 证明持久化行为。
   xtask 仅按需编译并调用独立 `pl-studio-acceptance`，不链接该工具的重依赖。
 - 先明确要验证的交互、状态变化、异常路径及证据；通过 `code/pl-studio-acceptance/src/`
@@ -16,8 +16,9 @@
 - 自动化桌面/原生生命周期走 `cargo xtask test-project --suite desktop|native`。
   `wait-events` 与 `shutdown` / `single-instance` 由 harness 自动判定；其余 preset 是操作者
   runbook，人类 `verdict.json` 保持 pending。
-- 图像证据来自 Flutter 内容捕获（`ext.anywork.capture`，宿主 `code/anywork/tool/capture_ui.dart`）。
-  浏览器 Widget Previewer 截图、系统窗口截图和通用 X11/Win32 抓屏都不能替代该 PNG 合同。
+- 默认通过 Flutter 层取得图像：官方 MCP `flutter_driver_command` 的 `screenshot` 可直接观察
+  当前原生应用；harness 的 `ext.anywork.capture` 继续提供带来源元数据的落盘 PNG。
+  浏览器预览须标为合成组件证据；Flutter 内容不包含原生装饰、系统菜单或 IME。
 
 Markdown 排版定向复核可运行 `cargo xtask manual-gui --preset markdown-layout`，
 通过真实输入框发送 `展示长 Markdown 表格、引用与代码排版样例`。模拟供应商逐行流式返回
@@ -25,42 +26,26 @@ Markdown 排版定向复核可运行 `cargo xtask manual-gui --preset markdown-l
 `assets/markdown-layout.md`，可用于核对真实选择与复制。此场景沿用交互式记录与 `done`
 收束，不进入自动门禁；截图、快照与临时探针仍只保存在忽略的证据目录。
 
-## Linux SSH：补齐终端和显示环境
+## 跨平台启动与显示条件
 
-先检查事实，不根据控制端环境猜测：
+Windows、Linux 的布局、交互和 Flutter 截图共用官方 MCP 接口。`--inspect` 仅启用独立 debug
+入口，`integration_test` 仍由自己的 binding 驱动；不把 MCP 操作记录称为自动化断言。
 
-```bash
-test -t 0 && echo 'stdin: tty' || echo 'stdin: not a tty'
-printf 'DISPLAY=%s WAYLAND_DISPLAY=%s\n' "$DISPLAY" "$WAYLAND_DISPLAY"
-command -v script xvfb-run Xvfb xauth
-```
-
-默认人工 preset 要求交互 stdin；非 TTY 会返回 `manual-gui requires an interactive terminal`。
-显示环境变量为空说明未指定桌面会话，并不证明本机无法运行 GUI。工具齐全时，可用伪终端和
-隔离虚拟显示器，不占用用户桌面，也不绕开 xtask：
+Linux SSH 没有显示服务时，先检查 `xvfb-run`、`Xvfb` 和 `xauth`。执行工具支持伪终端时直接
+启用其 TTY；否则使用系统 `script -q -e -c '<命令>' /dev/null`。例如在可写 TTY 中：
 
 ```bash
 GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
-  script -q -e -c 'cargo xtask manual-gui --preset gui' /dev/null
+  cargo xtask manual-gui --preset gui --inspect
 ```
 
-`xvfb-run` 只设置 X11 显示，不强制 GTK 选择该后端；隔离 X11 验收显式设置
-`GDK_BACKEND=x11`。需要固定证据目录时，给内部命令增加 `--output`，指向最新
-`studio.session-files` 给出的本 Thread `artifacts` 下尚不存在的唯一子目录；不要删除旧证据
-来复用路径。已有可用显示会话时按需要只用 `script`。
-`script -e` 透传子命令退出状态，`xvfb-run -a` 自动分配显示号并在命令退出后回收 Xvfb。
-不要把示例虚拟屏幕大小当作实际窗口大小；窗口尺寸须从本次内容捕获或窗口信息核实。
+Xvfb 只提供 Linux 显示环境，不参与控件定位、输入或截图；虚拟屏幕尺寸不是实际 Flutter 视口。
+Windows 原生运行仍需可运行桌面应用的会话。保留本次启动日志中的 DTD/VM Service 地址，待应用
+就绪后连接；认证地址不提交或公开。首次构建使用同一任务等待，不重复启动。
 
-保持命令的 stdin 可写，保存后台 taskId；给首次 Rust/Flutter 构建留足时间，用 `wait`
-等待，不重复启动。GUI ready 后才能交互。若启动迟迟未完成，检查本次进程树及其日志，
-区分构建中、VM Service 未就绪、显示失败与应用异常，不盲目重试。
-
-`tool-scroll`、`stress-body` 与 `wait-events` 使用性能分析构建。支持 `--retain-environment` 的场景
-（包括 `tool-scroll`、`wait-events`）在场景成功、
-运行时正常关闭且所属进程回收后，把本次合成环境保留在证据目录中，并写出
-`retained-environment.json`。保留整个环境根，避免配置及工作区里的绝对路径失效；仅复制 home
-不足以重开同一合成会话。随后可构建正式程序，以该文件中的 home 作为进程级 `ANYWORK_HOME`
-运行 `cargo xtask run-gui --release`，进行人工视觉复核；不要将合成配置写入用户的数据根。
+支持 `--retain-environment` 的 preset 正常关闭后会写出 `retained-environment.json`。
+复核时保留整个环境根，避免配置内绝对路径失效；仅复制 home 不足以重开同一合成会话。
+按回执中的 home 设置进程级 `ANYWORK_HOME`，不将合成配置写入用户数据根。
 
 ## 涉及系统凭据的隔离场景
 
@@ -137,10 +122,15 @@ bots-env conversations prepare-pages
 `target/gui-acceptance/` 是显式的本地工程探针示例，不是产品的命令 capture 或通用会话
 临时目录。
 
-1. 用真实键盘和指针操作生产界面。官方 `WidgetTester` / `integration_test` 能覆盖的交互
-   走 `test-project` 或 `flutter test --no-pub test/ui`；Computer Use 仅在这些入口和人工
-   都无法覆盖且确有必要时使用。
-2. 控件身份读取当前源码中的 `StudioDriverKeys` / `StudioDriverKeyValues`。动态 key 可包含
+1. 读取当前 Dart MCP 的工具 schema；`dtd.connect` 使用启动日志中的 DTD URI，
+   `appUri` 使用已连接应用的 VM Service URI，不能混用两者。热重载使用普通
+   `run-gui --inspect` 的常驻 Flutter 工具；`--native-launch` 是直接运行构建产物的
+   原生退出观察入口，不作为本项目的 MCP 热重载入口。
+   用 `widget_inspector` 的 `get_widget_tree` 发现真实控件；用 `flutter_driver_command` 的
+   `get_diagnostics_tree` / `get_offset`、`tap`、`enter_text`、`scroll` 和 `screenshot`
+   检查布局、交互与画面。多应用时显式指定 `appUri`，不猜定位器。自动化断言使用
+   `test-project` 或 `cargo flutter test --no-pub test/ui`；系统交互才使用真实键盘/指针。
+2. 控件身份优先读取本次 widget tree，源码中的 `StudioDriverKeys` / `StudioDriverKeyValues` 用于补充定位。动态 key 可包含
    account/profile ID，不能猜测为空或照抄上次 ID。折叠面板只点真实标题行；存在性、可见
    几何与标准组件的真实展开态分别核对。
 3. 关键状态分别保存内容捕获 PNG、必要的最小快照和日志，并实际打开截图核对。检查布局
@@ -191,6 +181,22 @@ bots-env conversations prepare-pages
 富文本选择与复制：排版截图正确不代表复制正确。覆盖中文与行内代码、连续代码片段、长路径、
 标题后有/无空行，在正常/窄窗口及不同文字缩放下执行真实选择与复制，逐字核对剪贴板。
 不得直接写入期望文本伪造成功。
+
+## 热重载与官方技能的项目适配
+
+- 上游技能中的 `launch_app` / 直接 `flutter run` 在本项目映射到 xtask 启动，之后由
+  MCP 附着本次 DTD；不要再启动第二个应用。xtask 持有进程树和控制管道，MCP 使用
+  Flutter 的 reload 服务，两者职责独立。
+- 修改 Dart 呈现后调用 `hot_reload`，核对目标控件的新文本或布局、已有草稿/展开态及
+  `get_runtime_errors`。工具返回成功之外，还需要真实界面变化；验证探针恢复后再次 reload。
+- `main()`、静态初始化或 binding 变化按 Flutter 限制选择重新启动；Rust、FRB 和原生 runner
+  变化通过 xtask 重新生成所需绑定、构建并完整关闭/重开应用。`hot_restart` 不替换已加载的
+  Rust 动态库。`--release` 不提供开发热重载。
+- 官方 Driver extension 只装配在 `tool/inspect_main.dart`，不要按通用技能示例注入正式
+  `lib/main.dart`，也不要与 `IntegrationTestWidgetsFlutterBinding` 混用。
+- 同一 checkout 的宿主与容器 Pub 会生成包含各自 SDK 路径的 `.dart_tool` 配置；先结束
+  一侧运行再切换环境，或使用独立 checkout。生成命令也须完成后再启动分析和热重载；
+  不通过新增锁或复制 SDK 配置掩盖并发覆盖。
 
 ## 结束、回收与判定
 

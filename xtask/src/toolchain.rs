@@ -27,6 +27,7 @@ pub(crate) fn required_for(command: &XtaskCommand) -> bool {
         | XtaskCommand::BuildRemoteHelper(_) => true,
         XtaskCommand::Flutter(_)
         | XtaskCommand::Dart(_)
+        | XtaskCommand::PreviewGui(_)
         | XtaskCommand::VerifyClient
         | XtaskCommand::ReleaseGui { .. } => false,
     }

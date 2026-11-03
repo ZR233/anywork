@@ -54,11 +54,14 @@ pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
     /// `wait-events`, `conversation-read-work`, `question-history`,
     /// `realtime-presentation` and `sidebar-query` are automatic desktop runners;
-    /// `shutdown` and `single-instance` are native lifecycle.
+    /// `shutdown` covers native lifecycle and second-instance behavior.
     /// ACP native acceptance uses the official Flutter integration_test
     /// suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
     pub(crate) preset: String,
+    /// Enable official Flutter MCP/Driver interaction for the manual gui preset.
+    #[arg(long)]
+    pub(crate) inspect: bool,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -685,8 +688,8 @@ fn presentation_capture_requested() -> Result<bool> {
         value.to_string_lossy()
     );
     ensure!(
-        cfg!(target_os = "linux"),
-        "ANYWORK_CAPTURE_PRESENTATION=1 is supported only on Linux"
+        cfg!(any(target_os = "linux", target_os = "windows")),
+        "ANYWORK_CAPTURE_PRESENTATION=1 requires Linux or Windows"
     );
     Ok(true)
 }
@@ -699,6 +702,10 @@ fn configure_presentation_capture(command: &mut Command, output: &Path, requeste
 }
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
+    ensure!(
+        !options.inspect || (options.preset == "gui" && !options.bots_fixture),
+        "--inspect requires the manual gui preset without --bots-fixture"
+    );
     let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
@@ -710,7 +717,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             || matches!(
                 options.preset.as_str(),
                 "gui"
-                    | "single-instance"
                     | "tool-scroll"
                     | "timeline-history"
                     | "timeline-history-20k"
@@ -722,7 +728,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "sidebar-query"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
-        "--retain-environment is supported by --preset gui, single-instance, tool-scroll, \
+        "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
          stress-body-large, wait-events, conversation-read-work, sidebar-query and the delegation scenes"
     );
@@ -813,7 +819,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "web-search"
             | "provider-usage"
             | "shutdown"
-            | "single-instance"
             | "timeline-history"
             | "timeline-history-20k"
             | "question-history"
@@ -1596,6 +1601,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .stdout(Stdio::from(gui_stdout))
         .stderr(Stdio::from(gui_log));
     if bots.is_none() {
+        if options.inspect {
+            gui_command.arg("--inspect");
+        }
         if options.preset == "gui" {
             gui_command.args(["--log-level", "info"]);
         }

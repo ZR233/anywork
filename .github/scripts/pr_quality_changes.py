@@ -17,7 +17,7 @@ OUTPUT_FLAGS = (
     "linux_environment",
     "flutter_checks",
     "gui_generated",
-    "linux_tools",
+    "linux_inputs",
     "remote_helpers",
     "linux_desktop",
     "linux_native",
@@ -258,9 +258,9 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags[name]
         for name in ("linux_desktop", "linux_native", "windows_build", "macos_build")
     )
-    flags["linux_tools"] = flags["gui_generated"] or flags["remote_helpers"]
+    flags["linux_inputs"] = flags["gui_generated"] or flags["remote_helpers"]
     flags["linux_environment"] = (
-        flags["rust_checks"] or flags["linux_tools"]
+        flags["flutter_checks"] or flags["rust_checks"] or flags["linux_inputs"]
     )
     plan_name = "+".join(name for name in OUTPUT_FLAGS if flags[name]) or "classified"
     return _finish(
@@ -285,16 +285,15 @@ def _finish(
         ("linux_environment", "linux-environment"),
         ("flutter_checks", "flutter-checks"),
         ("gui_generated", "gui-generated"),
-        ("linux_tools", "linux-tools"),
-        ("remote_helpers", "remote-helpers"),
+        ("linux_inputs", "linux-inputs"),
+        ("linux_desktop", "linux-desktop"),
+        ("linux_native", "linux-native"),
         ("windows_build", "windows-build"),
         ("macos_build", "macos-build"),
     )
     for flag, job in jobs_by_flag:
         if flags[flag]:
             required.append(job)
-    if flags["linux_desktop"] or flags["linux_native"]:
-        required.append("linux-integration")
     return {
         **flags,
         "required_jobs": tuple(required),

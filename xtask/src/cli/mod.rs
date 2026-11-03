@@ -23,6 +23,8 @@ pub(crate) enum Command {
     Flutter(ToolOptions),
     /// Run Dart from the anywork app directory.
     Dart(ToolOptions),
+    /// Prepare project overrides and start the official Flutter Widget Previewer.
+    PreviewGui(ToolOptions),
     /// Regenerate Riverpod, Freezed, l10n, and FRB bindings.
     GenerateGui,
     /// Regenerate GUI sources and fail when generated files are not committed.
@@ -73,6 +75,9 @@ pub(crate) struct RunGuiOptions {
     /// Register the debug-only Flutter content capture extension.
     #[arg(long, conflicts_with = "release")]
     pub(crate) capture: bool,
+    /// Enable official Flutter Driver/MCP inspection in a dedicated debug entrypoint.
+    #[arg(long, conflicts_with_all = ["release", "profile", "native_launch_target"])]
+    pub(crate) inspect: bool,
     /// Build the debug/profile bundle in profile/AOT mode.
     #[arg(long, requires = "native_launch")]
     pub(crate) profile: bool,
@@ -119,6 +124,12 @@ pub(crate) struct TestProjectOptions {
     /// Run or list one case. The id names the target and its environment, not assertions.
     #[arg(long, value_name = "ID")]
     pub(crate) case: Option<String>,
+    /// Zero-based shard of the sorted, selected suite. Empty shards fail.
+    #[arg(long, requires = "shard_count", conflicts_with = "case")]
+    pub(crate) shard_index: Option<usize>,
+    /// Number of disjoint shards, used with --shard-index.
+    #[arg(long, requires = "shard_index", conflicts_with = "case")]
+    pub(crate) shard_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -251,6 +262,9 @@ fn parse_forwarded_command(args: &[OsString]) -> Option<Command> {
             args: forwarded_args(),
         })),
         Some("dart") => Some(Command::Dart(ToolOptions {
+            args: forwarded_args(),
+        })),
+        Some("preview-gui") => Some(Command::PreviewGui(ToolOptions {
             args: forwarded_args(),
         })),
         Some("manual-gui") => Some(Command::ManualGui(ToolOptions {

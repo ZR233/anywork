@@ -30,7 +30,7 @@ jobs:
       linux_environment: ${{ steps.plan.outputs.linux_environment }}
       flutter_checks: ${{ steps.plan.outputs.flutter_checks }}
       gui_generated: ${{ steps.plan.outputs.gui_generated }}
-      linux_tools: ${{ steps.plan.outputs.linux_tools }}
+      linux_inputs: ${{ steps.plan.outputs.linux_inputs }}
       remote_helpers: ${{ steps.plan.outputs.remote_helpers }}
       linux_desktop: ${{ steps.plan.outputs.linux_desktop }}
       linux_native: ${{ steps.plan.outputs.linux_native }}
@@ -171,10 +171,10 @@ jobs:
             sleep "$((attempt * 2))"
           done
 
-  # Frontend-only changes never depend on the Rust image or native tools.
+  # Frontend-only changes use the shared image, but never compile Rust tools.
   flutter-checks:
     name: Flutter and Client (Linux, no bridge)
-    needs: changes
+    needs: [changes, linux-environment]
     if: needs.changes.outputs.flutter_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -185,14 +185,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
         with:
-          flutter-version: 3.47.7
-          channel: stable
-          cache: true
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Check frontend contracts and production UI components
-        run: bash .github/scripts/pr-quality-flutter.sh
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash .github/scripts/pr-quality-flutter.sh
 
   linux-environment:
     name: Prepare exact Linux build environment
@@ -212,6 +213,7 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_INCREMENTAL: '0'
+      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
     steps:
@@ -226,22 +228,35 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
       - name: Check and test Rust once with the locked SQLite profile
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo fmt --all --check
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
+            # Library tests run outside the Flutter bundle and need the
+            # current-source stdio supervisor on the container PATH.
+            cargo build --locked -p pl-remote-helper
+            export PATH="$PWD/target/debug:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
             cargo build --locked -p pl-studio-server
           '
 
-  linux-tools:
-    name: Compile reusable Linux engineering tool
+  linux-inputs:
+    name: Compile Linux engineering tool and bundled helpers
     needs: [changes, linux-environment]
-    if: needs.changes.outputs.linux_tools == 'true'
+    if: needs.changes.outputs.linux_inputs == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
     outputs:
@@ -250,6 +265,9 @@ jobs:
       sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
       workspace: ${{ steps.checkpoint.outputs.workspace }}
       environment: ${{ steps.checkpoint.outputs.environment }}
+      helperArtifactId: ${{ steps.helper-archive.outputs.artifact-id }}
+      helperArchiveSha256: ${{ steps.helper-checkpoint.outputs.archiveSha256 }}
+      helperSourceSha: ${{ steps.helper-checkpoint.outputs.sourceSha }}
     steps:
       - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -262,10 +280,26 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      - name: Build xtask once in its consuming environment
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+          workspaces: |
+            . -> target
+            . -> target/xtask
+      - name: Build xtask and selected helper targets in one container
+        env:
+          BUILD_HELPERS: ${{ needs.changes.outputs.remote_helpers }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo build --locked --target-dir target/xtask -p pl-xtask
+            if [ "$1" = true ]; then
+              PURE_REMOTE_HELPER_BUILDER=zigbuild target/xtask/debug/pl-xtask build-remote-helper --all-targets
+            fi
+          ' -- "$BUILD_HELPERS"
       - name: Checkpoint only the engineering executable
         id: checkpoint
         env:
@@ -284,63 +318,29 @@ jobs:
           compression-level: 0
           retention-days: 3
 
-  remote-helpers:
-    name: Compile bundled Linux helper targets once
-    needs: [changes, linux-environment, linux-tools]
-    if: needs.changes.outputs.remote_helpers == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    outputs:
-      artifactId: ${{ steps.archive.outputs.artifact-id }}
-      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
-      sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
-    steps:
-      - name: Check out the tested source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Restore exact Linux environment
-        uses: ./.github/actions/restore-linux-environment
-        with:
-          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
-          image-id: ${{ needs.linux-environment.outputs.imageId }}
-          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
-          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      - name: Restore this run's Linux engineering tool
-        uses: ./.github/actions/restore-quality-artifact
-        with:
-          kind: tool
-          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
-          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
-          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
-          workspace: ${{ needs.linux-tools.outputs.workspace }}
-          environment: ${{ needs.linux-tools.outputs.environment }}
-      - name: Build both resource targets with the existing cross compiler
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
-            env PURE_REMOTE_HELPER_BUILDER=zigbuild "$PR_QUALITY_XTASK" build-remote-helper --all-targets
       - name: Checkpoint the two target resources
-        id: checkpoint
+        id: helper-checkpoint
+        if: needs.changes.outputs.remote_helpers == 'true'
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
+          mkdir -p "$RUNNER_TEMP/helpers"
           python3 .github/scripts/pr_quality_handoff.py pack-helpers \
-            --archive "$RUNNER_TEMP/quality.tar.gz" --source-sha "$SOURCE_SHA"
+            --archive "$RUNNER_TEMP/helpers/quality.tar.gz" --source-sha "$SOURCE_SHA"
       - name: Share the exact helper archive
-        id: archive
+        id: helper-archive
+        if: needs.changes.outputs.remote_helpers == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-bundled-helpers-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/quality.tar.gz
+          path: ${{ runner.temp }}/helpers/quality.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
 
   gui-generated:
     name: Canonical GUI generation (Linux)
-    needs: [changes, linux-environment, linux-tools]
+    needs: [changes, linux-environment, linux-inputs]
     if: needs.changes.outputs.gui_generated == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -362,11 +362,11 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: tool
-          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
-          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
-          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
-          workspace: ${{ needs.linux-tools.outputs.workspace }}
-          environment: ${{ needs.linux-tools.outputs.environment }}
+          artifact-id: ${{ needs.linux-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-inputs.outputs.environment }}
       - name: Check generated sources once without repeating Rust quality or UI tests
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
@@ -376,12 +376,18 @@ jobs:
             "$1" check-gui-generated
           ' -- "$PR_QUALITY_XTASK"
 
-  linux-integration:
-    name: Desktop and native integration (Linux)
-    needs: [changes, linux-environment, linux-tools, remote-helpers]
-    if: needs.changes.outputs.linux_desktop == 'true' || needs.changes.outputs.linux_native == 'true'
+  linux-desktop:
+    name: Desktop integration (Linux, shard ${{ matrix.shard }})
+    needs: [changes, linux-environment, linux-inputs]
+    if: needs.changes.outputs.linux_desktop == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    env:
+      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
     steps:
@@ -400,41 +406,118 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: tool
-          artifact-id: ${{ needs.linux-tools.outputs.artifactId }}
-          sha256: ${{ needs.linux-tools.outputs.archiveSha256 }}
-          source-sha: ${{ needs.linux-tools.outputs.sourceSha }}
-          workspace: ${{ needs.linux-tools.outputs.workspace }}
-          environment: ${{ needs.linux-tools.outputs.environment }}
+          artifact-id: ${{ needs.linux-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-inputs.outputs.environment }}
       - name: Restore this run's bundled helper inputs
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
-          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
-          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
-          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
-      # One container keeps Cargo sources, acceptance and target fingerprints
-      # alive between suites, rather than only sharing the checkout directory.
-      - name: Run selected functional and native suites with shared build inputs
+          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+      # A shard owns its checkout, display and fixtures. Cases inside it stay
+      # sequential so no two Flutter processes rewrite the same build inputs.
+      - name: Run the complete selected desktop shard
         env:
-          RUN_DESKTOP: ${{ needs.changes.outputs.linux_desktop }}
-          RUN_NATIVE: ${{ needs.changes.outputs.linux_native }}
+          SHARD_INDEX: ${{ matrix.shard }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            failed=0
-            if [ "$2" = true ]; then
-              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-                "$1" test-project --suite desktop --set full --output target/ci-desktop-linux || failed=1
-            fi
-            if [ "$3" = true ]; then
-              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-                "$1" test-project --suite native --set full --output target/ci-native-linux || failed=1
-            fi
-            exit "$failed"
-          ' -- "$PR_QUALITY_XTASK" "$RUN_DESKTOP" "$RUN_NATIVE"
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
+            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+              "$1" test-project --suite desktop --set full \
+              --shard-index "$2" --shard-count 3 --output target/ci-desktop-linux
+          ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
+      - name: Preserve desktop reports and runner logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/ci-desktop-linux/report.json
+            target/ci-desktop-linux/cases/**/report.json
+            target/ci-desktop-linux/cases/**/gui.log
+            target/ci-desktop-linux/cases/**/*-integration.log
+            target/ci-desktop-linux/cases/**/*-driver.log
+            target/ci-desktop-linux/cases/**/*-errors.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  linux-native:
+    name: Native lifecycle integration (Linux)
+    needs: [changes, linux-environment, linux-inputs]
+    if: needs.changes.outputs.linux_native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Restore this run's Linux engineering tool
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tool
+          artifact-id: ${{ needs.linux-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-inputs.outputs.environment }}
+      - name: Restore this run's bundled helper inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: helpers
+          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+      - name: Run the full native lifecycle suite
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
+            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+              "$1" test-project --suite native --set full --output target/ci-native-linux
+          ' -- "$PR_QUALITY_XTASK"
+      - name: Preserve native reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/ci-native-linux/report.json
+            target/ci-native-linux/cases/**/report.json
+          if-no-files-found: warn
+          retention-days: 7
 
   windows-build:
     name: Native Rust and application checks (windows)
-    needs: [changes, remote-helpers]
+    needs: [changes, linux-inputs]
     if: needs.changes.outputs.windows_build == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
@@ -449,9 +532,9 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
-          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
-          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
-          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
+          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
@@ -476,9 +559,28 @@ jobs:
           cargo xtask build-gui
           test -f dist/anywork-release/anywork.exe
 
+      # Explicit platform observation; the normal Windows job remains a build
+      # and Rust check. The current desktop runner owns the isolated fixture.
+      - name: Observe Windows Flutter presentation when requested
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        env:
+          ANYWORK_CAPTURE_PRESENTATION: '1'
+        run: cargo xtask test-project --suite desktop --case question_history --output target/ci-inspection-windows
+
+      - name: Preserve Windows presentation evidence
+        if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-flutter-presentation-${{ github.sha }}
+          path: |
+            target/ci-inspection-windows/report.json
+            target/ci-inspection-windows/**/*.png
+            target/ci-inspection-windows/**/*.meta.json
+          if-no-files-found: error
+
   macos-build:
     name: Native Rust and application checks (macos)
-    needs: [changes, remote-helpers]
+    needs: [changes, linux-inputs]
     if: needs.changes.outputs.macos_build == 'true'
     runs-on: macos-15
     timeout-minutes: 90
@@ -493,9 +595,9 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
-          artifact-id: ${{ needs.remote-helpers.outputs.artifactId }}
-          sha256: ${{ needs.remote-helpers.outputs.archiveSha256 }}
-          source-sha: ${{ needs.remote-helpers.outputs.sourceSha }}
+          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
@@ -510,6 +612,9 @@ jobs:
       - name: Check Rust on macOS
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Use the runner's physical temporary directory
+        shell: bash
+        run: echo "TMPDIR=$(cd "$RUNNER_TEMP" && pwd -P)" >> "$GITHUB_ENV"
       - name: Test Rust on macOS with the locked SQLite profile
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked --workspace --features pl-core/sqlite
@@ -532,10 +637,10 @@ jobs:
       - flutter-checks
       - linux-environment
       - rust-checks
-      - linux-tools
-      - remote-helpers
+      - linux-inputs
       - gui-generated
-      - linux-integration
+      - linux-desktop
+      - linux-native
       - windows-build
       - macos-build
     runs-on: ubuntu-latest
@@ -557,10 +662,10 @@ jobs:
           FLUTTER_CHECKS_RESULT: ${{ needs.flutter-checks.result }}
           LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
-          LINUX_TOOLS_RESULT: ${{ needs.linux-tools.result }}
-          REMOTE_HELPERS_RESULT: ${{ needs.remote-helpers.result }}
+          LINUX_INPUTS_RESULT: ${{ needs.linux-inputs.result }}
           GUI_GENERATED_RESULT: ${{ needs.gui-generated.result }}
-          LINUX_INTEGRATION_RESULT: ${{ needs.linux-integration.result }}
+          LINUX_DESKTOP_RESULT: ${{ needs.linux-desktop.result }}
+          LINUX_NATIVE_RESULT: ${{ needs.linux-native.result }}
           WINDOWS_BUILD_RESULT: ${{ needs.windows-build.result }}
           MACOS_BUILD_RESULT: ${{ needs.macos-build.result }}
         run: python3 .github/scripts/pr_quality_gate.py

@@ -5,4 +5,3 @@ fn main() -> anyhow::Result<()> {
 mod desktop;
 mod environment;
 mod manual_gui;
-mod native;
