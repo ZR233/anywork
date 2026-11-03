@@ -33,16 +33,31 @@ void main() {
   ) async {
     await tester.pumpWidget(timelineContentWindowPreview());
     await tester.pumpAndSettle();
-    final tile = find.byKey(
+    final disclosure = find.byKey(
       StudioDriverKeys.timelineContentOpen('preview-deferred', 'payload'),
     );
-    expect(tester.widget<ExpansionTile>(tile).initiallyExpanded, isTrue);
+    expect(disclosure, findsOneWidget);
+    final tile = find.descendant(
+      of: disclosure,
+      matching: find.byType(ExpansionTile),
+    );
+    expect(tile, findsOneWidget);
+
+    ExpansibleController controller() {
+      final title = find.byWidget(tester.widget<ExpansionTile>(tile).title);
+      expect(title, findsOneWidget);
+      return ExpansibleController.of(tester.element(title));
+    }
+
+    expect(controller().isExpanded, isTrue);
     expect(find.text('复制当前段'), findsOneWidget);
     await tester.tap(find.text('按需查看原文 · 196608 字节'));
     await tester.pumpAndSettle();
+    expect(controller().isExpanded, isFalse);
     expect(find.text('复制当前段'), findsNothing);
     await tester.tap(find.text('按需查看原文 · 196608 字节'));
     await tester.pumpAndSettle();
+    expect(controller().isExpanded, isTrue);
     expect(find.text('复制当前段'), findsOneWidget);
   });
 
