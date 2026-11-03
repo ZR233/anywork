@@ -33,6 +33,7 @@ export '../../rust/api/studio/types/acp.dart';
 export '../../rust/api/studio/types/acp_install.dart';
 export '../../rust/api/studio/types/bots.dart';
 export '../../rust/api/studio/types/error.dart';
+export '../../rust/api/studio/types/mcp.dart';
 export '../../rust/api/studio/types/response.dart';
 export '../../rust/api/studio/types/runtime.dart';
 export '../../rust/api/studio/types/session_directory.dart';

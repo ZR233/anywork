@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncReadExt;
-use tokio::process::ChildStderr;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 const STDERR_TAIL_BYTES: usize = 16 * 1024;
 
@@ -12,7 +11,10 @@ pub(super) struct StderrCapture {
 }
 
 impl StderrCapture {
-    pub(super) fn spawn(stderr: ChildStderr, environment: &BTreeMap<String, String>) -> Self {
+    pub(super) fn spawn(
+        stderr: impl AsyncRead + Unpin + Send + 'static,
+        environment: &BTreeMap<String, String>,
+    ) -> Self {
         let capture = Self {
             tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_BYTES))),
             secrets: sensitive_values(environment),
@@ -28,7 +30,10 @@ impl StderrCapture {
     }
 }
 
-async fn drain_stderr(mut stderr: ChildStderr, tail: Arc<Mutex<VecDeque<u8>>>) {
+async fn drain_stderr(
+    mut stderr: impl AsyncRead + Unpin + Send + 'static,
+    tail: Arc<Mutex<VecDeque<u8>>>,
+) {
     let mut buffer = [0_u8; 1024];
     loop {
         match stderr.read(&mut buffer).await {

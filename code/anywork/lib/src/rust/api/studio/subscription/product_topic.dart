@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../subscription.dart';
 import '../types/error.dart';
+import '../types/mcp.dart';
 import '../types/product_topic.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';

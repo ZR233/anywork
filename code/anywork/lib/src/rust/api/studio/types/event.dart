@@ -10,6 +10,7 @@ import 'agent_profile.dart';
 import 'bots.dart';
 import 'chatgpt_auth.dart';
 import 'delegation.dart';
+import 'mcp.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -83,9 +84,12 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.recoveryStateChanged(
     BridgeRecoveryStateSnapshot field0,
   ) = BridgeProductEventPayload_RecoveryStateChanged;
-  const factory BridgeProductEventPayload.mcpStateChanged(
-    BridgeMcpStateSnapshot field0,
-  ) = BridgeProductEventPayload_McpStateChanged;
+  const factory BridgeProductEventPayload.mcpCatalogChanged(
+    BridgeMcpCatalogSnapshot field0,
+  ) = BridgeProductEventPayload_McpCatalogChanged;
+  const factory BridgeProductEventPayload.threadMcpStateChanged(
+    BridgeThreadMcpStateSnapshot field0,
+  ) = BridgeProductEventPayload_ThreadMcpStateChanged;
   const factory BridgeProductEventPayload.lspStateChanged(
     BridgeLspStateSnapshot field0,
   ) = BridgeProductEventPayload_LspStateChanged;

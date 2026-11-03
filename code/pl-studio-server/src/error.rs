@@ -34,6 +34,14 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+impl From<pl_studio_runtime::McpDocumentError> for ApiError {
+    fn from(error: pl_studio_runtime::McpDocumentError) -> Self {
+        Self(pl_studio_runtime::studio_error_from_anyhow(
+            anyhow::Error::from(error),
+        ))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.0.code {

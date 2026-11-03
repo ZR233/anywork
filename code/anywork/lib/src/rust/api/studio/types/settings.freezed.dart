@@ -1323,266 +1323,6 @@ String toString() {
 
 
 /// @nodoc
-mixin _$McpResetInput {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is McpResetInput);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'McpResetInput()';
-}
-
-
-}
-
-/// @nodoc
-class $McpResetInputCopyWith<$Res>  {
-$McpResetInputCopyWith(McpResetInput _, $Res Function(McpResetInput) __);
-}
-
-
-/// Adds pattern-matching-related methods to [McpResetInput].
-extension McpResetInputPatterns on McpResetInput {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( McpResetInput_Server value)?  server,TResult Function( McpResetInput_All value)?  all,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case McpResetInput_Server() when server != null:
-return server(_that);case McpResetInput_All() when all != null:
-return all(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( McpResetInput_Server value)  server,required TResult Function( McpResetInput_All value)  all,}){
-final _that = this;
-switch (_that) {
-case McpResetInput_Server():
-return server(_that);case McpResetInput_All():
-return all(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( McpResetInput_Server value)?  server,TResult? Function( McpResetInput_All value)?  all,}){
-final _that = this;
-switch (_that) {
-case McpResetInput_Server() when server != null:
-return server(_that);case McpResetInput_All() when all != null:
-return all(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String serverId)?  server,TResult Function()?  all,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case McpResetInput_Server() when server != null:
-return server(_that.serverId);case McpResetInput_All() when all != null:
-return all();case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String serverId)  server,required TResult Function()  all,}) {final _that = this;
-switch (_that) {
-case McpResetInput_Server():
-return server(_that.serverId);case McpResetInput_All():
-return all();}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String serverId)?  server,TResult? Function()?  all,}) {final _that = this;
-switch (_that) {
-case McpResetInput_Server() when server != null:
-return server(_that.serverId);case McpResetInput_All() when all != null:
-return all();case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class McpResetInput_Server extends McpResetInput {
-  const McpResetInput_Server({required this.serverId}): super._();
-
-
- final  String serverId;
-
-/// Create a copy of McpResetInput
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$McpResetInput_ServerCopyWith<McpResetInput_Server> get copyWith => _$McpResetInput_ServerCopyWithImpl<McpResetInput_Server>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is McpResetInput_Server&&(identical(other.serverId, serverId) || other.serverId == serverId));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,serverId);
-}
-
-@override
-String toString() {
-    return 'McpResetInput.server(serverId: $serverId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $McpResetInput_ServerCopyWith<$Res> implements $McpResetInputCopyWith<$Res> {
-  factory $McpResetInput_ServerCopyWith(McpResetInput_Server value, $Res Function(McpResetInput_Server) _then) = _$McpResetInput_ServerCopyWithImpl;
-@useResult
-$Res call({
- String serverId
-});
-
-
-
-
-}
-/// @nodoc
-class _$McpResetInput_ServerCopyWithImpl<$Res>
-    implements $McpResetInput_ServerCopyWith<$Res> {
-  _$McpResetInput_ServerCopyWithImpl(this._self, this._then);
-
-  final McpResetInput_Server _self;
-  final $Res Function(McpResetInput_Server) _then;
-
-/// Create a copy of McpResetInput
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? serverId = null,}) {
-  return _then(McpResetInput_Server(
-serverId: null == serverId ? _self.serverId : serverId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class McpResetInput_All extends McpResetInput {
-  const McpResetInput_All(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is McpResetInput_All);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'McpResetInput.all()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
 mixin _$SettingsFieldInput {
 
 
@@ -1626,7 +1366,7 @@ extension SettingsFieldInputPatterns on SettingsFieldInput {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( SettingsFieldInput_InstructionBaseOverride value)?  instructionBaseOverride,TResult Function( SettingsFieldInput_InstructionDeveloper value)?  instructionDeveloper,TResult Function( SettingsFieldInput_InstructionUser value)?  instructionUser,TResult Function( SettingsFieldInput_ProjectDocMaxBytes value)?  projectDocMaxBytes,TResult Function( SettingsFieldInput_ProjectDocFallbackFilenames value)?  projectDocFallbackFilenames,TResult Function( SettingsFieldInput_SkillsEnabled value)?  skillsEnabled,TResult Function( SettingsFieldInput_SkillsAutoLearn value)?  skillsAutoLearn,TResult Function( SettingsFieldInput_SkillsSystemEnabled value)?  skillsSystemEnabled,TResult Function( SettingsFieldInput_SkillsProjectDir value)?  skillsProjectDir,TResult Function( SettingsFieldInput_SkillsExternalDirs value)?  skillsExternalDirs,TResult Function( SettingsFieldInput_SkillsDisabled value)?  skillsDisabled,TResult Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)?  skillsAutoLearnMinToolCalls,TResult Function( SettingsFieldInput_McpServerEnabled value)?  mcpServerEnabled,TResult Function( SettingsFieldInput_McpServerTransport value)?  mcpServerTransport,TResult Function( SettingsFieldInput_McpServerEndpoint value)?  mcpServerEndpoint,TResult Function( SettingsFieldInput_GeneralFollowActiveTurn value)?  generalFollowActiveTurn,TResult Function( SettingsFieldInput_GeneralCompactTimeline value)?  generalCompactTimeline,TResult Function( SettingsFieldInput_GeneralLanguage value)?  generalLanguage,TResult Function( SettingsFieldInput_GeneralSidebarWidth value)?  generalSidebarWidth,TResult Function( SettingsFieldInput_GeneralPinnedThreadIds value)?  generalPinnedThreadIds,TResult Function( SettingsFieldInput_GeneralPinnedProjectIds value)?  generalPinnedProjectIds,TResult Function( SettingsFieldInput_WebSearchMode value)?  webSearchMode,TResult Function( SettingsFieldInput_WebSearchContextSize value)?  webSearchContextSize,TResult Function( SettingsFieldInput_WebSearchAllowedDomains value)?  webSearchAllowedDomains,TResult Function( SettingsFieldInput_WebSearchCountry value)?  webSearchCountry,TResult Function( SettingsFieldInput_WebSearchRegion value)?  webSearchRegion,TResult Function( SettingsFieldInput_WebSearchCity value)?  webSearchCity,TResult Function( SettingsFieldInput_WebSearchTimezone value)?  webSearchTimezone,TResult Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)?  deepSeekWebSearchEnabled,TResult Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)?  deepSeekWebFetchEnabled,TResult Function( SettingsFieldInput_ModeModel value)?  modeModel,TResult Function( SettingsFieldInput_ModeReasoningEffort value)?  modeReasoningEffort,TResult Function( SettingsFieldInput_RoleModel value)?  roleModel,TResult Function( SettingsFieldInput_RoleReasoningEffort value)?  roleReasoningEffort,TResult Function( SettingsFieldInput_DelegationMode value)?  delegationMode,TResult Function( SettingsFieldInput_DelegationPreference value)?  delegationPreference,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( SettingsFieldInput_InstructionBaseOverride value)?  instructionBaseOverride,TResult Function( SettingsFieldInput_InstructionDeveloper value)?  instructionDeveloper,TResult Function( SettingsFieldInput_InstructionUser value)?  instructionUser,TResult Function( SettingsFieldInput_ProjectDocMaxBytes value)?  projectDocMaxBytes,TResult Function( SettingsFieldInput_ProjectDocFallbackFilenames value)?  projectDocFallbackFilenames,TResult Function( SettingsFieldInput_SkillsEnabled value)?  skillsEnabled,TResult Function( SettingsFieldInput_SkillsAutoLearn value)?  skillsAutoLearn,TResult Function( SettingsFieldInput_SkillsSystemEnabled value)?  skillsSystemEnabled,TResult Function( SettingsFieldInput_SkillsProjectDir value)?  skillsProjectDir,TResult Function( SettingsFieldInput_SkillsExternalDirs value)?  skillsExternalDirs,TResult Function( SettingsFieldInput_SkillsDisabled value)?  skillsDisabled,TResult Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)?  skillsAutoLearnMinToolCalls,TResult Function( SettingsFieldInput_GeneralFollowActiveTurn value)?  generalFollowActiveTurn,TResult Function( SettingsFieldInput_GeneralCompactTimeline value)?  generalCompactTimeline,TResult Function( SettingsFieldInput_GeneralLanguage value)?  generalLanguage,TResult Function( SettingsFieldInput_GeneralSidebarWidth value)?  generalSidebarWidth,TResult Function( SettingsFieldInput_GeneralPinnedThreadIds value)?  generalPinnedThreadIds,TResult Function( SettingsFieldInput_GeneralPinnedProjectIds value)?  generalPinnedProjectIds,TResult Function( SettingsFieldInput_WebSearchMode value)?  webSearchMode,TResult Function( SettingsFieldInput_WebSearchContextSize value)?  webSearchContextSize,TResult Function( SettingsFieldInput_WebSearchAllowedDomains value)?  webSearchAllowedDomains,TResult Function( SettingsFieldInput_WebSearchCountry value)?  webSearchCountry,TResult Function( SettingsFieldInput_WebSearchRegion value)?  webSearchRegion,TResult Function( SettingsFieldInput_WebSearchCity value)?  webSearchCity,TResult Function( SettingsFieldInput_WebSearchTimezone value)?  webSearchTimezone,TResult Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)?  deepSeekWebSearchEnabled,TResult Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)?  deepSeekWebFetchEnabled,TResult Function( SettingsFieldInput_ModeModel value)?  modeModel,TResult Function( SettingsFieldInput_ModeReasoningEffort value)?  modeReasoningEffort,TResult Function( SettingsFieldInput_RoleModel value)?  roleModel,TResult Function( SettingsFieldInput_RoleReasoningEffort value)?  roleReasoningEffort,TResult Function( SettingsFieldInput_DelegationMode value)?  delegationMode,TResult Function( SettingsFieldInput_DelegationPreference value)?  delegationPreference,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
@@ -1641,10 +1381,7 @@ return skillsSystemEnabled(_that);case SettingsFieldInput_SkillsProjectDir() whe
 return skillsProjectDir(_that);case SettingsFieldInput_SkillsExternalDirs() when skillsExternalDirs != null:
 return skillsExternalDirs(_that);case SettingsFieldInput_SkillsDisabled() when skillsDisabled != null:
 return skillsDisabled(_that);case SettingsFieldInput_SkillsAutoLearnMinToolCalls() when skillsAutoLearnMinToolCalls != null:
-return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_McpServerEnabled() when mcpServerEnabled != null:
-return mcpServerEnabled(_that);case SettingsFieldInput_McpServerTransport() when mcpServerTransport != null:
-return mcpServerTransport(_that);case SettingsFieldInput_McpServerEndpoint() when mcpServerEndpoint != null:
-return mcpServerEndpoint(_that);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
+return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
 return generalFollowActiveTurn(_that);case SettingsFieldInput_GeneralCompactTimeline() when generalCompactTimeline != null:
 return generalCompactTimeline(_that);case SettingsFieldInput_GeneralLanguage() when generalLanguage != null:
 return generalLanguage(_that);case SettingsFieldInput_GeneralSidebarWidth() when generalSidebarWidth != null:
@@ -1683,7 +1420,7 @@ return delegationPreference(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( SettingsFieldInput_InstructionBaseOverride value)  instructionBaseOverride,required TResult Function( SettingsFieldInput_InstructionDeveloper value)  instructionDeveloper,required TResult Function( SettingsFieldInput_InstructionUser value)  instructionUser,required TResult Function( SettingsFieldInput_ProjectDocMaxBytes value)  projectDocMaxBytes,required TResult Function( SettingsFieldInput_ProjectDocFallbackFilenames value)  projectDocFallbackFilenames,required TResult Function( SettingsFieldInput_SkillsEnabled value)  skillsEnabled,required TResult Function( SettingsFieldInput_SkillsAutoLearn value)  skillsAutoLearn,required TResult Function( SettingsFieldInput_SkillsSystemEnabled value)  skillsSystemEnabled,required TResult Function( SettingsFieldInput_SkillsProjectDir value)  skillsProjectDir,required TResult Function( SettingsFieldInput_SkillsExternalDirs value)  skillsExternalDirs,required TResult Function( SettingsFieldInput_SkillsDisabled value)  skillsDisabled,required TResult Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)  skillsAutoLearnMinToolCalls,required TResult Function( SettingsFieldInput_McpServerEnabled value)  mcpServerEnabled,required TResult Function( SettingsFieldInput_McpServerTransport value)  mcpServerTransport,required TResult Function( SettingsFieldInput_McpServerEndpoint value)  mcpServerEndpoint,required TResult Function( SettingsFieldInput_GeneralFollowActiveTurn value)  generalFollowActiveTurn,required TResult Function( SettingsFieldInput_GeneralCompactTimeline value)  generalCompactTimeline,required TResult Function( SettingsFieldInput_GeneralLanguage value)  generalLanguage,required TResult Function( SettingsFieldInput_GeneralSidebarWidth value)  generalSidebarWidth,required TResult Function( SettingsFieldInput_GeneralPinnedThreadIds value)  generalPinnedThreadIds,required TResult Function( SettingsFieldInput_GeneralPinnedProjectIds value)  generalPinnedProjectIds,required TResult Function( SettingsFieldInput_WebSearchMode value)  webSearchMode,required TResult Function( SettingsFieldInput_WebSearchContextSize value)  webSearchContextSize,required TResult Function( SettingsFieldInput_WebSearchAllowedDomains value)  webSearchAllowedDomains,required TResult Function( SettingsFieldInput_WebSearchCountry value)  webSearchCountry,required TResult Function( SettingsFieldInput_WebSearchRegion value)  webSearchRegion,required TResult Function( SettingsFieldInput_WebSearchCity value)  webSearchCity,required TResult Function( SettingsFieldInput_WebSearchTimezone value)  webSearchTimezone,required TResult Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)  deepSeekWebSearchEnabled,required TResult Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)  deepSeekWebFetchEnabled,required TResult Function( SettingsFieldInput_ModeModel value)  modeModel,required TResult Function( SettingsFieldInput_ModeReasoningEffort value)  modeReasoningEffort,required TResult Function( SettingsFieldInput_RoleModel value)  roleModel,required TResult Function( SettingsFieldInput_RoleReasoningEffort value)  roleReasoningEffort,required TResult Function( SettingsFieldInput_DelegationMode value)  delegationMode,required TResult Function( SettingsFieldInput_DelegationPreference value)  delegationPreference,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( SettingsFieldInput_InstructionBaseOverride value)  instructionBaseOverride,required TResult Function( SettingsFieldInput_InstructionDeveloper value)  instructionDeveloper,required TResult Function( SettingsFieldInput_InstructionUser value)  instructionUser,required TResult Function( SettingsFieldInput_ProjectDocMaxBytes value)  projectDocMaxBytes,required TResult Function( SettingsFieldInput_ProjectDocFallbackFilenames value)  projectDocFallbackFilenames,required TResult Function( SettingsFieldInput_SkillsEnabled value)  skillsEnabled,required TResult Function( SettingsFieldInput_SkillsAutoLearn value)  skillsAutoLearn,required TResult Function( SettingsFieldInput_SkillsSystemEnabled value)  skillsSystemEnabled,required TResult Function( SettingsFieldInput_SkillsProjectDir value)  skillsProjectDir,required TResult Function( SettingsFieldInput_SkillsExternalDirs value)  skillsExternalDirs,required TResult Function( SettingsFieldInput_SkillsDisabled value)  skillsDisabled,required TResult Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)  skillsAutoLearnMinToolCalls,required TResult Function( SettingsFieldInput_GeneralFollowActiveTurn value)  generalFollowActiveTurn,required TResult Function( SettingsFieldInput_GeneralCompactTimeline value)  generalCompactTimeline,required TResult Function( SettingsFieldInput_GeneralLanguage value)  generalLanguage,required TResult Function( SettingsFieldInput_GeneralSidebarWidth value)  generalSidebarWidth,required TResult Function( SettingsFieldInput_GeneralPinnedThreadIds value)  generalPinnedThreadIds,required TResult Function( SettingsFieldInput_GeneralPinnedProjectIds value)  generalPinnedProjectIds,required TResult Function( SettingsFieldInput_WebSearchMode value)  webSearchMode,required TResult Function( SettingsFieldInput_WebSearchContextSize value)  webSearchContextSize,required TResult Function( SettingsFieldInput_WebSearchAllowedDomains value)  webSearchAllowedDomains,required TResult Function( SettingsFieldInput_WebSearchCountry value)  webSearchCountry,required TResult Function( SettingsFieldInput_WebSearchRegion value)  webSearchRegion,required TResult Function( SettingsFieldInput_WebSearchCity value)  webSearchCity,required TResult Function( SettingsFieldInput_WebSearchTimezone value)  webSearchTimezone,required TResult Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)  deepSeekWebSearchEnabled,required TResult Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)  deepSeekWebFetchEnabled,required TResult Function( SettingsFieldInput_ModeModel value)  modeModel,required TResult Function( SettingsFieldInput_ModeReasoningEffort value)  modeReasoningEffort,required TResult Function( SettingsFieldInput_RoleModel value)  roleModel,required TResult Function( SettingsFieldInput_RoleReasoningEffort value)  roleReasoningEffort,required TResult Function( SettingsFieldInput_DelegationMode value)  delegationMode,required TResult Function( SettingsFieldInput_DelegationPreference value)  delegationPreference,}){
 final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride():
@@ -1698,10 +1435,7 @@ return skillsSystemEnabled(_that);case SettingsFieldInput_SkillsProjectDir():
 return skillsProjectDir(_that);case SettingsFieldInput_SkillsExternalDirs():
 return skillsExternalDirs(_that);case SettingsFieldInput_SkillsDisabled():
 return skillsDisabled(_that);case SettingsFieldInput_SkillsAutoLearnMinToolCalls():
-return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_McpServerEnabled():
-return mcpServerEnabled(_that);case SettingsFieldInput_McpServerTransport():
-return mcpServerTransport(_that);case SettingsFieldInput_McpServerEndpoint():
-return mcpServerEndpoint(_that);case SettingsFieldInput_GeneralFollowActiveTurn():
+return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_GeneralFollowActiveTurn():
 return generalFollowActiveTurn(_that);case SettingsFieldInput_GeneralCompactTimeline():
 return generalCompactTimeline(_that);case SettingsFieldInput_GeneralLanguage():
 return generalLanguage(_that);case SettingsFieldInput_GeneralSidebarWidth():
@@ -1736,7 +1470,7 @@ return delegationPreference(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( SettingsFieldInput_InstructionBaseOverride value)?  instructionBaseOverride,TResult? Function( SettingsFieldInput_InstructionDeveloper value)?  instructionDeveloper,TResult? Function( SettingsFieldInput_InstructionUser value)?  instructionUser,TResult? Function( SettingsFieldInput_ProjectDocMaxBytes value)?  projectDocMaxBytes,TResult? Function( SettingsFieldInput_ProjectDocFallbackFilenames value)?  projectDocFallbackFilenames,TResult? Function( SettingsFieldInput_SkillsEnabled value)?  skillsEnabled,TResult? Function( SettingsFieldInput_SkillsAutoLearn value)?  skillsAutoLearn,TResult? Function( SettingsFieldInput_SkillsSystemEnabled value)?  skillsSystemEnabled,TResult? Function( SettingsFieldInput_SkillsProjectDir value)?  skillsProjectDir,TResult? Function( SettingsFieldInput_SkillsExternalDirs value)?  skillsExternalDirs,TResult? Function( SettingsFieldInput_SkillsDisabled value)?  skillsDisabled,TResult? Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)?  skillsAutoLearnMinToolCalls,TResult? Function( SettingsFieldInput_McpServerEnabled value)?  mcpServerEnabled,TResult? Function( SettingsFieldInput_McpServerTransport value)?  mcpServerTransport,TResult? Function( SettingsFieldInput_McpServerEndpoint value)?  mcpServerEndpoint,TResult? Function( SettingsFieldInput_GeneralFollowActiveTurn value)?  generalFollowActiveTurn,TResult? Function( SettingsFieldInput_GeneralCompactTimeline value)?  generalCompactTimeline,TResult? Function( SettingsFieldInput_GeneralLanguage value)?  generalLanguage,TResult? Function( SettingsFieldInput_GeneralSidebarWidth value)?  generalSidebarWidth,TResult? Function( SettingsFieldInput_GeneralPinnedThreadIds value)?  generalPinnedThreadIds,TResult? Function( SettingsFieldInput_GeneralPinnedProjectIds value)?  generalPinnedProjectIds,TResult? Function( SettingsFieldInput_WebSearchMode value)?  webSearchMode,TResult? Function( SettingsFieldInput_WebSearchContextSize value)?  webSearchContextSize,TResult? Function( SettingsFieldInput_WebSearchAllowedDomains value)?  webSearchAllowedDomains,TResult? Function( SettingsFieldInput_WebSearchCountry value)?  webSearchCountry,TResult? Function( SettingsFieldInput_WebSearchRegion value)?  webSearchRegion,TResult? Function( SettingsFieldInput_WebSearchCity value)?  webSearchCity,TResult? Function( SettingsFieldInput_WebSearchTimezone value)?  webSearchTimezone,TResult? Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)?  deepSeekWebSearchEnabled,TResult? Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)?  deepSeekWebFetchEnabled,TResult? Function( SettingsFieldInput_ModeModel value)?  modeModel,TResult? Function( SettingsFieldInput_ModeReasoningEffort value)?  modeReasoningEffort,TResult? Function( SettingsFieldInput_RoleModel value)?  roleModel,TResult? Function( SettingsFieldInput_RoleReasoningEffort value)?  roleReasoningEffort,TResult? Function( SettingsFieldInput_DelegationMode value)?  delegationMode,TResult? Function( SettingsFieldInput_DelegationPreference value)?  delegationPreference,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( SettingsFieldInput_InstructionBaseOverride value)?  instructionBaseOverride,TResult? Function( SettingsFieldInput_InstructionDeveloper value)?  instructionDeveloper,TResult? Function( SettingsFieldInput_InstructionUser value)?  instructionUser,TResult? Function( SettingsFieldInput_ProjectDocMaxBytes value)?  projectDocMaxBytes,TResult? Function( SettingsFieldInput_ProjectDocFallbackFilenames value)?  projectDocFallbackFilenames,TResult? Function( SettingsFieldInput_SkillsEnabled value)?  skillsEnabled,TResult? Function( SettingsFieldInput_SkillsAutoLearn value)?  skillsAutoLearn,TResult? Function( SettingsFieldInput_SkillsSystemEnabled value)?  skillsSystemEnabled,TResult? Function( SettingsFieldInput_SkillsProjectDir value)?  skillsProjectDir,TResult? Function( SettingsFieldInput_SkillsExternalDirs value)?  skillsExternalDirs,TResult? Function( SettingsFieldInput_SkillsDisabled value)?  skillsDisabled,TResult? Function( SettingsFieldInput_SkillsAutoLearnMinToolCalls value)?  skillsAutoLearnMinToolCalls,TResult? Function( SettingsFieldInput_GeneralFollowActiveTurn value)?  generalFollowActiveTurn,TResult? Function( SettingsFieldInput_GeneralCompactTimeline value)?  generalCompactTimeline,TResult? Function( SettingsFieldInput_GeneralLanguage value)?  generalLanguage,TResult? Function( SettingsFieldInput_GeneralSidebarWidth value)?  generalSidebarWidth,TResult? Function( SettingsFieldInput_GeneralPinnedThreadIds value)?  generalPinnedThreadIds,TResult? Function( SettingsFieldInput_GeneralPinnedProjectIds value)?  generalPinnedProjectIds,TResult? Function( SettingsFieldInput_WebSearchMode value)?  webSearchMode,TResult? Function( SettingsFieldInput_WebSearchContextSize value)?  webSearchContextSize,TResult? Function( SettingsFieldInput_WebSearchAllowedDomains value)?  webSearchAllowedDomains,TResult? Function( SettingsFieldInput_WebSearchCountry value)?  webSearchCountry,TResult? Function( SettingsFieldInput_WebSearchRegion value)?  webSearchRegion,TResult? Function( SettingsFieldInput_WebSearchCity value)?  webSearchCity,TResult? Function( SettingsFieldInput_WebSearchTimezone value)?  webSearchTimezone,TResult? Function( SettingsFieldInput_DeepSeekWebSearchEnabled value)?  deepSeekWebSearchEnabled,TResult? Function( SettingsFieldInput_DeepSeekWebFetchEnabled value)?  deepSeekWebFetchEnabled,TResult? Function( SettingsFieldInput_ModeModel value)?  modeModel,TResult? Function( SettingsFieldInput_ModeReasoningEffort value)?  modeReasoningEffort,TResult? Function( SettingsFieldInput_RoleModel value)?  roleModel,TResult? Function( SettingsFieldInput_RoleReasoningEffort value)?  roleReasoningEffort,TResult? Function( SettingsFieldInput_DelegationMode value)?  delegationMode,TResult? Function( SettingsFieldInput_DelegationPreference value)?  delegationPreference,}){
 final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
@@ -1751,10 +1485,7 @@ return skillsSystemEnabled(_that);case SettingsFieldInput_SkillsProjectDir() whe
 return skillsProjectDir(_that);case SettingsFieldInput_SkillsExternalDirs() when skillsExternalDirs != null:
 return skillsExternalDirs(_that);case SettingsFieldInput_SkillsDisabled() when skillsDisabled != null:
 return skillsDisabled(_that);case SettingsFieldInput_SkillsAutoLearnMinToolCalls() when skillsAutoLearnMinToolCalls != null:
-return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_McpServerEnabled() when mcpServerEnabled != null:
-return mcpServerEnabled(_that);case SettingsFieldInput_McpServerTransport() when mcpServerTransport != null:
-return mcpServerTransport(_that);case SettingsFieldInput_McpServerEndpoint() when mcpServerEndpoint != null:
-return mcpServerEndpoint(_that);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
+return skillsAutoLearnMinToolCalls(_that);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
 return generalFollowActiveTurn(_that);case SettingsFieldInput_GeneralCompactTimeline() when generalCompactTimeline != null:
 return generalCompactTimeline(_that);case SettingsFieldInput_GeneralLanguage() when generalLanguage != null:
 return generalLanguage(_that);case SettingsFieldInput_GeneralSidebarWidth() when generalSidebarWidth != null:
@@ -1792,7 +1523,7 @@ return delegationPreference(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  instructionBaseOverride,TResult Function( String value)?  instructionDeveloper,TResult Function( String value)?  instructionUser,TResult Function( BigInt value)?  projectDocMaxBytes,TResult Function( List<String> value)?  projectDocFallbackFilenames,TResult Function( bool value)?  skillsEnabled,TResult Function( bool value)?  skillsAutoLearn,TResult Function( bool value)?  skillsSystemEnabled,TResult Function( String value)?  skillsProjectDir,TResult Function( List<String> value)?  skillsExternalDirs,TResult Function( List<String> value)?  skillsDisabled,TResult Function( int value)?  skillsAutoLearnMinToolCalls,TResult Function( String id,  bool value)?  mcpServerEnabled,TResult Function( String id,  String transport)?  mcpServerTransport,TResult Function( String id,  String endpoint)?  mcpServerEndpoint,TResult Function( bool value)?  generalFollowActiveTurn,TResult Function( bool value)?  generalCompactTimeline,TResult Function( BridgeUiLanguage value)?  generalLanguage,TResult Function( int? value)?  generalSidebarWidth,TResult Function( List<String> value)?  generalPinnedThreadIds,TResult Function( List<String> value)?  generalPinnedProjectIds,TResult Function( String value)?  webSearchMode,TResult Function( String? value)?  webSearchContextSize,TResult Function( List<String> value)?  webSearchAllowedDomains,TResult Function( String? value)?  webSearchCountry,TResult Function( String? value)?  webSearchRegion,TResult Function( String? value)?  webSearchCity,TResult Function( String? value)?  webSearchTimezone,TResult Function( bool value)?  deepSeekWebSearchEnabled,TResult Function( bool value)?  deepSeekWebFetchEnabled,TResult Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult Function( String modeId,  String? effort)?  modeReasoningEffort,TResult Function( String role,  String accountId,  String modelId)?  roleModel,TResult Function( String role,  String? effort)?  roleReasoningEffort,TResult Function( BridgeDelegationMode value)?  delegationMode,TResult Function( BridgeDelegationPreference value)?  delegationPreference,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  instructionBaseOverride,TResult Function( String value)?  instructionDeveloper,TResult Function( String value)?  instructionUser,TResult Function( BigInt value)?  projectDocMaxBytes,TResult Function( List<String> value)?  projectDocFallbackFilenames,TResult Function( bool value)?  skillsEnabled,TResult Function( bool value)?  skillsAutoLearn,TResult Function( bool value)?  skillsSystemEnabled,TResult Function( String value)?  skillsProjectDir,TResult Function( List<String> value)?  skillsExternalDirs,TResult Function( List<String> value)?  skillsDisabled,TResult Function( int value)?  skillsAutoLearnMinToolCalls,TResult Function( bool value)?  generalFollowActiveTurn,TResult Function( bool value)?  generalCompactTimeline,TResult Function( BridgeUiLanguage value)?  generalLanguage,TResult Function( int? value)?  generalSidebarWidth,TResult Function( List<String> value)?  generalPinnedThreadIds,TResult Function( List<String> value)?  generalPinnedProjectIds,TResult Function( String value)?  webSearchMode,TResult Function( String? value)?  webSearchContextSize,TResult Function( List<String> value)?  webSearchAllowedDomains,TResult Function( String? value)?  webSearchCountry,TResult Function( String? value)?  webSearchRegion,TResult Function( String? value)?  webSearchCity,TResult Function( String? value)?  webSearchTimezone,TResult Function( bool value)?  deepSeekWebSearchEnabled,TResult Function( bool value)?  deepSeekWebFetchEnabled,TResult Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult Function( String modeId,  String? effort)?  modeReasoningEffort,TResult Function( String role,  String accountId,  String modelId)?  roleModel,TResult Function( String role,  String? effort)?  roleReasoningEffort,TResult Function( BridgeDelegationMode value)?  delegationMode,TResult Function( BridgeDelegationPreference value)?  delegationPreference,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper() when instructionDeveloper != null:
@@ -1806,10 +1537,7 @@ return skillsSystemEnabled(_that.value);case SettingsFieldInput_SkillsProjectDir
 return skillsProjectDir(_that.value);case SettingsFieldInput_SkillsExternalDirs() when skillsExternalDirs != null:
 return skillsExternalDirs(_that.value);case SettingsFieldInput_SkillsDisabled() when skillsDisabled != null:
 return skillsDisabled(_that.value);case SettingsFieldInput_SkillsAutoLearnMinToolCalls() when skillsAutoLearnMinToolCalls != null:
-return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_McpServerEnabled() when mcpServerEnabled != null:
-return mcpServerEnabled(_that.id,_that.value);case SettingsFieldInput_McpServerTransport() when mcpServerTransport != null:
-return mcpServerTransport(_that.id,_that.transport);case SettingsFieldInput_McpServerEndpoint() when mcpServerEndpoint != null:
-return mcpServerEndpoint(_that.id,_that.endpoint);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
+return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
 return generalFollowActiveTurn(_that.value);case SettingsFieldInput_GeneralCompactTimeline() when generalCompactTimeline != null:
 return generalCompactTimeline(_that.value);case SettingsFieldInput_GeneralLanguage() when generalLanguage != null:
 return generalLanguage(_that.value);case SettingsFieldInput_GeneralSidebarWidth() when generalSidebarWidth != null:
@@ -1848,7 +1576,7 @@ return delegationPreference(_that.value);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  instructionBaseOverride,required TResult Function( String value)  instructionDeveloper,required TResult Function( String value)  instructionUser,required TResult Function( BigInt value)  projectDocMaxBytes,required TResult Function( List<String> value)  projectDocFallbackFilenames,required TResult Function( bool value)  skillsEnabled,required TResult Function( bool value)  skillsAutoLearn,required TResult Function( bool value)  skillsSystemEnabled,required TResult Function( String value)  skillsProjectDir,required TResult Function( List<String> value)  skillsExternalDirs,required TResult Function( List<String> value)  skillsDisabled,required TResult Function( int value)  skillsAutoLearnMinToolCalls,required TResult Function( String id,  bool value)  mcpServerEnabled,required TResult Function( String id,  String transport)  mcpServerTransport,required TResult Function( String id,  String endpoint)  mcpServerEndpoint,required TResult Function( bool value)  generalFollowActiveTurn,required TResult Function( bool value)  generalCompactTimeline,required TResult Function( BridgeUiLanguage value)  generalLanguage,required TResult Function( int? value)  generalSidebarWidth,required TResult Function( List<String> value)  generalPinnedThreadIds,required TResult Function( List<String> value)  generalPinnedProjectIds,required TResult Function( String value)  webSearchMode,required TResult Function( String? value)  webSearchContextSize,required TResult Function( List<String> value)  webSearchAllowedDomains,required TResult Function( String? value)  webSearchCountry,required TResult Function( String? value)  webSearchRegion,required TResult Function( String? value)  webSearchCity,required TResult Function( String? value)  webSearchTimezone,required TResult Function( bool value)  deepSeekWebSearchEnabled,required TResult Function( bool value)  deepSeekWebFetchEnabled,required TResult Function( String modeId,  String accountId,  String modelId)  modeModel,required TResult Function( String modeId,  String? effort)  modeReasoningEffort,required TResult Function( String role,  String accountId,  String modelId)  roleModel,required TResult Function( String role,  String? effort)  roleReasoningEffort,required TResult Function( BridgeDelegationMode value)  delegationMode,required TResult Function( BridgeDelegationPreference value)  delegationPreference,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  instructionBaseOverride,required TResult Function( String value)  instructionDeveloper,required TResult Function( String value)  instructionUser,required TResult Function( BigInt value)  projectDocMaxBytes,required TResult Function( List<String> value)  projectDocFallbackFilenames,required TResult Function( bool value)  skillsEnabled,required TResult Function( bool value)  skillsAutoLearn,required TResult Function( bool value)  skillsSystemEnabled,required TResult Function( String value)  skillsProjectDir,required TResult Function( List<String> value)  skillsExternalDirs,required TResult Function( List<String> value)  skillsDisabled,required TResult Function( int value)  skillsAutoLearnMinToolCalls,required TResult Function( bool value)  generalFollowActiveTurn,required TResult Function( bool value)  generalCompactTimeline,required TResult Function( BridgeUiLanguage value)  generalLanguage,required TResult Function( int? value)  generalSidebarWidth,required TResult Function( List<String> value)  generalPinnedThreadIds,required TResult Function( List<String> value)  generalPinnedProjectIds,required TResult Function( String value)  webSearchMode,required TResult Function( String? value)  webSearchContextSize,required TResult Function( List<String> value)  webSearchAllowedDomains,required TResult Function( String? value)  webSearchCountry,required TResult Function( String? value)  webSearchRegion,required TResult Function( String? value)  webSearchCity,required TResult Function( String? value)  webSearchTimezone,required TResult Function( bool value)  deepSeekWebSearchEnabled,required TResult Function( bool value)  deepSeekWebFetchEnabled,required TResult Function( String modeId,  String accountId,  String modelId)  modeModel,required TResult Function( String modeId,  String? effort)  modeReasoningEffort,required TResult Function( String role,  String accountId,  String modelId)  roleModel,required TResult Function( String role,  String? effort)  roleReasoningEffort,required TResult Function( BridgeDelegationMode value)  delegationMode,required TResult Function( BridgeDelegationPreference value)  delegationPreference,}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride():
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper():
@@ -1862,10 +1590,7 @@ return skillsSystemEnabled(_that.value);case SettingsFieldInput_SkillsProjectDir
 return skillsProjectDir(_that.value);case SettingsFieldInput_SkillsExternalDirs():
 return skillsExternalDirs(_that.value);case SettingsFieldInput_SkillsDisabled():
 return skillsDisabled(_that.value);case SettingsFieldInput_SkillsAutoLearnMinToolCalls():
-return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_McpServerEnabled():
-return mcpServerEnabled(_that.id,_that.value);case SettingsFieldInput_McpServerTransport():
-return mcpServerTransport(_that.id,_that.transport);case SettingsFieldInput_McpServerEndpoint():
-return mcpServerEndpoint(_that.id,_that.endpoint);case SettingsFieldInput_GeneralFollowActiveTurn():
+return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_GeneralFollowActiveTurn():
 return generalFollowActiveTurn(_that.value);case SettingsFieldInput_GeneralCompactTimeline():
 return generalCompactTimeline(_that.value);case SettingsFieldInput_GeneralLanguage():
 return generalLanguage(_that.value);case SettingsFieldInput_GeneralSidebarWidth():
@@ -1900,7 +1625,7 @@ return delegationPreference(_that.value);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  instructionBaseOverride,TResult? Function( String value)?  instructionDeveloper,TResult? Function( String value)?  instructionUser,TResult? Function( BigInt value)?  projectDocMaxBytes,TResult? Function( List<String> value)?  projectDocFallbackFilenames,TResult? Function( bool value)?  skillsEnabled,TResult? Function( bool value)?  skillsAutoLearn,TResult? Function( bool value)?  skillsSystemEnabled,TResult? Function( String value)?  skillsProjectDir,TResult? Function( List<String> value)?  skillsExternalDirs,TResult? Function( List<String> value)?  skillsDisabled,TResult? Function( int value)?  skillsAutoLearnMinToolCalls,TResult? Function( String id,  bool value)?  mcpServerEnabled,TResult? Function( String id,  String transport)?  mcpServerTransport,TResult? Function( String id,  String endpoint)?  mcpServerEndpoint,TResult? Function( bool value)?  generalFollowActiveTurn,TResult? Function( bool value)?  generalCompactTimeline,TResult? Function( BridgeUiLanguage value)?  generalLanguage,TResult? Function( int? value)?  generalSidebarWidth,TResult? Function( List<String> value)?  generalPinnedThreadIds,TResult? Function( List<String> value)?  generalPinnedProjectIds,TResult? Function( String value)?  webSearchMode,TResult? Function( String? value)?  webSearchContextSize,TResult? Function( List<String> value)?  webSearchAllowedDomains,TResult? Function( String? value)?  webSearchCountry,TResult? Function( String? value)?  webSearchRegion,TResult? Function( String? value)?  webSearchCity,TResult? Function( String? value)?  webSearchTimezone,TResult? Function( bool value)?  deepSeekWebSearchEnabled,TResult? Function( bool value)?  deepSeekWebFetchEnabled,TResult? Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult? Function( String modeId,  String? effort)?  modeReasoningEffort,TResult? Function( String role,  String accountId,  String modelId)?  roleModel,TResult? Function( String role,  String? effort)?  roleReasoningEffort,TResult? Function( BridgeDelegationMode value)?  delegationMode,TResult? Function( BridgeDelegationPreference value)?  delegationPreference,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  instructionBaseOverride,TResult? Function( String value)?  instructionDeveloper,TResult? Function( String value)?  instructionUser,TResult? Function( BigInt value)?  projectDocMaxBytes,TResult? Function( List<String> value)?  projectDocFallbackFilenames,TResult? Function( bool value)?  skillsEnabled,TResult? Function( bool value)?  skillsAutoLearn,TResult? Function( bool value)?  skillsSystemEnabled,TResult? Function( String value)?  skillsProjectDir,TResult? Function( List<String> value)?  skillsExternalDirs,TResult? Function( List<String> value)?  skillsDisabled,TResult? Function( int value)?  skillsAutoLearnMinToolCalls,TResult? Function( bool value)?  generalFollowActiveTurn,TResult? Function( bool value)?  generalCompactTimeline,TResult? Function( BridgeUiLanguage value)?  generalLanguage,TResult? Function( int? value)?  generalSidebarWidth,TResult? Function( List<String> value)?  generalPinnedThreadIds,TResult? Function( List<String> value)?  generalPinnedProjectIds,TResult? Function( String value)?  webSearchMode,TResult? Function( String? value)?  webSearchContextSize,TResult? Function( List<String> value)?  webSearchAllowedDomains,TResult? Function( String? value)?  webSearchCountry,TResult? Function( String? value)?  webSearchRegion,TResult? Function( String? value)?  webSearchCity,TResult? Function( String? value)?  webSearchTimezone,TResult? Function( bool value)?  deepSeekWebSearchEnabled,TResult? Function( bool value)?  deepSeekWebFetchEnabled,TResult? Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult? Function( String modeId,  String? effort)?  modeReasoningEffort,TResult? Function( String role,  String accountId,  String modelId)?  roleModel,TResult? Function( String role,  String? effort)?  roleReasoningEffort,TResult? Function( BridgeDelegationMode value)?  delegationMode,TResult? Function( BridgeDelegationPreference value)?  delegationPreference,}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper() when instructionDeveloper != null:
@@ -1914,10 +1639,7 @@ return skillsSystemEnabled(_that.value);case SettingsFieldInput_SkillsProjectDir
 return skillsProjectDir(_that.value);case SettingsFieldInput_SkillsExternalDirs() when skillsExternalDirs != null:
 return skillsExternalDirs(_that.value);case SettingsFieldInput_SkillsDisabled() when skillsDisabled != null:
 return skillsDisabled(_that.value);case SettingsFieldInput_SkillsAutoLearnMinToolCalls() when skillsAutoLearnMinToolCalls != null:
-return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_McpServerEnabled() when mcpServerEnabled != null:
-return mcpServerEnabled(_that.id,_that.value);case SettingsFieldInput_McpServerTransport() when mcpServerTransport != null:
-return mcpServerTransport(_that.id,_that.transport);case SettingsFieldInput_McpServerEndpoint() when mcpServerEndpoint != null:
-return mcpServerEndpoint(_that.id,_that.endpoint);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
+return skillsAutoLearnMinToolCalls(_that.value);case SettingsFieldInput_GeneralFollowActiveTurn() when generalFollowActiveTurn != null:
 return generalFollowActiveTurn(_that.value);case SettingsFieldInput_GeneralCompactTimeline() when generalCompactTimeline != null:
 return generalCompactTimeline(_that.value);case SettingsFieldInput_GeneralLanguage() when generalLanguage != null:
 return generalLanguage(_that.value);case SettingsFieldInput_GeneralSidebarWidth() when generalSidebarWidth != null:
@@ -2774,216 +2496,6 @@ class _$SettingsFieldInput_SkillsAutoLearnMinToolCallsCopyWithImpl<$Res>
   return _then(SettingsFieldInput_SkillsAutoLearnMinToolCalls(
 value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
 as int,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class SettingsFieldInput_McpServerEnabled extends SettingsFieldInput {
-  const SettingsFieldInput_McpServerEnabled({required this.id, required this.value}): super._();
-
-
- final  String id;
- final  bool value;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$SettingsFieldInput_McpServerEnabledCopyWith<SettingsFieldInput_McpServerEnabled> get copyWith => _$SettingsFieldInput_McpServerEnabledCopyWithImpl<SettingsFieldInput_McpServerEnabled>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_McpServerEnabled&&(identical(other.id, id) || other.id == id)&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,id,value);
-}
-
-@override
-String toString() {
-    return 'SettingsFieldInput.mcpServerEnabled(id: $id, value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $SettingsFieldInput_McpServerEnabledCopyWith<$Res> implements $SettingsFieldInputCopyWith<$Res> {
-  factory $SettingsFieldInput_McpServerEnabledCopyWith(SettingsFieldInput_McpServerEnabled value, $Res Function(SettingsFieldInput_McpServerEnabled) _then) = _$SettingsFieldInput_McpServerEnabledCopyWithImpl;
-@useResult
-$Res call({
- String id, bool value
-});
-
-
-
-
-}
-/// @nodoc
-class _$SettingsFieldInput_McpServerEnabledCopyWithImpl<$Res>
-    implements $SettingsFieldInput_McpServerEnabledCopyWith<$Res> {
-  _$SettingsFieldInput_McpServerEnabledCopyWithImpl(this._self, this._then);
-
-  final SettingsFieldInput_McpServerEnabled _self;
-  final $Res Function(SettingsFieldInput_McpServerEnabled) _then;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? value = null,}) {
-  return _then(SettingsFieldInput_McpServerEnabled(
-id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
-as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as bool,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class SettingsFieldInput_McpServerTransport extends SettingsFieldInput {
-  const SettingsFieldInput_McpServerTransport({required this.id, required this.transport}): super._();
-
-
- final  String id;
- final  String transport;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$SettingsFieldInput_McpServerTransportCopyWith<SettingsFieldInput_McpServerTransport> get copyWith => _$SettingsFieldInput_McpServerTransportCopyWithImpl<SettingsFieldInput_McpServerTransport>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_McpServerTransport&&(identical(other.id, id) || other.id == id)&&(identical(other.transport, transport) || other.transport == transport));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,id,transport);
-}
-
-@override
-String toString() {
-    return 'SettingsFieldInput.mcpServerTransport(id: $id, transport: $transport)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $SettingsFieldInput_McpServerTransportCopyWith<$Res> implements $SettingsFieldInputCopyWith<$Res> {
-  factory $SettingsFieldInput_McpServerTransportCopyWith(SettingsFieldInput_McpServerTransport value, $Res Function(SettingsFieldInput_McpServerTransport) _then) = _$SettingsFieldInput_McpServerTransportCopyWithImpl;
-@useResult
-$Res call({
- String id, String transport
-});
-
-
-
-
-}
-/// @nodoc
-class _$SettingsFieldInput_McpServerTransportCopyWithImpl<$Res>
-    implements $SettingsFieldInput_McpServerTransportCopyWith<$Res> {
-  _$SettingsFieldInput_McpServerTransportCopyWithImpl(this._self, this._then);
-
-  final SettingsFieldInput_McpServerTransport _self;
-  final $Res Function(SettingsFieldInput_McpServerTransport) _then;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? transport = null,}) {
-  return _then(SettingsFieldInput_McpServerTransport(
-id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
-as String,transport: null == transport ? _self.transport : transport // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class SettingsFieldInput_McpServerEndpoint extends SettingsFieldInput {
-  const SettingsFieldInput_McpServerEndpoint({required this.id, required this.endpoint}): super._();
-
-
- final  String id;
- final  String endpoint;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$SettingsFieldInput_McpServerEndpointCopyWith<SettingsFieldInput_McpServerEndpoint> get copyWith => _$SettingsFieldInput_McpServerEndpointCopyWithImpl<SettingsFieldInput_McpServerEndpoint>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_McpServerEndpoint&&(identical(other.id, id) || other.id == id)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,id,endpoint);
-}
-
-@override
-String toString() {
-    return 'SettingsFieldInput.mcpServerEndpoint(id: $id, endpoint: $endpoint)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $SettingsFieldInput_McpServerEndpointCopyWith<$Res> implements $SettingsFieldInputCopyWith<$Res> {
-  factory $SettingsFieldInput_McpServerEndpointCopyWith(SettingsFieldInput_McpServerEndpoint value, $Res Function(SettingsFieldInput_McpServerEndpoint) _then) = _$SettingsFieldInput_McpServerEndpointCopyWithImpl;
-@useResult
-$Res call({
- String id, String endpoint
-});
-
-
-
-
-}
-/// @nodoc
-class _$SettingsFieldInput_McpServerEndpointCopyWithImpl<$Res>
-    implements $SettingsFieldInput_McpServerEndpointCopyWith<$Res> {
-  _$SettingsFieldInput_McpServerEndpointCopyWithImpl(this._self, this._then);
-
-  final SettingsFieldInput_McpServerEndpoint _self;
-  final $Res Function(SettingsFieldInput_McpServerEndpoint) _then;
-
-/// Create a copy of SettingsFieldInput
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? endpoint = null,}) {
-  return _then(SettingsFieldInput_McpServerEndpoint(
-id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
-as String,endpoint: null == endpoint ? _self.endpoint : endpoint // ignore: cast_nullable_to_non_nullable
-as String,
   ));
 }
 

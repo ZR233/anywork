@@ -126,13 +126,6 @@ pub struct RepairLspRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "scope", deny_unknown_fields)]
-pub enum McpResetRequest {
-    Server { server_id: String },
-    All,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase", tag = "scope", deny_unknown_fields)]
 pub enum LspResetRequest {
     Server {
         workspace_id: String,

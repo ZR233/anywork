@@ -82,7 +82,7 @@ final class _BootstrapTopicTransport extends _TopicTransport {
     agentDirectory: AgentDirectoryState(),
     settingsState: SettingsStateSnapshot(),
     recoveryState: RecoveryStateSnapshot(),
-    mcpState: McpStateSnapshot(revision: 1),
+    mcpCatalog: const McpCatalogSnapshot(revision: 1),
     lspState: LspStateSnapshot(revision: 1),
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),

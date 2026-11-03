@@ -288,9 +288,6 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       SkillsDisabledCommand() => 'skills:disabled',
       SkillsAutoLearnMinToolCallsCommand() =>
         'skills:auto-learn-min-tool-calls',
-      McpServerEnabledCommand(:final id) => 'mcp:$id:enabled',
-      McpServerTransportCommand(:final id) => 'mcp:$id:transport',
-      McpServerEndpointCommand(:final id) => 'mcp:$id:endpoint',
       GeneralFollowActiveTurnCommand() => 'general:follow-active-turn',
       GeneralCompactTimelineCommand() => 'general:compact-timeline',
       GeneralLanguageCommand() => 'general:language',

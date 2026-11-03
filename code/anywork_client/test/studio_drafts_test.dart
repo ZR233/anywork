@@ -640,7 +640,14 @@ void main() {
       if (!transport.startCancelGate!.isCompleted)
         transport.startCancelGate!.complete();
     });
-    final initialObservers = client.budget.used(ResourceKind.observer);
+    int nonMcpObservers() => client.budget.usage
+        .where(
+          (usage) =>
+              usage.kind == ResourceKind.observer &&
+              !usage.owner.startsWith('topic:threadMcp:'),
+        )
+        .length;
+    final initialObservers = nonMcpObservers();
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'new input');
     final submission = owner.submit(_project.id);
@@ -707,11 +714,30 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
-    // The visible root page releases its child-interactions share. The new
+    // The visible root page releases its MCP and child-interactions shares. The new
     // Conversation still owns exactly one independent metadata observation.
-    client.conversations.setVisibleThread(null);
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    bool pageObserversReleased() => !client.budget.usage.any(
+      (usage) =>
+          usage.kind == ResourceKind.observer &&
+          (usage.owner.startsWith('topic:threadMcp:') ||
+              usage.owner.startsWith('topic:childInteractions:')),
+    );
+    final released = Completer<void>();
+    void observeRelease() {
+      if (pageObserversReleased() && !released.isCompleted) released.complete();
+    }
+
+    final releaseWatch = client.budget.watchAvailability(
+      ResourceKind.observer,
+      observeRelease,
+    );
+    try {
+      client.conversations.setVisibleThread(null);
+      observeRelease();
+      await released.future.timeout(const Duration(seconds: 5));
+    } finally {
+      releaseWatch.cancel();
+    }
     expect(
       client.budget.usage.where(
         (usage) =>
@@ -722,7 +748,7 @@ void main() {
     );
     // 旧线程的页面份额已释放；新会话只保留自己的元数据观察（目录行随观察
     // 交付，页面份额在隐藏时同步释放，不再依赖快照时序悬留一个 permit）。
-    expect(client.budget.used(ResourceKind.observer), initialObservers);
+    expect(nonMcpObservers(), initialObservers);
     selected.cancel();
     await _close(client, transport);
   });

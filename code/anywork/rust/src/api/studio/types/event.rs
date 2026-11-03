@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
-    BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
+    BridgeMcpCatalogSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
     BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSettingsConfigStateSnapshot,
-    BridgeSkillsStateSnapshot, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeSkillsStateSnapshot, BridgeThreadMcpStateSnapshot, BridgeThreadModeCatalogSnapshot,
+    BridgeUpdaterStateSnapshot,
 };
 
 /// Flutter Bridge 的 Studio 产品事件信封。
@@ -30,7 +31,8 @@ pub enum BridgeProductEventPayload {
     SettingsConfigStateChanged(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<BridgeModelCatalogStateSnapshot>),
     RecoveryStateChanged(BridgeRecoveryStateSnapshot),
-    McpStateChanged(BridgeMcpStateSnapshot),
+    McpCatalogChanged(BridgeMcpCatalogSnapshot),
+    ThreadMcpStateChanged(BridgeThreadMcpStateSnapshot),
     LspStateChanged(BridgeLspStateSnapshot),
     SkillsStateChanged(BridgeSkillsStateSnapshot),
     ThreadModeCatalogChanged(BridgeThreadModeCatalogSnapshot),

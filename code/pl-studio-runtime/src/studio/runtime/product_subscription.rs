@@ -120,9 +120,12 @@ impl StudioRuntime {
                     state: self.recovery.state(),
                 }))
             }
-            StudioProductTopic::Mcp => {
-                StudioProductBaselineState::Mcp(Box::new(self.read_mcp_state().await?))
+            StudioProductTopic::McpCatalog { scope } => {
+                StudioProductBaselineState::McpCatalog(Box::new(self.read_mcp_catalog(scope)?))
             }
+            StudioProductTopic::ThreadMcp { thread_id } => StudioProductBaselineState::ThreadMcp(
+                Box::new(self.read_thread_mcp(thread_id).await?),
+            ),
             StudioProductTopic::Lsp => {
                 StudioProductBaselineState::Lsp(Box::new(self.read_lsp_state().await))
             }

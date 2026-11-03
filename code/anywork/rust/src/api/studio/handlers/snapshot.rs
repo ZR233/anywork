@@ -3,11 +3,10 @@ use anyhow::Result;
 use crate::api::studio::bridge_runtime::BridgeRuntime;
 use crate::api::studio::convert::runtime::{
     bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_lsp_state,
-    bridge_mcp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
-    bridge_persistence_state, bridge_project_directory, bridge_recovery_state,
-    bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
-    bridge_thread_directory_page, bridge_thread_mode_catalog, bridge_update_state,
-    runtime_snapshot,
+    bridge_model_catalog_state, bridge_persistence_queue_state, bridge_persistence_state,
+    bridge_project_directory, bridge_recovery_state, bridge_session_costs_state,
+    bridge_settings_config_state, bridge_skills_state, bridge_thread_directory_page,
+    bridge_thread_mode_catalog, bridge_update_state, runtime_snapshot,
 };
 use crate::api::studio::types::*;
 
@@ -26,7 +25,7 @@ pub(super) async fn read_studio_state_inner(
         settings_config: bridge_settings_config_state(state.settings_config.state),
         model_catalog: bridge_model_catalog_state(state.model_catalog.state),
         recovery: bridge_recovery_state(state.recovery.state),
-        mcp: bridge_mcp_state(state.mcp.state),
+        host_mcp_catalog: state.host_mcp_catalog.into(),
         lsp: bridge_lsp_state(state.lsp.state),
         skills_by_project: state
             .skills_by_project

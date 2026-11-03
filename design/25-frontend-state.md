@@ -154,6 +154,8 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 观察注册与初值读取同一同步边界；可替代快照可合并，可靠完成不能丢中间事实。Provider 构建只读，导航已提交页面身份声明可见需求，不从地址字符串或平行栈猜测。页面仅 detach 自己租约，短暂 observer 重建不销毁仍有所有者的资源；真正释放后以新 handle 的 Set 建展示，不跨会话缓存旧 controller，SDK 不替离屏呈现保存历史。
 
+会话 MCP 状态的页面主题需求由 Client 跟随成功准入的可见 `ThreadId` 持有，覆盖主／子成员及机器人绑定会话，不借用全局选择或 `SessionId` 代替页面身份。Client 在该需求边界取得既有主题租约并准备只读镜像，页面隐藏、切换和 Client 关闭时释放自身份额；失败由原资源登记表保留清理责任并发布原错误。MCP Provider 只借用已存在的镜像并观察需求变化，未准入时保持未加载，不能在构建中再次分配读模型、放宽预算或把准入失败伪装成空成功。该状态观察不激活 Native 会话或创建 MCP 连接；执行资源仍归 [09](./09-tool-runtime.md) 的 Thread owner。
+
 requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有的 open、producer、consumer、sink；独立 query 归原 read scope，不挂回 feed credit。失败保留 unresolved owner 与预算，丢句柄、Provider dispose 或取消 Future 不是 join。只回收观察，不停止 Session、Turn、后台任务、writer 或其他消费者。应用退出继续由既有唯一协调器承担。
 
 流与旧页通过 SDK domain 交同一个串行 applyBatch；先 await 捕获的原 controller 操作，复核 lease 后发布 before/current，再允许流 ACK。ACK 仅由 feed owner 确认连续 ready 前缀，不越过未应用 Chat；终态先分类且不 ACK，规则见 [07](./07-streaming.md)。重同步失效旧 handle/read 资格，保留旧数据显示直到新 Set 接纳，不先 Set([]) 清空，也不清无关草稿/领域。

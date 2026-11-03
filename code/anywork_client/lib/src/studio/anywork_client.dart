@@ -81,7 +81,7 @@ class AnyworkClient {
     );
     conversations = conversationOwner;
     _childInteractionVisibleWatch = conversationOwner.visibleThreadId.watch(
-      _onChildInteractionVisibleMirror,
+      _onVisibleThreadMirror,
     );
     drafts = DraftsRepositoryImpl(
       DraftsDependencies(
@@ -226,6 +226,8 @@ class AnyworkClient {
   final bots = BotsStore();
   final botsSends = BotsSendStore();
   final bootstrapState = LatestValue(const StudioBootstrapState());
+  final Map<McpScope, McpStore> _mcpCatalogs = {};
+  final Map<String, ThreadMcpStore> _threadMcp = {};
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
   final Map<String, ChildInteractionStore> _childInteractions = {};
@@ -264,11 +266,18 @@ class AnyworkClient {
       ),
   ]);
 
+  McpStore? existingMcpCatalog(McpScope scope) =>
+      scope is HostMcpScope ? mcp : _mcpCatalogs[scope];
+  ThreadMcpStore? existingThreadMcp(String threadId) => _threadMcp[threadId];
   SkillsStore? existingSkills(String workspaceId) => _skills[workspaceId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
   ChildInteractionStore? existingChildInteractions(String hostThreadId) =>
       _childInteractions[hostThreadId];
+  Iterable<McpStore> get ownedMcpCatalogs =>
+      List.unmodifiable(_mcpCatalogs.values);
+  Iterable<ThreadMcpStore> get ownedThreadMcp =>
+      List.unmodifiable(_threadMcp.values);
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
   Iterable<SessionCostsStore> get ownedSessionCosts =>
       List.unmodifiable(_sessionCosts.values);
@@ -276,6 +285,17 @@ class AnyworkClient {
       List.unmodifiable(_childInteractions.values);
   List<ProductTopic> get applicationTopics =>
       _applicationTopics?.topics ?? const [];
+
+  McpStore mcpCatalog(McpScope scope) => scope is HostMcpScope
+      ? mcp
+      : _mcpCatalogs.putIfAbsent(
+          scope,
+          () => _mirror('mcp:${scope.key}', () => McpStore(scope)),
+        );
+  ThreadMcpStore threadMcp(String threadId) => _threadMcp.putIfAbsent(
+    threadId,
+    () => _mirror('thread-mcp:$threadId', () => ThreadMcpStore(threadId)),
+  );
 
   SkillsStore skills(String workspaceId) => _skills.putIfAbsent(
     workspaceId,
@@ -307,7 +327,75 @@ class AnyworkClient {
   String? _childInteractionPageHost;
   BridgeTopicLease? _childInteractionPageLease;
   Observation? _childInteractionPageWatch;
+  String? _threadMcpPageThread;
+  BridgeTopicLease? _threadMcpPageLease;
   late final Observation _childInteractionVisibleWatch;
+
+  void _onVisibleThreadMirror(String? threadId) {
+    _onThreadMcpVisibleMirror(threadId);
+    _onChildInteractionVisibleMirror(threadId);
+  }
+
+  void _onThreadMcpVisibleMirror(String? threadId) {
+    if (_closed) return;
+    if (threadId == _threadMcpPageThread) return;
+    _releaseThreadMcpPageDemand();
+    if (threadId == null) return;
+    _threadMcpPageThread = threadId;
+    _acquireThreadMcpPageLease(threadId);
+  }
+
+  void _acquireThreadMcpPageLease(String threadId) {
+    if (_closed ||
+        _threadMcpPageThread != threadId ||
+        _threadMcpPageLease != null) {
+      return;
+    }
+    try {
+      _threadMcpPageLease = channels.acquireThreadMcp(threadId);
+      final failure = resourceFailure.value;
+      if (failure?.owner == 'thread-mcp-page:$threadId') {
+        resourceFailure.publish(null);
+      }
+    } catch (error) {
+      resourceFailure.publish(
+        UnresolvedResource(
+          owner: 'thread-mcp-page:$threadId',
+          attemptId: const AttemptId(0),
+          reason: error,
+        ),
+      );
+    }
+  }
+
+  void _releaseThreadMcpPageDemand() {
+    final threadId = _threadMcpPageThread;
+    _threadMcpPageThread = null;
+    final lease = _threadMcpPageLease;
+    _threadMcpPageLease = null;
+    if (lease == null) return;
+    // The registry retains the exact handle and permit if cancel fails.
+    unawaited(
+      lease.release().catchError((Object error) {
+        resourceFailure.publish(
+          UnresolvedResource(
+            owner: 'thread-mcp-page:${threadId!}',
+            attemptId: const AttemptId(0),
+            reason: error,
+          ),
+        );
+      }),
+    );
+  }
+
+  void _retryThreadMcpPageDemand(String threadId) {
+    if (_closed ||
+        _threadMcpPageThread != threadId ||
+        _threadMcpPageLease != null) {
+      return;
+    }
+    _acquireThreadMcpPageLease(threadId);
+  }
 
   void _onChildInteractionVisibleMirror(String? threadId) {
     if (_closed) return;
@@ -434,6 +522,13 @@ class AnyworkClient {
       // Same admission-failure case: the page share re-arms its own owner.
       _retryChildInteractionPageDemand(topic.hostThreadId);
     }
+    if (topic is ThreadMcpTopic &&
+        conversations.visibleThreadId.value == topic.threadId &&
+        _threadMcpPageLease == null) {
+      _retryThreadMcpPageDemand(topic.threadId);
+      // A newly admitted page starts its connection once; only an existing lease reconnects.
+      return;
+    }
     channels.retryTopic(topic);
   }
 
@@ -502,7 +597,7 @@ class AnyworkClient {
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
-      const McpTopic(),
+      const McpCatalogTopic(),
       const LspTopic(),
       const PersistenceQueueTopic(),
       const BotsTopic(),
@@ -538,7 +633,7 @@ class AnyworkClient {
     final profiles = snapshot.agentProfilesState;
     if (profiles != null) settings.applyAgentProfiles(profiles);
     recovery.apply(snapshot.recoveryState);
-    mcp.apply(snapshot.mcpState);
+    mcp.apply(snapshot.mcpCatalog);
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
     updater.apply(snapshot.updaterState);
@@ -642,6 +737,7 @@ class AnyworkClient {
     _closed = true;
     _selectionObservation.cancel();
     _childInteractionVisibleWatch.cancel();
+    _releaseThreadMcpPageDemand();
     _releaseChildInteractionPageDemand();
     _queries.seal();
     // Both domains seal synchronously before independent close joins await.

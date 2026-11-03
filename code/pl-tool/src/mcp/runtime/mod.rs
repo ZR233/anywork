@@ -239,7 +239,8 @@ impl McpRuntimeHandle {
         let (reply, response) = oneshot::channel();
         let recorded = match self.send(RuntimeCommand::Shutdown { reply }) {
             Ok(()) => match response.await {
-                Ok(result) => result.map_err(|error| error.to_string()),
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => return Err(error),
                 Err(error) => match self.shutdown_completion.recorded().await {
                     Some(recorded) => recorded,
                     None => return Err(runtime_stopped(error)),

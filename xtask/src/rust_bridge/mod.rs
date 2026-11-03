@@ -24,7 +24,7 @@ impl BridgeConfiguration {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RustBridgeArtifacts {
     dynamic_library: PathBuf,
     debug_symbols: Option<PathBuf>,

@@ -3651,8 +3651,7 @@ pub(crate) mod storage_fault_tests {
             recovery: crate::studio::StudioRecoveryRegistry::new(),
             product_events: events.clone(),
             config_runtime: config.clone(),
-            mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
-                .handle(),
+            mcp_connector: pl_tool::mcp::McpConnector::default(),
             lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
             skills: crate::studio::runtime::SkillCatalogRuntime::new(
                 events.clone(),

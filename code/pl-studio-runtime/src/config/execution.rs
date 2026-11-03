@@ -13,8 +13,6 @@ pub struct RuntimeConfig {
     pub tool_capabilities: ToolCapabilityConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_mcp_servers: Vec<String>,
     #[serde(default, skip_serializing_if = "OpenAiCompactionMode::is_default")]
     pub openai_compaction_mode: OpenAiCompactionMode,
 }
@@ -24,7 +22,6 @@ impl RuntimeConfig {
         self.permission_mode.is_default()
             && self.tool_capabilities.is_default()
             && self.active_skills.is_empty()
-            && self.active_mcp_servers.is_empty()
             && self.openai_compaction_mode.is_default()
     }
 

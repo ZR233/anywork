@@ -509,9 +509,7 @@ impl StudioThreadAssembler {
                 thread: thread.clone(),
             },
         );
-        if let Some(guard) = spec.preparation_guard.take() {
-            guard.disarm();
-        }
+        let mut preparation_guard = spec.preparation_guard.take();
         let setup = async {
             thread
                 .set_context_preparation(spec.context_preparation)
@@ -571,6 +569,9 @@ impl StudioThreadAssembler {
             // Freeze the observer's recovery baseline before exposing this owner to execution.
             // Observers may query the registry, so invoke them without its lock held.
             self.publish_observation(&spec.id, &thread);
+            if let Some(guard) = preparation_guard.take() {
+                guard.disarm();
+            }
             let mut state = self.0.state();
             if state.closing {
                 return Err(ThreadAssemblyError::Thread(ThreadError::Closed));

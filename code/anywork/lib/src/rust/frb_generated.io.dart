@@ -44,6 +44,7 @@ import 'api/studio/types/command.dart';
 import 'api/studio/types/delegation.dart';
 import 'api/studio/types/error.dart';
 import 'api/studio/types/event.dart';
+import 'api/studio/types/mcp.dart';
 import 'api/studio/types/mode_editor.dart';
 import 'api/studio/types/product_topic.dart';
 import 'api/studio/types/response.dart';
@@ -567,6 +568,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCreateMcpDocumentInput
+  dco_decode_box_autoadd_bridge_create_mcp_document_input(dynamic raw);
+
+  @protected
   BridgeCurrentActivityHead dco_decode_box_autoadd_bridge_current_activity_head(
     dynamic raw,
   );
@@ -599,6 +604,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeDegradedResource dco_decode_box_autoadd_bridge_degraded_resource(
     dynamic raw,
   );
+
+  @protected
+  BridgeDeleteMcpDocumentInput
+  dco_decode_box_autoadd_bridge_delete_mcp_document_input(dynamic raw);
 
   @protected
   BridgeDeleteThreadCommandReply
@@ -680,12 +689,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeMcpStateData dco_decode_box_autoadd_bridge_mcp_state_data(dynamic raw);
-
-  @protected
-  BridgeMcpStateSnapshot dco_decode_box_autoadd_bridge_mcp_state_snapshot(
+  BridgeMcpCatalogSnapshot dco_decode_box_autoadd_bridge_mcp_catalog_snapshot(
     dynamic raw,
   );
+
+  @protected
+  BridgeMcpDocumentDiagnostic
+  dco_decode_box_autoadd_bridge_mcp_document_diagnostic(dynamic raw);
+
+  @protected
+  BridgeMcpDocumentRef dco_decode_box_autoadd_bridge_mcp_document_ref(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeMcpExecutionLocation
+  dco_decode_box_autoadd_bridge_mcp_execution_location(dynamic raw);
+
+  @protected
+  BridgeMcpScope dco_decode_box_autoadd_bridge_mcp_scope(dynamic raw);
 
   @protected
   BridgeModelCatalogAccountDto
@@ -785,6 +807,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeReadyUpdaterState dco_decode_box_autoadd_bridge_ready_updater_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeReconnectThreadMcpInput
+  dco_decode_box_autoadd_bridge_reconnect_thread_mcp_input(dynamic raw);
 
   @protected
   BridgeRecoveryStateData dco_decode_box_autoadd_bridge_recovery_state_data(
@@ -935,6 +961,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_thread_mcp_health_snapshot(dynamic raw);
 
   @protected
+  BridgeThreadMcpStateSnapshot
+  dco_decode_box_autoadd_bridge_thread_mcp_state_snapshot(dynamic raw);
+
+  @protected
   BridgeThreadMetadataFrame dco_decode_box_autoadd_bridge_thread_metadata_frame(
     dynamic raw,
   );
@@ -1026,6 +1056,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_up_to_date_updater_state(dynamic raw);
 
   @protected
+  BridgeUpdateMcpDocumentInput
+  dco_decode_box_autoadd_bridge_update_mcp_document_input(dynamic raw);
+
+  @protected
   BridgeUpdaterStateSnapshot
   dco_decode_box_autoadd_bridge_updater_state_snapshot(dynamic raw);
 
@@ -1088,9 +1122,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LspScopeInput dco_decode_box_autoadd_lsp_scope_input(dynamic raw);
-
-  @protected
-  McpResetInput dco_decode_box_autoadd_mcp_reset_input(dynamic raw);
 
   @protected
   ProjectDto dco_decode_box_autoadd_project_dto(dynamic raw);
@@ -1786,6 +1817,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_bridge_create_bot_conversation_thread_request(dynamic raw);
 
   @protected
+  BridgeCreateMcpDocumentInput dco_decode_bridge_create_mcp_document_input(
+    dynamic raw,
+  );
+
+  @protected
   BridgeCurrentActivityHead dco_decode_bridge_current_activity_head(
     dynamic raw,
   );
@@ -1867,6 +1903,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDelegationSettings dco_decode_bridge_delegation_settings(dynamic raw);
+
+  @protected
+  BridgeDeleteMcpDocumentInput dco_decode_bridge_delete_mcp_document_input(
+    dynamic raw,
+  );
 
   @protected
   BridgeDeleteThreadCommandReply dco_decode_bridge_delete_thread_command_reply(
@@ -1989,29 +2030,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeLspStateSnapshot dco_decode_bridge_lsp_state_snapshot(dynamic raw);
 
   @protected
-  BridgeMcpHealthDto dco_decode_bridge_mcp_health_dto(dynamic raw);
+  BridgeMcpCatalogEntry dco_decode_bridge_mcp_catalog_entry(dynamic raw);
 
   @protected
-  BridgeMcpServerConfiguration dco_decode_bridge_mcp_server_configuration(
+  BridgeMcpCatalogSnapshot dco_decode_bridge_mcp_catalog_snapshot(dynamic raw);
+
+  @protected
+  BridgeMcpConfigStatusKind dco_decode_bridge_mcp_config_status_kind(
     dynamic raw,
   );
 
   @protected
-  BridgeMcpServerDto dco_decode_bridge_mcp_server_dto(dynamic raw);
-
-  @protected
-  BridgeMcpServerSettingsDto dco_decode_bridge_mcp_server_settings_dto(
+  BridgeMcpDocumentCommitReceipt dco_decode_bridge_mcp_document_commit_receipt(
     dynamic raw,
   );
 
   @protected
-  BridgeMcpServerState dco_decode_bridge_mcp_server_state(dynamic raw);
+  BridgeMcpDocumentContent dco_decode_bridge_mcp_document_content(dynamic raw);
 
   @protected
-  BridgeMcpStateData dco_decode_bridge_mcp_state_data(dynamic raw);
+  BridgeMcpDocumentDiagnostic dco_decode_bridge_mcp_document_diagnostic(
+    dynamic raw,
+  );
 
   @protected
-  BridgeMcpStateSnapshot dco_decode_bridge_mcp_state_snapshot(dynamic raw);
+  BridgeMcpDocumentRef dco_decode_bridge_mcp_document_ref(dynamic raw);
+
+  @protected
+  BridgeMcpEffectiveSource dco_decode_bridge_mcp_effective_source(dynamic raw);
+
+  @protected
+  BridgeMcpExecutionLocation dco_decode_bridge_mcp_execution_location(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeMcpScope dco_decode_bridge_mcp_scope(dynamic raw);
 
   @protected
   BridgeMetricAvailability dco_decode_bridge_metric_availability(dynamic raw);
@@ -2256,6 +2310,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyUpdaterState dco_decode_bridge_ready_updater_state(dynamic raw);
+
+  @protected
+  BridgeReconnectThreadMcpInput dco_decode_bridge_reconnect_thread_mcp_input(
+    dynamic raw,
+  );
 
   @protected
   BridgeRecoveryImpact dco_decode_bridge_recovery_impact(dynamic raw);
@@ -2580,8 +2639,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadMcpLifecycleKind dco_decode_bridge_thread_mcp_lifecycle_kind(
+    dynamic raw,
+  );
+
+  @protected
   BridgeThreadMcpServerDescriptor
   dco_decode_bridge_thread_mcp_server_descriptor(dynamic raw);
+
+  @protected
+  BridgeThreadMcpServerState dco_decode_bridge_thread_mcp_server_state(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadMcpStateSnapshot dco_decode_bridge_thread_mcp_state_snapshot(
+    dynamic raw,
+  );
 
   @protected
   BridgeThreadMetadataFrame dco_decode_bridge_thread_metadata_frame(
@@ -2800,6 +2874,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpdateHandoff dco_decode_bridge_update_handoff(dynamic raw);
+
+  @protected
+  BridgeUpdateMcpDocumentInput dco_decode_bridge_update_mcp_document_input(
+    dynamic raw,
+  );
 
   @protected
   BridgeUpdaterStateSnapshot dco_decode_bridge_updater_state_snapshot(
@@ -3141,11 +3220,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeLspServerDto> dco_decode_list_bridge_lsp_server_dto(dynamic raw);
 
   @protected
-  List<BridgeMcpServerDto> dco_decode_list_bridge_mcp_server_dto(dynamic raw);
+  List<BridgeMcpCatalogEntry> dco_decode_list_bridge_mcp_catalog_entry(
+    dynamic raw,
+  );
 
   @protected
-  List<BridgeMcpServerSettingsDto>
-  dco_decode_list_bridge_mcp_server_settings_dto(dynamic raw);
+  List<BridgeMcpDocumentDiagnostic>
+  dco_decode_list_bridge_mcp_document_diagnostic(dynamic raw);
 
   @protected
   List<BridgeModeModelSettingsDto>
@@ -3271,6 +3352,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_thread_mcp_availability_descriptor(dynamic raw);
 
   @protected
+  List<BridgeThreadMcpServerState>
+  dco_decode_list_bridge_thread_mcp_server_state(dynamic raw);
+
+  @protected
   List<BridgeThreadModeDescriptor>
   dco_decode_list_bridge_thread_mode_descriptor(dynamic raw);
 
@@ -3371,9 +3456,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LspScopeInput dco_decode_lsp_scope_input(dynamic raw);
-
-  @protected
-  McpResetInput dco_decode_mcp_reset_input(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -3516,6 +3598,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
     dynamic raw,
   );
+
+  @protected
+  BridgeMcpDocumentDiagnostic?
+  dco_decode_opt_box_autoadd_bridge_mcp_document_diagnostic(dynamic raw);
+
+  @protected
+  BridgeMcpDocumentRef? dco_decode_opt_box_autoadd_bridge_mcp_document_ref(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeMcpExecutionLocation?
+  dco_decode_opt_box_autoadd_bridge_mcp_execution_location(dynamic raw);
 
   @protected
   BridgeModelCatalogAccountDto?
@@ -4341,6 +4436,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCreateMcpDocumentInput
+  sse_decode_box_autoadd_bridge_create_mcp_document_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeCurrentActivityHead sse_decode_box_autoadd_bridge_current_activity_head(
     SseDeserializer deserializer,
   );
@@ -4373,6 +4474,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDegradedResource sse_decode_box_autoadd_bridge_degraded_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDeleteMcpDocumentInput
+  sse_decode_box_autoadd_bridge_delete_mcp_document_input(
     SseDeserializer deserializer,
   );
 
@@ -4484,12 +4591,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeMcpStateData sse_decode_box_autoadd_bridge_mcp_state_data(
+  BridgeMcpCatalogSnapshot sse_decode_box_autoadd_bridge_mcp_catalog_snapshot(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpStateSnapshot sse_decode_box_autoadd_bridge_mcp_state_snapshot(
+  BridgeMcpDocumentDiagnostic
+  sse_decode_box_autoadd_bridge_mcp_document_diagnostic(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpDocumentRef sse_decode_box_autoadd_bridge_mcp_document_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpExecutionLocation
+  sse_decode_box_autoadd_bridge_mcp_execution_location(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpScope sse_decode_box_autoadd_bridge_mcp_scope(
     SseDeserializer deserializer,
   );
 
@@ -4629,6 +4753,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyUpdaterState sse_decode_box_autoadd_bridge_ready_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeReconnectThreadMcpInput
+  sse_decode_box_autoadd_bridge_reconnect_thread_mcp_input(
     SseDeserializer deserializer,
   );
 
@@ -4825,6 +4955,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadMcpStateSnapshot
+  sse_decode_box_autoadd_bridge_thread_mcp_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadMetadataFrame sse_decode_box_autoadd_bridge_thread_metadata_frame(
     SseDeserializer deserializer,
   );
@@ -4940,6 +5076,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeUpdateMcpDocumentInput
+  sse_decode_box_autoadd_bridge_update_mcp_document_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeUpdaterStateSnapshot
   sse_decode_box_autoadd_bridge_updater_state_snapshot(
     SseDeserializer deserializer,
@@ -5022,11 +5164,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LspScopeInput sse_decode_box_autoadd_lsp_scope_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  McpResetInput sse_decode_box_autoadd_mcp_reset_input(
     SseDeserializer deserializer,
   );
 
@@ -5938,6 +6075,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCreateMcpDocumentInput sse_decode_bridge_create_mcp_document_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeCurrentActivityHead sse_decode_bridge_current_activity_head(
     SseDeserializer deserializer,
   );
@@ -6035,6 +6177,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDelegationSettings sse_decode_bridge_delegation_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDeleteMcpDocumentInput sse_decode_bridge_delete_mcp_document_input(
     SseDeserializer deserializer,
   );
 
@@ -6201,39 +6348,52 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeMcpHealthDto sse_decode_bridge_mcp_health_dto(
+  BridgeMcpCatalogEntry sse_decode_bridge_mcp_catalog_entry(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpServerConfiguration sse_decode_bridge_mcp_server_configuration(
+  BridgeMcpCatalogSnapshot sse_decode_bridge_mcp_catalog_snapshot(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpServerDto sse_decode_bridge_mcp_server_dto(
+  BridgeMcpConfigStatusKind sse_decode_bridge_mcp_config_status_kind(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpServerSettingsDto sse_decode_bridge_mcp_server_settings_dto(
+  BridgeMcpDocumentCommitReceipt sse_decode_bridge_mcp_document_commit_receipt(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpServerState sse_decode_bridge_mcp_server_state(
+  BridgeMcpDocumentContent sse_decode_bridge_mcp_document_content(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpStateData sse_decode_bridge_mcp_state_data(
+  BridgeMcpDocumentDiagnostic sse_decode_bridge_mcp_document_diagnostic(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeMcpStateSnapshot sse_decode_bridge_mcp_state_snapshot(
+  BridgeMcpDocumentRef sse_decode_bridge_mcp_document_ref(
     SseDeserializer deserializer,
   );
+
+  @protected
+  BridgeMcpEffectiveSource sse_decode_bridge_mcp_effective_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpExecutionLocation sse_decode_bridge_mcp_execution_location(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpScope sse_decode_bridge_mcp_scope(SseDeserializer deserializer);
 
   @protected
   BridgeMetricAvailability sse_decode_bridge_metric_availability(
@@ -6524,6 +6684,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyUpdaterState sse_decode_bridge_ready_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeReconnectThreadMcpInput sse_decode_bridge_reconnect_thread_mcp_input(
     SseDeserializer deserializer,
   );
 
@@ -6920,8 +7085,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadMcpLifecycleKind sse_decode_bridge_thread_mcp_lifecycle_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadMcpServerDescriptor
   sse_decode_bridge_thread_mcp_server_descriptor(SseDeserializer deserializer);
+
+  @protected
+  BridgeThreadMcpServerState sse_decode_bridge_thread_mcp_server_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadMcpStateSnapshot sse_decode_bridge_thread_mcp_state_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeThreadMetadataFrame sse_decode_bridge_thread_metadata_frame(
@@ -7178,6 +7358,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpdateHandoff sse_decode_bridge_update_handoff(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUpdateMcpDocumentInput sse_decode_bridge_update_mcp_document_input(
     SseDeserializer deserializer,
   );
 
@@ -7607,13 +7792,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeMcpServerDto> sse_decode_list_bridge_mcp_server_dto(
+  List<BridgeMcpCatalogEntry> sse_decode_list_bridge_mcp_catalog_entry(
     SseDeserializer deserializer,
   );
 
   @protected
-  List<BridgeMcpServerSettingsDto>
-  sse_decode_list_bridge_mcp_server_settings_dto(SseDeserializer deserializer);
+  List<BridgeMcpDocumentDiagnostic>
+  sse_decode_list_bridge_mcp_document_diagnostic(SseDeserializer deserializer);
 
   @protected
   List<BridgeModeModelSettingsDto>
@@ -7759,6 +7944,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeThreadMcpServerState>
+  sse_decode_list_bridge_thread_mcp_server_state(SseDeserializer deserializer);
+
+  @protected
   List<BridgeThreadModeDescriptor>
   sse_decode_list_bridge_thread_mode_descriptor(SseDeserializer deserializer);
 
@@ -7883,9 +8072,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LspScopeInput sse_decode_lsp_scope_input(SseDeserializer deserializer);
-
-  @protected
-  McpResetInput sse_decode_mcp_reset_input(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -8054,6 +8240,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryFault? sse_decode_opt_box_autoadd_bridge_history_fault(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpDocumentDiagnostic?
+  sse_decode_opt_box_autoadd_bridge_mcp_document_diagnostic(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpDocumentRef? sse_decode_opt_box_autoadd_bridge_mcp_document_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeMcpExecutionLocation?
+  sse_decode_opt_box_autoadd_bridge_mcp_execution_location(
     SseDeserializer deserializer,
   );
 
@@ -9049,6 +9252,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_create_mcp_document_input(
+    BridgeCreateMcpDocumentInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_current_activity_head(
     BridgeCurrentActivityHead self,
     SseSerializer serializer,
@@ -9087,6 +9296,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_degraded_resource(
     BridgeDegradedResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_delete_mcp_document_input(
+    BridgeDeleteMcpDocumentInput self,
     SseSerializer serializer,
   );
 
@@ -9211,14 +9426,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_mcp_state_data(
-    BridgeMcpStateData self,
+  void sse_encode_box_autoadd_bridge_mcp_catalog_snapshot(
+    BridgeMcpCatalogSnapshot self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_mcp_state_snapshot(
-    BridgeMcpStateSnapshot self,
+  void sse_encode_box_autoadd_bridge_mcp_document_diagnostic(
+    BridgeMcpDocumentDiagnostic self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_mcp_document_ref(
+    BridgeMcpDocumentRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_mcp_execution_location(
+    BridgeMcpExecutionLocation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_mcp_scope(
+    BridgeMcpScope self,
     SseSerializer serializer,
   );
 
@@ -9369,6 +9602,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_ready_updater_state(
     BridgeReadyUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_reconnect_thread_mcp_input(
+    BridgeReconnectThreadMcpInput self,
     SseSerializer serializer,
   );
 
@@ -9583,6 +9822,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_thread_mcp_state_snapshot(
+    BridgeThreadMcpStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_thread_metadata_frame(
     BridgeThreadMetadataFrame self,
     SseSerializer serializer,
@@ -9709,6 +9954,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_update_mcp_document_input(
+    BridgeUpdateMcpDocumentInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_updater_state_snapshot(
     BridgeUpdaterStateSnapshot self,
     SseSerializer serializer,
@@ -9801,12 +10052,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_lsp_scope_input(
     LspScopeInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_mcp_reset_input(
-    McpResetInput self,
     SseSerializer serializer,
   );
 
@@ -10912,6 +11157,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_create_mcp_document_input(
+    BridgeCreateMcpDocumentInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_current_activity_head(
     BridgeCurrentActivityHead self,
     SseSerializer serializer,
@@ -11028,6 +11279,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_delegation_settings(
     BridgeDelegationSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delete_mcp_document_input(
+    BridgeDeleteMcpDocumentInput self,
     SseSerializer serializer,
   );
 
@@ -11233,44 +11490,62 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_mcp_health_dto(
-    BridgeMcpHealthDto self,
+  void sse_encode_bridge_mcp_catalog_entry(
+    BridgeMcpCatalogEntry self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_server_configuration(
-    BridgeMcpServerConfiguration self,
+  void sse_encode_bridge_mcp_catalog_snapshot(
+    BridgeMcpCatalogSnapshot self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_server_dto(
-    BridgeMcpServerDto self,
+  void sse_encode_bridge_mcp_config_status_kind(
+    BridgeMcpConfigStatusKind self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_server_settings_dto(
-    BridgeMcpServerSettingsDto self,
+  void sse_encode_bridge_mcp_document_commit_receipt(
+    BridgeMcpDocumentCommitReceipt self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_server_state(
-    BridgeMcpServerState self,
+  void sse_encode_bridge_mcp_document_content(
+    BridgeMcpDocumentContent self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_state_data(
-    BridgeMcpStateData self,
+  void sse_encode_bridge_mcp_document_diagnostic(
+    BridgeMcpDocumentDiagnostic self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_mcp_state_snapshot(
-    BridgeMcpStateSnapshot self,
+  void sse_encode_bridge_mcp_document_ref(
+    BridgeMcpDocumentRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_mcp_effective_source(
+    BridgeMcpEffectiveSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_mcp_execution_location(
+    BridgeMcpExecutionLocation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_mcp_scope(
+    BridgeMcpScope self,
     SseSerializer serializer,
   );
 
@@ -11631,6 +11906,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_ready_updater_state(
     BridgeReadyUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_reconnect_thread_mcp_input(
+    BridgeReconnectThreadMcpInput self,
     SseSerializer serializer,
   );
 
@@ -12106,8 +12387,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_thread_mcp_lifecycle_kind(
+    BridgeThreadMcpLifecycleKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_thread_mcp_server_descriptor(
     BridgeThreadMcpServerDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_mcp_server_state(
+    BridgeThreadMcpServerState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_mcp_state_snapshot(
+    BridgeThreadMcpStateSnapshot self,
     SseSerializer serializer,
   );
 
@@ -12429,6 +12728,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_update_handoff(
     BridgeUpdateHandoff self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_update_mcp_document_input(
+    BridgeUpdateMcpDocumentInput self,
     SseSerializer serializer,
   );
 
@@ -12940,14 +13245,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_mcp_server_dto(
-    List<BridgeMcpServerDto> self,
+  void sse_encode_list_bridge_mcp_catalog_entry(
+    List<BridgeMcpCatalogEntry> self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_list_bridge_mcp_server_settings_dto(
-    List<BridgeMcpServerSettingsDto> self,
+  void sse_encode_list_bridge_mcp_document_diagnostic(
+    List<BridgeMcpDocumentDiagnostic> self,
     SseSerializer serializer,
   );
 
@@ -13120,6 +13425,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_thread_mcp_server_state(
+    List<BridgeThreadMcpServerState> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_thread_mode_descriptor(
     List<BridgeThreadModeDescriptor> self,
     SseSerializer serializer,
@@ -13271,9 +13582,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_lsp_scope_input(LspScopeInput self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_mcp_reset_input(McpResetInput self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -13458,6 +13766,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_history_fault(
     BridgeHistoryFault? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_mcp_document_diagnostic(
+    BridgeMcpDocumentDiagnostic? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_mcp_document_ref(
+    BridgeMcpDocumentRef? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_mcp_execution_location(
+    BridgeMcpExecutionLocation? self,
     SseSerializer serializer,
   );
 

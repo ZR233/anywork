@@ -193,6 +193,9 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<pl_tool::remote::RemoteClientError>() {
         return remote_client_error(error);
     }
+    if let Some(error) = error.downcast_ref::<crate::McpDocumentError>() {
+        return mcp_document_error(error);
+    }
     if let Some(error) = error.downcast_ref::<PureError>() {
         return pure_error(error);
     }
@@ -206,6 +209,22 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         "unclassified Studio runtime failure"
     );
     studio_error
+}
+
+fn mcp_document_error(error: &crate::McpDocumentError) -> StudioError {
+    use crate::McpDocumentError;
+    match error {
+        McpDocumentError::NotFound(msg) => {
+            StudioError::new(StudioErrorCode::NotFound, msg.clone(), false)
+        }
+        McpDocumentError::Conflict(msg) => {
+            StudioError::new(StudioErrorCode::Conflict, msg.clone(), false)
+        }
+        McpDocumentError::ValidationFailed(msg) => {
+            StudioError::new(StudioErrorCode::InvalidArgument, msg.clone(), false)
+        }
+        McpDocumentError::Io(msg) => StudioError::new(StudioErrorCode::Storage, msg.clone(), true),
+    }
 }
 
 fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioError {

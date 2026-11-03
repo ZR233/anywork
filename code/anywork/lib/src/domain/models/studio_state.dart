@@ -34,7 +34,7 @@ class StudioState {
     required this.accountsState,
     required this.modelDirectoryState,
     required this.recoveryState,
-    required this.mcpState,
+    required this.mcpCatalog,
     required this.lspState,
     required this.skillsByProject,
     this.threadModeCatalog = const ThreadModeCatalogView(),
@@ -82,7 +82,7 @@ class StudioState {
   final AgentDirectoryState agentDirectory;
   final SettingsStateSnapshot settingsState;
   final RecoveryStateSnapshot recoveryState;
-  final McpStateSnapshot mcpState;
+  final McpCatalogSnapshot mcpCatalog;
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
@@ -146,7 +146,6 @@ class StudioState {
 
   SessionCostView? get selectedSessionCost => selectedSessionCostState?.cost;
   List<RoleSettingsView> get roles => settingsState.roles;
-  List<McpServerSettingsView> get mcpServers => settingsState.mcpServers;
   InstructionsSettingsView get instructions => settingsState.instructions;
   SkillsSettingsView get skills => settingsState.skills;
   GeneralSettingsView get general => settingsState.general;
@@ -354,7 +353,7 @@ class StudioState {
     AccountsState? accountsState,
     ModelDirectoryState? modelDirectoryState,
     RecoveryStateSnapshot? recoveryState,
-    McpStateSnapshot? mcpState,
+    McpCatalogSnapshot? mcpCatalog,
     LspStateSnapshot? lspState,
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
@@ -394,7 +393,7 @@ class StudioState {
       accountsState: accountsState ?? this.accountsState,
       modelDirectoryState: modelDirectoryState ?? this.modelDirectoryState,
       recoveryState: recoveryState ?? this.recoveryState,
-      mcpState: mcpState ?? this.mcpState,
+      mcpCatalog: mcpCatalog ?? this.mcpCatalog,
       lspState: lspState ?? this.lspState,
       skillsByProject: skillsByProject ?? this.skillsByProject,
       threadModeCatalog: threadModeCatalog ?? this.threadModeCatalog,

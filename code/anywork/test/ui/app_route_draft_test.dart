@@ -461,6 +461,7 @@ void main() {
           );
           expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
+          expect(graph.client.existingThreadMcp('thread-alt'), isNull);
           expect(tester.takeException(), isNull);
           final failedFacts = queryStudioDriverFacts(
             graph.client,

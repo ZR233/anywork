@@ -73,6 +73,7 @@ async fn helper_capture_budget_refuses_invalid_and_charges_disk() -> anyhow::Res
         environment: BTreeMap::new(),
         capture,
         remaining_timeout_ms: None,
+        process_lease: None,
     };
     let error = client
         .spawn_process(request(
@@ -348,6 +349,7 @@ async fn capture_flush_failure_preserves_exit() -> anyhow::Result<()> {
                     stderr_path: "stderr.log".into(),
                     limit_bytes: 65536,
                 },
+                process_lease: None,
             })
             .await?;
         drop(command.take_stdin());

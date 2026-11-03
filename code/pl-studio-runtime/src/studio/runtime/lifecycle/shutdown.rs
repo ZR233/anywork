@@ -838,10 +838,7 @@ mod stage_order {
     pub(super) const RECOVERY: usize = 3;
     pub(super) const MODEL_REFRESH: usize = 4;
     pub(super) const TITLE: usize = 5;
-    pub(super) const MCP_STARTUP_RECONCILE: usize = 6;
-    pub(super) const MCP_HEALTH: usize = 7;
     pub(super) const MCP_STOP: usize = 8;
-    pub(super) const MCP_STOPPED: usize = 9;
     pub(super) const LSP_STATE: usize = 10;
     pub(super) const LSP_STOP: usize = 11;
     pub(super) const LSP_STOPPED: usize = 12;
@@ -1226,8 +1223,6 @@ impl StudioRuntime {
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
-        background_task::signal(&self.external_runtimes.mcp_config_watcher).await;
-        background_task::signal(&self.external_runtimes.mcp_health_watcher).await;
         background_task::signal(&self.external_runtimes.lsp_state_watcher).await;
         background_task::signal(&self.persistence_observer).await;
         background_task::signal(&self.profiles_forwarder).await;
@@ -1261,13 +1256,11 @@ impl StudioRuntime {
         // 保证幂等）。SSH transport 不是与它们独立的资源：它承载远端 MCP/LSP/工具的通信，必须在
         // 这些依赖的停止请求与结果处理之后才回收，因此在依赖闸门之后单独 ensure（见
         // `run_shutdown_stages`）。
-        let mcp = self.external_runtimes.mcp.clone();
+        let thread_factory = self.thread_factory.clone();
         let lsp = self.external_runtimes.lsp.clone();
         let (mcp, lsp) = futures::join!(
             ensure_service_stop(&slots.mcp, move || {
-                ServiceStopJob::spawn(
-                    async move { mcp.shutdown().await.map_err(anyhow::Error::from) },
-                )
+                ServiceStopJob::spawn(async move { thread_factory.shutdown_all_mcp().await })
             }),
             ensure_service_stop(&slots.lsp, move || {
                 ServiceStopJob::spawn(
@@ -1365,20 +1358,6 @@ impl StudioRuntime {
         let mut remote_dependents: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         remote_dependents.push(self.stage_branch(
             budget,
-            stage_order::MCP_STARTUP_RECONCILE,
-            "mcpStartupReconcile",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_mcp_config_watcher().await },
-        ));
-        remote_dependents.push(self.stage_branch(
-            budget,
-            stage_order::MCP_HEALTH,
-            "mcpHealth",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_mcp_health_watcher().await },
-        ));
-        remote_dependents.push(self.stage_branch(
-            budget,
             stage_order::TOOL_REFRESH,
             "toolRefresh",
             Some(SERVICE_STAGE_LIMIT),
@@ -1410,33 +1389,18 @@ impl StudioRuntime {
         // 只有确认回收才发布 `stopped`，失败绝不伪成功。job 常驻 runtime，超时不丢句柄。
         // stop 与随后的 `stopped` 发布是同一服务内的有向顺序，整体仍与其他独立资源并发。
         let mcp_job = services.mcp.clone();
-        let mcp_runtime = self.clone();
         remote_dependents.push(
             async move {
-                let stop = join_service_outcome(
-                    budget,
-                    stage_order::MCP_STOP,
-                    "mcpStop",
-                    mcp_job,
-                    Some(SERVICE_STAGE_LIMIT),
-                )
-                .await;
-                let acked = stop.is_done();
-                let mut outcomes = vec![stop];
-                if acked {
-                    outcomes.push(
-                        run_stage_owned(
-                            mcp_runtime,
-                            budget,
-                            stage_order::MCP_STOPPED,
-                            "mcpStopped",
-                            Some(SERVICE_STAGE_LIMIT),
-                            |runtime| async move { runtime.publish_mcp_stopped().await },
-                        )
-                        .await,
-                    );
-                }
-                outcomes
+                vec![
+                    join_service_outcome(
+                        budget,
+                        stage_order::MCP_STOP,
+                        "mcpStop",
+                        mcp_job,
+                        Some(SERVICE_STAGE_LIMIT),
+                    )
+                    .await,
+                ]
             }
             .boxed(),
         );

@@ -334,8 +334,8 @@ const initialServerMcps = {
 const globalMcpOverrides = [
   { id: 'zhipu_search', transport: 'streamableHttp', source: '内置 (Zhipu)', policy: 'inherit', remapPath: '' },
   { id: 'zhipu_reader', transport: 'streamableHttp', source: '内置 (Zhipu)', policy: 'inherit', remapPath: '' },
-  { id: 'filesystem', transport: 'stdio', source: '全局 config.toml (/data/shared-datasets)', policy: 'remap', remapPath: '/data/shared-datasets' },
-  { id: 'windows_local_automation', transport: 'stdio', source: '全局 (powershell.exe)', policy: 'disable', remapPath: '' }
+  { id: 'filesystem', transport: 'stdio', source: 'Host mcp/filesystem.toml (/data/shared-datasets)', policy: 'remap', remapPath: '/data/shared-datasets' },
+  { id: 'windows_local_automation', transport: 'stdio', source: 'Host mcp/windows_local_automation.toml (powershell.exe)', policy: 'disable', remapPath: '' }
 ];
 
 const remoteDirTree = {
@@ -523,7 +523,7 @@ function serverRowMarkup(s) {
     : st === 'waitingForInput'
     ? `<div class="aw-server-row-banner warning"><div class="aw-row">${icon('key-round')}<span>免密探测未通过，需要输入 SSH 密码。</span></div>${btn('输入密码', 'promptPassword', 'filled', 'log-in', `data-server="${s.alias}"`)}</div>`
     : st === 'connecting'
-    ? `<div class="aw-server-row-banner info"><div style="flex:1"><div class="aw-between" style="margin-bottom:4px"><span>正在部署 <code>pl-remote-helper</code> (v10)…</span><span class="aw-mono">68%</span></div><mdui-linear-progress value="0.68"></mdui-linear-progress></div></div>`
+    ? `<div class="aw-server-row-banner info"><div style="flex:1"><div class="aw-between" style="margin-bottom:4px"><span>正在部署 <code>pl-remote-helper</code> (v11)…</span><span class="aw-mono">68%</span></div><mdui-linear-progress value="0.68"></mdui-linear-progress></div></div>`
     : '';
 
   return `<article class="aw-server-row" data-server-row="${escapeHTML(s.alias)}">

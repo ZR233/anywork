@@ -9,6 +9,7 @@ import '../types/agent_profile.dart';
 import '../types/chatgpt_auth.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
+import '../types/mcp.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
 import '../types/session_directory.dart';

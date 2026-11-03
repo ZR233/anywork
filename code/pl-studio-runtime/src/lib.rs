@@ -55,9 +55,10 @@ pub use pl_tool::skill::{SkillCatalog, SkillMetadata, SkillResourceBase, SkillSo
 
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
-    DeepSeekWebSearchConfig, ModelCatalogRuntimeSnapshot, ReasoningEffort,
-    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioUiConfig, UserAgentProfile,
-    WebSearchContextSize, WebSearchLocation, WebSearchMode,
+    DeepSeekWebSearchConfig, McpCatalogResource, McpDocumentError, McpFileSpecV1, McpFileV1,
+    ModelCatalogRuntimeSnapshot, ReasoningEffort, ResolvedThreadMcpServer,
+    STUDIO_CONFIG_SCHEMA_VERSION, ScopedEffectiveMcpServer, StudioConfig, StudioUiConfig,
+    UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
 pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
 pub use error_mapping::studio_error_from_anyhow;
@@ -66,11 +67,9 @@ pub use first_run::{
 };
 pub use protocol::{
     FlushingPersistenceProgress, LspAvailable, LspAvailableActivity, LspBusy, LspChecking,
-    LspDisabled, LspIdle, LspIndexing, LspUnavailable, McpAvailable, McpChecking, McpDisabled,
-    McpMissingCredential, McpUnavailable, StudioAgentDirectoryData, StudioAgentDirectoryEntry,
-    StudioAgentDirectoryState, StudioChildInteractionsState, StudioLspHealth, StudioLspServer,
-    StudioLspServerState, StudioLspStateSnapshot, StudioMcpHealth, StudioMcpServer,
-    StudioMcpServerState, StudioMcpStateData, StudioMcpStateSnapshot,
+    LspDisabled, LspIdle, LspIndexing, LspUnavailable, StudioAgentDirectoryData,
+    StudioAgentDirectoryEntry, StudioAgentDirectoryState, StudioChildInteractionsState,
+    StudioLspHealth, StudioLspServer, StudioLspServerState, StudioLspStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioPendingPersistence, StudioProductBaseline,
     StudioProductBaselineState, StudioProductEventEnvelope, StudioProductEventKind,
     StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,

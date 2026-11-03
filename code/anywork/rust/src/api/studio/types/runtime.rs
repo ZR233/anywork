@@ -333,46 +333,6 @@ pub enum BridgeAgentExecutionPhase {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeMcpHealthDto {
-    pub active_mcp_servers: Vec<String>,
-    pub mcp_servers: Vec<BridgeMcpServerDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeMcpServerDto {
-    pub id: String,
-    pub transport: String,
-    pub endpoint: String,
-    pub source_kind: String,
-    pub mutation_policy: String,
-    pub state: BridgeMcpServerState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeMcpServerState {
-    Disabled {
-        message: String,
-    },
-    MissingCredential {
-        message: String,
-    },
-    Checking {
-        message: String,
-    },
-    Available {
-        checked_at: i64,
-        tool_count: u64,
-    },
-    Unavailable {
-        checked_at: i64,
-        error: BridgeStateError,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct BridgeLspHealthDto {
     pub active_lsp_servers: Vec<String>,
     pub lsp_servers: Vec<BridgeLspServerDto>,

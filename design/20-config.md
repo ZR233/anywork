@@ -33,6 +33,7 @@
 - **版本 `27 → 28`**：为已有账号明确补入 `authentication = "apiKey"`，不从计费类别推断订阅登录；端点、环境变量引用、受保护凭据关联、路由及模型覆盖保持不变。ChatGPT 注册仅来自新版本中用户完成并保存的授权，升级本身不读取 Codex 凭据或自动创建订阅连接。
 - **版本 `28 → 29`**：移除旧 `skills.user_dir`，保留其余技能设置、账号认证身份及凭据关联；旧技能内容原样保留，不复制或覆盖标准用户技能目录。
 - **版本 `29 → 30`**：允许已验证的 Codex workspace 和套餐元数据；已有 API、SIWC 账号、资源、凭据关联和模型选择保持原样，不自动转换或重新登录。新字段只随用户完成并保存的授权写入。
+- **版本 `30 → 31`**：将旧版 `config.toml` 中的 `[mcp.servers.<id>]` 与 `[mcp.builtin_servers.<id>]` 拆分迁移为 `<StudioHome>/mcp/host/<server-key>.toml` 独立单文件配置（各自携带 `schema_version = 1` 与 `kind = "server" | "builtin"`，`server-key` 为稳定服务 ID 的 SHA-256），同时从 `config.toml` 移除 `[mcp]` 配置段与退役字段 `[runtime].active_mcp_servers`，保持其余账号、凭据关联、路由及技能设置不变。迁移前完整备份原文件，中断后可安全恢复；正常读写仅消费单文件 MCP 目录，不双读 `config.toml` 中的旧 `[mcp]` 段。
 
 所有设置变更命令（Settings command）均须携带 `expectedSettingsRevision`，成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 
@@ -120,20 +121,12 @@ disabled_system_agents = []
 # 字段保留；当前版本执行路径固定为 full-access，该值不影响实际执行（见 04-security.md）。
 permission_mode = "request-approval"
 active_skills = ["rust", "git", "doc"]
-active_mcp_servers = ["github", "filesystem"]
 
 [instructions]
 base_override = ""
 developer = ""
 user = ""
 project_doc_max_bytes = 65536
-
-[mcp.servers.filesystem]
-enabled = true
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "D:/workspace"]
-env = {}
 
 [skills]
 enabled = true
@@ -220,15 +213,28 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 
 ## 20.7 运行态声明
 
-`[runtime]` 配置段保存本地 Studio 运行态展示所需的可选声明：`permission_mode`、`active_skills` 与 `active_mcp_servers`。其中 `permission_mode` 字段虽保留配置兼容，但当前版本执行路径固定为 `full-access`（见 [04](./04-security.md)），修改该字段不改变实际执行权限。`active_skills` 与 `active_mcp_servers` 仅声明启动预选项，不作为运行期真实可用性来源：MCP 服务的用户启用意图以 `[mcp.servers.<id>].enabled` 为准，真实连接健康度由进程内注册表探测；当前会话的已激活技能（`activeSkills`）由持久化的会话级激活扩展派生（见 [10](./10-skills.md) §10.6）。
+`[runtime]` 配置段保存本地 Studio 运行态展示所需的可选声明：`permission_mode` 与 `active_skills`。其中 `permission_mode` 字段虽保留配置兼容，但当前版本执行路径固定为 `full-access`（见 [04](./04-security.md)），修改该字段不改变实际执行权限。`active_skills` 仅声明启动预选项，不作为运行期真实可用性来源：当前会话的已激活技能（`activeSkills`）由持久化的会话级激活扩展派生（见 [10](./10-skills.md) §10.6）。
 
-## 20.8 MCP 配置
+## 20.8 MCP 按环境独立单文件配置与合并规则
 
-用户自定义 MCP 服务保存在 `[mcp.servers.<server_id>]` 表中。`server_id` 必须非空且仅包含 ASCII 字母、数字、`_` 与 `-`（因其参与构成模型可见的工具名），且不得占用内置保留 ID。Studio 运行时还会合成一组内置 MCP 服务，其界面开关状态保存在 `[mcp.builtin_servers.<server_id>]` 中。每个 MCP 服务须配置 `enabled`（默认 `true`）与传输方式 `transport`（`stdio` 或 `streamableHttp`）：`stdio` 服务须配置 `command`、`args`、`env` 及可选 `cwd`；`streamableHttp` 服务须配置 `url`、`headers` 及可选 `bearer_token_env_var`。
+MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模型（独立根版本 `schema_version = 1`），不再嵌入 `config.toml`：
+- **Host 作用域（`McpScope::Host`）**：保存在 `~/.anywork/mcp/host/<server-key>.toml`，定义本地会话的 MCP 服务及 SSH 会话的默认继承基线。
+- **SSH 服务器作用域（`McpScope::Ssh { ssh_alias }`）**：保存在 `~/.anywork/mcp/ssh/<ssh-key>/<server-key>.toml`，定义该 SSH 服务器的专属 MCP 服务、对同名 Host 服务的覆盖配置或禁用墓碑。
 
-启动后由 MCP 运行时所有者监听权威配置变化并在后台增量协调（reconcile）已启用且凭据完整的服务，维护配置指纹、工具命名规范化（格式为 `mcp__{server_id}__{tool_name}`，最长 64 字符，超长或冲突时追加稳定哈希后缀）、健康状态与代次（generation）原子替换（轮次租约契约见 [09](./09-tool-runtime.md)）。
+`server-key` 与 `ssh-key` 分别为稳定服务 ID 与 SSH alias 的 SHA-256，由现有路径 owner 生成；文件名不是语义 ID。每份文档必须携带字符串 `id`，仅允许包含 ASCII 字母、数字、`_` 与 `-`，目录条目交付实际文档引用供读取和编辑，调用方不能根据显示名称猜文件路径。文档通过 `kind` 区分三类配置：
+- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），包含 `enabled`（默认 `true`）与传输方式 `transport`（`stdio` 或 `streamableHttp`）。`stdio` 服务须配置 `command`、`args`、`env` 及可选 `cwd`（SSH 作用域下 `cwd` 必须为远端 POSIX 绝对路径）；`streamableHttp` 服务须配置 `url`、`headers` 及可选 `bearer_token_env_var`。
+- `kind = "builtin"`：内置智谱 Coding Plan MCP 服务的启用开关覆盖（仅限保留 ID `zhipu_search`、`zhipu_reader`、`zhipu_zread`、`zhipu_vision`），仅包含 `enabled: bool`。
+- `kind = "disabled"`：仅限 SSH 作用域目录使用的**按服务器禁用墓碑**，显式屏蔽继承自 Host 的同名自定义或内置服务；删除该墓碑文件即可恢复继承 Host 配置。Host 作用域下禁止写入 `kind = "disabled"`。
 
-内置智谱 Coding Plan MCP 服务固定包含 `zhipu_search`、`zhipu_reader`、`zhipu_zread`（均为官方端点的 `Streamable HTTP` 传输）与 `zhipu_vision`（经 `npm` 启动的 `stdio` 传输）。这组内置服务仅复用 `template = "zhipu-coding-plan"` 账号实例的有效 Bearer 令牌（存在多个实例时按账号 ID 稳定排序选取首个具备有效凭据的实例）；无可用令牌时标记为缺少凭据且不发起连接，检测到有效令牌时未显式禁用的内置服务自动启用并进入后台探测。
+`McpScope::Ssh { ssh_alias }` 的有效目录按稳定 `id` 合并（严禁在 SSH 覆盖失败、禁用或配置损坏时静默回退到 Host 配置）：
+1. 以内置服务默认项及 `mcp/host/*.toml` 的 Host 有效目录为基线；
+2. 若对应 SSH 作用域文档存在且为 `kind = "disabled"`，该 `id` 标记为 `ShadowedDisable`，不在该 SSH 服务器的会话中启动；
+3. 若对应 SSH 作用域文档存在且为 `kind = "server"` 或 `kind = "builtin"`，完整替换同名 Host 条目（或新增该服务器专属服务）；
+4. 若某个单文件 TOML 解析或校验失败，仅将该文件对应的 `id` 标记为 `InvalidDocument` 并保留诊断供用户在设置页修复或删除，不影响同目录下其他合法文件，也绝不回退读取被其覆盖的 Host 同名文件。
+
+设置页的 MCP 标签页按作用域（`Host` 或 `SSH · <alias>`）展示合并后的静态期望配置与单文件诊断，提供单文件 TOML 新建、编辑、删除、按机覆盖、按机禁用与恢复继承操作，不在设置页发起运行时探测连接。真实的 MCP 进程与连接生命周期由每个已激活会话（`Thread`）独占的 `McpRuntime` 持有，工具命名规范化（格式为 `mcp__{server_id}__{tool_name}`，最长 64 字符，超长或冲突时追加稳定哈希后缀）、轮次租约（`McpTurnLease`）与会话状态栏重连契约见 [09](./09-tool-runtime.md) §9.6。
+
+内置智谱 Coding Plan MCP 服务固定包含 `zhipu_search`、`zhipu_reader`、`zhipu_zread`（均为官方端点的 `Streamable HTTP` 传输）与 `zhipu_vision`（经 `npm` 启动的 `stdio` 传输）。这组内置服务仅复用 `template = "zhipu-coding-plan"` 账号实例的有效 Bearer 令牌（存在多个实例时按账号 ID 稳定排序选取首个具备有效凭据的实例）；无可用令牌时配置状态标记为缺少前置凭据且不发起连接，具备有效令牌且未在当前作用域禁用时由激活会话的 `McpRuntime` 按需连接。
 
 ## 20.9 技能（Skills）配置
 

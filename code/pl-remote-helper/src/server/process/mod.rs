@@ -19,6 +19,11 @@ struct Input {
     failure: Option<RemoteError>,
 }
 #[derive(Debug)]
+struct ProcessLeaseState {
+    lease_id: RemoteProcessLeaseId,
+    deadline: watch::Sender<tokio::time::Instant>,
+}
+#[derive(Debug)]
 struct Entry {
     input: Mutex<Input>,
     cancel: CancellationToken,
@@ -26,6 +31,7 @@ struct Entry {
     startup: watch::Sender<Option<Result<(), RemoteError>>>,
     journal: Journal,
     _lease: ByteLease,
+    process_lease: Option<ProcessLeaseState>,
     release_requested: std::sync::atomic::AtomicBool,
 }
 #[derive(Debug, Clone)]
@@ -68,6 +74,13 @@ impl ProcessRegistry {
                 "process handle budget exhausted",
             )
         })?;
+        let process_lease = request
+            .process_lease
+            .as_ref()
+            .map(|lease_id| ProcessLeaseState {
+                lease_id: lease_id.clone(),
+                deadline: watch::channel(tokio::time::Instant::now() + REMOTE_PROCESS_LEASE_TTL).0,
+            });
         let entry = Arc::new(Entry {
             input: Mutex::new(Input {
                 writer: None,
@@ -79,6 +92,7 @@ impl ProcessRegistry {
             startup: watch::channel(None).0,
             journal: Journal::new(self.budget.clone())?,
             _lease: lease,
+            process_lease,
             release_requested: std::sync::atomic::AtomicBool::new(false),
         });
         {
@@ -181,11 +195,51 @@ impl ProcessRegistry {
         let mut stdout = worker.take_stdout();
         let mut stderr = worker.take_stderr();
         let control = worker.control();
+        if let Some(lease) = &entry.process_lease {
+            lease
+                .deadline
+                .send_replace(tokio::time::Instant::now() + REMOTE_PROCESS_LEASE_TTL);
+        }
         entry.startup.send_replace(Some(Ok(())));
+        let lease_expired = std::sync::atomic::AtomicBool::new(false);
         let wait = async {
+            let mut lease_rx = entry
+                .process_lease
+                .as_ref()
+                .map(|lease| lease.deadline.subscribe());
+            let lease_expiry = async {
+                let Some(rx) = &mut lease_rx else {
+                    return std::future::pending::<()>().await;
+                };
+                loop {
+                    let deadline = *rx.borrow_and_update();
+                    tokio::select! {
+                        changed = rx.changed() => {
+                            if changed.is_err() {
+                                return std::future::pending::<()>().await;
+                            }
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            if tokio::time::Instant::now() >= *rx.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            };
+            tokio::pin!(lease_expiry);
             let result = tokio::select! {
                 result = worker.wait() => result,
                 _ = entry.cancel.cancelled() => {
+                    if control.cancel().await.is_err() { control.close(); }
+                    worker.wait().await
+                }
+                _ = &mut lease_expiry => {
+                    lease_expired.store(true, std::sync::atomic::Ordering::Release);
+                    entry
+                        .release_requested
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    entry.cancel.cancel();
                     if control.cancel().await.is_err() { control.close(); }
                     worker.wait().await
                 }
@@ -251,7 +305,15 @@ impl ProcessRegistry {
             }
             (failure, capture.receipt())
         };
-        let (result, (failure, receipt)) = tokio::join!(wait, output);
+        let (result, (mut failure, receipt)) = tokio::join!(wait, output);
+        if lease_expired.load(std::sync::atomic::Ordering::Acquire) {
+            failure.get_or_insert_with(|| {
+                remote_error(
+                    RemoteErrorCode::SessionExpired,
+                    "remote process lease expired",
+                )
+            });
+        }
         let (exit_code, signal) =
             match result.map_err(|e| remote_error(RemoteErrorCode::Io, e.to_string()))? {
                 ProcessTermination::ExitCode(code) => (Some(code), None),
@@ -321,6 +383,35 @@ impl ProcessRegistry {
     }
     pub(super) async fn terminate(&self, id: &str) -> Result<(), RemoteError> {
         self.get(id).await?.cancel.cancel();
+        Ok(())
+    }
+    pub(super) async fn renew_lease(
+        &self,
+        id: &str,
+        lease_id: &RemoteProcessLeaseId,
+    ) -> Result<(), RemoteError> {
+        let entry = self.get(id).await?;
+        if entry.exited.is_cancelled() || entry.cancel.is_cancelled() {
+            return Err(remote_error(
+                RemoteErrorCode::ProcessNotFound,
+                "process handle is closed",
+            ));
+        }
+        let Some(lease) = &entry.process_lease else {
+            return Err(remote_error(
+                RemoteErrorCode::InvalidRequest,
+                "process does not have an active lease",
+            ));
+        };
+        if &lease.lease_id != lease_id {
+            return Err(remote_error(
+                RemoteErrorCode::InvalidRequest,
+                "process lease identity mismatch",
+            ));
+        }
+        lease
+            .deadline
+            .send_replace(tokio::time::Instant::now() + REMOTE_PROCESS_LEASE_TTL);
         Ok(())
     }
     pub(super) async fn acknowledge(&self, id: &str, sequence: u64) -> Result<(), RemoteError> {

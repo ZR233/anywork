@@ -3041,27 +3041,113 @@ class FrbStudioTransport
   }
 
   @override
-  Future<McpStateSnapshot> readMcpState() async {
+  Future<McpCatalogSnapshot> readMcpCatalog(McpScope scope) async {
     await _ensureReady();
-    return _mcpStateFromFrb(await _bridgeCall(frb.readMcpState));
+    return _mcpCatalogFromFrb(
+      await _bridgeCall(() => frb.readMcpCatalog(scope: _mcpScopeToFrb(scope))),
+    );
   }
 
   @override
-  Future<McpStateSnapshot> resetMcpServer(String serverId) async {
+  Future<McpCatalogSnapshot> reloadMcpCatalog(McpScope scope) async {
     await _ensureReady();
-    return _mcpStateFromFrb(
+    return _mcpCatalogFromFrb(
       await _bridgeCall(
-        () => frb.resetMcp(input: frb.McpResetInput.server(serverId: serverId)),
+        () => frb.reloadMcpCatalog(scope: _mcpScopeToFrb(scope)),
       ),
     );
   }
 
   @override
-  Future<McpStateSnapshot> resetAllMcp() async {
+  Future<McpDocumentContent> readMcpDocument(McpDocumentRef document) async {
     await _ensureReady();
-    return _mcpStateFromFrb(
+    return _mcpDocumentContentFromFrb(
       await _bridgeCall(
-        () => frb.resetMcp(input: const frb.McpResetInput.all()),
+        () => frb.readMcpDocument(document: _mcpDocumentRefToFrb(document)),
+      ),
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> createMcpDocument({
+    required McpScope scope,
+    required String id,
+    required String rawToml,
+  }) async {
+    await _ensureReady();
+    return _mcpDocumentCommitReceiptFromFrb(
+      await _bridgeCall(
+        () => frb.createMcpDocument(
+          input: frb.BridgeCreateMcpDocumentInput(
+            scope: _mcpScopeToFrb(scope),
+            id: id,
+            rawToml: rawToml,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> updateMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+    required String rawToml,
+  }) async {
+    await _ensureReady();
+    return _mcpDocumentCommitReceiptFromFrb(
+      await _bridgeCall(
+        () => frb.updateMcpDocument(
+          input: frb.BridgeUpdateMcpDocumentInput(
+            document: _mcpDocumentRefToFrb(document),
+            expectedRevision: BigInt.from(expectedRevision),
+            rawToml: rawToml,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<McpDocumentCommitReceipt> deleteMcpDocument({
+    required McpDocumentRef document,
+    required int expectedRevision,
+  }) async {
+    await _ensureReady();
+    return _mcpDocumentCommitReceiptFromFrb(
+      await _bridgeCall(
+        () => frb.deleteMcpDocument(
+          input: frb.BridgeDeleteMcpDocumentInput(
+            document: _mcpDocumentRefToFrb(document),
+            expectedRevision: BigInt.from(expectedRevision),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) async {
+    await _ensureReady();
+    return _threadMcpStateFromFrb(
+      await _bridgeCall(() => frb.readThreadMcp(threadId: threadId)),
+    );
+  }
+
+  @override
+  Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
+    required String threadId,
+    String? serverId,
+  }) async {
+    await _ensureReady();
+    return _threadMcpStateFromFrb(
+      await _bridgeCall(
+        () => frb.reconnectThreadMcp(
+          input: frb.BridgeReconnectThreadMcpInput(
+            threadId: threadId,
+            serverId: serverId,
+          ),
+        ),
       ),
     );
   }

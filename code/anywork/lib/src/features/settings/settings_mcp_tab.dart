@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../presentation/providers/client_provider.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
@@ -23,42 +23,48 @@ class McpTab extends ConsumerStatefulWidget {
 }
 
 class _McpTabState extends ConsumerState<McpTab> {
-  final Map<String, bool> _enabledByServer = {};
-  final Map<String, String> _endpointByServer = {};
-  Timer? _saveTimer;
+  McpScope _selectedScope = const HostMcpScope();
+  List<SshServer> _sshServers = const [];
   String? _error;
 
   @override
-  void dispose() {
-    _saveTimer?.cancel();
-    super.dispose();
+  void initState() {
+    super.initState();
+    unawaited(_loadSshServers());
   }
 
-  List<McpServerSettingsView> _configServers() =>
-      ref.read(settingsMcpViewProvider).configServers;
+  Future<void> _loadSshServers() async {
+    try {
+      final servers = await ref
+          .read(anyworkClientProvider)
+          .remote
+          .listSshServers();
+      if (!mounted) return;
+      setState(() {
+        _sshServers = servers;
+        if (_selectedScope case SshMcpScope(:final sshAlias)) {
+          if (!servers.any((server) => server.alias == sshAlias)) {
+            _selectedScope = const HostMcpScope();
+          }
+        }
+      });
+    } catch (_) {
+      // SSH server list is optional for Host MCP configuration.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    // 只在 MCP tab 可见时观察 MCP topic；隐藏页不因 keep-alive 保持显示观察。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     watchSettingsScope(
       ref,
       visible: visible,
       kind: BridgeSettingsScopeKind.mcp,
     );
-    final mcp = ref.watch(settingsMcpViewProvider);
-    final configServers = mcp.configServers;
-    final servers = mcp.runtimeServers;
-    // 保留本地编辑器草稿：只清理已与 canonical 相等或已消失的覆盖。
-    final configById = {for (final server in configServers) server.id: server};
-    _enabledByServer.removeWhere(
-      (id, enabled) =>
-          configById[id] == null || configById[id]!.enabled == enabled,
-    );
-    _endpointByServer.removeWhere(
-      (id, endpoint) =>
-          configById[id] == null || configById[id]!.endpoint == endpoint,
-    );
+    final mcp = ref.watch(settingsScopedMcpViewProvider(_selectedScope));
+    final entries = mcp.entries;
+    final diagnostics = mcp.diagnostics;
+
     return SettingsPane(
       header: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -68,58 +74,123 @@ class _McpTabState extends ConsumerState<McpTab> {
             subtitle: context.l10n.settingsMcpSubtitle,
             trailing: Wrap(
               spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
+                if (_sshServers.isNotEmpty)
+                  DropdownButtonHideUnderline(
+                    child: DropdownButton<McpScope>(
+                      key: const ValueKey<String>('mcp-scope-selector'),
+                      value: _selectedScope,
+                      isDense: true,
+                      items: [
+                        const DropdownMenuItem<McpScope>(
+                          value: HostMcpScope(),
+                          child: Text('Host'),
+                        ),
+                        for (final server in _sshServers)
+                          DropdownMenuItem<McpScope>(
+                            value: SshMcpScope(sshAlias: server.alias),
+                            child: Text('SSH · ${server.alias}'),
+                          ),
+                      ],
+                      onChanged: (next) {
+                        if (next == null) return;
+                        setState(() {
+                          _selectedScope = next;
+                          _error = null;
+                        });
+                      },
+                    ),
+                  ),
                 TextButton.icon(
                   key: StudioDriverKeys.mcpRefresh,
                   onPressed: () => unawaited(_run(_refresh)),
                   icon: const Icon(Icons.refresh),
                   label: Text(context.l10n.settingsMcpRefresh),
                 ),
-                TextButton.icon(
-                  key: StudioDriverKeys.mcpResetAll,
-                  onPressed: servers.isEmpty
-                      ? null
-                      : () => unawaited(_confirmResetAll()),
-                  icon: const Icon(Icons.restart_alt),
-                  label: Text(context.l10n.settingsMcpResetAll),
+                FilledButton.tonalIcon(
+                  key: const ValueKey<String>('mcp-create-document'),
+                  onPressed: () => unawaited(_openCreateDialog()),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('TOML'),
                 ),
               ],
             ),
           ),
-          if (visible) SettingsTopicStatus(topic: const McpTopic()),
+          if (visible)
+            SettingsTopicStatus(topic: McpCatalogTopic(scope: _selectedScope)),
         ],
       ),
       children: [
         const SizedBox(height: 16),
-        if (servers.isNotEmpty)
+        if (diagnostics.isNotEmpty) ...[
           SettingsGroup(
             children: [
-              for (final server in servers)
-                _McpSettingsRow(
-                  server: server,
-                  enabled: _enabledByServer[server.id] ?? server.enabled,
-                  onReconnect: () => unawaited(
-                    _run(
-                      () => ref
-                          .read(anyworkClientProvider)
-                          .directoryCommands
-                          .resetMcpServer(server.id),
-                    ),
+              for (final diagnostic in diagnostics)
+                SettingsResourceRow(
+                  key: ValueKey<String>(
+                    'mcp-diagnostic-${diagnostic.document.relativePath}',
                   ),
-                  onEnabledChanged: (value) {
-                    setState(() => _enabledByServer[server.id] = value);
-                    unawaited(_save());
-                  },
-                  onEndpointChanged: server.hasLockedIdentity
-                      ? null
-                      : (value) => setState(() {
-                          _endpointByServer[server.id] = value;
-                          _scheduleSave();
-                        }),
+                  title: diagnostic.document.relativePath,
+                  icon: Icons.warning_amber_outlined,
+                  actions: [
+                    TextButton(
+                      onPressed: () => unawaited(
+                        _openEditDialog(
+                          diagnostic.document,
+                          title: diagnostic.document.relativePath,
+                        ),
+                      ),
+                      child: const Text('TOML'),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          unawaited(_deleteDocumentByRef(diagnostic.document)),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 18,
+                        color: context.colors.error,
+                      ),
+                    ),
+                  ],
+                  children: [
+                    Text(
+                      '${diagnostic.code}: ${diagnostic.message}',
+                      style: context.text.bodySmall?.copyWith(
+                        color: context.colors.error,
+                      ),
+                    ),
+                  ],
                 ),
             ],
           ),
-        if (servers.isEmpty)
+          const SizedBox(height: 12),
+        ],
+        if (entries.isNotEmpty)
+          SettingsGroup(
+            children: [
+              for (final entry in entries)
+                _McpCatalogRow(
+                  entry: entry,
+                  onEditToml: entry.document == null
+                      ? null
+                      : () => unawaited(
+                          _openEditDialog(entry.document!, title: entry.id),
+                        ),
+                  onOverrideInSsh:
+                      entry.canOverrideInSsh && entry.document == null
+                      ? () => unawaited(_openOverrideDialog(entry))
+                      : null,
+                  onDisableInSsh: entry.canDisableInSsh
+                      ? () => unawaited(_disableInSsh(entry))
+                      : null,
+                  onDeleteOrRestore: entry.document != null
+                      ? () => unawaited(_deleteDocumentByRef(entry.document!))
+                      : null,
+                ),
+            ],
+          ),
+        if (entries.isEmpty && diagnostics.isEmpty)
           SettingsEmptyMessage(
             icon: Icons.hub_outlined,
             title: context.l10n.settingsMcpEmptyTitle,
@@ -130,8 +201,12 @@ class _McpTabState extends ConsumerState<McpTab> {
     );
   }
 
-  Future<void> _refresh() {
-    return ref.read(anyworkClientProvider).directoryCommands.refreshMcpState();
+  Future<void> _refresh() async {
+    await _loadSshServers();
+    await ref
+        .read(anyworkClientProvider)
+        .directoryCommands
+        .reloadMcpCatalog(_selectedScope);
   }
 
   Future<void> _run(Future<void> Function() operation) async {
@@ -143,159 +218,398 @@ class _McpTabState extends ConsumerState<McpTab> {
     }
   }
 
-  Future<void> _confirmResetAll() async {
-    final confirmed = await showDialog<bool>(
+  Future<void> _openCreateDialog() async {
+    final created = await showDialog<({String id, String rawToml})>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(context.l10n.settingsMcpResetConfirmTitle),
-        content: Text(context.l10n.settingsMcpResetConfirmBody),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(context.l10n.settingsCancel),
+      builder: (context) => const _McpCreateTomlDialog(),
+    );
+    if (created == null || created.id.isEmpty || !mounted) return;
+    await _run(
+      () => ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .createMcpDocument(
+            scope: _selectedScope,
+            id: created.id,
+            rawToml: created.rawToml,
           ),
-          FilledButton(
-            key: StudioDriverKeys.mcpResetAllConfirm,
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(context.l10n.settingsMcpResetConfirmAction),
-          ),
-        ],
+    );
+  }
+
+  Future<void> _openOverrideDialog(McpCatalogEntry entry) async {
+    final template = entry.builtIn
+        ? 'id = "${entry.id}"\nkind = "builtin"\nbuiltin = "${entry.id}"\nenabled = true\n'
+        : 'id = "${entry.id}"\nkind = "server"\ntransport = "${entry.transport ?? 'stdio'}"\ncommand = "${entry.endpointSummary ?? entry.id}"\n';
+    final rawToml = await showDialog<String>(
+      context: context,
+      builder: (context) => _McpEditTomlDialog(
+        title: 'Override ${entry.id}',
+        initialToml: template,
+        fieldKey: ValueKey<String>('mcp-override-toml-${entry.id}'),
+        confirmKey: ValueKey<String>('mcp-override-confirm-${entry.id}'),
       ),
     );
-    if (confirmed == true && mounted) {
-      await _run(
-        () => ref.read(anyworkClientProvider).directoryCommands.resetAllMcp(),
-      );
-    }
+    if (rawToml == null || !mounted) return;
+    await _run(
+      () => ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .createMcpDocument(
+            scope: _selectedScope,
+            id: entry.id,
+            rawToml: rawToml,
+          ),
+    );
   }
 
-  void _scheduleSave() {
-    _saveTimer?.cancel();
-    _saveTimer = Timer(const Duration(milliseconds: 650), () {
-      unawaited(_save());
-    });
-  }
-
-  Future<void> _save() async {
+  Future<void> _openEditDialog(
+    McpDocumentRef document, {
+    required String title,
+  }) async {
+    late final McpDocumentContent content;
     try {
       setState(() => _error = null);
-      final configServers = _configServers();
-      final commands = ref.read(anyworkClientProvider).settingsCommands;
-      for (final server in configServers) {
-        final enabled = _enabledByServer[server.id] ?? server.enabled;
-        final endpoint = server.hasLockedIdentity
-            ? server.endpoint
-            : _endpointByServer[server.id] ?? server.endpoint;
-        if (enabled == server.enabled && endpoint == server.endpoint) {
-          continue;
-        }
-        if (enabled != server.enabled) {
-          await commands.applySettingsField(
-            McpServerEnabledCommand(id: server.id, value: enabled),
-            mutationKey: 'mcp:${server.id}:enabled',
-          );
-        }
-        if (endpoint != server.endpoint) {
-          await commands.applySettingsField(
-            McpServerEndpointCommand(id: server.id, value: endpoint),
-            mutationKey: 'mcp:${server.id}:endpoint',
-          );
-        }
-      }
+      content = await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .readMcpDocument(document);
     } catch (error) {
-      if (mounted) {
-        setState(() => _error = error.toString());
-      }
+      if (mounted) setState(() => _error = error.toString());
+      return;
     }
+    if (!mounted) return;
+    final updatedToml = await showDialog<String>(
+      context: context,
+      builder: (context) => _McpEditTomlDialog(
+        title: title,
+        initialToml: content.rawToml,
+        fieldKey: ValueKey<String>('mcp-edit-toml-${document.relativePath}'),
+        confirmKey: ValueKey<String>(
+          'mcp-edit-confirm-${document.relativePath}',
+        ),
+      ),
+    );
+    if (updatedToml == null || !mounted) return;
+    await _run(
+      () => ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .updateMcpDocument(
+            document: document,
+            expectedRevision: content.revision,
+            rawToml: updatedToml,
+          ),
+    );
+  }
+
+  Future<void> _disableInSsh(McpCatalogEntry entry) async {
+    final tombstoneToml = 'id = "${entry.id}"\nkind = "disabled"\n';
+    final existingDoc = entry.document;
+    if (existingDoc != null && existingDoc.scope == _selectedScope) {
+      await _run(() async {
+        final current = await ref
+            .read(anyworkClientProvider)
+            .directoryCommands
+            .readMcpDocument(existingDoc);
+        await ref
+            .read(anyworkClientProvider)
+            .directoryCommands
+            .updateMcpDocument(
+              document: existingDoc,
+              expectedRevision: current.revision,
+              rawToml: tombstoneToml,
+            );
+      });
+      return;
+    }
+    await _run(
+      () => ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .createMcpDocument(
+            scope: _selectedScope,
+            id: entry.id,
+            rawToml: tombstoneToml,
+          ),
+    );
+  }
+
+  Future<void> _deleteDocumentByRef(McpDocumentRef document) async {
+    await _run(() async {
+      final current = await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .readMcpDocument(document);
+      await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .deleteMcpDocument(
+            document: document,
+            expectedRevision: current.revision,
+          );
+    });
   }
 }
 
-class _McpSettingsRow extends StatelessWidget {
-  const _McpSettingsRow({
-    required this.server,
-    required this.enabled,
-    required this.onEnabledChanged,
-    required this.onEndpointChanged,
-    required this.onReconnect,
+class _McpCatalogRow extends StatelessWidget {
+  const _McpCatalogRow({
+    required this.entry,
+    this.onEditToml,
+    this.onOverrideInSsh,
+    this.onDisableInSsh,
+    this.onDeleteOrRestore,
   });
 
-  final McpServerSettingsView server;
-  final bool enabled;
-  final ValueChanged<bool> onEnabledChanged;
-  final ValueChanged<String>? onEndpointChanged;
-  final VoidCallback onReconnect;
+  final McpCatalogEntry entry;
+  final VoidCallback? onEditToml;
+  final VoidCallback? onOverrideInSsh;
+  final VoidCallback? onDisableInSsh;
+  final VoidCallback? onDeleteOrRestore;
 
   @override
   Widget build(BuildContext context) {
-    final unavailable = switch (server.state) {
-      McpUnavailableState() => server.state as McpUnavailableState,
-      McpDisabledState() ||
-      McpMissingCredentialState() ||
-      McpCheckingState() ||
-      McpAvailableState() => null,
-    };
+    final hasError =
+        entry.configStatus == McpConfigStatusKind.invalidDocument ||
+        entry.configStatus == McpConfigStatusKind.missingPrereq;
     return SettingsResourceRow(
-      key: StudioDriverKeys.mcpServerRow(server.id),
-      title: server.id,
+      key: StudioDriverKeys.mcpServerRow(entry.id),
+      title: entry.id,
       icon: Icons.hub_outlined,
       actions: [
-        Switch(value: enabled, onChanged: onEnabledChanged),
-        const SizedBox(width: 8),
-        TextButton.icon(
-          key: StudioDriverKeys.mcpResetServer(server.id),
-          onPressed: server.enabled ? onReconnect : null,
-          icon: const Icon(Icons.sync),
-          label: Text(context.l10n.settingsMcpReconnect),
-        ),
+        if (onEditToml != null)
+          TextButton(
+            key: ValueKey<String>('mcp-edit-${entry.id}'),
+            onPressed: onEditToml,
+            child: const Text('TOML'),
+          ),
+        if (onOverrideInSsh != null)
+          TextButton(
+            key: ValueKey<String>('mcp-override-${entry.id}'),
+            onPressed: onOverrideInSsh,
+            child: const Text('Override'),
+          ),
+        if (onDisableInSsh != null)
+          TextButton(
+            key: ValueKey<String>('mcp-disable-${entry.id}'),
+            onPressed: onDisableInSsh,
+            child: Text(context.l10n.settingsStateDisabled),
+          ),
+        if (onDeleteOrRestore != null)
+          IconButton(
+            key: ValueKey<String>('mcp-delete-${entry.id}'),
+            tooltip: entry.canRestoreInheritance ? 'Restore Host' : 'Delete',
+            onPressed: onDeleteOrRestore,
+            icon: Icon(
+              entry.canRestoreInheritance
+                  ? Icons.restore_outlined
+                  : Icons.delete_outline,
+              size: 18,
+            ),
+          ),
       ],
       children: [
         Wrap(
           spacing: 8,
           runSpacing: 6,
           children: [
-            SettingsInfoPill(icon: Icons.hub_outlined, label: server.transport),
+            if (entry.transport case final transport? when transport.isNotEmpty)
+              SettingsInfoPill(icon: Icons.hub_outlined, label: transport),
             SettingsInfoPill(
               icon: Icons.circle_outlined,
-              label: _mcpAvailabilityLabel(context, server.state),
+              label: _mcpConfigStatusLabel(context, entry.configStatus),
             ),
+            SettingsInfoPill(
+              icon: Icons.layers_outlined,
+              label: _mcpSourceLabel(entry.effectiveSource),
+            ),
+            if (entry.executionLocation case final location?)
+              SettingsInfoPill(
+                icon: Icons.dns_outlined,
+                label: _mcpLocationLabel(location),
+              ),
           ],
         ),
-        if (unavailable != null) ...[
+        if (entry.endpointSummary case final summary?
+            when summary.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(
-            unavailable.message,
-            key: StudioDriverKeys.mcpServerError(server.id),
+            summary,
             style: context.text.bodySmall?.copyWith(
-              color: context.colors.error,
+              color: context.colors.onSurfaceVariant,
             ),
           ),
         ],
-        const SizedBox(height: 9),
-        TextFormField(
-          key: ValueKey(
-            '${server.id}:${server.endpoint}:${server.mutationPolicy}',
+        if (entry.message case final message? when message.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            message,
+            key: StudioDriverKeys.mcpServerError(entry.id),
+            style: context.text.bodySmall?.copyWith(
+              color: hasError
+                  ? context.colors.error
+                  : context.colors.onSurfaceVariant,
+            ),
           ),
-          initialValue: server.endpoint,
-          readOnly: server.hasLockedIdentity,
-          decoration: InputDecoration(
-            labelText: context.l10n.settingsEndpoint,
-            isDense: true,
-          ),
-          onChanged: onEndpointChanged,
-        ),
-
+        ],
         const Divider(height: 24),
       ],
     );
   }
 }
 
-String _mcpAvailabilityLabel(BuildContext context, McpServerState state) =>
-    switch (state) {
-      McpDisabledState() => context.l10n.settingsStateDisabled,
-      McpMissingCredentialState() =>
-        context.l10n.settingsMcpStateMissingCredential,
-      McpCheckingState() => context.l10n.settingsStateChecking,
-      McpAvailableState() => context.l10n.settingsStateAvailable,
-      McpUnavailableState() => context.l10n.settingsStateUnavailable,
-    };
+String _mcpConfigStatusLabel(
+  BuildContext context,
+  McpConfigStatusKind status,
+) => switch (status) {
+  McpConfigStatusKind.enabled => context.l10n.settingsStateAvailable,
+  McpConfigStatusKind.disabled ||
+  McpConfigStatusKind.shadowedDisable => context.l10n.settingsStateDisabled,
+  McpConfigStatusKind.missingPrereq =>
+    context.l10n.settingsMcpStateMissingCredential,
+  McpConfigStatusKind.invalidDocument => context.l10n.settingsStateUnavailable,
+};
+
+String _mcpSourceLabel(McpEffectiveSource source) => switch (source) {
+  McpEffectiveSource.hostServer => 'host',
+  McpEffectiveSource.hostBuiltin => 'builtin',
+  McpEffectiveSource.inheritedHostServer => 'inherited',
+  McpEffectiveSource.inheritedHostBuiltin => 'inherited builtin',
+  McpEffectiveSource.sshOverrideServer => 'ssh override',
+  McpEffectiveSource.sshOverrideBuiltin => 'ssh builtin',
+  McpEffectiveSource.sshDisabledTombstone => 'ssh disabled',
+  McpEffectiveSource.invalidFile => 'invalid',
+};
+
+String _mcpLocationLabel(McpExecutionLocation location) => switch (location) {
+  HostLocalMcpExecutionLocation() => 'host-local',
+  HostRemoteStreamableHttpMcpExecutionLocation() => 'host-http',
+  SshRemoteMcpExecutionLocation(:final sshAlias) => 'ssh:$sshAlias',
+  SshRemoteStreamableHttpMcpExecutionLocation(:final sshAlias) =>
+    'ssh-http:$sshAlias',
+};
+
+class _McpCreateTomlDialog extends StatefulWidget {
+  const _McpCreateTomlDialog();
+
+  @override
+  State<_McpCreateTomlDialog> createState() => _McpCreateTomlDialogState();
+}
+
+class _McpCreateTomlDialogState extends State<_McpCreateTomlDialog> {
+  final TextEditingController _idController = TextEditingController();
+  final TextEditingController _tomlController = TextEditingController(
+    text: 'id = "example"\nkind = "server"\ntransport = "stdio"\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-everything"]\n',
+  );
+
+  @override
+  void dispose() {
+    _idController.dispose();
+    _tomlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('New MCP TOML'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const ValueKey<String>('mcp-create-id-input'),
+              controller: _idController,
+              decoration: const InputDecoration(
+                labelText: 'Server ID',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey<String>('mcp-create-toml-input'),
+              controller: _tomlController,
+              maxLines: 10,
+              decoration: const InputDecoration(
+                labelText: 'TOML',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(context.l10n.settingsCancel),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('mcp-create-confirm'),
+          onPressed: () => Navigator.of(
+            context,
+          ).pop((id: _idController.text.trim(), rawToml: _tomlController.text)),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _McpEditTomlDialog extends StatefulWidget {
+  const _McpEditTomlDialog({
+    required this.title,
+    required this.initialToml,
+    required this.fieldKey,
+    required this.confirmKey,
+  });
+
+  final String title;
+  final String initialToml;
+  final Key fieldKey;
+  final Key confirmKey;
+
+  @override
+  State<_McpEditTomlDialog> createState() => _McpEditTomlDialogState();
+}
+
+class _McpEditTomlDialogState extends State<_McpEditTomlDialog> {
+  late final TextEditingController _tomlController = TextEditingController(
+    text: widget.initialToml,
+  );
+
+  @override
+  void dispose() {
+    _tomlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 520,
+        child: TextField(
+          key: widget.fieldKey,
+          controller: _tomlController,
+          maxLines: 12,
+          decoration: const InputDecoration(
+            labelText: 'TOML',
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(context.l10n.settingsCancel),
+        ),
+        FilledButton(
+          key: widget.confirmKey,
+          onPressed: () => Navigator.of(context).pop(_tomlController.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}

@@ -71,24 +71,6 @@ fn bridge_agent_state(state: AgentState) -> BridgeAgentState {
     }
 }
 
-pub(crate) fn bridge_mcp_health(health: StudioMcpHealth) -> BridgeMcpHealthDto {
-    BridgeMcpHealthDto {
-        active_mcp_servers: health.active_mcp_servers,
-        mcp_servers: health
-            .mcp_servers
-            .into_iter()
-            .map(|server| BridgeMcpServerDto {
-                id: server.id,
-                transport: server.transport.to_string(),
-                endpoint: server.endpoint,
-                source_kind: server.source_kind,
-                mutation_policy: server.mutation_policy,
-                state: bridge_mcp_server_state(server.state),
-            })
-            .collect(),
-    }
-}
-
 impl From<StudioLspHealth> for BridgeLspHealthDto {
     fn from(health: StudioLspHealth) -> Self {
         Self {
@@ -105,28 +87,6 @@ impl From<StudioLspHealth> for BridgeLspHealthDto {
                 })
                 .collect(),
         }
-    }
-}
-
-fn bridge_mcp_server_state(state: StudioMcpServerState) -> BridgeMcpServerState {
-    match state {
-        StudioMcpServerState::Disabled(state) => BridgeMcpServerState::Disabled {
-            message: state.message().to_string(),
-        },
-        StudioMcpServerState::MissingCredential(state) => BridgeMcpServerState::MissingCredential {
-            message: state.message().to_string(),
-        },
-        StudioMcpServerState::Checking(state) => BridgeMcpServerState::Checking {
-            message: state.message().to_string(),
-        },
-        StudioMcpServerState::Available(state) => BridgeMcpServerState::Available {
-            checked_at: state.checked_at(),
-            tool_count: state.tool_count(),
-        },
-        StudioMcpServerState::Unavailable(state) => BridgeMcpServerState::Unavailable {
-            checked_at: state.checked_at(),
-            error: bridge_state_error(state.error()),
-        },
     }
 }
 

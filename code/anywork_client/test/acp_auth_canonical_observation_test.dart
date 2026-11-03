@@ -156,7 +156,7 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
     ],
   ),
   recoveryState: RecoveryStateSnapshot(revision: 1),
-  mcpState: McpStateSnapshot(revision: 1),
+  mcpCatalog: const McpCatalogSnapshot(revision: 1),
   lspState: LspStateSnapshot(revision: 1),
   skillsByProject: const {},
   threadModeCatalog: const ThreadModeCatalogView(),

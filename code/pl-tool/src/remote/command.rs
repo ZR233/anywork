@@ -1,16 +1,30 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
+use pl_protocol::remote::{RemoteCapture, RemoteProcessLeaseId, RemoteSpawnRequest};
 use pl_protocol::{PureError, Result};
 use serde_json::Value;
 
 use crate::command::{
     CommandBackend, CommandCaptureOwnership, CommandCaptureStream, CommandOutputSizes,
-    CommandOutputTarget, CommandSpawnRequest, ManagedCommand, command_output_model_path,
+    CommandOutputTarget, CommandSpawnRequest, CommandStartControl, ManagedCommand,
+    command_output_model_path,
 };
 
 use super::RemoteClient;
+use super::path::relative_workspace_path;
+
+/// Direct argv spawn request for long-lived remote protocol subprocesses (such as MCP stdio).
+#[derive(Debug, Clone)]
+pub struct RemoteProtocolSpawnRequest {
+    pub process_id: String,
+    pub program: String,
+    pub arguments: Vec<String>,
+    pub cwd: String,
+    pub environment: BTreeMap<String, String>,
+    pub remove_environment: Vec<String>,
+    pub start_control: Option<CommandStartControl>,
+}
 
 #[derive(Debug, Clone)]
 pub struct RemoteCommandBackend {
@@ -31,9 +45,77 @@ impl RemoteCommandBackend {
         }
     }
 
+    pub fn client(&self) -> &RemoteClient {
+        &self.client
+    }
+
+    pub fn canonical_workspace_path(&self) -> &str {
+        &self.lease.path
+    }
+
+    pub fn is_same_binding(&self, other: &Self) -> bool {
+        self.client.is_same_connection(&other.client)
+            && self.workspace_id == other.workspace_id
+            && self.lease.path == other.lease.path
+    }
+
+    pub fn resolve_protocol_cwd(&self, cwd: Option<&Path>) -> Result<String> {
+        let Some(cwd) = cwd else {
+            return Ok(".".to_string());
+        };
+        let raw = cwd.to_string_lossy();
+        if raw.starts_with('/') {
+            return relative_workspace_path(&self.lease.path, cwd).map_err(|()| {
+                remote_exec_error(format!(
+                    "remote protocol cwd '{}' escapes remote workspace '{}'",
+                    cwd.display(),
+                    self.lease.path
+                ))
+            });
+        }
+        path_to_posix(cwd)
+    }
+
     fn lease_files(&self) -> super::RemoteWorkspaceFileBackend {
         super::RemoteWorkspaceFileBackend::new(self.client.clone(), self.lease.clone())
     }
+
+    /// 常驻协议进程直接以 `program + arguments` 启动，不经过登录 shell 包装，并绑定独立进程租约。
+    pub async fn spawn_protocol(
+        &self,
+        request: RemoteProtocolSpawnRequest,
+    ) -> Result<ManagedCommand> {
+        if request.program.trim().is_empty() {
+            return Err(remote_exec_error(
+                "remote protocol program must not be empty",
+            ));
+        }
+        let lease_id = RemoteProcessLeaseId::new(format!("{}:lease", request.process_id));
+        let remaining_timeout_ms = request.start_control.as_ref().map(|control| {
+            control
+                .deadline()
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_millis()
+                .min(u64::MAX as u128) as u64
+        });
+        self.spawn_remote(
+            RemoteSpawnRequest {
+                process_id: request.process_id,
+                workspace_id: self.workspace_id.clone(),
+                program: request.program,
+                arguments: request.arguments,
+                remove_environment: request.remove_environment,
+                cwd: request.cwd,
+                environment: request.environment,
+                capture: RemoteCapture::None,
+                remaining_timeout_ms,
+                process_lease: Some(lease_id),
+            },
+            request.start_control,
+        )
+        .await
+    }
+
     /// 常驻协议进程仅传输 stdin/stdout，不创建命令捕获或消费一次性命令额度。
     pub(super) async fn spawn_stream(
         &self,
@@ -45,6 +127,7 @@ impl RemoteCommandBackend {
             .client
             .shell_argv(&command)
             .map_err(remote_exec_error)?;
+        let lease_id = RemoteProcessLeaseId::new(format!("{process_id}:lease"));
         self.spawn_remote(
             RemoteSpawnRequest {
                 process_id,
@@ -56,6 +139,7 @@ impl RemoteCommandBackend {
                 environment: BTreeMap::new(),
                 capture: RemoteCapture::None,
                 remaining_timeout_ms: None,
+                process_lease: Some(lease_id),
             },
             None,
         )
@@ -145,6 +229,7 @@ impl CommandBackend for RemoteCommandBackend {
                         .as_millis()
                         .min(u64::MAX as u128) as u64,
                 ),
+                process_lease: None,
             },
             Some(request.start_control),
         )

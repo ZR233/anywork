@@ -40,7 +40,9 @@ Studio 数据根目录（默认 `~/.anywork/`）的目录结构如下：
 
 ```text
 ~/.anywork/
-├── config.toml                     # 账号、模型路由、指令与技能/MCP 配置
+├── config.toml                     # 账号、模型路由、指令与技能/LSP 配置
+├── mcp/host/<server-key>.toml       # Host 级单文件 MCP 期望配置（server / builtin）
+├── mcp/ssh/<ssh-key>/<server-key>.toml # SSH 级 MCP 专属配置、覆盖与禁用墓碑
 ├── agents/<agent-id>.toml          # 用户自定义智能体预设（Agent Profile）
 ├── modes/<mode-id>.json            # 用户自定义工作模式（Mode）定义
 ├── data/                           # 唯一当前产品持久化根
@@ -172,7 +174,7 @@ v2 目录记录转换到当前结构时完整保留既有权威数据，不继�
 
 ## 17.3 配置文件、目录缓存与受管资产
 
-`config.toml` 保存账号、模型路由、系统指令、技能与 MCP 服务等全局配置；`settings.toml` 保存界面偏好与产品级设置；`workspaces.toml` 保存项目与工作区定义；`catalog.toml` 保存会话目录轻量摘要。所有配置文件均采用版本化结构（schema）、带 `revision` 的比较并交换（CAS）并发控制以及统一的同目录临时文件原子替换写入，正常读写路径不兼容双读旧格式。应用更新包的下载进度属于瞬态运行状态，不写入 `settings.toml`（更新下载恢复与安装资格契约见 [23](./23-release-update.md)）。
+`config.toml` 保存账号、模型路由、系统指令与技能等全局配置；`mcp/host/<server-key>.toml` 与 `mcp/ssh/<ssh-key>/<server-key>.toml` 按单服务单文件保存 Host 与各 SSH 服务器的 MCP 期望配置，路径键分别由稳定服务 ID 和 SSH alias 的 SHA-256 得到，不将原始 ID 直接拼入路径（配置结构从版本 30 升级至 31 时将旧 `config.toml` 中的 `[mcp]` 拆分迁入 Host MCP 目录并移除 `[runtime].active_mcp_servers`）；`settings.toml` 保存界面偏好与产品级设置；`workspaces.toml` 保存项目与工作区定义；`catalog.toml` 保存会话目录轻量摘要。所有配置文件均采用版本化结构（schema）、带 `revision` 的比较并交换（CAS）并发控制以及统一的同目录临时文件原子替换写入，正常读写路径不兼容双读旧格式。应用更新包的下载进度属于瞬态运行状态，不写入 `settings.toml`（更新下载恢复与安装资格契约见 [23](./23-release-update.md)）。
 
 ACP 接入的期望配置保存在 `config.toml` 中，仅持久化稳定账号 ID、供应商类型（`provider`）与显示名称；配置结构从版本 24 升级至 25 时自动保留账号身份并退役旧版自定义 `program`/`args` 字段，同时保留磁盘上已有的安装文件与系统凭据不被删除。固定发行版的启动命令由内置产品清单与受管安装回执共同确定，不回写至用户账号配置。ACP 认证进展与成功观察属于进程运行态，应用重启后重置为“未检查”状态，不从历史成功缓存推定当前凭据仍然有效。认证连接探测使用产品数据根下按稳定接入 ID 隔离的空工作目录，既不将用户的真实项目目录作为探测进程的工作目录（`cwd`），也不发送提示词或开放工具权限。探测目录与子进程由认证所有者独占持有；探测结束后立即关闭子进程并清理探测资源，不删除官方 CLI 工具自身的凭据文件或供应商本地历史（身份、隐私与生命周期契约见 [28](./28-acp.md)）。
 

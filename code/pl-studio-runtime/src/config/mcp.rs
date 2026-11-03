@@ -166,6 +166,7 @@ pub fn effective_mcp_servers(
                 mutation_policy: McpServerMutationPolicy::UserEditable,
                 bearer_token: None,
                 tool_effect: None,
+                execution_context: pl_tool::mcp::config::McpExecutionContext::Host,
             },
         );
     }
@@ -204,6 +205,7 @@ pub fn effective_mcp_servers(
                 mutation_policy: McpServerMutationPolicy::LockedIdentity,
                 bearer_token: token,
                 tool_effect: definition.tool_effect,
+                execution_context: pl_tool::mcp::config::McpExecutionContext::Host,
             },
         );
     }
@@ -227,6 +229,51 @@ pub fn normalize_builtin_mcp_server_states(
 
 pub fn zhipu_coding_plan_token(models: &pl_model::config::AgentModelConfig) -> Option<String> {
     ZHIPU_CREDENTIAL.resolve(models)
+}
+
+pub fn build_builtin_effective_config(
+    builtin_id: &str,
+    enabled: bool,
+    cwd: Option<String>,
+    models: &pl_model::config::AgentModelConfig,
+) -> Option<EffectiveMcpServerConfig> {
+    let definition = BUILTIN_MCP_SERVERS
+        .iter()
+        .find(|def| def.id == builtin_id)?;
+    let token = definition.credential.resolve(models);
+    let status_kind = if !enabled {
+        McpServerStatusKind::Disabled
+    } else if token.is_some() {
+        McpServerStatusKind::Enabled
+    } else {
+        McpServerStatusKind::MissingCredential
+    };
+    let mut config = definition.config(token.as_deref());
+    config.enabled = status_kind == McpServerStatusKind::Enabled;
+    if definition.transport == McpServerTransport::Stdio {
+        config.cwd = cwd;
+    }
+    Some(EffectiveMcpServerConfig {
+        id: definition.id.to_string(),
+        config,
+        source_kind: McpServerSourceKind::BuiltIn,
+        source_label: "Built-in".to_string(),
+        source_detail: Some(definition.source_detail.to_string()),
+        status_kind,
+        status_message: match status_kind {
+            McpServerStatusKind::Enabled => {
+                Some("Using the configured Zhipu Coding Plan account token".to_string())
+            }
+            McpServerStatusKind::MissingCredential => Some(
+                "Configure a Zhipu Coding Plan account token to enable this server".to_string(),
+            ),
+            McpServerStatusKind::Disabled => None,
+        },
+        mutation_policy: McpServerMutationPolicy::LockedIdentity,
+        bearer_token: token,
+        tool_effect: definition.tool_effect,
+        execution_context: pl_tool::mcp::config::McpExecutionContext::Host,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]

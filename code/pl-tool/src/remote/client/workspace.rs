@@ -22,6 +22,20 @@ impl WorkspaceLease {
     }
 }
 impl RemoteClient {
+    pub async fn open_command_backend(
+        &self,
+        path: String,
+    ) -> Result<crate::remote::RemoteCommandBackend, RemoteClientError> {
+        let cache = Arc::new(WorkspaceCache::default());
+        let lease = self
+            .open_workspace_lease(path, "remote".to_owned(), cache)
+            .await?;
+        Ok(crate::remote::RemoteCommandBackend::new(
+            self.clone(),
+            lease,
+        ))
+    }
+
     pub(in crate::remote) async fn open_workspace_lease(
         &self,
         path: String,

@@ -15,6 +15,7 @@ import 'types/chatgpt_auth.dart';
 import 'types/delegation.dart';
 import 'types/error.dart';
 import 'types/event.dart';
+import 'types/mcp.dart';
 import 'types/product_topic.dart';
 import 'types/response.dart';
 import 'types/runtime.dart';

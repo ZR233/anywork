@@ -216,60 +216,57 @@ final settingsAgentsViewProvider = Provider.autoDispose<SettingsAgentsView>((
 
 class SettingsMcpView {
   const SettingsMcpView({
-    required this.configServers,
-    required this.runtime,
-    required this.settingsRevision,
-    required this.runtimeRevision,
+    required this.scope,
+    required this.catalog,
+    required this.revision,
     required this.sync,
   });
 
-  final List<McpServerSettingsView> configServers;
-  final McpStateSnapshot? runtime;
-  final int settingsRevision;
-  final int runtimeRevision;
+  final McpScope scope;
+  final McpCatalogSnapshot? catalog;
+  final int revision;
   final DomainSyncStatus sync;
 
-  List<McpServerSettingsView> get runtimeServers =>
-      runtime?.servers ?? const <McpServerSettingsView>[];
+  List<McpCatalogEntry> get entries =>
+      catalog?.entries ?? const <McpCatalogEntry>[];
+
+  List<McpDocumentDiagnostic> get diagnostics =>
+      catalog?.diagnostics ?? const <McpDocumentDiagnostic>[];
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SettingsMcpView &&
-          settingsRevision == other.settingsRevision &&
-          runtimeRevision == other.runtimeRevision &&
+          scope == other.scope &&
+          revision == other.revision &&
           sync == other.sync &&
-          identical(configServers, other.configServers) &&
-          identical(runtime, other.runtime);
+          identical(catalog, other.catalog);
 
   @override
-  int get hashCode => Object.hash(
-    settingsRevision,
-    runtimeRevision,
-    sync,
-    identityHashCode(configServers),
-    identityHashCode(runtime),
-  );
+  int get hashCode =>
+      Object.hash(scope, revision, sync, identityHashCode(catalog));
 }
 
 final settingsMcpViewProvider = Provider.autoDispose<SettingsMcpView>((ref) {
-  final config = ref.watch(
-    settingsStoreProvider.select(
-      (state) => (
-        servers: state.canonical?.mcpServers ?? const <McpServerSettingsView>[],
-        revision: state.settingsRevision,
-      ),
-    ),
-  );
-  final runtime = ref.watch(mcpStoreProvider);
+  final catalog = ref.watch(mcpStoreProvider);
   return SettingsMcpView(
-    configServers: config.servers,
-    runtime: runtime.value,
-    settingsRevision: config.revision,
-    runtimeRevision: runtime.revision,
-    sync: runtime.sync,
+    scope: const HostMcpScope(),
+    catalog: catalog.value,
+    revision: catalog.revision,
+    sync: catalog.sync,
   );
 }, name: 'settingsMcpViewProvider');
+
+final settingsScopedMcpViewProvider = Provider.autoDispose
+    .family<SettingsMcpView, McpScope>((ref, scope) {
+      final catalog = ref.watch(mcpCatalogByScopeProvider(scope));
+      return SettingsMcpView(
+        scope: scope,
+        catalog: catalog.value,
+        revision: catalog.revision,
+        sync: catalog.sync,
+      );
+    }, name: 'settingsScopedMcpViewProvider');
 
 class SettingsLspView {
   const SettingsLspView({

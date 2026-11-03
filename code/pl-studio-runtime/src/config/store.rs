@@ -74,6 +74,23 @@ impl ConfigPaths {
     pub fn modes_dir(&self) -> PathBuf {
         self.config_dir.join("modes")
     }
+
+    /// 按环境拆分的 MCP 单文件配置根目录（`<StudioHome>/mcp`）。
+    pub fn mcp_dir(&self) -> PathBuf {
+        self.config_dir.join("mcp")
+    }
+
+    /// Host 环境 MCP 单文件目录（`<StudioHome>/mcp/host`）。
+    pub fn mcp_host_dir(&self) -> PathBuf {
+        self.mcp_dir().join("host")
+    }
+
+    /// SSH 环境 MCP 单文件目录（`<StudioHome>/mcp/ssh/<sha256(alias)>`）。
+    pub fn mcp_ssh_dir(&self, alias: &str) -> Result<PathBuf> {
+        let key = crate::studio::paths::storage_key(alias, "SSH server")
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        Ok(self.mcp_dir().join("ssh").join(key))
+    }
 }
 
 impl ConfigStore {
@@ -189,6 +206,8 @@ impl ConfigStore {
         super::schema_migration::resume_for_startup(&self.paths, self.credentials.as_ref())
             .map_err(super::ConfigRuntimeError::Migration)?;
         let content = if self.config_absent()? {
+            super::mcp_resource::ensure_default_host_builtins_if_fresh(&self.paths)
+                .map_err(|error| super::ConfigRuntimeError::Migration(error.into()))?;
             None
         } else {
             Some(fs::read(self.paths.config_file()).map_err(PureError::from)?)
@@ -336,6 +355,7 @@ impl ConfigStore {
                 self.paths.config_file().display()
             )));
         }
+        super::mcp_resource::ensure_default_host_builtins_if_fresh(&self.paths)?;
         let config = StudioConfig::default_config()?;
         self.save(&config)?;
         Ok(config)
@@ -466,7 +486,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV30::from_config(&persisted)
+    super::document_migration::MainV31::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -555,7 +575,7 @@ mod tests {
             Some("migration-api-secret")
         );
         let saved = std::fs::read_to_string(store.paths.config_file()).unwrap();
-        assert!(saved.contains("schema_version = 30"));
+        assert!(saved.contains("schema_version = 31"));
         assert!(!saved.contains("migration-api-secret"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert!(

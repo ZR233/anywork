@@ -477,7 +477,7 @@ impl ThreadObservations {
                             }
                         })?;
                     if !observations.0.projector.threads.is_report_receiver(&id) {
-                    thread_factory.forget_tool_binding(&id);
+                        thread_factory.forget_tool_binding(&id).await;
                     }
                     observations.drain(&id).await.map_err(|source| {
                         crate::thread_assembler::ThreadAssemblyError::Resource {
@@ -3946,8 +3946,7 @@ mod storage_fault_tests {
                 recovery: recovery.clone(),
                 product_events: events.clone(),
                 config_runtime: config.clone(),
-                mcp_runtime: pl_tool::mcp::McpRuntime::new(pl_tool::mcp::McpConnector::default())
-                    .handle(),
+                mcp_connector: pl_tool::mcp::McpConnector::default(),
                 lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
                 skills: crate::studio::runtime::SkillCatalogRuntime::new(
                     events.clone(),

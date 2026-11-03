@@ -103,6 +103,7 @@ impl ExecutionBackend for RemoteExecutionBackend {
                     environment: request.env,
                     capture: RemoteCapture::None,
                     remaining_timeout_ms: None,
+                    process_lease: None,
                 },
                 None,
             )
