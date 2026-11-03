@@ -107,9 +107,16 @@ impl HistoryStore {
         self.state.timeline_generation.subscribe()
     }
     pub(crate) async fn timeline_generation(&self) -> Result<String> {
-        let cached = self.state.timeline_generation.borrow().clone();
-        if !cached.is_empty() {
-            return Ok(cached);
+        {
+            let _initializing = self.state.init.read().await;
+            ensure!(
+                !self.state.closed.load(Ordering::Acquire),
+                "history is permanently closed"
+            );
+            let cached = self.state.timeline_generation.borrow().clone();
+            if !cached.is_empty() {
+                return Ok(cached);
+            }
         }
         let Some(connection) = self.reader().await? else {
             return Ok(String::new());

@@ -359,13 +359,8 @@ impl TimelineProjection {
             {
                 item.item.contents = next.contents.clone();
             }
-            if let Some(fact) = self
-                .facts
-                .iter_mut()
-                .find(|fact| fact.id == atom.id && outcome(fact).is_none())
-            {
-                *fact = next.clone();
-            }
+            // A mutable active head is not a second start. The first frozen
+            // phase remains immutable even when this update shares its batch.
             if self.items.iter().any(|item| {
                 item.item.id == member.item_id && item.item.kind == TimelineItemKind::WorkGroup
             }) {

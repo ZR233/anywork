@@ -396,13 +396,22 @@ pub(in crate::studio) fn project_effect_items(
         };
         let id = order::turn_id(turn_id);
         let (ordinal, created_at) = stamp(existing, reserved, &id, effect.committed_at);
+        // A background result can reference an already-terminal Turn in the
+        // checkpoint. Re-observing that Turn is not a new terminal transition:
+        // compare its business state with the frozen terminal's original clock.
+        // Actual state/input/usage changes still produce a changed candidate.
+        let terminal_stamp = existing.get(&id).filter(|item| {
+            matches!(item.state(), ThreadItemState::Turn(_))
+                && item.is_terminal()
+                && record.state != pl_core::thread::TurnState::Running
+        });
         let turn = super::turns::project_turn(
             &thread.id,
             state,
             record,
             created_at,
-            effect.committed_at,
-            effect.sequence,
+            terminal_stamp.map_or(effect.committed_at, |item| item.updated_at),
+            terminal_stamp.map_or(effect.sequence, |item| item.revision),
         )?;
         items.push(ThreadItem::new(
             id,

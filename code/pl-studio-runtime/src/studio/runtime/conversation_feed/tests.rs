@@ -805,13 +805,13 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
                     })
                 {
                     // The real content reference is retained under Item from active through seal.
-                    if message.id
+                    if message.content_item_id.as_deref()
                         == match &reference.target {
                             ContentTarget::Body {
                                 owner: ContentOwner::Item { item_id },
                                 ..
-                            } => item_id.as_str(),
-                            _ => "",
+                            } => Some(item_id.as_str()),
+                            _ => None,
                         }
                     {
                         saw_body = true;

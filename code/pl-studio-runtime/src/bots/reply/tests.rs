@@ -177,6 +177,62 @@ fn only_canonical_final_response_current_can_authorize_outbound_preview() -> any
     Ok(())
 }
 
+#[test]
+fn typed_turn_terminal_waits_for_the_delivered_item_cut_not_just_state() -> anyhow::Result<()> {
+    let mut projection = ReplyProjection::new("target");
+    projection.mark_covered();
+    let terminal = TurnState::Completed(pl_protocol::CompletedTurnState::new(
+        Some(1),
+        3,
+        pl_protocol::TurnCompletion::Normal,
+    ));
+    projection.observe_terminal(&terminal);
+    assert!(
+        projection.terminal().is_none(),
+        "State alone authorized final delivery"
+    );
+    let mut cut = CurrentProjection::empty(3, ThreadStatus::Idle);
+    let ChatEntry::Source(source) = ended_source() else {
+        unreachable!()
+    };
+    cut.sources = vec![source];
+    cut.items = vec![pl_protocol::TimelineItem {
+        id: "text:part".into(),
+        kind: pl_protocol::TimelineItemKind::Text,
+        source: ChatSourceId::ForegroundTurn {
+            turn_id: "target".into(),
+        },
+        atom_kind: Some(ChatAtomKind::Text),
+        delivery: ChatDeliveryKind::Foreground,
+        text_channel: Some(ThreadTextChannel::Final),
+        turn_id: Some("target".into()),
+        started_at: None,
+        finished_at: None,
+        outcome: Some(ChatTerminalOutcome::Completed),
+        summary: None,
+        members: None,
+        contents: Vec::new(),
+        payload: None,
+        content_item_id: Some("original-part".into()),
+        position: None,
+        admission_closed: true,
+    }];
+    projection.set_current(cut.clone())?;
+    assert!(
+        projection.terminal().is_none(),
+        "undelivered Final suffix was ignored"
+    );
+    assert!(projection.terminal_cut_to_qualify().is_none());
+    cut.items.clear();
+    projection.set_current(cut)?;
+    assert_eq!(projection.terminal(), Some(terminal));
+    assert!(
+        projection.completed()?.is_empty(),
+        "a synthetic success receipt was inserted into Main"
+    );
+    Ok(())
+}
+
 /// Observe the real provider/Model -> current snapshot before passing its exact
 /// ChatBatch through ReplyWatch's production reducer. The taken batch is staged
 /// before any await, preserving the normal pending-owner cancellation boundary.
@@ -967,6 +1023,15 @@ async fn real_model_completion_reads_long_final_ranges_and_rebuilds_on_a_new_lea
             anyhow::ensure!(collect_complete_turn_text(&runtime, &reader, &projection).await.is_err(), "closed read qualification authorized final collection");
             watch.reconnect(&runtime).await?;
             watch.ensure_coverage().await?;
+            // Coverage recovers only Main's prefix. The new lease must still
+            // consume its queued typed State terminal and qualify the delivered
+            // current/source cut; success has no synthetic Main receipt.
+            tokio::time::timeout(Duration::from_secs(20), async {
+                while watch.terminal(&target).is_none() { watch.receive().await?; }
+                Ok::<_,FinalError>(())
+            }).await??;
+            anyhow::ensure!(matches!(watch.terminal(&target),Some(TurnState::Completed(_))),
+                "new lease did not observe the real successful target terminal");
             let rebuilt = watch.projection().ok_or_else(|| anyhow::anyhow!("missing rebuilt target projection"))?;
             anyhow::ensure!(matches!(collect_complete_turn_text(&runtime, &watch.reader(), &rebuilt).await?, FinalText::CompleteText(text) if text == expected), "rebuilt final text differs from the full answer");
             Ok::<_, anyhow::Error>(())

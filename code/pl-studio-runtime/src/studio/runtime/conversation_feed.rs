@@ -310,6 +310,13 @@ impl StudioRuntime {
                 .is_none_or(|generation| generation == &projection_generation),
             resync()
         );
+        // A read-only cold snapshot can be the first access after restart.
+        // Seed the original owner's watch before leasing, and reject a genuine
+        // concurrent replacement instead of comparing this cut to an empty cache.
+        ensure!(
+            history.timeline_generation().await? == projection_generation,
+            resync()
+        );
         let generation_changed = history.timeline_generation_changes();
         if let Some(sources) = cold_sources {
             annotate_atoms(&mut initial_entries, &sources)?;

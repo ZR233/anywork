@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
@@ -14,6 +16,7 @@ import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../views/timeline_view.dart';
 import '../widgets/chat_item_view.dart';
+import '../widgets/conversation_current_views.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_attachments_view.dart';
 import '../widgets/timeline_children_view.dart';
@@ -54,7 +57,10 @@ Widget _timelinePreviewHost(
   ),
 );
 
-Widget _chatItem(ChatItemPresentation item) => ChatItemView(
+Widget _chatItem(
+  ChatItemPresentation item, {
+  String? resourceErrorAttachmentId,
+}) => ChatItemView(
   key: ValueKey(item.id),
   item: item,
   bodyBuilder: (id, text) => TimelineMarkdown(
@@ -64,23 +70,35 @@ Widget _chatItem(ChatItemPresentation item) => ChatItemView(
     isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
     imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
   ),
-  attachmentBuilder: (item) => _previewAttachments(item.id, item.attachments),
+  attachmentBuilder: (item) => _previewAttachments(
+    item.id,
+    item.attachments,
+    isTool: item.type == 'tool',
+    resourceErrorAttachmentId: resourceErrorAttachmentId,
+  ),
 );
 
-Widget _previewAttachments(String itemId, List<ThreadAttachmentView> values) =>
-    TimelineAttachmentsView(
-      attachments: values,
-      imageBuilder: (attachment) => TimelineImageView(
-        itemId: itemId,
-        attachment: attachment,
-        isTool: false,
-        active: true,
-        imageIdentity: ('preview', itemId, attachment.id),
-        bytes: TimelinePreviewFixtures.imageBytes,
-        width: TimelinePreviewFixtures.imageWidth,
-        height: TimelinePreviewFixtures.imageHeight,
-      ),
-    );
+Widget _previewAttachments(
+  String itemId,
+  List<ThreadAttachmentView> values, {
+  bool isTool = false,
+  String? resourceErrorAttachmentId,
+}) => TimelineAttachmentsView(
+  attachments: values,
+  imageBuilder: (attachment) => TimelineImageView(
+    itemId: itemId,
+    attachment: attachment,
+    isTool: isTool,
+    active: true,
+    imageIdentity: ('preview', itemId, attachment.id),
+    bytes: attachment.id == resourceErrorAttachmentId
+        ? null
+        : TimelinePreviewFixtures.imageBytes,
+    width: TimelinePreviewFixtures.imageWidth,
+    height: TimelinePreviewFixtures.imageHeight,
+    error: attachment.id == resourceErrorAttachmentId ? '合成读取失败' : null,
+  ),
+);
 
 @Preview(name: '历史 / 正文、思考与工具', group: 'Timeline · 历史组件', size: Size(820, 720))
 Widget timelineHistoryTypesPreview() => _timelinePreviewHost(
@@ -146,22 +164,65 @@ Widget timelineAtomicNarrowPreview() => _timelinePreviewHost(
   textScale: 1.6,
 );
 
+@Preview(
+  name: '工作组 / 保存的 current 无执行 owner',
+  group: 'Timeline · 原子工作组',
+  size: Size(760, 360),
+)
+Widget timelineAtomicSavedCurrentPreview() => _timelinePreviewHost(
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-saved-current'),
+    live: true,
+    executionPresent: false,
+  ),
+);
+
+@Preview(
+  name: '工作组 / 零活动等待后继边界',
+  group: 'Timeline · 原子工作组',
+  size: Size(760, 420),
+)
+Widget timelineAtomicOpenIdlePreview() => _timelinePreviewHost(
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-open-idle'),
+    live: true,
+    executionPresent: true,
+    waitingForBoundary: true,
+  ),
+);
+
+@Preview(
+  name: '工作组 / 零活动等待后继边界 390 / 160%',
+  group: 'Timeline · 原子工作组',
+  size: Size(390, 540),
+)
+Widget timelineAtomicOpenIdleNarrowPreview() => _timelinePreviewHost(
+  const _AtomicGroupPreview(
+    key: ValueKey('atomic-open-idle-narrow'),
+    live: true,
+    executionPresent: true,
+    waitingForBoundary: true,
+  ),
+  textScale: 1.6,
+);
+
 /// Static presentation inputs only. The real shared group/item widgets own
 /// disclosure; no preview reducer simulates admission or source completion.
 class _AtomicGroupPreview extends StatefulWidget {
   const _AtomicGroupPreview({
     required this.live,
     required this.executionPresent,
+    this.waitingForBoundary = false,
     super.key,
   });
   final bool live;
   final bool executionPresent;
+  final bool waitingForBoundary;
   @override
   State<_AtomicGroupPreview> createState() => _AtomicGroupPreviewState();
 }
 
 class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
-  static const source = ForegroundTurnChatSource(turnId: 'preview-turn');
   late final groups = [
     for (var index = 0; index < (widget.live ? 1 : 2); index++)
       TimelineDisplayUnit(
@@ -169,8 +230,10 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
         item: TimelineItem(
           id: 'preview-group-$index',
           kind: TimelineItemKind.workGroup,
-          source: source,
+          source: TimelinePreviewFixtures.groupSource,
           delivery: ChatDeliveryKind.foreground,
+          turnId: 'preview-turn',
+          position: widget.live ? null : index * 2 + 1,
           admissionClosed: !widget.live,
           contents: const [],
           members: TimelineMembersRef(
@@ -181,7 +244,7 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
           ),
           summary: TimelineGroupSummary(
             memberCount: index == 0 ? 2 : 1,
-            activeCount: widget.live ? 1 : 0,
+            activeCount: widget.live && !widget.waitingForBoundary ? 1 : 0,
             failedCount: 0,
             cancelledCount: 0,
             categories: [
@@ -195,6 +258,16 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
                   count: 1,
                 ),
             ],
+            startedAt: widget.live && !widget.waitingForBoundary
+                ? null
+                : index == 0
+                ? TimelinePreviewFixtures.groupStartedAt
+                : 1735689603,
+            finishedAt: widget.live && !widget.waitingForBoundary
+                ? null
+                : index == 0
+                ? TimelinePreviewFixtures.commandFinishedAt
+                : 1735689603,
           ),
         ),
       ),
@@ -220,8 +293,22 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
             executionPresent: widget.executionPresent,
             childBuilder: (_) => Column(
               children: [
-                _chatItem(TimelinePreviewFixtures.reasoning),
-                if (index == 0) _chatItem(TimelinePreviewFixtures.tool),
+                if (widget.live && !widget.waitingForBoundary)
+                  _activeReasoningWindow()
+                else
+                  _chatItem(
+                    ChatItemPresentation.decode(
+                      index == 0
+                          ? TimelinePreviewFixtures.completedReasoning
+                          : TimelinePreviewFixtures.secondCompletedReasoning,
+                    ),
+                  ),
+                if (index == 0)
+                  _chatItem(
+                    ChatItemPresentation.decode(
+                      TimelinePreviewFixtures.completedCommand,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -231,6 +318,7 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
                 'preview-answer-$index',
                 'text',
                 const {'channel': 'final', 'attachments': []},
+                sealedAt: index == 0 ? 1735689602 : 1735689604,
                 bodies: [
                   TimelinePreviewFixtures.body(
                     'part.text.0',
@@ -241,6 +329,134 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
             ),
         ],
       ],
+    ),
+  );
+}
+
+// This is exactly the pure window view used by TimelineMemberAtom for an active
+// reasoning member. There is no preview content owner, subscription or query.
+Widget _activeReasoningWindow() {
+  final window = TimelinePreviewFixtures.activeReasoningWindow;
+  return ConversationCurrentWindowView(
+    id: TimelinePreviewFixtures.activeReasoning.id,
+    text: utf8.decode(window.bytes),
+    offset: window.offset,
+    end: window.offset + window.bytes.length,
+    availableThrough: window.availableThrough,
+  );
+}
+
+@Preview(
+  name: 'Current / A07 R 未结束、T 已结束',
+  group: 'Timeline · 原子工作组',
+  size: Size(760, 480),
+)
+Widget timelineAtomicOverlapPreview() =>
+    _timelinePreviewHost(const _OverlapCurrentPreview());
+
+@Preview(
+  name: 'Current / A07 390 / 160%',
+  group: 'Timeline · 原子工作组',
+  size: Size(390, 600),
+)
+Widget timelineAtomicOverlapNarrowPreview() =>
+    _timelinePreviewHost(const _OverlapCurrentPreview(), textScale: 1.6);
+
+/// Only the local group + following text composition, not a complete current
+/// dock. R → T is the fixture's given order, never a computed committed prefix.
+class _OverlapCurrentPreview extends StatefulWidget {
+  const _OverlapCurrentPreview();
+  @override
+  State<_OverlapCurrentPreview> createState() => _OverlapCurrentPreviewState();
+}
+
+class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
+  final current = TimelinePreviewFixtures.overlapCurrent;
+  late final units = [
+    for (final item in current.items)
+      TimelineDisplayUnit(item: item, live: true),
+  ];
+  @override
+  void dispose() {
+    for (final unit in units) {
+      unit.expansion.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TimelineDisplayUnitView(
+          unit: units[0],
+          executionPresent: current.executionPresent,
+          childBuilder: (_) => _activeReasoningWindow(),
+        ),
+        _chatItem(ChatItemPresentation.forUnit(units[1])),
+      ],
+    ),
+  );
+}
+
+@Preview(
+  name: '工作组 / 同成员三图与文字、工具失败、媒体错误',
+  group: 'Timeline · 原子工作组',
+  size: Size(760, 620),
+)
+Widget timelineAtomicMediaPreview() =>
+    _timelinePreviewHost(const _MediaGroupPreview());
+
+@Preview(
+  name: '工作组 / 图文与两类错误 390 / 160%',
+  group: 'Timeline · 原子工作组',
+  size: Size(390, 640),
+)
+Widget timelineAtomicMediaNarrowPreview() =>
+    _timelinePreviewHost(const _MediaGroupPreview(), textScale: 1.6);
+
+class _MediaGroupPreview extends StatefulWidget {
+  const _MediaGroupPreview();
+  @override
+  State<_MediaGroupPreview> createState() => _MediaGroupPreviewState();
+}
+
+class _MediaGroupPreviewState extends State<_MediaGroupPreview> {
+  final unit = TimelineDisplayUnit(
+    item: TimelinePreviewFixtures.mediaGroup,
+    live: false,
+  );
+  @override
+  void dispose() {
+    unit.expansion.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    child: TimelineDisplayUnitView(
+      unit: unit,
+      executionPresent: false,
+      childBuilder: (_) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _chatItem(
+            ChatItemPresentation.decode(TimelinePreviewFixtures.mediaTool),
+          ),
+          _chatItem(
+            ChatItemPresentation.decode(
+              TimelinePreviewFixtures.failedImageTool,
+            ),
+          ),
+          _chatItem(
+            ChatItemPresentation.decode(
+              TimelinePreviewFixtures.resourceErrorTool,
+            ),
+            resourceErrorAttachmentId: 'preview-resource-error-image',
+          ),
+        ],
+      ),
     ),
   );
 }

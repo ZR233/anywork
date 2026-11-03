@@ -503,7 +503,7 @@ impl LiveProjection {
         Ok(changes)
     }
 
-    pub(super) fn complete_provenance(
+    pub(super) async fn complete_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
         items: &[ThreadItem],
@@ -518,11 +518,13 @@ impl LiveProjection {
                 )
         }) {
             if let ThreadItemState::Tool(tool) = item.state() {
-                if self.order_index_of()?.is_sealed(
-                    &super::super::order::tool_background_started_id(
-                        tool.invocation().tool_call_id(),
-                    ),
-                ) {
+                if tool.invocation().task_id().is_some()
+                    && self
+                        .completion_exists(&super::super::order::tool_background_started_id(
+                            tool.invocation().tool_call_id(),
+                        ))
+                        .await?
+                {
                     continue;
                 }
                 if !self.previews.contains_key(&item.id) {

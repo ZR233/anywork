@@ -208,7 +208,7 @@ impl ConversationReader {
             .values()
             .any(|value| value == source)
     }
-    pub(super) fn ensure(&self) -> Result<()> {
+    pub(crate) fn ensure(&self) -> Result<()> {
         if self.inner.resync.load(Ordering::Acquire) {
             return Err(resync());
         }
@@ -318,6 +318,37 @@ impl ConversationReader {
             current,
             token,
         ))
+    }
+    /// Crate-local consumer proof at an already-delivered current cut. Uses the
+    /// original owner metadata, or its durable source row after retention; never
+    /// advances the read cut, activates execution, flushes or reads a body.
+    pub(crate) async fn source_ended_at(&self, source: &ChatSourceId, cut: u64) -> Result<bool> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let retained = resources
+            .source
+            .as_ref()
+            .and_then(|owner| owner.current_conversation());
+        if let Some(state) = retained.as_ref().and_then(|current| {
+            current
+                .current
+                .source_states
+                .iter()
+                .find(|state| &state.source == source)
+        }) && state.ended.is_some_and(|at| at.effect_seq <= cut)
+            && matches!(state.lifecycle, ChatSourceLifecycle::Ended { .. })
+        {
+            self.ensure()?;
+            return Ok(true);
+        }
+        let states = resources
+            .history
+            .conversation_sources(std::slice::from_ref(source), cut)
+            .await?;
+        self.ensure()?;
+        Ok(states
+            .iter()
+            .any(|state| matches!(state.lifecycle, ChatSourceLifecycle::Ended { .. })))
     }
     pub(super) async fn annotate_source_states(
         &self,

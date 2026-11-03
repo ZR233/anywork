@@ -24,7 +24,7 @@ class TimelineAttachmentsView extends StatelessWidget {
     children: [
       for (final attachment in attachments)
         if (attachment.modality == AttachmentModalityView.image)
-          SizedBox(width: 120, height: 120, child: imageBuilder(attachment))
+          imageBuilder(attachment)
         else
           SizedBox(
             width: 280,

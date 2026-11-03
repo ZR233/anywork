@@ -52,6 +52,7 @@ abstract final class StudioDriverKeyValues {
   static const standalonePreparationRetry = 'standalone-preparation-retry';
   static String projectNewSession(String workspaceId) =>
       'project-new-session-$workspaceId';
+  static String threadRow(String id) => 'thread-row-$id';
   static String deleteThread(String id) => 'thread-delete-$id';
   static String deleteThreadDialog(String id) => 'thread-delete-dialog-$id';
   static String deleteThreadConfirm(String id) => 'thread-delete-confirm-$id';

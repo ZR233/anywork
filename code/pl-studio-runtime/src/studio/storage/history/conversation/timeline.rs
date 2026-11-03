@@ -1,5 +1,8 @@
 //! Rebuildable, metadata-only display index, written by the original effect transaction.
 #[cfg(test)]
+#[path = "timeline/read_work_tests.rs"]
+mod read_work_tests;
+#[cfg(test)]
 #[path = "timeline/tests.rs"]
 mod tests;
 use super::current::{PreparedCurrent, PreparedTimelineItem};

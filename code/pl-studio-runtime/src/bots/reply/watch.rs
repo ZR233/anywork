@@ -117,6 +117,7 @@ impl ReplyWatch {
         if let Some(projection) = &mut self.projection {
             projection.mark_covered();
         }
+        self.qualify_terminal_cut().await?;
         Ok(())
     }
 
@@ -166,7 +167,8 @@ impl ReplyWatch {
 
     pub(super) async fn receive(&mut self) -> Result<(), FinalError> {
         if self.pending.is_some() {
-            return self.finish_pending().await;
+            self.finish_pending().await?;
+            return self.qualify_terminal_cut().await;
         }
         let event = self
             .feed
@@ -185,7 +187,34 @@ impl ReplyWatch {
                 self.stage(*batch)?;
                 self.finish_pending().await
             }
+        }?;
+        self.qualify_terminal_cut().await
+    }
+
+    async fn qualify_terminal_cut(&mut self) -> Result<(), FinalError> {
+        let Some(cut) = self
+            .projection
+            .as_ref()
+            .and_then(ReplyProjection::terminal_cut_to_qualify)
+        else {
+            return Ok(());
+        };
+        let source = pl_protocol::ChatSourceId::ForegroundTurn {
+            turn_id: self
+                .turn_id
+                .clone()
+                .ok_or_else(|| gap("terminal has no target"))?,
+        };
+        if self
+            .reader()
+            .source_ended_at(&source, cut)
+            .await
+            .map_err(|error| read_failure("terminal source cut qualification failed", error))?
+            && let Some(projection) = &mut self.projection
+        {
+            projection.qualify_terminal_cut();
         }
+        Ok(())
     }
 
     fn stage(&mut self, batch: ChatBatch) -> Result<(), FinalError> {
@@ -272,6 +301,9 @@ impl ReplyWatch {
             if self.before.is_none() {
                 projection.mark_covered();
             }
+            if let Some(turn) = &self.observed_turn {
+                projection.observe_terminal(&turn.state);
+            }
         }
         Ok(())
     }
@@ -328,6 +360,9 @@ impl ReplyWatch {
                 || turn.revision == previous.revision && turn != *previous)
         {
             return Err(gap("reply observed Turn revision conflict"));
+        }
+        if let Some(projection) = &mut self.projection {
+            projection.observe_terminal(&turn.state);
         }
         self.observed_turn = Some(turn);
         Ok(())

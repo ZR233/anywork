@@ -325,6 +325,60 @@ async fn real_turn_outcome_payloads_backfill_completed_failed_and_cancelled_sour
 }
 
 #[tokio::test]
+async fn pending_timeline_fact_output_is_rejected_without_erasing_originals() -> Result<()> {
+    let (_directory, db) = source().await?;
+    let payload = insert(&db, 1, "original-tool", "tool").await?;
+    // A table with the next step's output name is not proof of a completed migration.
+    // Even an unrecognized shape with original bytes must be preserved, never adopted/dropped.
+    db.execute_unprepared(
+        "CREATE TABLE conversation_atom_facts(original BLOB NOT NULL);
+         INSERT INTO conversation_atom_facts VALUES(X'00ff01')",
+    )
+    .await?;
+    for _ in 0..2 {
+        let failure = prepare(&db, THREAD, Preparation::Schema, None)
+            .await
+            .expect_err("pending migration cannot adopt its pre-existing output");
+        assert!(
+            format!("{failure:#}").contains(
+                "pending timeline migration has pre-existing output table conversation_atom_facts"
+            ),
+            "{failure:#}"
+        );
+        assert_eq!(version(&db).await?, 13);
+        let original = db
+            .query_one_raw(statement(
+                "SELECT original FROM conversation_atom_facts",
+                vec![],
+            ))
+            .await?
+            .context("preserved conflicting output")?;
+        assert_eq!(original.try_get::<Vec<u8>>("", "original")?, [0, 255, 1]);
+        let completion = db
+            .query_one_raw(statement(
+                "SELECT payload FROM conversation_items WHERE item_id='original-tool'",
+                vec![],
+            ))
+            .await?
+            .context("preserved original completion")?;
+        assert_eq!(completion.try_get::<Vec<u8>>("", "payload")?, payload);
+        let boundary = db
+            .query_one_raw(statement(
+                "SELECT
+                   (SELECT COUNT(*) FROM pragma_table_info('conversation_items')
+                    WHERE name='metadata') AS metadata_columns,
+                   (SELECT COUNT(*) FROM seaql_migrations WHERE version IN (?,?)) AS completed",
+                vec![ATOM_METADATA.into(), TIMELINE_ITEMS.into()],
+            ))
+            .await?
+            .context("unmodified migration boundary")?;
+        assert_eq!(boundary.try_get::<i64>("", "metadata_columns")?, 0);
+        assert_eq!(boundary.try_get::<i64>("", "completed")?, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn migration_preserves_completion_bytes_seq_parent_and_content_owners() -> Result<()> {
     let (_dir, db) = source().await?;
     let payload = insert(&db, 1, "tool", "tool").await?;

@@ -33,12 +33,15 @@ const ACCOUNT: &str = "read-fixture";
 const TURN_COUNT: usize = 24;
 const THREAD_COUNT: usize = 2;
 
+mod profile;
+
 pub(super) struct ConversationReadWorkScenario<'a> {
     pub workspace: &'a Path,
     pub home: &'a Path,
     pub working: &'a Path,
     pub output: &'a Path,
     pub interrupt: &'a mpsc::Receiver<()>,
+    pub profile_read_samples: bool,
 }
 
 #[derive(Serialize)]
@@ -52,12 +55,16 @@ struct ReadCase {
 }
 
 pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
+    if context.profile_read_samples {
+        return profile::run(context);
+    }
     let ConversationReadWorkScenario {
         workspace,
         home,
         working,
         output,
         interrupt,
+        ..
     } = context;
     let cases_path = output.join("read-cases.json");
     let report_path = output.join("read-report.json");

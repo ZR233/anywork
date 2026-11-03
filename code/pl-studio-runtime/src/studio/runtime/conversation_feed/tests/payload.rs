@@ -248,39 +248,33 @@ async fn compaction_original_owner_serves_inline_pending_and_sqlite_but_large_en
         );
         cold.close().await?;
         cold.reader().close().await?;
-        // A fresh production projection provides a genuinely large original
-        // envelope (not an injected Inline DTO or a large referenced body).
+        // Compaction's receipt is intentionally small; its failure description
+        // is not a giant payload field. A real text completion whose <=4096-byte
+        // body is frozen inside the envelope instead exercises JSON byte-array
+        // expansion against a body-sized frame budget (not a large body ref).
         let mut harness = Harness::new(&env).await?;
         let id = harness.thread.id.clone();
-        let started = compaction(
-            &mut harness,
-            ContextCompactionEvent::Started {
-                operation_id: "large".into(),
-                turn_id: None,
-                attempt_id: None,
-            },
-        )
-        .await?;
-        harness.save(&started).await?;
+        let body="x".repeat(4096);
+        let envelope_demand=ReadDemand {max_items:1,max_bytes:u32::try_from(body.len())?};
         let mut large = env
             .runtime
-            .open_conversation_feed(&id, ChatScope::Main, demand())
+            .open_conversation_feed(&id, ChatScope::Main, envelope_demand)
             .await?;
         let _ = chat(&mut large).await?;
-        let finished = compaction(
-            &mut harness,
-            ContextCompactionEvent::Finished {
-                operation_id: "large".into(),
-                outcome: ContextCompactionOutcome::Failed {
-                    message: "failure detail ".repeat(16384),
-                },
-            },
-        )
-        .await?;
-        assert!(finished.completions[0].payload.len() > demand().max_bytes as usize);
+        let finished=harness.effect(vec![super::atoms::start("large-envelope",false)],
+            vec![super::atoms::finish("large-envelope",false,&body)?]).await?;
+        assert!(finished.completions[0].payload.len() > envelope_demand.max_bytes as usize);
         let batch = chat(&mut large).await?;
-        let item = completed_items(&batch).next().context("large Status")?;
+        let item = completed_items(&batch).next().context("large Text envelope")?;
         assert!(matches!(item.payload, Some(PayloadData::Deferred { .. })));
+        let Some(PayloadData::Deferred {reference,byte_length})=&item.payload else {unreachable!()};
+        let original=large.reader().read_content(reference,ContentRange {offset:0,max_bytes:u32::try_from(*byte_length)?}).await?;
+        assert_eq!(original.bytes.as_slice(),finished.completions[0].payload.as_ref());
+        let envelope:serde_json::Value=serde_json::from_slice(&original.bytes)?;
+        assert_eq!(envelope["contract"],"anywork.chat/1");
+        assert_eq!(envelope["type"],"text");
+        assert!(envelope["bodies"].as_array().context("frozen body")?.iter().any(|value|
+            serde_json::from_value::<Vec<u8>>(value["inline"].clone()).is_ok_and(|bytes|bytes==body.as_bytes())));
         let exact = ReadDemand {
             max_items: 1,
             max_bytes: u32::try_from(batch.encoded_len()?)?,

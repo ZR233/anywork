@@ -1528,7 +1528,9 @@ impl LiveProjection {
             }
         }
         for atom in &current.projection.atoms {
-            active.insert(atom.id.clone(), atom.clone());
+            active
+                .entry(atom.id.clone())
+                .or_insert_with(|| atom.clone());
         }
         for atom in active.into_values() {
             let input = TimelineInput::Atom {
@@ -1567,6 +1569,15 @@ impl LiveProjection {
         inputs.sort_by(|left, right| left.0.cmp(&right.0));
         for (_, input) in inputs {
             timeline.apply_input(input)?;
+        }
+        // Canonical inputs alone choose order/boundaries and freeze each start.
+        // The cut's latest mutable heads can additionally carry argument/body
+        // references and Waiting state. Refresh only already-admitted identities;
+        // this is neither another start nor another commit point.
+        for atom in &current.projection.atoms {
+            if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt {
+                timeline.refresh_current(atom)?;
+            }
         }
         Ok(Some(timeline))
     }
@@ -1751,7 +1762,8 @@ impl LiveProjection {
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
-        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)?;
+        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)
+            .await?;
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
@@ -1826,7 +1838,8 @@ impl LiveProjection {
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
-        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)?;
+        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)
+            .await?;
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
@@ -1985,7 +1998,13 @@ impl LiveProjection {
                 }
             }
         }
-        let (mut existing, restored) = self.resolve(thread, ids).await?;
+        let terminal_turns = provisional
+            .items
+            .iter()
+            .filter(|item| matches!(item.state(), ThreadItemState::Turn(_)) && item.is_terminal())
+            .map(|item| item.id.clone())
+            .collect();
+        let (mut existing, restored) = self.resolve(thread, ids, &terminal_turns).await?;
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -2077,7 +2096,19 @@ impl LiveProjection {
                     )
                 });
             let changed = self.content_changed(item.id.as_str(), item, &existing)?;
-            let mut current = self.revisions.get(item.id.as_str()).copied().unwrap_or(0);
+            let stable_terminal = self
+                .items
+                .get(&item.id)
+                .or_else(|| existing.get(&item.id))
+                .filter(|previous| {
+                    !changed
+                        && previous.is_terminal()
+                        && matches!(previous.state(), ThreadItemState::Turn(_))
+                });
+            let mut current = stable_terminal.map_or_else(
+                || self.revisions.get(item.id.as_str()).copied().unwrap_or(0),
+                |previous| previous.revision,
+            );
             if !self.items.contains_key(&item.id) {
                 current = current.max(
                     existing
@@ -2835,6 +2866,7 @@ impl LiveProjection {
         &self,
         thread: &pl_protocol::Thread,
         ids: impl IntoIterator<Item = String>,
+        terminal_turns: &BTreeSet<String>,
     ) -> Result<ResolvedIdentities, ProjectionError> {
         let mut existing = BTreeMap::new();
         let mut restored = BTreeSet::new();
@@ -2847,11 +2879,21 @@ impl LiveProjection {
                 existing.insert(id, item.clone());
                 continue;
             }
-            if let Some(fact) = self.facts.get(&id) {
-                existing.insert(id.clone(), fact.placeholder(&id, &thread.id));
-                continue;
-            }
-            if let Some(item) = self.order_index_of()?.pending_placement(&id, &thread.id) {
+            let placement = self
+                .facts
+                .get(&id)
+                .map(|fact| fact.placeholder(&id, &thread.id))
+                .or_else(|| {
+                    self.order_index
+                        .as_ref()
+                        .and_then(|index| index.pending_placement(&id, &thread.id))
+                });
+            // A placement-only Raw shell cannot compare a sealed Turn's state
+            // or normalize its real terminal clock. Recover that exact canonical
+            // item on the reliable path; never reinterpret a shell as its body.
+            if !terminal_turns.contains(&id)
+                && let Some(item) = placement.clone()
+            {
                 existing.insert(id, item);
                 continue;
             }
@@ -2867,6 +2909,8 @@ impl LiveProjection {
                 .map_err(|error| ProjectionError::History(error.to_string()))?
             {
                 restored.insert(id.clone());
+                existing.insert(id, item);
+            } else if let Some(item) = placement {
                 existing.insert(id, item);
             }
         }

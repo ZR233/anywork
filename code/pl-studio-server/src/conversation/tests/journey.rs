@@ -416,6 +416,8 @@ async fn complete(
     stage: &ReplyStage,
     prompt: &str,
 ) -> Result<Turn> {
+    // Subscribe before releasing the provider barrier: a fast completion must
+    // not be recovered by guessing from Main items or a later snapshot.
     let mut events = runtime
         .subscribe_thread(ThreadSubscriptionRequest {
             thread_id: thread.into(),
@@ -428,8 +430,14 @@ async fn complete(
                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
                 && turn.input_id.as_deref() == Some(&format!("input-{prompt}"))
             {
-                ensure!(turn.thread_id == thread, "completion belongs to another Thread");
-                ensure!(!turn.id.is_empty(), "completion omitted the actual Turn identity");
+                ensure!(
+                    turn.thread_id == thread,
+                    "completion belongs to another Thread"
+                );
+                ensure!(
+                    !turn.id.is_empty(),
+                    "completion omitted the actual Turn identity"
+                );
                 ensure!(
                     matches!(&turn.state, TurnState::Completed(_)),
                     "fixture input did not complete successfully: {:?}",
@@ -699,7 +707,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
     let growing = ReplyStage::new();
     let sealing = ReplyStage::new();
     let stopping = ReplyStage::new();
-    let old_text = "已完成的历史正文📖 ".repeat(600);
+    let old_text = "# 历史正文📖\n\n- **已完成** `代码`\n\n> 原始 Markdown\n\n".repeat(600);
     let frames = responses_reasoning_text(
         &["private activity member"],
         &[&old_text],
@@ -912,6 +920,9 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                     turn_receipts += 1;
                     ensure!(
                         message.kind == ChatAtomKind::TurnReceipt
+                            && matches!(message.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
+                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            })
                             && value["data"]["inputId"].as_str() == first_turn.input_id.as_deref()
                             && value["data"]["outcome"]["kind"] == "completed",
                         "Children TurnReceipt disagrees with the successful typed completion"
@@ -956,6 +967,11 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .context("live text item with its original content reference")?;
         ensure!(paused_text.position.is_none() && paused_text.outcome.is_none());
         let live_item_id = paused_text.id.clone();
+        let live_turn_id = paused_text
+            .turn_id
+            .as_deref()
+            .context("live text omitted its business Turn")?
+            .to_owned();
         let older: ChatBatch = env
             .query(
                 &thread,
@@ -1035,6 +1051,10 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .await?;
         ensure!(still_independent == updated);
         let next_completed_turn = complete(&env.runtime, &thread, &sealing, NEXT).await?;
+        ensure!(
+            live_turn_id == next_completed_turn.id,
+            "live text and typed completion belong to different Turns"
+        );
         let mut sealed = watch.window().await?;
         for _ in 0..8 {
             if sealed.sealed {
@@ -1118,6 +1138,29 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .query(&thread, &latest_cap, "contents/read", &request)
             .await?;
         ensure!(reopened == sealed, "reopening changed the sealed original response");
+        let mut restored_markdown = Vec::new();
+        while restored_markdown.len() < old_text.len() {
+            let chunk: ContentWindow = env
+                .query(&thread, &latest_cap, "contents/read", &json!({
+                    "reference": reference,
+                    "range": {"offset": restored_markdown.len(), "maxBytes": 4096},
+                }))
+                .await?;
+            ensure!(
+                chunk.sealed
+                    && chunk.offset == restored_markdown.len() as u64
+                    && chunk.available_through == old_text.len() as u64
+                    && chunk.generation == window.generation
+                    && !chunk.bytes.is_empty()
+                    && chunk.bytes.len() <= 4096,
+                "reopened large Markdown range changed its sealed owner or failed to progress"
+            );
+            restored_markdown.extend(chunk.bytes);
+        }
+        ensure!(
+            restored_markdown == old_text.as_bytes(),
+            "reopened original body did not preserve the complete Markdown UTF-8 bytes"
+        );
         ensure!(next_parent != parent && next_turn_identity != turn_id);
         let (next_cap, mut next_children) = env.open(&thread, Some(&next_parent), 1).await?;
         let next_set = next_children.chat().await?;
@@ -1133,6 +1176,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .collect::<HashSet<_>>();
         let mut next_turn_receipts = 0;
         let mut next_inferences = 0;
+        let mut next_responses = 0;
         for message in &next_members {
             ensure!(
                 message.turn_id.as_deref() == Some(next_turn),
@@ -1156,6 +1200,9 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                     next_turn_receipts += 1;
                     ensure!(
                         message.kind == ChatAtomKind::TurnReceipt
+                            && matches!(message.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
+                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            })
                             && value["data"]["inputId"].as_str() == next_completed_turn.input_id.as_deref()
                             && value["data"]["outcome"]["kind"] == "completed",
                         "second Children TurnReceipt disagrees with the successful typed completion"
@@ -1165,17 +1212,27 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                     value["data"]["outcome"]["kind"] == "completed",
                     "second Thinking member is not terminally completed"
                 ),
+                Some("text") => {
+                    next_responses += 1;
+                    ensure!(
+                        message.kind == ChatAtomKind::Text
+                            && message.completion_item_id.as_deref() == Some(active_id.as_str())
+                            && message.contents.iter().any(|content| content.reference == response_ref)
+                            && value == terminal,
+                        "second Children response lost its original content owner or frozen payload"
+                    );
+                }
                 Some(
-                    "tool" | "text" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
+                    "tool" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
                     | "plan",
                 ) => {}
                 kind => bail!("unexpected member from the second Turn's Children: {kind:?}"),
             }
         }
         ensure!(
-            next_turn_receipts == 1 && next_inferences == 0,
-            "second Children must retain its business TurnReceipt without copying inference: \
-             receipts={next_turn_receipts}, inference={next_inferences}"
+            next_turn_receipts == 1 && next_inferences == 0 && next_responses == 1,
+            "second Children must retain its business TurnReceipt and original response without copying inference: \
+             receipts={next_turn_receipts}, inference={next_inferences}, responses={next_responses}"
         );
         let next_lease = env.lease(&thread, &next_cap)?;
         drop(next_children);

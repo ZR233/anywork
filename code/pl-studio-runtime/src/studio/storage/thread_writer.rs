@@ -6830,7 +6830,8 @@ pub(crate) mod storage_fault_tests {
             accounting_only.accounting.retained_bytes()
                 + serde_json::to_vec(&accounting_only.current.projection)?.len() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
-                + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len() as u64,
+                + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
+                    as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -6971,8 +6972,7 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(index_bytes, 0);
         assert_eq!(index_state, (0, 0, false, 0));
         assert_eq!(
-            projection_bytes,
-            empty_projection_bytes,
+            projection_bytes, empty_projection_bytes,
             "read-only candidate lookup must not mutate the hydrated empty projection"
         );
         assert_eq!(completion_head, 0);

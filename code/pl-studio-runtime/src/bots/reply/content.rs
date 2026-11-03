@@ -467,16 +467,10 @@ pub(super) async fn collect_complete_turn_text(
         .synchronize_thread_observation(reader.thread_id())
         .await
         .map_err(|error| read_failure("thread observation barrier failed", error))?;
-    let terminal = items
-        .iter()
-        .rev()
-        .find(|item| matches!(item.kind, ReplyItemKind::Terminal(_)))
-        .ok_or_else(|| gap("canonical target terminal is missing"))?;
     // Even all-inline/empty replies must recheck the original read qualification
     // after the barrier; closing/replacing a lease must not authorize a final send.
     reader
-        .list_contents(&terminal.id, None, demand())
-        .await
+        .ensure()
         .map_err(|error| read_failure("canonical terminal read qualification failed", error))?;
     let mut text = String::new();
     for item in items {

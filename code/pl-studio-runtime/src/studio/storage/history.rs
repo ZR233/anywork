@@ -356,12 +356,19 @@ impl HistoryStore {
     /// The existing database identity after the shared initialization/reader barrier. This never
     /// creates a store, starts a writer, flushes execution or loads recovery state.
     pub(in crate::studio) async fn conversation_database_id(&self) -> Result<Option<String>> {
-        if let Some(writer) = self.state.writer.get() {
+        {
+            let _initializing = self.state.init.read().await;
             ensure!(
-                writer.schema_version == HISTORY_SCHEMA_VERSION,
-                "history requires explicit storage preparation"
+                !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
+                "history is permanently closed"
             );
-            return Ok(Some(writer.database_id.clone()));
+            if let Some(writer) = self.state.writer.get() {
+                ensure!(
+                    writer.schema_version == HISTORY_SCHEMA_VERSION,
+                    "history requires explicit storage preparation"
+                );
+                return Ok(Some(writer.database_id.clone()));
+            }
         }
         Ok(self
             .reader()
@@ -428,6 +435,10 @@ impl HistoryStore {
             let _ = tx.send(());
         }
         let _initializing = self.state.init.read().await;
+        ensure!(
+            !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
+            "history is permanently closed"
+        );
         if let Some(reader) = self.state.reader.get() {
             if let Some(writer) = self.state.writer.get() {
                 ensure!(
@@ -1379,8 +1390,8 @@ impl HistoryStore {
             .await?;
             if old_turn.is_empty() && !item.turn_id.is_empty() {
                 // A queued message may predate its Turn. Binding that *same* item identity to
-                // the Turn can extend the indexed start backwards, but no unrelated write may
-                // change the first ordinal checked by `upsert_turn` below.
+                // the Turn extends its derived MIN, just like inserting an earlier member
+                // whose real completion arrives later. This does not change any item ordinal.
                 db.execute_raw(statement(
                     "UPDATE history_turns SET first_ordinal=MIN(first_ordinal, ?) WHERE turn_id=?",
                     vec![old_ordinal.into(), item.turn_id.clone().into()],
@@ -1408,6 +1419,14 @@ impl HistoryStore {
                 payload.into(),
                 write_seq.into(),
             ],
+        ))
+        .await?;
+        // Completion order need not match the already assigned source ordinals: an earlier
+        // member can finish after this Turn already has an aggregate row. Maintain that
+        // row's derived MIN in this same writer transaction before `upsert_turn` verifies it.
+        db.execute_raw(statement(
+            "UPDATE history_turns SET first_ordinal=MIN(first_ordinal, ?) WHERE turn_id=?",
+            vec![ordinal.into(), item.turn_id.into()],
         ))
         .await?;
         Ok(())
@@ -3349,6 +3368,54 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn deletion_revokes_cached_qualification_and_closes_original_pools() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "deleted").await?;
+        history.prepare_write().await?;
+        assert!(history.conversation_database_id().await?.is_some());
+        assert!(!history.conversation_read_needs_preparation().await?);
+        assert!(!history.timeline_generation().await?.is_empty());
+        let writer = history.writer().await?.db.clone();
+        let reader = history
+            .reader()
+            .await?
+            .context("original reader")?
+            .db
+            .clone();
+        for connection in [&writer, &reader] {
+            assert!(
+                connection
+                    .query_one_raw(statement("SELECT 1", vec![]))
+                    .await?
+                    .is_some()
+            );
+        }
+        let retained = history.clone();
+        history.close_for_deletion().await?;
+        for connection in [&writer, &reader] {
+            assert!(
+                connection
+                    .query_one_raw(statement("SELECT 1", vec![]))
+                    .await
+                    .is_err(),
+                "deletion must close the actual original pool, not only logical admission"
+            );
+        }
+        assert!(retained.conversation_database_id().await.is_err());
+        assert!(
+            retained
+                .conversation_read_needs_preparation()
+                .await
+                .is_err()
+        );
+        assert!(retained.timeline_generation().await.is_err());
+        assert!(retained.reader().await.is_err());
+        assert!(retained.prepare_write().await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn ordinary_reader_is_read_only_and_never_borrows_the_live_writer() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history =
@@ -4285,6 +4352,146 @@ mod storage_fault_tests {
         let mut revised = terminal("second", 2);
         revised.revision = 2;
         assert!(store.commit(90, &[revised], &[]).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_first_ordinal_tracks_late_earlier_members_without_revising_facts() -> Result<()> {
+        for bind_queued_input in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let store =
+                HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
+            let message = |id: &str, ordinal: u64, turn_id: &str| {
+                let mut item = ThreadItem::completed_user_message(
+                    id.into(),
+                    "child".into(),
+                    turn_id.into(),
+                    id.into(),
+                    vec![],
+                    1,
+                );
+                item.ordinal = ordinal;
+                item.revision = 1;
+                item
+            };
+            let mut earlier = message("earlier", 1, if bind_queued_input { "" } else { "turn" });
+            let later = message("later", 2, "turn");
+            let turn_state =
+                pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
+                    Some(1),
+                    1,
+                    pl_protocol::TurnCompletion::Normal,
+                ));
+            let terminal = ThreadItem::new(
+                order::turn_id("turn"),
+                "child".into(),
+                "turn".into(),
+                3,
+                1,
+                1,
+                1,
+                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(turn_state.clone())),
+            );
+            // This low-level commit writes exactly the typed Turn aggregates supplied by its
+            // caller; unlike the production effect owner it does not derive them from items.
+            let aggregate = TimelineTurn {
+                turn: pl_protocol::Turn {
+                    input_id: None,
+                    id: "turn".into(),
+                    thread_id: "child".into(),
+                    revision: 1,
+                    state: turn_state,
+                    updated_at: terminal.updated_at,
+                },
+                last_item_id: terminal.id.clone(),
+                context_disposition: pl_protocol::ThreadContextDisposition::Active,
+            };
+            let mut initial = vec![later.clone(), terminal.clone()];
+            if bind_queued_input {
+                initial.push(earlier.clone());
+            }
+            store
+                .commit(1, &initial, std::slice::from_ref(&aggregate))
+                .await?;
+            let connection = store.reader().await?.context("current history")?;
+            let first = connection
+                .db
+                .query_one_raw(statement(
+                    "SELECT first_ordinal FROM history_turns WHERE turn_id='turn'",
+                    vec![],
+                ))
+                .await?
+                .context("initial Turn aggregate")?;
+            assert_eq!(first.try_get::<i64>("", "first_ordinal")?, 2);
+            if bind_queued_input {
+                earlier.turn_id = "turn".into();
+                earlier.revision += 1;
+            }
+            let before = store.existing_items([earlier.id.clone()]).await?;
+            let mut conflicting_later = later.clone();
+            conflicting_later.ordinal = 4;
+            conflicting_later.revision += 1;
+            let failure = store
+                .commit(
+                    2,
+                    &[earlier.clone(), conflicting_later],
+                    std::slice::from_ref(&aggregate),
+                )
+                .await
+                .unwrap_err();
+            assert!(format!("{failure:#}").contains("history item ordinal changed"));
+            let preserved = connection
+                .db
+                .query_one_raw(statement(
+                    "SELECT first_ordinal FROM history_turns WHERE turn_id='turn'",
+                    vec![],
+                ))
+                .await?
+                .context("rolled-back Turn aggregate")?;
+            assert_eq!(preserved.try_get::<i64>("", "first_ordinal")?, 2);
+            assert_eq!(store.watermark().await?, 1);
+            assert_eq!(store.existing_items([earlier.id.clone()]).await?, before);
+            store
+                .commit(
+                    2,
+                    std::slice::from_ref(&earlier),
+                    std::slice::from_ref(&aggregate),
+                )
+                .await?;
+            let saved_aggregate = connection
+                .db
+                .query_one_raw(statement(
+                    "SELECT first_ordinal,revision,payload FROM history_turns WHERE turn_id='turn'",
+                    vec![],
+                ))
+                .await?
+                .context("updated Turn aggregate")?;
+            assert_eq!(saved_aggregate.try_get::<i64>("", "first_ordinal")?, 1);
+            assert_eq!(saved_aggregate.try_get::<i64>("", "revision")?, 1);
+            assert_eq!(
+                saved_aggregate.try_get::<String>("", "payload")?,
+                serde_json::to_string(&aggregate)?,
+                "derived MIN changes must not revise the business Turn"
+            );
+            assert_eq!(
+                store.items_for_turn("turn").await?,
+                vec![earlier.clone(), later, terminal],
+                "late insertion/binding changes only the derived aggregate, not saved facts"
+            );
+            let mut changed = earlier.clone();
+            changed.ordinal = 4;
+            changed.revision += 1;
+            let failure = store
+                .commit(3, &[changed], std::slice::from_ref(&aggregate))
+                .await
+                .unwrap_err();
+            assert!(failure.to_string().contains("history item ordinal changed"));
+            assert_eq!(store.watermark().await?, 2);
+            assert_eq!(
+                store.existing_items([earlier.id.clone()]).await?[&earlier.id],
+                earlier
+            );
+        }
         Ok(())
     }
 

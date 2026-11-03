@@ -2860,7 +2860,12 @@ async fn persist_schema12_fixture(
                 (SELECT COUNT(*) FROM sqlite_schema
                  WHERE name='conversation_sources') AS source_tables,
                 (SELECT COUNT(*) FROM seaql_migrations
-                 WHERE version='m20261102_000001_history_atom_metadata') AS metadata_completed
+                 WHERE version='m20261102_000001_history_atom_metadata') AS metadata_completed,
+                (SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type='table' AND name IN ('timeline_items','timeline_item_members',
+                       'timeline_projection_state','conversation_atom_facts')) AS timeline_tables,
+                (SELECT COUNT(*) FROM seaql_migrations
+                 WHERE version='m20261103_000001_history_timeline_items') AS timeline_completed
              FROM history_meta WHERE id=1",
         ))
         .await?
@@ -2871,6 +2876,8 @@ async fn persist_schema12_fixture(
     assert_eq!(boundary.try_get::<i64>("", "metadata_columns")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "source_tables")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "metadata_completed")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "timeline_tables")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "timeline_completed")?, 0);
     assert_eq!(saved_checkpoint_payload(&db).await?, payload);
     db.close().await?;
     Ok(checkpoint)

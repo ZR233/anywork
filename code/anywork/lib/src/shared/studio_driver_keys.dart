@@ -612,7 +612,7 @@ abstract final class StudioDriverKeys {
       ValueKey<String>(StudioDriverKeyValues.projectNewSession(id));
 
   static ValueKey<String> threadRow(String id) =>
-      ValueKey<String>('thread-row-$id');
+      ValueKey<String>(StudioDriverKeyValues.threadRow(id));
 
   static ValueKey<String> pinThread(String id) =>
       ValueKey<String>('thread-pin-$id');

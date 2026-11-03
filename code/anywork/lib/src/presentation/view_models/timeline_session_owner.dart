@@ -403,6 +403,34 @@ final class TimelineSessionOwner {
     }
   }
 
+  /// A synchronous borrow of the original visible selection's layout witness.
+  /// This does not open a read, advance a page, mount content or retain a lease.
+  ({
+    String threadId,
+    int selectionId,
+    int generation,
+    TimelineContentLayout? firstContentLayout,
+  })?
+  get visibleLayoutSnapshot {
+    final current = _current;
+    final selectionId = current?.selectionId;
+    if (_closed ||
+        current == null ||
+        current.isRetired ||
+        !current.isMounted ||
+        _selectionTarget != current.threadId ||
+        selectionId == null ||
+        selectionId != _visibleSelectionId) {
+      return null;
+    }
+    return (
+      threadId: current.threadId,
+      selectionId: selectionId,
+      generation: current.generation,
+      firstContentLayout: current.firstContentLayout,
+    );
+  }
+
   TimelineDisplayLease? lease(String threadId) {
     final value = _current;
     return value?.threadId == threadId && !value!.isRetired ? value : null;

@@ -96,6 +96,16 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 首内容布局不等于满屏。集成采样须在同代次有效、可见且正尺寸的真实视口完成布局后，分别记录几何已满或明确 EOF；测试观察到的完成帧是带采样精度的上界，不冒充更早的内部完成时刻。主批次接纳 item 数、实际读取请求数、累计返回 item/成员原子数和驻留展示单元数分别命名，重复读取计入成本。`conversation_work` 的批次校验日志复用预算所需的编码长度，记录完整产品 JSON 批次字节及 Atom/Source 条数；它不是传输 ACK、FRB 编码字节或物理磁盘 IO。Inline 载荷返回量和正文 range 请求/返回量分别汇总，失败或缺失记录不填零。
 
+SQLite 查询工作量优先复用 SeaORM 的官方 metric callback，在实际执行连接上记录不含绑定值的语句、耗时与失败；不能给连接副本安装回调后冒称已观察原连接。种子写入、库存审计、Main、成员页和显式正文读取分别划定测量阶段，回调收集有界且溢出即证据无效。折叠大组的 Main 证据须实际命中摘要查询，并确认该阶段没有成员表或正文表查询；成员页返回量与 SQL 实际取回量分别报告，不能从可见 Widget 数反推。此类测试观察不增加生产查询、持久统计表、后台计量任务或新的业务接口。
+
+存储工作量样本使用固定规模和原事实/原投影/原读取路径，分别保留重建耗时、源与派生写入量及成员索引空间的口径；库文件总体大小不是成员索引大小。SQL 调用、返回行、正文返回字节和物理磁盘 IO 不是同一指标，未观察的项明确标为未测。测试构建中的单次存储耗时不能冒充生产原生首内容可见 p95，后者仍使用同代次真实布局与固定平台/构建的独立采样。
+
+原生首内容采样复用 `manual-gui --preset conversation-read-work --profile-read-samples` 的隔离环境、原写入器种子和进程所有权；默认未传此标志的功能集成入口不变。采样使用既有 20k provider seed 生成两条各至少 20,000 个 Main item 的会话，保存、准备完成并关闭种子所有者后，分别采集 20 个新应用进程的普通冷读和 20 次同进程 A→B→A 切换。实际 item 数、Flutter Profile 与 Rust 桥构建配置及构件身份、操作系统缓存未受控等条件随报告记录；不将审计扫描或重建纳入有效读模型的首内容时间。
+
+`run-gui --native-launch --profile --inspect --capture` 仅为显式非发布观察装配官方 Flutter Driver extension，普通发布入口不包含它；debug 的 MCP 组件树能力不外推到 profile。操作沿官方 Driver 的查找、点击与滚动，不恢复 `test_driver/`、`requestData`、自定义控制消息或第二套 UI。仅在非 release 且启用 `ANYWORK_CAPTURE` 时注册只读 `ext.anywork.timelineLayout`：同步借用当前可见、已挂载且未退役的原展示 lease，返回会话/选择/展示代次与已有首内容布局时间戳；未布局为 pending、无有效窗口为 unavailable，不触发读取、分页、执行或布局，也不以零值代替未测。
+
+每个样本保留原 `selectionStartedMicros`、`layoutCompletedMicros`、selectionId、generation 和 itemId，严格在同一 owner 时钟内计算 elapsed。采集端观察到结果的时间不是布局完成时间；旧选择或旧代次不得成为新样本。两类样本独立报告样本数、失败/未执行数、p50、nearest-rank p95 和最大值，完整有效样本的 p95 目标保持 500 ms；缺失、模式错误或超时使采样失败，不丢弃失败样本或补零。关闭请求受理、Driver 连接释放、原生进程真实退出和所属后代收束分别确认，原有 20k 库存人工入口的 notMeasured 结果不因此自动升级为性能通过。
+
 FRB credit 沿官方原生集成直接观察真实 transport feed，不恢复旧 Driver 命令或 `requestData` 协议。
 按 [07](./07-streaming.md) 的单未确认普通批次契约持有首帧，在不 ACK 时用原 reader 查询已真实完成、
 不在首 Set 中的新 item，并验证未发送序号 ACK 被拒绝；合法 ACK 后观察后继帧，再验证原 handle 的

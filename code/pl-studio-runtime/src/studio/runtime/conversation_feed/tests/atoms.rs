@@ -310,72 +310,443 @@ async fn failed_display_fold_retains_original_publication_for_retry_without_adva
 }
 
 #[tokio::test]
+async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start_bytes()
+-> Result<()> {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot, ContextSource},
+        model::ModelToolCall,
+        thread::{
+            journal::ContextChange,
+            task::{TaskRecord, TaskStatus},
+        },
+    };
+    use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let arguments = r#"{"path":"sample.txt"}"#;
+        let task = TaskRecord {
+            id: "task-head".into(),
+            call_id: "call-head".into(),
+            tool_id: "unknown-head-tool".into(),
+            turn_id: "atomic-turn".into(),
+            revision: 1,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        let records = vec![ContextRecord {
+            id: "request-head".into(),
+            turn_id: Some("atomic-turn".into()),
+            source: ContextSource::Assistant,
+            content: vec![],
+            tool_calls: vec![ModelToolCall {
+                call_id: task.call_id.clone(),
+                tool_id: task.tool_id.clone(),
+                arguments: OpaquePayload::new("application/json", 1, arguments)?,
+                presentation_contract: None,
+                rejection: None,
+            }],
+        }];
+        let turn = TurnRecord {
+            elapsed_ms: None,
+            input_id: None,
+            turn_id: "atomic-turn".into(),
+            state: CoreTurnState::Running,
+            model_steps: 1,
+        };
+        let state = CoreSnapshot {
+            turns: vec![turn.clone()].into(),
+            context: ContextSnapshot {
+                revision: 1,
+                records: records.clone().into(),
+            },
+            tasks: std::collections::BTreeMap::from([(task.id.clone(), task.clone())]),
+            ..Default::default()
+        };
+        let effect = ThreadEffectBatch {
+            thread_id: harness.thread.id.clone(),
+            sequence: 1,
+            committed_at: 11,
+            turn: Some(turn),
+            tasks: vec![task].into(),
+            context: Some(ContextChange::Append {
+                revision: 1,
+                records: records.into(),
+            }),
+            ..Default::default()
+        };
+        let (_, mut prepared) = harness
+            .projection
+            .prepare(&harness.thread, &effect, &state, false)
+            .await?;
+        harness
+            .projection
+            .publish_prepared(&harness.session, &mut prepared)
+            .await?;
+        publish(&harness.source, &harness.session, &prepared)?;
+        assert!(
+            prepared.completions.is_empty(),
+            "active tool manufactured a completion"
+        );
+        let frozen = prepared
+            .current
+            .timeline_update
+            .facts
+            .iter()
+            .find(|atom| atom.kind == ChatAtomKind::ToolCall)
+            .context("original tool start")?;
+        assert!(
+            frozen.contents.is_empty(),
+            "fixture did not exercise separate start/head stages"
+        );
+        let head = prepared
+            .current
+            .projection
+            .atoms
+            .iter()
+            .find(|atom| atom.id == frozen.id)
+            .context("mutable tool head")?;
+        let arguments_ref = head
+            .contents
+            .iter()
+            .find(|content| content.role == ChatContentRole::ToolArguments)
+            .context("current argument reference")?
+            .reference
+            .clone();
+        let member = prepared
+            .current
+            .timeline_update
+            .members
+            .iter()
+            .rev()
+            .find(|member| member.atom.id == frozen.id)
+            .context("latest member head")?;
+        assert_eq!(
+            member.atom.contents, head.contents,
+            "publication dropped the latest mutable head"
+        );
+        assert_eq!(member.atom.lifecycle, head.lifecycle);
+        let reference = prepared
+            .current
+            .projection
+            .items
+            .iter()
+            .find_map(|item| item.members.clone())
+            .context("group")?;
+        let mut group = env
+            .runtime
+            .open_conversation_feed(
+                &harness.thread.id,
+                ChatScope::GroupMembers { reference },
+                demand(),
+            )
+            .await?;
+        let set = chat(&mut group).await?;
+        let atom = set
+            .entries
+            .iter()
+            .find_map(|entry| {
+                if let ChatEntry::Atom(atom) = entry {
+                    Some(atom)
+                } else {
+                    None
+                }
+            })
+            .context("first member Set")?;
+        assert_eq!(atom.id, frozen.id);
+        assert_eq!(atom.contents, head.contents);
+        assert_eq!(atom.lifecycle, head.lifecycle);
+        let window = group
+            .reader()
+            .read_content(
+                &arguments_ref,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: arguments.len() as u32,
+                },
+            )
+            .await?;
+        assert_eq!(window.bytes, arguments.as_bytes());
+        harness.save(&prepared).await?;
+        let path = env
+            .runtime
+            .store
+            .registered_session_paths(&harness.thread.id)?
+            .history_database();
+        let db = Database::connect(format!("sqlite://{}?mode=ro", path.display())).await?;
+        let row = db
+            .query_one_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "SELECT metadata FROM conversation_atom_facts WHERE atom_id=? AND phase='start'",
+                vec![frozen.id.clone().into()],
+            ))
+            .await?
+            .context("stored immutable start")?;
+        assert_eq!(
+            row.try_get::<Vec<u8>>("", "metadata")?,
+            serde_json::to_vec(frozen)?
+        );
+        db.close().await?;
+        group.close().await?;
+        group.reader().close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&harness.thread.id)
+            .retire(&harness.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
 async fn reliable_starts_reverse_completion_and_member_window_use_real_item_feed() -> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
-    let result=async {
-        let mut harness=Harness::new(&env).await?;
-        let one=ReadDemand {max_items:1,..demand()};
-        let mut main=env.runtime.open_conversation_feed(&harness.thread.id,ChatScope::Main,one).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let one = ReadDemand {
+            max_items: 1,
+            ..demand()
+        };
+        let mut main = env
+            .runtime
+            .open_conversation_feed(&harness.thread.id, ChatScope::Main, one)
+            .await?;
         assert!(chat(&mut main).await?.entries.is_empty());
-        let started=harness.effect(vec![start("reasoning",true),start("text",false)],vec![]).await?;
-        assert_eq!(harness.session.head_seq(),0,"starts manufactured an atomic completion");
-        let current=chat(&mut main).await?;
-        assert!(current.entries.is_empty(),"Main delivered start atoms");
-        let current=current.current.context("current")?;
-        assert_eq!(current.items.len(),2);
-        let reference=current.items[0].members.clone().context("group reference")?;
-        assert_eq!(current.items[0].summary.as_ref().context("summary")?.active_count,1);
-        let mut group=env.runtime.open_conversation_feed(&harness.thread.id,ChatScope::GroupMembers {reference:reference.clone()},one).await?;
-        let initial=chat(&mut group).await?;
+        let started = harness
+            .effect(vec![start("reasoning", true), start("text", false)], vec![])
+            .await?;
+        assert_eq!(
+            harness.session.head_seq(),
+            0,
+            "starts manufactured an atomic completion"
+        );
+        let current = chat(&mut main).await?;
+        assert!(current.entries.is_empty(), "Main delivered start atoms");
+        let current = current.current.context("current")?;
+        assert_eq!(current.items.len(), 2);
+        let reference = current.items[0]
+            .members
+            .clone()
+            .context("group reference")?;
+        assert_eq!(
+            current.items[0]
+                .summary
+                .as_ref()
+                .context("summary")?
+                .active_count,
+            1
+        );
+        let mut group = env
+            .runtime
+            .open_conversation_feed(
+                &harness.thread.id,
+                ChatScope::GroupMembers {
+                    reference: reference.clone(),
+                },
+                one,
+            )
+            .await?;
+        let initial = chat(&mut group).await?;
         assert!(initial.current.is_none());
-        let [ChatEntry::Atom(reasoning)]=initial.entries.as_slice() else {bail!("member Set must contain an Atom");};
-        assert!(matches!(reasoning.lifecycle,ChatAtomLifecycle::Active {started:Some(_),..}));
-        let member_id=reasoning.id.clone();
+        let [ChatEntry::Atom(reasoning)] = initial.entries.as_slice() else {
+            bail!("member Set must contain an Atom");
+        };
+        assert!(matches!(
+            reasoning.lifecycle,
+            ChatAtomLifecycle::Active {
+                started: Some(_),
+                ..
+            }
+        ));
+        assert!(
+            !reasoning.contents.is_empty(),
+            "first live part lost its mutable content reference"
+        );
+        let current_text = started
+            .current
+            .projection
+            .atoms
+            .iter()
+            .find(|atom| atom.kind == ChatAtomKind::Text)
+            .context("live text head")?;
+        let text_item = started
+            .current
+            .projection
+            .items
+            .iter()
+            .find(|item| item.kind == TimelineItemKind::Text)
+            .context("live text Item")?;
+        assert_eq!(text_item.contents, current_text.contents);
+        assert!(
+            !text_item.contents.is_empty(),
+            "first live Text Item lost its content owner"
+        );
+        let member_id = reasoning.id.clone();
         harness.save(&started).await?;
-        let text=harness.effect(vec![],vec![finish("text",false,"visible before reasoning ends")?]).await?;
-        let interim=chat(&mut main).await?;
-        assert!(interim.entries.is_empty(),"text crossed its unfinished foreground prefix");
-        let text_current=interim.current.context("interim current")?;
-        assert_eq!(text_current.items.len(),2);
-        assert_eq!(text_current.items[1].outcome,Some(ChatTerminalOutcome::Completed));
+        let text = harness
+            .effect(
+                vec![],
+                vec![finish("text", false, "visible before reasoning ends")?],
+            )
+            .await?;
+        let interim = chat(&mut main).await?;
+        assert!(
+            interim.entries.is_empty(),
+            "text crossed its unfinished foreground prefix"
+        );
+        let text_current = interim.current.context("interim current")?;
+        assert_eq!(text_current.items.len(), 2);
+        assert_eq!(
+            text_current.items[1].outcome,
+            Some(ChatTerminalOutcome::Completed)
+        );
         assert!(text_current.items[1].content_item_id.is_some());
         harness.save(&text).await?;
-        let end=harness.effect(vec![],vec![finish("reasoning",true,"done")?]).await?;
-        let first=chat(&mut main).await?;
-        let [ChatEntry::Item(item)]=first.entries.as_slice() else {bail!("first frame is not one Item");};
-        assert_eq!(item.kind,TimelineItemKind::WorkGroup);
-        assert_eq!(item.position,Some(0));
-        assert_eq!(item.outcome,None);
-        let suffix=first.current.as_ref().context("split current")?;
-        assert_eq!(suffix.items.len(),1,"undelivered text vanished from current");
-        assert_eq!(suffix.items[0].kind,TimelineItemKind::Text);
-        let exact=ReadDemand {max_items:1,max_bytes:u32::try_from(first.encoded_len()?)?};
-        main.reader().finish_batch(first.clone(),exact)?;
-        assert!(main.reader().finish_batch(first,ReadDemand {max_bytes:exact.max_bytes-1,..exact}).is_err());
-        let second=chat(&mut main).await?;
-        let [ChatEntry::Item(text)]=second.entries.as_slice() else {bail!("second frame is not a text Item");};
-        assert_eq!(text.kind,TimelineItemKind::Text);
-        assert_eq!(text.position,Some(1));
-        assert!(second.current.as_ref().context("retired current")?.items.is_empty());
-        let terminal=chat(&mut group).await?;
-        assert!(matches!(&terminal.entries[0],ChatEntry::Atom(atom) if atom.id==member_id && matches!(atom.lifecycle,ChatAtomLifecycle::Terminal{..})));
+        let end = harness
+            .effect(vec![], vec![finish("reasoning", true, "done")?])
+            .await?;
+        let first = chat(&mut main).await?;
+        let [ChatEntry::Item(item)] = first.entries.as_slice() else {
+            bail!("first frame is not one Item");
+        };
+        assert_eq!(item.kind, TimelineItemKind::WorkGroup);
+        assert_eq!(item.position, Some(0));
+        assert_eq!(item.outcome, None);
+        let suffix = first.current.as_ref().context("split current")?;
+        assert_eq!(
+            suffix.items.len(),
+            1,
+            "undelivered text vanished from current"
+        );
+        assert_eq!(suffix.items[0].kind, TimelineItemKind::Text);
+        let exact = ReadDemand {
+            max_items: 1,
+            max_bytes: u32::try_from(first.encoded_len()?)?,
+        };
+        main.reader().finish_batch(first.clone(), exact)?;
+        assert!(
+            main.reader()
+                .finish_batch(
+                    first,
+                    ReadDemand {
+                        max_bytes: exact.max_bytes - 1,
+                        ..exact
+                    }
+                )
+                .is_err()
+        );
+        let second = chat(&mut main).await?;
+        let [ChatEntry::Item(text)] = second.entries.as_slice() else {
+            bail!("second frame is not a text Item");
+        };
+        assert_eq!(text.kind, TimelineItemKind::Text);
+        assert_eq!(text.position, Some(1));
+        assert!(
+            second
+                .current
+                .as_ref()
+                .context("retired current")?
+                .items
+                .is_empty()
+        );
+        let terminal = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let update = chat(&mut group).await?;
+                for entry in update.entries {
+                    match entry {
+                        ChatEntry::Atom(atom) => {
+                            assert_eq!(atom.id, member_id, "opened member window changed identity");
+                            if matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }) {
+                                return Ok::<_, anyhow::Error>(atom);
+                            }
+                        }
+                        ChatEntry::Source(state) => assert_eq!(state.source, reasoning.source),
+                        ChatEntry::Item(_) => bail!("GroupMembers delivered a Main Item"),
+                    }
+                }
+            }
+        })
+        .await??;
+        let completed_atoms = end
+            .completions
+            .iter()
+            .map(|record| serde_json::from_slice::<ChatAtom>(&record.header.metadata))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let completed = completed_atoms
+            .iter()
+            .find(|atom| atom.id == member_id)
+            .context("R's original terminal")?;
+        assert_eq!(terminal.completion_item_id, completed.completion_item_id);
+        assert_eq!(terminal.lifecycle, completed.lifecycle);
+        assert_eq!(terminal.contents, completed.contents);
         // The member window cursor cannot become a Main continuation, even when
         // both pages happened to contain one row at position zero.
-        assert!(group.reader().load_older("not a cursor",one).await.is_err());
+        assert!(
+            group
+                .reader()
+                .load_older("not a cursor", one)
+                .await
+                .is_err()
+        );
         harness.save(&end).await?;
-        let reader=main.reader().clone();
-        let PayloadData::Inline {bytes:original}=text.payload.as_ref().context("inline text")? else {bail!("short text was not delivered typed");};
-        let body=ContentRef {database_id:harness.history.conversation_database_id().await?.context("database")?,
-            target:ContentTarget::ItemPayload {item_id:text.content_item_id.clone().context("original content owner")?}};
+        let reader = main.reader().clone();
+        let PayloadData::Inline { bytes: original } =
+            text.payload.as_ref().context("inline text")?
+        else {
+            bail!("short text was not delivered typed");
+        };
+        let body = ContentRef {
+            database_id: harness
+                .history
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+            target: ContentTarget::ItemPayload {
+                item_id: text
+                    .content_item_id
+                    .clone()
+                    .context("original content owner")?,
+            },
+        };
         main.close().await?;
-        let bytes=reader.read_content(&body,ContentRange {offset:0,max_bytes:u32::try_from(original.len())?}).await?;
-        assert_eq!(&bytes.bytes,original,"closing delivery invalidated its independent reader");
+        let bytes = reader
+            .read_content(
+                &body,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: u32::try_from(original.len())?,
+                },
+            )
+            .await?;
+        assert_eq!(
+            &bytes.bytes, original,
+            "closing delivery invalidated its independent reader"
+        );
         reader.close().await?;
-        assert!(reader.read_content(&body,ContentRange {offset:0,max_bytes:1}).await.is_err());
-        group.close().await?;group.reader().close().await?;
-        env.runtime.thread_observations.observation_slot(&harness.thread.id).retire(&harness.source);
-        Ok::<_,anyhow::Error>(())
-    }.await;
+        assert!(
+            reader
+                .read_content(
+                    &body,
+                    ContentRange {
+                        offset: 0,
+                        max_bytes: 1
+                    }
+                )
+                .await
+                .is_err()
+        );
+        group.close().await?;
+        group.reader().close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&harness.thread.id)
+            .retire(&harness.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
     env.finish(result).await
 }
 
@@ -697,6 +1068,11 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
                 else {projection.prepare(&thread,&effect,&state,false).await?.1};
             assert!(prepared.timeline.is_empty(),"prepare exposed a different commit partition");
             projection.publish_prepared(&session,&mut prepared).await?;
+            let original_u=history.item(&crate::studio::thread_projection::order::turn_id("background-turn")).await?
+                .context("original terminal U")?;
+            if let Some(reobserved)=prepared.items.iter().find(|item|item.id==original_u.id) {
+                assert_eq!(reobserved,&original_u,"B's effect restamped a sealed old Turn");
+            }
             assert_eq!(prepared.timeline.iter().map(|item|item.kind).collect::<Vec<_>>(),
                 vec![TimelineItemKind::WorkGroup,TimelineItemKind::Status,TimelineItemKind::Status]);
             assert!(matches!(prepared.timeline[1].source,ChatSourceId::BackgroundResult {..}));

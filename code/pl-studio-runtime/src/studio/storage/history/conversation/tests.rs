@@ -216,7 +216,49 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
 #[tokio::test]
 async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_payload()
 -> Result<()> {
-    use pl_protocol::ChatScope;
+    use pl_protocol::{ChatBatch, ChatEntry, ChatPlacement, ChatScope};
+    // Budget the complete wire envelope, not a synthetic per-row byte constant.
+    // Match the reader's conservative source annotation and JSON byte-array bound;
+    // the opaque fixture payload must never be decoded to make this decision.
+    struct EnvelopeBudget {
+        database_id: String,
+        empty: ChatBatch,
+    }
+    impl EnvelopeBudget {
+        fn entry(&self, header: &ChatItemHeader, mode: PayloadMode) -> Result<ChatEntry> {
+            let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(&header.metadata)?;
+            atom.completion_seq = Some(header.append_seq);
+            atom.payload = Some(match mode {
+                PayloadMode::Inline => pl_protocol::PayloadData::Inline { bytes: Vec::new() },
+                PayloadMode::Deferred => pl_protocol::PayloadData::Deferred {
+                    reference: pl_protocol::ContentRef {
+                        database_id: self.database_id.clone(),
+                        target: pl_protocol::ContentTarget::ItemPayload {
+                            item_id: header.item_id.clone(),
+                        },
+                    },
+                    byte_length: header.byte_length,
+                },
+            });
+            Ok(ChatEntry::Atom(Box::new(atom)))
+        }
+    }
+    impl ChatBudget for EnvelopeBudget {
+        fn fixed_bytes(&self) -> usize {
+            serde_json::to_vec(&self.empty).unwrap().len()
+        }
+        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
+            let base = timeline::entry_bytes(&self.entry(header, mode).unwrap()).unwrap();
+            if mode == PayloadMode::Inline {
+                base + usize::try_from(header.byte_length).unwrap() * 4
+            } else {
+                base
+            }
+        }
+        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
+            unreachable!("this test does not read a content manifest")
+        }
+    }
     let dir = tempfile::tempdir()?;
     let store =
         super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget").await?;
@@ -257,7 +299,15 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
     timeline::normalize_legacy(&tx).await?;
     tx.commit().await?;
     store.maintain_timeline().await?;
-    let budget = Budget;
+    let budget = EnvelopeBudget {
+        database_id: connection.database_id.clone(),
+        empty: ChatBatch {
+            placement: ChatPlacement::Prepend,
+            entries: Vec::new(),
+            before: Some("cold-budget-continuation".into()),
+            current: None,
+        },
+    };
     let cold = store
         .cold_timeline(&ChatScope::Main, ReadDemand::new(1, 256 * 1024), &budget)
         .await?
@@ -280,6 +330,10 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
         .await?
         .unwrap();
     assert_eq!(exact.timeline.unwrap().entries, page.entries);
+    let mut main_envelope = budget.empty.clone();
+    main_envelope.entries = page.entries.clone();
+    main_envelope.current = Some(cold.current.clone());
+    assert!(serde_json::to_vec(&main_envelope)?.len() <= minimum);
     assert!(
         store
             .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum - 1), &budget)
@@ -295,6 +349,14 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
         .unwrap();
     assert_eq!(child.page.items.len(), 1);
     assert_eq!(child.page.items[0].header, records[1].header);
+    assert!(matches!(
+        child.page.items[0].payload,
+        PayloadData::Deferred { .. }
+    ));
+    let mut child_envelope = budget.empty.clone();
+    child_envelope.entries =
+        vec![budget.entry(&child.page.items[0].header, PayloadMode::Deferred)?];
+    assert!(serde_json::to_vec(&child_envelope)?.len() <= child_minimum);
     assert!(
         !child.page.exhausted,
         "a full scoped page conservatively continues without an existence probe"
@@ -309,13 +371,13 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
         &connection.db,
         &ChatHistoryRequest {
             query: Some(query.clone()),
-            after: records[1].header.append_seq,
-            before: None,
+            after: 0,
+            before: Some(records[1].header.append_seq),
             ceiling: records[2].header.append_seq,
             demand: ReadDemand::new(1, child_minimum),
         },
         &budget,
-        true,
+        false,
     )
     .await?;
     assert!(end.items.is_empty());

@@ -62,6 +62,9 @@ pub(crate) struct ManualGuiOptions {
     /// Enable official Flutter MCP/Driver interaction for the manual gui preset.
     #[arg(long)]
     pub(crate) inspect: bool,
+    /// Measure native Profile first-content layout with the conversation-read-work preset.
+    #[arg(long)]
+    pub(crate) profile_read_samples: bool,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -703,6 +706,10 @@ fn configure_presentation_capture(command: &mut Command, output: &Path, requeste
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ensure!(
+        !options.profile_read_samples || options.preset == "conversation-read-work",
+        "--profile-read-samples requires --preset conversation-read-work"
+    );
+    ensure!(
         !options.inspect || (options.preset == "gui" && !options.bots_fixture),
         "--inspect requires the manual gui preset without --bots-fixture"
     );
@@ -906,6 +913,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 working: working.path(),
                 output: &output,
                 interrupt: &interrupt_rx,
+                profile_read_samples: options.profile_read_samples,
             });
         if options.retain_environment || result.is_err() {
             let retained = keep_isolated_environment(working, &home, &output, None);

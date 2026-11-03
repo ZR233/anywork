@@ -713,3 +713,30 @@ fn active_turn_receipt_is_not_an_extra_current_item() {
     assert!(timeline.current_items().is_empty());
     assert!(timeline.committed().is_empty());
 }
+
+#[test]
+fn active_head_updates_never_rewrite_the_frozen_start_phase() {
+    let mut timeline = fold();
+    let started = active("tool", ChatAtomKind::ToolCall, 1, pos(1, 1), Vec::new());
+    timeline.observe(&started, None).unwrap();
+    let mut waiting = started.clone();
+    waiting.lifecycle = ChatAtomLifecycle::Active {
+        started: Some(pos(1, 1)),
+        status: ChatActiveStatus::Waiting,
+    };
+    waiting.contents = content();
+    timeline.observe(&waiting, None).unwrap();
+    let first = timeline.take_update().unwrap();
+    assert_eq!(first.facts, vec![lightweight(&started)]);
+    assert_eq!(first.members.last().unwrap().atom, lightweight(&waiting));
+    let mut restored = fold();
+    restored.restore_recovery(&first.recovery).unwrap();
+    waiting.lifecycle = started.lifecycle;
+    restored.observe(&waiting, None).unwrap();
+    let update = restored.take_update().unwrap();
+    assert!(
+        update.facts.is_empty(),
+        "a restored mutable head became a new start"
+    );
+    assert_eq!(update.members[0].atom, lightweight(&waiting));
+}

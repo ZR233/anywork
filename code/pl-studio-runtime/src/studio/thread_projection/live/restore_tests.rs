@@ -43,7 +43,7 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
     use anyhow::Context as _;
     use pl_core::thread::{ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome};
     use pl_protocol::{
-        ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry,
+        ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
         ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
         ThreadActivityKind,
     };
@@ -230,12 +230,10 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                     .current_handoff
                     .as_ref()
                     .context("end handoff")?
-                    .entries
+                    .sources
                     .iter()
-                    .any(
-                        |entry| matches!(entry, ChatEntry::Source(state) if state.source == source
-                    && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })
-                    )
+                    .any(|state| state.source == source
+                        && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })
             );
             save(&history, &effect, &prepared).await?;
             assert!(
@@ -526,7 +524,14 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
         assert_eq!(handoff.before.as_ref(), &snapshot.projection);
         assert_eq!(handoff.after.source_effect_seq, 6);
         assert!(handoff.after.atoms.is_empty());
-        assert!(handoff.entries.is_empty(), "activation fabricated a reliable start");
+        assert!(completed.current.timeline_update.facts.iter().all(|atom|
+            !matches!(atom.lifecycle,pl_protocol::ChatAtomLifecycle::Active {..})),
+            "activation fabricated a reliable start");
+        assert!(handoff.entries.iter().all(|entry|matches!(entry,pl_protocol::ChatEntry::Item(_))),
+            "Main handoff leaked raw activation facts");
+        assert!(handoff.entries.iter().any(|entry|matches!(entry,pl_protocol::ChatEntry::Item(item)
+            if item.content_item_id.as_deref()==Some(saved_atom.id.as_str()))),
+            "restored completion lost its original content owner");
         let completed_atom = completed
             .completions
             .iter()

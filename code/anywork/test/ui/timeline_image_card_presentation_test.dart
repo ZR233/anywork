@@ -2,12 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_attachments_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
@@ -239,6 +245,210 @@ void main() {
       );
       expect(reads, 2);
       expect(find.textContaining('authorized read failed'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    '390 / 160% image errors expose every glyph and retry tail while thumbnails retain bounded Wrap cells',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      const shortMarker = '短错尾标-END';
+      const longMarker = '长错尾标-END';
+      const shortError = '合成读取失败：$shortMarker';
+      final longError = '长错误开始：${'读取结果仍不可用，需要完整保留原始诊断。' * 24}$longMarker';
+      final errors = {'short-error': shortError, 'long-error': longError};
+      final attachments = [
+        for (final id in ['image-0', 'image-1', 'image-2', ...errors.keys])
+          ThreadAttachmentView(
+            id: id,
+            modality: AttachmentModalityView.image,
+            mediaType: 'image/png',
+            byteSize: _png.length,
+            filename: '$id.png',
+          ),
+      ];
+      var retries = 0;
+      const scrollKey = ValueKey('image-error-layout-scroll');
+      Widget scene({
+        bool loaded = true,
+        bool active = true,
+        bool retryAvailable = true,
+      }) => MaterialApp(
+        theme: pureStudioTheme(locale: const Locale('zh')),
+        locale: const Locale('zh'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.6)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            key: scrollKey,
+            controller: scroll,
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: TimelineAttachmentsView(
+                attachments: attachments,
+                imageBuilder: (attachment) => TimelineImageView(
+                  key: ValueKey('layout:${attachment.id}'),
+                  itemId: 'layout-tool',
+                  attachment: attachment,
+                  isTool: true,
+                  active: active,
+                  imageIdentity: ('layout-tool', attachment.id),
+                  bytes: loaded && !errors.containsKey(attachment.id)
+                      ? _png
+                      : null,
+                  width: 1,
+                  height: 1,
+                  error: errors[attachment.id],
+                  onRetry: retryAvailable ? () => retries++ : null,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      String displayId(String id) =>
+          StudioDriverKeys.toolImageEntryId('layout-tool', id);
+      Finder thumbnail(String id) =>
+          find.byKey(StudioDriverKeys.viewImageThumbnail(displayId(id)));
+      Finder retry(String id) =>
+          find.byKey(StudioDriverKeys.timelineImageRetry(displayId(id)));
+
+      List<Rect> expectErrorGeometry(String id, String reason, String marker) {
+        final text = '图片读取失败：$reason，重试';
+        final paragraph = tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: retry(id),
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is RichText && widget.text.toPlainText() == text,
+            ),
+          ),
+        );
+        expect(paragraph.didExceedMaxLines, isFalse);
+        final buttonBounds = tester.getRect(retry(id));
+        final attachmentBounds = tester.getRect(
+          find.byType(TimelineAttachmentsView),
+        );
+        final glyphs = paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: 0, extentOffset: text.length),
+        );
+        expect(glyphs, isNotEmpty);
+        for (final glyph in glyphs) {
+          final local = glyph.toRect();
+          expect(local.left, greaterThanOrEqualTo(-1));
+          expect(local.top, greaterThanOrEqualTo(-1));
+          expect(local.right, lessThanOrEqualTo(paragraph.size.width + 1));
+          expect(local.bottom, lessThanOrEqualTo(paragraph.size.height + 1));
+          final global = local.shift(paragraph.localToGlobal(Offset.zero));
+          expect(buttonBounds.inflate(1).contains(global.topLeft), isTrue);
+          expect(buttonBounds.inflate(1).contains(global.bottomRight), isTrue);
+          expect(attachmentBounds.inflate(1).contains(global.topLeft), isTrue);
+          expect(
+            attachmentBounds.inflate(1).contains(global.bottomRight),
+            isTrue,
+          );
+        }
+        // Semantic presence is not enough: both the diagnostic tail and the
+        // final retry glyphs must have actual, unclipped text layout boxes.
+        final tail = paragraph.getBoxesForSelection(
+          TextSelection(
+            baseOffset: text.indexOf(marker),
+            extentOffset: text.length,
+          ),
+        );
+        final retryGlyphs = paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: text.length - 2, extentOffset: text.length),
+        );
+        expect(tail, isNotEmpty);
+        expect(retryGlyphs, isNotEmpty);
+        return [
+          for (final glyph in tail)
+            glyph.toRect().shift(paragraph.localToGlobal(Offset.zero)),
+        ];
+      }
+
+      await tester.pumpWidget(scene(loaded: false));
+      for (var index = 0; index < 3; index++) {
+        expect(
+          tester.getSize(find.byKey(ValueKey('layout:image-$index'))),
+          const Size(120, 120),
+        );
+      }
+      await tester.pumpWidget(scene());
+      await tester.pumpAndSettle();
+      for (var index = 0; index < 3; index++) {
+        expect(tester.getSize(thumbnail('image-$index')), const Size(120, 120));
+      }
+      final first = tester.getRect(thumbnail('image-0'));
+      final second = tester.getRect(thumbnail('image-1'));
+      final third = tester.getRect(thumbnail('image-2'));
+      expect(second.top, closeTo(first.top, 0.1));
+      expect(second.left, greaterThanOrEqualTo(first.right + 8));
+      expect(third.left, closeTo(first.left, 0.1));
+      expect(third.top, greaterThanOrEqualTo(first.bottom + 8));
+      expect(tester.takeException(), isNull);
+      await tester.tap(thumbnail('image-0'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(StudioDriverKeys.viewImageDialog(displayId('image-0'))),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(StudioDriverKeys.timelineImageClose));
+      await tester.pumpAndSettle();
+      final viewport = tester.getRect(find.byKey(scrollKey));
+      final shortTail = expectErrorGeometry(
+        'short-error',
+        shortError,
+        shortMarker,
+      );
+      for (final glyph in shortTail) {
+        expect(viewport.inflate(1).contains(glyph.topLeft), isTrue);
+        expect(viewport.inflate(1).contains(glyph.bottomRight), isTrue);
+      }
+      final longTail = expectErrorGeometry('long-error', longError, longMarker);
+      expect(longTail.last.bottom, greaterThan(viewport.bottom));
+      expect(tester.getSize(retry('long-error')).height, greaterThan(120));
+      expect(retries, 0, reason: 'Layout and image errors do not retry reads');
+      await tester.tap(retry('short-error'));
+      await tester.pump();
+      expect(retries, 1);
+      expect(scroll.position.maxScrollExtent, greaterThan(0));
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      final visibleTail = expectErrorGeometry(
+        'long-error',
+        longError,
+        longMarker,
+      );
+      for (final glyph in visibleTail) {
+        expect(viewport.inflate(1).contains(glyph.topLeft), isTrue);
+        expect(viewport.inflate(1).contains(glyph.bottomRight), isTrue);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(scene(active: false));
+      for (final id in errors.keys) {
+        expect(tester.widget<TextButton>(retry(id)).onPressed, isNull);
+      }
+      expect(
+        tester.widget<GestureDetector>(thumbnail('image-0')).onTap,
+        isNull,
+      );
+      await tester.pumpWidget(scene(retryAvailable: false));
+      for (final id in errors.keys) {
+        expect(tester.widget<TextButton>(retry(id)).onPressed, isNull);
+      }
+      expect(retries, 1);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
