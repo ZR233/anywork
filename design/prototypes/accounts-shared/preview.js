@@ -748,7 +748,7 @@ root.addEventListener('click',e=>{
  const row=e.target.closest('[data-open-account]');
  if(row){navigate('detail',row.dataset.openAccount);return;}
  const nav=e.target.closest('[data-nav]');
- if(nav){if(nav.dataset.nav==='账号')navigate('list');else toast('当前设计稿聚焦账号列表与详情');return;}
+ if(nav){if(nav.dataset.nav==='账号')navigate('list');else if(nav.dataset.nav==='SSH')location.href='../ssh-servers/index.html';else if(nav.dataset.nav==='MCP')location.href='../ssh-server-mcp/index.html';else toast('当前设计稿聚焦账号列表与详情');return;}
  const el=e.target.closest('[data-action]');
  if(!el)return;
  const action=el.dataset.action;
