@@ -40,31 +40,35 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
     launch_acceptance_tool(&executable, args)
 }
 
-/// Builds the tool with readable streamed output, then reports its executable.
-///
-/// The second cargo invocation is a no-op build whose JSON artifact messages
-/// locate the executable without recompiling, respecting `CARGO_TARGET_DIR`
-/// and any configured build target.
+/// Builds the tool with readable streamed diagnostics, then reports its
+/// executable from the same build's JSON artifact messages.
 pub(crate) fn build_acceptance_tool(workspace: &Path) -> Result<PathBuf> {
-    let display = format!("cargo build -p {ACCEPTANCE_PACKAGE}");
-    let mut build = Command::new("cargo");
-    build
-        .current_dir(workspace)
-        .args(["build", "-p", ACCEPTANCE_PACKAGE]);
-    process::run_checked(&mut build, &display)?;
+    use std::process::Stdio;
 
-    let discovery = Command::new("cargo")
+    let display = format!(
+        "cargo build --locked -p {ACCEPTANCE_PACKAGE} --message-format=json-render-diagnostics"
+    );
+    let mut build = Command::new("cargo");
+    let output = build
         .current_dir(workspace)
-        .args(["build", "-p", ACCEPTANCE_PACKAGE, "--message-format=json"])
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            ACCEPTANCE_PACKAGE,
+            "--message-format=json-render-diagnostics",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .output()
         .with_context(|| format!("failed to start command from PATH: {display}"))?;
-    if !discovery.status.success() {
+    if !output.status.success() {
         bail!(
-            "failed to locate the {ACCEPTANCE_PACKAGE} executable: {display}; stderr: {}",
-            String::from_utf8_lossy(&discovery.stderr)
+            "command exited unsuccessfully: {display} ({})",
+            output.status
         );
     }
-    parse_acceptance_executable(&discovery.stdout)
+    parse_acceptance_executable(&output.stdout)
 }
 
 /// Extracts the tool's bin executable from cargo's JSON artifact messages.
@@ -91,7 +95,11 @@ fn parse_acceptance_executable(stdout: &[u8]) -> Result<PathBuf> {
 ///
 /// # Errors
 /// Returns an error when the tool cannot be started or exits non-zero.
-pub(crate) fn wait_acceptance_tool(executable: &Path, args: &[OsString]) -> Result<()> {
+pub(crate) fn wait_acceptance_tool(
+    executable: &Path,
+    args: &[OsString],
+    environment: Option<(&str, &std::ffi::OsStr)>,
+) -> Result<()> {
     use std::process::Stdio;
 
     #[cfg(windows)]
@@ -102,6 +110,9 @@ pub(crate) fn wait_acceptance_tool(executable: &Path, args: &[OsString]) -> Resu
     let display = process::display_command(&program, args);
     let mut command = Command::new(executable);
     command.args(args);
+    if let Some((name, value)) = environment {
+        command.env(name, value);
+    }
     command.stdin(Stdio::inherit());
     process::run_checked(&mut command, &display)
 }

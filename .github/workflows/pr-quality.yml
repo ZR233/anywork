@@ -36,6 +36,8 @@ jobs:
       linux_native: ${{ steps.plan.outputs.linux_native }}
       windows_build: ${{ steps.plan.outputs.windows_build }}
       macos_build: ${{ steps.plan.outputs.macos_build }}
+      windows_gui_build: ${{ steps.plan.outputs.windows_gui_build }}
+      macos_gui_build: ${{ steps.plan.outputs.macos_gui_build }}
       required_jobs: ${{ steps.plan.outputs.required_jobs }}
       plan: ${{ steps.plan.outputs.plan }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -538,6 +540,7 @@ jobs:
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
+        if: needs.changes.outputs.windows_gui_build == 'true' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance'))
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
@@ -553,6 +556,7 @@ jobs:
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
+        if: needs.changes.outputs.windows_gui_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -601,6 +605,7 @@ jobs:
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
+        if: needs.changes.outputs.macos_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
@@ -619,6 +624,7 @@ jobs:
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
+        if: needs.changes.outputs.macos_gui_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
