@@ -28,7 +28,7 @@ pub(crate) fn classify(preset: &str) -> PresetKind {
         | "question-history"
         | "realtime-presentation"
         | "sidebar-query" => PresetKind::Desktop,
-        "shutdown" | "single-instance" => PresetKind::Native,
+        "shutdown" => PresetKind::Native,
         _ => PresetKind::Manual,
     }
 }

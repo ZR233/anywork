@@ -89,6 +89,11 @@ struct CaseRecord {
 /// case fails, the report directory already exists, or the report cannot be
 /// written after a run that requested `--output`.
 pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
+    validate_shard_options(
+        options.case.as_deref(),
+        options.shard_index,
+        options.shard_count,
+    )?;
     let workspace_root = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace_root);
     let discovered = match options.suite {
@@ -101,6 +106,7 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
         options.set,
         options.case.as_deref(),
     )?;
+    let selected = shard_cases(selected, options.shard_index, options.shard_count)?;
     if options.list {
         for case in &selected {
             println!("{}", case.id);
@@ -112,7 +118,7 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
         Some(path) => Some(prepare_output_dir(path)?),
         None => None,
     };
-    let native_executable = if matches!(options.suite, ProjectSuite::Native) {
+    let acceptance_executable = if selected.iter().any(case_needs_acceptance) {
         Some(studio_acceptance::build_acceptance_tool(&workspace_root)?)
     } else {
         None
@@ -125,7 +131,11 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
         let case_output = output
             .as_ref()
             .map(|root| root.join("cases").join(&case.id));
-        match run_case(case, case_output.as_deref(), native_executable.as_deref()) {
+        match run_case(
+            case,
+            case_output.as_deref(),
+            acceptance_executable.as_deref(),
+        ) {
             Ok(()) => records.push(CaseRecord {
                 id: case.id.clone(),
                 result: "passed",
@@ -174,15 +184,15 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
 fn run_case(
     case: &DiscoveredCase,
     output: Option<&Path>,
-    native_executable: Option<&Path>,
+    acceptance_executable: Option<&Path>,
 ) -> Result<()> {
     match case.target {
         CaseTarget::Desktop { ref relative_path } => {
             if !desktop_env_ready(&case.id) {
                 if let Some(preset) = desktop_harness_preset(&case.id) {
-                    let workspace = paths::workspace_root()?;
-                    let executable = studio_acceptance::build_acceptance_tool(&workspace)?;
-                    return wait_acceptance_preset(&executable, preset, output);
+                    let executable =
+                        acceptance_executable.context("acceptance executable is missing")?;
+                    return wait_acceptance_preset(executable, preset, output);
                 }
                 bail!(
                     "desktop case `{}` needs an isolated environment; no acceptance preset owns it",
@@ -193,8 +203,17 @@ fn run_case(
         }
         CaseTarget::Native { preset } => {
             let executable =
-                native_executable.context("native acceptance executable is missing")?;
+                acceptance_executable.context("native acceptance executable is missing")?;
             wait_acceptance_preset(executable, preset, output)
+        }
+    }
+}
+
+fn case_needs_acceptance(case: &DiscoveredCase) -> bool {
+    match &case.target {
+        CaseTarget::Native { .. } => true,
+        CaseTarget::Desktop { .. } => {
+            !desktop_env_ready(&case.id) && desktop_harness_preset(&case.id).is_some()
         }
     }
 }
@@ -343,7 +362,7 @@ fn desktop_case_id(path: &Path) -> Result<String> {
 }
 
 fn native_cases() -> Vec<DiscoveredCase> {
-    ["shutdown", "single-instance"]
+    ["shutdown"]
         .into_iter()
         .map(|preset| DiscoveredCase {
             id: preset.to_owned(),
@@ -390,6 +409,46 @@ fn select_cases(
     }
     ensure!(!selected.is_empty(), "{suite} {set} discovery is empty");
     Ok(selected)
+}
+
+fn shard_cases(
+    mut selected: Vec<DiscoveredCase>,
+    shard_index: Option<usize>,
+    shard_count: Option<usize>,
+) -> Result<Vec<DiscoveredCase>> {
+    validate_shard_options(None, shard_index, shard_count)?;
+    selected.sort_by(|left, right| left.id.cmp(&right.id));
+    if let (Some(index), Some(count)) = (shard_index, shard_count) {
+        selected = selected
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, case)| (position % count == index).then_some(case))
+            .collect();
+        ensure!(!selected.is_empty(), "selected shard is empty");
+    }
+    Ok(selected)
+}
+
+fn validate_shard_options(
+    requested_case: Option<&str>,
+    shard_index: Option<usize>,
+    shard_count: Option<usize>,
+) -> Result<()> {
+    ensure!(
+        requested_case.is_none() || (shard_index.is_none() && shard_count.is_none()),
+        "a case cannot be combined with shard options"
+    );
+    match (shard_index, shard_count) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => {
+            bail!("shard index and count must be specified together")
+        }
+        (Some(index), Some(count)) => {
+            ensure!(count > 0, "shard count must be greater than zero");
+            ensure!(index < count, "shard index must be less than shard count");
+        }
+    }
+    Ok(())
 }
 
 fn prepare_output_dir(path: &Path) -> Result<PathBuf> {
@@ -461,7 +520,8 @@ fn rustc_version() -> Result<String> {
 mod tests {
     use super::{
         CaseTarget, DESKTOP_SMOKE_IDS, DiscoveredCase, ProjectSet, ProjectSuite,
-        desktop_harness_preset, discover_desktop_cases, native_cases, select_cases,
+        desktop_harness_preset, discover_desktop_cases, native_cases, select_cases, shard_cases,
+        validate_shard_options,
     };
     use std::fs;
     use std::path::Path;
@@ -514,6 +574,95 @@ mod tests {
         );
         assert_eq!(case_ids(&smoke), DESKTOP_SMOKE_IDS);
         Ok(())
+    }
+
+    #[test]
+    fn shards_sort_input_and_partition_every_selected_case_once() -> anyhow::Result<()> {
+        let discovered = vec![
+            desktop_case("delta"),
+            desktop_case("alpha"),
+            desktop_case("charlie"),
+            desktop_case("bravo"),
+        ];
+        let selected = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Full, None)?;
+        let expected = case_ids(&selected)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut assigned = std::collections::BTreeSet::new();
+        for index in 0..3 {
+            let shard = shard_cases(selected.clone(), Some(index), Some(3))?;
+            assert!(shard.windows(2).all(|pair| pair[0].id <= pair[1].id));
+            for id in case_ids(&shard).into_iter().map(str::to_owned) {
+                assert!(
+                    assigned.insert(id.clone()),
+                    "case `{id}` was assigned more than once"
+                );
+            }
+        }
+        assert_eq!(assigned, expected);
+        let ordered = shard_cases(
+            vec![
+                desktop_case("charlie"),
+                desktop_case("alpha"),
+                desktop_case("bravo"),
+            ],
+            None,
+            None,
+        )?;
+        assert_eq!(case_ids(&ordered), ["alpha", "bravo", "charlie"]);
+        Ok(())
+    }
+
+    #[test]
+    fn suite_filtering_precedes_sharding() -> anyhow::Result<()> {
+        let discovered = vec![
+            desktop_case("chatgpt_auth"),
+            desktop_case("wait_events"),
+            desktop_case("conversation_read_work"),
+            desktop_case("acp_real_login"),
+        ];
+        for set in [ProjectSet::Smoke, ProjectSet::Full] {
+            let selected = select_cases(&discovered, ProjectSuite::Desktop, set, None)?;
+            let expected = case_ids(&selected)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut assigned = std::collections::BTreeSet::new();
+            for index in 0..2 {
+                let shard = shard_cases(selected.clone(), Some(index), Some(2))?;
+                for id in case_ids(&shard).into_iter().map(str::to_owned) {
+                    assert!(
+                        assigned.insert(id.clone()),
+                        "case `{id}` was assigned more than once"
+                    );
+                }
+            }
+            assert_eq!(assigned, expected);
+            assert!(!assigned.contains("conversation_read_work") || set == ProjectSet::Full);
+            assert!(
+                !assigned.contains("acp_real_login") || super::desktop_env_ready("acp_real_login")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_and_empty_shards_fail() {
+        let cases = vec![desktop_case("only")];
+        for (index, count) in [
+            (Some(0), None),
+            (None, Some(2)),
+            (Some(0), Some(0)),
+            (Some(2), Some(2)),
+            (Some(1), Some(3)),
+        ] {
+            assert!(
+                shard_cases(cases.clone(), index, count).is_err(),
+                "invalid shard ({index:?}, {count:?}) must fail"
+            );
+        }
+        assert!(validate_shard_options(Some("only"), Some(0), Some(2)).is_err());
     }
 
     #[test]

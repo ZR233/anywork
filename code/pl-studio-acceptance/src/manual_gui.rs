@@ -53,7 +53,7 @@ pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
     /// `wait-events`, `conversation-read-work`, `question-history`,
     /// `realtime-presentation` and `sidebar-query` are automatic desktop runners;
-    /// `shutdown` and `single-instance` are native lifecycle.
+    /// `shutdown` covers native lifecycle and second-instance behavior.
     /// ACP native acceptance uses the official Flutter integration_test
     /// suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
@@ -716,7 +716,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             || matches!(
                 options.preset.as_str(),
                 "gui"
-                    | "single-instance"
                     | "tool-scroll"
                     | "timeline-history"
                     | "timeline-history-20k"
@@ -728,7 +727,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "sidebar-query"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
-        "--retain-environment is supported by --preset gui, single-instance, tool-scroll, \
+        "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
          stress-body-large, wait-events, conversation-read-work, sidebar-query and the delegation scenes"
     );
@@ -819,7 +818,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "web-search"
             | "provider-usage"
             | "shutdown"
-            | "single-instance"
             | "timeline-history"
             | "timeline-history-20k"
             | "question-history"

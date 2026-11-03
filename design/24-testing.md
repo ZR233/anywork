@@ -9,11 +9,18 @@
 | Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
-| Linux 桌面与原生集成 | 在相同工作区复用工程工具、helper、acceptance 与对应配置的 bridge；desktop full 与所需 native full 分别提供功能和生命周期信号，不因共用 harness 删除独特断言 |
+| Linux 构建输入 | 工程工具与双架构 helper 在同一准备作业复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
+| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；每个 runner 内顺序复用 acceptance 与对应配置的 bridge，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
 | Windows/macOS 应用检查 | Rust 改动同时选择两个宿主的 Rust clippy、测试和生产 Flutter 编译，复用各平台同一作业的工具链与构建目录；仅平台 runner 等非 Rust 改动只选择相应编译。两个宿主均不重复运行 Flutter UI、desktop smoke、native lifecycle 或发布打包验收 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
 Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
+
+集成分片沿用同一发现、full/smoke 与显式启用规则，按稳定排序后的序号分配；所有分片无重叠且完整覆盖未分片的选择集合，不维护第二份场景名单。分片索引从零开始，必须与正数分片总数成对提供；索引越界、空分片或与单场景选择混用均失败，列举与执行消费同一选择结果。各分片的失败、取消与缺失均阻止 gate 通过，各自保留报告与日志，但不归档隔离配置、home 或数据库。
+
+Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。原生平台的测试临时根使用 runner 自有的真实目录，避免系统临时路径的符号链接干扰路径安全断言；生产符号链接拒绝语义不因此放宽。
+
+原生关闭与第二实例行为由同一个 `shutdown` 自动旅程证明：第二实例必须重定向并激活原实例、在创建第二个 Flutter engine 前退出，原实例继续工作并在重新打开后恢复持久化结果。原先单列的 `single-instance` 入口没有独立自动断言、实际进入人工交互，已从自动套件与预置入口中移除；清理重复入口不删除上述真实第二实例断言。
 
 无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业消费
 同次解析并校验的项目 Docker 镜像；`cnativeapi` 所需 C++、pkg-config、GTK 3 / X11 / Xi
@@ -117,7 +124,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-PR 中适用的 functional 与 native 生命周期由 Linux 集成作业通过 xtask 的 `test-project` 两类 suite 执行；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
+PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 xtask 的 `test-project` 两类 suite 并行执行，桌面功能使用完整集合的确定性分片；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 
