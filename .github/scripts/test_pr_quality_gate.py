@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_quality_gate import KNOWN_JOBS, evaluate  # noqa: E402
+from pr_quality_gate import evaluate  # noqa: E402
 from pr_quality_changes import plan_from_paths  # noqa: E402
 
 
@@ -23,9 +23,9 @@ def _results(**overrides: str) -> dict[str, str]:
         "linux-environment": "skipped",
         "flutter-checks": "skipped",
         "gui-generated": "skipped",
-        "linux-tools": "skipped",
-        "remote-helpers": "skipped",
-        "linux-integration": "skipped",
+        "linux-inputs": "skipped",
+        "linux-desktop": "skipped",
+        "linux-native": "skipped",
         "windows-build": "skipped",
         "macos-build": "skipped",
     }
@@ -92,9 +92,36 @@ class GateEvaluateTest(unittest.TestCase):
 
     def test_optional_planned_job_skip_passes(self):
         errors = evaluate(["changes", "flutter-checks"], _results(
-            **{"flutter-checks": "success", "linux-integration": "skipped"}
+            **{"flutter-checks": "success", "linux-inputs": "skipped"}
         ))
         self.assertEqual(errors, [])
+
+    def test_gui_generation_requires_inputs_without_helper_job(self):
+        plan = plan_from_paths(
+            ["code/anywork/lib/src/infrastructure/frb/api.dart"],
+            event_name="pull_request",
+        )
+        required = plan["required_jobs"]
+        self.assertIn("gui-generated", required)
+        self.assertIn("linux-inputs", required)
+        self.assertNotIn("remote-helpers", required)
+        results = _results(**{job: "success" for job in required})
+        self.assertEqual(evaluate(required, results), [])
+
+    def test_desktop_and_native_required_jobs_reject_skip_or_cancel(self):
+        for path, job in (
+            ("code/anywork/integration_test/smoke_test.dart", "linux-desktop"),
+            ("code/anywork/lib/src/app/studio_host_lifecycle.dart", "linux-native"),
+        ):
+            plan = plan_from_paths([path], event_name="push")
+            required = plan["required_jobs"]
+            self.assertIn(job, required)
+            results = _results(**{item: "success" for item in required})
+            self.assertEqual(evaluate(required, results), [])
+            for status in ("skipped", "cancelled"):
+                with self.subTest(job=job, status=status):
+                    errors = evaluate(required, {**results, job: status})
+                    self.assertTrue(any(job in error for error in errors))
 
     def test_rust_plan_cannot_skip_either_native_platform(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="push")
@@ -104,15 +131,6 @@ class GateEvaluateTest(unittest.TestCase):
             with self.subTest(job=job):
                 errors = evaluate(plan["required_jobs"], {**results, job: "skipped"})
                 self.assertTrue(any(job in error for error in errors))
-
-    def test_retired_jobs_are_not_known(self):
-        self.assertFalse({
-            "rust-quality", "rust-deterministic", "flutter-quality", "flutter-ui",
-            "linux-desktop", "windows-desktop", "macos-desktop", "linux-native",
-            "windows-native",
-            "studio-server-linux",
-        } & set(KNOWN_JOBS))
-
 
 if __name__ == "__main__":
     unittest.main()
