@@ -1,4 +1,4 @@
-use super::atoms::Harness;
+use super::atoms::{Harness, finish, start};
 use super::*;
 use crate::studio::thread_projection::PreparedEffect;
 use pl_core::thread::{ContextCompactionEvent, ContextCompactionOutcome, ThreadEffectBatch};
@@ -28,6 +28,345 @@ fn assert_text(item: &TimelineItem, expected: &str) -> Result<()> {
         "original inline body bytes differ"
     );
     Ok(())
+}
+
+fn member<'a>(batch: &'a ChatBatch, id: &str) -> Result<&'a ChatAtom> {
+    batch
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            ChatEntry::Atom(atom) if atom.id == id => Some(atom.as_ref()),
+            _ => None,
+        })
+        .with_context(|| format!("member {id} missing from its opened window"))
+}
+
+fn assert_thinking(atom: &ChatAtom, original: &[u8]) -> Result<()> {
+    let Some(PayloadData::Inline { bytes }) = &atom.payload else {
+        bail!("small member envelope remained Deferred: {}", atom.id);
+    };
+    assert_eq!(bytes.as_slice(), original, "original member bytes changed");
+    let envelope: serde_json::Value = serde_json::from_slice(bytes)?;
+    assert_eq!(envelope["contract"], "anywork.chat/1");
+    assert_eq!(envelope["type"], "thinking");
+    Ok(())
+}
+
+#[tokio::test]
+async fn opened_members_keep_original_typed_bytes_live_pending_and_sqlite_with_bounded_delivery()
+-> Result<()> {
+    let mut env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let id = harness.thread.id.clone();
+        let one = ReadDemand {
+            max_items: 1,
+            max_bytes: 8 * 1024,
+        };
+        let started = harness
+            .effect(
+                vec![
+                    start("small-thinking", true),
+                    start("large-thinking", true),
+                    start("final", false),
+                ],
+                vec![],
+            )
+            .await?;
+        let reference = started
+            .current
+            .projection()
+            .items
+            .iter()
+            .find(|item| item.is_work_group())
+            .and_then(|item| item.members.clone())
+            .context("original group reference")?;
+        let scope = ChatScope::GroupMembers { reference };
+        harness.save(&started).await?;
+        let mut live = env
+            .runtime
+            .open_conversation_feed(
+                &id,
+                scope.clone(),
+                ReadDemand {
+                    max_items: 2,
+                    ..one
+                },
+            )
+            .await?;
+        let initial = chat(&mut live).await?;
+        let [ChatEntry::Atom(small_head), ChatEntry::Atom(large_head)] = initial.entries.as_slice()
+        else {
+            bail!("opened group must contain both active reasoning members")
+        };
+        for atom in [small_head, large_head] {
+            assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
+            assert!(atom.payload.is_none() && !atom.contents.is_empty());
+        }
+        let small_id = small_head.id.clone();
+        let large_id = large_head.id.clone();
+        let small = harness
+            .effect(
+                vec![],
+                vec![finish("small-thinking", true, "small reasoning")?],
+            )
+            .await?;
+        assert_eq!(small.completions.len(), 1);
+        let original_small = small.completions[0].payload.as_ref();
+        let append = chat(&mut live).await?;
+        assert_eq!(append.placement, ChatPlacement::Append);
+        let small_atom = member(&append, &small_id)?;
+        assert_thinking(small_atom, original_small)?;
+        let small_ref = ContentRef {
+            database_id: harness
+                .history
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+            target: ContentTarget::ItemPayload {
+                item_id: small_atom
+                    .completion_item_id
+                    .clone()
+                    .context("original completion")?,
+            },
+        };
+
+        // The same selected member stays Deferred when only its header fits.
+        let mut deferred = append.clone();
+        let ChatEntry::Atom(atom) = &mut deferred.entries[0] else {
+            unreachable!()
+        };
+        atom.payload = Some(PayloadData::Deferred {
+            reference: small_ref.clone(),
+            byte_length: original_small.len() as u64,
+        });
+        let tiny = ReadDemand {
+            max_bytes: u32::try_from(deferred.encoded_len()?)?,
+            ..one
+        };
+        let mut bounded = deferred.clone();
+        live.reader()
+            .inline_timeline_payloads(&mut bounded, tiny)
+            .await?;
+        assert_eq!(bounded, deferred);
+        live.reader().finish_batch(bounded, tiny)?;
+        let window = live
+            .reader()
+            .read_content(
+                &small_ref,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: u32::try_from(original_small.len())?,
+                },
+            )
+            .await?;
+        assert_eq!(window.bytes.as_slice(), original_small);
+
+        let large = harness
+            .effect(
+                vec![],
+                vec![
+                    finish("large-thinking", true, &"x".repeat(4096))?,
+                    finish("final", false, "final text")?,
+                ],
+            )
+            .await?;
+        let append = chat(&mut live).await?;
+        let large_atom = member(&append, &large_id)?;
+        assert!(matches!(
+            large_atom.payload,
+            Some(PayloadData::Deferred { .. })
+        ));
+        let large_record = large
+            .completions
+            .iter()
+            .find(|record| {
+                Some(record.header.item_id.as_str()) == large_atom.completion_item_id.as_deref()
+            })
+            .context("large original completion")?;
+        assert!(large_record.payload.len() > one.max_bytes as usize);
+        assert!(large_record.payload.len() <= CONTENT_WINDOW_MAX_BYTES as usize);
+
+        // A source/body or another real completion is not this Atom's payload owner.
+        for target in [
+            ContentTarget::ItemPayload {
+                item_id: large_record.header.item_id.clone(),
+            },
+            small_atom
+                .contents
+                .first()
+                .context("original body ref")?
+                .reference
+                .target
+                .clone(),
+        ] {
+            let mut invalid = deferred.clone();
+            let ChatEntry::Atom(atom) = &mut invalid.entries[0] else {
+                unreachable!()
+            };
+            let Some(PayloadData::Deferred { reference, .. }) = &mut atom.payload else {
+                unreachable!()
+            };
+            reference.target = target;
+            let error = live
+                .reader()
+                .inline_timeline_payloads(&mut invalid, demand())
+                .await
+                .expect_err("member accepted a different payload owner");
+            assert!(
+                matches!(
+                    error.downcast_ref::<core::ChatError>(),
+                    Some(core::ChatError::StaleContent)
+                ),
+                "{error:#}"
+            );
+        }
+        let mut no_completion = deferred.clone();
+        let ChatEntry::Atom(atom) = &mut no_completion.entries[0] else {
+            unreachable!()
+        };
+        atom.completion_item_id = None;
+        let unchanged = no_completion.clone();
+        live.reader()
+            .inline_timeline_payloads(&mut no_completion, demand())
+            .await?;
+        assert_eq!(
+            no_completion, unchanged,
+            "missing completion triggered a content read"
+        );
+        let mut wrong_length = deferred.clone();
+        let ChatEntry::Atom(atom) = &mut wrong_length.entries[0] else {
+            unreachable!()
+        };
+        let Some(PayloadData::Deferred { byte_length, .. }) = &mut atom.payload else {
+            unreachable!()
+        };
+        *byte_length -= 1;
+        let error = live
+            .reader()
+            .inline_timeline_payloads(&mut wrong_length, demand())
+            .await
+            .expect_err("member accepted a payload/header length mismatch");
+        assert!(
+            matches!(
+                error.downcast_ref::<core::ChatError>(),
+                Some(core::ChatError::Conflict(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(
+            harness.session.durable_seq(),
+            0,
+            "member reads forced a save"
+        );
+
+        let mut pending = env
+            .runtime
+            .open_conversation_feed(&id, scope.clone(), one)
+            .await?;
+        let latest = chat(&mut pending).await?;
+        assert_eq!(latest.entries.len(), 1);
+        let latest_atom = member(&latest, &large_id)?;
+        let Some(PayloadData::Deferred {
+            reference,
+            byte_length,
+        }) = &latest_atom.payload
+        else {
+            bail!("large latest member was skipped or inlined");
+        };
+        let range = ContentRange {
+            offset: 0,
+            max_bytes: u32::try_from(*byte_length)?,
+        };
+        let bytes = pending
+            .reader()
+            .read_content(reference, range.clone())
+            .await?;
+        assert_eq!(bytes.bytes.as_slice(), large_record.payload.as_ref());
+        let older = pending
+            .reader()
+            .load_older(
+                latest.before.as_deref().context("member continuation")?,
+                one,
+            )
+            .await?;
+        assert_eq!(older.placement, ChatPlacement::Prepend);
+        assert_thinking(member(&older, &small_id)?, original_small)?;
+
+        let mut main = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand())
+            .await?;
+        let main_batch = chat(&mut main).await?;
+        let group = main_batch
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ChatEntry::Item(item) if item.is_work_group() => Some(item),
+                _ => None,
+            })
+            .context("folded Main group")?;
+        assert!(group.payload.is_none() && group.contents.is_empty());
+        // Even a tempting small reference on a folded header must never enter
+        // read_content. An attempted read of this absent original would fail.
+        let mut folded = ChatBatch {
+            placement: ChatPlacement::Append,
+            entries: vec![ChatEntry::Item(group.clone())],
+            before: None,
+            current: None,
+        };
+        let ChatEntry::Item(item) = &mut folded.entries[0] else {
+            unreachable!()
+        };
+        item.payload = Some(PayloadData::Deferred {
+            reference: ContentRef {
+                database_id: small_ref.database_id.clone(),
+                target: ContentTarget::ItemPayload {
+                    item_id: "absent-folded-payload".into(),
+                },
+            },
+            byte_length: 1,
+        });
+        let unchanged = folded.clone();
+        main.reader()
+            .inline_timeline_payloads(&mut folded, demand())
+            .await?;
+        assert_eq!(folded, unchanged);
+        harness.save(&small).await?;
+        harness.save(&large).await?;
+        for feed in [&mut live, &mut pending, &mut main] {
+            feed.close().await?;
+            feed.reader().close().await?;
+        }
+        env.runtime
+            .thread_observations
+            .observation_slot(&id)
+            .retire(&harness.source);
+        env.restart().await?;
+        let mut cold = env.runtime.open_conversation_feed(&id, scope, one).await?;
+        let latest = chat(&mut cold).await?;
+        assert_eq!(latest.entries.len(), 1);
+        let atom = member(&latest, &large_id)?;
+        assert_eq!(
+            atom.payload, latest_atom.payload,
+            "SQLite changed the deferred owner"
+        );
+        let bytes = cold.reader().read_content(reference, range).await?;
+        assert_eq!(bytes.bytes.as_slice(), large_record.payload.as_ref());
+        let older = cold
+            .reader()
+            .load_older(
+                latest.before.as_deref().context("SQLite continuation")?,
+                one,
+            )
+            .await?;
+        assert_thinking(member(&older, &small_id)?, original_small)?;
+        cold.close().await?;
+        cold.reader().close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 #[tokio::test]
