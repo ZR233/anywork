@@ -1430,3 +1430,223 @@ async fn real_empty_part_closes_work_but_whitespace_remains_a_message() -> Resul
     }.await;
     env.finish(result).await
 }
+
+fn a14_atom_metadata(atom: &ChatAtom) -> serde_json::Value {
+    serde_json::json!({
+        "id": atom.id, "kind": atom.kind, "source": atom.source,
+        "sourceOrder": atom.source_order, "turnId": atom.turn_id,
+        "attemptId": atom.attempt_id, "lifecycle": atom.lifecycle,
+        "completionItemId": atom.completion_item_id, "completionSeq": atom.completion_seq,
+        "contentPresent": atom.content_present, "sourceState": atom.source_state,
+    })
+}
+
+async fn a14_admitted_cut(
+    feed: &mut ConversationFeed,
+    main: &mut Vec<TimelineItem>,
+    current: &mut Option<CurrentProjection>,
+    ready: impl Fn(&[TimelineItem], Option<&CurrentProjection>) -> bool,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if ready(main, current.as_ref()) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            if let ConversationEvent::Chat { batch } =
+                feed.recv().await?.context("A14 Main feed ended")?
+            {
+                batch.validate_for(&ChatScope::Main)?;
+                match batch.placement {
+                    ChatPlacement::Set => main.clear(),
+                    ChatPlacement::Append => {}
+                    ChatPlacement::Prepend => bail!("A14 unexpectedly paged Main"),
+                }
+                for entry in batch.entries {
+                    let ChatEntry::Item(item) = entry else {
+                        bail!("Main returned a member atom");
+                    };
+                    main.push(*item);
+                }
+                *current = batch.current;
+            }
+        }
+    })
+    .await
+    .context("A14 stage lacks an admitted product cut")?
+}
+
+#[tokio::test]
+async fn fixture_empty_content_part_preserves_a14_start_and_reliable_handoff() -> Result<()> {
+    const STAGES: [&str; 6] = [
+        "a14-before-empty",
+        "a14-empty-start",
+        "a14-empty-terminal",
+        "a14-after-empty",
+        "a14-text-readable",
+        "a14-before-turn-end",
+    ];
+    let mut step = pl_provider_fixture::timeline_concept::Control::default().script()
+        .into_iter().find(|step| matches!(&step.request, RequestMatch::Prompt { text, .. } if text == pl_provider_fixture::timeline_concept::EMPTY_TEXT_PROMPT))
+        .context("original A14 fixture step")?;
+    let RequestMatch::Prompt {
+        text: prompt,
+        step: ordinal,
+    } = &mut step.request
+    else {
+        bail!("A14 prompt shape changed");
+    };
+    *ordinal = 0;
+    let prompt = prompt.clone();
+    let Reply::SegmentedSse { segments, gates } = &step.reply else {
+        bail!("A14 is not a staged SSE reply");
+    };
+    assert_eq!(segments.len(), STAGES.len() + 1);
+    let gates = gates.clone();
+    let env = support::Environment::new(vec![step], vec![]).await?;
+    let mut feeds = Vec::new();
+    let mut result = async {
+        let thread = env.start(ThreadWorkspaceMode::Local, &prompt).await?;
+        let id = &thread.thread.id;
+        let handle = env.runtime.threads.observed_thread(id).context("real Core owner")?;
+        let history = env.runtime.store.history(id).await?;
+        let mut feed = env.runtime.open_conversation_feed(id, ChatScope::Main, demand()).await?;
+        let result = async {
+            let mut main = Vec::new();
+            let mut current = None;
+            let mut before_id = None;
+            let mut after_id = None;
+            let mut empty_id = None;
+            let mut empty_completion = None;
+            let mut source = None;
+            let mut failures = Vec::new();
+            for (index, (reached, release)) in gates.iter().enumerate() {
+                tokio::time::timeout(support::integration_test_deadline()?, reached.cancelled()).await?;
+                // Wire reached does not qualify a product state. Keep consuming the original feed
+                // until this stage's actual atom/boundary/terminal facts have been admitted.
+                let admitted = a14_admitted_cut(&mut feed, &mut main, &mut current, |main, current| {
+                    let Some(current) = current else { return false; };
+                    let first_ready = before_id.as_ref().is_some_and(|id| main.iter().any(|item| &item.id == id && item.admission_closed && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)));
+                    match index {
+                        // Current atoms contain active starts. A completed group's qualification
+                        // is checked below through its real GroupMembers query, not this list.
+                        0 => current.items.iter().any(|item| item.is_work_group() && !item.admission_closed && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)),
+                        1 => first_ready && current.atoms.iter().any(|atom| atom.kind == ChatAtomKind::Text && Some(&atom.source) == source.as_ref() && matches!(atom.lifecycle, ChatAtomLifecycle::Active { started: Some(_), .. })),
+                        2 => first_ready && current.items.iter().all(|item| item.atom_kind != Some(ChatAtomKind::Text)),
+                        3 => first_ready && current.items.iter().any(|item| item.is_work_group() && Some(&item.id) != before_id.as_ref() && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)),
+                        4 => after_id.as_ref().is_some_and(|id| main.iter().any(|item| &item.id == id && item.admission_closed))
+                            && current.items.iter().any(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref() && !item.contents.is_empty()),
+                        5 => main.iter().any(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref() && item.outcome == Some(ChatTerminalOutcome::Completed)),
+                        _ => unreachable!(),
+                    }
+                }).await;
+                if let Err(error) = &admitted {
+                    failures.push(format!("{}: {error:#}", STAGES[index]));
+                }
+                let snapshot = handle.snapshot();
+                let parts = snapshot.model_progress.as_ref().map(|active| serde_json::json!({
+                    "attemptId": active.attempt_id,
+                    "parts": active.progress.parts().iter().map(|part| serde_json::json!({"identity": part.identity(), "version": part.version(), "byteLength": part.content().len()})).collect::<Vec<_>>()
+                }));
+                if index == 0 {
+                    if admitted.is_err() {
+                        eprintln!("A14_STAGE_FAILURE {}", serde_json::json!({
+                            "stage": STAGES[index], "coreCommitSequence": snapshot.commit_sequence,
+                            "coreDurableSequence": snapshot.persistence.durable_sequence,
+                            "coreProgress": parts,
+                            "mainIds": main.iter().map(|item| &item.id).collect::<Vec<_>>(),
+                            "current": current.as_ref().map(|value| serde_json::json!({
+                                "sourceEffectSeq": value.source_effect_seq,
+                                "items": value.items.iter().map(|item| serde_json::json!({
+                                    "id": item.id, "kind": item.kind, "source": item.source,
+                                    "admissionClosed": item.admission_closed, "summary": item.summary,
+                                })).collect::<Vec<_>>(),
+                                "atoms": value.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>(),
+                            })),
+                        }));
+                    }
+                    ensure!(admitted.is_ok(), "A14 before group lacked a reliable completion: {admitted:?}");
+                    let group = current.as_ref().context("before current")?.items.iter().find(|item| item.is_work_group()).context("before group")?;
+                    before_id = Some(group.id.clone());
+                    source = Some(group.source.clone());
+                }
+                if index == 1 {
+                    empty_id = current.as_ref().and_then(|value| value.atoms.iter().find(|atom| atom.kind == ChatAtomKind::Text && Some(&atom.source) == source.as_ref())).map(|atom| atom.id.clone());
+                }
+                if index == 3 {
+                    after_id = current.as_ref().and_then(|value| value.items.iter().find(|item| item.is_work_group())).map(|item| item.id.clone());
+                    if after_id == before_id { failures.push("A14 reused the before group after the empty boundary".into()); }
+                }
+                let turn_id = match source.as_ref().context("A14 source")? {
+                    ChatSourceId::ForegroundTurn { turn_id } => turn_id,
+                    _ => bail!("A14 source was not its real foreground Turn"),
+                };
+                let mut durable = Vec::new();
+                for item in history.items_for_turn(turn_id).await? {
+                    let frozen = match history.read_chat_item(&item.id).await? {
+                        Some(value) => Some(serde_json::from_slice::<ChatAtom>(&value.header.metadata)?),
+                        None => None,
+                    };
+                    if let Some(atom) = &frozen
+                        && atom.kind == ChatAtomKind::Text
+                        && Some(&atom.source) == source.as_ref()
+                        && atom.content_present == Some(false)
+                    {
+                        empty_completion = Some(atom.clone());
+                    }
+                    durable.push(serde_json::json!({"id":item.id,"ordinal":item.ordinal,"kind":item.state().kind(),"frozen":frozen.as_ref().map(a14_atom_metadata)}));
+                }
+                eprintln!("A14_STAGE {}", serde_json::json!({
+                    "stage": STAGES[index], "admitted": admitted.is_ok(),
+                    "coreCommitSequence": snapshot.commit_sequence,
+                    "coreDurableSequence": snapshot.persistence.durable_sequence,
+                    "coreProgress": parts, "durableItems": durable,
+                    "main": main.iter().filter(|item| Some(&item.source) == source.as_ref()).map(|item| serde_json::json!({"id":item.id,"kind":item.kind,"source":item.source,"position":item.position,"admissionClosed":item.admission_closed,"summary":item.summary,"contentItemId":item.content_item_id,"outcome":item.outcome})).collect::<Vec<_>>(),
+                    "current": current.as_ref().map(|value| serde_json::json!({"sourceEffectSeq":value.source_effect_seq,"sources":value.sources,"items":value.items.iter().map(|item| serde_json::json!({"id":item.id,"kind":item.kind,"source":item.source,"admissionClosed":item.admission_closed,"summary":item.summary,"outcome":item.outcome})).collect::<Vec<_>>(),"atoms":value.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>()})),
+                }));
+                if index == 0 || index == 3 {
+                    if let Some(reference) = current.as_ref().and_then(|value| value.items.iter().find(|item| item.is_work_group())).and_then(|item| item.members.clone()) {
+                        let mut members = env.runtime.open_conversation_feed(id, ChatScope::GroupMembers { reference }, demand()).await?;
+                        let batch = chat(&mut members).await?;
+                        ensure!(batch.before.is_none(), "A14 single reasoning unexpectedly paged");
+                        ensure!(batch.entries.len() == 1, "A14 group query did not return exactly one member");
+                        for entry in batch.entries {
+                            let ChatEntry::Atom(atom) = entry else { bail!("GroupMembers returned a Main item"); };
+                            eprintln!("A14_MEMBER {}", a14_atom_metadata(&atom));
+                            ensure!(Some(&atom.source) == source.as_ref() && atom.completion_item_id.is_some() && atom.completion_seq.is_some() && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { ended: Some(_), outcome: ChatTerminalOutcome::Completed, .. }), "A14 group handoff lacked a reliable member completion");
+                        }
+                        feeds.push(members);
+                    }
+                }
+                if let Some(atom) = &empty_completion {
+                    ensure!(matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { ended: Some(_), outcome: ChatTerminalOutcome::Completed, .. }), "empty completion lacks a reliable end");
+                    ensure!(atom.completion_item_id.is_some() && atom.completion_seq.is_some(), "empty completion lacks its real identity");
+                    ensure!(main.iter().all(|item| item.content_item_id != atom.completion_item_id), "empty structural atom appeared in Main");
+                }
+                release.cancel();
+            }
+            support::completed_prompt(&env.runtime, id, &prompt).await?;
+            let final_text = main.iter().find(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref()).context("A14 final Main text")?;
+            let body = final_text.contents.iter().find(|content| content.role == ChatContentRole::Body).context("A14 final body reference")?;
+            let window = feed.reader().read_content(&body.reference, ContentRange { offset: 0, max_bytes: 1024 }).await?;
+            ensure!(window.sealed && !window.bytes.is_empty(), "A14 final text lacked completed nonempty bytes");
+            ensure!(empty_completion.is_some(), "A14 empty completion was not observed in durable metadata");
+            ensure!(empty_id.is_some(), "A14 empty start never reached current; {failures:?}");
+            ensure!(failures.is_empty(), "A14 admitted-stage failures: {failures:?}");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let closed = feed.close().await;
+        let reader_closed = feed.reader().close().await;
+        result.and(closed).and(reader_closed)
+    }.await;
+    // Always unblock every original response gate before joining the real runtime and fixture,
+    // including a failed admitted-stage assertion. No model worker or test observer is detached.
+    for (_, release) in &gates {
+        release.cancel();
+    }
+    for mut feed in feeds {
+        let closed = feed.close().await;
+        let reader_closed = feed.reader().close().await;
+        result = result.and(closed).and(reader_closed);
+    }
+    env.finish(result).await
+}
