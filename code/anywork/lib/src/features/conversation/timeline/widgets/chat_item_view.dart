@@ -279,8 +279,12 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (identity != null && identity.callId != tool.toolCallId) {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
-      final contents = item.atom?.contents
-          .where(
+      // Main Status owns its declarations on the Item, not a fabricated Atom.
+      final declaredContents = item.displayUnit == null
+          ? item.atom?.contents
+          : item.displayUnit!.item.contents;
+      final contents = declaredContents
+          ?.where(
             (content) =>
                 content.role == ChatContentRole.toolArguments ||
                 content.role == ChatContentRole.toolOutput,
