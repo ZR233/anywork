@@ -452,7 +452,8 @@ final class _RealtimeScene {
     final mainSets = mainLease.appliedSets;
     final reference = unit.item.members!;
     final expansion = unit.expansion;
-    final bodyGeneration = expansion.bodyGeneration;
+    final bodyActiveBeforeOpen = expansion.bodyActive;
+    final bodyGenerationBeforeOpen = expansion.bodyGeneration;
     final display = await observed.openGroup(unit.id);
     await until(() {
       final members = display.atoms.toList();
@@ -525,6 +526,13 @@ final class _RealtimeScene {
       reason: 'No exec has been admitted before the observer gate is released',
     );
     expect(find.text('realtime parallel tools complete'), findsNothing);
+    // The member body scope is acquired by the original UI disclosure, not
+    // before it. Freeze it only after the real prefix is ready and laid out.
+    expect(expansion.bodyActive, isTrue);
+    final bodyGeneration = expansion.bodyGeneration;
+    if (!bodyActiveBeforeOpen) {
+      expect(bodyGeneration, isNot(same(bodyGenerationBeforeOpen)));
+    }
     final prepared = (
       turnId: turn!.turnId,
       lease: mainLease,
@@ -546,6 +554,14 @@ final class _RealtimeScene {
         'gate': _parallelObserverStage,
         'gateReached': true,
         'gateReleased': false,
+        'bodyScopeAdmission': {
+          'activeBeforeOpen': bodyActiveBeforeOpen,
+          'activeAfterReady': expansion.bodyActive,
+          'generationChangedOnOpen': !identical(
+            bodyGenerationBeforeOpen,
+            bodyGeneration,
+          ),
+        },
       },
     );
     _expectParallelObserver(prepared);
