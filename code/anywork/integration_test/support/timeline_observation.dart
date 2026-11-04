@@ -2,6 +2,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -233,7 +234,67 @@ final class TimelineObservation {
     expect(value.item.members, reference);
     final display = await openGroup(value.id);
     expect(display.atoms.where((entry) => entry.id == atom.id), hasLength(1));
-    await reveal(memberRow(atom.id), value.id);
+    final children = find.descendant(
+      of: groupRow(value.id),
+      matching: find.byType(TimelineChildrenView),
+    );
+    await until(
+      () => children.evaluate().length == 1,
+      'original member viewport ${value.id}',
+    );
+    final view = tester.widget<TimelineChildrenView>(children);
+    final list = find.descendant(
+      of: children,
+      matching: find.byKey(
+        ValueKey(('timeline-children-list', view.generation)),
+      ),
+    );
+    expect(list, findsOneWidget);
+    // The list's own Scrollable precedes any text-internal scrollables.
+    final scrollable = find
+        .descendant(of: list, matching: find.byType(Scrollable))
+        .first;
+    expect(scrollable, findsOneWidget);
+    await tester.ensureVisible(children);
+    await tester.pump();
+    // Members have their own bounded viewport and controller order. Main's
+    // parent index cannot locate a lazily mounted member inside that viewport.
+    final clock = Stopwatch()..start();
+    while (memberRow(atom.id).evaluate().isEmpty) {
+      if (clock.elapsed > const Duration(seconds: 60)) {
+        fail('Group ${value.id} did not mount original member ${atom.id}');
+      }
+      expect(display.isCurrent, isTrue);
+      expect(display.error, isNull);
+      final ordered = view.controller.messages
+          .map((message) => message.id)
+          .toList();
+      final wanted = ordered.indexOf(atom.id);
+      expect(wanted, greaterThanOrEqualTo(0));
+      final mounted =
+          tester
+              .widgetList<ChatItemView>(
+                find.descendant(
+                  of: children,
+                  matching: find.byType(ChatItemView),
+                ),
+              )
+              .map((widget) => ordered.indexOf(widget.item.id))
+              .where((index) => index >= 0)
+              .toList()
+            ..sort();
+      if (mounted.isNotEmpty) {
+        if (wanted > mounted.last) {
+          await tester.drag(scrollable, const Offset(0, -240));
+        } else if (wanted < mounted.first) {
+          await tester.drag(scrollable, const Offset(0, 240));
+        }
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
+    await tester.ensureVisible(memberRow(atom.id));
+    await tester.pump();
     expect(memberRow(atom.id), findsOneWidget);
     final rendered = tester.widget<ChatItemView>(memberRow(atom.id)).item.atom!;
     expect(rendered.id, atom.id);
