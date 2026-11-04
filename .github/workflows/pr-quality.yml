@@ -458,7 +458,8 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+            bash .github/scripts/linux-desktop-session.sh target/ci-desktop-secret-service \
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
               --shard-index "$2" --shard-count 3 --output target/ci-desktop-linux
           ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
@@ -550,7 +551,8 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+            bash .github/scripts/linux-desktop-session.sh target/ci-native-secret-service \
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite native --set full --output target/ci-native-linux
           ' -- "$PR_QUALITY_XTASK"
       - name: Record disk usage after native build

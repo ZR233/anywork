@@ -187,6 +187,10 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 xtask 的 `test-project` 两类 suite 并行执行，桌面功能使用完整集合的确定性分片；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
+Linux 自动桌面与原生作业除 Xvfb 外，还须显式提供可初始化的系统凭据服务：在作业自有隔离目录内使用独立 D-Bus session、仅启用 secrets 组件的 GNOME Keyring 及私有 XDG 数据、配置和运行目录，不访问操作者已有凭据库。复用官方 `dbus-run-session` 管理 bus 生命周期，等待 `org.freedesktop.secrets` 注册后再运行原 xtask；服务名就绪不替代产品实际初始化和业务验收。精确 Linux 镜像声明相应命令依赖，不依赖宿主恰好已有桌面登录会话。
+
+隔离服务的启动失败使该命令失败；正常或失败结束都须终止并等待自有 daemon，保留被包裹命令的原退出状态，再清理自有目录。服务就绪、业务与退出分别判定，不延长既有场景期限，不把凭据服务不可访问改成条目缺失或内存凭据成功。Keyring 的 `NoDefaultStore` 可以表示其一次原生初始化失败，不能单凭该类别推定具体 D-Bus 原因或缺少手动注册。
+
 实时场景先在 Windows 执行真实目录身份回归，确认普通盘符路径与扩展路径可指向同一实体，并仍拒绝工作区内路径及错误目标。目录等价复用 `dart:io` 的文件系统身份能力，不以解析后的路径字符串必须一致作为额外条件；Linux 跳过 Windows 专项不算目标平台通过，目录回归也不替代原生工具执行与实际 cwd 的交付证明。
 
 CI 在场景启动前显式完成同次源码、相同 Cargo 配置的 Rust bridge 构建：profile 场景使用 `release`，debug 场景使用默认开发配置。独立构建步骤保留完整编译失败，不让首次冷编译占用原生 VM 就绪期限；场景仍由 xtask 校验并消费构件，原有就绪、交互及退出期限保持不变。预构建成功不证明原生程序已启动或任何验收通过。
