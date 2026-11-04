@@ -124,7 +124,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         env.submit_followup().await?;
         tokio::time::timeout(Duration::from_secs(5), head.wait_reached()).await?;
 
-        let (held_seq, reference) = loop {
+        let (held_seq, reference, preview_id, preview_bytes, preview_range_matches, held_cut) = loop {
             let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
             for entry in batch.entries {
@@ -136,7 +136,20 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             if let Some(preview) = batch.current.as_ref().and_then(|current| current.previews.iter()
                 .find(|preview| preview.role == BridgeCurrentContentRole::Response))
             {
-                break (sequence, preview.reference.clone());
+                let cut = batch.current.as_ref().map(|current| (
+                    current.source_effect_seq,
+                    current.execution_present,
+                    current.active.as_ref().map(|active| active.id.clone()),
+                    current.active_turn.clone(),
+                ));
+                break (
+                    sequence,
+                    preview.reference.clone(),
+                    preview.id.clone(),
+                    preview.text.len(),
+                    preview.text.as_bytes().get(3..15) == Some(&prefix.as_bytes()[3..15]),
+                    cut,
+                );
             }
             owner.acknowledge(&owner.subscription_id, sequence)?;
         };
@@ -144,13 +157,30 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         ensure!(owner.native.try_lock().is_err());
         let mut credit = Box::pin(owner.wait_credit());
         ensure!(futures::poll!(credit.as_mut()).is_pending());
+        let held_context = || format!(
+            "watch.primary held preview: thread_id={}; subscription_id={}; held_sequence={held_seq}; \
+             preview_id={preview_id:?}; preview_text_bytes={preview_bytes}; \
+             preview_range_matches={preview_range_matches}; \
+             cut(source_effect_seq,execution_present,active_id,active_turn)={held_cut:?}; \
+             reference={reference:?}; range={range:?}; expected_available_through={}; expected_window_bytes=12",
+            owner.thread_id, owner.subscription_id, prefix.len(),
+        );
         let watch = facade.open_content_watch(reference.clone(), range.clone()).await
             .map_err(|error| anyhow::anyhow!(
                 "watch.primary.open: reference={reference:?}; range={range:?}: {error:?}"
-            ))?;
-        let first = window(&facade, &watch, "watch.primary.initial").await?;
-        ensure!(first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64);
-        ensure!(first.bytes == prefix.as_bytes()[3..15]);
+            ))
+            .with_context(&held_context)?;
+        let first = window(&facade, &watch, "watch.primary.initial").await
+            .with_context(&held_context)?;
+        let held_context = held_context();
+        ensure!(
+            first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64,
+            "{held_context}; actual_initial_window={first:?}"
+        );
+        ensure!(
+            first.bytes == prefix.as_bytes()[3..15],
+            "{held_context}; actual_initial_window={first:?}"
+        );
         let cancelled_watch = facade.open_content_watch(reference.clone(), range.clone()).await
             .map_err(|error| anyhow::anyhow!(
                 "watch.cancelled.open: reference={reference:?}; range={range:?}: {error:?}"
@@ -269,8 +299,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             .map_err(|error| anyhow::anyhow!("replacement.read_content: {error:?}"))?
             .bytes == final_window.bytes);
         replacement_facade.close().await?;
-        println!("live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed",
-            first.generation, final_window.generation);
+        println!("live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed; \
+            {held_context}; actual_window_through(first,append,replacement)=({},{},{}); actual_initial_window={first:?}",
+            first.generation, final_window.generation,
+            first.available_through, second.available_through, final_window.available_through);
         Ok(())
     }).await.context("live FRB lifecycle exceeded its bounded test budget").and_then(|result| result);
     head.release();
