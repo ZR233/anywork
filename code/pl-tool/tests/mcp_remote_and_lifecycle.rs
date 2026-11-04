@@ -46,10 +46,20 @@ if pid_file:
 
 exit_marker = os.environ.get("MCP_EXIT_MARKER")
 ignore_term_ms = int(os.environ.get("MCP_IGNORE_TERM_MS", "0"))
+term_started_marker = os.environ.get("MCP_TERM_STARTED_MARKER")
+term_release_marker = os.environ.get("MCP_TERM_RELEASE_MARKER")
 hang_initialize = os.environ.get("MCP_HANG_INITIALIZE") == "1"
 hang_call_ms = int(os.environ.get("MCP_HANG_CALL_MS", "0"))
 
 def on_term(signum, frame):
+    if term_release_marker:
+        with open(term_started_marker, "w") as f:
+            f.write("terminating")
+        deadline = time.monotonic() + 5
+        while not os.path.exists(term_release_marker):
+            if time.monotonic() >= deadline:
+                sys.exit("timed out waiting for SIGTERM handler release")
+            time.sleep(0.025)
     if ignore_term_ms > 0:
         time.sleep(ignore_term_ms / 1000.0)
     if exit_marker:
@@ -134,6 +144,13 @@ for raw in sys.stdin:
         }
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+
+if term_release_marker:
+    # T09 must stay alive after transport EOF until the real SIGTERM handler runs.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        time.sleep(0.025)
+    sys.exit("stdin closed without SIGTERM")
 "#;
 
 fn stdio_effective_config(
@@ -307,12 +324,8 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
     );
 
     // --- T09: First shutdown() times out, second shutdown() joins in-flight close and succeeds ---
-    // Connect via a slow-closing Remote stdio command where Terminate is delayed on the wire,
-    // or use a short close_timeout (80ms) while the process delays exit by 350ms.
-    // Note: ManagedWorker on Linux sends SIGKILL after control.cancel() if child ignores SIGTERM,
-    // wait: ManagedWorker::cancel sends Cancel over control socket, which kills the process group
-    // immediately. For remote stdio, Terminate sends SIGTERM then waits up to 2s before SIGKILL!
-    // Let's test T09 with a remote stdio server that ignores SIGTERM for 350ms while close_timeout is 80ms!
+    // Hold the real remote SIGTERM handler until the first 80ms shutdown returns.
+    // Once released, the handler still delays exit by the original 400ms.
     let helper_instance = support::Helper::start(executable).await?;
     let remote_commands = helper_instance
         .client
@@ -324,11 +337,24 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
         STDIO_MCP_SCRIPT,
     );
     let exit_marker = helper_instance.root.path().join("exited.marker");
+    let term_started_marker = helper_instance.root.path().join("terminating.marker");
+    let term_release_marker = helper_instance
+        .root
+        .path()
+        .join("release-termination.marker");
     let mut delayed_env = BTreeMap::new();
     delayed_env.insert("MCP_IGNORE_TERM_MS".to_owned(), "400".to_owned());
     delayed_env.insert(
         "MCP_EXIT_MARKER".to_owned(),
         exit_marker.to_string_lossy().into_owned(),
+    );
+    delayed_env.insert(
+        "MCP_TERM_STARTED_MARKER".to_owned(),
+        term_started_marker.to_string_lossy().into_owned(),
+    );
+    delayed_env.insert(
+        "MCP_TERM_RELEASE_MARKER".to_owned(),
+        term_release_marker.to_string_lossy().into_owned(),
     );
 
     let short_connector = McpConnector::default()
@@ -353,7 +379,21 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
     );
     retry_handle.reconcile(retry_servers).await?;
 
-    let first_shutdown = retry_handle.shutdown().await;
+    let first_shutdown_handle = retry_handle.clone();
+    let first_shutdown_task = tokio::spawn(async move { first_shutdown_handle.shutdown().await });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !term_started_marker.exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let handler_started = term_started_marker.exists();
+    let first_shutdown = first_shutdown_task.await;
+    // Release even if readiness, the join, or the original timeout assertion fails.
+    std::fs::write(&term_release_marker, b"release")?;
+    let first_shutdown = first_shutdown?;
+    assert!(
+        handler_started,
+        "remote stdio server must enter its real SIGTERM handler"
+    );
     assert!(
         first_shutdown.is_err(),
         "first shutdown with 80ms close_timeout should report timeout while process takes 400ms"
