@@ -505,6 +505,245 @@ async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start
 }
 
 #[tokio::test]
+async fn opened_member_window_appends_later_members_and_reliable_source_end_across_save()
+-> Result<()> {
+    async fn member_cut(feed: &mut ConversationFeed, serial: u64) -> Result<Vec<ChatEntry>> {
+        let mut entries = Vec::new();
+        // Consume the original feed's bounded frames through the published
+        // cut. Active head updates can share a cut with new member admissions.
+        while feed.seen_serial < serial {
+            let batch = chat(feed).await?;
+            assert_eq!(batch.placement, ChatPlacement::Append);
+            assert!(batch.before.is_none() && batch.current.is_none());
+            entries.extend(batch.entries);
+        }
+        assert_eq!(feed.seen_serial, serial);
+        Ok(entries)
+    }
+
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let window = ReadDemand {
+            max_items: 3,
+            ..demand()
+        };
+        let started = harness
+            .effect(
+                (0..4)
+                    .map(|index| start(&format!("work-{index}"), true))
+                    .collect(),
+                vec![],
+            )
+            .await?;
+        harness.save(&started).await?;
+        let reference = started.current.projection().items[0]
+            .members
+            .clone()
+            .context("live group")?;
+        let mut group = env
+            .runtime
+            .open_conversation_feed(
+                &harness.thread.id,
+                ChatScope::GroupMembers { reference },
+                window,
+            )
+            .await?;
+        let subscription = group.reader().subscription_id().to_owned();
+        let initial = chat(&mut group).await?;
+        let before = initial.before.context("older hidden member")?;
+        assert_eq!(initial.placement, ChatPlacement::Set);
+        assert!(initial.current.is_none());
+        assert_eq!(initial.entries.len(), 3);
+        let initial_ids = initial
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                ChatEntry::Atom(atom) => Ok(atom.id.clone()),
+                _ => bail!("member Set returned a non-atom"),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let later = harness
+            .effect(vec![start("work-4", true), start("work-5", true)], vec![])
+            .await?;
+        let serial = harness
+            .source
+            .current_conversation()
+            .context("live cut")?
+            .serial;
+        let new = member_cut(&mut group, serial).await?;
+        let new_ids = new
+            .iter()
+            .filter_map(|entry| match entry {
+                ChatEntry::Atom(atom) => {
+                    assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
+                    (!initial_ids.contains(&atom.id)).then(|| atom.id.clone())
+                }
+                ChatEntry::Source(_) => None,
+                ChatEntry::Item(_) => panic!("member admission returned a Main item"),
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(new_ids.len(), 2, "same window lost later member admission");
+        harness.save(&later).await?;
+
+        // A hidden older member also completes, but must not be pulled into
+        // the opened window. Reverse completion does not change membership.
+        let partial = harness
+            .effect(
+                vec![],
+                vec![
+                    finish("work-5", true, "five")?,
+                    finish("work-3", true, "three")?,
+                    finish("work-1", true, "one")?,
+                    finish("work-0", true, "hidden")?,
+                ],
+            )
+            .await?;
+        harness.save(&partial).await?;
+        let serial = harness
+            .source
+            .current_conversation()
+            .context("live cut")?
+            .serial;
+        let completed = member_cut(&mut group, serial).await?;
+        let completed_ids = completed
+            .iter()
+            .filter_map(|entry| match entry {
+                ChatEntry::Atom(atom) => {
+                    matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+                        .then(|| atom.id.clone())
+                }
+                ChatEntry::Source(_) => None,
+                ChatEntry::Item(_) => panic!("member completion returned a Main item"),
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            completed_ids,
+            [
+                initial_ids[0].clone(),
+                initial_ids[2].clone(),
+                new_ids[1].clone(),
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        // The original reliable effect ends both remaining loaded members and
+        // their source. With max_items=3 this is one real mixed Atom/Source
+        // batch, not an ordinary page and not a synthesized terminal state.
+        harness.sequence += 1;
+        let turn = TurnRecord {
+            elapsed_ms: None,
+            input_id: None,
+            turn_id: "atomic-turn".into(),
+            state: CoreTurnState::Finished(pl_core::thread::TurnOutcome::Completed),
+            model_steps: 1,
+        };
+        let state = CoreSnapshot {
+            turns: vec![turn.clone()].into(),
+            ..Default::default()
+        };
+        let effect = ThreadEffectBatch {
+            thread_id: harness.thread.id.clone(),
+            sequence: harness.sequence,
+            committed_at: 100,
+            turn: Some(turn),
+            model_members: vec![
+                finish("work-4", true, "four")?,
+                finish("work-2", true, "two")?,
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let (_, mut end) = harness
+            .projection
+            .prepare(&harness.thread, &effect, &state, false)
+            .await?;
+        harness
+            .projection
+            .publish_prepared(&harness.session, &mut end)
+            .await?;
+        publish(&harness.source, &harness.session, &end)?;
+        harness.save(&end).await?;
+        let serial = harness
+            .source
+            .current_conversation()
+            .context("live cut")?
+            .serial;
+        let terminal = member_cut(&mut group, serial).await?;
+        assert_eq!(terminal.len(), 3);
+        let mut terminal_ids = std::collections::BTreeSet::new();
+        let mut source_ends = 0;
+        for entry in terminal {
+            match entry {
+                ChatEntry::Atom(atom) => {
+                    assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }));
+                    let source = atom.source_state.context("same-cut source annotation")?;
+                    assert!(matches!(
+                        source.lifecycle,
+                        ChatSourceLifecycle::Ended { .. }
+                    ));
+                    assert_eq!(
+                        source.ended.context("source end cut")?.effect_seq,
+                        effect.sequence
+                    );
+                    terminal_ids.insert(atom.id);
+                }
+                ChatEntry::Source(source) => {
+                    assert!(matches!(
+                        source.lifecycle,
+                        ChatSourceLifecycle::Ended { .. }
+                    ));
+                    assert_eq!(
+                        source.ended.context("reliable source end")?.effect_seq,
+                        effect.sequence
+                    );
+                    source_ends += 1;
+                }
+                ChatEntry::Item(_) => bail!("GroupMembers delivered a Main item"),
+            }
+        }
+        assert_eq!(
+            terminal_ids,
+            [initial_ids[1].clone(), new_ids[0].clone()]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(source_ends, 1);
+        assert_eq!(group.reader().subscription_id(), subscription);
+        let older = group.reader().load_older(&before, window).await?;
+        assert!(older.before.is_none() && older.current.is_none());
+        let [ChatEntry::Atom(hidden)] = older.entries.as_slice() else {
+            bail!("old member continuation changed its original boundary");
+        };
+        assert!(
+            matches!(hidden.lifecycle, ChatAtomLifecycle::Active { .. }),
+            "new durable head leaked into the original older-page cut"
+        );
+        assert!(matches!(
+            hidden
+                .source_state
+                .as_ref()
+                .context("old source")?
+                .lifecycle,
+            ChatSourceLifecycle::Active
+        ));
+        group.close().await?;
+        group.reader().close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&harness.thread.id)
+            .retire(&harness.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
 async fn reliable_starts_reverse_completion_and_member_window_use_real_item_feed() -> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
     let result = async {

@@ -193,12 +193,18 @@ impl ConversationReader {
             }
         }
     }
-    pub(super) fn observes_member(&self, id: &str) -> bool {
-        self.inner
-            .member_window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(id)
+    pub(super) fn observes_member(&self, id: &str, order: u64) -> bool {
+        // The initial page freezes only the older-page boundary. New members
+        // of this same group still belong to its live append tail, including a
+        // member first observed at its reliable terminal handoff. Older hidden
+        // members must not be materialized by an unrelated update.
+        order >= self.inner.ceiling
+            || self
+                .inner
+                .member_window
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(id)
     }
     pub(super) fn observes_source(&self, source: &ChatSourceId) -> bool {
         self.inner
