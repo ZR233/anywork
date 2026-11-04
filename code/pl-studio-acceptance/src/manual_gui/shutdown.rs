@@ -2212,8 +2212,9 @@ fn start_gui_with(
     label: &str,
     launch: NativeLaunch<'_>,
 ) -> Result<OwnedProcess> {
-    let log = File::create(log_path)?;
     let report = native_report_path(working, label);
+    let (log_filename, native_report_filename) = launch_identity_filenames(log_path, &report)?;
+    let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
@@ -2268,17 +2269,53 @@ fn start_gui_with(
         command.env("TMPDIR", tmpdir);
     }
     let gui = OwnedProcess::start(&mut command, false)?;
-    fs::write(
-        launch_identity_path(working, gui.child.id()),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "label": label,
-            "launcherPid": gui.child.id(),
-            "launcherStartTicks": proc_start_ticks(gui.child.id()),
-            "logFile": log_path.file_name(),
-            "nativeReportFile": report.file_name(),
-        }))?,
+    write_launch_identity(
+        working,
+        label,
+        gui.child.id(),
+        proc_start_ticks(gui.child.id()),
+        log_filename,
+        native_report_filename,
     )?;
     Ok(gui)
+}
+
+fn launch_identity_filenames<'a>(
+    log_path: &'a Path,
+    report_path: &'a Path,
+) -> Result<(&'a str, &'a str)> {
+    let log_filename = log_path
+        .file_name()
+        .context("shutdown launcher log path has no filename")?
+        .to_str()
+        .context("shutdown launcher log filename is not valid UTF-8")?;
+    let native_report_filename = report_path
+        .file_name()
+        .context("shutdown launcher native report path has no filename")?
+        .to_str()
+        .context("shutdown launcher native report filename is not valid UTF-8")?;
+    Ok((log_filename, native_report_filename))
+}
+
+fn write_launch_identity(
+    working: &Path,
+    label: &str,
+    launcher_pid: u32,
+    launcher_start_ticks: Option<u64>,
+    log_filename: &str,
+    native_report_filename: &str,
+) -> Result<()> {
+    fs::write(
+        launch_identity_path(working, launcher_pid),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "label": label,
+            "launcherPid": launcher_pid,
+            "launcherStartTicks": launcher_start_ticks,
+            "logFile": log_filename,
+            "nativeReportFile": native_report_filename,
+        }))?,
+    )?;
+    Ok(())
 }
 
 fn launch_identity_path(working: &Path, launcher_pid: u32) -> PathBuf {
@@ -3100,4 +3137,74 @@ fn signal_group(pid: u32, signal: &str) -> Result<()> {
         "failed to send {signal} to process group {pid}: {status}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        launch_identity_filenames, launch_identity_path, read_phase_json, write_launch_identity,
+    };
+    use anyhow::Result;
+    use std::fs;
+
+    #[test]
+    fn launch_identity_filenames_round_trip_as_utf8_json_strings() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log_path = directory.path().join("shutdown normal 测试.log");
+        let report_path = directory.path().join("shutdown native 已退出.json");
+        fs::write(&log_path, b"synthetic launcher log\n")?;
+        fs::write(&report_path, b"{}\n")?;
+        let (log_filename, native_report_filename) =
+            launch_identity_filenames(&log_path, &report_path)?;
+        write_launch_identity(
+            directory.path(),
+            "normal",
+            42,
+            Some(123),
+            log_filename,
+            native_report_filename,
+        )?;
+
+        let identity = read_phase_json(&launch_identity_path(directory.path(), 42))?;
+        assert!(identity["logFile"].is_string());
+        assert!(identity["nativeReportFile"].is_string());
+        assert_eq!(
+            identity["logFile"].as_str(),
+            log_path.file_name().and_then(|name| name.to_str()),
+        );
+        assert_eq!(
+            identity["nativeReportFile"].as_str(),
+            report_path.file_name().and_then(|name| name.to_str()),
+        );
+        assert_eq!(
+            identity["logFile"].as_str(),
+            Some("shutdown normal 测试.log")
+        );
+        assert_eq!(
+            identity["nativeReportFile"].as_str(),
+            Some("shutdown native 已退出.json"),
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_identity_filenames_reject_non_utf8_before_launch() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        let invalid_path = Path::new(OsStr::from_bytes(b"shutdown-\xff.log"));
+        let valid_path = Path::new("shutdown valid.json");
+        let log_error = launch_identity_filenames(invalid_path, valid_path).unwrap_err();
+        assert_eq!(
+            log_error.to_string(),
+            "shutdown launcher log filename is not valid UTF-8",
+        );
+        let report_error = launch_identity_filenames(valid_path, invalid_path).unwrap_err();
+        assert_eq!(
+            report_error.to_string(),
+            "shutdown launcher native report filename is not valid UTF-8",
+        );
+    }
 }
