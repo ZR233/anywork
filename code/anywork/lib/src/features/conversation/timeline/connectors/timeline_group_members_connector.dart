@@ -50,7 +50,12 @@ class _MembersState extends State<TimelineGroupMembersConnector>
   @override
   String? get before => isCurrent ? _display?.olderCursor : null;
   @override
-  bool get loading => isCurrent && (_display?.loadingOlder ?? false);
+  bool get loading {
+    if (!isCurrent) return false;
+    final display = _display;
+    return display == null || !display.isCurrent || display.loadingOlder;
+  }
+
   @override
   Object? get error => isCurrent ? _display?.error : null;
   @override
