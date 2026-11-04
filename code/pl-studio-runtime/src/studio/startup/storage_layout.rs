@@ -558,17 +558,20 @@ async fn build(
                 let manifest = root
                     .join(storage_key(&workspace.id, "Workspace")?)
                     .join("project.toml");
-                if manifest.parent().context("manifest parent")?.try_exists()? {
-                    let content = tokio::fs::read_to_string(&manifest)
-                        .await
-                        .context("grouped v2 Workspace manifest is missing")?;
-                    let old = session_layout::schema::decode_v2_workspace(&manifest, &content)?;
-                    ensure!(
-                        old.workspace_id == workspace.id
-                            && old.path == workspace.path
-                            && old.ssh_alias == workspace.ssh_alias,
-                        "v2 project manifest conflicts with canonical Workspace"
-                    );
+                match tokio::fs::read_to_string(&manifest).await {
+                    Ok(content) => {
+                        let old = session_layout::schema::decode_v2_workspace(&manifest, &content)?;
+                        ensure!(
+                            old.workspace_id == workspace.id
+                                && old.path == workspace.path
+                                && old.ssh_alias == workspace.ssh_alias,
+                            "v2 project manifest conflicts with canonical Workspace"
+                        );
+                    }
+                    // Workspaces owns identity; each registered session is verified below.
+                    // A missing redundant project manifest must not prevent its migration.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
             if let Some(mapping) = journal.bot_roots.iter().find(|mapping| {
