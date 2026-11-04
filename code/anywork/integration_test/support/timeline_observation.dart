@@ -151,6 +151,8 @@ final class TimelineObservation {
     ScrollableState? originalScrollable;
     final clock = Stopwatch()..start();
     TimelineDisplayUnit? originalUnit;
+    Finder interaction = target;
+    Element? interactionHeader;
     var phase = 'capture';
     final demands = <Map<String, Object?>>[];
 
@@ -276,6 +278,20 @@ final class TimelineObservation {
             .take(3)
             .map((element) => _mainRevealElementInfo(element, state))
             .toList(),
+        'interactionRole': interactionHeader == null
+            ? 'originalFragment'
+            : 'groupHeaderTitle',
+        'interactionTitle': interactionHeader == null
+            ? null
+            : {
+                'finderCount': interaction.evaluate().length,
+                'hitTestableCount': interaction.hitTestable().evaluate().length,
+                'elements': interaction
+                    .evaluate()
+                    .take(3)
+                    .map((element) => _mainRevealElementInfo(element, state))
+                    .toList(),
+              },
         'scrollDemands': demands,
         'pointerEvidenceLimit': 'Read-only hit test at exact dragFrom start; actual dispatch cache and gesture-arena winning receiver are not exposed by WidgetTester.',
       };
@@ -338,7 +354,19 @@ final class TimelineObservation {
       }
     }
 
-    void requireTarget() {
+    bool belongsTo(Element element, Element ancestor) {
+      var belongs = identical(element, ancestor);
+      element.visitAncestorElements((candidate) {
+        if (identical(candidate, ancestor)) {
+          belongs = true;
+          return false;
+        }
+        return true;
+      });
+      return belongs;
+    }
+
+    Element requireTarget() {
       final matches = target.evaluate().toList();
       if (matches.length != 1) {
         stop(
@@ -350,16 +378,28 @@ final class TimelineObservation {
           !identical(Scrollable.maybeOf(matches.single), originalScrollable)) {
         stop('Main reveal fragment lost its original Main domain');
       }
-      var belongsToRow = identical(matches.single, row.single);
-      matches.single.visitAncestorElements((element) {
-        if (identical(element, row.single)) {
-          belongsToRow = true;
-          return false;
-        }
-        return true;
-      });
-      if (!belongsToRow) {
+      if (!belongsTo(matches.single, row.single)) {
         stop('Main reveal fragment belongs to another canonical row');
+      }
+      return matches.single;
+    }
+
+    void requireInteraction() {
+      final fragment = requireTarget();
+      final header = interactionHeader;
+      if (header == null) return;
+      final headers = groupHeader(unitId).evaluate().toList();
+      if (originalUnit!.item.kind != TimelineItemKind.workGroup ||
+          headers.length != 1 ||
+          !identical(headers.single, header) ||
+          !identical(fragment, header)) {
+        stop('Main reveal lost its exact original group header');
+      }
+      final titles = interaction.evaluate().toList();
+      if (titles.length != 1 ||
+          !belongsTo(titles.single, header) ||
+          !identical(Scrollable.maybeOf(titles.single), originalScrollable)) {
+        stop('Main reveal requires the exact header title in its Main domain');
       }
     }
 
@@ -468,19 +508,49 @@ final class TimelineObservation {
     ).contains(wanted)) {
       stop('Main canonical row did not become visible after ensureVisible');
     }
-    requireTarget();
+    final fragmentElement = requireTarget();
+    if (originalUnit!.item.kind == TimelineItemKind.workGroup) {
+      final headers = groupHeader(unitId).evaluate().toList();
+      if (headers.length > 1) {
+        stop('Main reveal group header is not unique');
+      }
+      if (headers.length == 1 && identical(fragmentElement, headers.single)) {
+        // This is the same title used by openGroup, selected by exact header
+        // identity before any fragment demand, not a failed-hit fallback.
+        interactionHeader = fragmentElement;
+        interaction = _groupTitle(unitId);
+      }
+    }
+    requireInteraction();
     await demand(
-      'ensure original fragment visible',
-      () => tester.ensureVisible(target),
+      interactionHeader == null
+          ? 'ensure original fragment visible'
+          : 'ensure original group title visible',
+      () => tester.ensureVisible(interaction),
     );
     requireOriginal();
-    requireTarget();
+    requireInteraction();
     final fragment = target.evaluate().single.findRenderObject();
     if (fragment is! RenderBox || !fragment.attached || !fragment.hasSize) {
       stop('Main original fragment has no attached sized RenderBox');
     }
-    if (target.hitTestable().evaluate().length != 1) {
-      stop('Main original fragment is not hit-testable after ensureVisible');
+    final viewport = RenderAbstractViewport.maybeOf(fragment);
+    if (viewport is! RenderViewport ||
+        !identical(viewport.offset, originalScrollable!.position) ||
+        !viewport.attached ||
+        !viewport.hasSize) {
+      stop('Main original fragment lost its original sized viewport');
+    }
+    final rect = MatrixUtils.transformRect(
+      fragment.getTransformTo(viewport),
+      Offset.zero & fragment.size,
+    );
+    final visible = rect.intersect(Offset.zero & viewport.size);
+    if (!rect.isFinite || visible.width <= 0 || visible.height <= 0) {
+      stop('Main original fragment is not geometrically visible');
+    }
+    if (interaction.hitTestable().evaluate().length != 1) {
+      stop('Main interaction target is not hit-testable after ensureVisible');
     }
   }
 

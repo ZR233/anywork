@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -271,7 +272,42 @@ void main() {
         phase = 'reveal cached canonical group';
         await observed.reveal(groupHeader, ids.last);
         expect(groupHeader, findsOneWidget);
-        expect(groupHeader.hitTestable(), findsOneWidget);
+        final headerElement = tester.element(groupHeader);
+        final headerBox = tester.renderObject<RenderBox>(groupHeader);
+        expect(headerBox.attached, isTrue);
+        expect(headerBox.hasSize, isTrue);
+        expect(
+          tester
+              .getRect(groupHeader)
+              .intersect(tester.getRect(mainScroll))
+              .isEmpty,
+          isFalse,
+          reason: 'The original header must really intersect its Main viewport',
+        );
+        expect(
+          Scrollable.maybeOf(headerElement),
+          same(tester.state<ScrollableState>(mainScroll)),
+        );
+        expect(
+          tester.element(
+            find.descendant(of: cachedGroupRow, matching: groupHeader),
+          ),
+          same(headerElement),
+        );
+        // Match the existing openGroup/_groupTitle click surface, scoped to
+        // this exact header, not the Align/Row/Spacer container's empty centre.
+        final groupTitle = find.descendant(
+          of: groupHeader,
+          matching: find.text(
+            tester.widget<TimelineActivityRow>(groupHeader).label,
+          ),
+        );
+        expect(groupTitle, findsOneWidget);
+        expect(groupTitle.hitTestable(), findsOneWidget);
+        expect(
+          Scrollable.maybeOf(tester.element(groupTitle)),
+          same(tester.state<ScrollableState>(mainScroll)),
+        );
         expect(
           mainDrags,
           dragsBeforeCache,
@@ -301,6 +337,37 @@ void main() {
         expect(cachedTypedBody.hitTestable(), findsOneWidget);
         expect(mainDrags, dragsBeforeCache);
 
+        expect(atomScroll.position.pixels, atomPixels);
+        expect(lease.controller, same(controller));
+        expect(lease.generation, 7);
+        expect(controller.messages.map((message) => message.id), ids);
+        expect(operations, 0);
+        expect(content.calls, 0);
+        expect(memberOpens, 0);
+        expect(tester.takeException(), isNull);
+
+        // Only after all original zero-IO/Main/Atom guards pass, exercise the
+        // same real title tap as openGroup. This fixture has no member builder;
+        // expansion proves UI interaction, not GroupMembers query acceptance.
+        phase = 'toggle exact group title';
+        await observed.reveal(groupHeader, ids.last);
+        final titlePixels = position.pixels;
+        await observed.tap(groupTitle);
+        await tester.pumpAndSettle();
+        expect(groupUnit.expansion.expanded, isTrue);
+        expect(
+          tester.widget<TimelineActivityRow>(groupHeader).expanded,
+          isTrue,
+        );
+        await observed.tap(groupTitle);
+        await tester.pumpAndSettle();
+        expect(groupUnit.expansion.expanded, isFalse);
+        expect(
+          tester.widget<TimelineActivityRow>(groupHeader).expanded,
+          isFalse,
+        );
+        expect(position.pixels, titlePixels);
+        expect(mainDrags, dragsBeforeCache);
         expect(atomScroll.position.pixels, atomPixels);
         expect(lease.controller, same(controller));
         expect(lease.generation, 7);
