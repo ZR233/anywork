@@ -975,6 +975,7 @@ async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_
         let mut legacy: serde_json::Value =
             serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
         super::super::legacy_usage::flatten(&mut legacy);
+        legacy["state"]["usageSummary"]["turnDecodeMillis"] = 99.into();
         legacy["schemaVersion"] = 5.into();
         let payload = serde_json::to_string(&legacy)?;
         db.execute_raw(statement(

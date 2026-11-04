@@ -16,6 +16,20 @@ const ATTEMPT_MEMBERS: [&str; 6] = [
     "data",
     "storage-migration.toml",
 ];
+// A recovery owns the complete unpublished layout operation as well as current data.
+// Preserve opaque journals with their sources and candidates; never interpret them as defaults.
+const RECOVERY_MEMBERS: [&str; 10] = [
+    "config.toml",
+    "agents",
+    "modes",
+    "mcp",
+    "v2",
+    "studio/v2",
+    "data",
+    "storage-migration.toml",
+    "migration-backups",
+    "skills",
+];
 fn legacy_members_version() -> u32 {
     1
 }
@@ -24,6 +38,7 @@ fn member_names(version: u32) -> Result<&'static [&'static str]> {
         1 => Ok(&V2_MEMBERS),
         2 => Ok(&CURRENT_MEMBERS),
         3 => Ok(&ATTEMPT_MEMBERS),
+        4 => Ok(&RECOVERY_MEMBERS),
         _ => anyhow::bail!("unknown recovery member layout"),
     }
 }
@@ -102,7 +117,7 @@ impl StartupBackup {
             backup.record.interrupted = Some(inventory(
                 home,
                 crate::studio::ids::new_id("interrupted"),
-                3,
+                4,
             )?);
             backup.persist()?;
         }
@@ -122,7 +137,7 @@ impl StartupBackup {
             reason,
             created_at: crate::studio::unix_seconds(),
             phase: Phase::Moving,
-            original: inventory(home, "original".into(), 2)?,
+            original: inventory(home, "original".into(), 4)?,
             interrupted: None,
         };
         ensure_no_credential_transactions(home, &record)?;
@@ -269,24 +284,47 @@ pub(crate) fn validate_credential_recovery(home: &Path) -> Result<()> {
 
 fn ensure_no_credential_transactions(home: &Path, record: &Record) -> Result<()> {
     let root = home.join("startup-backups").join(&record.id);
-    let mut bases = vec![home.to_owned(), root.join(&record.original.directory)];
+    let mut bases = vec![
+        (home.to_owned(), record.original.member_version),
+        (
+            root.join(&record.original.directory),
+            record.original.member_version,
+        ),
+    ];
     if let Some(pass) = &record.interrupted {
-        bases.push(root.join(&pass.directory));
+        bases.push((root.join(&pass.directory), pass.member_version));
     }
-    for base in bases {
+    for (base, member_version) in bases {
         let layout_journal = base.join("storage-migration.toml");
         check_ancestors(home, &layout_journal)?;
         metadata(&layout_journal)?;
-        ensure!(
-            !super::storage_layout::incomplete_operation(&layout_journal)?,
-            "unfinished layout migration intersects startup recovery; materials preserved"
-        );
-        for relative in [
+        if member_version < 4 {
+            ensure!(
+                !super::storage_layout::incomplete_operation(&layout_journal)?,
+                "unfinished layout migration intersects startup recovery; materials preserved"
+            );
+        }
+        let mut transaction_roots = [
             "v2/credential-transactions",
             "studio/v2/credential-transactions",
             "data/credential-transactions",
-        ] {
-            let path = base.join(relative);
+        ]
+        .map(|relative| base.join(relative))
+        .to_vec();
+        let preserved = base.join("migration-backups");
+        check_ancestors(home, &preserved)?;
+        if metadata(&preserved)?.is_some_and(|meta| meta.is_dir()) {
+            for entry in std::fs::read_dir(&preserved)? {
+                let operation = entry?.path();
+                if metadata(&operation)?.is_some_and(|meta| meta.is_dir()) {
+                    for relative in ["v2", "studio/v2", "current-home/data"] {
+                        transaction_roots
+                            .push(operation.join(relative).join("credential-transactions"));
+                    }
+                }
+            }
+        }
+        for path in transaction_roots {
             check_ancestors(home, &path)?;
             if let Some(meta) = metadata(&path)? {
                 ensure!(
@@ -629,6 +667,73 @@ mod migration_fault_tests {
             b"original config"
         );
         assert!(!backup.root().join("original/config.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_layout_backup_resumes_moves_and_rejects_pending_credentials() -> Result<()> {
+        for credential_root in [
+            None,
+            Some("v2"),
+            Some("studio/v2"),
+            Some("current-home/data"),
+        ] {
+            let temp = tempfile::tempdir()?;
+            std::fs::write(temp.path().join("config.toml"), b"original config")?;
+            std::fs::write(
+                temp.path().join("storage-migration.toml"),
+                b"unknown journal",
+            )?;
+            let operation = temp.path().join("migration-backups/layout-original");
+            let original = operation.join("v2/source");
+            std::fs::create_dir_all(original.parent().expect("fixture parent"))?;
+            std::fs::write(&original, b"original history")?;
+            if let Some(relative) = credential_root {
+                std::fs::create_dir_all(
+                    operation
+                        .join(relative)
+                        .join("credential-transactions/pending"),
+                )?;
+                assert!(StartupBackup::begin(temp.path(), "unsupported layout".into()).is_err());
+                assert_eq!(std::fs::read(&original)?, b"original history");
+                assert!(!temp.path().join(JOURNAL).exists());
+                continue;
+            }
+            let mut backup = StartupBackup {
+                home: temp.path().to_owned(),
+                record: Record {
+                    version: 2,
+                    id: crate::studio::ids::new_id("recovery"),
+                    reason: "unsupported layout".into(),
+                    created_at: crate::studio::unix_seconds(),
+                    phase: Phase::Moving,
+                    original: inventory(temp.path(), "original".into(), 4)?,
+                    interrupted: None,
+                },
+            };
+            let root = backup.root();
+            std::fs::create_dir_all(&root)?;
+            backup.persist()?;
+            // Simulate a rename that completed before its journal update.
+            move_member(temp.path(), &root, &mut backup.record.original, 8)?;
+            drop(backup);
+            let mut resumed = StartupBackup::resume(temp.path())?.expect("same recovery");
+            assert_eq!(resumed.root(), root);
+            assert_eq!(
+                std::fs::read(root.join("original/config.toml"))?,
+                b"original config"
+            );
+            assert_eq!(
+                std::fs::read(root.join("original/storage-migration.toml"))?,
+                b"unknown journal"
+            );
+            assert_eq!(
+                std::fs::read(root.join("original/migration-backups/layout-original/v2/source"))?,
+                b"original history"
+            );
+            resumed.complete()?;
+            assert!(StartupBackup::resume(temp.path())?.is_none());
+        }
         Ok(())
     }
 

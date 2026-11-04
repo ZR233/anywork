@@ -36,16 +36,10 @@ impl StudioStartupError {
         let source = source.into();
         let kind = if has_document_chain_error(&source) {
             StudioStartupErrorKind::Internal
-        } else if source
-            .chain()
-            .any(|cause| cause.is::<crate::toml_schema::DocumentMigrationFailed>())
-            && has_environment_error(&source)
-        {
+        } else if has_environment_error(&source) {
             StudioStartupErrorKind::Environment
         } else if is_storage_migration(&source) {
             StudioStartupErrorKind::Migration
-        } else if has_environment_error(&source) {
-            StudioStartupErrorKind::Environment
         } else if is_bundled_agent_error(&source) {
             StudioStartupErrorKind::Internal
         } else if source.chain().any(|cause| {
@@ -216,7 +210,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn document_errors_never_become_automatic_data_reset() {
+    fn document_errors_retain_migration_classification() {
         let error = crate::toml_schema::migration_error(
             Path::new("catalog.toml"),
             "catalog",

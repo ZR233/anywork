@@ -108,6 +108,8 @@ Main latest 捕获固定 item 位置上界与完成水位 H0；before 还要求 
 
 Text/Status 的小型原信封在本帧实际预算允许时沿原内容 owner 交付 Inline，实时发布、RAM 短读与 SQLite 前缀使用同一选择语义，使短正文、附件元信息和回执可直接进入原 typed renderer。派生表仍只保存引用，不持久化第二份正文；WorkGroup 不为此读取成员或媒体。不能将所有小载荷永久 Deferred 后仅展示 JSON 原文来代替正常消息；超预算信封继续 Deferred，正文大块仍保留原 range 引用与显式按需读取。
 
+明确展开的 `GroupMembers` 查询沿同一选择机制交付完成成员的小型原信封：只解析该页已选中原子的 `ItemPayload` 引用，核对其原完成项身份，在原内容窗口上限和原批次实际编码预算内选择 Inline。实时交接、RAM 与 SQLite 页遵守同一规则；缺少完成载荷的活动成员仍沿原 current/内容引用交付。这里不增加帧预算、成员预取、媒体读取、完整正文缓存或 Flutter 侧通用 Deferred 解码器；超预算成员继续保留 Deferred 和原显式 range 读取。折叠的 WorkGroup/Main 查询不因此读取任何成员信封，Children 查询也不因本规则改变语义。
+
 不能跨 await 持 Session 锁、复用捕获前旧快照、查询触发 flush/执行恢复/完整性检查，或跳过较新的大 item 去库里凑旧小 item；超预算 payload 以 Deferred 表达。捕获后 writer 清 pending 时短读仍持 Arc；捕获前清理则后开的 DB 快照已能看到提交。
 
 before 是绑定原库身份、scope、排他位置和读取作用域的不透明字符串，Flutter 原样回传、不解析来源或 seq。不返回 totalCount，不 COUNT，不为 UI 计算全历史空占位。非空 before 仅表示可继续请求，不保证下一页非空。只有内存和库均已确认耗尽才返回 null；内存恰好够页时不为精确 hasOlder 额外查库。允许一次空末页返回 null，非空页 cursor 必须前进，空页不得原地 continuation；短页和字节截页不自动表示 EOF，item 页只含折叠摘要也不表示成员已经加载完毕。
@@ -136,6 +138,8 @@ Main entries 只有 `ChatEntry::Item(TimelineItem)`；成员/Children 才是 `At
 不提高预算或预读隐藏参数、正文、输出。终态继续使用原完成 payload 中的 typed wait；不在完成 metadata
 重复保存活动投影，旧冻结 metadata 缺省此字段仍解码为无活动事实，无需改库或回填。
 FRB、HTTP 与 SDK 机械传递同一字段，Flutter 复用现有 Waiting 组件，不建立另一套等待状态或任务查询。
+
+活动成员的可变 head 保留原工具在该 effect 切面的 typed wait，并随既有成员更新、current／recovery 和实时交接计入原持有与编码预算，使明确展开的成员窗口能直接使用上述字段。不可变 start 事实和完成 metadata 仍不保存活动 wait；完成后沿原 typed payload 表达真实终态。该 head 只是原事实的只读投影，不另建等待状态所有者或查询，不从工具名、通用状态及较晚切面补猜等待意图，也不为已有历史补造缺失字段。
 取消 Waiting 仍由真实 Stop 与原任务 owner 执行，不能因显示变化取消之前 Turn 的计时器或伪造终态。
 
 Core ChatDraft/Header 的不透明轻量 metadata 随原冻结完成记录发布、查询和保存，产品 reader 无需解码 payload 即可映射 Atom；Core 不解析其领域内容。实际来源开始/结束经原 Thread effect/current handoff 一次交付并同事务保存，历史页按真实来源身份有界取得同切点状态。它们不是工作段起止或前缀，不能按正文/工具 UI 分类制造来源闭合。来源可跨 attempt，idle 压缩有独立真实操作身份；后台最终结果独立来源，保原 call 关联。
