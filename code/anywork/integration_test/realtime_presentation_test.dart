@@ -247,7 +247,7 @@ void main() {
       await scene.verifyExecReceipts(priorParallelItems, const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
-      });
+      }, turnId: parallelObserver.turnId);
 
       final priorHostCwdItems = scene.observed.items
           .map((item) => item.id)
@@ -258,11 +258,12 @@ void main() {
         runningExecCallIds: const {'realtime-host-cwd-call'},
         settleDisclosure: false,
       );
+      final hostCwdTurnId = scene._submittedTurnId!;
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
       await scene.verifyExecReceipts(priorHostCwdItems, const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
-      });
+      }, turnId: hostCwdTurnId);
 
       await scene.submit('Realtime provider error');
       await scene.terminal(StudioTurnStatus.failed);
@@ -364,6 +365,13 @@ typedef _ParallelObserver = ({
   Map<String, Object?> evidence,
 });
 
+typedef _ExecReceipt = ({
+  ChatAtom? member,
+  TimelineMembersRef? reference,
+  TimelineItem? main,
+  ChatItemPresentation value,
+});
+
 final class _RealtimeScene {
   _RealtimeScene(this.tester, this.graph);
 
@@ -373,6 +381,7 @@ final class _RealtimeScene {
   String? _submittedThreadId;
   String? _submittedTurnId;
   int _liveTextObservation = 0;
+  int _execReceiptObservation = 0;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
@@ -791,69 +800,238 @@ final class _RealtimeScene {
 
   Future<void> verifyExecReceipts(
     Set<String> priorItemIds,
-    Map<String, String> expected,
-  ) async {
-    final source = ForegroundTurnChatSource(turnId: _latestTurn()!.turnId);
-    await observed.openSourceGroups(source);
-    bool requestedResult(ChatItemPresentation item) {
-      final reading = item.toolCard;
-      return reading is DecodedToolCard &&
-          expected.containsKey(reading.value.toolCallId) &&
-          reading.value.statusString == 'succeeded';
+    Map<String, String> expected, {
+    required String turnId,
+  }) async {
+    final source = ForegroundTurnChatSource(turnId: turnId);
+    final associatedTasks = <String, String>{};
+    final observations = <Map<String, Object?>>[];
+    final clock = Stopwatch()..start();
+    Map<String, Object?>? lastObservation;
+    String? previousObservation;
+
+    Map<String, Object?> sourceFacts(ChatSourceId value) =>
+        value is ForegroundTurnChatSource
+        ? {'kind': 'foregroundTurn', 'turnId': value.turnId}
+        : value is BackgroundResultChatSource
+        ? {'kind': 'backgroundResult', 'messageId': value.messageId}
+        : {'kind': value.runtimeType.toString()};
+
+    List<_ExecReceipt> targets() {
+      final result = <_ExecReceipt>[];
+      final candidates = <Map<String, Object?>>[];
+      final counts = {for (final call in expected.keys) call: 0};
+      final snapshot = <String, Object?>{
+        'turnId': turnId,
+        'candidates': candidates,
+        'finalCounts': counts,
+        'complete': false,
+      };
+      lastObservation = {
+        'elapsedMillis': clock.elapsedMilliseconds,
+        ...snapshot,
+      };
+
+      ChatItemPresentation read(
+        PayloadData? payload,
+        Map<String, Object?> candidate,
+        ChatItemPresentation Function() decode,
+      ) {
+        candidates.add(candidate);
+        candidate['payloadKind'] = payload.runtimeType.toString();
+        candidate['payloadBytes'] = payload is InlinePayload
+            ? payload.bytes.length
+            : payload is DeferredPayload
+            ? payload.byteLength
+            : null;
+        if (payload is DeferredPayload) {
+          candidate['payloadReference'] = contentReferenceIdentity(
+            payload.reference,
+          ).toString();
+        }
+        expect(
+          payload,
+          isA<InlinePayload>(),
+          reason:
+              'Small fixture receipt needs its original Inline envelope: '
+              '${jsonEncode(candidate)}',
+        );
+        final value = decode();
+        final reading = value.toolCard;
+        candidate['compatibility'] = value.compatibility.name;
+        candidate['decoder'] = reading.runtimeType.toString();
+        if (reading is DecodedToolCard) {
+          candidate.addAll({
+            'callId': reading.value.toolCallId,
+            'taskId': reading.value.taskId,
+            'status': reading.value.statusString,
+            'exitCode': reading.value.exitCode,
+          });
+        } else if (reading is UnavailableToolCard) {
+          candidate['unavailableKind'] = reading.kind.name;
+        }
+        expect(
+          reading,
+          isA<DecodedToolCard>(),
+          reason:
+              'Receipt envelope must decode without a Deferred loader: '
+              '${jsonEncode(candidate)}',
+        );
+        return value;
+      }
+
+      // Keep the original foreground members as task associations, not as
+      // substitutes for the independently delivered final Main Status.
+      for (final atom in observed.mountedMembers) {
+        if (atom.source != source ||
+            atom.turnId != turnId ||
+            !expected.containsKey(atom.tool?.callId) ||
+            atom.lifecycle is! TerminalChatAtom) {
+          continue;
+        }
+        final terminal = atom.lifecycle as TerminalChatAtom;
+        final reference = observed.unitForMember(atom.id).item.members!;
+        final candidate = <String, Object?>{
+          'domain': 'GroupMembers',
+          'id': atom.id,
+          'kind': atom.kind.name,
+          'source': sourceFacts(atom.source),
+          'turnId': atom.turnId,
+          'delivery': atom.delivery.name,
+          'outcome': terminal.outcome.name,
+          'completionItemId': atom.completionItemId,
+          'groupId': reference.itemId,
+        };
+        final value = read(
+          atom.payload,
+          candidate,
+          () => ChatItemPresentation.decode(atom),
+        );
+        final tool = (value.toolCard as DecodedToolCard).value;
+        expect(tool.toolCallId, atom.tool!.callId);
+        expect(tool.name, atom.tool!.name);
+        final handedOff =
+            atom.kind == ChatAtomKind.toolCall &&
+            tool.name == 'exec' &&
+            atom.delivery == ChatDeliveryKind.backgroundHandoff &&
+            terminal.outcome == ChatTerminalOutcome.transferred &&
+            tool.statusString == 'backgroundStarted';
+        if (handedOff) {
+          expect(tool.taskId, isNotNull);
+          final previous = associatedTasks[tool.toolCallId];
+          expect(previous, anyOf(isNull, tool.taskId));
+          associatedTasks[tool.toolCallId] = tool.taskId!;
+        }
+        final finalResult =
+            atom.kind == ChatAtomKind.toolCall &&
+            atom.delivery == ChatDeliveryKind.foreground &&
+            terminal.outcome == ChatTerminalOutcome.completed &&
+            tool.name == 'exec' &&
+            tool.statusString == 'succeeded' &&
+            tool.exitCode == 0;
+        candidate['handedOff'] = handedOff;
+        candidate['finalResult'] = finalResult;
+        if (finalResult) {
+          result.add((
+            member: atom,
+            reference: reference,
+            main: null,
+            value: value,
+          ));
+          counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
+        }
+      }
+      for (final unit in observed.main) {
+        final item = unit.item;
+        if (priorItemIds.contains(item.id) ||
+            item.turnId != turnId ||
+            item.kind != TimelineItemKind.status ||
+            item.atomKind != ChatAtomKind.toolCall) {
+          continue;
+        }
+        final candidate = <String, Object?>{
+          'domain': 'MainStatus',
+          'id': item.id,
+          'kind': item.kind.name,
+          'source': sourceFacts(item.source),
+          'turnId': item.turnId,
+          'delivery': item.delivery.name,
+          'outcome': item.outcome?.name,
+          'contentItemId': item.contentItemId,
+        };
+        final value = read(
+          item.payload,
+          candidate,
+          () => ChatItemPresentation.forUnit(unit),
+        );
+        final tool = (value.toolCard as DecodedToolCard).value;
+        final backgroundResult =
+            item.source is BackgroundResultChatSource &&
+            item.delivery == ChatDeliveryKind.independent &&
+            item.outcome == ChatTerminalOutcome.completed;
+        final taskAssociated =
+            tool.taskId != null &&
+            associatedTasks[tool.toolCallId] == tool.taskId;
+        final finalResult =
+            backgroundResult &&
+            taskAssociated &&
+            expected.containsKey(tool.toolCallId) &&
+            tool.name == 'exec' &&
+            tool.statusString == 'succeeded' &&
+            tool.exitCode == 0;
+        candidate['backgroundResult'] = backgroundResult;
+        candidate['taskAssociated'] = taskAssociated;
+        candidate['finalResult'] = finalResult;
+        if (finalResult) {
+          result.add((member: null, reference: null, main: item, value: value));
+          counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
+        }
+      }
+      snapshot['associatedTasks'] = Map<String, String>.of(associatedTasks);
+      snapshot['complete'] = true;
+      lastObservation = {
+        'elapsedMillis': clock.elapsedMilliseconds,
+        ...snapshot,
+      };
+      final signature = jsonEncode(snapshot);
+      if (signature != previousObservation) {
+        previousObservation = signature;
+        if (observations.length < 32) observations.add(lastObservation!);
+      }
+      return result;
     }
 
-    // Main Status and explicit group members are different domains. These
-    // short-lived observations never fabricate an Atom for a Main item.
-    List<
-      ({
-        ChatAtom? member,
-        TimelineMembersRef? reference,
-        TimelineItem? main,
-        ChatItemPresentation value,
-      })
-    >
-    targets() => [
-      for (final unit in observed.main)
-        if (!priorItemIds.contains(unit.id) &&
-            unit.item.source == source &&
-            unit.item.kind == TimelineItemKind.status &&
-            unit.item.payload != null &&
-            requestedResult(ChatItemPresentation.forUnit(unit)))
-          (
-            member: null,
-            reference: null,
-            main: unit.item,
-            value: ChatItemPresentation.forUnit(unit),
-          ),
-      for (final atom in observed.mountedMembers)
-        if (atom.source == source &&
-            atom.payload != null &&
-            requestedResult(ChatItemPresentation.decode(atom)))
-          (
-            member: atom,
-            reference: observed.unitForMember(atom.id).item.members,
-            main: null,
-            value: ChatItemPresentation.decode(atom),
-          ),
-    ];
-
-    await until(
-      () => expected.keys.every(
-        (call) =>
-            targets()
-                .where(
-                  (target) =>
-                      (target.value.toolCard as DecodedToolCard)
-                          .value
-                          .toolCallId ==
-                      call,
-                )
-                .length ==
-            1,
-      ),
-      'all exact completed exec receipts in real Main units',
-    );
-    final receipts = targets();
+    var receipts = <_ExecReceipt>[];
+    try {
+      await observed.openSourceGroups(source);
+      await until(() {
+        receipts = targets();
+        return expected.keys.every(
+          (call) =>
+              receipts
+                  .where(
+                    (target) =>
+                        (target.value.toolCard as DecodedToolCard)
+                            .value
+                            .toolCallId ==
+                        call,
+                  )
+                  .length ==
+              1,
+        );
+      }, 'all exact successful final exec results in their original domains');
+    } finally {
+      final output = Directory(
+        const String.fromEnvironment('ANYWORK_REALTIME_OUTPUT'),
+      );
+      await File.fromUri(
+        output.uri.resolve(
+          'realtime-exec-receipts-${_execReceiptObservation++}.json',
+        ),
+      ).writeAsString(
+        '${jsonEncode({'turnId': turnId, 'expectedCalls': expected.keys.toList(), 'associatedTasks': associatedTasks, 'observations': observations, 'lastObservation': lastObservation})}\n',
+      );
+    }
     expect(
       receipts
           .map(
