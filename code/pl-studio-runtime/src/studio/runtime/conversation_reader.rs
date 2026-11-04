@@ -506,15 +506,15 @@ impl ConversationReader {
         self.finish_batch(batch, demand)
     }
 
-    /// Resolve only frame-budgeted Text/Status envelopes through their original
-    /// content owner. WorkGroup headers never enter a payload/member read.
+    /// Resolve frame-budgeted Text/Status and explicitly opened member envelopes
+    /// through their original content owner. WorkGroup headers never read members.
     pub(super) async fn inline_timeline_payloads(
         &self,
         batch: &mut ChatBatch,
         demand: ReadDemand,
     ) -> Result<()> {
         use crate::studio::storage::history::conversation::timeline;
-        if !matches!(self.inner.scope, ChatScope::Main) {
+        if matches!(self.inner.scope, ChatScope::Children { .. }) {
             return Ok(());
         }
         let mut used = batch.encoded_len()?;
@@ -525,6 +525,13 @@ impl ConversationReader {
                 (0..batch.entries.len()).collect()
             };
         for index in indices {
+            if !matches!(
+                (&self.inner.scope, &batch.entries[index]),
+                (ChatScope::Main, ChatEntry::Item(_))
+                    | (ChatScope::GroupMembers { .. }, ChatEntry::Atom(_))
+            ) {
+                continue;
+            }
             let Some(inline) = timeline::inline_entry_bytes(&batch.entries[index])? else {
                 continue;
             };
@@ -534,21 +541,23 @@ impl ConversationReader {
             {
                 continue;
             }
-            let ChatEntry::Item(item) = &batch.entries[index] else {
-                unreachable!()
+            let (payload, content_item_id) = match &batch.entries[index] {
+                ChatEntry::Item(item) => (&item.payload, item.content_item_id.as_deref()),
+                ChatEntry::Atom(atom) => (&atom.payload, atom.completion_item_id.as_deref()),
+                ChatEntry::Source(_) => unreachable!(),
             };
             let Some(
                 original @ PayloadData::Deferred {
                     reference,
                     byte_length,
                 },
-            ) = &item.payload
+            ) = payload
             else {
                 unreachable!()
             };
             ensure!(
                 matches!(&reference.target,ContentTarget::ItemPayload {item_id}
-                if item.content_item_id.as_deref()==Some(item_id.as_str())),
+                if content_item_id==Some(item_id.as_str())),
                 core::ChatError::StaleContent
             );
             let original = original.clone();
@@ -567,18 +576,22 @@ impl ConversationReader {
                     && window.bytes.len() as u64 == *byte_length,
                 core::ChatError::Conflict("frozen timeline payload differs from its header".into())
             );
-            let ChatEntry::Item(item) = &mut batch.entries[index] else {
-                unreachable!()
+            let payload = match &mut batch.entries[index] {
+                ChatEntry::Item(item) => &mut item.payload,
+                ChatEntry::Atom(atom) => &mut atom.payload,
+                ChatEntry::Source(_) => unreachable!(),
             };
-            item.payload = Some(PayloadData::Inline {
+            *payload = Some(PayloadData::Inline {
                 bytes: window.bytes,
             });
             let encoded = batch.encoded_len()?;
             if encoded > demand.max_bytes as usize {
-                let ChatEntry::Item(item) = &mut batch.entries[index] else {
-                    unreachable!()
+                let payload = match &mut batch.entries[index] {
+                    ChatEntry::Item(item) => &mut item.payload,
+                    ChatEntry::Atom(atom) => &mut atom.payload,
+                    ChatEntry::Source(_) => unreachable!(),
                 };
-                item.payload = Some(original);
+                *payload = Some(original);
             } else {
                 used = encoded;
             }

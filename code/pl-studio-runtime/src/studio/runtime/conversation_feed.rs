@@ -716,7 +716,17 @@ impl ConversationFeed {
                         .skip(next)
                         .take(self.demand.max_items as usize)
                     {
-                        product.entries.push(entry.clone());
+                        let mut entry = entry.clone();
+                        // Inline selection must include the real source annotation
+                        // in the same encoded frame budget as the member envelope.
+                        self.reader
+                            .annotate_source_states(
+                                std::slice::from_mut(&mut entry),
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
+                            )
+                            .await?;
+                        product.entries.push(entry);
                         product.current =
                             main.then(|| cut.handoff.projection_after_items(next + 1));
                         self.reader
@@ -745,13 +755,6 @@ impl ConversationFeed {
                         self.cut_entries = None;
                     }
                     if !product.entries.is_empty() || product.current != self.current {
-                        self.reader
-                            .annotate_source_states(
-                                &mut product.entries,
-                                &cut.handoff.after().projection().sources,
-                                cut.handoff.after().projection().source_effect_seq,
-                            )
-                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
                         self.reader.select_member_window(&product.entries);
                         self.current = product.current.clone();

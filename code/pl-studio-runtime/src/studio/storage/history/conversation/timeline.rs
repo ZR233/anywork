@@ -684,25 +684,26 @@ pub(in crate::studio) fn entry_bytes(entry: &pl_protocol::ChatEntry) -> Result<u
 pub(in crate::studio) fn inline_entry_bytes(
     entry: &pl_protocol::ChatEntry,
 ) -> Result<Option<usize>> {
-    let pl_protocol::ChatEntry::Item(item) = entry else {
-        return Ok(None);
+    let payload = match entry {
+        pl_protocol::ChatEntry::Item(item) if !item.is_work_group() => &item.payload,
+        pl_protocol::ChatEntry::Atom(atom) if atom.completion_item_id.is_some() => &atom.payload,
+        _ => return Ok(None),
     };
-    if item.is_work_group() {
-        return Ok(None);
-    }
-    let Some(PayloadData::Deferred { byte_length, .. }) = &item.payload else {
+    let Some(PayloadData::Deferred { byte_length, .. }) = payload else {
         return Ok(None);
     };
     if *byte_length > u64::from(pl_protocol::CONTENT_WINDOW_MAX_BYTES) {
         return Ok(None);
     }
-    let mut inline = item.as_ref().clone();
-    inline.payload = Some(PayloadData::Inline { bytes: Vec::new() });
+    let mut inline = entry.clone();
+    let payload = match &mut inline {
+        pl_protocol::ChatEntry::Item(item) => &mut item.payload,
+        pl_protocol::ChatEntry::Atom(atom) => &mut atom.payload,
+        pl_protocol::ChatEntry::Source(_) => unreachable!(),
+    };
+    *payload = Some(PayloadData::Inline { bytes: Vec::new() });
     Ok(Some(
-        serde_json::to_vec(&pl_protocol::ChatEntry::Item(Box::new(inline)))?
-            .len()
-            .saturating_add(1)
-            .saturating_add((*byte_length as usize).saturating_mul(4)),
+        entry_bytes(&inline)?.saturating_add((*byte_length as usize).saturating_mul(4)),
     ))
 }
 /// Prefer a transport-inline envelope; if it cannot fit, keep this same item
