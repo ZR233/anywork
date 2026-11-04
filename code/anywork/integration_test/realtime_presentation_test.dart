@@ -1022,7 +1022,7 @@ final class _RealtimeScene {
       }, 'all exact successful final exec results in their original domains');
     } finally {
       final output = Directory(
-        const String.fromEnvironment('ANYWORK_REALTIME_OUTPUT'),
+        Platform.environment['ANYWORK_REALTIME_OUTPUT']!,
       );
       await File.fromUri(
         output.uri.resolve(
