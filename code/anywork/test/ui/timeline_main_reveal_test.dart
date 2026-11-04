@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -46,7 +47,10 @@ void main() {
       await projection.applyBatch(
         chatBatch([
           for (var i = 0; i < ids.length; i++)
-            chatMessage(ids[i], body: 'Main row $i', completionSeq: i),
+            if (i == ids.length - 1)
+              workItem(ids[i], count: 1)
+            else
+              chatMessage(ids[i], body: 'Main row $i', completionSeq: i),
         ]),
       );
       final atomScroll = ScrollController();
@@ -54,6 +58,7 @@ void main() {
       final subscription = controller.operationsStream.listen(
         (_) => operations++,
       );
+      var mainDrags = 0;
       var phase = 'build';
       addTearDown(
         () => debugPrint('Main reveal regression final phase: $phase'),
@@ -82,39 +87,48 @@ void main() {
                           scrollToBottomBuilder: (_, _, _) =>
                               const SizedBox.shrink(),
                           chatAnimatedListBuilder: (_, _) =>
-                              ChatAnimatedListReversed(
-                                scrollController: lease.scrollController,
-                                insertAnimationDuration: Duration.zero,
-                                removeAnimationDuration: Duration.zero,
-                                scrollToEndAnimationDuration: Duration.zero,
-                                shouldScrollToEndWhenSendingMessage: false,
-                                handleSafeArea: false,
-                                topPadding: 0,
-                                bottomPadding: 0,
-                                cacheExtent: 120,
-                                itemBuilder:
-                                    (
-                                      context,
-                                      message,
-                                      index,
-                                      animation, {
-                                      messagesGroupingMode,
-                                      messageGroupingTimeoutInSeconds,
-                                      isRemoved,
-                                    }) => _KeptMainRow(
-                                      key: ValueKey('main-row:${message.id}'),
-                                      keepAlive:
-                                          message.id == ids.first ||
-                                          message.id == ids.last,
-                                      child: SizedBox(
-                                        height: 120,
-                                        child: ChatItemView(
-                                          item: chatItemPresentationOf(
-                                            message,
-                                          )!,
+                              NotificationListener<ScrollStartNotification>(
+                                onNotification: (notification) {
+                                  if (notification.depth == 0 &&
+                                      notification.dragDetails != null) {
+                                    mainDrags++;
+                                  }
+                                  return false;
+                                },
+                                child: ChatAnimatedListReversed(
+                                  scrollController: lease.scrollController,
+                                  insertAnimationDuration: Duration.zero,
+                                  removeAnimationDuration: Duration.zero,
+                                  scrollToEndAnimationDuration: Duration.zero,
+                                  shouldScrollToEndWhenSendingMessage: false,
+                                  handleSafeArea: false,
+                                  topPadding: 0,
+                                  bottomPadding: 0,
+                                  cacheExtent: 120,
+                                  itemBuilder:
+                                      (
+                                        context,
+                                        message,
+                                        index,
+                                        animation, {
+                                        messagesGroupingMode,
+                                        messageGroupingTimeoutInSeconds,
+                                        isRemoved,
+                                      }) => _KeptMainRow(
+                                        key: ValueKey('main-row:${message.id}'),
+                                        keepAlive:
+                                            message.id == ids.first ||
+                                            message.id == ids.last,
+                                        child: SizedBox(
+                                          height: 120,
+                                          child: ChatItemView(
+                                            item: chatItemPresentationOf(
+                                              message,
+                                            )!,
+                                          ),
                                         ),
                                       ),
-                                    ),
+                                ),
                               ),
                         ),
                       ),
@@ -172,6 +186,8 @@ void main() {
           const Offset(0, 240),
         );
         await tester.pumpAndSettle();
+        final dragsAfterSeed = mainDrags;
+        expect(dragsAfterSeed, greaterThan(0));
         final newestKept = find.byKey(
           ValueKey('main-row:${ids.last}'),
           skipOffstage: false,
@@ -199,6 +215,8 @@ void main() {
         expect(newerTarget, findsOneWidget);
         expect(newerTarget.hitTestable(), findsOneWidget);
         expect(position.pixels, lessThan(oldestPixels));
+        expect(mainDrags, greaterThan(dragsAfterSeed));
+        final dragsAfterNewer = mainDrags;
         final newerPixels = position.pixels;
 
         final oldestKept = find.byKey(
@@ -222,6 +240,67 @@ void main() {
         expect(olderTarget, findsOneWidget);
         expect(olderTarget.hitTestable(), findsOneWidget);
         expect(position.pixels, greaterThan(newerPixels));
+        expect(mainDrags, greaterThan(dragsAfterNewer));
+
+        final groupUnit = chatItemPresentationOf(controller.messages[31])!
+            .displayUnit!;
+        final cachedGroupRow = find.byWidgetPredicate(
+          (widget) =>
+              widget is ChatItemView &&
+              identical(widget.item.displayUnit, groupUnit),
+          skipOffstage: false,
+        );
+        final groupHeader = observed.groupHeader(ids.last);
+        expect(cachedGroupRow, findsOneWidget);
+        final groupItem = tester.widget<ChatItemView>(cachedGroupRow).item;
+        expect(groupItem.type, 'displayUnit');
+        expect(groupItem.compatibility, ChatItemCompatibility.current);
+        expect(groupUnit.item.kind, TimelineItemKind.workGroup);
+        expect(
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineDisplayUnitView &&
+                identical(widget.unit, groupUnit),
+            skipOffstage: false,
+          ),
+          findsOneWidget,
+        );
+        expect(groupHeader, findsNothing);
+        expect(groupHeader.hitTestable(), findsNothing);
+        final dragsBeforeCache = mainDrags;
+        phase = 'reveal cached canonical group';
+        await observed.reveal(groupHeader, ids.last);
+        expect(groupHeader, findsOneWidget);
+        expect(groupHeader.hitTestable(), findsOneWidget);
+        expect(
+          mainDrags,
+          dragsBeforeCache,
+          reason: 'An already mounted canonical row needs no further UI drag',
+        );
+        expect(groupUnit.expansion.expanded ?? false, isFalse);
+
+        final typedUnit = chatItemPresentationOf(controller.messages[0])!
+            .displayUnit!;
+        final cachedTypedRow = find.byWidgetPredicate(
+          (widget) =>
+              widget is ChatItemView &&
+              identical(widget.item.displayUnit, typedUnit),
+          skipOffstage: false,
+        );
+        expect(cachedTypedRow, findsOneWidget);
+        final typedItem = tester.widget<ChatItemView>(cachedTypedRow).item;
+        expect(typedItem.type, 'text');
+        expect(typedItem.compatibility, ChatItemCompatibility.current);
+        expect(typedUnit.item.kind, TimelineItemKind.text);
+        final cachedTypedBody = body(0);
+        expect(cachedTypedBody, findsNothing);
+        expect(cachedTypedBody.hitTestable(), findsNothing);
+        phase = 'reveal cached canonical typed body';
+        await observed.reveal(cachedTypedBody, ids.first);
+        expect(cachedTypedBody, findsOneWidget);
+        expect(cachedTypedBody.hitTestable(), findsOneWidget);
+        expect(mainDrags, dragsBeforeCache);
+
         expect(atomScroll.position.pixels, atomPixels);
         expect(lease.controller, same(controller));
         expect(lease.generation, 7);
