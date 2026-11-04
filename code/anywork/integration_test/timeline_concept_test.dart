@@ -932,6 +932,7 @@ final class _ConceptScene {
       'loading': value.loading,
       'error': value.error?.toString(),
       'mountedMemberCount': value.atoms.length,
+      'bodyWindowCount': value.windows.length,
     };
     // Borrow only already mounted consumers, including one still awaiting a
     // permit. This synchronous diagnostic never opens, pages or copies atoms.
@@ -1908,7 +1909,16 @@ final class _ConceptScene {
     );
     final work = live.single.id;
     await expand(live.single);
+    final originalLease = lease;
+    final original = lease.groupDisplays.singleWhere(
+      (display) => display.unitId == work,
+    );
+    final reference = original.membersRef;
+    expect(reference, isNotNull);
     final reason = membersOf(work).single.id;
+    final source = membersOf(work).single.source;
+    expect(source, isA<ForegroundTurnChatSource>());
+    final turnId = (source as ForegroundTurnChatSource).turnId;
     await release('a07-reasoning-start');
     await reach(
       'a07-text-start',
@@ -1948,6 +1958,63 @@ final class _ConceptScene {
     await release('a07-reasoning-terminal');
     await idle();
     report['overlapAtomIds'] = [reason];
+    await _until(tester, () {
+      if (original.error case final error?) throw StateError('$error');
+      final member = original.atoms.singleOrNull;
+      final terminal = member?.lifecycle;
+      final turn = graph.client.conversations.session(threadId).state.lastTurn;
+      return original.isCurrent &&
+          original.expanded &&
+          original.before == null &&
+          !original.loading &&
+          member?.id == reason &&
+          member?.source == source &&
+          member?.completionItemId == reason &&
+          member?.completionSeq != null &&
+          terminal is TerminalChatAtom &&
+          terminal.outcome == ChatTerminalOutcome.completed &&
+          turn != null &&
+          turn.threadId == threadId &&
+          turn.turnId == turnId &&
+          turn.state.isTerminal &&
+          turn.state.status == StudioTurnStatus.completed;
+    }, 'the original A07 member and Turn finish before its observation closes');
+    expect(lease, same(originalLease));
+    expect(
+      lease.groupDisplays.singleWhere((display) => display.unitId == work),
+      same(original),
+    );
+    expect(original.membersRef, reference);
+    final terminalMember = original.atoms.single;
+    report['overlapMemberTerminal'] = {
+      'id': terminalMember.id,
+      'turnId': terminalMember.turnId,
+      'attemptId': terminalMember.attemptId,
+      'completionItemId': terminalMember.completionItemId,
+      'completionSeq': terminalMember.completionSeq,
+      'lifecycle': terminalMember.lifecycle.runtimeType.toString(),
+      'outcome': (terminalMember.lifecycle as TerminalChatAtom).outcome.name,
+    };
+    _recordMemberInventory('a07-before-close', work, original: original);
+    expect(graph.client.budget.used(ResourceKind.chatHandle), 2);
+    await observed.closeGroup(original);
+    await _until(
+      tester,
+      () =>
+          original.windows.isEmpty &&
+          graph.client.budget.used(ResourceKind.chatHandle) == 1,
+      'the original A07 scope releases its body eligibility and read handle',
+    );
+    expect(lease, same(originalLease));
+    expect(original.membersRef, reference);
+    expect(original.isCurrent, isFalse);
+    expect(original.expanded, isFalse);
+    expect(original.atoms, isEmpty);
+    expect(original.before, isNull);
+    expect(original.loading, isFalse);
+    expect(original.error, isNull);
+    expect(original.windows, isEmpty);
+    _recordMemberInventory('a07-closed', work, original: original);
   }
 
   Future<void> emptyText() async {
