@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -7,6 +9,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_disp
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// UI operations and synchronous borrows of the production presentation owner.
@@ -135,39 +139,196 @@ final class TimelineObservation {
   }
 
   Future<void> reveal(Finder target, String unitId) async {
+    final originalLease = lease;
+    final originalController = originalLease.controller;
+    final originalScrollController = originalLease.scrollController;
+    final originalGeneration = originalLease.generation;
     final scrollable = find.byWidgetPredicate(
       (widget) =>
           widget is Scrollable &&
-          identical(widget.controller, lease.scrollController),
+          identical(widget.controller, originalScrollController),
     );
+    ScrollableState? originalScrollable;
     final clock = Stopwatch()..start();
-    while (target.evaluate().isEmpty) {
-      if (clock.elapsed > const Duration(seconds: 60)) {
-        fail('Main did not mount requested unit $unitId');
+
+    Never stop(String reason) {
+      TimelineDisplayLease? currentLease;
+      String? borrowError;
+      try {
+        currentLease = lease;
+      } catch (error) {
+        borrowError = error.runtimeType.toString();
       }
-      final ordered = main.toList();
-      final wanted = ordered.indexWhere((unit) => unit.id == unitId);
-      final mounted =
-          tester.allWidgets
-              .map(
-                (widget) => switch (widget) {
-                  TimelineDisplayUnitView(:final unit) when !unit.live =>
-                    unit.id,
-                  ChatItemView(:final item) => item.id,
-                  _ => null,
-                },
-              )
-              .map((id) => ordered.indexWhere((unit) => unit.id == id))
-              .where((index) => index >= 0)
-              .toList()
-            ..sort();
-      final newer = mounted.isNotEmpty && wanted > mounted.last;
-      await tester.drag(scrollable, Offset(0, newer ? -240 : 240));
+      final matches = scrollable.evaluate().toList();
+      final state = matches.length == 1
+          ? tester.state<ScrollableState>(scrollable)
+          : null;
+      final position = state?.position;
+      final available = !originalLease.isReleased;
+      final mounted = available && state != null
+          ? _mainRevealIndices(originalController, state, visibleOnly: false)
+          : <int>[];
+      final visible = available && state != null
+          ? _mainRevealIndices(originalController, state, visibleOnly: true)
+          : <int>[];
+      final wanted = available
+          ? originalController.messages.indexWhere((item) => item.id == unitId)
+          : null;
+      fail(
+        '$reason: ${jsonEncode({
+          'targetId': unitId,
+          'mainIndex': wanted,
+          'elapsedMillis': clock.elapsedMilliseconds,
+          'original': {'lease': identityHashCode(originalLease), 'controller': identityHashCode(originalController), 'scrollController': identityHashCode(originalScrollController), 'generation': originalGeneration, 'mounted': originalLease.isMounted, 'retired': originalLease.isRetired, 'released': originalLease.isReleased},
+          'current': {'lease': currentLease == null ? null : identityHashCode(currentLease), 'controller': currentLease == null || currentLease.isReleased ? null : identityHashCode(currentLease.controller), 'generation': currentLease?.generation, 'borrowError': borrowError},
+          'scrollableCount': matches.length,
+          'originalScrollable': originalScrollable == null ? null : identityHashCode(originalScrollable),
+          'sameScrollable': state != null && identical(state, originalScrollable),
+          'pixels': position?.hasPixels == true ? position!.pixels : null,
+          'min': position?.hasContentDimensions == true ? position!.minScrollExtent : null,
+          'max': position?.hasContentDimensions == true ? position!.maxScrollExtent : null,
+          'viewport': position?.hasViewportDimension == true ? position!.viewportDimension : null,
+          'axisDirection': position?.axisDirection.name,
+          'visibleMainIndices': visible.take(40).toList(),
+          'visibleMainCount': visible.length,
+          'mountedMainIndices': mounted.take(40).toList(),
+          'mountedMainCount': mounted.length,
+          'cachedMainIndices': mounted.where((index) => !visible.contains(index)).take(40).toList(),
+          'cachedMainCount': mounted.length - visible.length,
+          'targetMainRowMounted': mounted.contains(wanted),
+          'targetFinderCount': target.evaluate().length,
+          'targetHitTestableCount': target.hitTestable().evaluate().length,
+        })}',
+      );
+    }
+
+    void requireOriginal() {
+      TimelineDisplayLease currentLease;
+      try {
+        currentLease = lease;
+      } catch (_) {
+        stop('Main reveal lost its original lease');
+      }
+      if (!identical(currentLease, originalLease) ||
+          originalLease.isRetired ||
+          originalLease.isReleased ||
+          !originalLease.isMounted ||
+          originalLease.generation != originalGeneration ||
+          !identical(originalLease.controller, originalController)) {
+        stop('Main reveal lost its original lease/controller/generation');
+      }
+      if (scrollable.evaluate().length != 1 ||
+          originalScrollController.positions.length != 1) {
+        stop('Main reveal requires one original Main Scrollable');
+      }
+      final state = tester.state<ScrollableState>(scrollable);
+      if ((originalScrollable != null &&
+              !identical(state, originalScrollable)) ||
+          !identical(state.position, originalScrollController.position)) {
+        stop('Main reveal lost its original Scrollable');
+      }
+      originalScrollable ??= state;
+    }
+
+    while (true) {
+      requireOriginal();
+      if (clock.elapsed > const Duration(seconds: 60)) {
+        stop('Main did not mount requested unit');
+      }
+      final targetCount = target.evaluate().length;
+      if (targetCount > 1) stop('Main reveal target is not unique');
+      if (targetCount == 1) {
+        if (!identical(
+          Scrollable.maybeOf(target.evaluate().single),
+          originalScrollable,
+        )) {
+          stop('Main reveal target belongs to another Scrollable');
+        }
+        break;
+      }
+      final wanted = originalController.messages.indexWhere(
+        (item) => item.id == unitId,
+      );
+      final visible = _mainRevealIndices(
+        originalController,
+        originalScrollable!,
+        visibleOnly: true,
+      );
+      if (wanted < 0 || visible.isEmpty) {
+        stop('Main reveal has no target index or visible Main anchor');
+      }
+      if (wanted >= visible.first && wanted <= visible.last) {
+        stop('Main reveal target is absent inside the visible Main range');
+      }
+      final axisDirection = originalScrollable!.axisDirection;
+      // Flyer reverses both the viewport axis and the controller-to-sliver
+      // index mapping. Increasing pixels therefore approaches older Main items
+      // on a reversed list, and newer ones on a non-reversed list.
+      final forward =
+          (wanted < visible.first) == axisDirectionIsReversed(axisDirection);
+      final delta = switch (axisDirection) {
+        AxisDirection.up => Offset(0, forward ? 240 : -240),
+        AxisDirection.down => Offset(0, forward ? -240 : 240),
+        AxisDirection.left || AxisDirection.right => stop(
+          'Main reveal expected the production vertical Main list',
+        ),
+      };
+      await tester.drag(scrollable, delta);
+      requireOriginal();
       await tester.pump(const Duration(milliseconds: 16));
+      requireOriginal();
       expect(tester.takeException(), isNull);
     }
     await tester.ensureVisible(target);
+    requireOriginal();
     await tester.pump();
+    requireOriginal();
+    if (target.evaluate().length != 1) {
+      stop('Main reveal lost its unique mounted target');
+    }
+  }
+
+  List<int> _mainRevealIndices(
+    ChatController controller,
+    ScrollableState main, {
+    required bool visibleOnly,
+  }) {
+    final indices = <int>{};
+    // ChatItemView is the canonical Main container, including typed payloads
+    // and groups. Its inner TimelineDisplayUnitView must not be counted twice.
+    final rows = find.byType(ChatItemView, skipOffstage: visibleOnly);
+    for (final element in rows.evaluate()) {
+      if (!identical(Scrollable.maybeOf(element), main)) continue;
+      final unit = (element.widget as ChatItemView).item.displayUnit;
+      if (unit == null || unit.live) {
+        continue; // Not a Main item (e.g. an Atom).
+      }
+      final index = controller.messages.indexWhere(
+        (message) =>
+            message.id == unit.id &&
+            identical(message.metadata?[timelineDisplayUnitKey], unit),
+      );
+      if (index < 0) continue;
+      if (visibleOnly) {
+        final box = element.findRenderObject();
+        if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+        final viewport = RenderAbstractViewport.maybeOf(box);
+        if (viewport is! RenderViewport ||
+            !identical(viewport.offset, main.position) ||
+            !viewport.attached ||
+            !viewport.hasSize) {
+          continue;
+        }
+        final rect = MatrixUtils.transformRect(
+          box.getTransformTo(viewport),
+          Offset.zero & box.size,
+        );
+        final intersection = rect.intersect(Offset.zero & viewport.size);
+        if (intersection.width <= 0 || intersection.height <= 0) continue;
+      }
+      indices.add(index);
+    }
+    return indices.toList()..sort();
   }
 
   Future<TimelineGroupDisplay> openGroup(String id) async {
