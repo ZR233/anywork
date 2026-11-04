@@ -1498,8 +1498,10 @@ final class _RealtimeScene {
     final controller = lease.controller;
     final mainSets = lease.appliedSets;
     final witnessed = <String>{};
+    Map<String, Object?> Function()? disclosureFacts;
     try {
       for (final target in receipts) {
+        disclosureFacts = null;
         final atom = target.member;
         TimelineGroupDisplay? group;
         if (atom != null) {
@@ -1529,24 +1531,73 @@ final class _RealtimeScene {
           matching: find.byType(TimelineToolDetails),
         );
         expect(details, findsOneWidget);
+        final detailsElement = tester.element(details);
         final renderedTool = tester.widget<TimelineToolDetails>(details).item;
+        expect(renderedTool.id, tool.id);
         expect(renderedTool.toolCallId, tool.toolCallId);
         expect(renderedTool.statusString, 'succeeded');
-        final disclosure = find
-            .descendant(
-              of: details,
-              matching: find.byType(TimelineActivityDisclosure),
-            )
-            .first;
-        final title = find
-            .descendant(
-              of: disclosure,
-              matching: find.byType(TimelineActivityRow),
-            )
-            .first;
-        if (!tester.widget<TimelineActivityRow>(title).expanded) {
-          await tap(disclosure);
+        final disclosure = find.descendant(
+          of: details,
+          matching: find.byKey(
+            ValueKey('timeline-tool-details:${renderedTool.id}'),
+          ),
+        );
+        expect(disclosure, findsOneWidget);
+        final disclosureElement = tester.element(disclosure);
+        expect(disclosureElement.widget, isA<TimelineActivityDisclosure>());
+        final tiles = find.descendant(
+          of: disclosure,
+          matching: find.byElementPredicate(
+            (element) =>
+                element.widget is ExpansionTile &&
+                identical(
+                  element
+                      .findAncestorWidgetOfExactType<
+                        TimelineActivityDisclosure
+                      >(),
+                  disclosureElement.widget,
+                ),
+          ),
+        );
+        expect(tiles, findsOneWidget);
+        final outerTile = tester.element(tiles);
+        final outerTitle = find.descendant(
+          of: disclosure,
+          matching: find.byWidgetPredicate((widget) {
+            final tile = outerTile.widget;
+            return widget is ListTile &&
+                tile is ExpansionTile &&
+                identical(widget.title, tile.title);
+          }),
+        );
+        final title = find.descendant(
+          of: outerTitle,
+          matching: find.byType(TimelineActivityRow),
+        );
+
+        bool expectDisclosure() {
+          expect(details, findsOneWidget);
+          expect(tester.element(details), same(detailsElement));
+          expect(detailsElement.mounted, isTrue);
+          final currentTool = tester.widget<TimelineToolDetails>(details).item;
+          expect(currentTool.id, renderedTool.id);
+          expect(currentTool.toolCallId, tool.toolCallId);
+          expect(currentTool.statusString, 'succeeded');
+          expect(disclosure, findsOneWidget);
+          expect(tester.element(disclosure), same(disclosureElement));
+          expect(disclosureElement.mounted, isTrue);
+          expect(tiles, findsOneWidget);
+          expect(tester.element(tiles), same(outerTile));
+          expect(outerTile.mounted, isTrue);
+          expect(outerTitle, findsOneWidget);
+          expect(title, findsOneWidget);
+          return tester.widget<TimelineActivityRow>(title).expanded;
         }
+
+        if (!expectDisclosure()) {
+          await tap(outerTitle);
+        }
+        expect(expectDisclosure(), isTrue);
         final output = await readDeclaredRange(
           rowId,
           contentItemId,
@@ -1554,14 +1605,35 @@ final class _RealtimeScene {
           ChatContentRole.toolOutput,
           lastLine,
         );
-        final outputBorrow = tester.state(
+        final outputState = tester.state(
           find.byWidgetPredicate(
             (widget) =>
                 widget is TimelineContentRangeConnector &&
                 widget.itemId == rowId &&
                 widget.contentKey == ChatContentRole.toolOutput.name,
           ),
-        ) as TimelineCurrentWindowDisplay;
+        );
+        final outputBorrow = outputState as TimelineCurrentWindowDisplay;
+        Map<String, Object?> closeFacts() {
+          final headers = outerTile.mounted
+              ? title.evaluate().toList()
+              : <Element>[];
+          final window = outputBorrow.window;
+          return {
+            'rowId': rowId,
+            'callId': tool.toolCallId,
+            'closedTitleExpanded': headers.length == 1
+                ? tester.widget<TimelineActivityRow>(title).expanded
+                : null,
+            'originalStateMounted': outputState.mounted,
+            'windowPresent': window != null,
+            'sameAcceptedWindow': window == null
+                ? null
+                : identical(window, output),
+          };
+        }
+
+        disclosureFacts = closeFacts;
         if (tool.toolCallId == 'realtime-host-cwd-call') {
           final arguments = await readDeclaredRange(
             rowId,
@@ -1598,10 +1670,15 @@ final class _RealtimeScene {
           tester,
           'realtime-${tool.toolCallId}-succeeded.png',
         );
+        expect(expectDisclosure(), isTrue);
         if (group != null) {
           await observed.closeGroup(group);
         } else {
-          await tap(disclosure);
+          await tap(outerTitle);
+          debugPrintSynchronously(
+            'Exec receipt disclosure after close: ${jsonEncode(closeFacts())}',
+          );
+          expect(expectDisclosure(), isFalse);
         }
         await until(
           () => outputBorrow.window == null,
@@ -1612,8 +1689,14 @@ final class _RealtimeScene {
       await returnAfterReadingHistory();
     } catch (_) {
       final scroll = lease.scrollController;
+      Map<String, Object?>? disclosure;
+      try {
+        disclosure = disclosureFacts?.call();
+      } catch (error) {
+        disclosure = {'diagnosticErrorType': error.runtimeType.toString()};
+      }
       debugPrintSynchronously(
-        'Exec receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'witnessed': witnessed.toList()})}',
+        'Exec receipt navigation failure: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.hasClients ? scroll.position.pixels : null, 'maxExtent': scroll.hasClients ? scroll.position.maxScrollExtent : null, 'witnessed': witnessed.toList(), 'disclosure': disclosure})}',
       );
       await capturePresentation(tester, 'realtime-exec-receipts-failure.png');
       rethrow;
