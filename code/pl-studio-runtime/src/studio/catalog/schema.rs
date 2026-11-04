@@ -88,7 +88,8 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
     })
 }
 
-/// V6 intentionally drops inherited copies; reject disagreements before those copies disappear.
+/// V6 drops inherited copies. Old root-only mode changes left legitimate stale child modes;
+/// the root owns the session mode, while the remaining ownership facts must still agree.
 fn validate_v5_inheritance(path: &Path, content: &str) -> Result<()> {
     let mut value = toml_schema::parse(path, content, ENTITY, 6)?;
     value.remove(SCHEMA_KEY);
@@ -111,7 +112,6 @@ fn validate_v5_inheritance(path: &Path, content: &str) -> Result<()> {
                 && child.workspace_path == root.workspace_path
                 && child.delegation_mode == root.delegation_mode
                 && child.delegation_preference == root.delegation_preference
-                && child.mode == root.mode
                 && child.archived == root.archived,
             "Studio catalog child {} has conflicting inherited session facts",
             child.id

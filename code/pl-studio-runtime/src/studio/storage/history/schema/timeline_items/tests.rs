@@ -25,7 +25,12 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }
@@ -40,7 +45,7 @@ impl MigratorTraitSelf for Published14 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != TIMELINE_ITEMS)
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -601,7 +606,24 @@ async fn formal_migration_round_trip() -> Result<()> {
         "the migration's output indexes must roll back with its tables and head"
     );
     assert_eq!(source_bytes(&inspect).await?, original_source);
-    assert_eq!(migration_records(&inspect).await?, original_ledger);
+    let corrected_ledger = migration_records(&inspect).await?;
+    assert_eq!(corrected_ledger.len(), original_ledger.len() + 1);
+    for record in &original_ledger {
+        assert!(
+            corrected_ledger.contains(record),
+            "an earlier Applied record changed"
+        );
+    }
+    assert!(
+        inspect
+            .query_one_raw(statement(
+                "SELECT 1 FROM seaql_migrations WHERE version=?",
+                vec![BACKGROUND_RESULTS.into()],
+            ))
+            .await?
+            .is_some(),
+        "the preceding correction commits independently of the failed Timeline transaction"
+    );
     assert_eq!(
         inspect
             .query_one_raw(statement(
@@ -650,8 +672,8 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 1,
-        "content preparation records only TimelineItems, not lifecycle migrations"
+        original_ledger.len() + 2,
+        "content preparation records BackgroundResults and TimelineItems, not lifecycle migrations"
     );
     for record in &original_ledger {
         assert!(
