@@ -538,6 +538,49 @@ async fn observe(control: Control, step: Step, prompt: &str, counts: &[usize]) -
 }
 
 #[tokio::test]
+async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
+    let control = Control::realtime();
+    let parallel = control
+        .realtime_script("fixture-host-cwd")
+        .into_iter()
+        .find(|step| matches!(&step.reply, Reply::GatedSse { .. }))
+        .expect("realtime observation must have its explicit gate");
+    let step = Step::prompt(
+        Protocol::ResponsesHttp,
+        GUI_REALTIME_PARALLEL_PROMPT,
+        0,
+        parallel.reply,
+    );
+    // The real HTTP observer sees only created/added/delta/done reasoning before
+    // release. observe also rejects premature or repeated release requests.
+    let observed = observe(control, step, GUI_REALTIME_PARALLEL_PROMPT, &[4]).await;
+    assert_eq!(observed[3]["item"]["type"], "reasoning");
+    assert_eq!(
+        observed[3]["item"]["summary"][0]["text"],
+        "realtime parallel observers ready"
+    );
+    let calls = observed
+        .iter()
+        .filter(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "function_call"
+        })
+        .map(|event| &event["item"])
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    for (call, tag, lines) in [
+        (&calls[0], "a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
+        (&calls[1], "b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
+    ] {
+        assert_eq!(call["call_id"], format!("realtime-parallel-call-{tag}"));
+        assert_eq!(call["name"], TOOL_EXEC_NAME);
+        assert_eq!(
+            call["arguments"],
+            realtime_exec_arguments(&realtime_parallel_command(tag, lines), None)
+        );
+    }
+}
+
+#[tokio::test]
 async fn a07_keeps_reasoning_active_until_after_readable_text_and_text_terminal() {
     let control = control(OVERLAP_STAGES);
     let step = control.overlap_step(0);

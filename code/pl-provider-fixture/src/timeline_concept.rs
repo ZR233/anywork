@@ -100,6 +100,17 @@ impl Default for Control {
 }
 
 impl Control {
+    pub fn realtime() -> Self {
+        Self {
+            names: vec!["realtime-parallel-observer"],
+            stages: vec![ReplyStage::new()],
+        }
+    }
+
+    pub fn realtime_script(&self, host_cwd: &str) -> Vec<Step> {
+        super::gui_realtime_script(host_cwd, Some(&self.stages[0]))
+    }
+
     pub fn questions() -> Self {
         Self {
             names: vec!["questions-pending"],
