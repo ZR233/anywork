@@ -944,19 +944,24 @@ final class _RealtimeScene {
     return accepted!;
   }
 
-  // Live atoms without a completion payload use the real tool disclosure,
-  // including wait. Only a completed wait payload has a TimelineWaitPanel.
-  Finder currentToolCard(ChatAtom atom) => atom.wait != null
-      ? find.byWidgetPredicate(
-          (widget) => widget is TimelineWaitPanel && widget.identity == atom.id,
-        )
-      : find.byWidgetPredicate(
-          (widget) =>
-              widget is TimelineToolDetails &&
-              widget.item.id == atom.id &&
-              widget.item.toolCallId == atom.tool?.callId &&
-              widget.item.name == atom.tool?.name,
-        );
+  Finder currentToolCard(ChatAtom atom) {
+    final reading = ChatItemPresentation.decode(atom).toolCard;
+    // Use the renderer's same typed facts for active and completed waits.
+    final wait =
+        atom.wait ?? (reading is DecodedToolCard ? reading.value.wait : null);
+    return wait != null
+        ? find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineWaitPanel && widget.identity == atom.id,
+          )
+        : find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineToolDetails &&
+                widget.item.id == atom.id &&
+                widget.item.toolCallId == atom.tool?.callId &&
+                widget.item.name == atom.tool?.name,
+          );
+  }
 
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
@@ -966,6 +971,8 @@ final class _RealtimeScene {
   }) async {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
+    final observations = <Map<String, Object?>>[];
+    String? previousObservation;
     try {
       while (true) {
         final turn = _latestTurn();
@@ -980,6 +987,7 @@ final class _RealtimeScene {
           if (turn != null && turn.turnId == _submittedTurnId)
             ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
         ];
+        final openingStartedMillis = clock.elapsedMilliseconds;
         for (final unit in units) {
           await observed.openGroup(unit.id);
         }
@@ -1005,6 +1013,29 @@ final class _RealtimeScene {
         final laidOut = required
             .where((atom) => _laidOut(currentToolCard(atom)))
             .length;
+        final observation = {
+          'groupIds': groupIds.toList(),
+          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          'members': tools
+              .map(
+                (atom) => {
+                  'id': atom.id,
+                  'callId': atom.tool?.callId,
+                  'active': atom.lifecycle is ActiveChatAtom,
+                  'laidOut': _laidOut(currentToolCard(atom)),
+                },
+              )
+              .toList(),
+        };
+        final signature = jsonEncode(observation);
+        if (signature != previousObservation && observations.length < 32) {
+          observations.add({
+            'openingStartedMillis': openingStartedMillis,
+            'observedMillis': clock.elapsedMilliseconds,
+            ...observation,
+          });
+        }
+        previousObservation = signature;
         if (tools.length >= minimum &&
             required.isNotEmpty &&
             required
@@ -1075,6 +1106,17 @@ final class _RealtimeScene {
         expect(tester.takeException(), isNull);
       }
     } catch (_) {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri.resolve('realtime-tool-observation-failure.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert({
+          'turnId': _submittedTurnId,
+          'expectedCallIds': {...toolCallIds, ...runningExecCallIds}.toList(),
+          'runningExecCallIds': runningExecCallIds.toList(),
+          'observations': observations,
+        })}\n',
+      );
       debugPrintSynchronously(
         'Realtime tool observation failure: ${jsonEncode({
           'turnId': _submittedTurnId,
