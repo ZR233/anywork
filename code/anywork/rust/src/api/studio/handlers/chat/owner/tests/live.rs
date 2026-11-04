@@ -1,10 +1,13 @@
 //! Real provider barriers drive the production FRB producer and native range watch.
-use std::collections::HashSet;
+use std::{collections::HashSet, io::Write};
 
 use super::*;
 use crate::api::studio::{
     handlers::chat::tests::MODEL,
-    types::{BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeCurrentContentRole},
+    types::{
+        BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeContentRef,
+        BridgeCurrentContentRole,
+    },
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
 
@@ -124,6 +127,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         env.submit_followup().await?;
         tokio::time::timeout(Duration::from_secs(5), head.wait_reached()).await?;
 
+        let mut response_identity: Option<(String, BridgeContentRef)> = None;
         let (held_seq, reference, preview_id, preview_bytes, preview_range_matches, held_cut) = loop {
             let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
@@ -133,23 +137,43 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                 };
                 ensure!(completed_items.insert(item.id));
             }
-            if let Some(preview) = batch.current.as_ref().and_then(|current| current.previews.iter()
-                .find(|preview| preview.role == BridgeCurrentContentRole::Response))
-            {
-                let cut = batch.current.as_ref().map(|current| (
-                    current.source_effect_seq,
-                    current.execution_present,
-                    current.active.as_ref().map(|active| active.id.clone()),
-                    current.active_turn.clone(),
-                ));
-                break (
-                    sequence,
-                    preview.reference.clone(),
-                    preview.id.clone(),
-                    preview.text.len(),
-                    preview.text.as_bytes().get(3..15) == Some(&prefix.as_bytes()[3..15]),
-                    cut,
-                );
+            let mut responses = batch.current.iter()
+                .flat_map(|current| &current.previews)
+                .filter(|preview| preview.role == BridgeCurrentContentRole::Response);
+            if let Some(preview) = responses.next() {
+                ensure!(responses.next().is_none(), "fixture must expose one Response preview");
+                if let Some((id, reference)) = &response_identity {
+                    ensure!(
+                        preview.id == *id && preview.reference == *reference,
+                        "Response preview changed identity before its readable prefix"
+                    );
+                } else {
+                    response_identity = Some((preview.id.clone(), preview.reference.clone()));
+                }
+                // An early declaration is not the readable prefix needed by the
+                // original range. ACK it below and consume the next real batch.
+                if let Some(bytes) = preview.text.as_bytes().get(3..15) {
+                    ensure!(
+                        bytes == &prefix.as_bytes()[3..15],
+                        "readable Response preview differs from the expected prefix: \
+                         sequence={sequence}; preview_id={:?}; reference={:?}; actual_bytes={bytes:?}",
+                        preview.id, preview.reference,
+                    );
+                    let cut = batch.current.as_ref().map(|current| (
+                        current.source_effect_seq,
+                        current.execution_present,
+                        current.active.as_ref().map(|active| active.id.clone()),
+                        current.active_turn.clone(),
+                    ));
+                    break (
+                        sequence,
+                        preview.reference.clone(),
+                        preview.id.clone(),
+                        preview.text.len(),
+                        preview.text.as_bytes().get(3..15) == Some(&prefix.as_bytes()[3..15]),
+                        cut,
+                    );
+                }
             }
             owner.acknowledge(&owner.subscription_id, sequence)?;
         };
@@ -169,9 +193,9 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             .map_err(|error| anyhow::anyhow!(
                 "watch.primary.open: reference={reference:?}; range={range:?}: {error:?}"
             ))
-            .with_context(&held_context)?;
+            .with_context(held_context)?;
         let first = window(&facade, &watch, "watch.primary.initial").await
-            .with_context(&held_context)?;
+            .with_context(held_context)?;
         let held_context = held_context();
         ensure!(
             first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64,
@@ -299,10 +323,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             .map_err(|error| anyhow::anyhow!("replacement.read_content: {error:?}"))?
             .bytes == final_window.bytes);
         replacement_facade.close().await?;
-        println!("live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed; \
+        writeln!(std::io::stdout(), "live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed; \
             {held_context}; actual_window_through(first,append,replacement)=({},{},{}); actual_initial_window={first:?}",
             first.generation, final_window.generation,
-            first.available_through, second.available_through, final_window.available_through);
+            first.available_through, second.available_through, final_window.available_through)?;
         Ok(())
     }).await.context("live FRB lifecycle exceeded its bounded test budget").and_then(|result| result);
     head.release();
