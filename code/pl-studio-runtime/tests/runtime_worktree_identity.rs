@@ -2,8 +2,9 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatPlacement, ChatScope, ContentRange, ContentRef, ObservedResourceKind, PayloadData,
-    ReadDemand, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ChatEntry, ChatPlacement, ChatScope, ContentOwner, ContentRange, ContentRef, ContentTarget,
+    ObservedResourceKind, PayloadData, ReadDemand, ThreadSubscriptionRequest,
+    ThreadSubscriptionUpdate, ThreadWorkspaceMode, TimelineItem, TimelineItemKind,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -48,10 +49,17 @@ async fn public_bytes(
     Ok(bytes)
 }
 
+#[derive(Debug, PartialEq)]
+struct MainHistoryItem {
+    item: Box<TimelineItem>,
+    envelope: Option<serde_json::Value>,
+    bodies: Vec<Vec<u8>>,
+}
+
 async fn public_history(
     runtime: &pl_studio_runtime::StudioRuntime,
     id: &str,
-) -> Result<Vec<(String, serde_json::Value, Vec<Vec<u8>>)>> {
+) -> Result<Vec<MainHistoryItem>> {
     let demand = ReadDemand {
         max_items: 3,
         max_bytes: 64 * 1024,
@@ -75,34 +83,80 @@ async fn public_history(
         loop {
             let mut page = Vec::new();
             for entry in batch.entries {
-                let pl_protocol::ChatEntry::Atom(message) = entry else {
-                    continue;
+                let ChatEntry::Item(mut item) = entry else {
+                    anyhow::bail!("Main delivered a raw member/source instead of a Timeline Item");
                 };
-                let raw = match message.payload.context("completed payload")? {
-                    PayloadData::Inline { bytes } => bytes,
-                    PayloadData::Deferred {
-                        reference,
-                        byte_length,
-                    } => public_bytes(&reader, &reference, byte_length).await?,
-                };
-                let value: serde_json::Value = serde_json::from_slice(&raw)?;
-                ensure!(value["contract"] == "anywork.chat/1");
                 let mut bodies = Vec::new();
-                for body in value["bodies"].as_array().context("public body manifest")? {
-                    let bytes = if let Some(inline) = body.get("inline") {
-                        serde_json::from_value::<Vec<u8>>(inline.clone())?
-                    } else {
-                        public_bytes(
-                            &reader,
-                            &serde_json::from_value(body["reference"].clone())?,
-                            body["byteLength"].as_u64().context("body length")?,
-                        )
-                        .await?
+                let envelope = if item.kind == TimelineItemKind::WorkGroup {
+                    ensure!(
+                        item.payload.is_none()
+                            && item.content_item_id.is_none()
+                            && item.contents.is_empty(),
+                        "Main work group carried member payload/body content"
+                    );
+                    None
+                } else {
+                    let owner = item
+                        .content_item_id
+                        .as_deref()
+                        .context("Main text/status content owner")?;
+                    let raw = match item.payload.as_ref().context("completed Main payload")? {
+                        PayloadData::Inline { bytes } => bytes.clone(),
+                        PayloadData::Deferred {
+                            reference,
+                            byte_length,
+                        } => {
+                            ensure!(
+                                matches!(&reference.target, ContentTarget::ItemPayload { item_id }
+                                    if item_id == owner),
+                                "Main payload changed its original content owner"
+                            );
+                            public_bytes(&reader, reference, *byte_length).await?
+                        }
                     };
-                    ensure!(Some(bytes.len() as u64) == body["byteLength"].as_u64());
-                    bodies.push(bytes);
-                }
-                page.push((message.id, value, bodies));
+                    let value: serde_json::Value = serde_json::from_slice(&raw)?;
+                    ensure!(value["contract"] == "anywork.chat/1");
+                    for body in value["bodies"].as_array().context("public body manifest")? {
+                        let key = body["key"].as_str().context("body key")?;
+                        let len = body["byteLength"].as_u64().context("body length")?;
+                        let reference = &item
+                            .contents
+                            .iter()
+                            .find(|content| {
+                                matches!(&content.reference.target,
+                                    ContentTarget::Body {
+                                        owner: ContentOwner::Item { item_id },
+                                        key: actual,
+                                    } if item_id == owner && actual == key)
+                            })
+                            .context("Main body has no declared original Item-owned reference")?
+                            .reference;
+                        let bytes = public_bytes(&reader, reference, len).await?;
+                        if let Some(inline) = body.get("inline") {
+                            ensure!(
+                                serde_json::from_value::<Vec<u8>>(inline.clone())? == bytes,
+                                "Main inline body differs from its declared content"
+                            );
+                        } else {
+                            ensure!(
+                                serde_json::from_value::<ContentRef>(body["reference"].clone())?
+                                    == *reference,
+                                "Main body manifest changed its declared content reference"
+                            );
+                        }
+                        ensure!(bytes.len() as u64 == len);
+                        bodies.push(bytes);
+                    }
+                    // Compare the decoded envelope, not its legal Inline/Deferred transport form.
+                    // All other fields of the original Main Item remain part of history equality.
+                    item.payload = None;
+                    Some(value)
+                };
+                page.push(MainHistoryItem {
+                    item,
+                    envelope,
+                    bodies,
+                });
             }
             pages.splice(0..0, page);
             let Some(before) = batch.before else {
@@ -115,7 +169,8 @@ async fn public_history(
                 "history continuation did not advance"
             );
         }
-        let identities: std::collections::HashSet<_> = pages.iter().map(|(id, _, _)| id).collect();
+        let identities: std::collections::HashSet<_> =
+            pages.iter().map(|entry| &entry.item.id).collect();
         ensure!(identities.len() == pages.len());
         Ok(pages)
     }
@@ -887,9 +942,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         let original_snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
         let original_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
-            original_page.iter().any(|(_, envelope, bodies)| {
-                envelope["type"] == "text"
-                    && bodies
+            original_page.iter().any(|entry| {
+                entry.item.kind == TimelineItemKind::Text
+                    && entry
+                        .bodies
                         .iter()
                         .any(|bytes| bytes == b"saved missing-site history")
             }),
