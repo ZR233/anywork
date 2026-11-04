@@ -250,6 +250,7 @@ void main() {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
       }, turnId: parallelObserver.turnId);
+      await scene.closeLatestTurnGroups();
 
       final priorHostCwdItems = scene.observed.items
           .map((item) => item.id)
@@ -266,6 +267,7 @@ void main() {
       await scene.verifyExecReceipts(priorHostCwdItems, const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
       }, turnId: hostCwdTurnId);
+      await scene.closeLatestTurnGroups();
 
       await scene.submit('Realtime provider error');
       await scene.terminal(StudioTurnStatus.failed);
