@@ -108,6 +108,8 @@ Main latest 捕获固定 item 位置上界与完成水位 H0；before 还要求 
 
 Text/Status 的小型原信封在本帧实际预算允许时沿原内容 owner 交付 Inline，实时发布、RAM 短读与 SQLite 前缀使用同一选择语义，使短正文、附件元信息和回执可直接进入原 typed renderer。派生表仍只保存引用，不持久化第二份正文；WorkGroup 不为此读取成员或媒体。不能将所有小载荷永久 Deferred 后仅展示 JSON 原文来代替正常消息；超预算信封继续 Deferred，正文大块仍保留原 range 引用与显式按需读取。
 
+明确展开的 `GroupMembers` 查询沿同一选择机制交付完成成员的小型原信封：只解析该页已选中原子的 `ItemPayload` 引用，核对其原完成项身份，在原内容窗口上限和原批次实际编码预算内选择 Inline。实时交接、RAM 与 SQLite 页遵守同一规则；缺少完成载荷的活动成员仍沿原 current/内容引用交付。这里不增加帧预算、成员预取、媒体读取、完整正文缓存或 Flutter 侧通用 Deferred 解码器；超预算成员继续保留 Deferred 和原显式 range 读取。折叠的 WorkGroup/Main 查询不因此读取任何成员信封，Children 查询也不因本规则改变语义。
+
 不能跨 await 持 Session 锁、复用捕获前旧快照、查询触发 flush/执行恢复/完整性检查，或跳过较新的大 item 去库里凑旧小 item；超预算 payload 以 Deferred 表达。捕获后 writer 清 pending 时短读仍持 Arc；捕获前清理则后开的 DB 快照已能看到提交。
 
 before 是绑定原库身份、scope、排他位置和读取作用域的不透明字符串，Flutter 原样回传、不解析来源或 seq。不返回 totalCount，不 COUNT，不为 UI 计算全历史空占位。非空 before 仅表示可继续请求，不保证下一页非空。只有内存和库均已确认耗尽才返回 null；内存恰好够页时不为精确 hasOlder 额外查库。允许一次空末页返回 null，非空页 cursor 必须前进，空页不得原地 continuation；短页和字节截页不自动表示 EOF，item 页只含折叠摘要也不表示成员已经加载完毕。
