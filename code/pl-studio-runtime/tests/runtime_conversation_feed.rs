@@ -6,8 +6,9 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentRange, ContentRef,
-    PayloadData, ReadDemand, ThreadWorkspaceMode,
+    ChatAtom, ChatAtomContent, ChatAtomLifecycle, ChatBatch, ChatEntry, ChatPlacement, ChatScope,
+    ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
+    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TimelineItem, TurnState,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{ReplyStage, responses_text};
@@ -38,15 +39,17 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
 }
 
 // Close both independent owners even if the observation or one close failed.
-async fn finish_feed(feed: &mut ConversationFeed, result: Result<()>) -> Result<()> {
+async fn finish_feed<T>(feed: &mut ConversationFeed, result: Result<T>) -> Result<T> {
     let reader = feed.reader().clone();
     feed.request_close();
     reader.request_close();
     let producer = feed.close().await;
     let read = reader.close().await;
-    result.with_context(|| format!("feed cleanup: producer={producer:?}, read={read:?}"))?;
+    let result =
+        result.with_context(|| format!("feed cleanup: producer={producer:?}, read={read:?}"))?;
     producer?;
-    read
+    read?;
+    Ok(result)
 }
 
 async fn content(reader: &ConversationReader, reference: &ContentRef, len: u64) -> Result<Vec<u8>> {
@@ -73,50 +76,153 @@ async fn content(reader: &ConversationReader, reference: &ContentRef, len: u64) 
         generation = Some(window.generation);
         bytes.extend(window.bytes);
     }
+    let end = reader
+        .read_content(
+            reference,
+            ContentRange {
+                offset: len,
+                max_bytes: 1,
+            },
+        )
+        .await?;
+    ensure!(end.offset == len && end.bytes.is_empty() && end.sealed);
+    ensure!(end.available_through == len && generation.as_ref() == Some(&end.generation));
     Ok(bytes)
 }
 
-fn atoms(entries: Vec<ChatEntry>) -> Vec<ChatAtom> {
+fn items(entries: Vec<ChatEntry>) -> Result<Vec<TimelineItem>> {
     entries
         .into_iter()
-        .filter_map(|entry| match entry {
-            ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(*atom),
-            _ => None,
+        .map(|entry| match entry {
+            ChatEntry::Item(item) => Ok(*item),
+            _ => anyhow::bail!("Main delivered a raw member/source instead of a Timeline item"),
         })
         .collect()
 }
 
-async fn envelope(reader: &ConversationReader, message: &ChatAtom) -> Result<serde_json::Value> {
-    let bytes = match message.payload.as_ref().context("completed payload")? {
+fn atoms(entries: Vec<ChatEntry>) -> Result<Vec<ChatAtom>> {
+    let mut atoms = Vec::new();
+    for entry in entries {
+        match entry {
+            ChatEntry::Atom(atom) => {
+                ensure!(
+                    atom.source_state
+                        .as_ref()
+                        .is_some_and(|state| state.source == atom.source),
+                    "member omitted its real source state"
+                );
+                atoms.push(*atom);
+            }
+            ChatEntry::Source(_) => (),
+            ChatEntry::Item(_) => anyhow::bail!("member scope delivered a Main item"),
+        }
+    }
+    Ok(atoms)
+}
+
+async fn envelope(
+    reader: &ConversationReader,
+    payload: Option<&PayloadData>,
+    owner: &str,
+) -> Result<serde_json::Value> {
+    let bytes = match payload.context("completed payload")? {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
             reference,
             byte_length,
-        } => content(reader, reference, *byte_length).await?,
+        } => {
+            ensure!(
+                matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == owner),
+                "payload reference changed its original completion owner"
+            );
+            content(reader, reference, *byte_length).await?
+        }
     };
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     ensure!(value["contract"] == "anywork.chat/1");
     Ok(value)
 }
 
-async fn history(reader: &ConversationReader, first: ChatBatch) -> Result<Vec<ChatAtom>> {
-    let mut messages = atoms(first.entries);
+async fn bodies(
+    reader: &ConversationReader,
+    value: &serde_json::Value,
+    contents: &[ChatAtomContent],
+    owner: &str,
+) -> Result<Vec<Vec<u8>>> {
+    let mut bodies = Vec::new();
+    for body in value["bodies"].as_array().context("body manifest")? {
+        let key = body["key"].as_str().context("body key")?;
+        let len = body["byteLength"].as_u64().context("body length")?;
+        let reference = &contents
+            .iter()
+            .find(|content| {
+                matches!(&content.reference.target,
+                ContentTarget::Body { owner: ContentOwner::Item { item_id }, key: actual }
+                    if item_id == owner && actual == key)
+            })
+            .context("body has no matching original Item-owned content reference")?
+            .reference;
+        let bytes = content(reader, reference, len).await?;
+        if let Some(inline) = body.get("inline") {
+            ensure!(serde_json::from_value::<Vec<u8>>(inline.clone())? == bytes);
+        } else {
+            ensure!(serde_json::from_value::<ContentRef>(body["reference"].clone())? == *reference);
+        }
+        bodies.push(bytes);
+    }
+    Ok(bodies)
+}
+
+async fn pages(
+    reader: &ConversationReader,
+    scope: &ChatScope,
+    first: ChatBatch,
+    read_demand: ReadDemand,
+) -> Result<Vec<ChatEntry>> {
+    ensure!(first.placement == ChatPlacement::Set);
+    first.validate_for(scope)?;
+    ensure!(first.entries.len() <= read_demand.max_items as usize);
+    ensure!(first.encoded_len()? <= read_demand.max_bytes as usize);
+    let mut entries = first.entries;
     let mut before = first.before;
+    let mut cursors = HashSet::new();
     while let Some(cursor) = before {
-        let page = reader.load_older(&cursor, demand(7)).await?;
+        ensure!(
+            cursors.insert(cursor.clone()),
+            "opaque continuation repeated"
+        );
+        let page = reader.load_older(&cursor, read_demand).await?;
         ensure!(page.placement == ChatPlacement::Prepend && page.current.is_none());
+        page.validate_for(scope)?;
+        ensure!(page.entries.len() <= read_demand.max_items as usize);
+        ensure!(page.encoded_len()? <= read_demand.max_bytes as usize);
         ensure!(
             page.before.as_ref() != Some(&cursor),
             "opaque continuation did not advance"
         );
         // A byte-limited short page is not EOF; a final empty page is legal.
         before = page.before;
-        messages.splice(0..0, atoms(page.entries));
+        entries.splice(0..0, page.entries);
     }
+    Ok(entries)
+}
+
+async fn history(
+    reader: &ConversationReader,
+    first: ChatBatch,
+    read_demand: ReadDemand,
+) -> Result<Vec<TimelineItem>> {
+    let messages = items(pages(reader, &ChatScope::Main, first, read_demand).await?)?;
     let ids: HashSet<_> = messages.iter().map(|message| &message.id).collect();
     ensure!(
         ids.len() == messages.len(),
         "history repeated a completed identity"
+    );
+    ensure!(
+        messages
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position),
+        "Main history did not preserve item positions"
     );
     Ok(messages)
 }
@@ -151,7 +257,8 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
             .start(ThreadWorkspaceMode::Worktree, "feed-first")
             .await?;
         let id = &thread.thread.id;
-        completed_prompt(&env.runtime, id, "feed-first").await?;
+        let seed = completed_prompt(&env.runtime, id, "feed-first").await?;
+        ensure!(matches!(seed.state, TurnState::Completed(_)));
         let snapshot = env.runtime.thread_snapshot(id).await?;
         env.runtime
             .submit_prompt_command(
@@ -200,7 +307,8 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
             let reader = feed.reader().clone();
             // Complete production before the first recv: open, not recv, owns H0.
             stage.release();
-            completed_prompt(&env.runtime, id, "feed-next").await?;
+            let terminal = completed_prompt(&env.runtime, id, "feed-next").await?;
+            ensure!(matches!(terminal.state, TurnState::Completed(_)));
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set && first.current.is_some());
             ensure!(first.entries.len() <= 1);
@@ -220,37 +328,81 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
                 } => item_id.clone(),
                 _ => anyhow::bail!("active response has no stable Item owner"),
             };
-            let old = history(&reader, first).await?;
-            ensure!(old.iter().all(|atom| {
-                atom.source_state
-                    .as_ref()
-                    .is_some_and(|source| source.source == atom.source)
-            }));
+            let display_id = current
+                .items
+                .iter()
+                .find(|item| {
+                    item.contents
+                        .iter()
+                        .any(|content| content.reference == response)
+                })
+                .context("current response has no Timeline item")?
+                .id
+                .clone();
+            let old = history(&reader, first, demand(1)).await?;
             ensure!(
-                !old.iter().any(|message| message.id == response_id),
+                !old.iter().any(|message| {
+                    message.id == display_id
+                        || message.content_item_id.as_deref() == Some(response_id.as_str())
+                }),
                 "Set chased completions after its open cut"
             );
+            let mut saw_seed = false;
+            for item in &old {
+                let owner = item
+                    .content_item_id
+                    .as_deref()
+                    .context("old content owner")?;
+                let value = envelope(&reader, item.payload.as_ref(), owner).await?;
+                if value["turnId"] == seed.id
+                    && value["type"] == "text"
+                    && matches!(
+                        value["data"]["channel"].as_str(),
+                        Some("final" | "commentary")
+                    )
+                {
+                    ensure!(
+                        bodies(&reader, &value, &item.contents, owner).await?
+                            == [b"first real response".to_vec()]
+                    );
+                    saw_seed = true;
+                }
+            }
+            ensure!(saw_seed, "nonempty Set lost the earlier response");
             let mut identities: HashSet<_> = old.iter().map(|message| message.id.clone()).collect();
+            let mut last_position = old.last().and_then(|item| item.position);
             let mut saw_response = false;
             loop {
                 let batch = chat(&mut feed).await?;
+                batch.validate_for(&ChatScope::Main)?;
                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                 ensure!(batch.entries.len() <= 1);
                 ensure!(batch.encoded_len()? <= demand(1).max_bytes as usize);
-                let completed = atoms(batch.entries.clone());
-                ensure!(completed.iter().all(|atom| {
-                    atom.source_state
-                        .as_ref()
-                        .is_some_and(|source| source.source == atom.source)
-                }));
-                let completes_response = completed.iter().any(|message| message.id == response_id);
+                let completed = items(batch.entries.clone())?;
+                let completes_response = completed.iter().any(|item| item.id == display_id);
                 for message in &completed {
+                    ensure!(
+                        message.position > last_position,
+                        "Append changed item order"
+                    );
+                    last_position = message.position;
                     ensure!(
                         identities.insert(message.id.clone()),
                         "completion repeated across Set/Append"
                     );
                 }
                 if completes_response {
+                    let item = completed
+                        .iter()
+                        .find(|item| item.id == display_id)
+                        .context("completed response item")?;
+                    ensure!(item.content_item_id.as_deref() == Some(response_id.as_str()));
+                    let value = envelope(&reader, item.payload.as_ref(), &response_id).await?;
+                    ensure!(value["turnId"] == terminal.id && value["type"] == "text");
+                    ensure!(
+                        bodies(&reader, &value, &item.contents, &response_id).await?
+                            == [b"second real response".to_vec()]
+                    );
                     let current = batch
                         .current
                         .as_ref()
@@ -262,7 +414,17 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
                             .any(|preview| preview.reference == response),
                         "completed member stayed active"
                     );
+                    ensure!(
+                        !current.items.iter().any(|item| item.id == display_id),
+                        "delivered response stayed in current"
+                    );
                     saw_response = true;
+                }
+                if !saw_response && let Some(current) = &batch.current {
+                    ensure!(
+                        current.items.iter().any(|item| item.id == display_id),
+                        "current response retired before its item was delivered"
+                    );
                 }
                 if batch
                     .current
@@ -295,20 +457,46 @@ async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_b
 async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Result<()> {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement, TransactionTrait};
 
-    let stage = ReplyStage::new();
-    let frames = responses_text("independently sealed member", "member", support::MODEL);
-    let done = frames
-        .iter()
-        .position(|frame| frame["type"] == "response.output_item.done")
-        .context("fixture independent member completion")?;
+    let active = ReplyStage::new();
+    let sealed = ReplyStage::new();
+    let frames = pl_provider_fixture::responses_reasoning_text(
+        &["independently sealed reasoning"],
+        &["independently sealed member"],
+        "member",
+        support::MODEL,
+    );
+    let mut second = frames[1..=3].to_vec();
+    // Two actual provider reasoning items share a group. Open only the newer
+    // member; its older cursor must keep the first member's pre-completion cut.
+    for frame in &mut second {
+        frame["output_index"] = 1.into();
+        if frame.get("item").is_some() {
+            frame["item"]["id"] = "reasoning-2".into();
+        } else {
+            frame["item_id"] = "reasoning-2".into();
+        }
+    }
+    second[2]["item"]["summary"][0]["id"] = "reasoning-2-part".into();
+    let mut text = frames[4..frames.len() - 1].to_vec();
+    for frame in &mut text {
+        frame["output_index"] = 2.into();
+    }
+    let mut prefix = frames[..3].to_vec();
+    prefix.extend(second[..2].iter().cloned());
+    let mut completion = vec![frames[3].clone(), second[2].clone()];
+    completion.extend(text);
+    let reply = ReplyStage::staged(
+        vec![
+            prefix,
+            completion,
+            vec![frames.last().context("fixture terminal")?.clone()],
+        ],
+        &[&active, &sealed],
+    );
     let env = Environment::new(
         vec![
             prompt_step("member-seed", 0, text_reply("durable seed", "seed")),
-            prompt_step(
-                "member-next",
-                1,
-                stage.gated(frames[..=done].to_vec(), frames[done + 1..].to_vec()),
-            ),
+            prompt_step("member-next", 1, reply),
         ],
         vec![],
     )
@@ -316,7 +504,8 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
     let result = async {
         let thread = env.start(ThreadWorkspaceMode::Worktree, "member-seed").await?;
         let id = &thread.thread.id;
-        completed_prompt(&env.runtime, id, "member-seed").await?;
+        let seed = completed_prompt(&env.runtime, id, "member-seed").await?;
+        ensure!(matches!(seed.state, TurnState::Completed(_)));
         env.runtime.synchronize_thread_observation(id).await?;
         // The saved fixture locates this isolated Thread's DB by identity only;
         // no checkpoint or receipt supplies the public chat text below.
@@ -336,61 +525,132 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                     input: StudioPromptInput { input_id: "input-member-next".into(), text: "member-next".into(), attachment_draft_ids: vec![] },
                     expected_model_route_revision: snapshot.model_route.as_ref().context("model route")?.revision,
                 }).await?;
-                reached(&stage).await?;
-                let completed_id = loop {
+                reached(&active).await?;
+                let reference = loop {
                     let batch = chat(&mut feed).await?;
+                    batch.validate_for(&ChatScope::Main)?;
                     ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
-                    let mut completed = None;
-                    for message in &atoms(batch.entries.clone()) {
-                        let value = envelope(feed.reader(), message).await?;
-                        if value["type"] == "text"
-                            && matches!(value["data"]["channel"].as_str(), Some("final" | "commentary"))
-                            && value["turnId"] != serde_json::Value::Null {
-                            let body = value["bodies"].as_array().context("member bodies")?
-                                .first().context("member body")?;
-                            let bytes = if let Some(inline) = body.get("inline") {
-                                serde_json::from_value::<Vec<u8>>(inline.clone())?
-                            } else {
-                                content(feed.reader(), &serde_json::from_value(body["reference"].clone())?,
-                                    body["byteLength"].as_u64().context("member body length")?).await?
-                            };
-                            ensure!(bytes == b"independently sealed member");
-                            let current = batch.current.as_ref().context("member completion omitted same-batch current")?;
-                            ensure!(current.active_turn.is_some(), "member waited for the whole attempt");
-                            ensure!(!current.previews.iter().any(|preview| matches!(&preview.reference.target,
-                                pl_protocol::ContentTarget::Body { owner: pl_protocol::ContentOwner::Item { item_id }, .. }
-                                if item_id == &message.id)), "sealed member stayed active");
-                            completed = Some(message.id.clone());
-                        }
+                    if let Some(group) = batch.current.as_ref().and_then(|current|
+                        current.items.iter().find(|item| item.is_work_group()
+                            && item.summary.as_ref().is_some_and(|summary|
+                                summary.member_count == 2 && summary.active_count == 2))) {
+                        break group.members.clone().context("active group reference")?;
                     }
-                    if let Some(id) = completed { break id; }
                 };
-                ensure!(transaction.query_one_raw(Statement::from_sql_and_values(
-                    DbBackend::Sqlite, "SELECT item_id FROM conversation_items WHERE item_id=?",
-                    [completed_id.clone().into()],
-                )).await?.is_none(), "member was already durable despite the reserved writer");
-                let mut latest = env.runtime.open_conversation_feed(id, ChatScope::Main, demand(1)).await?;
-                let queried = async {
-                    let set = chat(&mut latest).await?;
-                    ensure!(set.placement == ChatPlacement::Set);
-                    ensure!(atoms(set.entries.clone()).iter().any(|message| message.id == completed_id),
-                        "pending member was pushed but not independently queryable");
+                let scope = ChatScope::GroupMembers { reference };
+                let mut members = env.runtime.open_conversation_feed(id, scope.clone(), demand(1)).await?;
+                let member_observation = async {
+                    let first = chat(&mut members).await?;
+                    first.validate_for(&scope)?;
+                    ensure!(first.placement == ChatPlacement::Set && first.current.is_none());
+                    let cursor = first.before.clone().context("two-member window needs an older cursor")?;
+                    let initial = atoms(first.entries)?;
+                    ensure!(initial.len() == 1);
+                    let initial = &initial[0];
+                    ensure!(initial.completion_seq.is_none() && initial.payload.is_none());
+                    ensure!(matches!(initial.lifecycle, ChatAtomLifecycle::Active { .. }));
+                    active.release();
+                    reached(&sealed).await?;
+                    let completed = 'completed: loop {
+                        let batch = chat(&mut members).await?;
+                        batch.validate_for(&scope)?;
+                        ensure!(batch.placement == ChatPlacement::Append && batch.current.is_none());
+                        ensure!(batch.encoded_len()? <= demand(1).max_bytes as usize);
+                        for atom in atoms(batch.entries)? {
+                            ensure!(atom.id == initial.id, "member feed escaped its opened window");
+                            if atom.completion_seq.is_some() {
+                                break 'completed atom;
+                            }
+                        }
+                    };
+                    let owner = completed.completion_item_id.as_deref().context("member completion owner")?;
+                    let value = envelope(members.reader(), completed.payload.as_ref(), owner).await?;
+                    ensure!(value["type"] == "thinking");
+                    ensure!(bodies(members.reader(), &value, &completed.contents, owner).await?
+                        == [b"independently sealed reasoning".to_vec()]);
+                    ensure!(completed.source == initial.source && completed.source_order == initial.source_order);
+
+                    let older = members.reader().load_older(&cursor, demand(1)).await?;
+                    older.validate_for(&scope)?;
+                    ensure!(older.placement == ChatPlacement::Prepend);
+                    let older = atoms(older.entries)?;
+                    ensure!(older.len() == 1 && older[0].id != completed.id);
+                    ensure!(older[0].source_order < completed.source_order);
+                    ensure!(older[0].completion_seq.is_none() && older[0].payload.is_none(),
+                        "old GroupMembers cursor borrowed a future completion cut");
+                    ensure!(matches!(older[0].lifecycle, ChatAtomLifecycle::Active { .. }));
+
+                    let text_owner = loop {
+                        let batch = chat(&mut feed).await?;
+                        batch.validate_for(&ChatScope::Main)?;
+                        ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
+                        let mut found = None;
+                        for item in items(batch.entries.clone())? {
+                            if item.is_work_group() { continue; }
+                            let owner = item.content_item_id.as_deref().context("text completion owner")?;
+                            let value = envelope(feed.reader(), item.payload.as_ref(), owner).await?;
+                            if value["type"] == "text"
+                                && matches!(value["data"]["channel"].as_str(), Some("final" | "commentary"))
+                            {
+                                ensure!(bodies(feed.reader(), &value, &item.contents, owner).await?
+                                    == [b"independently sealed member".to_vec()]);
+                                let current = batch.current.as_ref().context("text omitted same-batch current")?;
+                                ensure!(current.active_turn.is_some(), "member waited for the whole attempt");
+                                ensure!(!current.items.iter().any(|current| current.id == item.id));
+                                ensure!(!current.previews.iter().any(|preview| matches!(&preview.reference.target,
+                                    ContentTarget::Body { owner: ContentOwner::Item { item_id }, .. }
+                                        if item_id == owner)), "sealed member stayed active");
+                                found = Some(owner.to_owned());
+                            }
+                        }
+                        if let Some(owner) = found { break owner; }
+                    };
+                    ensure!(!sealed.is_released(), "provider attempt escaped its terminal barrier");
+                    let snapshot = env.runtime.thread_snapshot(id).await?;
+                    let turn = snapshot.active_turn.context("member waited for the real Turn terminal")?;
+                    ensure!(matches!(turn.state, TurnState::Running(_)));
+                    ensure!(completed.turn_id.as_deref() == Some(turn.id.as_str()));
+                    for owner in [owner, text_owner.as_str()] {
+                        ensure!(transaction.query_one_raw(Statement::from_sql_and_values(
+                            DbBackend::Sqlite, "SELECT item_id FROM conversation_items WHERE item_id=?",
+                            [owner.to_owned().into()],
+                        )).await?.is_none(), "member was already durable despite the reserved writer");
+                    }
+                    let mut latest = env.runtime.open_conversation_feed(id, scope.clone(), demand(1)).await?;
+                    let queried = async {
+                        let set = chat(&mut latest).await?;
+                        let queried = atoms(pages(latest.reader(), &scope, set, demand(1)).await?)?;
+                        ensure!(queried.len() == 2 && queried.iter().all(|atom| atom.completion_seq.is_some()),
+                            "pending members were pushed but not independently queryable");
+                        for atom in queried {
+                            let owner = atom.completion_item_id.as_deref().context("queried original owner")?;
+                            let queried = envelope(latest.reader(), atom.payload.as_ref(), owner).await?;
+                            ensure!(queried["type"] == "thinking");
+                            ensure!(bodies(latest.reader(), &queried, &atom.contents, owner).await?
+                                == [b"independently sealed reasoning".to_vec()]);
+                        }
+                        Ok(())
+                    }.await;
+                    finish_feed(&mut latest, queried).await?;
                     Ok(())
                 }.await;
-                finish_feed(&mut latest, queried).await
+                finish_feed(&mut members, member_observation).await
             }.await;
             finish_feed(&mut feed, observed).await
         }.await;
         let rollback = transaction.rollback().await;
         let close = db.close().await;
-        stage.release();
+        active.release();
+        sealed.release();
         observed.with_context(|| format!("SQLite cleanup: rollback={rollback:?}, close={close:?}"))?;
         rollback?;
         close?;
-        completed_prompt(&env.runtime, id, "member-next").await?;
+        let terminal = completed_prompt(&env.runtime, id, "member-next").await?;
+        ensure!(matches!(terminal.state, TurnState::Completed(_)));
         Ok(())
     }.await;
-    stage.release();
+    active.release();
+    sealed.release();
     env.finish(result).await
 }
 
@@ -410,7 +670,8 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             .start(ThreadWorkspaceMode::Worktree, "feed-restart")
             .await?;
         let id = &thread.thread.id;
-        completed_prompt(&env.runtime, id, "feed-restart").await?;
+        let terminal = completed_prompt(&env.runtime, id, "feed-restart").await?;
+        ensure!(matches!(terminal.state, TurnState::Completed(_)));
         let mut feed = env
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand(1))
@@ -423,12 +684,25 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
                 .clone()
                 .context("one-item first page must have older facts")?;
             let reader = feed.reader().clone();
-            let original = history(&reader, old).await?;
+            let original = history(&reader, old, demand(1)).await?;
             ensure!(!original.is_empty());
             let mut frozen = Vec::new();
             for message in &original {
-                frozen.push((message.id.clone(), envelope(&reader, message).await?));
+                let owner = message
+                    .content_item_id
+                    .as_deref()
+                    .context("original content owner")?;
+                let value = envelope(&reader, message.payload.as_ref(), owner).await?;
+                let body = bodies(&reader, &value, &message.contents, owner).await?;
+                frozen.push((message.clone(), value, body));
             }
+            ensure!(
+                frozen
+                    .iter()
+                    .any(|(_, value, body)| value["turnId"] == terminal.id
+                        && body == &[b"a persisted completed response".to_vec()]),
+                "saved nonempty feed did not contain the real response body"
+            );
             env.runtime.synchronize_thread_observation(id).await?;
             env.restart().await?;
             let error = loop {
@@ -475,15 +749,33 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
                         .is_err(),
                     "new lease accepted an old opaque continuation"
                 );
-                let saved = history(restored.reader(), first).await?;
-                for (id, original) in &frozen {
+                let saved = history(restored.reader(), first, demand(1)).await?;
+                ensure!(
+                    saved.len() == frozen.len(),
+                    "restart changed the published item count"
+                );
+                for (item, original, body) in &frozen {
                     let saved = saved
                         .iter()
-                        .find(|message| &message.id == id)
+                        .find(|message| message.id == item.id)
                         .context("restart lost a published identity")?;
                     ensure!(
-                        envelope(restored.reader(), saved).await? == *original,
-                        "restart changed frozen payload"
+                        saved.position == item.position
+                            && saved.source == item.source
+                            && saved.kind == item.kind
+                            && saved.content_item_id == item.content_item_id
+                            && saved.contents == item.contents,
+                        "restart changed item order, source or original content ownership"
+                    );
+                    let owner = saved
+                        .content_item_id
+                        .as_deref()
+                        .context("saved content owner")?;
+                    let value = envelope(restored.reader(), saved.payload.as_ref(), owner).await?;
+                    ensure!(value == *original, "restart changed frozen payload");
+                    ensure!(
+                        bodies(restored.reader(), &value, &saved.contents, owner).await? == *body,
+                        "restart changed original body bytes"
                     );
                 }
                 Ok(())
@@ -508,57 +800,156 @@ async fn realistic_output_limit_many_items() -> Result<()> {
     observe_realistic_output_limit(2_000).await
 }
 
-async fn count_output(
+async fn count_payload(
     reader: &ConversationReader,
-    messages: &[ChatAtom],
+    payload: Option<&PayloadData>,
+    owner: &str,
+    contents: &[ChatAtomContent],
     identities: &mut HashSet<String>,
-) -> Result<(usize, u64, Option<String>)> {
+    turns: &mut HashSet<String>,
+) -> Result<(usize, u64)> {
+    ensure!(
+        identities.insert(owner.to_owned()),
+        "original completion identity repeated"
+    );
+    let value = envelope(reader, payload, owner).await?;
+    let response_text = value["type"] == "text"
+        && matches!(
+            value["data"]["channel"].as_str(),
+            Some("final" | "commentary")
+        );
+    if !response_text && value["type"] != "thinking" {
+        return Ok((0, 0));
+    }
+    turns.insert(
+        value["turnId"]
+            .as_str()
+            .context("output Turn identity")?
+            .to_owned(),
+    );
+    let bodies = bodies(reader, &value, contents, owner).await?;
+    ensure!(
+        !bodies.is_empty(),
+        "output member omitted its original body"
+    );
+    let mut bytes = 0;
+    for raw in bodies {
+        let (parts, remainder) = raw.as_chunks::<2>();
+        ensure!(
+            remainder.is_empty() && parts.iter().all(|part| part == b" a"),
+            "public body differs from provider output"
+        );
+        bytes += raw.len() as u64;
+    }
+    Ok((1, bytes))
+}
+
+async fn count_output(
+    env: &Environment,
+    thread_id: &str,
+    reader: &ConversationReader,
+    messages: &[TimelineItem],
+    display_ids: &mut HashSet<String>,
+    identities: &mut HashSet<String>,
+    turns: &mut HashSet<String>,
+) -> Result<(usize, u64)> {
     let mut count = 0;
     let mut bytes = 0;
-    let mut parent = None;
     for message in messages {
         ensure!(
-            identities.insert(message.id.clone()),
-            "completed identity repeated"
+            display_ids.insert(message.id.clone()),
+            "Main repeated a Timeline item"
         );
-        let value = envelope(reader, message).await?;
-        if value["type"] == "turn" {
-            parent = message.turn_id.clone();
-        }
-        let response_text = value["type"] == "text"
-            && matches!(
-                value["data"]["channel"].as_str(),
-                Some("final" | "commentary")
-            );
-        if !response_text && value["type"] != "thinking" {
-            continue;
-        }
-        count += 1;
-        for body in value["bodies"]
-            .as_array()
-            .context("text/thinking body manifest")?
-        {
-            let len = body["byteLength"].as_u64().context("body length")?;
-            let raw = if let Some(inline) = body.get("inline") {
-                serde_json::from_value::<Vec<u8>>(inline.clone())?
-            } else {
-                content(
-                    reader,
-                    &serde_json::from_value(body["reference"].clone())?,
-                    len,
-                )
-                .await?
-            };
-            ensure!(raw.len() as u64 == len);
-            let (parts, remainder) = raw.as_chunks::<2>();
+        let (members, body_bytes) = if message.is_work_group() {
             ensure!(
-                remainder.is_empty() && parts.iter().all(|part| part == b" a"),
-                "public body differs from provider output"
+                message.contents.is_empty()
+                    && message.payload.is_none()
+                    && message.content_item_id.is_none(),
+                "folded WorkGroup copied original content"
             );
-            bytes += len;
-        }
+            let scope = ChatScope::GroupMembers {
+                reference: message
+                    .members
+                    .clone()
+                    .context("completed group reference")?,
+            };
+            let mut feed = env
+                .runtime
+                .open_conversation_feed(thread_id, scope.clone(), demand(1))
+                .await?;
+            let read = async {
+                let first = chat(&mut feed).await?;
+                let members = atoms(pages(feed.reader(), &scope, first, demand(1)).await?)?;
+                ensure!(
+                    members.len()
+                        == message
+                            .summary
+                            .as_ref()
+                            .context("group summary")?
+                            .member_count as usize
+                );
+                ensure!(
+                    members
+                        .windows(2)
+                        .all(|pair| pair[0].source_order < pair[1].source_order),
+                    "member pagination changed real source order"
+                );
+                let mut ids = HashSet::new();
+                let mut sequences = HashSet::new();
+                let mut count = 0;
+                let mut bytes = 0;
+                for atom in members {
+                    ensure!(
+                        ids.insert(atom.id.clone()),
+                        "member pagination repeated an identity"
+                    );
+                    ensure!(
+                        sequences.insert(
+                            atom.completion_seq
+                                .context("uncompleted historical member")?
+                        )
+                    );
+                    ensure!(atom.source == message.source && atom.turn_id == message.turn_id);
+                    ensure!(matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }));
+                    let owner = atom
+                        .completion_item_id
+                        .as_deref()
+                        .context("original member owner")?;
+                    let (members, body_bytes) = count_payload(
+                        feed.reader(),
+                        atom.payload.as_ref(),
+                        owner,
+                        &atom.contents,
+                        identities,
+                        turns,
+                    )
+                    .await?;
+                    count += members;
+                    bytes += body_bytes;
+                }
+                Ok((count, bytes))
+            }
+            .await;
+            finish_feed(&mut feed, read).await?
+        } else {
+            let owner = message
+                .content_item_id
+                .as_deref()
+                .context("original Main content owner")?;
+            count_payload(
+                reader,
+                message.payload.as_ref(),
+                owner,
+                &message.contents,
+                identities,
+                turns,
+            )
+            .await?
+        };
+        count += members;
+        bytes += body_bytes;
     }
-    Ok((count, bytes, parent))
+    Ok((count, bytes))
 }
 
 async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
@@ -579,22 +970,56 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
         let observed = async {
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set);
-            let mut identities = HashSet::new();
-            let (mut completed_items, mut body_bytes, initial_parent) = count_output(feed.reader(), &atoms(first.entries.clone()), &mut identities).await?;
+            let mut retired = first.current.as_ref().is_some_and(|current|
+                current.active_turn.is_none() && current.items.is_empty());
             let mut peak_batch = first.encoded_len()?;
-            let _terminal = tokio::time::timeout(Duration::from_secs(120), async {
-                if let Some(parent) = initial_parent { return Ok(parent); }
-                loop {
-                    let batch = chat(&mut feed).await?;
-                    ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
-                    peak_batch = peak_batch.max(batch.encoded_len()?);
-                    ensure!(peak_batch <= demand(37).max_bytes as usize);
-                    let (count, bytes, parent) = count_output(feed.reader(), &atoms(batch.entries.clone()), &mut identities).await?;
-                    completed_items += count;
-                    body_bytes += bytes;
-                    if let Some(parent) = parent { break Ok::<_, anyhow::Error>(parent); }
+            let initial = history(feed.reader(), first, demand(37)).await?;
+            let mut last_position = initial.last().and_then(|item| item.position);
+            let mut display_ids = HashSet::new();
+            let mut identities = HashSet::new();
+            let mut turns = HashSet::new();
+            let (mut completed_items, mut body_bytes) = count_output(&env, &thread.thread.id,
+                feed.reader(), &initial, &mut display_ids, &mut identities, &mut turns).await?;
+            let mut terminal = None;
+            tokio::time::timeout(Duration::from_secs(120), async {
+                while terminal.is_none() || !retired || completed_items < item_count {
+                    match next(&mut feed).await? {
+                        ConversationEvent::Chat { batch } => {
+                            batch.validate_for(&ChatScope::Main)?;
+                            ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
+                            ensure!(batch.entries.len() <= demand(37).max_items as usize);
+                            peak_batch = peak_batch.max(batch.encoded_len()?);
+                            ensure!(peak_batch <= demand(37).max_bytes as usize);
+                            if let Some(current) = &batch.current {
+                                retired = current.active_turn.is_none() && current.items.is_empty();
+                            }
+                            let items = items(batch.entries)?;
+                            for item in &items {
+                                ensure!(item.position > last_position, "Main Append changed item order");
+                                last_position = item.position;
+                            }
+                            let (count, bytes) = count_output(&env, &thread.thread.id, feed.reader(),
+                                &items, &mut display_ids, &mut identities, &mut turns).await?;
+                            completed_items += count;
+                            body_bytes += bytes;
+                            ensure!(completed_items <= item_count, "output members repeated");
+                        }
+                        ConversationEvent::State { update } => {
+                            if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                                && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                            {
+                                ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+                                ensure!(matches!(turn.state, TurnState::Completed(_)),
+                                    "real output Turn failed: {:?}", turn.state);
+                                terminal = Some(turn.id);
+                            }
+                        }
+                    }
                 }
+                Ok::<_, anyhow::Error>(())
             }).await.context("paced fixture feed exceeded its observation deadline")??;
+            ensure!(turns.len() == 1 && turns.contains(terminal.as_ref().context("typed Turn terminal")?),
+                "public output belonged to a different Turn");
             ensure!(completed_items == item_count, "observed {completed_items}/{item_count} independent output members");
             ensure!(body_bytes == (OUTPUT_TOKENS * 2) as u64, "public output body length mismatch: {body_bytes}");
             eprintln!("realistic output: items={item_count}, reference_tokens={OUTPUT_TOKENS}, completed_items={completed_items}, body_bytes={body_bytes}, peak_chat_bytes={peak_batch}");
