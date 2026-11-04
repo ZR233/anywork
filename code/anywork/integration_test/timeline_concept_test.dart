@@ -295,7 +295,7 @@ final class _ConceptScene {
     (widget) =>
         (widget is TimelineDisplayUnitView && widget.unit.id == id) ||
         (widget is ChatItemView &&
-            widget.item.displayUnit == null &&
+            widget.item.type != 'displayUnit' &&
             widget.item.id == id),
   );
   Finder itemFinder(String id) => find.byWidgetPredicate(
