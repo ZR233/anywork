@@ -172,6 +172,7 @@ fn is_data_error(error: &anyhow::Error) -> bool {
 }
 
 fn has_environment_error(error: &anyhow::Error) -> bool {
+    let storage_migration = is_storage_migration(error);
     error.is::<CleanupFailure>()
         || error.chain().any(|cause| {
             cause
@@ -182,8 +183,27 @@ fn has_environment_error(error: &anyhow::Error) -> bool {
                 })
                 || cause
                     .downcast_ref::<DbErr>()
-                    .is_some_and(|error| !sqlite_data_error(error))
+                    .is_some_and(|error| {
+                        !sqlite_data_error(error)
+                            && !(storage_migration && sqlite_constraint_error(error))
+                    })
         })
+}
+
+fn sqlite_constraint_error(error: &DbErr) -> bool {
+    match error {
+        DbErr::Conn(RuntimeErr::SqlxError(error))
+        | DbErr::Exec(RuntimeErr::SqlxError(error))
+        | DbErr::Query(RuntimeErr::SqlxError(error)) => match error.as_ref() {
+            SqlxError::Database(error) => error
+                .code()
+                .as_deref()
+                .and_then(|code| code.parse::<i32>().ok())
+                .is_some_and(|code| code & 0xff == 19),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn sqlite_data_error(error: &DbErr) -> bool {
@@ -207,6 +227,7 @@ fn sqlite_data_error(error: &DbErr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sea_orm::{ConnectOptions, ConnectionTrait, Database};
     use std::path::Path;
 
     #[test]
@@ -248,5 +269,60 @@ mod tests {
             StudioStartupError::input("settings", input_error(error)).kind,
             StudioStartupErrorKind::Internal
         );
+    }
+
+    #[tokio::test]
+    async fn named_storage_constraint_rejection_keeps_migration_without_hiding_read_only_errors()
+    -> anyhow::Result<()> {
+        let mut options = ConnectOptions::new("sqlite::memory:");
+        options.max_connections(1);
+        let database = Database::connect(options).await?;
+        database
+            .execute_unprepared("CREATE TABLE guarded_input (value INTEGER CHECK (value > 0))")
+            .await?;
+
+        let unscoped = database
+            .execute_unprepared("INSERT INTO guarded_input VALUES (0)")
+            .await
+            .expect_err("the actual SQLite CHECK constraint must reject the value");
+        assert!(sqlite_constraint_error(&unscoped));
+        assert_eq!(
+            StudioStartupError::input("history", unscoped).kind,
+            StudioStartupErrorKind::Environment,
+            "an unscoped database constraint must not acquire migration recovery authority"
+        );
+
+        let rejected = database
+            .execute_unprepared("INSERT INTO guarded_input VALUES (0)")
+            .await
+            .expect_err("the same input still violates the target schema");
+        assert_eq!(
+            StudioStartupError::input(
+                "history",
+                migration_error("history", "guarded input conversion", rejected),
+            )
+            .kind,
+            StudioStartupErrorKind::Migration
+        );
+
+        database
+            .execute_unprepared("PRAGMA query_only = ON")
+            .await?;
+        let read_only = database
+            .execute_unprepared("INSERT INTO guarded_input VALUES (1)")
+            .await
+            .expect_err("the actual query-only connection must reject the valid write");
+        assert!(!sqlite_constraint_error(&read_only));
+        assert_eq!(
+            StudioStartupError::input(
+                "history",
+                migration_error("history", "guarded input conversion", read_only),
+            )
+            .kind,
+            StudioStartupErrorKind::Environment,
+            "a migration marker must not hide a real database access failure"
+        );
+        database.close().await?;
+        Ok(())
     }
 }

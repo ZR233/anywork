@@ -3008,9 +3008,11 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
         .expect_err("the explicit upgrade must reach the checkpoint transaction");
     assert!(format!("{failure:#}").contains("m20261026_000006_history_checkpoint_v5"));
     assert!(format!("{failure:#}").contains("injected envelope migration failure"));
+    let failure_chain: Vec<_> = failure.chain().map(|cause| format!("{cause:?}")).collect();
     assert_eq!(
         crate::studio::startup::StudioStartupError::input("history", failure).kind,
-        crate::studio::startup::StudioStartupErrorKind::Migration
+        crate::studio::startup::StudioStartupErrorKind::Migration,
+        "original migration failure chain: {failure_chain:#?}"
     );
     drop(cold);
     let db = raw_database(&path).await?;
