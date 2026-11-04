@@ -365,66 +365,6 @@ fn frozen_update_retention_counts_recovery_json_numbers() {
     }
 }
 
-#[test]
-fn prepend_prior_invalidates_measured_updates_without_changing_recovery() {
-    let mut timeline = fold();
-    timeline
-        .observe(
-            &active("first", ChatAtomKind::ToolCall, 1, pos(1, 1), content()),
-            None,
-        )
-        .unwrap();
-    let prior = timeline.take_update().unwrap();
-    let prior_bytes = prior.retained_bytes();
-    assert!(!prior.facts().is_empty() && !prior.members().is_empty());
-    timeline
-        .observe(
-            &active("second", ChatAtomKind::ToolCall, 2, pos(2, 1), content()),
-            None,
-        )
-        .unwrap();
-    let fresh = timeline.take_update().unwrap();
-    let fresh_bytes = fresh.retained_bytes();
-    // Exercise both a clone carrying an existing estimate and a newly constructed update.
-    for mut update in [fresh.clone(), timeline.take_update().unwrap()] {
-        let before_bytes = update.retained_bytes();
-        let expected_facts: Vec<_> = prior
-            .facts()
-            .iter()
-            .chain(update.facts())
-            .cloned()
-            .collect();
-        let expected_members: Vec<_> = prior
-            .members()
-            .iter()
-            .chain(update.members())
-            .cloned()
-            .collect();
-        let current = serde_json::to_vec(update.current()).unwrap();
-        let recovery = update.recovery().to_vec();
-        let next_position = update.next_position();
-        let generation = update.generation().to_owned();
-        update.prepend_prior(&prior);
-        assert_eq!(update.facts(), expected_facts);
-        assert_eq!(
-            serde_json::to_vec(update.members()).unwrap(),
-            serde_json::to_vec(&expected_members).unwrap()
-        );
-        assert_eq!(serde_json::to_vec(update.current()).unwrap(), current);
-        assert_eq!(update.recovery(), recovery);
-        assert_eq!(update.next_position(), next_position);
-        assert_eq!(update.generation(), generation);
-        let canonical = canonical_update_bytes(&update);
-        let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
-        assert!(expected > before_bytes);
-        assert_eq!(update.retained_bytes(), expected);
-        assert_eq!(update.retained_bytes(), expected);
-        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
-    }
-    assert_eq!(prior.retained_bytes(), prior_bytes);
-    assert_eq!(fresh.retained_bytes(), fresh_bytes);
-}
-
 fn kinds(items: &[TimelineItem]) -> Vec<(TimelineItemKind, u64)> {
     items
         .iter()

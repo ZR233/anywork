@@ -411,6 +411,7 @@ impl PreparedEffect {
         retained_bytes(&self.items)
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
+            .saturating_add(self.current.pending_index_bytes())
             .saturating_add(
                 serde_json::to_vec(self.current.source_changes.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1379,8 +1380,8 @@ impl LiveProjection {
             }
         }
     }
-    pub(in crate::studio) async fn reload_timeline(&mut self) -> Result<(), ProjectionError> {
-        self.timeline_position_restored = false;
+    /// Restores the prepared migration head once when this realtime owner is installed.
+    pub(in crate::studio) async fn initialize_timeline(&mut self) -> Result<(), ProjectionError> {
         self.ensure_timeline_position().await
     }
     pub(in crate::studio) fn timeline_generation(&self) -> &str {
@@ -1742,7 +1743,7 @@ impl LiveProjection {
     /// error or cancellation then resumes the same frozen drafts, never the projection.
     ///
     /// `deliver` controls only outward frame materialization. Phase, hidden-input and Turn identity
-    /// maintenance, session publication and the reliable prepared batch never depend on demand.
+    /// session publication and the reliable prepared batch never depend on demand.
     ///
     /// # Errors
     /// Returns a projection failure when the effect references facts this projection cannot resolve
@@ -1773,9 +1774,6 @@ impl LiveProjection {
         // Admission, source ends and terminals are folded together only after
         // reliable retention/publication assigns the original completion seqs.
         let timeline = Vec::new();
-        if let Some(timeline) = self.timeline.as_mut() {
-            Arc::make_mut(&mut current).timeline_update = Arc::new(timeline.take_update()?);
-        }
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -1838,9 +1836,6 @@ impl LiveProjection {
         let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let timeline = Vec::new();
-        if let Some(timeline) = self.timeline.as_mut() {
-            Arc::make_mut(&mut current).timeline_update = Arc::new(timeline.take_update()?);
-        }
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
@@ -2373,10 +2368,7 @@ impl LiveProjection {
         let after = current_after.frozen_projection().with_items(live_items);
         current_after.replace_projection(after.clone());
         if let Some(timeline) = candidate.as_mut() {
-            let mut update = timeline.take_update()?;
-            let first = &current_after.timeline_update;
-            update.prepend_prior(first);
-            current_after.timeline_update = Arc::new(update);
+            current_after.timeline_update = Arc::new(timeline.take_update()?);
         }
         let handoff = Arc::new(
             super::CurrentHandoff::new(

@@ -18,7 +18,7 @@ use pl_protocol::{
 };
 
 #[derive(Debug, thiserror::Error)]
-#[error("timeline derived row is inconsistent; maintenance required")]
+#[error("timeline derived row is inconsistent; original history preserved")]
 pub(in crate::studio) struct ProjectionFault;
 
 pub(in crate::studio) fn validate_item(
@@ -87,74 +87,48 @@ pub(in super::super) async fn validate_tables(db: &impl ConnectionTrait) -> Resu
         "SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,metadata FROM timeline_item_members LIMIT 0",
         "SELECT projection_version,next_position,source_effect_seq,projection_generation,recovery FROM timeline_projection_state LIMIT 0",
     ] {
-        db.query_all_raw(statement(sql, vec![])).await.context(
-            "timeline projection requires explicit maintenance; original facts preserved",
-        )?;
+        db.query_all_raw(statement(sql, vec![]))
+            .await
+            .context("timeline derived storage is invalid; original facts preserved")?;
     }
     Ok(())
 }
-pub(in super::super) async fn state(db: &impl ConnectionTrait) -> Result<Option<(u32, u64)>> {
-    let row = db.query_one_raw(statement("SELECT projection_version,next_position FROM timeline_projection_state WHERE singleton_id=1",vec![])).await?;
+pub(in super::super) struct ProjectionState {
+    pub(in super::super) version: u32,
+    pub(in super::super) next_position: u64,
+    pub(in super::super) source_effect_seq: u64,
+    pub(in super::super) generation: String,
+    pub(in super::super) recovery: Vec<u8>,
+}
+
+/// Read the complete bounded recovery cut in one singleton query.
+pub(in super::super) async fn read_state(
+    db: &impl ConnectionTrait,
+) -> Result<Option<ProjectionState>> {
+    let row = db.query_one_raw(statement("SELECT projection_version,next_position,source_effect_seq,projection_generation,recovery FROM timeline_projection_state WHERE singleton_id=1",vec![])).await?;
     row.map(|row| {
-        Ok((
-            u32::try_from(
-                row.try_get::<i64>("", "projection_version")
-                    .map_err(|_| ProjectionFault)?,
-            )
-            .map_err(|_| ProjectionFault)?,
-            u64::try_from(
-                row.try_get::<i64>("", "next_position")
-                    .map_err(|_| ProjectionFault)?,
-            )
-            .map_err(|_| ProjectionFault)?,
-        ))
+        let state = ProjectionState {
+            version: u32::try_from(row.try_get::<i64>("", "projection_version")?)
+                .map_err(|_| ProjectionFault)?,
+            next_position: u64::try_from(row.try_get::<i64>("", "next_position")?)
+                .map_err(|_| ProjectionFault)?,
+            source_effect_seq: u64::try_from(row.try_get::<i64>("", "source_effect_seq")?)
+                .map_err(|_| ProjectionFault)?,
+            generation: row.try_get("", "projection_generation")?,
+            recovery: row.try_get("", "recovery")?,
+        };
+        ensure!(
+            state.version == TIMELINE_PROJECTION_VERSION
+                && !state.generation.is_empty()
+                && state.recovery.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+            ProjectionFault
+        );
+        Ok(state)
     })
     .transpose()
 }
-pub(in super::super) async fn next_position(db: &impl ConnectionTrait) -> Result<u64> {
-    let (version, next) = state(db)
-        .await?
-        .context("timeline recovery is missing; maintenance required")?;
-    ensure!(
-        version == TIMELINE_PROJECTION_VERSION,
-        "timeline projection version requires maintenance"
-    );
-    Ok(next)
-}
-pub(in super::super) async fn recovery(db: &impl ConnectionTrait) -> Result<Vec<u8>> {
-    next_position(db).await?;
-    Ok(db
-        .query_one_raw(statement(
-            "SELECT recovery FROM timeline_projection_state WHERE singleton_id=1",
-            vec![],
-        ))
-        .await?
-        .ok_or(ProjectionFault)?
-        .try_get("", "recovery")
-        .map_err(|_| ProjectionFault)?)
-}
 pub(in crate::studio) async fn generation(db: &impl ConnectionTrait) -> Result<String> {
-    let row = db
-        .query_one_raw(statement(
-            "SELECT projection_generation FROM timeline_projection_state WHERE singleton_id=1",
-            vec![],
-        ))
-        .await?
-        .ok_or(ProjectionFault)?;
-    let value: String = row
-        .try_get("", "projection_generation")
-        .map_err(|_| ProjectionFault)?;
-    ensure!(!value.is_empty(), ProjectionFault);
-    Ok(value)
-}
-pub(in crate::studio) async fn apply_facts(
-    db: &impl ConnectionTrait,
-    current: &PreparedCurrent,
-) -> Result<()> {
-    for atom in current.timeline_update.facts() {
-        save_fact(db, atom, current.projection().source_effect_seq).await?;
-    }
-    Ok(())
+    Ok(read_state(db).await?.ok_or(ProjectionFault)?.generation)
 }
 pub(in crate::studio) fn deferred_item(database: &str, item: &TimelineItem) -> TimelineItem {
     let mut value = item.clone();
@@ -182,22 +156,24 @@ async fn save_item(
 ) -> Result<()> {
     let item = deferred_item(database, item);
     let bytes = serde_json::to_vec(&item)?;
-    let old = db
-        .query_one_raw(statement(
-            "SELECT location,metadata,position FROM timeline_items WHERE item_id=?",
-            vec![item.id.clone().into()],
-        ))
-        .await?;
-    if let Some(old) = old
-        && old.try_get::<String>("", "location")? == "history"
-    {
-        ensure!(
-            old.try_get::<Vec<u8>>("", "metadata")? == bytes,
-            "immutable timeline item conflict"
-        );
-        return Ok(());
-    }
-    db.execute_raw(statement("INSERT INTO timeline_items(item_id,kind,location,position,commit_seq,metadata,projection_version) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET location=excluded.location,position=excluded.position,commit_seq=excluded.commit_seq,metadata=excluded.metadata,projection_version=excluded.projection_version",vec![item.id.clone().into(),item.kind.as_str().into(),if item.position.is_some(){"history"}else{"current"}.into(),item.position.map(integer).transpose()?.into(),item.position.map(|_| integer(effect)).transpose()?.into(),bytes.into(),i64::from(TIMELINE_PROJECTION_VERSION).into()])).await?;
+    let written = db.execute_raw(statement(
+        "INSERT INTO timeline_items(item_id,kind,location,position,commit_seq,metadata,projection_version)
+         VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+         location=excluded.location,position=excluded.position,
+         commit_seq=CASE WHEN timeline_items.location='history' THEN timeline_items.commit_seq ELSE excluded.commit_seq END,
+         metadata=excluded.metadata,projection_version=excluded.projection_version
+         WHERE timeline_items.kind=excluded.kind
+           AND timeline_items.projection_version=excluded.projection_version
+           AND (timeline_items.location='current'
+             OR (timeline_items.location='history' AND excluded.location='history'
+               AND timeline_items.position IS excluded.position
+               AND timeline_items.metadata=excluded.metadata))",
+        vec![item.id.clone().into(),item.kind.as_str().into(),if item.position.is_some(){"history"}else{"current"}.into(),item.position.map(integer).transpose()?.into(),item.position.map(|_| integer(effect)).transpose()?.into(),bytes.into(),i64::from(TIMELINE_PROJECTION_VERSION).into()],
+    )).await?;
+    ensure!(
+        written.rows_affected() == 1,
+        "immutable timeline item conflict"
+    );
     Ok(())
 }
 async fn save_fact(db: &impl ConnectionTrait, atom: &ChatAtom, fallback: u64) -> Result<()> {
@@ -206,24 +182,32 @@ async fn save_fact(db: &impl ConnectionTrait, atom: &ChatAtom, fallback: u64) ->
         ChatAtomLifecycle::Terminal { ended, .. } => (ended, "terminal"),
     };
     let bytes = serde_json::to_vec(&lightweight(atom))?;
-    let old = db
-        .query_one_raw(statement(
-            "SELECT metadata FROM conversation_atom_facts WHERE atom_id=? AND phase=?",
-            vec![atom.id.clone().into(), phase.into()],
-        ))
-        .await?;
-    if let Some(old) = old {
-        ensure!(
-            old.try_get::<Vec<u8>>("", "metadata")? == bytes,
-            "canonical atom phase changed for {} ({phase}); original fact preserved",
-            atom.id
-        );
-        return Ok(());
-    }
-    db.execute_raw(statement("INSERT INTO conversation_atom_facts(effect_seq,suborder,atom_id,phase,fact_order,metadata) VALUES(?,?,?,?,?,?)",vec![integer(at.map_or(fallback,|at|at.effect_seq))?.into(),i64::from(at.map_or(0,|at|at.suborder)).into(),atom.id.clone().into(),phase.into(),integer(atom.source_order.or(atom.completion_seq).unwrap_or(0))?.into(),bytes.into()])).await?;
+    let written = db.execute_raw(statement(
+        "INSERT INTO conversation_atom_facts(effect_seq,suborder,atom_id,phase,fact_order,metadata)
+         VALUES(?,?,?,?,?,?) ON CONFLICT(atom_id,phase) DO UPDATE SET metadata=excluded.metadata
+         WHERE conversation_atom_facts.metadata=excluded.metadata",
+        vec![integer(at.map_or(fallback,|at|at.effect_seq))?.into(),i64::from(at.map_or(0,|at|at.suborder)).into(),atom.id.clone().into(),phase.into(),integer(atom.source_order.or(atom.completion_seq).unwrap_or(0))?.into(),bytes.into()],
+    )).await?;
+    ensure!(
+        written.rows_affected() == 1,
+        "canonical atom phase changed for {} ({phase}); original fact preserved",
+        atom.id
+    );
     Ok(())
 }
 async fn save_update(
+    db: &impl ConnectionTrait,
+    database: &str,
+    update: &TimelineUpdate,
+    committed: &[PreparedTimelineItem],
+    effect: u64,
+    facts: bool,
+) -> Result<()> {
+    save_changes(db, database, update, committed, effect, facts).await?;
+    save_snapshot(db, database, update, effect).await
+}
+
+async fn save_changes(
     db: &impl ConnectionTrait,
     database: &str,
     update: &TimelineUpdate,
@@ -238,27 +222,80 @@ async fn save_update(
     }
     for member in update.members() {
         let bytes = serde_json::to_vec(&member.atom)?;
-        let written = db.execute_raw(statement("INSERT INTO timeline_item_members(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata) VALUES(?,?,?,?,?,?) ON CONFLICT(item_id,member_order) DO UPDATE SET completion_item_id=excluded.completion_item_id,metadata=excluded.metadata WHERE timeline_item_members.member_id=excluded.member_id AND (timeline_item_members.completion_item_id IS NULL OR timeline_item_members.completion_item_id=excluded.completion_item_id)",vec![member.item_id.clone().into(),integer(member.member_order)?.into(),member.atom.id.clone().into(),member.atom.completion_item_id.clone().into(),integer(effect)?.into(),bytes.into()])).await?;
+        // Validate admission and the canonical terminal in the same write.
+        // Mutable active metadata is not another canonical start fact.
+        let written = db.execute_raw(statement(
+            "WITH incoming(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata)
+               AS (VALUES(?,?,?,?,?,?))
+             INSERT INTO timeline_item_members(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata)
+             SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,metadata FROM incoming
+             WHERE (json_extract(CAST(incoming.metadata AS TEXT),'$.lifecycle.kind')='active'
+                 AND incoming.completion_item_id IS NULL
+                 AND json_extract(CAST(incoming.metadata AS TEXT),'$.completionSeq') IS NULL)
+               OR (json_extract(CAST(incoming.metadata AS TEXT),'$.lifecycle.kind')='terminal'
+                 AND EXISTS(SELECT 1 FROM conversation_atom_facts f
+                   WHERE f.atom_id=incoming.member_id AND f.phase='terminal'
+                     AND f.metadata=incoming.metadata))
+             ON CONFLICT(item_id,member_order) DO UPDATE SET
+               completion_item_id=excluded.completion_item_id,metadata=excluded.metadata
+             WHERE timeline_item_members.member_id=excluded.member_id
+               AND json_extract(CAST(timeline_item_members.metadata AS TEXT),
+                 '$.id','$.source','$.sourceOrder','$.kind','$.turnId','$.attemptId',
+                 '$.tool','$.textChannel','$.startedAt','$.lifecycle.started')
+                 =json_extract(CAST(excluded.metadata AS TEXT),
+                 '$.id','$.source','$.sourceOrder','$.kind','$.turnId','$.attemptId',
+                 '$.tool','$.textChannel','$.startedAt','$.lifecycle.started')
+               AND (json_extract(CAST(timeline_item_members.metadata AS TEXT),'$.lifecycle.kind')='active'
+                 OR (json_extract(CAST(timeline_item_members.metadata AS TEXT),'$.lifecycle.kind')='terminal'
+                   AND timeline_item_members.completion_item_id IS excluded.completion_item_id
+                   AND timeline_item_members.metadata=excluded.metadata))",
+            vec![member.item_id.clone().into(),integer(member.member_order)?.into(),member.atom.id.clone().into(),member.atom.completion_item_id.clone().into(),integer(effect)?.into(),bytes.into()],
+        )).await?;
         ensure!(
             written.rows_affected() == 1,
             "timeline member identity/completion conflict"
         );
     }
-    for item in update.current() {
-        save_item(db, database, item, effect).await?;
-    }
     for entry in committed {
         save_item(db, database, &entry.item, effect).await?;
+    }
+    Ok(())
+}
+
+/// All ordered deltas have been applied before the batch's last complete cut is saved.
+pub(in super::super) async fn save_snapshot(
+    db: &impl ConnectionTrait,
+    database: &str,
+    update: &TimelineUpdate,
+    effect: u64,
+) -> Result<()> {
+    if update.generation().is_empty() {
+        return Ok(());
+    }
+    for item in update.current() {
+        save_item(db, database, item, effect).await?;
     }
     // Empty text remains a boundary in the source facts, not an empty display row.
     db.execute_raw(statement("DELETE FROM timeline_items WHERE location='current' AND item_id NOT IN (SELECT value FROM json_each(?))",vec![serde_json::to_string(&update.current().iter().map(|item| &item.id).collect::<Vec<_>>())?.into()])).await?;
     db.execute_raw(statement("INSERT INTO timeline_projection_state(singleton_id,projection_version,next_position,source_effect_seq,projection_generation,recovery) VALUES(1,?,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET projection_version=excluded.projection_version,next_position=excluded.next_position,source_effect_seq=excluded.source_effect_seq,projection_generation=excluded.projection_generation,recovery=excluded.recovery",vec![i64::from(TIMELINE_PROJECTION_VERSION).into(),integer(update.next_position())?.into(),integer(effect)?.into(),update.generation().to_owned().into(),update.recovery().to_vec().into()])).await?;
     Ok(())
 }
-pub(in super::super) async fn apply(
+fn validate_unqualified(current: &PreparedCurrent) -> Result<()> {
+    ensure!(
+        current.timeline.is_empty()
+            && current.timeline_update.facts().is_empty()
+            && current.timeline_update.members().is_empty(),
+        "unqualified derived write"
+    );
+    Ok(())
+}
+
+/// Validate and write every immutable/member delta while advancing the transaction-local head.
+pub(in super::super) async fn apply_delta(
     db: &impl ConnectionTrait,
     database: &str,
     current: &PreparedCurrent,
+    head: &mut ProjectionState,
 ) -> Result<()> {
     ensure!(
         current.timeline.is_empty()
@@ -266,19 +303,14 @@ pub(in super::super) async fn apply(
         "timeline publication is not bound to its source effect"
     );
     if current.timeline_update.generation().is_empty() {
-        ensure!(
-            current.timeline.is_empty()
-                && current.timeline_update.facts().is_empty()
-                && current.timeline_update.members().is_empty(),
-            "unqualified derived write"
-        );
+        validate_unqualified(current)?;
         return Ok(());
     }
     ensure!(
-        generation(db).await? == current.timeline_update.generation(),
+        head.generation == current.timeline_update.generation(),
         "retired timeline generation cannot write"
     );
-    let mut expected = next_position(db).await?;
+    let mut expected = head.next_position;
     for entry in current.timeline.iter() {
         ensure!(
             entry.item.position == Some(expected),
@@ -290,7 +322,7 @@ pub(in super::super) async fn apply(
         current.timeline_update.next_position() == expected,
         "timeline recovery order differs from history prefix"
     );
-    save_update(
+    save_changes(
         db,
         database,
         &current.timeline_update,
@@ -298,7 +330,10 @@ pub(in super::super) async fn apply(
         current.projection().source_effect_seq,
         true,
     )
-    .await
+    .await?;
+    head.next_position = expected;
+    head.source_effect_seq = current.projection().source_effect_seq;
+    Ok(())
 }
 pub(in super::super) async fn verify(
     db: &impl ConnectionTrait,
@@ -575,9 +610,10 @@ pub(in crate::studio) async fn rebuild_batched(
         }
     }
     drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
+    let head = read_state(db).await?.ok_or(ProjectionFault)?;
     let mut restored =
-        TimelineProjection::new(database.into(), candidate.clone(), next_position(db).await?);
-    restored.restore_recovery(&recovery(db).await?)?;
+        TimelineProjection::new(database.into(), candidate.clone(), head.next_position);
+    restored.restore_recovery(&head.recovery)?;
     current.items = projection.current_items();
     let bytes = serde_json::to_vec(&current)?;
     ensure!(
@@ -617,9 +653,9 @@ pub(in crate::studio) async fn validate_members_ref(
             && reference.projection_version == TIMELINE_PROJECTION_VERSION,
         pl_core::chat::ChatError::StaleContent
     );
-    next_position(db).await?;
+    let head = read_state(db).await?.ok_or(ProjectionFault)?;
     ensure!(
-        generation(db).await? == reference.projection_generation,
+        head.generation == reference.projection_generation,
         pl_core::chat::ChatError::StaleContent
     );
     ensure!(db.query_one_raw(statement("SELECT 1 FROM timeline_items WHERE item_id=? AND kind='workGroup' AND projection_version=?",vec![reference.item_id.clone().into(),i64::from(reference.projection_version).into()])).await?.is_some(),pl_core::chat::ChatError::StaleContent);
@@ -702,7 +738,9 @@ pub(in crate::studio) async fn page_rows(
             ],
         ),
         pl_protocol::ChatScope::GroupMembers { reference } => (
-            "SELECT member_order AS ordering,metadata FROM timeline_item_members WHERE item_id=? AND member_order<? AND member_order<? AND admitted_effect<=? ORDER BY member_order DESC LIMIT ?",
+            "SELECT member_order AS ordering,metadata,
+                    (SELECT source_effect_seq FROM timeline_projection_state WHERE singleton_id=1) AS stored_effect
+             FROM timeline_item_members WHERE item_id=? AND member_order<? AND member_order<? AND admitted_effect<=? ORDER BY member_order DESC LIMIT ?",
             vec![
                 reference.item_id.clone().into(),
                 integer(before.unwrap_or(ceiling))?.into(),
@@ -733,7 +771,19 @@ pub(in crate::studio) async fn page_rows(
         } else {
             let mut atom: ChatAtom = serde_json::from_slice(&bytes)?;
             let fact=db.query_one_raw(statement("SELECT metadata FROM conversation_atom_facts WHERE atom_id=? AND effect_seq<=? AND phase IN ('start','terminal','legacyAdmission') ORDER BY CASE phase WHEN 'terminal' THEN 0 ELSE 1 END LIMIT 1",vec![atom.id.clone().into(),integer(effect_cut)?.into()])).await?.context("member has no source fact at the captured cut")?;
-            atom = serde_json::from_slice(&fact.try_get::<Vec<u8>>("", "metadata")?)?;
+            let canonical: ChatAtom =
+                serde_json::from_slice(&fact.try_get::<Vec<u8>>("", "metadata")?)?;
+            ensure!(
+                atom.id == canonical.id && atom.source == canonical.source,
+                ProjectionFault
+            );
+            // A validated mutable member head carries active content references that the
+            // immutable start need not contain. The snapshot's saved head bounds all such
+            // updates; only an older captured cut must fall back to its canonical fact.
+            let stored_effect = u64::try_from(row.try_get::<i64>("", "stored_effect")?)?;
+            if stored_effect > effect_cut {
+                atom = canonical;
+            }
             if let Some(id) = &atom.completion_item_id {
                 let payload = db
                     .query_one_raw(statement(

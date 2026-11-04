@@ -93,6 +93,145 @@ fn active_wait_is_typed_without_payload_and_completion_keeps_only_original_wait(
     Ok(())
 }
 
+#[test]
+fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_resolution()
+-> Result<()> {
+    use crate::studio::thread_projection::timeline::{TimelineInput, TimelineProjection};
+    use pl_protocol::*;
+
+    for (name, kind, question_id) in [
+        ("request_user_input", ChatAtomKind::Interaction, "question"),
+        (
+            crate::plan_tool::TOOL_PLAN_SUBMIT,
+            ChatAtomKind::Plan,
+            AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID,
+        ),
+    ] {
+        let input = |state| {
+            ThreadToolUserInput::new(
+                "interaction".into(),
+                vec![UserQuestion {
+                    id: question_id.into(),
+                    header: "Confirmation".into(),
+                    question: "Continue with this proposal?".into(),
+                    is_other: true,
+                    is_secret: false,
+                    options: None,
+                }],
+                state,
+            )
+        };
+        let tool_item = |state, user_input| {
+            ThreadItem::new(
+                "tool:4:call".into(),
+                "thread".into(),
+                "turn".into(),
+                7,
+                1,
+                10,
+                11,
+                ThreadItemState::Tool(
+                    ThreadToolItem::new(
+                        ThreadToolInvocation::new("call".into(), name.into(), "{}".into()),
+                        state,
+                    )
+                    .with_user_input(user_input),
+                ),
+            )
+        };
+        for (resolution, terminal_state, outcome) in [
+            (
+                ThreadToolUserInputState::Resolved(ResolvedThreadToolUserInput::new(vec![
+                    ThreadToolUserInputAnswer::new(question_id.into(), vec!["Approve".into()]),
+                ])),
+                ThreadToolState::Succeeded(SucceededThreadTool::new(
+                    12,
+                    ThreadToolOutput::new("answered".into(), Vec::new(), Vec::new(), None),
+                )),
+                ChatTerminalOutcome::Completed,
+            ),
+            (
+                ThreadToolUserInputState::Cancelled,
+                ThreadToolState::Interrupted(InterruptedThreadTool::new(12, "cancelled".into())),
+                ChatTerminalOutcome::Cancelled,
+            ),
+        ] {
+            let initial = tool_item(
+                ThreadToolState::Running(RunningThreadTool::new(String::new())),
+                None,
+            );
+            assert!(initial.tool().unwrap().user_input().is_none());
+            assert!(initial.tool().unwrap().wait().is_none());
+            let first_atom = atom(&initial);
+            assert!(first_atom.payload.is_none());
+            assert!(first_atom.contents.is_empty());
+            assert!(first_atom.completion_item_id.is_none());
+            assert!(first_atom.completion_seq.is_none());
+
+            let pending = tool_item(
+                ThreadToolState::Running(RunningThreadTool::new(String::new())),
+                Some(input(ThreadToolUserInputState::Pending)),
+            );
+            let decided = tool_item(
+                ThreadToolState::Running(RunningThreadTool::new(String::new())),
+                Some(input(resolution.clone())),
+            );
+            let terminal = tool_item(terminal_state, Some(input(resolution)));
+            let mut projection = TimelineProjection::new("database".into(), "generation".into(), 1);
+            let mut display_id = None;
+            for (item, expected_outcome) in [
+                (initial, None),
+                (pending, None),
+                (decided, None),
+                (terminal, Some(outcome)),
+            ] {
+                let projected_atom = if expected_outcome.is_some() {
+                    serde_json::from_slice::<ChatAtom>(
+                        &completion_draft(&item, 4, "database")?.metadata,
+                    )?
+                } else {
+                    atom(&item)
+                };
+                assert_eq!(projected_atom.id, first_atom.id);
+                assert_eq!(projected_atom.source, first_atom.source);
+                assert_eq!(projected_atom.tool, first_atom.tool);
+                assert_eq!(projected_atom.kind, kind);
+                assert!(projected_atom.wait.is_none());
+                match expected_outcome {
+                    None => assert!(matches!(
+                        projected_atom.lifecycle,
+                        ChatAtomLifecycle::Active {
+                            status: ChatActiveStatus::Running,
+                            ..
+                        }
+                    )),
+                    Some(expected) => assert!(matches!(
+                        projected_atom.lifecycle,
+                        ChatAtomLifecycle::Terminal { outcome, .. } if outcome == expected
+                    )),
+                }
+                projection.apply_input(TimelineInput::Atom {
+                    atom: Box::new(projected_atom),
+                    payload: None,
+                })?;
+                let mut items = projection.current_items();
+                items.extend(projection.take_committed());
+                assert_eq!(items.len(), 1, "{name}: interaction must remain one status");
+                let status = &items[0];
+                assert_eq!(status.kind, TimelineItemKind::Status, "{name}");
+                assert_eq!(status.atom_kind, Some(kind));
+                assert_eq!(status.source, first_atom.source);
+                assert_eq!(status.outcome, expected_outcome);
+                assert!(status.members.is_none());
+                assert!(status.summary.is_none());
+                let first_display_id = display_id.get_or_insert_with(|| status.id.clone());
+                assert_eq!(status.id.as_str(), first_display_id.as_str());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn text(id: &str, body: String) -> ThreadItem {
     ThreadItem::new(
         id.into(),

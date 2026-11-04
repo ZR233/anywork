@@ -213,18 +213,19 @@ pub(super) async fn prepare_with_bot_root(
         Preparation::ExecutionIdentity => pending.len(),
     };
     let steps = u32::try_from(steps)?;
+    if steps == 0 {
+        return Ok(());
+    }
     let started = std::time::Instant::now();
     let result = migrator.up(db, Some(steps)).await;
-    if steps > 0 {
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id,
-            migration_steps = steps,
-            success = result.is_ok(),
-            elapsed_us = started.elapsed().as_micros() as u64,
-            "history migration completed"
-        );
-    }
+    tracing::debug!(
+        target: "conversation_work",
+        thread_id,
+        migration_steps = steps,
+        success = result.is_ok(),
+        elapsed_us = started.elapsed().as_micros() as u64,
+        "history migration completed"
+    );
     if let Err(error) = result {
         let pending = migrator
             .get_pending_migrations_read_only(db)
@@ -593,8 +594,26 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
     demand_conversation::validate_tables(db).await?;
     model_route_head::validate_tables(db).await?;
     atom_metadata::validate_tables(db).await?;
-    // Rebuildable display state is admitted by its original read/writer owner.
-    // Missing derived tables must not invalidate the canonical source database.
+    super::conversation::timeline::validate_tables(db).await?;
+    let head = super::conversation::timeline::read_state(db)
+        .await?
+        .context("timeline recovery head is missing; existing data preserved")?;
+    let database_id = db
+        .query_one_raw(statement(
+            "SELECT database_id FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("history identity is missing; existing data preserved")?
+        .try_get::<String>("", "database_id")?;
+    let mut projection = crate::studio::thread_projection::TimelineProjection::new(
+        database_id,
+        head.generation,
+        head.next_position,
+    );
+    projection
+        .restore_recovery(&head.recovery)
+        .context("timeline recovery is invalid; existing data preserved")?;
     checkpoint::read_model_route_head(db).await?;
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),

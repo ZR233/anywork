@@ -5,11 +5,14 @@
 mod helper;
 #[path = "support/remote_receipts.rs"]
 mod receipts;
-#[path = "support/remote.rs"]
+#[path = "support/remote_resource.rs"]
 mod support;
 use anyhow::{Context, ensure};
 use pl_protocol::remote::*;
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::test]
@@ -17,15 +20,16 @@ async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     receipts::verify(executable).await?;
     let mut helper = support::Helper::start(executable).await?;
-    let outcome = exercise(&mut helper).await;
+    let outcome = exercise(&mut helper, executable).await;
     let close = helper.close().await;
     outcome?;
     close?;
     support::Helper::start(executable)
         .await?
-        .close_during_attachment()
+        .close_during_attachment(executable)
         .await?;
     let expiring = support::Helper::start(executable).await?;
+    let owner_pid = support::heartbeat(&expiring.client).await?.owner_pid;
     let mut command = expiring
         .command("lease-owned", "printf 'ready\\n'; sleep 120")
         .await?;
@@ -33,16 +37,17 @@ async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
     let mut ready = String::new();
     output.read_line(&mut ready).await?;
     ensure!(ready == "ready\n");
-    expiring.expire().await?;
+    expiring.expire(owner_pid).await?;
     ensure!(
         !matches!(command.wait().await, Ok(exit) if exit.exit_code == Some(0)),
         "expired physical command was reported successful"
     );
     Ok(())
 }
-async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
+async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Result<()> {
     let initial = support::heartbeat(&helper.client).await?;
-    let baseline = support::resources(helper.owner_pid);
+    let owner_pid = initial.owner_pid;
+    let baseline = support::resources(owner_pid);
     let host_baseline = support::resources(std::process::id());
     println!(
         "{}",
@@ -88,7 +93,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
         .client
         .request(RemoteRequest::Stat(helper.target(".")), &[])
         .await?;
-    helper.reconnect().await?;
+    helper.reconnect(executable, owner_pid).await?;
     stdin.write_all(b"once\n").await?;
     drop(stdin);
     let (read, exit) = tokio::join!(
@@ -202,7 +207,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
     while offset < payload.len() {
         if !reattached && offset >= payload.len() / 2 {
             let recovery_started = Instant::now();
-            helper.reconnect().await?;
+            helper.reconnect(executable, owner_pid).await?;
             recovery_ms = recovery_started.elapsed().as_secs_f64() * 1000.0;
             reattached = true;
         }
@@ -267,7 +272,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"scenario":"resource-shrink", "before":before,
-        "helper":support::heartbeat(&helper.client).await?, "resources":support::resources(helper.owner_pid),
+        "helper":support::heartbeat(&helper.client).await?, "resources":support::resources(owner_pid),
         "host":support::resources(std::process::id())})
     );
     helper
@@ -304,7 +309,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
             )
             .await?;
     }
-    let idle_before = support::resources(helper.owner_pid);
+    let idle_before = support::resources(owner_pid);
     let queries_before = support::heartbeat(&helper.client).await?.operation_queries;
     tokio::time::sleep(Duration::from_secs(15)).await;
     let final_state = support::heartbeat(&helper.client).await?;
@@ -315,7 +320,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"scenario":"idle", "seconds":15, "before":idle_before,
-        "after":support::resources(helper.owner_pid), "businessStatusQueries":final_state.operation_queries-queries_before})
+        "after":support::resources(owner_pid), "businessStatusQueries":final_state.operation_queries-queries_before})
     );
     ensure!(
         final_state.workspaces == 1
@@ -327,7 +332,7 @@ async fn exercise(helper: &mut support::Helper) -> anyhow::Result<()> {
     );
     println!(
         "{}",
-        serde_json::json!({"scenario":"resource-release", "baseline":baseline, "final":support::resources(helper.owner_pid),
+        serde_json::json!({"scenario":"resource-release", "baseline":baseline, "final":support::resources(owner_pid),
         "hostBaseline":host_baseline, "hostFinal":support::resources(std::process::id()), "helper":final_state})
     );
     Ok(())

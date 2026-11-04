@@ -9,7 +9,6 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
-import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -385,6 +384,9 @@ final class _TimelineScene {
   final WidgetTester tester;
   final AppGraph graph;
   String? latestTurnId;
+  String? _submittedThreadId;
+  String? _priorTurnId;
+  String? _submittedTurnId;
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
@@ -428,6 +430,15 @@ final class _TimelineScene {
       await tester.enterText(input, prompt);
       await tester.pump();
       expect(tester.widget<TextField>(input).controller!.text, prompt);
+      _submittedThreadId = graph.client.selection.state.selectedThreadId;
+      _priorTurnId = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .session(_submittedThreadId!)
+                .state
+                .lastTurn
+                ?.turnId;
+      _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
     } catch (_) {
       final composer = tester.widget<PromptComposerView>(
@@ -444,27 +455,41 @@ final class _TimelineScene {
   }
 
   Future<void> waitForCompletedTurn({String? after}) async {
-    ChatItemPresentation? turn;
+    StudioTurnView? turn;
+    final observed = TimelineObservation(tester, () => lease);
     await until(
       () {
         final selected = graph.client.selection.state.selectedThreadId;
-        final display = selected == null
-            ? null
-            : graph.timeline.lease(selected);
-        if (display == null) return false;
-        turn = display.controller.messages
-            .map(chatItemPresentationOf)
-            .whereType<ChatItemPresentation>()
-            .where((item) => item.type == 'turn')
-            .lastOrNull;
-        if (turn == null || turn!.id == after) return false;
-        final outcome = turn!.data['outcome'];
-        return outcome is Map && outcome['kind'] == 'completed';
+        if (selected == null) return false;
+        _submittedThreadId ??= selected;
+        if (selected != _submittedThreadId) return false;
+        final candidate = graph.client.conversations
+            .session(selected)
+            .state
+            .lastTurn;
+        if (candidate == null ||
+            candidate.threadId != selected ||
+            candidate.turnId == _priorTurnId ||
+            candidate.turnId == after) {
+          return false;
+        }
+        _submittedTurnId ??= candidate.turnId;
+        if (candidate.turnId != _submittedTurnId) return false;
+        turn = candidate;
+        if (candidate.state is! CompletedStudioTurnState ||
+            graph.timeline.lease(selected) == null) {
+          return false;
+        }
+        final source = ForegroundTurnChatSource(turnId: candidate.turnId);
+        // Main admission is a separate requirement, not the Turn's completion
+        // authority. Both must arrive within the original wait budget.
+        return observed.items.any((item) => item.source == source) &&
+            !observed.live.any((unit) => unit.item.source == source);
       },
       'completed timeline Turn',
       timeout: const Duration(minutes: 6),
     );
-    latestTurnId = turn!.id;
+    latestTurnId = turn!.turnId;
   }
 
   Future<({String turnId, String activityId})> waitForStreamingTurn({
@@ -476,6 +501,8 @@ final class _TimelineScene {
       () {
         final selected = graph.client.selection.state.selectedThreadId;
         if (selected == null) return false;
+        _submittedThreadId ??= selected;
+        if (selected != _submittedThreadId) return false;
         final display = graph.timeline.lease(selected);
         final current = display?.content.current.value;
         final candidate = current?.activeTurn?.id;
@@ -486,6 +513,7 @@ final class _TimelineScene {
             .activeTurn;
         final currentDisplay = display?.currentDisplay;
         if (candidate == null ||
+            candidate == _priorTurnId ||
             candidate == after ||
             candidateActivity == null ||
             currentDisplay == null ||
@@ -493,11 +521,14 @@ final class _TimelineScene {
             currentDisplay.activityId != candidateActivity ||
             !currentDisplay.isCurrent ||
             sessionTurn?.turnId != candidate ||
+            sessionTurn?.threadId != selected ||
             sessionTurn?.state.isBusy != true ||
             current!.logicalStatus.isActive != true ||
             !current.executionPresent) {
           return false;
         }
+        _submittedTurnId ??= candidate;
+        if (candidate != _submittedTurnId) return false;
         turnId = candidate;
         activityId = candidateActivity;
         return true;
@@ -510,6 +541,8 @@ final class _TimelineScene {
 
   void expectStreamingTurn(({String turnId, String activityId}) streaming) {
     final selected = graph.client.selection.state.selectedThreadId!;
+    expect(selected, _submittedThreadId);
+    expect(streaming.turnId, _submittedTurnId);
     final display = graph.timeline.lease(selected)!;
     final current = display.content.current.value;
     final sessionTurn = graph.client.conversations
@@ -531,12 +564,14 @@ final class _TimelineScene {
     await until(
       () {
         final selected = graph.client.selection.state.selectedThreadId;
-        if (selected == null) return false;
+        if (selected == null || selected != _submittedThreadId) return false;
         final display = graph.timeline.lease(selected);
         final current = display?.content.current.value;
         final state = graph.client.conversations.session(selected).state;
         final completed = state.lastTurn;
-        return completed?.turnId == turnId &&
+        return turnId == _submittedTurnId &&
+            completed?.threadId == selected &&
+            completed?.turnId == turnId &&
             completed?.state.status == StudioTurnStatus.completed &&
             completed?.state.isTerminal == true &&
             state.activeTurn?.turnId != turnId &&

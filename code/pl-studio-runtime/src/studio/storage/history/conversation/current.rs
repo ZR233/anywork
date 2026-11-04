@@ -90,6 +90,12 @@ impl PreparedCurrent {
         &self.projection
     }
 
+    /// Node/handle allowance for the original HistoryStore's secondary pending indexes.
+    /// No body or recovery is copied; every original writer owner still pays its full charge.
+    pub(in crate::studio) fn pending_index_bytes(&self) -> u64 {
+        128_u64.saturating_add((self.timeline.len() as u64).saturating_mul(256))
+    }
+
     pub(in crate::studio) fn replace_projection(
         &mut self,
         projection: Arc<FrozenCurrentProjection>,
@@ -142,6 +148,35 @@ pub(crate) async fn apply(
     write_seq: u64,
     current: &PreparedCurrent,
 ) -> Result<()> {
+    let prior = read_head(db).await?;
+    apply_changes(db, write_seq, current, prior.as_ref()).await?;
+    write_head(db, current).await
+}
+
+/// The transaction owner carries this bounded header between consecutive effects.
+pub(in super::super) async fn read_head(
+    db: &impl ConnectionTrait,
+) -> Result<Option<CurrentProjection>> {
+    db.query_one_raw(statement(
+        "SELECT payload FROM conversation_view_state WHERE singleton_id=1",
+        vec![],
+    ))
+    .await?
+    .map(|row| {
+        let bytes: Vec<u8> = row.try_get("", "payload")?;
+        Ok(serde_json::from_slice(&bytes)?)
+    })
+    .transpose()
+}
+
+/// Preserve every content/collection/source mutation and retirement in effect order.
+/// Only the singleton write is deferred until the batch's final fresh effect.
+pub(in super::super) async fn apply_changes(
+    db: &impl ConnectionTrait,
+    write_seq: u64,
+    current: &PreparedCurrent,
+    prior: Option<&CurrentProjection>,
+) -> Result<()> {
     ensure!(
         current.projection().source_effect_seq == write_seq,
         "current projection does not belong to the committing effect"
@@ -152,10 +187,9 @@ pub(crate) async fn apply(
         live_keys.insert(key.clone());
         super::content::write_content(db, &write.content, write.sealed).await?;
     }
-    let bytes = serde_json::to_vec(current.projection())?;
     // The product envelope is bounded; growing facts belong in the collection/content tables.
     ensure!(
-        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        current.frozen_projection().json_bytes() <= u64::from(pl_protocol::CHAT_BATCH_MAX_BYTES),
         "current projection exceeds the product envelope budget"
     );
     for change in current.changes.iter() {
@@ -282,15 +316,7 @@ pub(crate) async fn apply(
             });
         }
     }
-    if let Some(row) = db
-        .query_one_raw(statement(
-            "SELECT payload FROM conversation_view_state WHERE singleton_id=1",
-            vec![],
-        ))
-        .await?
-    {
-        let old: CurrentProjection =
-            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
+    if let Some(old) = prior {
         for reference in old.collections.iter().chain(old.interactions.iter()) {
             if !current
                 .projection()
@@ -306,6 +332,18 @@ pub(crate) async fn apply(
     retire_current_contents(db, &live_keys).await?;
     retire_unsealed_items(db, &live_keys).await?;
     super::sources::apply(db, write_seq, &current.source_changes).await?;
+    Ok(())
+}
+
+pub(in super::super) async fn write_head(
+    db: &impl ConnectionTrait,
+    current: &PreparedCurrent,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(current.projection())?;
+    ensure!(
+        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        "current projection exceeds the product envelope budget"
+    );
     db.execute_raw(statement(
         "INSERT INTO conversation_view_state(singleton_id,payload) VALUES(1,?)
          ON CONFLICT(singleton_id) DO UPDATE SET payload=excluded.payload",

@@ -8,6 +8,7 @@ use pl_core::chat::{
 };
 use pl_protocol::ReadDemand;
 use pl_protocol::*;
+use sea_orm::TransactionTrait;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -252,6 +253,129 @@ struct Fixture {
 }
 
 impl Fixture {
+    async fn cold_qualification_work(&self) -> Result<Phase> {
+        let mut db =
+            crate::studio::storage::history::connect_read_only(&self.store.state.path).await?;
+        let metrics = self.metrics.clone();
+        db.set_metric_callback(move |info| metrics.observe(info));
+        self.metrics.begin()?;
+        // The actual ordinary reader's qualification gate, before its pool is published. This
+        // measures the gate's SQL, not connection creation, OS cache state or execution recovery.
+        let qualified =
+            crate::studio::storage::history::validate_existing(&db, &self.store.state.thread_id)
+                .await;
+        let measured = self.metrics.end();
+        let closed = db.close().await;
+        qualified?;
+        closed?;
+        let phase = measured?;
+        ensure!(phase.calls > 0, "cold qualification SQL was not observed");
+        let mut unexpected = Vec::new();
+        for sql in phase.sql.keys() {
+            let query = sql.to_ascii_lowercase().replace('"', "");
+            // SeaORM's has_table counts matching schema entries, not historical rows.
+            let counts_history = query.contains("count(") && !query.contains("from sqlite_master");
+            // LIMIT 0 prepares the real table/column shape without fetching source rows or
+            // bodies. A table name passed to pragma_index_list/table_info is metadata, not
+            // a read from that table; check the FROM source instead of its mere appearance.
+            let reads_history = !query.trim_end().trim_end_matches(';').ends_with("limit 0")
+                && [
+                    "from conversation_contents",
+                    "from conversation_content_chunks",
+                    "from conversation_items",
+                    "from conversation_atom_facts",
+                    "from timeline_records",
+                ]
+                .iter()
+                .any(|source| query.contains(*source));
+            if counts_history || reads_history || query.contains("quick_check") {
+                unexpected.push(sql);
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "cold qualification scanned source history: {unexpected:#?}"
+        );
+        Ok(phase)
+    }
+
+    async fn main_query_plan(&self, phase: &Phase) -> Result<Vec<String>> {
+        let sql = phase
+            .sql
+            .keys()
+            .find(|sql| sql.contains("FROM timeline_items WHERE location='history'"))
+            .context("missing actual Main query template")?;
+        let rows = self
+            .store
+            .reader()
+            .await?
+            .context("Main query planner reader")?
+            .db
+            .query_all_raw(statement(
+                &format!("EXPLAIN QUERY PLAN {sql}"),
+                vec![
+                    1_i64.into(),
+                    1_i64.into(),
+                    integer(self.effect)?.into(),
+                    i64::from(PAGE_ITEMS).into(),
+                ],
+            ))
+            .await?;
+        let details = rows
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "detail"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        ensure!(
+            details
+                .iter()
+                .any(|detail| detail.contains("timeline_items_by_location_position")),
+            "Main query must seek its location/position index: {details:?}"
+        );
+        ensure!(
+            details
+                .iter()
+                .all(|detail| !detail.contains("USE TEMP B-TREE")),
+            "Main query must not sort the saved history: {details:?}"
+        );
+        Ok(details)
+    }
+
+    async fn reopen_after_migration(&mut self) -> Result<()> {
+        let path = self.store.state.path.clone();
+        let thread = self.store.state.thread_id.clone();
+        // This fixture has no live owner or exported reader. End both actual
+        // pools before opening the migrated database under a fresh store.
+        let mut failures = Vec::new();
+        for connection in [&self.store.state.writer, &self.store.state.reader] {
+            if let Some(connection) = connection.get()
+                && let Err(error) = connection.db.clone().close().await
+            {
+                failures.push(error.to_string());
+            }
+        }
+        ensure!(
+            failures.is_empty(),
+            "fixture connection close: {failures:?}"
+        );
+        let mut store = HistoryStore::open(&path, &thread).await?;
+        store.prepare_write().await?;
+        store
+            .reader()
+            .await?
+            .context("reopened independent reader")?;
+        let state = Arc::get_mut(&mut store.state).context("exclusive reopened fixture")?;
+        for connection in [&mut state.writer, &mut state.reader] {
+            let metrics = self.metrics.clone();
+            connection
+                .get_mut()
+                .context("reopened connection")?
+                .db
+                .set_metric_callback(move |info| metrics.observe(info));
+        }
+        self.store = store;
+        Ok(())
+    }
+
     async fn seed(count: usize) -> Result<Self> {
         let directory = tempfile::tempdir()?;
         let mut store = HistoryStore::open(&directory.path().join("history.sqlite"), "a19").await?;
@@ -646,9 +770,15 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
 -> Result<()> {
     let mut phases = Vec::new();
     let small = Fixture::seed(32).await?;
-    let fixture = Fixture::seed(MEMBERS).await?;
+    let mut fixture = Fixture::seed(MEMBERS).await?;
     let small_stock = small.stock().await?;
     let before_stock = fixture.stock().await?;
+    phases.push(fixture.cold_qualification_work().await?.report(
+        "ordinaryColdQualification",
+        0,
+        0,
+        0,
+    ));
     small.metrics.begin()?;
     let small_page = small.main_page().await?;
     group(&small_page, 32)?;
@@ -666,6 +796,7 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
         main_work.signature(),
         "32 and 1024 members must use identical Main SQL work"
     );
+    let main_query_plan = fixture.main_query_plan(&main_work).await?;
     phases.push(main_work.report("main1024", 1, 0, 0));
     let reference = original.members.as_ref().context("typed members ref")?;
     let main_cursor = (main.before, main.ceiling);
@@ -726,13 +857,19 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
     report["sqlCoverage"] = json!("SeaORM only; native SQLx/BLOB range SQL is not observed");
     phases.push(report);
 
-    // Delete only the reproducible model, outside measured rebuild; retain every
-    // canonical start/terminal/source boundary, completion, manifest and body.
+    // Exercise the private migration primitive on an exclusively owned fixture,
+    // not a repair API on a running Thread. All source facts and bodies remain.
     fixture.store.writer().await?.db.execute_unprepared(
         "DROP TABLE timeline_item_members; DROP TABLE timeline_items; DROP TABLE timeline_projection_state;"
     ).await?;
     fixture.metrics.begin()?;
-    fixture.store.maintain_timeline().await?;
+    {
+        let connection = fixture.store.writer().await?;
+        let tx = connection.db.begin().await?;
+        tx.execute_unprepared(CREATE_DERIVED_SCHEMA).await?;
+        rebuild(&tx, &connection.database_id).await?;
+        tx.commit().await?;
+    }
     let rebuild = fixture.metrics.end()?;
     let rebuild_elapsed = rebuild.elapsed_micros;
     assert!(
@@ -748,6 +885,7 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
     );
     rebuild.assert_no_bodies();
     phases.push(rebuild.report("rebuildFromOriginalFacts", 0, 0, 0));
+    fixture.reopen_after_migration().await?;
     fixture.metrics.begin()?;
     let rebuilt_main = fixture.main_page().await?;
     let rebuilt = group(&rebuilt_main, MEMBERS)?;
@@ -819,6 +957,7 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
             "overflowInvalidatesEvidence": true, "seedAndStockAuditsIncluded": false,
             "sqlActualFetchRows": null, "nativeSqlxBlobSqlQueries": null},
         "phases": phases,
+        "mainQueryPlan": main_query_plan,
         "rebuild": {"elapsedMicros": rebuild_elapsed, "sameLogicalItem": true,
             "sameMemberOrder": true, "allOriginalBodyBytesVerified": true,
             "generationChanged": true, "oldRefRejected": true},

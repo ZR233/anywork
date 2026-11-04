@@ -35,13 +35,18 @@ async fn chat(
 async fn window(
     facade: &BridgeConversationFeed,
     id: &str,
+    stage: &str,
 ) -> Result<crate::api::studio::types::BridgeContentWindow> {
     tokio::time::timeout(
         Duration::from_secs(5),
         facade.next_content_window(id.to_owned()),
     )
-    .await??
-    .context("live watch ended before its window")
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!("{stage}: next_content_window timeout; watch={id}: {error:?}")
+    })?
+    .map_err(|error| anyhow::anyhow!("{stage}: next_content_window; watch={id}: {error:?}"))?
+    .with_context(|| format!("{stage}: live watch ended before its window; watch={id}"))
 }
 
 #[tokio::test]
@@ -72,7 +77,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let before = initial.before.context("nonempty fixture must have an older page")?;
         let old = facade.load_older(before.clone(), BridgeReadDemand {
             max_items: 16, max_bytes: 64 * 1024,
-        }).await?;
+        }).await.map_err(|error| anyhow::anyhow!("history.load_older.initial: {error:?}"))?;
         ensure!(old.placement == BridgeChatPlacement::Prepend && old.current.is_none());
         let mut completed_items = HashSet::new();
         for entry in &initial.entries {
@@ -97,7 +102,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                             max_bytes: 64 * 1024,
                         },
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| anyhow::anyhow!(
+                        "history.list_contents: item_id={item_id}: {error:?}"
+                    ))?;
                 if let Some(entry) = manifest.entries.into_iter().next() {
                     historical = Some(entry.reference);
                     break;
@@ -106,7 +114,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         }
         let historical = historical.context("real completed body manifest")?;
         let range = BridgeContentRange { offset: 3, max_bytes: 12 };
-        let old_window = facade.read_content(historical.clone(), range.clone()).await?;
+        let old_window = facade.read_content(historical.clone(), range.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "history.read_content.initial: reference={historical:?}; range={range:?}: {error:?}"
+            ))?;
         ensure!(old_window.sealed && old_window.offset == range.offset && !old_window.bytes.is_empty());
         ensure!(owner.state.lock().unwrap().sent == set_seq);
         owner.acknowledge(&owner.subscription_id, set_seq)?;
@@ -133,43 +144,69 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         ensure!(owner.native.try_lock().is_err());
         let mut credit = Box::pin(owner.wait_credit());
         ensure!(futures::poll!(credit.as_mut()).is_pending());
-        let watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
-        let first = window(&facade, &watch).await?;
+        let watch = facade.open_content_watch(reference.clone(), range.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.primary.open: reference={reference:?}; range={range:?}: {error:?}"
+            ))?;
+        let first = window(&facade, &watch, "watch.primary.initial").await?;
         ensure!(first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64);
         ensure!(first.bytes == prefix.as_bytes()[3..15]);
-        let cancelled_watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
-        window(&facade, &cancelled_watch).await?;
-        let mut waiting = Box::pin(facade.next_content_window(cancelled_watch.clone()));
-        ensure!(futures::poll!(waiting.as_mut()).is_pending(), "unchanged native source must wait");
+        let cancelled_watch = facade.open_content_watch(reference.clone(), range.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.cancelled.open: reference={reference:?}; range={range:?}: {error:?}"
+            ))?;
+        window(&facade, &cancelled_watch, "watch.cancelled.initial").await?;
+        let mut waiting = Box::pin(async {
+            facade.next_content_window(cancelled_watch.clone()).await
+                .map_err(|error| anyhow::anyhow!(
+                    "watch.cancelled.wait_next: watch={cancelled_watch}: {error:?}"
+                ))
+        });
+        let waiting_state = futures::poll!(waiting.as_mut());
+        if let std::task::Poll::Ready(Err(error)) = waiting_state {
+            return Err(error);
+        }
+        ensure!(waiting_state.is_pending(), "unchanged native source must wait");
         facade.request_close_content_watch(cancelled_watch.clone())?;
         let (next, close) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(waiting, facade.close_content_watch(cancelled_watch.clone()))
-        }).await?;
+        }).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.cancelled.close_join.timeout: watch={cancelled_watch}: {error:?}"
+            ))?;
         ensure!(next?.is_none());
         close?;
         let page = tokio::time::timeout(Duration::from_secs(5), facade.load_older(before.clone(),
-            BridgeReadDemand { max_items: 16, max_bytes: 64 * 1024 })).await??;
+            BridgeReadDemand { max_items: 16, max_bytes: 64 * 1024 })).await
+            .map_err(|error| anyhow::anyhow!("history.load_older.credit_blocked.timeout: {error:?}"))?
+            .map_err(|error| anyhow::anyhow!("history.load_older.credit_blocked: {error:?}"))?;
         ensure!(!page.entries.is_empty() && page.current.is_none());
-        ensure!(facade.read_content(historical, range.clone()).await?.bytes == old_window.bytes);
+        ensure!(facade.read_content(historical, range.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "history.read_content.credit_blocked: range={range:?}: {error:?}"
+            ))?.bytes == old_window.bytes);
         ensure!(port.try_recv().is_err(), "query or watch must not bypass feed credit");
         // Only the real producer may consume the credit notification after ACK.
         drop(credit);
         head.release();
         tokio::time::timeout(Duration::from_secs(5), appended.wait_reached()).await?;
-        let second = window(&facade, &watch).await?;
+        let second = window(&facade, &watch, "watch.primary.append").await?;
         ensure!(second.generation == first.generation, "append-only content must retain its generation");
         ensure!(second.available_through == (prefix.len() + suffix.len()) as u64 && !second.sealed);
         ensure!(second.offset == first.offset && second.bytes == first.bytes);
         owner.acknowledge(&owner.subscription_id, held_seq)?;
         appended.release();
         let final_window = loop {
-            let next = window(&facade, &watch).await?;
+            let next = window(&facade, &watch, "watch.primary.replacement").await?;
             if next.sealed { break next; }
         };
         ensure!(final_window.bytes == replacement.as_bytes()[3..15]);
         ensure!(final_window.available_through == replacement.len() as u64);
         ensure!(final_window.generation != first.generation, "authoritative replacement must change generation");
-        ensure!(facade.next_content_window(watch.clone()).await?.is_none());
+        ensure!(facade.next_content_window(watch.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.primary.terminal_next: watch={watch}: {error:?}"
+            ))?.is_none());
         facade.close_content_watch(watch).await?;
 
         let mut completed_body = false;
@@ -191,7 +228,10 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                                 max_bytes: 64 * 1024,
                             },
                         )
-                        .await?;
+                        .await
+                        .map_err(|error| anyhow::anyhow!(
+                            "completion.list_contents: item_id={item_id}: {error:?}"
+                        ))?;
                     completed_body |= manifest
                         .entries
                         .into_iter()
@@ -212,14 +252,22 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let replacement_facade = BridgeConversationFeed { inner: replacement_owner };
         ensure!(replacement_facade.load_older(before.clone(),
             BridgeReadDemand { max_items: 2, max_bytes: 64 * 1024 }).await.is_err());
-        let late_watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
+        let late_watch = facade.open_content_watch(reference.clone(), range.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.late.open: reference={reference:?}; range={range:?}: {error:?}"
+            ))?;
         facade.request_close();
-        ensure!(facade.next_content_window(late_watch).await?.is_none());
+        ensure!(facade.next_content_window(late_watch.clone()).await
+            .map_err(|error| anyhow::anyhow!(
+                "watch.late.retired_next: watch={late_watch}: {error:?}"
+            ))?.is_none());
         facade.close().await?;
         ensure!(owner.is_settled() && owner.native.lock().await.is_none());
         ensure!(owner.producer.lock().await.task.is_none());
         ensure!(facade.read_content(reference.clone(), range.clone()).await.is_err());
-        ensure!(replacement_facade.read_content(reference, range).await?.bytes == final_window.bytes);
+        ensure!(replacement_facade.read_content(reference, range).await
+            .map_err(|error| anyhow::anyhow!("replacement.read_content: {error:?}"))?
+            .bytes == final_window.bytes);
         replacement_facade.close().await?;
         println!("live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed",
             first.generation, final_window.generation);

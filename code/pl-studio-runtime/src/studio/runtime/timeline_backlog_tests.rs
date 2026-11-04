@@ -1,4 +1,4 @@
-//! A34: the installed product owner, not a test projection worker, owns maintenance.
+//! Ordinary reliable backlog: one installed product owner preserves every fold fragment.
 use super::*;
 use crate::{
     runtime_test_support as support,
@@ -31,18 +31,15 @@ use std::{
     collections::BTreeMap,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 
 const WINDOW: usize = 128;
 const PREFIX_MEMBERS: usize = 2 * WINDOW;
-// Exercise the existing record ceiling, rather than inventing a smaller queue or
-// charging artificial resident bytes. Each suffix member makes two real effects.
-const QUEUE_RECORDS: usize = 4096;
-const SUFFIX_MEMBERS: usize = QUEUE_RECORDS / 2;
-const TEXT: &str = "T completed before R; 正文与附件所有权不能随维护换代";
+// Cross several ordinary credit windows without claiming to exercise the writer's capacity limit.
+const SUFFIX_MEMBERS: usize = 2 * WINDOW;
+const TEXT: &str = "T completed before R; 正文与附件所有权不能随普通积压中断";
 const R: &str = "a34-r";
 const T: &str = "a34-t";
 const U: &str = "a34-u";
@@ -52,7 +49,7 @@ enum Stage {
     Initial,
     FirstWindow,
     Cut,
-    QueueFull,
+    SuffixReady,
 }
 
 /// Only a model environment: it emits canonical starts/receipts through Core's
@@ -256,15 +253,11 @@ async fn emit(script: &Script, request: &ModelRequest) -> Result<()> {
         start(script, members, &id, true).await?;
         complete(script, members, &id, true, &format!("suffix body {index}")).await?;
     }
-    // The queue now owns exactly its existing record budget. This is a real
-    // canonical terminal, ACKed by Core but owed behind the original full sink.
     complete(script, members, R, true, "R ended after T").await?;
     script
-        .boundary(Stage::QueueFull, &request.cancellation)
+        .boundary(Stage::SuffixReady, &request.cancellation)
         .await?;
-    // A new producer fact naturally retries Core's retained R obligation when
-    // capacity returns. No test reducer, reload, publish or replacement owner.
-    complete(script, members, U, true, "U ended after maintenance").await?;
+    complete(script, members, U, true, "U ended after backlog").await?;
     Ok(())
 }
 
@@ -535,8 +528,7 @@ async fn all_members(
 }
 
 #[tokio::test]
-async fn a34_real_owner_rebuild_preserves_multifragment_cut_and_resumes_original_full_queue()
--> Result<()> {
+async fn ordinary_backlog_preserves_multifragment_cut_and_uninterrupted_fold() -> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
     let result = run_case(&env).await;
     env.finish(result).await
@@ -547,9 +539,7 @@ fn diagnostic(
     id: &str,
     owner: &ThreadHandle,
     script: &Script,
-    history: &crate::studio::storage::history::HistoryStore,
     phase: &str,
-    gate_owned: bool,
 ) -> String {
     let core = owner.snapshot();
     let channel = env.runtime.store.thread_persistence().history_channel(id);
@@ -581,9 +571,9 @@ fn diagnostic(
         .into_iter()
         .find(|thread| thread.thread_id == id);
     format!(
-        "wait={phase}; gate_release_owned={gate_owned}; producer_stage={:?}; producer={:?}; \
+        "wait={phase}; producer_stage={:?}; producer={:?}; \
          core_commit={}; core_lifecycle={:?}; core_model={:?}; persistence={:?}; \
-         channel={status:?}; handoff={}; channel_stopping={}; timeline_paused={}; publication={publication:?}; \
+         channel={status:?}; handoff={}; channel_stopping={}; publication={publication:?}; \
          owner_finished/error={owner_status:?}; writer={writer:?}",
         *script.stage.borrow(),
         *script.diagnostic.lock().unwrap(),
@@ -593,14 +583,13 @@ fn diagnostic(
         core.persistence,
         channel.handoff_ticket(),
         channel.is_stopping(),
-        history.timeline_is_paused(),
     )
 }
 
 async fn run_case(env: &support::Environment) -> Result<()> {
     let thread = env
         .runtime
-        .create_thread(&env.project.id, "A34 maintenance owner")
+        .create_thread(&env.project.id, "ordinary backlog owner")
         .await?;
     let id = thread.id.clone();
     let owner: ThreadHandle = env.runtime.ensure_thread_owner(&id).await?;
@@ -634,9 +623,6 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     let mut producer_join = None;
     let mut feeds = Vec::new();
     let mut database_connection = None;
-    // A timeout cancels the story, not the real maintenance owner. Keep its
-    // normal-success release responsibility outside that cancellable future.
-    let mut gate_release = None;
     let mut phase = "first-window producer ACKs";
     let story_started = std::time::Instant::now();
     let trace_phase = |phase: &str| {
@@ -671,13 +657,10 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         let slot = env.runtime.thread_observations.observation_slot(&id);
         let (position, _) = slot.capture();
         let source = position.source.context("installed original owner")?;
-        let registration = source.conversation();
-        let mut publication = registration.progress;
-        let mut owner_progress = registration.owner_progress;
         let live = source
             .current_conversation()
             .context("original publication")?;
-        let old_generation = live.projection_generation.clone();
+        let generation = live.projection_generation.clone();
         let cut_current = live.current.projection().clone();
         assert_eq!(cut_current.items.len(), 3, "R / completed T / active U");
         let r_group = &cut_current.items[0];
@@ -706,7 +689,6 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             cut_current.atoms.len() < WINDOW,
             "completed group was mirrored into active current"
         );
-        let old_ref = r_group.members.clone().context("old typed R ref")?;
         phase = "original Main Set and T range";
         feeds.push(
             env.runtime
@@ -716,13 +698,6 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         let initial = chat(&mut feeds[0], &ChatScope::Main).await?;
         assert_eq!(initial.placement, ChatPlacement::Set);
         check_text(feeds[0].reader(), text).await?;
-        let old_reader = feeds[0].reader().clone();
-        let (entered, release) = history.arm_timeline_rebuild_gate().await;
-        gate_release = Some(release);
-        history.request_timeline_maintenance();
-        phase = "owner maintenance gate after durable C";
-        trace_phase(phase);
-        entered.await?;
         phase = "durable C current/recovery/readonly facts";
         trace_phase(phase);
         let durable = history.conversation_current().await?.context("durable C")?;
@@ -734,10 +709,9 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         assert_eq!(status.borrow().committed_sequence, cut);
         assert_eq!(status.borrow().queued_records, 0);
         assert!(!channel.is_stopping());
-        assert!(history.timeline_is_paused());
-        let (database, generation, _, recovery) =
+        let (database, snapshot_generation, _, recovery) =
             history.timeline_snapshot().await?.context("C recovery")?;
-        assert_eq!(generation, old_generation);
+        assert_eq!(snapshot_generation, generation);
         let recovery: serde_json::Value = serde_json::from_slice(&recovery)?;
         assert_eq!(
             recovery["items"]
@@ -770,219 +744,63 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             .context("test read connection")?;
         let prefix = facts(db, cut).await?;
         assert!(prefix.len() > PREFIX_MEMBERS * 2);
+
         script.release();
-        phase = "C suffix producer / real QueueFull";
+        phase = "ordinary suffix producer ACKs";
         trace_phase(phase);
-        script.reached(Stage::QueueFull).await?;
-        // Do not infer pressure from one Pending poll: the original sink reports
-        // its classified ceiling and still owns the complete accepted prefix.
-        let full = status.borrow_and_update().clone();
-        assert_eq!(
-            full.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
+        script.reached(Stage::SuffixReady).await?;
+        let suffix_target = owner.snapshot().commit_sequence;
+        phase = "ordinary suffix fixed-target observation/durable barrier";
+        trace_phase(phase);
+        env.runtime.synchronize_thread_observation(&id).await?;
+        channel
+            .await_handoff_durable(&id, channel.handoff_ticket())
+            .await?;
+        let suffix_status = status.borrow_and_update().clone();
+        ensure!(
+            suffix_status.fault.is_none(),
+            "ordinary backlog faulted: {suffix_status:?}"
         );
-        assert_eq!(full.queued_records, QUEUE_RECORDS as u64);
-        assert!(full.queued_bytes > 0);
-        assert_eq!(full.admitted_sequence, cut + QUEUE_RECORDS as u64);
-        assert_eq!(full.committed_sequence, cut);
+        ensure!(
+            suffix_status.error.is_none(),
+            "ordinary backlog save failed: {suffix_status:?}"
+        );
+        assert!(suffix_status.admitted_sequence >= suffix_target);
+        assert!(suffix_status.committed_sequence >= suffix_target);
+        assert_eq!(suffix_status.queued_records, 0);
         assert!(!channel.is_stopping());
         assert_eq!(
-            owner.snapshot().lifecycle,
-            pl_core::thread::ThreadLifecycle::Open
+            facts(db, cut).await?,
+            prefix,
+            "durable prefix changed while suffix drained"
         );
-        assert_eq!(
-            owner.snapshot().persistence.admitted_sequence,
-            full.admitted_sequence
-        );
-        let queued = channel.unprojected_writes();
-        assert_eq!(queued.len(), QUEUE_RECORDS);
-        for (offset, write) in queued.iter().enumerate() {
-            assert_eq!(write.effect.sequence, cut + 1 + offset as u64);
-            assert_eq!(write.effect.sequence, write.checkpoint.state_revision);
-        }
-        drop(queued);
-        let owed = owner
-            .effects()
-            .await?
-            .into_iter()
-            .find(|effect| effect.sequence == full.admitted_sequence + 1)
-            .context("Core's original refused obligation")?;
-        assert_eq!(owed.model_members.len(), 1);
-        assert_eq!(owed.model_members[0].member_id, R);
-        assert_eq!(
-            owed.model_members[0].payload,
-            receipt(R, true, "R ended after T")?
-        );
-        phase = "original Core flush at classified full sink";
-        trace_phase(phase);
-        assert!(
-            owner.flush().await.is_err(),
-            "full sink accepted the owed producer fence"
-        );
-        assert_eq!(
-            history
-                .conversation_current()
-                .await?
-                .context("paused current")?
-                .source_effect_seq,
-            cut
-        );
-        assert_eq!(history.timeline_generation().await?, old_generation);
-        assert_eq!(facts(db, cut).await?, prefix);
-        gate_release
-            .take()
-            .context("owned maintenance release")?
-            .send(())
-            .map_err(|_| anyhow::anyhow!("original maintenance owner disappeared"))?;
-        phase = "same owner new-generation publication";
-        trace_phase(phase);
-        let new_generation = loop {
-            if let Some(error) = owner_progress.borrow_and_update().retained_error() {
-                return Err(anyhow::anyhow!(
-                    "original maintenance owner failed: {error:#}"
-                ));
-            }
-            if let Some(current) = publication.borrow_and_update().clone()
-                && current.projection_generation != old_generation
-            {
-                break current.projection_generation.clone();
-            }
-            tokio::select! {
-                changed = publication.changed() => changed.context("owner publication closed")?,
-                changed = owner_progress.changed() => changed.context("projection owner ended")?,
-            }
-        };
-        assert_ne!(new_generation, old_generation);
-        assert_eq!(history.timeline_generation().await?, new_generation);
+        assert_eq!(history.timeline_generation().await?, generation);
         assert!(Arc::ptr_eq(
             &channel,
             &env.runtime.store.thread_persistence().history_channel(&id)
         ));
-        let (after, _) = slot.capture();
+        let (after_suffix, _) = slot.capture();
         assert!(Arc::ptr_eq(
-            after.source.as_ref().context("owner after rebuild")?,
+            after_suffix.source.as_ref().context("owner after suffix")?,
             &source
         ));
         assert_eq!(
             history.conversation_database_id().await?.as_deref(),
             Some(database.as_str())
         );
-        phase = "old reader/feed/membersRef revocation";
-        assert!(
-            old_reader
-                .list_contents(
-                    text.content_item_id.as_deref().context("T owner")?,
-                    None,
-                    demand()
-                )
-                .await
-                .is_err()
-        );
-        assert!(feeds[0].recv().await.is_err());
-        let stale = env
-            .runtime
-            .open_conversation_feed(
-                &id,
-                ChatScope::GroupMembers { reference: old_ref },
-                demand(),
-            )
-            .await;
-        let stale_error = match stale {
-            Err(error) => error,
-            Ok(feed) => {
-                feeds.push(feed);
-                bail!("old members ref remained valid");
-            }
-        };
-        assert!(matches!(
-            stale_error.downcast_ref::<pl_core::chat::ChatError>(),
-            Some(pl_core::chat::ChatError::StaleContent)
-        ));
-        phase = "new-generation Main Set / recovered R-T-U";
-        feeds.push(
-            env.runtime
-                .open_conversation_feed(&id, ChatScope::Main, demand())
-                .await?,
-        );
-        let rebuilt_set = chat(&mut feeds[1], &ChatScope::Main).await?;
-        assert_eq!(rebuilt_set.placement, ChatPlacement::Set);
-        assert_eq!(
-            feeds[1].reader().inner.projection_generation,
-            new_generation
-        );
-        let rebuilt_current = rebuilt_set
-            .current
-            .as_ref()
-            .context("new-generation current")?;
-        assert_eq!(
-            rebuilt_current
-                .items
-                .iter()
-                .map(|item| &item.id)
-                .collect::<Vec<_>>(),
-            vec![&r_group.id, &text.id, &u_group.id]
-        );
-        assert!(
-            rebuilt_current
-                .items
-                .iter()
-                .all(|item| item.position.is_none())
-        );
-        assert_eq!(rebuilt_current.items[0].summary, r_group.summary);
-        check_text(feeds[1].reader(), &rebuilt_current.items[1]).await?;
-        // QueueFull is a classified save fault, so use its real explicit retry.
-        // Never clear the latch, lower a watermark or replace the producer.
-        channel.retry(full.fault_generation)?;
-        phase = "original writer committed accepted work after C";
-        trace_phase(phase);
-        let mut observed_durable = cut;
-        loop {
-            let state = status.borrow_and_update().clone();
-            ensure!(
-                state.admitted_sequence == full.admitted_sequence,
-                "original admission changed while the producer was held: {state:?}"
-            );
-            ensure!(
-                state.committed_sequence >= observed_durable
-                    && state.committed_sequence <= full.admitted_sequence,
-                "original accepted prefix lost its durable ordering: {state:?}"
-            );
-            ensure!(
-                state.queued_records == full.admitted_sequence - state.committed_sequence,
-                "original accepted prefix has a queue hole: {state:?}"
-            );
-            ensure!(
-                state.fault.is_none()
-                    || state.fault == Some(pl_protocol::studio::HistoryFault::QueueFull),
-                "original writer failed after maintenance: {state:?}"
-            );
-            if state.committed_sequence > cut {
-                break;
-            }
-            observed_durable = state.committed_sequence;
-            status.changed().await?;
-        }
-        let still_owed = owner
-            .effects()
+        let suffix_current = history
+            .conversation_current()
             .await?
-            .into_iter()
-            .find(|effect| effect.sequence == owed.sequence)
-            .context("refused producer responsibility disappeared after writer progress")?;
-        assert!(Arc::ptr_eq(&still_owed, &owed));
-        assert!(status.borrow().admitted_sequence < owed.sequence);
-        // This proves resumed writer progress, not enough record/byte budget
-        // for R at this instant. The same producer's next canonical input lets
-        // the original Core/sink admission decide when its retained R can move.
-        // Full drain and recovery remain required below, after that continuation.
+            .context("suffix durable current")?;
+        assert_eq!(suffix_current.source_effect_seq, suffix_target);
+        assert!(suffix_current.source_effect_seq > cut);
+
         script.release();
-        phase = "same producer U / original R owed responsibility / Core terminal";
+        phase = "same producer U terminal";
         trace_phase(phase);
-        // Core removes terminal Turns before publishing its live snapshot; a
-        // subscription is not a terminal journal. The original run_turn reply
-        // proves execution completion, not sink admission or durable settlement.
         let joined = (&mut run)
             .await
-            .context("A34 producer join")
+            .context("ordinary backlog producer join")
             .and_then(|joined| Ok(joined?));
         let completed = joined
             .as_ref()
@@ -995,26 +813,6 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             owner.snapshot().persistence
         );
         let target = owner.snapshot().commit_sequence;
-        phase = "original R admitted/durable and final suffix QueueFull recovery";
-        trace_phase(phase);
-        loop {
-            let state = status.borrow_and_update().clone();
-            if state.admitted_sequence >= owed.sequence
-                && state.committed_sequence >= target
-                && state.queued_records == 0
-                && state.fault.is_none()
-                && state.error.is_none()
-            {
-                assert!(state.committed_sequence >= owed.sequence);
-                break;
-            }
-            ensure!(
-                state.fault.is_none()
-                    || state.fault == Some(pl_protocol::studio::HistoryFault::QueueFull),
-                "original suffix save failed: {state:?}"
-            );
-            status.changed().await?;
-        }
         phase = "final observation/durable barrier";
         trace_phase(phase);
         env.runtime.synchronize_thread_observation(&id).await?;
@@ -1024,18 +822,21 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         assert_eq!(
             facts(db, cut).await?,
             prefix,
-            "C facts changed during successful replacement"
+            "C facts changed while ordinary backlog drained"
         );
         let latest = history
             .conversation_current()
             .await?
             .context("resumed durable current")?;
-        assert_eq!(latest.source_effect_seq, owner.snapshot().commit_sequence);
-        assert!(latest.source_effect_seq > owed.sequence);
-        assert_eq!(status.borrow().queued_records, 0);
-        assert_eq!(status.borrow().admitted_sequence, latest.source_effect_seq);
-        assert_eq!(status.borrow().committed_sequence, latest.source_effect_seq);
-        assert_eq!(history.timeline_generation().await?, new_generation);
+        assert_eq!(latest.source_effect_seq, target);
+        assert!(latest.source_effect_seq > suffix_target);
+        let final_status = status.borrow_and_update().clone();
+        assert_eq!(final_status.queued_records, 0);
+        assert_eq!(final_status.admitted_sequence, latest.source_effect_seq);
+        assert_eq!(final_status.committed_sequence, latest.source_effect_seq);
+        assert!(final_status.fault.is_none());
+        assert!(final_status.error.is_none());
+        assert_eq!(history.timeline_generation().await?, generation);
         let (final_position, _) = slot.capture();
         assert!(Arc::ptr_eq(
             final_position
@@ -1068,7 +869,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         for group in saved.iter().filter(|item| item.is_work_group()) {
             phase = "final real GroupMembers inventory / original body ranges";
             let reference = group.members.clone().context("new typed ref")?;
-            assert_eq!(reference.projection_generation, new_generation);
+            assert_eq!(reference.projection_generation, generation);
             let (first_body, last_body) = if group.id == r_group.id {
                 (
                     "R ended after T",
@@ -1076,7 +877,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
                 )
             } else {
                 (
-                    "U ended after maintenance",
+                    "U ended after backlog",
                     format!("suffix body {}", SUFFIX_MEMBERS - 1),
                 )
             };
@@ -1117,7 +918,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         );
         assert_eq!(
             feeds[final_feed].reader().inner.projection_generation,
-            new_generation
+            generation
         );
         assert!(
             set.entries
@@ -1135,15 +936,11 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         assert_eq!(fresh_text.content_item_id, text.content_item_id);
         assert_eq!(fresh_text.contents, text.contents);
         check_text(feeds[final_feed].reader(), fresh_text).await?;
-        old_reader.close().await?;
         Ok::<_, anyhow::Error>(())
     };
     // Assertion failures must also reach the owned resource cleanup below.
-    let result = match tokio::time::timeout(
-        Duration::from_secs(20),
-        AssertUnwindSafe(story).catch_unwind(),
-    )
-    .await
+    let deadline = support::integration_test_deadline()?;
+    let result = match tokio::time::timeout(deadline, AssertUnwindSafe(story).catch_unwind()).await
     {
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => Err(anyhow::anyhow!(
@@ -1156,41 +953,17 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         )),
         Err(error) => Err(anyhow::Error::new(error).context("A34 owner/queue deadline")),
     }
-    .with_context(|| {
-        diagnostic(
-            env,
-            &id,
-            &owner,
-            &script,
-            &history,
-            phase,
-            gate_release.is_some(),
-        )
-    });
+    .with_context(|| diagnostic(env, &id, &owner, &script, phase));
     // End all environment waits before runtime close/join, including a failed
     // assertion path. A test-owned JoinHandle is always observed, never detached.
     trace_phase("cleanup begins");
     let mut cleanup_errors = Vec::new();
-    // Release the held gate normally even after a cancelled assertion/read.
-    // Dropping its Sender would deliberately inject maintenance cancellation,
-    // latch a repair failure, and prevent the original owner from draining.
-    if let Some(release) = gate_release.take()
-        && release.send(()).is_err()
-    {
-        cleanup_errors.push("maintenance release receiver disappeared".to_owned());
-    }
-    let status = channel.subscribe().borrow().clone();
-    if status.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
-        && let Err(error) = channel.retry(status.fault_generation)
-    {
-        cleanup_errors.push(format!("original queue retry: {error:#}"));
-    }
     cancel.cancel();
     script.next.add_permits(3);
     let joined = if let Some(joined) = producer_join {
         joined
     } else {
-        match tokio::time::timeout(Duration::from_secs(20), &mut run).await {
+        match tokio::time::timeout(deadline, &mut run).await {
             Ok(joined) => joined
                 .context("A34 producer join")
                 .and_then(|joined| Ok(joined?)),
@@ -1218,15 +991,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     }
     let cleanup_context = format!(
         "A34 cleanup: producer_join={joined:?}; resource_errors={cleanup_errors:?}; after={}",
-        diagnostic(
-            env,
-            &id,
-            &owner,
-            &script,
-            &history,
-            phase,
-            gate_release.is_some()
-        ),
+        diagnostic(env, &id, &owner, &script, phase),
     );
     trace_phase("owned producer/feed/reader/database cleanup complete");
     let result = result.and_then(|()| {

@@ -34,7 +34,9 @@ use pl_protocol::ThreadItem;
 use tokio::time::Instant;
 
 use crate::studio::StudioStore;
-use crate::studio::storage::coordinator::{ThreadPersistenceMetrics, ThreadPersistenceReport};
+use crate::studio::storage::coordinator::{
+    PendingSequenceRange, ThreadPersistenceMetrics, ThreadPersistenceReport,
+};
 use crate::studio::storage::history::{
     AccountingCommit, EffectCommit, InputIdentityWrite, MessageIdentityWrite, SessionAccounting,
     is_retryable_write,
@@ -63,6 +65,8 @@ const MAX_HISTORY_BATCHES: usize = 4096;
 const MAX_HISTORY_THREAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HISTORY_PROCESS_BYTES: u64 = 256 * 1024 * 1024;
 const NO_PROGRESS_WINDOW: Duration = Duration::from_secs(60);
+/// Conservative retained charge for the bounded age index entry owned by one queued effect.
+const PENDING_AGE_METADATA_BYTES: u64 = std::mem::size_of::<(i64, u64)>() as u64 + 64;
 
 /// Identity source for live per-Thread writer incarnations.
 ///
@@ -152,6 +156,8 @@ pub(in crate::studio) struct RuntimeOrderIndex {
     materialize_gate: Mutex<Option<MaterializeGate>>,
     #[cfg(test)]
     confirm_saved_entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    #[cfg(test)]
+    confirm_saved_calls: AtomicU64,
 }
 
 #[cfg(test)]
@@ -237,6 +243,8 @@ impl RuntimeOrderIndex {
             materialize_gate: Mutex::new(None),
             #[cfg(test)]
             confirm_saved_entered: Mutex::new(None),
+            #[cfg(test)]
+            confirm_saved_calls: AtomicU64::new(0),
         }
     }
 
@@ -756,8 +764,11 @@ impl RuntimeOrderIndex {
 
     fn confirm_saved(&self, effect: u64) {
         #[cfg(test)]
-        if let Some(entered) = self.confirm_saved_entered.lock().unwrap().take() {
-            let _ = entered.send(());
+        {
+            self.confirm_saved_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(entered) = self.confirm_saved_entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
         }
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         state.durable = state.durable.max(effect);
@@ -847,6 +858,10 @@ struct Progress {
     /// Highest fixed barrier target; cancelling a waiter does not retract its request.
     flush_target: u64,
     effect_bytes: u64,
+    /// Conservatively charged entries in `pending_saved_at`.
+    queue_metadata_bytes: u64,
+    /// Counts queued checkpoint timestamps so the maximum age is available without a queue scan.
+    pending_saved_at: BTreeMap<i64, u64>,
     pending_accounting: Option<PendingAccounting>,
     /// Retained bytes of the prepared batches the queue still holds.
     ///
@@ -897,6 +912,48 @@ struct Progress {
     last_progress_at: Option<Instant>,
     /// Actual accepted output, separate from each operation's upper bound.
     operation_output: BTreeMap<String, OperationOutput>,
+}
+
+impl Progress {
+    /// Locate a sequence in the continuous original queue without scanning it.
+    fn queue_offset(&self, sequence: u64) -> Option<usize> {
+        let first = self.effects.front()?.sequence;
+        let offset = usize::try_from(sequence.checked_sub(first)?).ok()?;
+        self.effects
+            .get(offset)
+            .is_some_and(|queued| queued.sequence == sequence)
+            .then_some(offset)
+    }
+
+    /// The projection handoff advances continuously from the durable or handed-over tail.
+    fn next_unprojected_offset(&self) -> Option<usize> {
+        let sequence = self.durable.max(self.handoff).checked_add(1)?;
+        self.queue_offset(sequence)
+    }
+
+    fn admit_saved_at(&mut self, saved_at: i64) {
+        *self.pending_saved_at.entry(saved_at).or_default() += 1;
+        self.queue_metadata_bytes = self
+            .queue_metadata_bytes
+            .saturating_add(PENDING_AGE_METADATA_BYTES);
+    }
+
+    fn release_saved_at(&mut self, saved_at: i64) {
+        let remove = {
+            let count = self
+                .pending_saved_at
+                .get_mut(&saved_at)
+                .expect("queued effect has an age index entry");
+            *count -= 1;
+            *count == 0
+        };
+        if remove {
+            self.pending_saved_at.remove(&saved_at);
+        }
+        self.queue_metadata_bytes = self
+            .queue_metadata_bytes
+            .saturating_sub(PENDING_AGE_METADATA_BYTES);
+    }
 }
 
 #[derive(Debug)]
@@ -988,11 +1045,11 @@ pub(crate) struct HistoryChannel {
     pub(super) stopping: tokio_util::sync::CancellationToken,
     /// The process-wide reliable budget, shared by every Thread's channel.
     ///
-    /// It charges exactly two things, each byte once: the effects the channels hold, each at the
-    /// encoded size it was admitted with, and the accepted output still retained by in-flight
-    /// model/tool operations. A fact produced by that operation takes those bytes over at
-    /// admission instead of adding a second charge for the same output, and both charges are
-    /// released when the fact becomes durable or the call ends without one.
+    /// It charges the effects the channels hold (their admission encoding plus bounded queue
+    /// metadata), and the accepted output still retained by in-flight model/tool operations, each
+    /// byte once. A fact produced by that operation takes those bytes over at admission instead of
+    /// adding a second charge for the same output, and both charges are released when the fact
+    /// becomes durable or the call ends without one.
     ///
     /// The prepared batches and the live projection's retained bodies are deliberately *not* part of
     /// this process counter: they are the same product content the queued effect already charged,
@@ -1071,6 +1128,7 @@ impl HistoryChannel {
     fn other_resident_bytes(progress: &Progress) -> u64 {
         progress
             .effect_bytes
+            .saturating_add(progress.queue_metadata_bytes)
             .saturating_add(progress.prepared_bytes)
             .saturating_add(progress.projection_bytes)
             .saturating_add(
@@ -1557,8 +1615,10 @@ impl HistoryChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = retention.pending {
+            let offset = progress.next_unprojected_offset();
             ensure!(
-                progress.effects.iter().any(|effect| {
+                offset.is_some_and(|offset| {
+                    let effect = &progress.effects[offset];
                     effect.sequence == pending.sequence && effect.prepared.is_none()
                 }),
                 "projection retention does not name an unprepared admitted effect"
@@ -1648,19 +1708,16 @@ impl HistoryChannel {
         if sequence <= progress.durable {
             return false;
         }
-        // Locate the entry by index so the budget update and the attach happen in one place without
-        // holding a borrow of the queue while `prepared_bytes` changes.
-        let Some(index) = progress
-            .effects
-            .iter()
-            .position(|queued| queued.sequence == sequence)
-        else {
+        let Some(index) = progress.queue_offset(sequence) else {
             return false;
         };
         if let Some(existing) = &progress.effects[index].prepared {
             // Retries hand over the original frozen batch; replacing it could lose a published
             // completion or change the bytes behind an unchanged reliable-budget charge.
             return Arc::ptr_eq(existing, &prepared);
+        }
+        if progress.next_unprojected_offset() != Some(index) {
+            return false;
         }
         let mut order_index = self
             .order_index
@@ -1719,9 +1776,8 @@ impl HistoryChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         progress
-            .effects
-            .iter()
-            .find(|queued| queued.prepared.is_none())
+            .next_unprojected_offset()
+            .and_then(|offset| progress.effects.get(offset))
             .map(|queued| queued.write.clone())
     }
 
@@ -1732,10 +1788,13 @@ impl HistoryChannel {
             .progress
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let offset = progress
+            .next_unprojected_offset()
+            .unwrap_or(progress.effects.len());
         progress
             .effects
             .iter()
-            .filter(|queued| queued.prepared.is_none())
+            .skip(offset)
             .map(|queued| queued.write.clone())
             .collect()
     }
@@ -1790,6 +1849,7 @@ impl HistoryChannel {
             queued_records: progress.effects.len() as u64,
             queued_bytes: progress
                 .effect_bytes
+                .saturating_add(progress.queue_metadata_bytes)
                 .saturating_add(progress.prepared_bytes)
                 .saturating_add(self.delivery_bytes.load(Ordering::Acquire))
                 .saturating_add(progress.projection_bytes)
@@ -2062,24 +2122,32 @@ fn report_with_calls(
     inner.channel.report(progress);
     let pending = progress
         .effects
-        .iter()
-        .map(|queued| queued.sequence)
-        .collect::<Vec<_>>();
-    let pending_bytes = progress.effect_bytes;
+        .front()
+        .zip(progress.effects.back())
+        .map(|(first, last)| PendingSequenceRange {
+            first: first.sequence,
+            last: last.sequence,
+        });
+    debug_assert_eq!(
+        pending.map_or(0, PendingSequenceRange::count),
+        progress.effects.len() as u64
+    );
+    let pending_bytes = progress
+        .effect_bytes
+        .saturating_add(progress.queue_metadata_bytes);
     // 每个待写 effect 自带它的候选 checkpoint，并与其在同一个事务落盘：队列非空就意味着历史与
     // checkpoint 都还 dirty，最老待写年龄因此只来自队列里每条 effect 自己的 saved_at。
     let pending_operations = progress.effects.len() as u64;
     let now = crate::studio::unix_seconds();
-    let oldest_pending_age_millis = progress
-        .effects
-        .iter()
-        .map(|queued| queued.write.checkpoint.saved_at)
-        .map(|saved_at| {
-            u64::try_from(now.saturating_sub(saved_at))
-                .unwrap_or(0)
-                .saturating_mul(1000)
-        })
-        .reduce(u64::min);
+    let oldest_pending_age_millis =
+        progress
+            .pending_saved_at
+            .first_key_value()
+            .map(|(saved_at, _)| {
+                u64::try_from(now.saturating_sub(*saved_at))
+                    .unwrap_or(0)
+                    .saturating_mul(1000)
+            });
     let max_admitted = progress
         .effects
         .back()
@@ -2087,9 +2155,8 @@ fn report_with_calls(
         .unwrap_or(0);
     let dirty_revision = progress
         .effects
-        .iter()
+        .back()
         .map(|queued| queued.write.checkpoint.state_revision)
-        .max()
         .unwrap_or(progress.published_revision);
     let metrics = ThreadPersistenceMetrics {
         fault_generation: progress.fault_generation,
@@ -2450,7 +2517,7 @@ async fn step(inner: &Inner) -> Result<Step> {
         .inner
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let mut released_bytes = 0;
+    let mut released_bytes = 0_u64;
     for candidate in &selected {
         ensure!(
             progress
@@ -2462,9 +2529,12 @@ async fn step(inner: &Inner) -> Result<Step> {
         let committed = progress.effects.pop_front().expect("checked queue head");
         let bytes = committed.bytes;
         let prepared_bytes = committed.prepared_bytes;
+        progress.release_saved_at(committed.write.checkpoint.saved_at);
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
         progress.effect_bytes -= bytes;
-        released_bytes += bytes;
+        released_bytes = released_bytes
+            .saturating_add(bytes)
+            .saturating_add(PENDING_AGE_METADATA_BYTES);
         progress.durable = committed.sequence;
     }
     progress.in_flight = None;
@@ -2838,6 +2908,7 @@ impl ColdStore for ThreadStorageSink {
             });
         let bytes = progress
             .effect_bytes
+            .saturating_add(progress.queue_metadata_bytes)
             .saturating_add(progress.prepared_bytes)
             .saturating_add(progress.projection_bytes)
             .saturating_add(self.0.channel.order_index.retained_bytes())
@@ -2871,6 +2942,7 @@ impl ColdStore for ThreadStorageSink {
         if thread_id != self.0.thread.id
             || write.effect.thread_id != thread_id
             || write.checkpoint.thread_id != thread_id
+            || write.effect.sequence == 0
             || write.effect.sequence != write.checkpoint.state_revision
             || write.checkpoint.history_fence != write.effect.sequence
         {
@@ -2898,12 +2970,32 @@ impl ColdStore for ThreadStorageSink {
         if progress.stopped {
             return Err(cold_error("history writer is stopped"));
         }
-        if sequence > progress.durable
-            && !progress
-                .effects
-                .iter()
-                .any(|queued| queued.sequence == sequence)
-        {
+        if sequence > progress.durable && progress.queue_offset(sequence).is_none() {
+            let expected = progress.effects.back().map_or_else(
+                || progress.durable.checked_add(1),
+                |tail| tail.sequence.checked_add(1),
+            );
+            if expected != Some(sequence) {
+                let message = format!(
+                    "Thread {thread_id} persistence sequence {sequence} does not follow {}",
+                    expected.map_or_else(
+                        || "the exhausted sequence space".to_owned(),
+                        |expected| { format!("write_seq {expected}") }
+                    )
+                );
+                if progress.error.is_none() {
+                    progress.fault_generation = progress.fault_generation.saturating_add(1);
+                    progress.retry_requested = false;
+                }
+                progress.fault_target = progress.fault_target.max(sequence);
+                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+                progress.error = Some(message.clone());
+                progress.fault_recovered = false;
+                report(&self.0, &progress);
+                drop(progress);
+                self.0.changed.notify_one();
+                return Err(cold_error(&message));
+            }
             let mut index = self
                 .0
                 .channel
@@ -2913,15 +3005,21 @@ impl ColdStore for ThreadStorageSink {
                 .unwrap_or_else(|error| error.into_inner());
             let queued_bytes = progress
                 .effect_bytes
+                .saturating_add(progress.queue_metadata_bytes)
                 .saturating_add(self.0.channel.order_index.retained_bytes());
             // The fact takes over the bytes of its own operation's reservation instead of being
             // charged next to them; only bytes not already charged need new headroom.
-            let (transfer, covered) =
-                output_transfer_plan(&progress, write.output_claim.as_deref(), bytes);
-            let added = bytes.saturating_sub(covered);
+            let (transfer, covered) = output_transfer_plan(
+                &progress,
+                write.output_claim.as_deref(),
+                bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
+            );
+            let added = bytes
+                .saturating_add(PENDING_AGE_METADATA_BYTES)
+                .saturating_sub(covered);
             if progress.effects.len() >= MAX_HISTORY_BATCHES
                 || queued_bytes
-                    .checked_add(bytes)
+                    .checked_add(bytes.saturating_add(PENDING_AGE_METADATA_BYTES))
                     .is_none_or(|total| total > MAX_HISTORY_THREAD_BYTES)
                 || (added > 0 && !self.0.channel.reserve(added))
             {
@@ -2985,6 +3083,7 @@ impl ColdStore for ThreadStorageSink {
                 prepared_bytes: 0,
             });
             progress.effect_bytes += bytes;
+            progress.admit_saved_at(write.checkpoint.saved_at);
             progress.last_progress_at.get_or_insert_with(Instant::now);
             self.0.channel.commit_residents(&progress, &index);
             drop(index);
@@ -6862,6 +6961,8 @@ pub(crate) mod storage_fault_tests {
                 + serde_json::to_vec(accounting_only.current.projection())?.len() as u64
                 + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64
                 + 3 * std::mem::size_of::<usize>() as u64
+                + 128
+                + 256 * accounting_only.current.timeline.len() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
                 + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
                     as u64
@@ -6930,7 +7031,7 @@ pub(crate) mod storage_fault_tests {
         let mut projection = live_projection(&sink).await?;
         // Restore the existing small Timeline recovery before taking the baseline. Loading
         // that state is not an effect mutation and remains charged after a rejected prepare.
-        projection.reload_timeline().await?;
+        projection.initialize_timeline().await?;
         let empty_projection_bytes = projection.retained_bytes();
         let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, 2)?;
         let mut write = ticket(id, 1);
@@ -7127,6 +7228,7 @@ pub(crate) mod storage_fault_tests {
                 probe.reserve_boundaries(&write.effect, 0)?;
                 let resident_bytes = MAX_HISTORY_THREAD_BYTES
                     - encoded_bytes(&write.effect)
+                    - PENDING_AGE_METADATA_BYTES
                     - probe.retained_bytes();
                 sink.0
                     .channel
@@ -7178,7 +7280,11 @@ pub(crate) mod storage_fault_tests {
                     Ok(())
                 })
             };
-            tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+            tokio::time::timeout(
+                crate::runtime_test_support::integration_test_deadline()?,
+                entered_rx,
+            )
+            .await??;
             let (attempting, attempted) = tokio::sync::oneshot::channel();
             let provider = {
                 let sink = sink.clone();
@@ -8097,21 +8203,6 @@ pub(crate) mod storage_fault_tests {
             "a call that the reliable budget cannot fund is backpressure, never a silent grant"
         );
 
-        // A fact no reservation covers is refused while there is no headroom and no projection holds
-        // a queued fact that could free any: typed backpressure, nothing dropped, ticket untouched.
-        let uncovered = visible_input_ticket(&sink.0.thread.id, 3, "input-uncovered")?;
-        sink.admit(&sink.0.thread.id, uncovered.clone())
-            .expect_err("an unfunded fact cannot be admitted into a full budget");
-        let refused = channel.subscribe().borrow().clone();
-        assert_eq!(
-            refused.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
-        );
-        // Both live incarnations observe the same real fault before recovery.
-        // Neither may leave its own coordinator report blocked after it clears.
-        let overlapping =
-            ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
-
         // Every call returns: its result is admitted while the process budget is still full, which
         // only works because the reservation it was made under is transferred onto the fact.
         for (index, operation) in operations.iter().enumerate() {
@@ -8136,6 +8227,21 @@ pub(crate) mod storage_fault_tests {
             MAX_HISTORY_PROCESS_BYTES,
             "transferring a reservation onto a fact adds no second charge for the same output"
         );
+
+        // The next continuous fact has no reservation and is refused while there is no headroom and
+        // no projection can free any: typed backpressure, nothing dropped, ticket untouched.
+        let uncovered = visible_input_ticket(&sink.0.thread.id, 3, "input-uncovered")?;
+        sink.admit(&sink.0.thread.id, uncovered.clone())
+            .expect_err("an unfunded fact cannot be admitted into a full budget");
+        let refused = channel.subscribe().borrow().clone();
+        assert_eq!(
+            refused.fault,
+            Some(pl_protocol::studio::HistoryFault::QueueFull)
+        );
+        // Both live incarnations observe the same real fault before recovery.
+        // Neither may leave its own coordinator report blocked after it clears.
+        let overlapping =
+            ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
 
         // Recovery: the first call ends, so its remaining ceiling comes back and the very same
         // ticket is admitted unchanged; the rest of the calls end too.
@@ -8265,6 +8371,142 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(recovered.queued_records, 0);
         assert_eq!(recovered.fault, None);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn admission_requires_the_continuous_tail_but_keeps_replay_semantics() -> Result<()> {
+        let id = "continuous-admission";
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let channel = &sink.0.channel;
+        let writer = channel.step_lock.lock().await;
+        let first = ticket(id, 1);
+        sink.admit(id, first.clone())?;
+        sink.admit(id, first.clone())?;
+        assert_eq!(channel.subscribe().borrow().queued_records, 1);
+
+        let third = ticket(id, 3);
+        sink.admit(id, third.clone())
+            .expect_err("a new record cannot cross an unsaved sequence gap");
+        let fault = channel.subscribe().borrow().clone();
+        assert_eq!(
+            fault.fault,
+            Some(pl_protocol::studio::HistoryFault::WriteFailed)
+        );
+        assert_eq!(fault.queued_records, 1);
+
+        sink.admit(id, ticket(id, 2))?;
+        sink.admit(id, third)?;
+        let mut projection = live_projection(&sink).await?;
+        while let Some(write) = channel.next_unprojected() {
+            let mut prepared = projection
+                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
+                .await?;
+            projection
+                .publish_prepared(&sink.0.chat, &mut prepared)
+                .await?;
+            assert!(channel.prepare(prepared));
+        }
+        drop(writer);
+        store
+            .thread_persistence()
+            .retry_history(id, fault.fault_generation)
+            .await?;
+        sink.flush(id, 3).await?;
+        assert_eq!(store.history(id).await?.watermark().await?, 3);
+        sink.admit(id, first)?;
+        assert_eq!(channel.subscribe().borrow().queued_records, 0);
+        channel.stop_and_join().await
+    }
+
+    #[tokio::test]
+    async fn record_capacity_refuses_only_the_next_continuous_ticket_and_drains() -> Result<()> {
+        let id = "record-capacity";
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let channel = &sink.0.channel;
+        let writer = channel.step_lock.lock().await;
+        let mut projection = live_projection(&sink).await?;
+        for sequence in 1..=MAX_HISTORY_BATCHES as u64 {
+            let write = ticket(id, sequence);
+            sink.admit(id, write.clone())?;
+            let mut prepared = projection
+                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
+                .await?;
+            projection
+                .publish_prepared(&sink.0.chat, &mut prepared)
+                .await?;
+            assert!(channel.prepare(prepared));
+        }
+        let refused = ticket(id, MAX_HISTORY_BATCHES as u64 + 1);
+        sink.admit(id, refused.clone())
+            .expect_err("the first ticket beyond the real record limit must be refused");
+        let full = channel.subscribe().borrow().clone();
+        assert_eq!(
+            full.fault,
+            Some(pl_protocol::studio::HistoryFault::QueueFull)
+        );
+        assert_eq!(full.queued_records, MAX_HISTORY_BATCHES as u64);
+        assert!(
+            channel.next_unprojected().is_none(),
+            "capacity refusal must not append or duplicate the original ticket"
+        );
+        drop(writer);
+
+        let mut capacity = channel.subscribe();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while capacity.borrow_and_update().queued_records >= MAX_HISTORY_BATCHES as u64 {
+                capacity.changed().await?;
+            }
+            Ok::<_, tokio::sync::watch::error::RecvError>(())
+        })
+        .await??;
+        sink.admit(id, refused.clone())?;
+        let write = channel
+            .next_unprojected()
+            .context("the exact refused ticket becomes the next continuous handoff")?;
+        assert_eq!(write.effect.sequence, refused.effect.sequence);
+        let mut prepared = projection
+            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
+            .await?;
+        projection
+            .publish_prepared(&sink.0.chat, &mut prepared)
+            .await?;
+        assert!(channel.prepare(prepared));
+        store
+            .thread_persistence()
+            .retry_history(id, full.fault_generation)
+            .await?;
+        sink.flush(id, refused.effect.sequence).await?;
+        assert_eq!(
+            store.history(id).await?.watermark().await?,
+            refused.effect.sequence
+        );
+        assert_eq!(channel.subscribe().borrow().queued_records, 0);
+        channel.stop_and_join().await
+    }
+
+    #[test]
+    fn pending_age_index_tracks_the_oldest_timestamp_without_sequence_order() {
+        let mut progress = Progress::default();
+        progress.admit_saved_at(80);
+        progress.admit_saved_at(10);
+        progress.admit_saved_at(50);
+        assert_eq!(progress.pending_saved_at.first_key_value(), Some((&10, &1)));
+        assert_eq!(
+            progress.queue_metadata_bytes,
+            3 * PENDING_AGE_METADATA_BYTES
+        );
+        progress.release_saved_at(10);
+        assert_eq!(progress.pending_saved_at.first_key_value(), Some((&50, &1)));
+        progress.release_saved_at(80);
+        progress.release_saved_at(50);
+        assert!(progress.pending_saved_at.is_empty());
+        assert_eq!(progress.queue_metadata_bytes, 0);
     }
 
     #[tokio::test]
@@ -9343,7 +9585,7 @@ pub(crate) mod storage_fault_tests {
                     id,
                     sink.0.owner,
                     ThreadPersistenceReport {
-                        pending: vec![1],
+                        pending: Some(PendingSequenceRange { first: 1, last: 1 }),
                         pending_checkpoint: false,
                         error: failed.error,
                         metrics: ThreadPersistenceMetrics {

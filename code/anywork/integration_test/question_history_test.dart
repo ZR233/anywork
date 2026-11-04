@@ -163,13 +163,31 @@ void main() {
     graph.setConversationPageVisible(true);
 
     report['nativeWindow'] = await configurePresentationWindow(tester);
+    final priorThreadId = graph.client.selection.state.selectedThreadId;
+    final priorTurnId = priorThreadId == null
+        ? null
+        : graph.client.conversations
+              .session(priorThreadId)
+              .state
+              .lastTurn
+              ?.turnId;
     await _submitPrompt(tester, _prompt);
     await fixtureGate(tester, Uri.parse(provider), 'questions-pending');
-    await _until(
-      tester,
-      () => graph.client.selection.state.selectedThreadId != null,
-      'accepted first input selects its real Thread',
-    );
+    String? questionThreadId;
+    String? questionTurnId;
+    await _until(tester, () {
+      final threadId = graph.client.selection.state.selectedThreadId;
+      if (threadId == null) return false;
+      final turn = graph.client.conversations.session(threadId).state.lastTurn;
+      if (turn == null ||
+          turn.threadId != threadId ||
+          (threadId == priorThreadId && turn.turnId == priorTurnId)) {
+        return false;
+      }
+      questionThreadId = threadId;
+      questionTurnId = turn.turnId;
+      return true;
+    }, 'accepted first input selects its real Thread and Turn');
     await tester.pump();
     final draftInput = find.byKey(const ValueKey('composer-input'));
     await _until(
@@ -184,6 +202,7 @@ void main() {
       _preservedDraft,
     );
     final draftThread = graph.client.selection.state.selectedThreadId!;
+    expect(draftThread, questionThreadId);
     expect(
       graph.client.drafts.composer(draftThread).state.draft,
       _preservedDraft,
@@ -194,11 +213,29 @@ void main() {
       'questions-pending',
       release: true,
     );
+    StudioTurnView? questionTurn;
     try {
       await _until(
         tester,
-        () =>
-            find.byKey(StudioDriverKeys.userInputSubmit).evaluate().isNotEmpty,
+        () {
+          if (graph.client.selection.state.selectedThreadId != draftThread) {
+            return false;
+          }
+          final turn = graph.client.conversations
+              .session(draftThread)
+              .state
+              .lastTurn;
+          if (turn?.threadId != draftThread ||
+              turn?.turnId != questionTurnId ||
+              turn?.state is! CompletedStudioTurnState) {
+            return false;
+          }
+          questionTurn = turn;
+          return find
+              .byKey(StudioDriverKeys.userInputSubmit)
+              .evaluate()
+              .isNotEmpty;
+        },
         'real request_user_input controls',
         timeout: const Duration(minutes: 2),
       );
@@ -271,7 +308,7 @@ void main() {
       _preservedDraft,
     );
     await capturePresentation(tester, 'question-draft-restored.png');
-    final receipt = await _questionReceipt(tester, graph);
+    final receipt = await _questionReceipt(tester, graph, questionTurn!);
     final receiptRoot = find.byKey(
       StudioDriverKeys.timelineUserInput(receipt.id),
     );
@@ -500,52 +537,69 @@ Future<void> _reportMissingQuestionControls({
 Future<ChatItemPresentation> _questionReceipt(
   WidgetTester tester,
   AppGraph graph,
+  StudioTurnView questionTurn,
 ) async {
+  final threadId = questionTurn.threadId;
+  expect(questionTurn.state, isA<CompletedStudioTurnState>());
   final observed = TimelineObservation(tester, () {
-    final threadId = graph.client.selection.state.selectedThreadId!;
+    expect(graph.client.selection.state.selectedThreadId, threadId);
     return graph.timeline.lease(threadId)!;
   });
-  TimelineItem? turn;
+  // Answer submission creates a continuation Turn. Its real terminal state
+  // must not be confused with the earlier Turn that requested the interaction.
   await _until(tester, () {
-    turn = observed.items
-        .where(
-          (item) =>
-              item.kind == TimelineItemKind.status &&
-              item.atomKind == ChatAtomKind.turnReceipt,
-        )
-        .lastOrNull;
-    return turn != null;
-  }, 'question Turn item and its real source');
-  await observed.openSourceGroups(turn!.source);
-  ChatAtom? target;
+    if (graph.client.selection.state.selectedThreadId != threadId) return false;
+    final turn = graph.client.conversations.session(threadId).state.lastTurn;
+    return turn != null &&
+        turn.threadId == threadId &&
+        turn.turnId != questionTurn.turnId &&
+        turn.state is CompletedStudioTurnState;
+  }, 'completed real question continuation Turn');
+  final source = ForegroundTurnChatSource(turnId: questionTurn.turnId);
+  TimelineItem? target;
   await _until(tester, () {
-    final matches = observed.mountedMembers
+    final matches = observed.main
         .where(
-          (atom) =>
-              atom.source == turn!.source &&
-              atom.kind == ChatAtomKind.interaction &&
-              atom.tool?.name == 'request_user_input' &&
-              atom.tool?.callId == _questionCallId,
+          (unit) =>
+              unit.item.source == source &&
+              unit.item.kind == TimelineItemKind.status &&
+              unit.item.atomKind == ChatAtomKind.interaction &&
+              unit.item.outcome == ChatTerminalOutcome.completed,
         )
+        .map((unit) => unit.item)
         .toList();
     expect(matches.length, lessThanOrEqualTo(1));
     target = matches.singleOrNull;
-    return target?.payload != null && target?.lifecycle is TerminalChatAtom;
-  }, 'exact completed question interaction in Main work members');
-  final atom = target!;
+    return target != null;
+  }, 'completed question interaction in independent Main status');
+  final status = target!;
+  expect(status.outcome, ChatTerminalOutcome.completed);
+  expect(status.members, isNull);
+  final payload = status.payload;
+  final byteLength = payload is InlinePayload
+      ? payload.bytes.length
+      : payload is DeferredPayload
+      ? payload.byteLength
+      : null;
+  final reason =
+      'Known small question fixture requires Inline/current business '
+      'presentation within the original frame budget: id=${status.id}, '
+      'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
+      'Over-budget payloads may remain Deferred in the product.';
+  expect(payload is InlinePayload, isTrue, reason: reason);
   expect(
-    (atom.lifecycle as TerminalChatAtom).outcome,
-    ChatTerminalOutcome.completed,
+    ChatItemPresentation.forUnit(observed.unit(status.id)).compatibility,
+    ChatItemCompatibility.current,
+    reason: reason,
   );
-  // Main owns display units, not one Message per atom. Open the owning work
-  // segment through its real header before observing this receipt's own tile.
-  final reference = observed.unitForMember(atom.id).item.members!;
-  await observed.revealMember(atom, reference: reference);
-  final receipt = tester.widget<ChatItemView>(observed.memberRow(atom.id)).item;
-  expect(receipt.id, atom.id);
-  expect(receipt.atom?.source, atom.source);
-  expect(receipt.atom?.tool?.callId, _questionCallId);
-  expect(receipt.compatibility, ChatItemCompatibility.current);
+  // Reveal the independent status through the production Main owner, then
+  // inspect the receipt actually supplied to its real UI, not a fabricated atom.
+  await observed.revealItem(status);
+  final receipt = tester.widget<ChatItemView>(observed.itemRow(status.id)).item;
+  expect(receipt.id, status.id);
+  expect(receipt.atom, isNull);
+  expect(observed.unit(receipt.id).item.source, source);
+  expect(receipt.compatibility, ChatItemCompatibility.current, reason: reason);
   expect(receipt.type, 'tool');
   final invocation = receipt.data['invocation'] as Map<String, Object?>;
   expect(invocation['toolCallId'], _questionCallId);

@@ -33,17 +33,9 @@ pub(super) fn run(context: &QuestionHistoryScenario<'_>, mut fixture: OwnedProce
         let log = File::create(&log_path)?;
         let ready: pl_provider_fixture::ReadyFile =
             serde_json::from_slice(&fs::read(context.working.join("fixture-ready.json"))?)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(context.workspace)?;
         command
-            .current_dir(context.workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "question_history",
-            ])
+            .args(["--suite", "desktop", "--case", "question_history"])
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_QUESTION_HISTORY_PROJECT", &project)
             .env("ANYWORK_QUESTION_HISTORY_OUTPUT", context.output)

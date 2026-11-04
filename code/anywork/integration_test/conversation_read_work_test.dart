@@ -231,7 +231,7 @@ void main() {
           (args) =>
               args['placement'] == 'set' &&
               args['generation'] == samples.last['generation'],
-        )['decodedItems'],
+        )['acceptedEntries'],
         samples.last['initialControllerMessages'],
       );
       expect(

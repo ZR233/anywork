@@ -70,17 +70,9 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
             }
             let mut log = fs::OpenOptions::new().append(true).open(&log_path)?;
             writeln!(log, "timeline-concept native process: phase={phase}")?;
-            let mut command = Command::new("cargo");
+            let mut command = desktop_test_command(context.workspace)?;
             command
-                .current_dir(context.workspace)
-                .args([
-                    "xtask",
-                    "test-project",
-                    "--suite",
-                    "desktop",
-                    "--case",
-                    "timeline_concept",
-                ])
+                .args(["--suite", "desktop", "--case", "timeline_concept"])
                 .env("ANYWORK_HOME", context.home)
                 .env("ANYWORK_TIMELINE_CONCEPT_PROJECT", &project)
                 .env("ANYWORK_TIMELINE_CONCEPT_OUTPUT", context.output)

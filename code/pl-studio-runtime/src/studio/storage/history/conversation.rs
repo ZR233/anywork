@@ -79,12 +79,24 @@ pub(super) async fn read_item(db: &impl ConnectionTrait, id: &str) -> Result<Opt
 }
 
 /// Caller owns the effect transaction. Frozen Arcs are borrowed, never cloned as whole records.
+#[cfg(test)]
 pub(super) async fn append_records<'a>(
     db: &impl ConnectionTrait,
     records: impl IntoIterator<Item = &'a ChatItem>,
     allow_new: bool,
 ) -> Result<()> {
     let mut head = latest_append_seq(db).await?;
+    append_records_at_head(db, records, allow_new, &mut head).await
+}
+
+/// The owning transaction reads its append baseline once and advances it locally.
+/// New suffix rows use SQLite's identity constraints; only actual replay reads old bytes.
+pub(super) async fn append_records_at_head<'a>(
+    db: &impl ConnectionTrait,
+    records: impl IntoIterator<Item = &'a ChatItem>,
+    allow_new: bool,
+    head: &mut u64,
+) -> Result<()> {
     for item in records {
         let h = &item.header;
         ensure!(
@@ -95,12 +107,15 @@ pub(super) async fn append_records<'a>(
             h.byte_length == item.payload.len() as u64,
             "completion payload length differs"
         );
-        let rows = db
-            .query_all_raw(statement(
+        let rows = if h.append_seq <= *head {
+            db.query_all_raw(statement(
                 "SELECT seq,item_id FROM conversation_items WHERE seq=? OR item_id=?",
                 vec![integer(h.append_seq)?.into(), h.item_id.clone().into()],
             ))
-            .await?;
+            .await?
+        } else {
+            Vec::new()
+        };
         ensure!(
             rows.len() <= 1,
             "completion identity and sequence name different rows"
@@ -158,7 +173,7 @@ pub(super) async fn append_records<'a>(
                 item.payload.to_vec().into(),h.metadata.to_vec().into()],
         )).await?;
         write_contents(db, &h.item_id, &item.contents).await?;
-        head = h.append_seq;
+        *head = h.append_seq;
     }
     Ok(())
 }

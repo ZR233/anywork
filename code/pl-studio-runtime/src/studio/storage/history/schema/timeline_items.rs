@@ -64,3 +64,6 @@ pub(super) async fn validate_source(db: &impl ConnectionTrait) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

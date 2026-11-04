@@ -8,6 +8,7 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -202,12 +203,13 @@ void main() {
     await scene.tap(find.byKey(const ValueKey('composer-stop')));
     final stopped = await scene.completedTurn(
       after: prepareTurn,
-      outcome: 'cancelled',
+      outcome: StudioTurnStatus.cancelled,
     );
-    expect(
-      scene.observed.unit(stopped.id).item.atomKind,
-      ChatAtomKind.turnReceipt,
+    final stoppedReceipt = await scene.turnReceipt(
+      stopped,
+      ChatTerminalOutcome.cancelled,
     );
+    expect(stoppedReceipt.atomKind, ChatAtomKind.turnReceipt);
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -229,6 +231,9 @@ final class _Scene {
   final WidgetTester tester;
   final AppGraph graph;
   String? latestTurnId;
+  String? _submittedThreadId;
+  String? _priorTurnId;
+  String? _submittedTurnId;
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
@@ -272,6 +277,15 @@ final class _Scene {
       await tester.enterText(input, prompt);
       await tester.pump();
       expect(tester.widget<TextField>(input).controller!.text, prompt);
+      _submittedThreadId = graph.client.selection.state.selectedThreadId;
+      _priorTurnId = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .session(_submittedThreadId!)
+                .state
+                .lastTurn
+                ?.turnId;
+      _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
     } catch (_) {
       final composer = tester.widget<PromptComposerView>(
@@ -291,49 +305,120 @@ final class _Scene {
     }
   }
 
-  Future<ChatItemPresentation> waitForTurn({
+  Future<StudioTurnView> waitForTurn({
     String? after,
-    String outcome = 'completed',
+    StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
-    ChatItemPresentation? turn;
+    StudioTurnView? turn;
     await until(() {
       final id = graph.client.selection.state.selectedThreadId;
       if (id == null) return false;
-      final display = graph.timeline.lease(id);
-      if (display == null) return false;
-      turn = display.controller.messages
-          .map(chatItemPresentationOf)
-          .whereType<ChatItemPresentation>()
-          .where((item) => item.type == 'turn')
-          .lastOrNull;
-      return turn != null && turn!.id != after;
-    }, 'completed Turn');
+      _submittedThreadId ??= id;
+      if (id != _submittedThreadId) return false;
+      final candidate = graph.client.conversations.session(id).state.lastTurn;
+      if (candidate == null ||
+          candidate.threadId != id ||
+          candidate.turnId == _priorTurnId ||
+          candidate.turnId == after) {
+        return false;
+      }
+      _submittedTurnId ??= candidate.turnId;
+      if (candidate.turnId != _submittedTurnId) return false;
+      turn = candidate;
+      if (!candidate.state.isTerminal ||
+          candidate.state.status != outcome ||
+          graph.timeline.lease(id) == null) {
+        return false;
+      }
+      final source = ForegroundTurnChatSource(turnId: candidate.turnId);
+      // State proves completion; Main must separately accept this source in
+      // the same original wait budget before the history assertions proceed.
+      if (!observed.items.any((item) => item.source == source) ||
+          observed.live.any((unit) => unit.item.source == source)) {
+        return false;
+      }
+      if (outcome == StudioTurnStatus.cancelled) {
+        final receipts = observed.items
+            .where(
+              (item) =>
+                  item.source == source &&
+                  item.kind == TimelineItemKind.status &&
+                  item.atomKind == ChatAtomKind.turnReceipt,
+            )
+            .toList();
+        expect(receipts.length, lessThanOrEqualTo(1));
+        return receipts.singleOrNull?.outcome == ChatTerminalOutcome.cancelled;
+      }
+      return true;
+    }, '${outcome.name} Turn');
     final original = turn!;
-    latestTurnId = original.id;
-    expect((original.data['outcome'] as Map)['kind'], outcome);
+    latestTurnId = original.turnId;
+    expect(original.state.status, outcome);
     return original;
   }
 
-  Future<ChatItemPresentation> completedTurn({
+  Future<StudioTurnView> completedTurn({
     String? after,
-    String outcome = 'completed',
+    StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
     final original = await waitForTurn(after: after, outcome: outcome);
-    final item = observed.unit(original.id).item;
-    expect(item.kind, TimelineItemKind.status);
-    expect(item.atomKind, ChatAtomKind.turnReceipt);
-    expect(observed.workFor(item.source), isNotEmpty);
-    // A terminal receipt identifies the real source, not a synthetic container.
-    // A later tool lookup opens its exact ordinary work segment.
+    final source = ForegroundTurnChatSource(turnId: original.turnId);
+    expect(observed.workFor(source), isNotEmpty);
+    // The typed Turn identifies the real source. Tool lookup still opens and
+    // verifies its original ordinary work segment, independently of completion.
     return original;
+  }
+
+  Future<TimelineItem> turnReceipt(
+    StudioTurnView turn,
+    ChatTerminalOutcome outcome,
+  ) async {
+    final source = ForegroundTurnChatSource(turnId: turn.turnId);
+    expect(graph.client.selection.state.selectedThreadId, turn.threadId);
+    final receipt = observed.items.singleWhere(
+      (item) =>
+          item.source == source &&
+          item.kind == TimelineItemKind.status &&
+          item.atomKind == ChatAtomKind.turnReceipt,
+    );
+    expect(receipt.outcome, outcome);
+    final payload = receipt.payload;
+    final byteLength = payload is InlinePayload
+        ? payload.bytes.length
+        : payload is DeferredPayload
+        ? payload.byteLength
+        : null;
+    final reason =
+        'Known small wait fixture requires Inline/current business '
+        'presentation within the original frame budget: id=${receipt.id}, '
+        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
+        'Over-budget payloads may remain Deferred in the product.';
+    expect(payload is InlinePayload, isTrue, reason: reason);
+    expect(
+      ChatItemPresentation.forUnit(observed.unit(receipt.id)).compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    await observed.revealItem(receipt);
+    final rendered = tester
+        .widget<ChatItemView>(observed.itemRow(receipt.id))
+        .item;
+    expect(
+      rendered.compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    expect(rendered.type, 'turn');
+    expect((rendered.data['outcome'] as Map)['kind'], outcome.name);
+    return receipt;
   }
 
   Future<ChatItemPresentation> tool(
-    ChatItemPresentation turn,
+    StudioTurnView turn,
     String prefix, {
     String status = 'succeeded',
   }) async {
-    final source = observed.unit(turn.id).item.source;
+    final source = ForegroundTurnChatSource(turnId: turn.turnId);
     final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
     await observed.openSourceGroups(source);
@@ -371,8 +456,8 @@ final class _Scene {
     return item;
   }
 
-  Future<void> closeTurn(ChatItemPresentation turn) async {
-    await observed.closeSource(observed.unit(turn.id).item.source);
+  Future<void> closeTurn(StudioTurnView turn) async {
+    await observed.closeSource(ForegroundTurnChatSource(turnId: turn.turnId));
     await until(
       () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
       'ordinary group scopes released; only original Main handle remains',
@@ -380,23 +465,45 @@ final class _Scene {
   }
 
   Future<void> currentWaiting(String prefix) async {
-    await until(
-      () => observed.live.any(
-        (unit) => unit.item.kind == TimelineItemKind.workGroup,
-      ),
-      'live work item with explicit member reference',
-    );
-    await observed.openLiveGroups();
+    await until(() {
+      final threadId = graph.client.selection.state.selectedThreadId;
+      if (threadId == null || threadId != _submittedThreadId) return false;
+      final turn = graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn;
+      if (turn == null ||
+          turn.threadId != threadId ||
+          turn.turnId == _priorTurnId ||
+          !turn.state.isBusy) {
+        return false;
+      }
+      _submittedTurnId ??= turn.turnId;
+      return turn.turnId == _submittedTurnId &&
+          observed.live.any(
+            (unit) =>
+                unit.item.kind == TimelineItemKind.workGroup &&
+                unit.item.source ==
+                    ForegroundTurnChatSource(turnId: turn.turnId),
+          );
+    }, 'live work item with explicit member reference');
+    final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
+    await observed.openSourceGroups(source);
     await until(
       () =>
           observed.mountedMembers
-              .where((atom) => atom.tool?.callId.startsWith(prefix) == true)
+              .where(
+                (atom) =>
+                    atom.source == source &&
+                    atom.tool?.callId.startsWith(prefix) == true,
+              )
               .length ==
           1,
       'exact live wait atom',
     );
     final atom = observed.mountedMembers.singleWhere(
-      (atom) => atom.tool?.callId.startsWith(prefix) == true,
+      (atom) =>
+          atom.source == source && atom.tool?.callId.startsWith(prefix) == true,
     );
     final unit = observed.unitForMember(atom.id);
     expect(atom.lifecycle, isA<ActiveChatAtom>());

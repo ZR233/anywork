@@ -9,12 +9,15 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         ThreadItemState::Text(_) => ChatAtomKind::Text,
         ThreadItemState::Thinking(_) => ChatAtomKind::Reasoning,
         ThreadItemState::Tool(tool)
-            if tool.user_input().is_some()
-                && tool.invocation().name() == crate::plan_tool::TOOL_PLAN_SUBMIT =>
+            if tool.invocation().name() == crate::plan_tool::TOOL_PLAN_SUBMIT =>
         {
             ChatAtomKind::Plan
         }
-        ThreadItemState::Tool(tool) if tool.user_input().is_some() => ChatAtomKind::Interaction,
+        ThreadItemState::Tool(tool)
+            if tool.invocation().name() == "request_user_input" || tool.user_input().is_some() =>
+        {
+            ChatAtomKind::Interaction
+        }
         ThreadItemState::Tool(_) => ChatAtomKind::ToolCall,
         ThreadItemState::File(_) => ChatAtomKind::FileChange,
         ThreadItemState::Skill(_) => ChatAtomKind::Skill,

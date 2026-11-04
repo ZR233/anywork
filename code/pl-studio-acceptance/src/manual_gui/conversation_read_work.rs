@@ -74,17 +74,9 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
         let seeded = seed_closed_home(home, working)?;
         fs::write(&cases_path, serde_json::to_vec_pretty(&seeded)?)?;
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(workspace)?;
         command
-            .current_dir(workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "conversation_read_work",
-            ])
+            .args(["--suite", "desktop", "--case", "conversation_read_work"])
             .env("ANYWORK_HOME", home)
             .env("ANYWORK_READ_CASES", &cases_path)
             .env("ANYWORK_READ_REPORT", &report_path)

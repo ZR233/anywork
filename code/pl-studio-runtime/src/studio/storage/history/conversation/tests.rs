@@ -297,8 +297,11 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
     let connection = store.writer().await?;
     let tx = connection.db.begin().await?;
     timeline::normalize_legacy(&tx).await?;
+    let generation = timeline::rebuild(&tx, &connection.database_id).await?;
     tx.commit().await?;
-    store.maintain_timeline().await?;
+    // The synthetic legacy fixture is prepared before admitting any consumer.
+    // There is no normal read-triggered rebuild or live maintenance entry.
+    store.state.timeline_generation.send_replace(generation);
     let budget = EnvelopeBudget {
         database_id: connection.database_id.clone(),
         empty: ChatBatch {
@@ -968,6 +971,74 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
         .downcast_ref::<ChatError>(),
         Some(ChatError::StaleContent)
     ));
+    // Ordered batch mutations must still retire intermediate owners even
+    // though only the final complete singleton is written.
+    db.execute_unprepared(
+        "CREATE TABLE written_current(sequence INTEGER NOT NULL);
+         CREATE TRIGGER count_current_header AFTER UPDATE ON conversation_view_state
+         BEGIN INSERT INTO written_current VALUES(json_extract(CAST(NEW.payload AS TEXT),'$.sourceEffectSeq')); END;",
+    ).await?;
+    let third = prepare(3, b"intermediate revision")?;
+    let empty = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(
+            pl_protocol::CurrentProjection::empty(4, pl_protocol::ThreadStatus::Idle),
+        ),
+        Arc::from([]),
+        Arc::from([]),
+    );
+    let last = prepare(5, b"last revision")?;
+    let tx = db.begin().await?;
+    let baseline = current::read_head(&tx).await?;
+    current::apply_changes(&tx, 3, &third, baseline.as_ref()).await?;
+    current::apply_changes(&tx, 4, &empty, Some(third.projection())).await?;
+    current::apply_changes(&tx, 5, &last, Some(empty.projection())).await?;
+    assert_eq!(current::read_head(&tx).await?.unwrap().source_effect_seq, 2);
+    current::write_head(&tx, &last).await?;
+    tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=5")
+        .await?;
+    tx.commit().await?;
+    let written = db
+        .query_all_raw(statement("SELECT sequence FROM written_current", vec![]))
+        .await?;
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].try_get::<i64>("", "sequence")?, 5);
+    let retired = ContentReadRequest {
+        reference: ContentRef::Body(third.contents[0].content.descriptor.key.clone()),
+        ..request.clone()
+    };
+    assert!(matches!(
+        read_content(&db, &retired)
+            .await
+            .unwrap_err()
+            .downcast_ref::<ChatError>(),
+        Some(ChatError::StaleContent)
+    ));
+    assert_eq!(
+        read_content(
+            &db,
+            &ContentReadRequest {
+                reference: ContentRef::Body(last.contents[0].content.descriptor.key.clone()),
+                ..request
+            }
+        )
+        .await?
+        .bytes
+        .as_bytes(),
+        b"last revision"
+    );
+    let page = current::page(
+        &db,
+        &last.projection().collections[0],
+        None,
+        pl_protocol::ReadDemand {
+            max_items: 1,
+            max_bytes: 4096,
+        },
+        &Ok,
+    )
+    .await?;
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].position, 37);
     Ok(())
 }
 

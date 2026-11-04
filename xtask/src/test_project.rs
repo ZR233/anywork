@@ -147,6 +147,8 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
                 reason: None,
             }),
             Err(error) => {
+                let reason = format!("{error:#}");
+                eprintln!("test-project case `{}` failed: {reason}", case.id);
                 failed = true;
                 if case_output.is_none() {
                     cleanup = CleanupVerdict::Unknown;
@@ -159,7 +161,7 @@ pub(crate) fn run(options: TestProjectOptions) -> Result<()> {
                 records.push(CaseRecord {
                     id: case.id.clone(),
                     result: "failed",
-                    reason: Some(error.to_string()),
+                    reason: Some(reason),
                 });
             }
         }
@@ -199,7 +201,6 @@ fn run_case(
                 if let Some(preset) = desktop_harness_preset(&case.id) {
                     let executable =
                         acceptance_executable.context("acceptance executable is missing")?;
-                    prepared.validate()?;
                     return wait_acceptance_preset(executable, preset, output, Some(prepared));
                 }
                 bail!(
@@ -300,7 +301,14 @@ fn wait_acceptance_preset(
         args.push(OsString::from("--output"));
         args.push(output.as_os_str().to_os_string());
     }
-    studio_acceptance::wait_acceptance_tool(executable, &args, prepared.map(|p| p.environment()))
+    let environment = prepared.map(|preparation| preparation.environment());
+    studio_acceptance::wait_acceptance_tool(
+        executable,
+        &args,
+        environment
+            .as_ref()
+            .map_or(&[], |environment| environment.as_slice()),
+    )
 }
 
 fn discover_desktop_cases(app_dir: &Path) -> Result<Vec<DiscoveredCase>> {

@@ -36,17 +36,9 @@ pub(super) fn run(
             "failed to initialize isolated realtime-presentation project"
         );
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(context.workspace)?;
         command
-            .current_dir(context.workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "realtime_presentation",
-            ])
+            .args(["--suite", "desktop", "--case", "realtime_presentation"])
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_REALTIME_PROJECT", &project)
             .env("ANYWORK_REALTIME_OUTPUT", context.output)

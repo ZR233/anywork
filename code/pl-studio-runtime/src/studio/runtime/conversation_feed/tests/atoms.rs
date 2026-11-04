@@ -754,94 +754,6 @@ async fn reliable_starts_reverse_completion_and_member_window_use_real_item_feed
 }
 
 #[tokio::test]
-async fn source_rebuild_retires_old_ref_and_old_readers_without_changing_item_identity()
--> Result<()> {
-    let env = support::Environment::new(vec![], vec![]).await?;
-    let result = async {
-        let mut harness = Harness::new(&env).await?;
-        let first = harness.effect(vec![start("work", true)], vec![]).await?;
-        harness.save(&first).await?;
-        let second = harness
-            .effect(vec![], vec![finish("work", true, "work")?])
-            .await?;
-        harness.save(&second).await?;
-        let third = harness.effect(vec![start("text", false)], vec![]).await?;
-        assert!(
-            third.completions.is_empty(),
-            "text-start invented an atom completion"
-        );
-        assert_eq!(
-            third.timeline.len(),
-            1,
-            "text-start failed to commit its terminal work group"
-        );
-        harness.save(&third).await?;
-        let mut old = env
-            .runtime
-            .open_conversation_feed(&harness.thread.id, ChatScope::Main, demand())
-            .await?;
-        let initial = chat(&mut old).await?;
-        let [ChatEntry::Item(item)] = initial.entries.as_slice() else {
-            bail!("expected work item");
-        };
-        let old_reference = item.members.clone().context("reference")?;
-        let id = item.id.clone();
-        let generation = old_reference.projection_generation.clone();
-        let slot = env
-            .runtime
-            .thread_observations
-            .observation_slot(&harness.thread.id);
-        slot.retire(&harness.source);
-        harness.history.maintain_timeline().await?;
-        assert_ne!(harness.history.timeline_generation().await?, generation);
-        assert!(
-            old.reader()
-                .list_contents(&id, None, demand())
-                .await
-                .is_err()
-        );
-        let stale = env
-            .runtime
-            .open_conversation_feed(
-                &harness.thread.id,
-                ChatScope::GroupMembers {
-                    reference: old_reference,
-                },
-                demand(),
-            )
-            .await;
-        assert!(matches!(
-            stale.unwrap_err().downcast_ref::<core::ChatError>(),
-            Some(core::ChatError::StaleContent)
-        ));
-        let mut reopened = env
-            .runtime
-            .open_conversation_feed(&harness.thread.id, ChatScope::Main, demand())
-            .await?;
-        let set = chat(&mut reopened).await?;
-        let [ChatEntry::Item(item)] = set.entries.as_slice() else {
-            bail!("rebuild changed the logical page");
-        };
-        assert_eq!(item.id, id);
-        assert_eq!(item.summary.as_ref().context("summary")?.member_count, 1);
-        assert!(
-            !set.current
-                .as_ref()
-                .context("cold current")?
-                .execution_present
-        );
-        assert_eq!(set.current.as_ref().context("cold current")?.items.len(), 1);
-        old.close().await?;
-        old.reader().close().await?;
-        reopened.close().await?;
-        reopened.reader().close().await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    env.finish(result).await
-}
-
-#[tokio::test]
 async fn background_result_precedes_unfinished_foreground_and_mid_set_preserves_both_sources()
 -> Result<()> {
     background_order_case(false, false).await
@@ -1093,7 +1005,7 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
             publish(&source,&session,&prepared)?;
             let before=read_all_timeline(&history,ChatScope::Main,1).await?;
             let ChatEntry::Item(group)=before.iter().find(|entry|matches!(entry,ChatEntry::Item(item) if item.kind==TimelineItemKind::WorkGroup))
-                .context("G before rebuild")? else {unreachable!()};
+                .context("saved G")? else {unreachable!()};
             let members_before=read_all_timeline(&history,ChatScope::GroupMembers {reference:group.members.clone().context("G ref")?},1).await?;
             use sea_orm::{ConnectionTrait,Database,Statement,DatabaseBackend};
             let path=env.runtime.store.registered_session_paths(&thread.id)?.history_database();
@@ -1103,37 +1015,14 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
                 "SELECT ended_effect,ended_suborder FROM conversation_sources WHERE source_key=?",vec![source_key.into()])).await?.context("stored V end")?;
             assert_eq!(end.try_get::<i64>("","ended_effect")?,4);
             assert_eq!(end.try_get::<i64>("","ended_suborder")?,0);
-            // Rebuild from source facts, not a copy of the old derived snapshot.
-            db.execute_unprepared("DROP TABLE timeline_item_members;DROP TABLE timeline_items;DROP TABLE timeline_projection_state;").await?;
             db.close().await?;
-            history.maintain_timeline().await?;
             for size in [1,2,17] {
                 let after=read_all_timeline(&history,ChatScope::Main,size).await?;
                 assert_eq!(logical_timeline(before.clone()),logical_timeline(after.clone()));
                 let ChatEntry::Item(group)=after.iter().find(|entry|matches!(entry,ChatEntry::Item(item) if item.kind==TimelineItemKind::WorkGroup))
-                    .context("rebuilt G")? else {unreachable!()};
+                    .context("saved G at page size")? else {unreachable!()};
                 assert_eq!(members_before,read_all_timeline(&history,ChatScope::GroupMembers {reference:group.members.clone().context("rebuilt G ref")?},size).await?);
             }
-            // Also vary the SQL replay window itself, not just Main page sizes.
-            // Each candidate remains inside its owner transaction and rolls back.
-            use sea_orm::TransactionTrait;
-            use crate::studio::storage::history::conversation::timeline;
-            let db=Database::connect(format!("sqlite://{}?mode=rw",path.display())).await?;
-            let database=history.conversation_database_id().await?.context("original database")?;
-            for size in [1,2,17] {
-                let tx=db.begin().await?;
-                timeline::rebuild_batched(&tx,&database,size).await?;
-                let rows=timeline::page_rows(&tx,&ChatScope::Main,None,100,4,100).await?;
-                let after=rows.into_iter().rev().map(|(_,entry)|entry).collect::<Vec<_>>();
-                assert_eq!(logical_timeline(before.clone()),logical_timeline(after.clone()));
-                let ChatEntry::Item(group)=after.iter().find(|entry|matches!(entry,ChatEntry::Item(item) if item.kind==TimelineItemKind::WorkGroup))
-                    .context("G at SQL replay cut")? else {unreachable!()};
-                let members=timeline::page_rows(&tx,&ChatScope::GroupMembers {reference:group.members.clone().context("SQL replay G ref")?},None,100,4,100)
-                    .await?.into_iter().rev().map(|(_,entry)|entry).collect::<Vec<_>>();
-                assert_eq!(members_before,members);
-                tx.rollback().await?;
-            }
-            db.close().await?;
             env.runtime.thread_observations.observation_slot(&thread.id).retire(&source);
             return Ok::<_,anyhow::Error>(());
         }

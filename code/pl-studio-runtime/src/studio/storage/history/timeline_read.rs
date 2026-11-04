@@ -22,41 +22,19 @@ impl HistoryStore {
             .timeline_pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(current.projection().source_effect_seq, current);
+            .publish(current);
     }
     pub(super) fn timeline_saved(&self, through: u64) {
         self.state
             .timeline_pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|seq, _| *seq > through);
+            .saved(through);
     }
     /// No IO when the captured pending suffix satisfies the requested page.
     /// Taking references before opening the read snapshot closes the save/prune
     /// race: a row is in this capture, in SQLite, or both (identity deduplicated).
     pub(in crate::studio) async fn timeline_page(
-        &self,
-        scope: &ChatScope,
-        before: Option<u64>,
-        ceiling: u64,
-        effect_cut: u64,
-        demand: ReadDemand,
-        fixed: usize,
-    ) -> Result<TimelinePage> {
-        let result = self
-            .timeline_page_in(scope, before, ceiling, effect_cut, demand, fixed)
-            .await;
-        if let Err(error) = &result
-            && (error.downcast_ref::<serde_json::Error>().is_some()
-                || error
-                    .downcast_ref::<conversation::timeline::ProjectionFault>()
-                    .is_some())
-        {
-            self.request_timeline_maintenance();
-        }
-        result
-    }
-    async fn timeline_page_in(
         &self,
         scope: &ChatScope,
         before: Option<u64>,
@@ -79,15 +57,44 @@ impl HistoryStore {
                 ChatError::StaleContent
             );
         }
-        let pending: Vec<_> = self
-            .state
-            .timeline_pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .range(..=effect_cut)
-            .map(|(_, current)| current.clone())
-            .collect();
+        let (pending, main) = {
+            let pending = self
+                .state
+                .timeline_pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match scope {
+                ChatScope::Main => (
+                    Vec::new(),
+                    pending.main_page(before, ceiling, effect_cut, demand.max_items as usize),
+                ),
+                _ => (
+                    pending
+                        .effects
+                        .range(..=effect_cut)
+                        .map(|(_, current)| current.clone())
+                        .collect::<Vec<_>>(),
+                    Vec::new(),
+                ),
+            }
+        };
         let mut rows = std::collections::BTreeMap::new();
+        tracing::debug!(
+            target: "conversation_work",
+            pending_main_candidates = main.len(),
+            "pending timeline indexed selection"
+        );
+        for (index, current) in main {
+            ensure!(
+                current.timeline_update.generation() == generation,
+                ChatError::StaleContent
+            );
+            let item = &current.timeline[index].item;
+            conversation::timeline::validate_item(item, database, &generation)?;
+            if let Some(position) = item.position {
+                rows.insert(position, ChatEntry::Item(Box::new(item.clone())));
+            }
+        }
         let mut member_exists = false;
         let mut member_head = None;
         let member_database = match scope {
@@ -106,17 +113,6 @@ impl HistoryStore {
                 ChatError::StaleContent
             );
             match scope {
-                ChatScope::Main => {
-                    for entry in current.timeline.iter() {
-                        let item = &entry.item;
-                        conversation::timeline::validate_item(item, database, &generation)?;
-                        if let Some(position) = item.position.filter(|position| {
-                            *position < ceiling && before.is_none_or(|before| *position < before)
-                        }) {
-                            rows.insert(position, ChatEntry::Item(Box::new(item.clone())));
-                        }
-                    }
-                }
                 ChatScope::GroupMembers { reference } => {
                     let known = current
                         .timeline_update
@@ -160,8 +156,8 @@ impl HistoryStore {
                         rows.insert(member.member_order, ChatEntry::Atom(Box::new(atom)));
                     }
                 }
-                ChatScope::Children { .. } => {
-                    anyhow::bail!("children use the original atomic reader")
+                ChatScope::Main | ChatScope::Children { .. } => {
+                    anyhow::bail!("non-member scope has an unexpected member capture")
                 }
             }
         }
@@ -208,11 +204,10 @@ impl HistoryStore {
             return finish(selected, false, demand, &generation);
         };
         let tx = connection.db.begin().await?;
-        conversation::timeline::next_position(&tx).await?;
-        ensure!(
-            conversation::timeline::generation(&tx).await? == generation,
-            ChatError::StaleContent
-        );
+        let head = conversation::timeline::read_state(&tx)
+            .await?
+            .context("initialized history is missing its timeline recovery head")?;
+        ensure!(head.generation == generation, ChatError::StaleContent);
         if let ChatScope::GroupMembers { reference } = scope {
             ensure!(
                 reference.database_id == connection.database_id,

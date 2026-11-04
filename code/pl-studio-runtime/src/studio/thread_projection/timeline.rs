@@ -156,12 +156,6 @@ impl TimelineUpdate {
     pub fn generation(&self) -> &str {
         &self.generation
     }
-    /// Carries earlier facts and members into this update without changing its recovery state.
-    pub(super) fn prepend_prior(&mut self, previous: &Self) {
-        self.retained_bytes.take();
-        self.facts.splice(0..0, previous.facts.iter().cloned());
-        self.members.splice(0..0, previous.members.iter().cloned());
-    }
     pub fn retained_bytes(&self) -> u64 {
         *self.retained_bytes.get_or_init(|| {
             let view = TimelineUpdateRetentionView {
@@ -391,7 +385,7 @@ impl TimelineProjection {
                 })
             {
                 return Err(ProjectionError::History(
-                    "timeline recovery requires maintenance".into(),
+                    "timeline recovery is inconsistent; original history preserved".into(),
                 ));
             }
         }

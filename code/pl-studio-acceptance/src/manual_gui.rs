@@ -37,6 +37,7 @@ use sea_orm::sqlx::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -703,6 +704,38 @@ fn configure_presentation_capture(command: &mut Command, output: &Path, requeste
     if requested {
         command.env("ANYWORK_PRESENTATION_SCREENSHOTS", output);
     }
+}
+
+fn desktop_test_command(workspace: &Path) -> Result<Command> {
+    let preparation = env::var_os("ANYWORK_DESKTOP_TEST_PREPARATION");
+    let xtask = env::var_os("ANYWORK_DESKTOP_TEST_XTASK");
+    desktop_test_command_with_handoff(workspace, preparation.as_deref(), xtask.as_deref())
+}
+
+fn desktop_test_command_with_handoff(
+    workspace: &Path,
+    preparation: Option<&OsStr>,
+    xtask: Option<&OsStr>,
+) -> Result<Command> {
+    let mut command = match (preparation, xtask) {
+        (None, None) => {
+            let mut command = Command::new("cargo");
+            command.arg("xtask");
+            command
+        }
+        (Some(preparation), Some(xtask)) if !preparation.is_empty() && !xtask.is_empty() => {
+            let mut command = Command::new(xtask);
+            command
+                .env("ANYWORK_DESKTOP_TEST_PREPARATION", preparation)
+                .env("ANYWORK_DESKTOP_TEST_XTASK", xtask);
+            command
+        }
+        _ => bail!(
+            "ANYWORK_DESKTOP_TEST_PREPARATION and ANYWORK_DESKTOP_TEST_XTASK must be set together and non-empty"
+        ),
+    };
+    command.current_dir(workspace).arg("test-project");
+    Ok(command)
 }
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
@@ -2046,17 +2079,9 @@ fn run_timeline_history_scenario(
             phases.push((phase, None));
             let integration_log = working.join(format!("timeline-history-{phase}-integration.log"));
             let integration_output = File::create(&integration_log)?;
-            let mut command = Command::new("cargo");
+            let mut command = desktop_test_command(workspace)?;
             command
-                .current_dir(workspace)
-                .args([
-                    "xtask",
-                    "test-project",
-                    "--suite",
-                    "desktop",
-                    "--case",
-                    "timeline_presentation",
-                ])
+                .args(["--suite", "desktop", "--case", "timeline_presentation"])
                 .env("ANYWORK_HOME", home)
                 .env("ANYWORK_TIMELINE_PHASE", phase)
                 .env("ANYWORK_TIMELINE_PROJECT", &project)
@@ -5849,6 +5874,83 @@ fn failure_reason(line: &str) -> Option<String> {
     }
     let sanitized = redact_loopback_ports(&redact_loopback_urls(reason));
     Some(sanitized.chars().take(480).collect())
+}
+
+#[cfg(test)]
+mod desktop_test_command_tests {
+    use super::desktop_test_command_with_handoff;
+    use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    #[test]
+    fn paired_handoff_runs_the_parent_xtask_directly() -> anyhow::Result<()> {
+        let workspace = Path::new("workspace with spaces");
+        let preparation = OsStr::new("prepared inputs");
+        let xtask = OsStr::new("parent executable");
+        let mut command =
+            desktop_test_command_with_handoff(workspace, Some(preparation), Some(xtask))?;
+        command.args(["--suite", "desktop", "--case", "wait_events"]);
+
+        assert_eq!(command.get_program(), xtask);
+        assert_eq!(command.get_current_dir(), Some(workspace));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "test-project",
+                "--suite",
+                "desktop",
+                "--case",
+                "wait_events"
+            ]
+            .map(OsStr::new)
+        );
+        let environment = command.get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get(OsStr::new("ANYWORK_DESKTOP_TEST_PREPARATION")),
+            Some(&Some(preparation))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("ANYWORK_DESKTOP_TEST_XTASK")),
+            Some(&Some(xtask))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_desktop_test_uses_the_normal_cargo_entrypoint() -> anyhow::Result<()> {
+        let workspace = Path::new("workspace");
+        let command = desktop_test_command_with_handoff(workspace, None, None)?;
+        assert_eq!(command.get_program(), OsStr::new("cargo"));
+        assert_eq!(command.get_current_dir(), Some(workspace));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("xtask"), OsStr::new("test-project")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_or_empty_handoff_is_rejected_without_falling_back() {
+        let preparation = Some(OsStr::new("prepared inputs"));
+        let xtask = Some(OsStr::new("parent executable"));
+        let empty = Some(OsStr::new(""));
+        for (preparation, xtask) in [
+            (preparation, None),
+            (None, xtask),
+            (empty, None),
+            (None, empty),
+            (preparation, empty),
+            (empty, xtask),
+            (empty, empty),
+        ] {
+            assert!(
+                desktop_test_command_with_handoff(Path::new("workspace"), preparation, xtask)
+                    .is_err(),
+                "invalid desktop handoff: preparation={preparation:?}, xtask={xtask:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

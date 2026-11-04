@@ -32,17 +32,9 @@ pub(super) fn run(context: &SidebarQueryScenario<'_>) -> Result<()> {
         fs::create_dir_all(&artifacts)?;
         write_home_config(home)?;
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(workspace)?;
         command
-            .current_dir(workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "sidebar",
-            ])
+            .args(["--suite", "desktop", "--case", "sidebar"])
             .env("ANYWORK_HOME", home)
             .env("ANYWORK_SIDEBAR_PROJECTS", &projects)
             .env("ANYWORK_SIDEBAR_ARTIFACTS", &artifacts)

@@ -839,7 +839,6 @@ impl StudioRuntime {
 /// batch is handed to the Thread's reliable admission channel, so the history writer commits the
 /// content this owner published instead of projecting the effect a second time.
 struct LiveOwner {
-    _timeline_owner_lease: Arc<()>,
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
     >,
@@ -1032,7 +1031,6 @@ impl LiveOwner {
         let id = thread.id.as_str();
         let chat = projector.store.chat_session(id).await?;
         let history = projector.store.history(id).await?;
-        let timeline_owner_lease = history.register_timeline_channel(&channel);
         let database_id = history
             .conversation_database_id()
             .await?
@@ -1057,7 +1055,7 @@ impl LiveOwner {
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
         projection.seed(seed_items, hidden);
         projection.restore_current(&chat, &thread, snapshot).await?;
-        projection.reload_timeline().await?;
+        projection.initialize_timeline().await?;
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1091,7 +1089,6 @@ impl LiveOwner {
         let model_route_published = model_route;
         feed.publish_storage(storage_published.clone());
         let owner = Self {
-            _timeline_owner_lease: timeline_owner_lease,
             terminal_transfer: state.terminal_transfer.clone(),
             terminal_revocation: state.reconciliation_through.clone(),
             terminal_floor: state.progress.borrow().applied,
@@ -1237,6 +1234,7 @@ impl LiveOwner {
         // A receiver may register while this effect is being prepared or retained before handoff.
         // Freeze its typed State facts in the original charged slot regardless of current demand;
         // only the outward envelope is optional. Otherwise that receiver loses a reliable commit.
+        let started = std::time::Instant::now();
         let projected = self
             .projection
             .prepare(&self.thread, effect, &write.checkpoint.state, true)
@@ -1275,7 +1273,16 @@ impl LiveOwner {
             mode: HandoffMode::Live,
         });
         self.publish_retained()?;
-        self.finish_pending(services).await
+        let result = self.finish_pending(services).await;
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = self.thread.id,
+            source_effect_seq = effect.sequence,
+            projection_handoff_elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok(),
+            "live owner projection and handoff"
+        );
+        result
     }
 
     /// Prepares the retained batch's original parent report, then hands the batch over.
@@ -1967,16 +1974,6 @@ async fn run(
     };
     // Product facts are projected once per committed revision; the live projection additionally
     // follows every owner snapshot so streaming previews reach the same single publisher.
-    let maintenance_history = match worker.services.store.history(&worker.id).await {
-        Ok(history) => history,
-        Err(error) => {
-            worker.state.progress.send_modify(|progress| {
-                progress.error = Some(Arc::new(error));
-                progress.finished = true;
-            });
-            return;
-        }
-    };
     let mut projected = None;
     loop {
         let issue_id = format!("tool-cleanup:{}", worker.id);
@@ -2071,14 +2068,12 @@ async fn run(
                 }
             }
             Err(error) => {
-                if !maintenance_history.timeline_is_paused() {
-                    worker.continuous = false;
-                    worker.live_floor = worker.live_floor.max(current.commit_sequence);
-                    worker
-                        .state
-                        .reconciliation_through
-                        .fetch_max(current.commit_sequence, std::sync::atomic::Ordering::AcqRel);
-                }
+                worker.continuous = false;
+                worker.live_floor = worker.live_floor.max(current.commit_sequence);
+                worker
+                    .state
+                    .reconciliation_through
+                    .fetch_max(current.commit_sequence, std::sync::atomic::Ordering::AcqRel);
                 // A fact this owner could not project leaves the committed stream discontinuous for
                 // every subscriber, so the feed tells them to resynchronize from the durable window
                 // instead of letting the client splice a hole; the worker retries the same watermark.
@@ -2091,16 +2086,14 @@ async fn run(
         }
         if current.lifecycle == ThreadLifecycle::Closed {
             tokio::select! {
-                () = worker.state.retry.notified() => { maintenance_history.retry_timeline_maintenance(); }
+                () = worker.state.retry.notified() => {}
                 _ = handoff.changed() => {}
-                () = maintenance_history.timeline_maintenance_requested() => {}
             }
             current = worker.thread.snapshot();
             continue;
         }
         tokio::select! {
-            () = worker.state.retry.notified() => { maintenance_history.retry_timeline_maintenance(); current = worker.thread.snapshot(); },
-            () = maintenance_history.timeline_maintenance_requested() => current = worker.thread.snapshot(),
+            () = worker.state.retry.notified() => current = worker.thread.snapshot(),
             // A handoff the writer is waiting for may be the only reason this worker still has work
             // to do; re-run the projection so a deferred admission is taken over and saved.
             _ = handoff.changed() => current = worker.thread.snapshot(),
@@ -2362,42 +2355,6 @@ async fn product_association(
 // The worker carries the projection owner, its feed and the product watermark across one projection;
 // splitting them into a context struct would only hide the same state behind one more indirection.
 impl ProjectionWorker {
-    async fn maintain_timeline(&mut self) -> Result<()> {
-        let history = self.services.store.history(&self.id).await?;
-        let needed = history.timeline_maintenance_needed().await?;
-        // Finish only an already-retained prepare; do not take another input
-        // from the reliable channel while the derived writer is paused.
-        if needed
-            && let Some(live) = &mut self.live
-            && live.pending.is_some()
-        {
-            live.finish_pending(&self.services).await?;
-        }
-        if needed {
-            history
-                .maintain_timeline_if_needed(
-                    self.live.as_ref().map(|live| &live._timeline_owner_lease),
-                )
-                .await?;
-        }
-        // Also handle a healthy generation installed by the cold owner before
-        // activation. A handover wake must not return early merely on !needed.
-        if let Some(live) = &mut self.live
-            && live.projection.timeline_generation() != history.timeline_generation().await?
-        {
-            live.projection.reload_timeline().await?;
-            let current = live
-                .projection
-                .current_state()
-                .context("rebuilt timeline has no current owner")?;
-            self.feed.conversation.publish_generation(
-                &live.chat,
-                current,
-                live.projection.timeline_generation(),
-            )?;
-        }
-        Ok(())
-    }
     /// Takes over every admitted fact this projection owner has not folded yet, projects the current
     /// streaming overlay and, when `products` is set, the product directory and billing facts they
     /// imply.
@@ -2417,22 +2374,6 @@ impl ProjectionWorker {
         products: bool,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
     ) -> Result<()> {
-        self.maintain_timeline().await?;
-        let prepare_history = self.services.store.history(&self.id).await?;
-        let _prepare = prepare_history.timeline_prepare_guard().await;
-        if let Some(live) = &mut self.live
-            && live.projection.timeline_generation()
-                != prepare_history.timeline_generation().await?
-        {
-            live.projection.reload_timeline().await?;
-            self.feed.conversation.publish_generation(
-                &live.chat,
-                live.projection
-                    .current_state()
-                    .context("current owner missing after maintenance")?,
-                live.projection.timeline_generation(),
-            )?;
-        }
         let Self {
             services,
             id,
@@ -4695,9 +4636,6 @@ mod storage_fault_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("qa-restart");
         register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
         let history = store.history(&thread.id).await?;
         let call_id = "call-restart";
         let tool_id = crate::studio::thread_projection::order::tool_id(call_id);
@@ -4758,6 +4696,19 @@ mod storage_fault_tests {
             .await?;
 
         // 2) 重启：新投影没有任何驻留正文，Turn/Task 都不在（空且已剪枝的状态）。
+        // The fresh writer must adopt the same durable fence as the simulated restored owner,
+        // rather than retaining a pre-seed channel that still thinks sequence zero is durable.
+        let restored = ThreadCheckpoint::capture(
+            thread.id.clone(),
+            1,
+            ThreadSnapshot {
+                commit_sequence: 1,
+                ..Default::default()
+            },
+        );
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), Some(&restored)).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let chat = store.chat_session(&thread.id).await?;
         let mut projection = LiveProjection::new();
         projection.bind_execution_history(
             store

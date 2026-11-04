@@ -232,7 +232,7 @@ void main() {
       });
 
       await scene.submit('Realtime provider error');
-      await scene.terminal('failed');
+      await scene.terminal(StudioTurnStatus.failed);
       await capturePresentation(
         tester,
         'realtime-provider-error-collapsed.png',
@@ -267,7 +267,7 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-before-cancel.png');
       await scene.tap(find.byKey(StudioDriverKeys.composerStop));
-      await scene.terminal('cancelled');
+      await scene.terminal(StudioTurnStatus.cancelled);
       expect(
         scene.observed.items.where((item) => item.id == cancelledText.id),
         hasLength(1),
@@ -321,6 +321,8 @@ final class _RealtimeScene {
   final WidgetTester tester;
   final AppGraph graph;
   String? _priorTurn;
+  String? _submittedThreadId;
+  String? _submittedTurnId;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
@@ -333,7 +335,7 @@ final class _RealtimeScene {
 
   Future<ChatItemPresentation> openLatestTurnThinking() async {
     final turn = _latestTurn()!;
-    final source = observed.unit(turn.id).item.source;
+    final source = ForegroundTurnChatSource(turnId: turn.turnId);
     final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
     await observed.openSourceGroups(source);
@@ -362,19 +364,50 @@ final class _RealtimeScene {
     return ChatItemPresentation.decode(reasoning.last);
   }
 
-  Future<void> closeLatestTurnGroups() =>
-      observed.closeSource(observed.unit(_latestTurn()!.id).item.source);
+  Future<void> closeLatestTurnGroups() => observed.closeSource(
+    ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
+  );
+
+  TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
+    (item) =>
+        item.kind == TimelineItemKind.status &&
+        item.atomKind == ChatAtomKind.turnReceipt &&
+        item.source == ForegroundTurnChatSource(turnId: turn.turnId),
+  );
+
+  void _expectSmallTurnReceipt(TimelineItem item) {
+    final payload = item.payload;
+    final byteLength = payload is InlinePayload
+        ? payload.bytes.length
+        : payload is DeferredPayload
+        ? payload.byteLength
+        : null;
+    final reason =
+        'Known small realtime fixture requires Inline/current business '
+        'presentation within the original frame budget: id=${item.id}, '
+        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
+        'Over-budget payloads may remain Deferred in the product.';
+    expect(payload is InlinePayload, isTrue, reason: reason);
+    expect(
+      ChatItemPresentation.forUnit(observed.unit(item.id)).compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+  }
 
   Future<Finder> openTurnReceipt(
-    ChatItemPresentation turn, {
+    StudioTurnView turn, {
     required String expectedOutcome,
   }) async {
-    final item = observed.unit(turn.id).item;
+    final item = _turnReceipt(turn);
     expect(item.kind, TimelineItemKind.status);
     expect(item.atomKind, ChatAtomKind.turnReceipt);
-    expect((turn.data['outcome'] as Map)['kind'], expectedOutcome);
+    _expectSmallTurnReceipt(item);
     await observed.revealItem(item);
     final row = observed.itemRow(item.id);
+    final receipt = tester.widget<ChatItemView>(row).item;
+    expect(receipt.type, 'turn');
+    expect((receipt.data['outcome'] as Map)['kind'], expectedOutcome);
     final header = find
         .descendant(of: row, matching: find.byType(TimelineActivityRow))
         .first;
@@ -393,8 +426,8 @@ final class _RealtimeScene {
     return row;
   }
 
-  Future<void> closeTurnReceipt(ChatItemPresentation turn) async {
-    final row = observed.itemRow(turn.id);
+  Future<void> closeTurnReceipt(StudioTurnView turn) async {
+    final row = observed.itemRow(_turnReceipt(turn).id);
     final header = find
         .descendant(of: row, matching: find.byType(TimelineActivityRow))
         .first;
@@ -466,7 +499,7 @@ final class _RealtimeScene {
     Set<String> priorItemIds,
     Map<String, String> expected,
   ) async {
-    final source = observed.unit(_latestTurn()!.id).item.source;
+    final source = ForegroundTurnChatSource(turnId: _latestTurn()!.turnId);
     await observed.openSourceGroups(source);
     bool requestedResult(ChatItemPresentation item) {
       final reading = item.toolCard;
@@ -488,6 +521,7 @@ final class _RealtimeScene {
     targets() => [
       for (final unit in observed.main)
         if (!priorItemIds.contains(unit.id) &&
+            unit.item.source == source &&
             unit.item.kind == TimelineItemKind.status &&
             unit.item.payload != null &&
             requestedResult(ChatItemPresentation.forUnit(unit)))
@@ -735,13 +769,21 @@ final class _RealtimeScene {
   }
 
   Future<void> submit(String prompt) async {
-    _priorTurn = _latestTurn()?.id;
     final input = find.byKey(const ValueKey('composer-input'));
     await until(() => input.evaluate().isNotEmpty, 'composer');
     try {
       await tester.enterText(input, prompt);
       await tester.pump();
       expect(tester.widget<TextField>(input).controller!.text, prompt);
+      _submittedThreadId = graph.client.selection.state.selectedThreadId;
+      _priorTurn = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .session(_submittedThreadId!)
+                .state
+                .lastTurn
+                ?.turnId;
+      _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
     } catch (_) {
       final composer = tester.widget<PromptComposerView>(
@@ -758,7 +800,7 @@ final class _RealtimeScene {
   }
 
   Future<void> completed({required String answer}) async {
-    await terminal('completed');
+    await terminal(StudioTurnStatus.completed);
     await tester.pump();
     final returnToLatest = find
         .byKey(StudioDriverKeys.timelineReturnLive)
@@ -785,18 +827,58 @@ final class _RealtimeScene {
     }
   }
 
-  Future<void> terminal(String kind) async {
+  Future<void> terminal(StudioTurnStatus kind) async {
+    TimelineItem? receipt;
     await until(
       () {
         final turn = _latestTurn();
-        return turn != null &&
-            turn.id != _priorTurn &&
-            turn.data['outcome'] is Map &&
-            (turn.data['outcome'] as Map)['kind'] == kind;
+        if (turn == null || turn.turnId == _priorTurn) return false;
+        _submittedTurnId ??= turn.turnId;
+        if (turn.turnId != _submittedTurnId) return false;
+        if (!turn.state.isTerminal ||
+            turn.state.status != kind ||
+            graph.timeline.lease(turn.threadId) == null) {
+          return false;
+        }
+        final source = ForegroundTurnChatSource(turnId: turn.turnId);
+        // State proves the outcome; Main admission remains independent and
+        // uses the original wait budget, without a normal completion item.
+        if (!observed.items.any((item) => item.source == source) ||
+            observed.live.any((unit) => unit.item.source == source)) {
+          return false;
+        }
+        if (kind == StudioTurnStatus.failed ||
+            kind == StudioTurnStatus.cancelled) {
+          final outcome = kind == StudioTurnStatus.failed
+              ? ChatTerminalOutcome.failed
+              : ChatTerminalOutcome.cancelled;
+          final matches = observed.items
+              .where(
+                (item) =>
+                    item.source == source &&
+                    item.kind == TimelineItemKind.status &&
+                    item.atomKind == ChatAtomKind.turnReceipt,
+              )
+              .toList();
+          expect(matches.length, lessThanOrEqualTo(1));
+          receipt = matches.singleOrNull;
+          return receipt?.outcome == outcome;
+        }
+        return true;
       },
-      '$kind realtime Turn',
+      '${kind.name} realtime Turn',
       timeout: const Duration(minutes: 3),
     );
+    if (kind == StudioTurnStatus.failed || kind == StudioTurnStatus.cancelled) {
+      _expectSmallTurnReceipt(receipt!);
+      await observed.revealItem(receipt!);
+      final rendered = tester
+          .widget<ChatItemView>(observed.itemRow(receipt!.id))
+          .item;
+      expect(rendered.compatibility, ChatItemCompatibility.current);
+      expect(rendered.type, 'turn');
+      expect((rendered.data['outcome'] as Map)['kind'], kind.name);
+    }
   }
 
   Future<TimelineItem> untilReadableCurrentText({
@@ -985,12 +1067,13 @@ final class _RealtimeScene {
     }
   }
 
-  ChatItemPresentation? _latestTurn() {
+  StudioTurnView? _latestTurn() {
     final threadId = graph.client.selection.state.selectedThreadId;
     if (threadId == null) return null;
-    final display = graph.timeline.lease(threadId);
-    if (display == null) return null;
-    return items.where((item) => item.type == 'turn').lastOrNull;
+    _submittedThreadId ??= threadId;
+    if (threadId != _submittedThreadId) return null;
+    final turn = graph.client.conversations.session(threadId).state.lastTurn;
+    return turn?.threadId == threadId ? turn : null;
   }
 }
 
