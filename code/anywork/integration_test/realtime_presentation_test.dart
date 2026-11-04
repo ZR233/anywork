@@ -17,6 +17,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_payload_re
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -767,48 +768,318 @@ final class _RealtimeScene {
     ChatContentRole role,
     String fragment,
   ) async {
-    final reference = contents
-        .singleWhere((content) => content.role == role)
-        .reference;
-    final body = reference.target as BodyContentTarget;
-    expect((body.owner as ItemContentOwner).itemId, contentItemId);
+    final mainLease = lease;
+    final currentDisplay = mainLease.currentDisplay;
+    final controller = mainLease.controller;
+    final scroll = mainLease.scrollController;
+    final generation = mainLease.generation;
+    final mainSets = mainLease.appliedSets;
     final connector = find.byWidgetPredicate(
       (widget) =>
           widget is TimelineContentRangeConnector &&
           widget.itemId == presentationId &&
           widget.contentKey == role.name,
     );
-    await until(
-      () => connector.evaluate().length == 1,
-      'declared ${role.name} range of $contentItemId',
+    final rangeView = find.descendant(
+      of: connector,
+      matching: find.byType(TimelineContentRangeView),
     );
-    final owner = tester.state(connector) as TimelineCurrentWindowDisplay;
-    expect(
-      contentReferenceIdentity(owner.reference),
-      contentReferenceIdentity(reference),
+    final read = find.descendant(
+      of: connector,
+      matching: find.byKey(
+        StudioDriverKeys.timelineContentOpen(presentationId, role.name),
+      ),
     );
-    final read = find.byKey(
-      StudioDriverKeys.timelineContentOpen(presentationId, role.name),
-    );
-    if (owner.window == null) await tap(read);
-    await until(() {
-      if (owner.error case final error?) throw StateError('$error');
-      return owner.window != null;
-    }, 'accepted bounded ${role.name} window');
-    final window = owner.window!;
-    expect(window.offset, 0);
-    expect(window.sealed, isTrue);
-    expect(window.bytes, isNotEmpty);
-    expect(window.bytes.length, lessThanOrEqualTo(64 * 1024));
-    final text = utf8.decode(window.bytes);
-    expect(text, contains(fragment));
-    final rendered = find.byKey(
-      StudioDriverKeys.timelineContentWindow(presentationId, role.name),
-    );
-    await until(() => _laidOut(rendered), 'actual bounded body text');
-    await _revealTextFragment(tester, rendered, fragment);
-    expect(owner.window, same(window));
-    return window;
+    ContentRef? expectedReference;
+    State? originalState;
+    TimelineCurrentWindowDisplay? originalOwner;
+
+    void expectMain() {
+      expect(lease, same(mainLease));
+      expect(mainLease.isRetired, isFalse);
+      expect(mainLease.currentDisplay, same(currentDisplay));
+      expect(currentDisplay, isNotNull);
+      expect(currentDisplay!.isCurrent, isTrue);
+      expect(mainLease.controller, same(controller));
+      expect(mainLease.scrollController, same(scroll));
+      expect(mainLease.generation, generation);
+      expect(mainLease.appliedSets, mainSets);
+    }
+
+    try {
+      final reference = contents
+          .singleWhere((content) => content.role == role)
+          .reference;
+      expectedReference = reference;
+      final body = reference.target as BodyContentTarget;
+      expect((body.owner as ItemContentOwner).itemId, contentItemId);
+      await until(() {
+        expectMain();
+        final count = connector.evaluate().length;
+        expect(count, lessThanOrEqualTo(1));
+        return count == 1;
+      }, 'declared ${role.name} range of $contentItemId');
+      final state = tester.state(connector);
+      final owner = state as TimelineCurrentWindowDisplay;
+      originalState = state;
+      originalOwner = owner;
+      final mountedReference = owner.reference;
+
+      TimelineContentRangeView expectAutomaticRead() {
+        expectMain();
+        expect(connector, findsOneWidget);
+        expect(tester.state(connector), same(state));
+        expect(state.mounted, isTrue);
+        expect(owner.reference, same(mountedReference));
+        expect(
+          contentReferenceIdentity(owner.reference),
+          contentReferenceIdentity(reference),
+        );
+        expect(
+          tester.widget<TimelineContentRangeConnector>(connector).reference,
+          same(mountedReference),
+        );
+        expect(
+          tester
+              .element(connector)
+              .getInheritedWidgetOfExactType<TimelineBodyReadIntent>(),
+          isNotNull,
+        );
+        expect(rangeView, findsOneWidget);
+        final view = tester.widget<TimelineContentRangeView>(rangeView);
+        expect(view.itemId, presentationId);
+        expect(view.contentKey, role.name);
+        expect(view.initiallyExpanded, isTrue);
+        expect(view.active, isTrue);
+        expect(view.canRead, isTrue);
+        if (owner.error case final error?) throw error;
+        if (view.error case final error?) throw error;
+        expect(read, findsOneWidget);
+        final disclosure = tester.widget<TimelineActivityDisclosure>(read);
+        expect(disclosure.initiallyExpanded, isTrue);
+        expect(disclosure.enabled, !view.loading);
+        return view;
+      }
+
+      // The enclosing tool disclosure already supplied the read intent. A null
+      // window can be its in-flight read, so do not click the inner disclosure.
+      await until(() {
+        final view = expectAutomaticRead();
+        return owner.window != null && !view.loading;
+      }, 'accepted bounded ${role.name} window');
+      final window = owner.window!;
+      expect(expectAutomaticRead().window, same(window));
+      expect(window.offset, 0);
+      expect(window.sealed, isTrue);
+      expect(window.bytes, isNotEmpty);
+      expect(window.bytes.length, lessThanOrEqualTo(64 * 1024));
+      final text = utf8.decode(window.bytes);
+      expect(text, contains(fragment));
+      final rendered = find.byKey(
+        StudioDriverKeys.timelineContentWindow(presentationId, role.name),
+      );
+      await until(() {
+        expectAutomaticRead();
+        return _laidOut(rendered);
+      }, 'actual bounded body text');
+      await _revealTextFragment(tester, rendered, fragment);
+      expectAutomaticRead();
+      expect(owner.window, same(window));
+      return window;
+    } catch (_) {
+      try {
+        Map<String, Object?> positionFacts(ScrollPosition position) => {
+          'sameMainPosition': scroll.positions.contains(position),
+          'axis': position.axisDirection.name,
+          'pixels': position.hasPixels ? position.pixels : null,
+          'minExtent': position.hasContentDimensions
+              ? position.minScrollExtent
+              : null,
+          'maxExtent': position.hasContentDimensions
+              ? position.maxScrollExtent
+              : null,
+          'viewport': position.hasViewportDimension
+              ? position.viewportDimension
+              : null,
+        };
+        Map<String, Object?> boxFacts(RenderObject? render) => {
+          'type': render?.runtimeType.toString(),
+          'attached': render?.attached,
+          if (render is RenderBox) ...{
+            'hasSize': render.hasSize,
+            if (render.attached && render.hasSize)
+              'rect': [
+                render.localToGlobal(Offset.zero).dx,
+                render.localToGlobal(Offset.zero).dy,
+                render.size.width,
+                render.size.height,
+              ],
+          },
+        };
+        Map<String, Object?> geometry(Finder finder) {
+          final elements = finder.evaluate().toList();
+          final facts = <String, Object?>{
+            'finder': finder.toString(),
+            'matches': elements.length,
+          };
+          if (elements.length != 1) return facts;
+          final element = elements.single;
+          facts['widgetType'] = element.widget.runtimeType.toString();
+          facts['key'] = element.widget.key?.toString();
+          try {
+            final render = element.findRenderObject();
+            facts['render'] = boxFacts(render);
+            final clips = <Map<String, Object?>>[];
+            var ancestor = render?.parent;
+            for (var depth = 0; ancestor != null && depth < 96; depth++) {
+              if (ancestor is RenderClipRect ||
+                  ancestor is RenderAbstractViewport) {
+                clips.add(boxFacts(ancestor));
+                if (clips.length == 8) break;
+              }
+              ancestor = ancestor.parent;
+            }
+            facts['clips'] = clips;
+            final scrollables = <Map<String, Object?>>[];
+            var depth = 0;
+            element.visitAncestorElements((ancestor) {
+              if (ancestor is StatefulElement &&
+                  ancestor.state is ScrollableState) {
+                final state = ancestor.state as ScrollableState;
+                scrollables.add(positionFacts(state.position));
+              }
+              return ++depth < 96 && scrollables.length < 6;
+            });
+            facts['scrollables'] = scrollables;
+            if (render is RenderBox && render.attached && render.hasSize) {
+              facts['hitTestable'] = finder.hitTestable().evaluate().length;
+              final center = render.localToGlobal(
+                render.size.center(Offset.zero),
+              );
+              facts['centerHitTypes'] = tester
+                  .hitTestOnBinding(center)
+                  .path
+                  .take(12)
+                  .map((entry) => entry.target.runtimeType.toString())
+                  .toList();
+            }
+          } catch (error) {
+            facts['diagnosticErrorType'] = error.runtimeType.toString();
+          }
+          return facts;
+        }
+
+        Map<String, Object?> ownerFacts(TimelineCurrentWindowDisplay? owner) {
+          final window = owner?.window;
+          return {
+            'type': owner?.runtimeType.toString(),
+            'reference': owner == null
+                ? null
+                : contentReferenceIdentity(owner.reference).toString(),
+            'errorType': owner?.error?.runtimeType.toString(),
+            'window': window == null
+                ? null
+                : {
+                    'offset': window.offset,
+                    'bytes': window.bytes.length,
+                    'generation': window.generation,
+                    'availableThrough': window.availableThrough,
+                    'sealed': window.sealed,
+                  },
+          };
+        }
+
+        final matches = connector.evaluate().toList();
+        final actualState = matches.length == 1
+            ? tester.state(connector)
+            : null;
+        final views = rangeView.evaluate().toList();
+        final view = views.length == 1
+            ? views.single.widget as TimelineContentRangeView
+            : null;
+        final tiles = find
+            .descendant(of: read, matching: find.byType(ExpansionTile))
+            .evaluate()
+            .toList();
+        final ownTitle = find.descendant(
+          of: read,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                tiles.length == 1 &&
+                widget is ListTile &&
+                identical(
+                  widget.title,
+                  (tiles.single.widget as ExpansionTile).title,
+                ),
+          ),
+        );
+        final disclosures = read.evaluate().toList();
+        final snapshot = jsonEncode({
+          'presentationId': presentationId,
+          'role': role.name,
+          'contentItemId': contentItemId,
+          'expectedReference': expectedReference == null
+              ? null
+              : contentReferenceIdentity(expectedReference).toString(),
+          'sameLease': identical(
+            graph.timeline.lease(mainLease.threadId),
+            mainLease,
+          ),
+          'retired': mainLease.isRetired,
+          'sameController':
+              !mainLease.isRetired &&
+              identical(mainLease.controller, controller),
+          'generation': mainLease.generation,
+          'expectedGeneration': generation,
+          'mainSets': mainLease.appliedSets,
+          'expectedMainSets': mainSets,
+          'sameCurrentDisplay': identical(
+            mainLease.currentDisplay,
+            currentDisplay,
+          ),
+          'current': currentDisplay?.isCurrent,
+          'sameState': identical(actualState, originalState),
+          'originalStateMounted': originalState?.mounted,
+          'actualStateMounted': actualState?.mounted,
+          'originalOwner': ownerFacts(originalOwner),
+          'actualOwner': ownerFacts(
+            actualState is TimelineCurrentWindowDisplay
+                ? actualState as TimelineCurrentWindowDisplay
+                : null,
+          ),
+          'automaticIntent': matches.length == 1
+              ? matches.single
+                        .getInheritedWidgetOfExactType<
+                          TimelineBodyReadIntent
+                        >() !=
+                    null
+              : null,
+          'initiallyExpanded': view?.initiallyExpanded,
+          'loading': view?.loading,
+          'active': view?.active,
+          'canRead': view?.canRead,
+          'viewErrorType': view?.error?.runtimeType.toString(),
+          'enabled': disclosures.length == 1
+              ? (disclosures.single.widget as TimelineActivityDisclosure)
+                    .enabled
+              : null,
+          'connector': geometry(connector),
+          'disclosure': geometry(read),
+          'ownTitle': geometry(ownTitle),
+          'mainPositions': scroll.positions.take(2).map(positionFacts).toList(),
+        });
+        debugPrintSynchronously('Declared automatic range failure: $snapshot');
+        await File.fromUri(
+          Directory(Platform.environment['ANYWORK_REALTIME_OUTPUT']!).uri
+              .resolve('realtime-declared-range-failure.json'),
+        ).writeAsString('$snapshot\n');
+      } catch (error) {
+        debugPrintSynchronously(
+          'Declared range diagnostic failed: ${error.runtimeType}',
+        );
+      }
+      rethrow;
+    }
   }
 
   Future<void> verifyExecReceipts(
