@@ -151,7 +151,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the operator runbook. `--delegation-driver`
 /// only records an optional script path in evidence; the harness does not launch it.
-pub const GUI_SCENARIOS: [&str; 33] = [
+pub const GUI_SCENARIOS: [&str; 34] = [
     "gui",
     "markdown-layout",
     "storage-compaction",
@@ -161,6 +161,7 @@ pub const GUI_SCENARIOS: [&str; 33] = [
     "stress-body-large",
     "statistics",
     "realtime",
+    "realtime-presentation",
     "timeline-concept",
     "history-lock",
     "history-fault",
@@ -1869,7 +1870,7 @@ pub struct FixtureOptions {
     pub agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     /// Dedicated scripted-provider journey; never changes product routing.
     pub delegation: Option<delegation::Scenario>,
-    /// Explicit observation gates for the independent timeline concept script.
+    /// Explicit observation gates for the independent desktop scripts.
     pub timeline_concept: Option<timeline_concept::Control>,
 }
 
@@ -2877,7 +2878,11 @@ pub fn gui_statistics_script() -> Vec<Step> {
 /// project that the host-cwd command runs in. The caller owns it and keeps it
 /// alive for the whole run; the command reports the directory it really runs in,
 /// so the delivered output never depends on this argument alone.
-pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
+///
+/// `parallel_observer` holds the two parallel calls behind a completed reasoning
+/// prefix so the desktop observer can mount the original member window before
+/// the calls begin their foreground lifetime.
+pub fn gui_realtime_script(host_cwd: &str, parallel_observer: Option<&ReplyStage>) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
@@ -2970,34 +2975,56 @@ pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
         )
     });
     script.add(|step| {
+        let calls = [
+            RealtimeToolCall {
+                item_id: "realtime-parallel-item-a",
+                call_id: "realtime-parallel-call-a",
+                name: TOOL_EXEC_NAME,
+                arguments: realtime_exec_arguments(
+                    &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
+                    None,
+                ),
+            },
+            RealtimeToolCall {
+                item_id: "realtime-parallel-item-b",
+                call_id: "realtime-parallel-call-b",
+                name: TOOL_EXEC_NAME,
+                arguments: realtime_exec_arguments(
+                    &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
+                    None,
+                ),
+            },
+        ];
+        let reply = if let Some(stage) = parallel_observer {
+            // Prepare the real group window before either command is issued.
+            // The original foreground lifetime begins only after the observer
+            // releases this prefix; command durations and receipts stay exact.
+            let events = responses_reasoning_tool_calls(
+                &["realtime parallel observers ready"],
+                "realtime-parallel",
+                "fixture-model",
+                &calls,
+            );
+            let tool_start = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.added"
+                        && event["item"]["type"] == "function_call"
+                })
+                .expect("parallel fixture must contain its original exec calls");
+            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-parallel",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_PARALLEL_PROMPT,
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-parallel",
-                "fixture-model",
-                &[
-                    RealtimeToolCall {
-                        item_id: "realtime-parallel-item-a",
-                        call_id: "realtime-parallel-call-a",
-                        name: TOOL_EXEC_NAME,
-                        arguments: realtime_exec_arguments(
-                            &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
-                            None,
-                        ),
-                    },
-                    RealtimeToolCall {
-                        item_id: "realtime-parallel-item-b",
-                        call_id: "realtime-parallel-call-b",
-                        name: TOOL_EXEC_NAME,
-                        arguments: realtime_exec_arguments(
-                            &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
-                            None,
-                        ),
-                    },
-                ],
-            )),
+            reply,
         )
     });
     // Both commands outlive the foreground window, so the Turn is answered with

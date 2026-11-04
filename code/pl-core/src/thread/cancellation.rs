@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct InterruptHandle(Arc<Mutex<InterruptState>>);
+pub(super) struct InterruptHandle {
+    state: Arc<Mutex<InterruptState>>,
+    shutdown: CancellationToken,
+}
 
 #[derive(Debug, Default)]
 struct InterruptState {
@@ -33,10 +36,12 @@ impl InterruptHandle {
         let token = parent.child_token();
         {
             let mut state = self
-                .0
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.closing || authorized_stops.is_some_and(|authorized| authorized != state.stops)
+            if state.closing
+                || self.shutdown.is_cancelled()
+                || authorized_stops.is_some_and(|authorized| authorized != state.stops)
             {
                 token.cancel();
             }
@@ -48,20 +53,28 @@ impl InterruptHandle {
         }
     }
     pub(super) fn begin_close(&self) {
-        let token = {
-            let mut state = self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.closing = true;
-            state.active.clone()
-        };
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closing = true;
+        self.request_shutdown();
+    }
+
+    pub(super) fn request_shutdown(&self) {
+        // No actor/storage wait and no mutex held while cancellation wakes executors.
+        self.shutdown.cancel();
+        let token = self.active_token();
         if let Some(token) = token {
             token.cancel();
         }
     }
+
+    pub(super) fn background_token(&self) -> CancellationToken {
+        self.shutdown.child_token()
+    }
+
     pub(super) fn is_closing(&self) -> bool {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closing
@@ -73,7 +86,7 @@ impl InterruptHandle {
     /// while holding the interrupt lock would block every other entry point. A clone is enough
     /// because a cancelled token is cancelled for every clone.
     pub(super) fn active_token(&self) -> Option<CancellationToken> {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active
@@ -103,7 +116,7 @@ impl InterruptHandle {
     pub(super) fn interrupt_generation(&self) -> (bool, u64) {
         let (token, generation) = {
             let mut state = self
-                .0
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.stops = state.stops.saturating_add(1);
@@ -123,7 +136,7 @@ impl InterruptHandle {
     /// It is the observable "an external stop happened" state: a caller that cancels for its own reason
     /// records the count its cancellation produced, and any later stop makes the count differ.
     pub(super) fn stops(&self) -> u64 {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .stops
@@ -137,7 +150,7 @@ pub(super) struct ActiveExecution {
 impl Drop for ActiveExecution {
     fn drop(&mut self) {
         self.handle
-            .0
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active

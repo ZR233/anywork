@@ -553,6 +553,7 @@ mod tests {
         let path = dir.path().join("catalog.toml");
         let mut document = current_document();
         document.sessions[0].archived = true;
+        document.sessions[0].mode = pl_protocol::ThreadModeId::task();
         let mut child = document.agents[0].clone();
         child.agent_id = "child".into();
         child.thread_id = "child".into();
@@ -569,7 +570,10 @@ mod tests {
             system_instructions: None,
         });
         document.agents.push(child);
-        let legacy = v5_content(&document);
+        let mut legacy: toml::Table = toml::from_str(&v5_content(&document)).unwrap();
+        // The old root-only mode command did not rewrite existing child copies.
+        legacy["entries"][1]["mode"] = "mode.simple".into();
+        let legacy = toml::to_string(&legacy).unwrap();
         tokio::fs::write(&path, &legacy)
             .await
             .expect("legacy source");
@@ -612,6 +616,35 @@ mod tests {
                 .expect("reject topology");
             assert!(error.is::<DocumentMigrationFailed>(), "{error:#}");
             assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), raw);
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_child_mode_does_not_hide_workspace_ownership_conflicts() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        let mut document = current_document();
+        let mut child = document.agents[0].clone();
+        child.agent_id = "child".into();
+        child.thread_id = "child".into();
+        child.parent_agent_id = Some("thread-a".into());
+        document.agents.push(child);
+        for (field, value) in [
+            ("workspaceId", "another-workspace"),
+            ("workspaceMode", "worktree"),
+            ("workspacePath", "/another-workspace"),
+        ] {
+            let mut legacy: toml::Table = toml::from_str(&v5_content(&document)).unwrap();
+            legacy["entries"][1]["mode"] = "mode.task".into();
+            legacy["entries"][1][field] = value.into();
+            let original = toml::to_string(&legacy).unwrap();
+            tokio::fs::write(&path, &original).await.unwrap();
+            let failure = CatalogStore::load(path.clone())
+                .await
+                .err()
+                .expect("reject ownership conflict");
+            assert!(failure.is::<DocumentMigrationFailed>(), "{failure:#}");
+            assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), original);
         }
     }
 

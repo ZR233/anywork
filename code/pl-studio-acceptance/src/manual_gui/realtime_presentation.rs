@@ -14,6 +14,7 @@ pub(super) struct RealtimePresentationScenario<'a> {
     pub requests_file: &'a Path,
     pub interrupt: &'a mpsc::Receiver<()>,
     pub capture_presentation: bool,
+    pub provider_url: &'a str,
 }
 
 pub(super) fn run(
@@ -42,6 +43,7 @@ pub(super) fn run(
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_REALTIME_PROJECT", &project)
             .env("ANYWORK_REALTIME_OUTPUT", context.output)
+            .env("ANYWORK_REALTIME_PROVIDER", context.provider_url)
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         configure_presentation_capture(&mut command, context.output, context.capture_presentation);
@@ -141,7 +143,7 @@ pub(super) fn run(
         context.output.join("fixture-status.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "scenario": "realtime-presentation",
-            "fixtureScenario": "realtime",
+            "fixtureScenario": "realtime-presentation",
             "runner": "flutter.integration_test",
             "runnerExitCode": runner_exit.and_then(|status| status.code()),
             "acceptedRequests": accepted,

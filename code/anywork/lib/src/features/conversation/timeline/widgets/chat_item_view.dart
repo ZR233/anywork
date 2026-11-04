@@ -114,7 +114,8 @@ class _ChatItemViewState extends State<ChatItemView> {
   @override
   Widget build(BuildContext context) {
     if (item.isKnownEmptyText) return const SizedBox.shrink();
-    if (item.displayUnit case final unit?) {
+    final unit = item.displayUnit;
+    if (unit != null && item.type == 'displayUnit') {
       if (unit.item.kind != TimelineItemKind.workGroup) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,

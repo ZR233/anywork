@@ -1036,11 +1036,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     } else {
         catalog_hits_path.clone()
     };
-    let fixture_scenario = if options.preset == "realtime-presentation" {
-        "realtime"
-    } else {
-        options.preset.as_str()
-    };
+    let fixture_scenario = options.preset.as_str();
     let mut fixture_command = Command::new(&fixture_executable);
     fixture_command
         .current_dir(&workspace)
@@ -1358,6 +1354,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 requests_file: &requests_file,
                 interrupt: &interrupt_rx,
                 capture_presentation,
+                provider_url: &ready.base_url,
             },
             fixture,
         );
