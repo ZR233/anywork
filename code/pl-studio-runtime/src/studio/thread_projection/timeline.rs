@@ -84,12 +84,20 @@ fn category(atom: &ChatAtom) -> TimelineCategory {
         _ => TimelineCategory::Other,
     }
 }
-/// Metadata only. Wait presentations, previews and payload bytes have their own
-/// owners and must not become a hidden second content/history store.
+/// Frozen metadata only. Active wait presentations belong to mutable member
+/// heads; payload bytes remain with their original content owner.
 pub(in crate::studio) fn lightweight(atom: &ChatAtom) -> ChatAtom {
     let mut atom = atom.clone();
     atom.payload = None;
     atom.wait = None;
+    atom.source_state = None;
+    atom
+}
+/// Same-cut mutable member metadata, including the producer's active wait.
+fn active_head(atom: &ChatAtom) -> ChatAtom {
+    debug_assert!(outcome(atom).is_none());
+    let mut atom = atom.clone();
+    atom.payload = None;
     atom.source_state = None;
     atom
 }
@@ -419,7 +427,7 @@ impl TimelineProjection {
             return Ok(());
         }
         if let Some(member) = self.active.get_mut(&atom.id) {
-            let next = lightweight(atom);
+            let next = active_head(atom);
             if member.atom == next {
                 return Ok(());
             }
@@ -679,7 +687,7 @@ impl TimelineProjection {
                 ActiveMember {
                     item_id: item.item.id.clone(),
                     order,
-                    atom: lightweight(&atom),
+                    atom: active_head(&atom),
                 },
             );
         }
@@ -704,7 +712,11 @@ impl TimelineProjection {
             self.changes.push(MemberChange {
                 item_id: item.item.id.clone(),
                 member_order: order,
-                atom: lightweight(&atom),
+                atom: if terminal {
+                    lightweight(&atom)
+                } else {
+                    active_head(&atom)
+                },
                 payload_bytes,
             });
         }

@@ -9,6 +9,8 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -201,9 +203,10 @@ Future<void> _runLive(
     timeout: const Duration(seconds: 30),
   );
   expect(find.byKey(const ValueKey('conversation-activity')), findsOneWidget);
-  final streamingLease = scene.lease;
   final streaming = await scene.waitForStreamingTurn(after: priorTurn);
+  final streamingLease = streaming.lease;
   await capturePresentation(scene.tester, 'timeline-streaming-before-page.png');
+  scene.expectStreamingTurn(streaming);
   final beforePage = scene.ids(streamingLease);
   await scene.loadOlder(streamingLease);
   expect(scene.ids(streamingLease).length, greaterThan(beforePage.length));
@@ -213,7 +216,7 @@ Future<void> _runLive(
         .skip(scene.ids(streamingLease).length - beforePage.length),
     beforePage,
   );
-  scene.expectStreamingTurn(streaming);
+  final afterPage = scene.expectStreamingTurn(streaming);
   await capturePresentation(scene.tester, 'timeline-streaming-after-page.png');
   await scene.waitForTerminalTurn(streaming.turnId);
   await scene.waitForCompletedTurn(after: priorTurn);
@@ -247,7 +250,17 @@ Future<void> _runLive(
     'identity': {...baseline, 'evidenceConsistent': true},
     'streamingActivityVisible': true,
     'streamingPageRetained': true,
-    'streamingHistory': {'pass': true},
+    'streamingHistory': {
+      'pass': true,
+      'threadId': streamingLease.threadId,
+      'turnId': streaming.turnId,
+      'activityId': streaming.activityId,
+      'responseAtomId': streaming.response.id,
+      'phase': ThreadActivityKind.responding.name,
+      'beforePreviewBytes': utf8.encode(streaming.preview.text).length,
+      'afterPreviewBytes': utf8.encode(afterPage.text).length,
+      'responsePrefixRetained': true,
+    },
     'latestItemIds': latestIds,
     'latestPage': latestPage,
     'latestPageOk': true,
@@ -378,6 +391,15 @@ Map<String, Object?> _pagingReport(
   'growthViolations': const <Object?>[],
 };
 
+typedef _StreamingTurn = ({
+  TimelineDisplayLease lease,
+  TimelineCurrentDisplay display,
+  String turnId,
+  String activityId,
+  ChatAtom response,
+  CurrentContentPreview preview,
+});
+
 final class _TimelineScene {
   _TimelineScene(this.tester, this.graph);
 
@@ -492,11 +514,8 @@ final class _TimelineScene {
     latestTurnId = turn!.turnId;
   }
 
-  Future<({String turnId, String activityId})> waitForStreamingTurn({
-    String? after,
-  }) async {
-    String? turnId;
-    String? activityId;
+  Future<_StreamingTurn> waitForStreamingTurn({String? after}) async {
+    _StreamingTurn? streaming;
     await until(
       () {
         final selected = graph.client.selection.state.selectedThreadId;
@@ -504,14 +523,17 @@ final class _TimelineScene {
         _submittedThreadId ??= selected;
         if (selected != _submittedThreadId) return false;
         final display = graph.timeline.lease(selected);
-        final current = display?.content.current.value;
+        if (display == null || !display.isMounted || display.isRetired) {
+          return false;
+        }
+        final current = display.content.current.value;
         final candidate = current?.activeTurn?.id;
         final candidateActivity = current?.active?.id;
         final sessionTurn = graph.client.conversations
             .session(selected)
             .state
             .activeTurn;
-        final currentDisplay = display?.currentDisplay;
+        final currentDisplay = display.currentDisplay;
         if (candidate == null ||
             candidate == _priorTurnId ||
             candidate == after ||
@@ -523,41 +545,100 @@ final class _TimelineScene {
             sessionTurn?.turnId != candidate ||
             sessionTurn?.threadId != selected ||
             sessionTurn?.state.isBusy != true ||
+            current?.activeTurn?.phase != sessionTurn?.state.activity ||
+            current?.active?.kind != ThreadActivityKind.responding ||
             current!.logicalStatus.isActive != true ||
             !current.executionPresent) {
           return false;
         }
         _submittedTurnId ??= candidate;
         if (candidate != _submittedTurnId) return false;
-        turnId = candidate;
-        activityId = candidateActivity;
+        // Busy/preparing is not a streaming witness: wait for a real unfinished
+        // response and its producer-owned nonempty body before freezing identity.
+        final response = current.atoms
+            .where(
+              (atom) =>
+                  atom.kind == ChatAtomKind.text &&
+                  atom.lifecycle is ActiveChatAtom &&
+                  atom.source == ForegroundTurnChatSource(turnId: candidate) &&
+                  atom.turnId == candidate,
+            )
+            .firstOrNull;
+        if (response == null) return false;
+        final preview = current.previews
+            .where(
+              (preview) =>
+                  preview.id == response.id &&
+                  preview.role == CurrentContentRole.response &&
+                  preview.text.isNotEmpty,
+            )
+            .firstOrNull;
+        if (preview == null) return false;
+        streaming = (
+          lease: display,
+          display: currentDisplay,
+          turnId: candidate,
+          activityId: candidateActivity,
+          response: response,
+          preview: preview,
+        );
         return true;
       },
-      'canonical streaming Turn',
+      'canonical responding Turn with live response content',
       timeout: const Duration(seconds: 30),
     );
-    return (turnId: turnId!, activityId: activityId!);
+    return streaming!;
   }
 
-  void expectStreamingTurn(({String turnId, String activityId}) streaming) {
+  CurrentContentPreview expectStreamingTurn(_StreamingTurn streaming) {
     final selected = graph.client.selection.state.selectedThreadId!;
     expect(selected, _submittedThreadId);
     expect(streaming.turnId, _submittedTurnId);
     final display = graph.timeline.lease(selected)!;
-    final current = display.content.current.value;
+    expect(display, same(streaming.lease));
+    expect(display.threadId, selected);
+    expect(display.isMounted, isTrue);
+    expect(display.isRetired, isFalse);
+    final current = display.content.current.value!;
     final sessionTurn = graph.client.conversations
         .session(selected)
         .state
         .activeTurn;
-    expect(current?.activeTurn?.id, streaming.turnId);
-    expect(current?.active?.id, streaming.activityId);
-    expect(current?.logicalStatus.isActive, isTrue);
-    expect(current?.executionPresent, isTrue);
+    expect(current.activeTurn?.id, streaming.turnId);
+    expect(current.active?.id, streaming.activityId);
+    expect(current.active?.kind, ThreadActivityKind.responding);
+    expect(current.logicalStatus.isActive, isTrue);
+    expect(current.executionPresent, isTrue);
+    expect(display.currentDisplay, same(streaming.display));
     expect(display.currentDisplay?.turnId, streaming.turnId);
     expect(display.currentDisplay?.activityId, streaming.activityId);
     expect(display.currentDisplay?.isCurrent, isTrue);
     expect(sessionTurn?.turnId, streaming.turnId);
+    expect(sessionTurn?.threadId, selected);
     expect(sessionTurn?.state.isBusy, isTrue);
+    // Turn phase tracks the attempt outcome, while active.kind tracks live
+    // response facts. Require their own typed projections to agree, not the
+    // coarse Turn phase to become responding before the attempt has committed.
+    expect(current.activeTurn?.phase, sessionTurn?.state.activity);
+    final response = current.atoms.singleWhere(
+      (atom) => atom.id == streaming.response.id,
+    );
+    expect(response.kind, ChatAtomKind.text);
+    expect(response.lifecycle, isA<ActiveChatAtom>());
+    expect(response.source, streaming.response.source);
+    expect(response.turnId, streaming.turnId);
+    final preview = current.previews.singleWhere(
+      (preview) => preview.id == streaming.preview.id,
+    );
+    expect(preview.role, CurrentContentRole.response);
+    expect(
+      contentReferenceIdentity(preview.reference),
+      contentReferenceIdentity(streaming.preview.reference),
+    );
+    // Producer previews are bounded prefixes (range 0..PREVIEW_BYTES), so real
+    // token progress may extend the body but must not replace its accepted text.
+    expect(preview.text, startsWith(streaming.preview.text));
+    return preview;
   }
 
   Future<void> waitForTerminalTurn(String turnId) async {

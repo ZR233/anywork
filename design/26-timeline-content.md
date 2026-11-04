@@ -138,6 +138,8 @@ Main entries 只有 `ChatEntry::Item(TimelineItem)`；成员/Children 才是 `At
 不提高预算或预读隐藏参数、正文、输出。终态继续使用原完成 payload 中的 typed wait；不在完成 metadata
 重复保存活动投影，旧冻结 metadata 缺省此字段仍解码为无活动事实，无需改库或回填。
 FRB、HTTP 与 SDK 机械传递同一字段，Flutter 复用现有 Waiting 组件，不建立另一套等待状态或任务查询。
+
+活动成员的可变 head 保留原工具在该 effect 切面的 typed wait，并随既有成员更新、current／recovery 和实时交接计入原持有与编码预算，使明确展开的成员窗口能直接使用上述字段。不可变 start 事实和完成 metadata 仍不保存活动 wait；完成后沿原 typed payload 表达真实终态。该 head 只是原事实的只读投影，不另建等待状态所有者或查询，不从工具名、通用状态及较晚切面补猜等待意图，也不为已有历史补造缺失字段。
 取消 Waiting 仍由真实 Stop 与原任务 owner 执行，不能因显示变化取消之前 Turn 的计时器或伪造终态。
 
 Core ChatDraft/Header 的不透明轻量 metadata 随原冻结完成记录发布、查询和保存，产品 reader 无需解码 payload 即可映射 Atom；Core 不解析其领域内容。实际来源开始/结束经原 Thread effect/current handoff 一次交付并同事务保存，历史页按真实来源身份有界取得同切点状态。它们不是工作段起止或前缀，不能按正文/工具 UI 分类制造来源闭合。来源可跨 attempt，idle 压缩有独立真实操作身份；后台最终结果独立来源，保原 call 关联。

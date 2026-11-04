@@ -29,6 +29,9 @@ pub(crate) struct LegacyUsageSummary {
     estimated_costs: Vec<UsageCost>,
     estimated_cache_savings: Vec<UsageCost>,
     turn_completion_tokens: u64,
+    // Decode-only timing was published before total-response timing; it cannot supply its sample.
+    #[serde(rename = "turnDecodeMillis", skip_serializing)]
+    _turn_decode_millis: u64,
     turn_response_millis: u64,
     turn_id: String,
 }
@@ -122,6 +125,7 @@ impl From<UsageSummary> for LegacyUsageSummary {
             estimated_costs: summary.pricing.estimated_costs,
             estimated_cache_savings: summary.pricing.estimated_cache_savings,
             turn_completion_tokens: summary.throughput.completion_tokens,
+            _turn_decode_millis: 0,
             turn_response_millis: summary.throughput.response_millis,
             turn_id: summary.throughput.turn_id,
         }
