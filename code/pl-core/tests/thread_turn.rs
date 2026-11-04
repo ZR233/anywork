@@ -410,6 +410,16 @@ async fn close_cancels_background_task_before_a_blocked_save_finishes() {
         if task.status != TaskStatus::Running || task.acknowledgement.is_none() {
             return Err("the real task did not receive a running acknowledgement".into());
         }
+        thread.interrupt();
+        if cancellation.is_cancelled()
+            || thread
+                .snapshot()
+                .tasks
+                .get(&task.id)
+                .is_none_or(|task| task.status != TaskStatus::Running)
+        {
+            return Err("ordinary interrupt cancelled the independent background task".into());
+        }
 
         let durable_before = store.durable.load(Ordering::SeqCst);
         store.released.send_replace(false);
