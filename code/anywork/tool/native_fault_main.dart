@@ -248,7 +248,8 @@ final class _NativeLifecycleAssembly {
 
   Future<void> _runBusyHold() async {
     await mark('busy_hold_connected');
-    await _awaitSelectedThread();
+    await _openProject();
+    await _verifyRestored('normal');
     await mark('busy_hold_reopened');
     await _awaitSignal('busy-second-redirected', const Duration(seconds: 600));
     final continued = await _settle(prompt, 'busy_continue');
