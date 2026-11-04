@@ -96,7 +96,7 @@ impl Owner {
         let cancellation = if call.executor.requires_foreground_execution() {
             cancellation.child_token()
         } else {
-            CancellationToken::new()
+            self.interrupt.background_token()
         };
         self.task_tokens
             .insert(format!("task:{}", call.call.call_id), cancellation.clone());

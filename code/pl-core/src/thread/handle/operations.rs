@@ -347,6 +347,16 @@ impl ThreadHandle {
         self.interrupt.interrupt()
     }
 
+    /// Signals global shutdown without waiting for commands, storage or resource joins.
+    ///
+    /// Cancels the active generation and independent background tools. Unlike [`Self::close`], this
+    /// does not close the owner or publish a terminal fact: hosts must still call `close` and await
+    /// its result. New execution generations inherit the shutdown signal; existing results and
+    /// terminal producers remain owned until the normal close path drains them.
+    pub fn request_shutdown(&self) {
+        self.interrupt.request_shutdown();
+    }
+
     /// Replaces the model session at a serial execution boundary while preserving historical context.
     /// The supplied factory is invoked only after the old session closes successfully.
     ///
