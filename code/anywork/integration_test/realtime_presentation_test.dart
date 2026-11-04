@@ -945,7 +945,9 @@ final class _RealtimeScene {
   }
 
   Finder currentToolCard(ChatAtom atom) {
-    final reading = ChatItemPresentation.decode(atom).toolCard;
+    final reading = atom.payload == null
+        ? null
+        : ChatItemPresentation.decode(atom).toolCard;
     // Use the renderer's same typed facts for active and completed waits.
     final wait =
         atom.wait ?? (reading is DecodedToolCard ? reading.value.wait : null);
