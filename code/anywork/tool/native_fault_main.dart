@@ -14,6 +14,7 @@ import 'package:anywork/main.dart' as studio;
 import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/platform/error_log.dart';
@@ -432,7 +433,7 @@ final class _NativeLifecycleAssembly {
       );
     }
     _recordState('$label turn completed');
-    return _SettledTurn(threadId: threadId, turnId: settled.lastTurn?.turnId);
+    return _SettledTurn(threadId: threadId, turnId: turn.turnId);
   }
 
   Future<String> _submit(String text) async {
@@ -517,6 +518,7 @@ final class _NativeLifecycleAssembly {
       if (!inventory.any(
         (item) =>
             item['channel'] == ThreadTextChannel.finalAnswer.name &&
+            item['key'] == 'body' &&
             item['body'] == expected,
       )) {
         throw StateError(
@@ -568,90 +570,264 @@ final class _NativeLifecycleAssembly {
   }
 
   Future<List<Map<String, Object?>>> _inventory(_SettledTurn settled) async {
-    // Borrow the sole production display and its original reader. Main contains
-    // Items, never Atoms; these successful fixture turns have a final text Item.
+    // Reliable Items live in the original Main controller. Their current
+    // counterparts retire at handoff; liveUnits is only a diagnostic surface.
     final deadline = DateTime.now().add(const Duration(seconds: 120));
     TimelineDisplayLease? lease;
     List<TimelineItem> items = const [];
-    while (DateTime.now().isBefore(deadline)) {
-      final error = graph.timeline.source.value?.connectionError;
-      if (error != null) throw error;
-      lease = graph.timeline.lease(settled.threadId);
-      if (lease != null) {
-        items = lease.liveUnits.value
-            .map((unit) => unit.item)
-            .where((item) => item.turnId == settled.turnId)
-            .toList();
-        if (items.any(
-          (item) =>
-              item.kind == TimelineItemKind.text &&
-              item.textChannel == ThreadTextChannel.finalAnswer &&
-              item.outcome == ChatTerminalOutcome.completed,
-        )) {
-          break;
-        }
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
-    if (lease == null ||
-        lease.isRetired ||
-        !items.any(
-          (item) =>
-              item.kind == TimelineItemKind.text &&
-              item.textChannel == ThreadTextChannel.finalAnswer &&
-              item.outcome == ChatTerminalOutcome.completed,
-        )) {
-      throw TimeoutException(
-        'saved turn ${settled.turnId} has no completed final Item',
-      );
-    }
-    final scope = lease.openDetailQueries();
-    if (scope == null) throw StateError('Saved-turn reader was retired');
     try {
-      final inventory = <Map<String, Object?>>[];
-      for (final item in items) {
-        final itemId = item.contentItemId;
-        if (itemId == null) continue;
-        final manifest = await scope.listContents(
-          itemId: itemId,
-          demand: lease.demand,
-        );
-        if (manifest.continuation != null) {
-          throw StateError(
-            'Native fixture content inventory exceeded one bounded page',
-          );
+      while (DateTime.now().isBefore(deadline)) {
+        final error = graph.timeline.source.value?.connectionError;
+        if (error != null) throw error;
+        lease ??= graph.timeline.lease(settled.threadId);
+        if (lease != null) {
+          _requireInventoryOwner(settled, lease);
+          items = _mainItems(lease)
+              .where((item) => item.turnId == settled.turnId)
+              .toList();
+          if (items.any((item) => _isInventoryFinal(item, settled))) break;
         }
-        for (final entry in manifest.entries) {
-          final window = await scope.readContent(
-            reference: entry.reference,
-            range: ContentRange(offset: 0, maxBytes: lease.demand.maxBytes),
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (lease == null ||
+          !items.any((item) => _isInventoryFinal(item, settled))) {
+        throw TimeoutException(
+          'saved turn ${settled.turnId} has no qualified completed final Main Item; '
+          'see shutdown-assembly-$pid.jsonl inventory metadata',
+        );
+      }
+      _requireInventoryOwner(settled, lease);
+      _recordInventory('Main inventory ready', settled, lease);
+      final scope = lease.openDetailQueries();
+      if (scope == null) {
+        throw StateError('Saved-turn original Main reader is unavailable');
+      }
+      try {
+        if (scope.threadId != settled.threadId ||
+            scope.generation != lease.generation) {
+          throw StateError('Saved-turn original Main reader identity changed');
+        }
+        final inventory = <Map<String, Object?>>[];
+        for (final item in items) {
+          final itemId = item.contentItemId;
+          if (itemId == null) {
+            if (item.kind == TimelineItemKind.text) {
+              throw StateError(
+                'Saved Main text ${item.id} has no content identity',
+              );
+            }
+            continue;
+          }
+          _requireInventoryOwner(settled, lease);
+          final manifest = await scope.listContents(
+            itemId: itemId,
+            demand: lease.demand,
           );
-          if (!window.sealed ||
-              window.availableThrough != window.bytes.length) {
+          if (manifest.continuation != null) {
             throw StateError(
-              'Native fixture content is not fully sealed: $itemId/${entry.key}',
+              'Native fixture content inventory exceeded one bounded page',
             );
           }
-          inventory.add({
-            'itemId': itemId,
-            'key': entry.key,
-            'channel': item.textChannel?.name,
-            'body': utf8.decode(window.bytes),
-          });
+          if (item.kind == TimelineItemKind.text &&
+              manifest.entries.where((entry) => entry.key == 'body').length !=
+                  1) {
+            throw StateError('Saved Main text $itemId has no unique body');
+          }
+          for (final entry in manifest.entries) {
+            final target = entry.reference.target;
+            if (target is! BodyContentTarget ||
+                target.owner is! ItemContentOwner ||
+                (target.owner as ItemContentOwner).itemId != itemId ||
+                target.key != entry.key) {
+              throw StateError(
+                'Manifest reference does not own $itemId/${entry.key}',
+              );
+            }
+            final byteLength = switch (jsonDecode(utf8.decode(entry.payload))) {
+              {'byteLength': final int length} when length >= 0 => length,
+              _ => throw StateError('Saved body has no valid byte length'),
+            };
+            _requireInventoryOwner(settled, lease);
+            final window = await scope.readContent(
+              reference: entry.reference,
+              range: ContentRange(offset: 0, maxBytes: lease.demand.maxBytes),
+            );
+            if (window.offset != 0 ||
+                !window.sealed ||
+                window.availableThrough != byteLength ||
+                window.bytes.length > lease.demand.maxBytes ||
+                window.bytes.length != byteLength) {
+              throw StateError(
+                'Native fixture content is not fully sealed in range: '
+                '$itemId/${entry.key}',
+              );
+            }
+            inventory.add({
+              'timelineItemId': item.id,
+              'itemId': itemId,
+              'source': _inventorySource(item.source),
+              'turnId': item.turnId,
+              'position': item.position,
+              'key': entry.key,
+              'databaseId': entry.reference.databaseId,
+              'channel': item.textChannel?.name,
+              'body': utf8.decode(window.bytes),
+            });
+          }
         }
+        if (inventory.isEmpty) {
+          throw StateError('Native fixture content inventory is empty');
+        }
+        inventory.sort(
+          (a, b) => '${a['itemId']}/${a['key']}'.compareTo(
+            '${b['itemId']}/${b['key']}',
+          ),
+        );
+        return inventory;
+      } finally {
+        await lease.closeDetailQueries(scope);
       }
-      if (inventory.isEmpty) {
-        throw StateError('Native fixture content inventory is empty');
+    } catch (error, stack) {
+      try {
+        _recordInventory('Main inventory failed', settled, lease);
+      } catch (diagnosticError, diagnosticStack) {
+        recordDartError(
+          diagnosticError,
+          diagnosticStack,
+          stage: 'native-shutdown-inventory-diagnostic',
+        );
       }
-      inventory.sort(
-        (a, b) => '${a['itemId']}/${a['key']}'.compareTo(
-          '${b['itemId']}/${b['key']}',
-        ),
-      );
-      return inventory;
-    } finally {
-      await lease.closeDetailQueries(scope);
+      Error.throwWithStackTrace(error, stack);
     }
+  }
+
+  Iterable<TimelineItem> _mainItems(TimelineDisplayLease lease) sync* {
+    for (final message in lease.controller.messages) {
+      final unit = message.metadata?[timelineDisplayUnitKey];
+      if (unit is! TimelineDisplayUnit ||
+          message.id != unit.id ||
+          unit.live ||
+          unit.item.position == null) {
+        throw StateError(
+          'Original Main message ${message.id} has no reliable Item',
+        );
+      }
+      yield unit.item;
+    }
+  }
+
+  void _requireInventoryOwner(
+    _SettledTurn settled,
+    TimelineDisplayLease lease,
+  ) {
+    if (lease.isRetired ||
+        lease.isReleased ||
+        !identical(graph.timeline.lease(settled.threadId), lease) ||
+        graph.client.selection.state.selectedThreadId != settled.threadId ||
+        graph.client.conversations.visibleThreadId.value != settled.threadId) {
+      throw StateError('Saved-turn original Main lease is no longer selected');
+    }
+  }
+
+  Map<String, bool> _inventoryPredicates(
+    TimelineItem item,
+    _SettledTurn settled,
+  ) => {
+    'sameTurn': item.turnId == settled.turnId,
+    'sameSource':
+        item.source == ForegroundTurnChatSource(turnId: settled.turnId),
+    'text': item.kind == TimelineItemKind.text,
+    'textAtom': item.atomKind == ChatAtomKind.text,
+    'finalAnswer': item.textChannel == ThreadTextChannel.finalAnswer,
+    'completed': item.outcome == ChatTerminalOutcome.completed,
+    'reliablePosition': item.position != null,
+    'contentIdentity': item.contentItemId != null,
+  };
+
+  bool _isInventoryFinal(TimelineItem item, _SettledTurn settled) =>
+      _inventoryPredicates(item, settled).values.every((value) => value);
+
+  Map<String, String> _inventorySource(ChatSourceId source) => switch (source) {
+    ForegroundTurnChatSource(:final turnId) => {'foregroundTurn': turnId},
+    InputChatSource(:final inputId) => {'input': inputId},
+    BackgroundResultChatSource(:final messageId) => {
+      'backgroundResult': messageId,
+    },
+    OperationChatSource(:final operationId) => {'operation': operationId},
+    ReceiptChatSource(:final receiptId) => {'receipt': receiptId},
+  };
+
+  void _recordInventory(
+    String event,
+    _SettledTurn settled,
+    TimelineDisplayLease? lease,
+  ) {
+    Map<String, Object?> describe(TimelineDisplayUnit unit) {
+      final item = unit.item;
+      return {
+        'id': item.id,
+        'kind': item.kind.name,
+        'live': unit.live,
+        'source': _inventorySource(item.source),
+        'turnId': item.turnId,
+        'channel': item.textChannel?.name,
+        'outcome': item.outcome?.name,
+        'position': item.position,
+        'contentItemId': item.contentItemId,
+        'contentReferences': [
+          for (final content in item.contents)
+            {
+              'role': content.role.name,
+              'targetKind': content.reference.target.runtimeType.toString(),
+              'itemOwned': switch (content.reference.target) {
+                BodyContentTarget(owner: ItemContentOwner(:final itemId)) =>
+                  itemId == item.contentItemId,
+                _ => false,
+              },
+            },
+        ],
+        'predicates': _inventoryPredicates(item, settled),
+      };
+    }
+
+    final readable = lease != null && !lease.isReleased;
+    final snapshot = {
+      'at': DateTime.now().toUtc().toIso8601String(),
+      'pid': pid,
+      'event': event,
+      'threadId': settled.threadId,
+      'turnId': settled.turnId,
+      'leasePresent': lease != null,
+      'leaseThreadId': lease?.threadId,
+      'generation': lease?.generation,
+      'selectionId': lease?.selectionId,
+      'retired': lease?.isRetired,
+      'released': lease?.isReleased,
+      'selected':
+          lease != null &&
+          identical(graph.timeline.lease(settled.threadId), lease),
+      'selectedThreadId': graph.client.selection.state.selectedThreadId,
+      'visibleThreadId': graph.client.conversations.visibleThreadId.value,
+      'main': [
+        if (readable)
+          for (final message in lease.controller.messages)
+            if (message.metadata?[timelineDisplayUnitKey]
+                case final TimelineDisplayUnit unit)
+              {'messageId': message.id, ...describe(unit)}
+            else
+              {'messageId': message.id, 'unitPresent': false},
+      ],
+      'live': [
+        if (readable)
+          for (final unit in lease.liveUnits.value) describe(unit),
+      ],
+    };
+    _requireCoord();
+    File('$coord/shutdown-assembly-$pid.jsonl').writeAsStringSync(
+      '${jsonEncode(snapshot)}\n',
+      mode: FileMode.append,
+      flush: true,
+    );
   }
 
   void _requireCoord() {
@@ -750,7 +926,7 @@ class _SettledTurn {
   const _SettledTurn({required this.threadId, required this.turnId});
 
   final String threadId;
-  final String? turnId;
+  final String turnId;
 }
 
 /// Real FRB transport whose shutdown-progress subscription is faulty.
