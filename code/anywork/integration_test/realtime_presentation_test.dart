@@ -192,6 +192,7 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-exec-wait.png');
       await scene.completed(answer: 'realtime long command complete');
+      await scene.closeLatestTurnGroups();
 
       final priorParallelItems = scene.observed.items
           .map((item) => item.id)
@@ -364,9 +365,15 @@ final class _RealtimeScene {
     return ChatItemPresentation.decode(reasoning.last);
   }
 
-  Future<void> closeLatestTurnGroups() => observed.closeSource(
-    ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
-  );
+  Future<void> closeLatestTurnGroups() async {
+    await observed.closeSource(
+      ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
+    );
+    await until(
+      () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
+      'collapsed realtime member handles joined before the next turn',
+    );
+  }
 
   TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
     (item) =>
