@@ -10,7 +10,9 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -904,6 +906,79 @@ final class _ConceptScene {
     await observed.openGroup(unit.id);
   }
 
+  void _recordMemberInventory(
+    String stage,
+    String id, {
+    TimelineGroupDisplay? original,
+    Object? error,
+  }) {
+    Map<String, Object?>? reference(TimelineMembersRef? value) => value == null
+        ? null
+        : {
+            'itemId': value.itemId,
+            'databaseId': value.databaseId,
+            'projectionVersion': value.projectionVersion,
+            'projectionGeneration': value.projectionGeneration,
+          };
+    Map<String, Object?> display(TimelineGroupDisplay value) => {
+      'unitId': value.unitId,
+      'identity': identityHashCode(value),
+      'membersRef': reference(value.membersRef),
+      'isCurrent': value.isCurrent,
+      'expanded': value.expanded,
+      'before': value.before,
+      'loading': value.loading,
+      'error': value.error?.toString(),
+      'mountedMemberCount': value.atoms.length,
+    };
+    // Borrow only already mounted consumers, including one still awaiting a
+    // permit. This synchronous diagnostic never opens, pages or copies atoms.
+    final windows = <Map<String, Object?>>[];
+    for (final element in find.byType(TimelineChildrenConnector).evaluate()) {
+      final widget = element.widget as TimelineChildrenConnector;
+      if (widget.threadId != lease.threadId ||
+          widget.membersRef == null ||
+          element is! StatefulElement) {
+        continue;
+      }
+      final Object state = element.state;
+      if (state is! TimelineChildrenDisplay) continue;
+      windows.add({
+        'parentId': state.parentId,
+        'membersRef': reference(widget.membersRef),
+        'generation': state.generation,
+        'isCurrent': state.isCurrent,
+        'ready': state.ready,
+        'olderCursor': state.olderCursor,
+        'loadingOlder': state.loadingOlder,
+        'error': state.error?.toString(),
+        'appliedSets': state.appliedSets,
+        'appliedPrepends': state.appliedPrepends,
+        'appliedAppends': state.appliedAppends,
+      });
+    }
+    final events =
+        (report['memberInventoryLifecycle'] ??= <Map<String, Object?>>[])
+            as List<Map<String, Object?>>;
+    events.add({
+      'stage': stage,
+      'itemId': id,
+      'mainLeaseGeneration': lease.generation,
+      'chatHandleCapacity':
+          graph.client.budget.capacities[ResourceKind.chatHandle],
+      'chatHandleUsed': graph.client.budget.used(ResourceKind.chatHandle),
+      'chatHandles': [
+        for (final usage in graph.client.budget.usage)
+          if (usage.kind == ResourceKind.chatHandle)
+            {'owner': usage.owner, 'phase': usage.phase.name},
+      ],
+      'groupDisplays': lease.groupDisplays.map(display).toList(),
+      'memberWindows': windows,
+      if (original != null) 'originalDisplay': display(original),
+      if (error != null) 'failure': error.toString(),
+    });
+  }
+
   /// Explicit UI member demand to EOF. Retain only observed IDs for archived
   /// evidence, not raw atoms or a second group projection. Record explicit
   /// member demands separately from reused windows and Main batch counters.
@@ -917,38 +992,52 @@ final class _ConceptScene {
       (display) =>
           display.unitId == id && display.isCurrent && display.expanded,
     );
-    final display = await observed.openGroup(id);
-    final ids = <String>{};
-    var olderPageCommands = 0;
-    while (true) {
-      ids.addAll(display.atoms.map((atom) => atom.id));
-      if (display.before == null && !display.loading) break;
-      final before = display.before;
-      final older = find.descendant(
-        of: observed.groupRow(id),
-        matching: find.byKey(const ValueKey('timeline-children-load-older')),
-      );
-      await observed.tap(older);
-      olderPageCommands++;
-      await _until(tester, () {
-        if (display.error case final error?) throw StateError('$error');
-        return !display.loading && display.before != before;
-      }, 'explicit group member page advanced');
+    TimelineGroupDisplay? original;
+    _recordMemberInventory('before-open', id);
+    try {
+      final display = await observed.openGroup(id);
+      original = display;
+      final ids = <String>{};
+      var olderPageCommands = 0;
+      while (true) {
+        ids.addAll(display.atoms.map((atom) => atom.id));
+        if (display.before == null && !display.loading) break;
+        final before = display.before;
+        final older = find.descendant(
+          of: observed.groupRow(id),
+          matching: find.byKey(const ValueKey('timeline-children-load-older')),
+        );
+        await observed.tap(older);
+        olderPageCommands++;
+        await _until(tester, () {
+          if (display.error case final error?) throw StateError('$error');
+          return !display.loading && display.before != before;
+        }, 'explicit group member page advanced');
+      }
+      expect(ids, hasLength(unit.item.summary!.memberCount));
+      final observations =
+          (report['memberPageObservations'] ??= <Map<String, Object?>>[])
+              as List<Map<String, Object?>>;
+      observations.add({
+        'itemId': id,
+        'reusedMountedWindow': reusedWindow,
+        'memberScopeOpenCommands': reusedWindow ? 0 : 1,
+        'olderPageCommands': olderPageCommands,
+        'costMeaning':
+            'explicit UI demands; not physical/native IO page counts',
+        'distinctObservedMembers': ids.length,
+        'eof': true,
+      });
+      _recordMemberInventory('eof-before-close', id, original: display);
+      // Inventory retains IDs, not simultaneous historical member leases.
+      // Revoke this original window through its ordinary UI before proceeding.
+      await observed.closeGroup(display);
+      _recordMemberInventory('closed', id, original: display);
+      return ids.toList();
+    } catch (error) {
+      _recordMemberInventory('failed', id, original: original, error: error);
+      rethrow;
     }
-    expect(ids, hasLength(unit.item.summary!.memberCount));
-    final observations =
-        (report['memberPageObservations'] ??= <Map<String, Object?>>[])
-            as List<Map<String, Object?>>;
-    observations.add({
-      'itemId': id,
-      'reusedMountedWindow': reusedWindow,
-      'memberScopeOpenCommands': reusedWindow ? 0 : 1,
-      'olderPageCommands': olderPageCommands,
-      'costMeaning': 'explicit UI demands; not physical/native IO page counts',
-      'distinctObservedMembers': ids.length,
-      'eof': true,
-    });
-    return ids.toList();
   }
 
   Future<void> journey(String project) async {
