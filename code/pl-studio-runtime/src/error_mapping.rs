@@ -123,8 +123,48 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             crate::StudioStartupErrorKind::Internal => (StudioErrorCode::Internal, false),
             crate::StudioStartupErrorKind::Migration => (StudioErrorCode::InvalidArgument, false),
         };
-        return StudioError::new(code, format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind), retryable)
-            .with_details(serde_json::json!({"startupStep": startup.step, "startupKind": format!("{:?}", startup.kind)}));
+        let mut message = format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind);
+        let mut details = serde_json::json!({
+            "startupStep": startup.step,
+            "startupKind": format!("{:?}", startup.kind),
+        });
+        if let Some(io) = error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .last()
+        {
+            let kind = format!("{:?}", io.kind());
+            details["startupIoKind"] = kind.clone().into();
+            details["startupOsCode"] = serde_json::json!(io.raw_os_error());
+            message.push_str(&format!("；I/O 错误类型：{kind}"));
+            if let Some(code) = io.raw_os_error() {
+                message.push_str(&format!("，系统码：{code}"));
+            }
+        }
+        if let Some(cause) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<keyring::Error>())
+        {
+            // Only the dependency's typed variant name crosses the redacted boundary.
+            // Backend messages and variant payloads may contain protected material.
+            let kind = match cause {
+                keyring::Error::PlatformFailure(_) => "platformFailure",
+                keyring::Error::NoStorageAccess(_) => "noStorageAccess",
+                keyring::Error::NoEntry => "noEntry",
+                keyring::Error::BadEncoding(_) => "badEncoding",
+                keyring::Error::BadDataFormat(_, _) => "badDataFormat",
+                keyring::Error::BadStoreFormat(_) => "badStoreFormat",
+                keyring::Error::TooLong(_, _) => "tooLong",
+                keyring::Error::Invalid(_, _) => "invalid",
+                keyring::Error::Ambiguous(_) => "ambiguous",
+                keyring::Error::NoDefaultStore => "noDefaultStore",
+                keyring::Error::NotSupportedByStore(_) => "notSupportedByStore",
+                _ => "unclassified",
+            };
+            details["startupCredentialErrorKind"] = kind.into();
+            message.push_str(&format!("；系统凭据错误类型：{kind}"));
+        }
+        return StudioError::new(code, message, retryable).with_details(details);
     }
     if error.downcast_ref::<StudioDatabaseError>().is_some()
         || error.downcast_ref::<std::io::Error>().is_some()
