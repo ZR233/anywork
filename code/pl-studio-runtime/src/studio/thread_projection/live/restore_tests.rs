@@ -128,7 +128,7 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
             assert!(prepared.items.is_empty() && prepared.completions.is_empty());
             let active = prepared
                 .current
-                .projection
+                .projection()
                 .atoms
                 .first()
                 .context("active compaction")?
@@ -166,7 +166,7 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                 restored
                     .current_state()
                     .context("restored current")?
-                    .projection
+                    .projection()
                     .atoms,
                 vec![active.clone()]
             );
@@ -185,10 +185,10 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                     .current_handoff
                     .as_ref()
                     .context("handoff")?
-                    .entries
+                    .entries()
                     .is_empty()
             );
-            assert_eq!(prepared.current.projection.atoms, vec![active.clone()]);
+            assert_eq!(prepared.current.projection().atoms, vec![active.clone()]);
             let effect = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
                 sequence: 3,
@@ -223,14 +223,14 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                     outcome: terminal,
                 }
             );
-            assert!(prepared.current.projection.atoms.is_empty());
-            assert!(prepared.current.projection.active.is_none());
+            assert!(prepared.current.projection().atoms.is_empty());
+            assert!(prepared.current.projection().active.is_none());
             assert!(
                 prepared
                     .current_handoff
                     .as_ref()
                     .context("end handoff")?
-                    .sources
+                    .sources()
                     .iter()
                     .any(|state| state.source == source
                         && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })
@@ -384,7 +384,7 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
             save(&history, &effect, &next).await?;
             prepared = next;
         }
-        let saved_atom = prepared.current.projection.atoms[0].clone();
+        let saved_atom = prepared.current.projection().atoms[0].clone();
         let saved_content = prepared
             .current
             .contents
@@ -515,21 +515,25 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
         assert_eq!(content.descriptor, saved_content.descriptor);
         assert_eq!(content.data.range(0, 150_000)?.as_bytes(), body.as_bytes());
         let snapshot = restored_snapshot.context("restore returned without a current snapshot")?;
-        assert_eq!(snapshot.projection.source_effect_seq, 5);
+        assert_eq!(snapshot.projection().source_effect_seq, 5);
         assert_eq!(
-            snapshot.projection.atoms.as_slice(),
+            snapshot.projection().atoms.as_slice(),
             std::slice::from_ref(&saved_atom)
         );
         let handoff = completed.current_handoff.as_ref().context("handoff")?;
-        assert_eq!(handoff.before.as_ref(), &snapshot.projection);
-        assert_eq!(handoff.after.source_effect_seq, 6);
-        assert!(handoff.after.atoms.is_empty());
-        assert!(completed.current.timeline_update.facts.iter().all(|atom|
+        assert!(Arc::ptr_eq(
+            handoff.before(),
+            snapshot.frozen_projection()
+        ));
+        assert_eq!(handoff.before().projection(), snapshot.projection());
+        assert_eq!(handoff.after().projection().source_effect_seq, 6);
+        assert!(handoff.after().projection().atoms.is_empty());
+        assert!(completed.current.timeline_update.facts().iter().all(|atom|
             !matches!(atom.lifecycle,pl_protocol::ChatAtomLifecycle::Active {..})),
             "activation fabricated a reliable start");
-        assert!(handoff.entries.iter().all(|entry|matches!(entry,pl_protocol::ChatEntry::Item(_))),
+        assert!(handoff.entries().iter().all(|entry|matches!(entry,pl_protocol::ChatEntry::Item(_))),
             "Main handoff leaked raw activation facts");
-        assert!(handoff.entries.iter().any(|entry|matches!(entry,pl_protocol::ChatEntry::Item(item)
+        assert!(handoff.entries().iter().any(|entry|matches!(entry,pl_protocol::ChatEntry::Item(item)
             if item.content_item_id.as_deref()==Some(saved_atom.id.as_str()))),
             "restored completion lost its original content owner");
         let completed_atom = completed
@@ -550,7 +554,7 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
                     pl_protocol::ChatAtomLifecycle::Active { started: old, .. } if old == started)));
         assert!(completed_atom.source_state.is_none());
         let restored_content = snapshot
-            .contents
+            .contents()
             .get(&saved_content.descriptor.key)
             .context("restored owner body")?
             .content();

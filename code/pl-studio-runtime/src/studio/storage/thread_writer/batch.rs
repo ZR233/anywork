@@ -151,7 +151,7 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             projected.sequence == sequence
                 && projected.accounting.sequence == sequence
                 && projected.accounting.thread_id == inner.thread.id
-                && projected.current.projection.source_effect_seq == sequence,
+                && projected.current.projection().source_effect_seq == sequence,
             "prepared history batch {sequence} has inconsistent handoff identities"
         );
         let before = summary.pricing.clone();

@@ -180,13 +180,13 @@ async fn published_pending(
                 .current_conversation()
                 .map(|value| value.current.clone())
                 && let Some(interaction) = current
-                    .interactions
+                    .interactions()
                     .iter()
                     .find(|interaction| interaction.status() == InteractionStatus::Pending)
             {
                 return Ok::<_, anyhow::Error>((
                     interaction.clone(),
-                    current.projection.source_effect_seq,
+                    current.projection().source_effect_seq,
                 ));
             }
             changed
@@ -718,6 +718,34 @@ async fn live_set_watch_completion_current_and_independent_read_close() -> Resul
             assert_eq!(next.placement, ChatPlacement::Append);
             current = next.current.context("stream current")?;
         };
+        // The fixture gate proves only that the provider wrote its prefix.
+        // Wait for the original product owner to publish the body before
+        // opening a range whose offset requires those bytes to exist.
+        let mut readiness = reader
+            .watch_content(
+                &reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 16,
+                },
+            )
+            .await?;
+        let ready = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let window = readiness
+                    .recv()
+                    .await?
+                    .context("active body readiness ended")?;
+                assert!(!window.sealed);
+                assert!(window.available_through <= body.len() as u64);
+                if window.available_through == body.len() as u64 {
+                    break Ok::<_, anyhow::Error>(());
+                }
+            }
+        })
+        .await;
+        readiness.close().await?;
+        ready.context("active body was not published before opening its tail range")??;
         let range = ContentRange {
             offset: (body.len() - 16) as u64,
             max_bytes: 16,

@@ -159,15 +159,15 @@ impl StudioRuntime {
             if !source.projection_generation.is_empty() {
                 captured_generation = Some(source.projection_generation.clone());
             }
-            state_effect_floor = source.current.projection.source_effect_seq;
-            initial_turn = source.current.active_turn.clone();
-            initial_interactions = source.current.interactions.to_vec();
-            source_states = source.current.source_states.to_vec();
+            state_effect_floor = source.current.projection().source_effect_seq;
+            initial_turn = source.current.active_turn().cloned();
+            initial_interactions = source.current.interactions().to_vec();
+            source_states = source.current.source_states().to_vec();
             let database_id = history
                 .conversation_database_id()
                 .await?
                 .ok_or_else(resync)?;
-            let current = main.then(|| source.current.projection.clone());
+            let current = main.then(|| source.current.projection().clone());
             let budget = JsonBudget::new(
                 database_id.clone(),
                 current.clone(),
@@ -657,14 +657,14 @@ impl ConversationFeed {
                 if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
                     if self.cut_entries.is_none() {
                         let candidates = if main {
-                            cut.handoff.entries.to_vec()
+                            cut.handoff.entries().to_vec()
                         } else {
                             let ChatScope::GroupMembers { reference } = &self.reader.inner.scope
                             else {
                                 unreachable!()
                             };
                             cut.handoff
-                                .members
+                                .members()
                                 .iter()
                                 .filter(|member| {
                                     member.item_id == reference.item_id
@@ -689,7 +689,7 @@ impl ConversationFeed {
                                 })
                                 .chain(
                                     cut.handoff
-                                        .sources
+                                        .sources()
                                         .iter()
                                         .filter(|state| self.reader.observes_source(&state.source))
                                         .cloned()
@@ -748,8 +748,8 @@ impl ConversationFeed {
                         self.reader
                             .annotate_source_states(
                                 &mut product.entries,
-                                &cut.handoff.after.sources,
-                                cut.handoff.after.source_effect_seq,
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
                             )
                             .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
@@ -787,8 +787,8 @@ impl ConversationFeed {
                         self.reader
                             .annotate_source_states(
                                 &mut product.entries,
-                                &cut.handoff.after.sources,
-                                cut.handoff.after.source_effect_seq,
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
                             )
                             .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;

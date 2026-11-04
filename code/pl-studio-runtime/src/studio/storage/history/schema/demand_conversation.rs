@@ -199,19 +199,16 @@ pub(in super::super) async fn seed_current(
         .await?
         .context("history identity missing")?
         .try_get::<String>("", "database_id")?;
-    let mut prepared = PreparedCurrent {
-        timeline: std::sync::Arc::from([]),
-        timeline_update: std::sync::Arc::new(Default::default()),
-        timeline_commit: 0,
-        source_changes: std::sync::Arc::from([]),
-        projection: CurrentProjection::empty(watermark, ThreadStatus::Idle),
-        changes: Arc::from([]),
-        contents: Arc::from([]),
-    };
+    let mut projection = CurrentProjection::empty(watermark, ThreadStatus::Idle);
     let Some(checkpoint) = checkpoint::read(db, thread_id).await? else {
         // v2 imports can prepare their SQLite facts before importing the external checkpoint.
         // There is no persisted execution source yet; that explicit import reseeds this projection
         // in its checkpoint transaction before its preparation barrier is released.
+        let prepared = PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+            Arc::from([]),
+            Arc::from([]),
+        );
         return conversation::current::apply(db, watermark, &prepared).await;
     };
     ensure!(
@@ -219,18 +216,18 @@ pub(in super::super) async fn seed_current(
         "current migration checkpoint fence differs"
     );
     let state = &checkpoint.state;
-    prepared.projection.logical_status = crate::studio::thread_projection::status(state);
+    projection.logical_status = crate::studio::thread_projection::status(state);
     if let Some(turn) = crate::studio::thread_projection::project_active_turn(thread_id, state, 0)?
         && let Some(phase) = turn.phase()
     {
-        prepared.projection.active_turn = Some(CurrentTurnHead { id: turn.id, phase });
+        projection.active_turn = Some(CurrentTurnHead { id: turn.id, phase });
     }
     let mut entries = Vec::new();
     let mut contents = Vec::new();
     if let Some(activity) =
         crate::studio::thread_projection::project_activity(thread_id, state, None)
     {
-        prepared.projection.active = Some(pl_protocol::CurrentActivityHead {
+        projection.active = Some(pl_protocol::CurrentActivityHead {
             id: activity.identity,
             kind: activity.kind,
             summary: activity.summary,
@@ -246,7 +243,7 @@ pub(in super::super) async fn seed_current(
                 }
             }),
         });
-        prepared.projection.collections.push(CurrentCollectionRef {
+        projection.collections.push(CurrentCollectionRef {
             database_id: identity.clone(),
             collection: "tools".into(),
             revision: watermark,
@@ -261,7 +258,7 @@ pub(in super::super) async fn seed_current(
         }
     }
     if !state.interactions.is_empty() || !state.permissions.is_empty() {
-        prepared.projection.interactions = Some(CurrentCollectionRef {
+        projection.interactions = Some(CurrentCollectionRef {
             database_id: identity.clone(),
             collection: "interactions".into(),
             revision: watermark,
@@ -316,13 +313,13 @@ pub(in super::super) async fn seed_current(
                 },
             }
         });
-        prepared.projection.plan = Some(CurrentPlanHead {
+        projection.plan = Some(CurrentPlanHead {
             revision: plan.revision,
             phase: plan.state,
             document,
         });
         if !plan.history_tail.is_empty() {
-            prepared.projection.collections.push(CurrentCollectionRef {
+            projection.collections.push(CurrentCollectionRef {
                 database_id: identity,
                 collection: "planHistory".into(),
                 revision: plan.revision,
@@ -337,9 +334,12 @@ pub(in super::super) async fn seed_current(
             }
         }
     }
-    prepared.changes = Arc::from(entries);
-    prepared.contents = Arc::from(contents);
     // Persisted running remains a logical fact; it does not reactivate the old execution.
-    prepared.projection.execution_present = false;
+    projection.execution_present = false;
+    let prepared = PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        Arc::from(entries),
+        Arc::from(contents),
+    );
     conversation::current::apply(db, watermark, &prepared).await
 }

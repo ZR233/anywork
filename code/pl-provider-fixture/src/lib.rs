@@ -2558,13 +2558,12 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
     ]
 }
 
-/// Thirty normal provider turns for the Linux cumulative-history acceptance.
+/// Strict seed-only portion of the cumulative-history fixture.
 ///
-/// The first ten turns seed 20,000 independently completed text items. The
-/// following twenty turns append 2,000 more items while the Driver separately
-/// observes Live and History windows. Optional title requests remain normal
-/// product traffic, but only the batch prompts create the measured output.
-pub fn gui_timeline_history_20k_script() -> Vec<Step> {
+/// Ten normal provider turns produce 20,000 independently completed text items.
+/// Optional title requests retain the same matching and ordering as the full
+/// scenario; callers do not copy or truncate its individual protocol steps.
+pub fn gui_timeline_history_20k_seed_script() -> Vec<Step> {
     let mut steps = Vec::new();
     for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
         push_timeline_history_20k_batch(
@@ -2576,6 +2575,17 @@ pub fn gui_timeline_history_20k_script() -> Vec<Step> {
             0,
         );
     }
+    steps
+}
+
+/// Thirty normal provider turns for the Linux cumulative-history acceptance.
+///
+/// The first ten turns seed 20,000 independently completed text items. The
+/// following twenty turns append 2,000 more items while the Driver separately
+/// observes Live and History windows. Optional title requests remain normal
+/// product traffic, but only the batch prompts create the measured output.
+pub fn gui_timeline_history_20k_script() -> Vec<Step> {
+    let mut steps = gui_timeline_history_20k_seed_script();
     push_timeline_history_20k_batch(
         &mut steps,
         "switch",

@@ -5,9 +5,9 @@ use pl_model::config::{AgentRoleId, ModelRouteConfig};
 use pl_model::model::{
     ModelParameter, ModelPricing, ParameterWire, TokenPriceTier, WireAssignment,
 };
-use pl_protocol::{BillingKind, DelegationSettings};
+use pl_protocol::{AgentBinding, BillingKind, DelegationSettings, NativeAgentConfig};
 use pl_provider_fixture::delegation::{OTHER_MODEL, SHARED_MODEL};
-use pl_studio_runtime::config::UserAgentProfile;
+use pl_studio_runtime::config::{ConfigPaths, UserAgentProfile, save_user_agent_profile};
 
 pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
@@ -40,7 +40,6 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         a_models,
     );
     a.billing_kind = Some(BillingKind::Subscription);
-    a.set_model_enabled("delegation-disabled", false)?;
     let mut b = AccountConfig::from_explicit_models(
         ProtocolEndpoint::compatible(
             "Delegation synthetic account B — identical model ID, independent endpoint",
@@ -92,19 +91,34 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         display_name: "Delegation role with unavailable fixed route".into(),
         description: "Synthetic manual observation role".into(),
         when_to_use: "Automatic mode only; its fixed route is intentionally disabled".into(),
-        system_instructions:
-            "Read-only synthetic delivery. Do not change files or invoke external services.".into(),
-        account_id: a_id,
-        model_id: "delegation-disabled".into(),
-        effort: None,
+        binding: AgentBinding::Native(NativeAgentConfig {
+            route: Some(pl_protocol::studio::NewThreadModelRoute {
+                account_id: a_id.as_str().into(),
+                model_id: "delegation-disabled".into(),
+                effort: None,
+            }),
+            system_instructions: Some(
+                "Read-only synthetic delivery. Do not change files or invoke external services."
+                    .into(),
+            ),
+        }),
         workspace_mode: pl_protocol::AgentWorkspaceMode::Unrestricted,
     };
-    let agents = home.join("agents");
-    fs::create_dir_all(&agents)?;
-    fs::write(
-        agents.join("obsolete_route.toml"),
-        toml::to_string_pretty(&profile)?,
+    // Persist the valid Profile through its schema owner before disabling its
+    // fixed model. The final config reproduces an existing now-unavailable
+    // route without hand-encoding a legacy or unversioned Profile document.
+    save_user_agent_profile(
+        &ConfigPaths::from_config_dir(home),
+        "obsolete_route",
+        &profile,
+        &config,
     )?;
+    config
+        .models
+        .accounts
+        .get_mut(&a_id)
+        .context("synthetic account A")?
+        .set_model_enabled("delegation-disabled", false)?;
     persist_config(home, &config)
 }
 

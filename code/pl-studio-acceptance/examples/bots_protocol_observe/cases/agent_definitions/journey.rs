@@ -577,10 +577,11 @@ impl Observation<'_> {
                 let mut seen = std::collections::HashSet::new();
                 'pages: for _ in 0..256 {
                     charge_chat_batch(&page, &mut remaining)?;
-                    for item in page.entries.iter().filter_map(|entry| match entry {
-                        ChatEntry::Item(item) => Some(item),
-                        ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
-                    }) {
+                    for entry in &page.entries {
+                        let ChatEntry::Item(item) = entry else {
+                            bail!("Main returned a member atom/source instead of a Timeline item");
+                        };
+                        let item = item.as_ref();
                         if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
                             continue;
                         }
@@ -982,12 +983,13 @@ impl Observation<'_> {
             let mut target_segment_complete = false;
             'main: for _ in 0..256 {
                 charge_chat_batch(&page, &mut remaining)?;
-                for item in page.entries.iter().filter_map(|entry| match entry {
-                    ChatEntry::Item(item) => Some(item),
-                    ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
-                }) {
+                for entry in &page.entries {
+                    let ChatEntry::Item(item) = entry else {
+                        bail!("Main returned a member atom/source instead of a Timeline item");
+                    };
+                    let item = item.as_ref();
                     if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
-                        group_items.push(item.as_ref().clone());
+                        group_items.push((*item).clone());
                         continue;
                     }
                     if let Some(target_turn) = target_turn.as_deref()
@@ -1135,18 +1137,31 @@ async fn cold_main_chat(
                     ChatEntry::Item(item)
                         if item.kind == pl_protocol::TimelineItemKind::WorkGroup =>
                     {
-                        for atom in group_member_atoms(&read, item, remaining, deadline).await? {
-                            if let Some(payload) =
-                                completed_atom_payload(&read, &atom, remaining, deadline).await?
-                            {
-                                payloads.push(payload);
-                            }
-                        }
+                        // This cold inventory proves input/Turn uniqueness and
+                        // reads only original text/status envelopes. It does not
+                        // assert complete tool history, so do not fan out into
+                        // every unrelated work group's member scope.
                     }
                     ChatEntry::Item(item) => {
                         if let Some(payload) =
                             completed_timeline_payload(&read, item, remaining, deadline).await?
                         {
+                            if payload["type"] == "text" {
+                                let turn_id = payload["turnId"]
+                                    .as_str()
+                                    .context("cold text payload omitted turn identity")?;
+                                let text_channel = item
+                                    .text_channel
+                                    .context("cold Timeline text omitted explicit text_channel")?;
+                                ensure!(
+                                    item.kind == pl_protocol::TimelineItemKind::Text
+                                        && item.atom_kind == Some(ChatAtomKind::Text)
+                                        && item.turn_id.as_deref() == Some(turn_id)
+                                        && payload["data"]["channel"]
+                                            == serde_json::to_value(text_channel)?,
+                                    "cold Timeline text identity/channel disagreed with original payload"
+                                );
+                            }
                             payloads.push(payload);
                         }
                     }

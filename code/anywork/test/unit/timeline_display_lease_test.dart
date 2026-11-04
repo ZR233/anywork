@@ -181,22 +181,40 @@ void main() {
     'mounted lease retains controller ownership until unbind and close retry',
     () async {
       final h = _Harness([chatMessage('a')]);
+      h.owner.noteVisibleSelection('thread');
       await h.open();
       final lease = h.lease..bind();
       final controller = lease.controller;
+      expect(h.owner.visibleLayoutSnapshot!.firstContentLayout, isNull);
+      h.owner.recordContentLayout(lease, 'a', h.owner.monotonicMicros);
+      final visible = h.owner.visibleLayoutSnapshot!;
+      expect(visible.threadId, 'thread');
+      expect(visible.selectionId, lease.selectionId);
+      expect(visible.generation, lease.generation);
+      expect(visible.firstContentLayout, same(lease.firstContentLayout));
+      expect(visible.firstContentLayout, isNotNull);
+      expect(h.owner.visibleLayoutSnapshot, visible);
+      expect(h.transport.opens, 1);
+      expect(h.transport.reader.boundaries, isEmpty);
+      expect(h.transport.reader.demands, isEmpty);
       h.client.conversations.setVisibleThread(null);
       final closing = h.owner.close(deadline: DateTime.utc(2000));
+      expect(h.owner.visibleLayoutSnapshot, isNull);
       expect(h.owner.close(), same(closing));
       expect((await closing).complete, isFalse);
       expect(lease.isRetired, isTrue);
       expect(lease.isReleased, isFalse);
       expect(lease.controller, same(controller));
       expect(h.owner.lease('thread'), isNull);
+      h.owner.recordContentLayout(lease, 'a', h.owner.monotonicMicros);
+      expect(h.owner.visibleLayoutSnapshot, isNull);
+      expect(lease.firstContentLayout, same(visible.firstContentLayout));
       await lease.unbind();
       expect(lease.isReleased, isTrue);
       expect(lease.loadedCount, 0);
       expect(() => lease.controller, throwsStateError);
       expect((await h.owner.close()).complete, isTrue);
+      expect(h.owner.visibleLayoutSnapshot, isNull);
     },
   );
 

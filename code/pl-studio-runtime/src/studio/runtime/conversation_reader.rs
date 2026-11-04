@@ -332,7 +332,7 @@ impl ConversationReader {
         if let Some(state) = retained.as_ref().and_then(|current| {
             current
                 .current
-                .source_states
+                .source_states()
                 .iter()
                 .find(|state| &state.source == source)
         }) && state.ended.is_some_and(|at| at.effect_seq <= cut)
@@ -367,7 +367,7 @@ impl ConversationReader {
             states.extend(
                 source
                     .current
-                    .source_states
+                    .source_states()
                     .iter()
                     .filter(|state| !known.iter().any(|known| known.source == state.source))
                     .cloned(),
@@ -450,7 +450,7 @@ impl ConversationReader {
             &r.history,
             source
                 .as_ref()
-                .map_or(&[], |source| source.current.source_states.as_ref()),
+                .map_or(&[], |source| source.current.source_states().as_ref()),
             self.inner.effect_cut,
         )
         .await?;
@@ -700,7 +700,7 @@ impl ConversationReader {
             .as_ref()
             .map(|state| {
                 state
-                    .contents
+                    .contents()
                     .values()
                     .filter(|content| content.descriptor.key.owner == owner)
                     .map(|content| content.descriptor.clone())
@@ -810,7 +810,7 @@ impl ConversationReader {
             };
             if let Some(content) = source
                 .as_ref()
-                .and_then(|source| source.current.contents.get(&content_key))
+                .and_then(|source| source.current.contents().get(&content_key))
             {
                 let content = content.content();
                 let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
@@ -840,7 +840,7 @@ impl ConversationReader {
                 {
                     ensure!(
                         state
-                            .projection
+                            .projection()
                             .collections
                             .iter()
                             .any(|reference| reference.collection == collection
@@ -848,7 +848,7 @@ impl ConversationReader {
                         core::ChatError::StaleContent
                     );
                     let entry = state
-                        .entries
+                        .entries()
                         .get(&(collection.into(), id.clone()))
                         .ok_or_else(stale)?;
                     let data = core::ContentData::Bytes(entry.payload.clone());
@@ -1328,7 +1328,7 @@ fn current_page(
 ) -> Result<CurrentCollectionPage> {
     ensure!(
         state
-            .projection
+            .projection()
             .collections
             .iter()
             .any(|current| current == reference),
@@ -1353,7 +1353,7 @@ fn current_page(
         continuation: None,
     };
     let mut selected_bytes = 0usize;
-    for (_, entry) in state.by_position.range((lower, upper)) {
+    for (_, entry) in state.by_position().range((lower, upper)) {
         if page.entries.len() == demand.max_items as usize {
             return Ok(page);
         }

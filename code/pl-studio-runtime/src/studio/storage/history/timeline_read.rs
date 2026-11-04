@@ -22,7 +22,7 @@ impl HistoryStore {
             .timeline_pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(current.projection.source_effect_seq, current);
+            .insert(current.projection().source_effect_seq, current);
     }
     pub(super) fn timeline_saved(&self, through: u64) {
         self.state
@@ -102,7 +102,7 @@ impl HistoryStore {
         };
         for current in &pending {
             ensure!(
-                current.timeline_update.generation == generation,
+                current.timeline_update.generation() == generation,
                 ChatError::StaleContent
             );
             match scope {
@@ -120,14 +120,14 @@ impl HistoryStore {
                 ChatScope::GroupMembers { reference } => {
                     let known = current
                         .timeline_update
-                        .current
+                        .current()
                         .iter()
                         .chain(current.timeline.iter().map(|entry| &entry.item))
                         .any(|item| item.members.as_ref() == Some(reference));
                     member_exists |= known;
                     for item in current
                         .timeline_update
-                        .current
+                        .current()
                         .iter()
                         .chain(current.timeline.iter().map(|entry| &entry.item))
                         .filter(|item| item.members.as_ref() == Some(reference))
@@ -136,7 +136,7 @@ impl HistoryStore {
                             member_head = Some(u64::from(summary.member_count));
                         }
                     }
-                    for member in &current.timeline_update.members {
+                    for member in current.timeline_update.members() {
                         if member.item_id != reference.item_id
                             || member.member_order >= ceiling
                             || before.is_some_and(|before| member.member_order >= before)

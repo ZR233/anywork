@@ -6,6 +6,8 @@ import 'package:anywork/src/capture/capture_protocol.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:args/args.dart';
 import 'package:flutter_driver/flutter_driver.dart';
+import 'package:vm_service/vm_service.dart' as vm_service;
+import 'package:vm_service/vm_service_io.dart' as vm_service_io;
 
 const int _schemaVersion = 1;
 const Duration _pollInterval = Duration(milliseconds: 100);
@@ -360,6 +362,121 @@ TimelineSpan requireFreshObservation(
   return span;
 }
 
+bool isFreshObservation(
+  TimelineObservation observation, {
+  required String threadId,
+  required int afterSelectionId,
+  required int afterGeneration,
+}) =>
+    observation.isObserved &&
+    observation.threadId == threadId &&
+    observation.selectionId != null &&
+    observation.generation != null &&
+    observation.selectionId! > afterSelectionId &&
+    observation.generation! > afterGeneration &&
+    observation.firstContentLayout != null;
+
+class _DriverConnectionScope {
+  vm_service.VmService? _service;
+  Future<vm_service.VmService>? _serviceFuture;
+  Future<void>? _closeFuture;
+  bool _abandoned = false;
+  bool _connectionSettled = false;
+
+  bool get hasService => _service != null;
+  bool get hasUnsettledConnection =>
+      _serviceFuture != null && !_connectionSettled;
+
+  Future<vm_service.VmService> connectOnce(
+    String url,
+    Map<String, dynamic>? headers,
+  ) {
+    if (headers != null) {
+      throw UnsupportedError('VM Service headers are not used by this probe');
+    }
+    final future = vm_service_io.vmServiceConnectUri(url);
+    _serviceFuture = future;
+    return future.then(
+      (service) {
+        _connectionSettled = true;
+        _service = service;
+        if (_abandoned) _closeLate(service);
+        return service;
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _connectionSettled = true;
+        Error.throwWithStackTrace(error, stackTrace);
+      },
+    );
+  }
+
+  void transferToDriver() {
+    _abandoned = false;
+  }
+
+  Future<void> closeAfterFailedConnect() async {
+    _abandoned = true;
+    final service = _service;
+    if (service != null) {
+      await _closeService(service);
+    } else if (_serviceFuture != null) {
+      // A timed-out WebSocket handshake cannot be cancelled through the
+      // public connector API. Own its completion and close any late service.
+      unawaited(
+        _serviceFuture!.then<void>(
+          _closeLate,
+          onError: (Object error, StackTrace stackTrace) {
+            _connectionSettled = true;
+            stderr.writeln(
+              'Late VM Service connection failed (${error.runtimeType})',
+            );
+          },
+        ),
+      );
+    }
+  }
+
+  Future<void> closeServiceAfterDriverFailure() async {
+    final service = _service;
+    if (service != null) await _closeService(service);
+  }
+
+  void consumeLateDriver(Future<FlutterDriver> connection) {
+    unawaited(
+      connection.then<void>(
+        (lateDriver) async {
+          try {
+            await lateDriver.close();
+          } catch (error) {
+            stderr.writeln(
+              'Late FlutterDriver cleanup failed (${error.runtimeType})',
+            );
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          stderr.writeln(
+            'Late FlutterDriver connection failed (${error.runtimeType})',
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _closeLate(vm_service.VmService service) async {
+    try {
+      await _closeService(service);
+    } catch (error) {
+      stderr.writeln('Late VM Service cleanup failed (${error.runtimeType})');
+    }
+  }
+
+  Future<void> _closeService(vm_service.VmService service) =>
+      _closeFuture ??= () async {
+        await service.dispose();
+        await service.onDone;
+      }();
+}
+
 class _OperationDeadline {
   _OperationDeadline(this.duration) : _stopwatch = Stopwatch()..start();
 
@@ -392,14 +509,28 @@ Map<String, Object?> _sampleJson(
     'index': index,
     'status': failure == null ? 'observed' : 'failed',
     'threadId': threadId,
-    if (span != null) ...span.toJson(),
+    ...?span?.toJson(),
     'viaOtherThread': viaOtherThread?.toJson(),
-    if (failure != null) 'failure': failure,
+    'failure': ?failure,
   };
 }
 
 String _failureText(String operation, Object error) =>
-    '$operation failed (${error.runtimeType})';
+    error is _ObservationDeadlineExceeded
+    ? '$operation failed (${error.runtimeType}): ${error.message}'
+    : '$operation failed (${error.runtimeType})';
+
+class _ObservationDeadlineExceeded extends TimeoutException {
+  _ObservationDeadlineExceeded(super.message);
+}
+
+Map<String, Object?> _observationSummary(TimelineObservation observation) => {
+  'status': observation.status,
+  'threadId': observation.threadId,
+  'selectionId': observation.selectionId,
+  'generation': observation.generation,
+  'firstContentLayout': observation.firstContentLayout?.toJson(),
+};
 
 Future<int> runProbe(List<String> arguments) async {
   if (arguments.contains('--help') || arguments.contains('-h')) {
@@ -434,19 +565,27 @@ Future<int> runProbe(List<String> arguments) async {
       'vmServiceClosed': null,
     },
   };
+  final connectionScope = _DriverConnectionScope();
+  final originalConnector = vmServiceConnectFunction;
+  vmServiceConnectFunction = connectionScope.connectOnce;
+  Future<FlutterDriver>? driverConnection;
   FlutterDriver? driver;
   String? failure;
   try {
     final connectDeadline = _OperationDeadline(options.deadline);
-    driver = await connectDeadline.run(
-      FlutterDriver.connect(
-        dartVmServiceUrl: options.vmUrl.toString(),
-        printCommunication: false,
-        logCommunicationToFile: false,
-      ),
-      'Driver connection',
+    driverConnection = FlutterDriver.connect(
+      dartVmServiceUrl: options.vmUrl.toString(),
+      printCommunication: false,
+      logCommunicationToFile: false,
     );
-    (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] = false;
+    driver = await connectDeadline.run(driverConnection, 'Driver connection');
+    if (driver is! VMServiceFlutterDriver) {
+      throw UnsupportedError('Only native VM Service Driver is supported');
+    }
+    connectionScope.transferToDriver();
+    if (connectionScope.hasService) {
+      (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] = false;
+    }
     if (options.mode == 'cold') {
       final sample = await _coldSample(driver, options);
       (report['samples']! as List<Map<String, Object?>>).add(sample);
@@ -470,18 +609,59 @@ Future<int> runProbe(List<String> arguments) async {
       }
     }
   } finally {
+    vmServiceConnectFunction = originalConnector;
     if (driver != null) {
       try {
         await driver.close();
         (report['cleanup']! as Map<String, Object?>)
           ..['driverClosed'] = true
-          ..['vmServiceClosed'] = true;
+          ..['vmServiceClosed'] = connectionScope.hasService
+              ? true
+              : (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'];
       } catch (error) {
         final cleanupFailure = _failureText('Driver/VM Service cleanup', error);
         failure = failure == null
             ? cleanupFailure
             : '$failure; $cleanupFailure';
         report['failure'] = failure;
+        try {
+          await connectionScope.closeServiceAfterDriverFailure();
+          if (connectionScope.hasService) {
+            (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] =
+                true;
+          }
+        } catch (serviceError) {
+          final serviceFailure = _failureText(
+            'Owned VM Service cleanup',
+            serviceError,
+          );
+          failure = '$failure; $serviceFailure';
+          report['failure'] = failure;
+        }
+      }
+    } else {
+      if (driverConnection != null) {
+        connectionScope.consumeLateDriver(driverConnection);
+      }
+      try {
+        await connectionScope.closeAfterFailedConnect();
+        if (connectionScope.hasService) {
+          (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] =
+              true;
+        } else if (connectionScope.hasUnsettledConnection) {
+          (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] =
+              false;
+        }
+      } catch (error) {
+        final cleanupFailure = _failureText('Owned VM Service cleanup', error);
+        failure = failure == null
+            ? cleanupFailure
+            : '$failure; $cleanupFailure';
+        report['failure'] = failure;
+        if (connectionScope.hasService) {
+          (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] =
+              false;
+        }
       }
     }
   }
@@ -652,15 +832,31 @@ Future<TimelineObservation> _waitForObserved(
   required int afterGeneration,
 }) async {
   final waitDeadline = _OperationDeadline(deadline);
+  TimelineObservation? lastObservation;
   while (true) {
     final remaining = waitDeadline.remaining;
     if (remaining <= Duration.zero) {
-      throw TimeoutException(
-        'Waiting for layout of $threadId exceeded deadline',
+      throw _ObservationDeadlineExceeded(
+        'Waiting for layout of $threadId exceeded deadline; '
+        'lastObservation=${lastObservation == null ? 'none' : jsonEncode(_observationSummary(lastObservation))}',
       );
     }
-    final observation = await _readObservation(driver, remaining);
-    if (observation.isObserved) {
+    final TimelineObservation observation;
+    try {
+      observation = await _readObservation(driver, remaining);
+    } on TimeoutException {
+      throw _ObservationDeadlineExceeded(
+        'Waiting for layout of $threadId exceeded deadline; '
+        'lastObservation=${lastObservation == null ? 'none' : jsonEncode(_observationSummary(lastObservation))}',
+      );
+    }
+    lastObservation = observation;
+    if (isFreshObservation(
+      observation,
+      threadId: threadId,
+      afterSelectionId: afterSelectionId,
+      afterGeneration: afterGeneration,
+    )) {
       requireFreshObservation(
         observation,
         threadId: threadId,

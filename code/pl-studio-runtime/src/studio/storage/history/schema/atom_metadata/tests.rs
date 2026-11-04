@@ -161,15 +161,11 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
     conversation::current::apply(
         db,
         0,
-        &PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            projection: current.clone(),
-            changes: changes.into(),
-            contents: contents.into(),
-            source_changes: Arc::from([]),
-        },
+        &PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
+            changes.into(),
+            contents.into(),
+        ),
     )
     .await?;
     Ok(current)

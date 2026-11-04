@@ -100,6 +100,144 @@ void main() {
     await h.owner.close();
   });
 
+  test('visible layout snapshot borrows only the mounted accepted selection and original layout span without reads', () async {
+    final h = _Harness(viewport: false);
+    final leases = <TimelineDisplayLease>[];
+    addTearDown(() async {
+      for (final lease in leases) {
+        if (lease.isMounted) unawaited(lease.unbind());
+      }
+      expect((await h.owner.close()).complete, isTrue);
+    });
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    h.owner.noteVisibleSelection('a');
+    h.owner.select('a');
+    final waitingSource = h.owner.source.value;
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    expect(h.owner.source.value, same(waitingSource));
+    expect(h.a.consumer, isNull);
+    expect(h.a.demands, isEmpty);
+    expect(h.a.attaches + h.b.attaches, 0);
+    expect(h.a.scopes, isEmpty);
+    expect(h.b.scopes, isEmpty);
+
+    h.owner.updateReadDemand(chatDemand);
+    await h.a.deliver(chatBatch([_text('a', 1)], before: 'before-3'));
+    final first = h.owner.lease('a')!;
+    leases.add(first);
+    expect(first.isMounted, isFalse);
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    h.owner.recordContentLayout(first, 'a-1', h.owner.monotonicMicros);
+    expect(first.firstContentLayout, isNull);
+    first.bind();
+    final controller = first.controller;
+    final message = controller.messages.single;
+    final consumer = h.a.consumer;
+    final source = h.owner.source.value;
+    void expectOriginalResources() {
+      expect(h.owner.source.value, same(source));
+      expect(h.owner.lease('a'), same(first));
+      expect(first.controller, same(controller));
+      expect(controller.messages.single, same(message));
+      expect(first.isMounted, isTrue);
+      expect(first.olderCursor, 'before-3');
+      expect(first.hasOlder, isTrue);
+      expect(first.demand, same(chatDemand));
+      expect(
+        (first.appliedSets, first.appliedPrepends, first.appliedAppends),
+        (1, 0, 0),
+      );
+      expect(h.a.consumer, same(consumer));
+      expect(h.a.attaches, 1);
+      expect(h.a.demands, [chatDemand]);
+      expect(h.a.refreshes, 0);
+      expect(
+        h.a.scopes,
+        isEmpty,
+        reason: 'A snapshot must not open a query or load an older page',
+      );
+      expect(h.b.attaches, 0);
+      expect(h.b.scopes, isEmpty);
+    }
+
+    final pending = h.owner.visibleLayoutSnapshot!;
+    expect(pending.threadId, 'a');
+    expect(pending.selectionId, first.selectionId);
+    expect(pending.generation, first.generation);
+    expect(pending.firstContentLayout, isNull);
+    expect(h.owner.visibleLayoutSnapshot, pending);
+    expect(first.firstContentLayout, isNull);
+    expectOriginalResources();
+    final completedMicros = h.owner.monotonicMicros;
+    h.owner.recordContentLayout(first, 'a-1', completedMicros);
+    final observed = h.owner.visibleLayoutSnapshot!;
+    final span = observed.firstContentLayout!;
+    expect(span, same(first.firstContentLayout));
+    expect(span.selectionId, pending.selectionId);
+    expect(span.generation, pending.generation);
+    expect(span.itemId, 'a-1');
+    expect(span.selectionStartedMicros, first.selectionStartedMicros);
+    expect(span.layoutCompletedMicros, completedMicros);
+    expect(h.owner.visibleLayoutSnapshot, observed);
+    expectOriginalResources();
+
+    final released = first.unbind();
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    first.bind();
+    expect(h.owner.visibleLayoutSnapshot!.firstContentLayout, same(span));
+    // Visible selection may change before its next Set is admitted. Even an
+    // A -> B -> A notification must not lend the first A's observed span.
+    h.owner.noteVisibleSelection('b');
+    expect(first.isMounted, isTrue);
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    h.owner.noteVisibleSelection('a');
+    expect(h.owner.lease('a'), same(first));
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    await h.a.deliver(chatBatch([_text('a', 2)], before: 'new-before'));
+    final next = h.owner.lease('a')!;
+    leases.add(next);
+    expect(first.isRetired, isTrue);
+    expect(first.isReleased, isFalse);
+    expect(h.owner.visibleLayoutSnapshot, isNull);
+    next.bind();
+    final nextPending = h.owner.visibleLayoutSnapshot!;
+    expect(nextPending.threadId, 'a');
+    expect(nextPending.generation, greaterThan(pending.generation));
+    expect(nextPending.selectionId, greaterThan(pending.selectionId));
+    expect(nextPending.firstContentLayout, isNull);
+    h.owner.recordContentLayout(first, 'a-1', h.owner.monotonicMicros);
+    expect(h.owner.visibleLayoutSnapshot, nextPending);
+    h.owner.recordContentLayout(next, 'a-2', h.owner.monotonicMicros);
+    final nextSpan = h.owner.visibleLayoutSnapshot!.firstContentLayout!;
+    expect(nextSpan, same(next.firstContentLayout));
+    expect(nextSpan, isNot(same(span)));
+    expect(nextSpan.itemId, 'a-2');
+    expect(nextSpan.selectionId, nextPending.selectionId);
+    expect(nextSpan.generation, nextPending.generation);
+    expect(h.a.demands, [chatDemand]);
+    expect(h.a.attaches, 1);
+    expect(h.a.scopes, isEmpty);
+    unawaited(first.unbind());
+    await released;
+    expect(
+      first.isReleased,
+      isTrue,
+      reason: 'Keeping the returned record/span must not retain a lease',
+    );
+    final retiringNext = next.retire();
+    expect(next.isMounted, isTrue);
+    expect(next.isRetired, isTrue);
+    expect(
+      h.owner.visibleLayoutSnapshot,
+      isNull,
+      reason: 'An observed lease loses snapshot eligibility before unmount',
+    );
+    unawaited(next.unbind());
+    await retiringNext;
+    expect(next.isReleased, isTrue);
+  });
+
   for (final phase in [
     TimelineConnectionPhase.idle,
     TimelineConnectionPhase.ready,
@@ -612,6 +750,7 @@ final class _Content extends Fake implements ConversationContent {
   void Function()? onDetach;
   int attaches = 0;
   int refreshes = 0;
+  final demands = <ReadDemand>[];
   final scopes = <_Scope>[];
   final payloads = <String, List<int>>{};
   @override
@@ -621,6 +760,7 @@ final class _Content extends Fake implements ConversationContent {
   }) {
     if (consumer != null) throw StateError('duplicate consumer');
     attaches++;
+    demands.add(demand);
     consumer = value;
     onAttach?.call();
     return _Observation(() {

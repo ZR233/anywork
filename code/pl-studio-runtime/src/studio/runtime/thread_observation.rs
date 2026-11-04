@@ -910,11 +910,19 @@ impl PendingHandoff {
     /// The same measurement the reliable channel charges when it takes the batch over, so the
     /// Thread's existing budget covers the batch under exactly one owner at a time — never twice
     /// outside the one synchronous handoff boundary, and never unbounded while a report awaits.
+    #[cfg(test)]
     fn retained_bytes(&self) -> u64 {
+        self.prepared
+            .retained_bytes()
+            .saturating_add(self.extra_retained_bytes())
+    }
+
+    /// Delivery changes owned here in addition to the shared prepared batch.
+    fn extra_retained_bytes(&self) -> u64 {
         // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
         // the one implementation the writer shares); the delivery changes are this owner's own
         // residents and are charged element by element.
-        let mut bytes = self.prepared.retained_bytes();
+        let mut bytes = 0_u64;
         if let Some(changes) = self.changes.as_ref() {
             for event in changes {
                 bytes = bytes.saturating_add(event.retained_bytes());
@@ -1142,7 +1150,7 @@ impl LiveOwner {
         // the prepared content is added and no body is counted twice in steady state.
         let pending = self.pending.as_ref().map(|pending| {
             let prepared_bytes = pending.prepared.retained_bytes();
-            bytes = bytes.saturating_add(pending.retained_bytes().saturating_sub(prepared_bytes));
+            bytes = bytes.saturating_add(pending.extra_retained_bytes());
             PendingProjectionRetention {
                 sequence: pending.prepared.sequence,
                 prepared_bytes,
@@ -1360,8 +1368,7 @@ impl LiveOwner {
     /// refuse the batch, this pending slot remains its sole owner. That prevents the next worker pass
     /// from starting delivery before the reliable handoff and keeps cancellation/retry on one batch.
     fn prepare_terminal_delivery(&mut self, services: &ObservationServices) -> Result<()> {
-        let before = self.retention();
-        let Some(pending) = self.pending.as_mut() else {
+        let Some(pending) = self.pending.as_ref() else {
             return Ok(());
         };
         if pending.terminal.is_some() {
@@ -1370,6 +1377,13 @@ impl LiveOwner {
         let Some(original) = pending.prepared.parent_report.clone() else {
             return Ok(());
         };
+        // Ordinary effects have no terminal material to transfer. Measure only after that
+        // qualification; the retained batch cannot change during these synchronous borrows.
+        let before = self.retention();
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("terminal batch was checked above");
         anyhow::ensure!(
             self.terminal_transfer
                 .lock()
@@ -2465,6 +2479,10 @@ impl ProjectionWorker {
         // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
         let mut newest_commit_at = 0_i64;
         loop {
+            // One projection includes table scans and encoding, not one cheap iterator item.
+            // Yield between complete handoffs instead of spending only one cooperative credit
+            // per effect; writer progress must not depend on exhausting a whole batch of them.
+            tokio::task::yield_now().await;
             // The retained handoff is completed before any new queue work: its write is the very
             // Arc the queue admitted, so even a queue entry that already disappeared cannot make
             // this owner forget or re-project the commit it still owes.
@@ -4705,15 +4723,13 @@ mod storage_fault_tests {
                 )),
             )),
         );
-        let current = crate::studio::storage::history::conversation::current::PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            projection: pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
-            changes: Arc::from([]),
-            contents: Arc::from([]),
-            source_changes: Arc::from([]),
-        };
+        let current = crate::studio::storage::history::conversation::current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(
+                pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
+            ),
+            Arc::from([]),
+            Arc::from([]),
+        );
         history
             .commit_effect(
                 1,

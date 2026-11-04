@@ -728,10 +728,10 @@ impl RuntimeOrderIndex {
         }
     }
 
-    pub(in crate::studio) fn retain(
+    pub(in crate::studio) fn retain<V>(
         &self,
         sources: &std::collections::BTreeSet<String>,
-        identities: &std::collections::BTreeSet<String>,
+        identities: &BTreeMap<String, V>,
     ) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         for (id, entry) in &mut state.assigned {
@@ -745,7 +745,7 @@ impl RuntimeOrderIndex {
                 // checkpoint. Absence from an older checkpoint does not prove source retirement.
                 !entry.source_ended
             });
-            entry.retained = identities.contains(id) || source_live;
+            entry.retained = source_live || identities.contains_key(id);
         }
         let released = self.prune(&mut state);
         drop(state);
@@ -5115,14 +5115,21 @@ pub(crate) mod storage_fault_tests {
         let reserved_bytes = index.retained_bytes();
         assert!(reserved_bytes > "observed".len() as u64);
         assert_eq!(process.load(Ordering::Acquire), reserved_bytes);
-        index.retain(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), &Default::default());
         assert_eq!(
             index.retained_bytes(),
             reserved_bytes,
             "an older checkpoint cannot retire a source the projection has not reached"
         );
         index.finish_source("attempt-one");
-        index.retain(&Default::default(), &Default::default());
+        let identities = BTreeMap::from([("observed".to_owned(), 5_u64)]);
+        index.retain(&Default::default(), &identities);
+        assert_eq!(
+            index.retained_bytes(),
+            reserved_bytes,
+            "an ended source's identity stays charged while the original fact index retains it"
+        );
+        index.retain::<()>(&Default::default(), &Default::default());
         assert_eq!(
             index.retained_bytes(),
             0,
@@ -5150,7 +5157,7 @@ pub(crate) mod storage_fault_tests {
         index.materialize(&item, 7)?;
         index.mark_completion("completed", true);
         index.finish_source("attempt-two");
-        index.retain(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), &Default::default());
         assert!(index.pending("completed"));
         assert!(index.is_sealed("completed"));
         assert!(index.is_terminal("completed"));
@@ -5184,7 +5191,7 @@ pub(crate) mod storage_fault_tests {
         index.other_thread_bytes.store(0, Ordering::Release);
         assert_eq!(index.reserve_observed("attempt", "accepted")?, 11);
         index.finish_source("attempt");
-        index.retain(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), &Default::default());
         assert_eq!(process.load(Ordering::Acquire), 0);
         Ok(())
     }
@@ -5227,7 +5234,7 @@ pub(crate) mod storage_fault_tests {
 
         index.other_thread_bytes.store(0, Ordering::Release);
         index.materialize(&item, 7)?;
-        index.retain(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), &Default::default());
         let pending = index.pending_placement(id, "thread").unwrap();
         let resident_bytes = index.retained_bytes();
         let mut growing = item.clone();
@@ -5390,7 +5397,7 @@ pub(crate) mod storage_fault_tests {
                 })?;
             // The later fact has also left the live window; only its new unsaved obligation
             // must keep the reconstructed identity resident until the writer reaches it.
-            index.retain(&Default::default(), &Default::default());
+            index.retain::<()>(&Default::default(), &Default::default());
             let mut next_prepared = old_prepared.clone();
             next_prepared.sequence = 3;
             next_prepared.current = next_current.current.clone();
@@ -6852,10 +6859,13 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(
             accounting_only.retained_bytes(),
             accounting_only.accounting.retained_bytes()
-                + serde_json::to_vec(&accounting_only.current.projection)?.len() as u64
+                + serde_json::to_vec(accounting_only.current.projection())?.len() as u64
+                + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64
+                + 3 * std::mem::size_of::<usize>() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
                 + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
-                    as u64,
+                    as u64
+                + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -7444,7 +7454,7 @@ pub(crate) mod storage_fault_tests {
         assert!(bytes > 0);
         assert_eq!(process.load(Ordering::Acquire), bytes);
         // Processing an older checkpoint cannot retire an admitted but unprojected boundary.
-        index.retain(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), &Default::default());
         assert_eq!(index.retained_bytes(), bytes);
         index.confirm_saved(1);
         assert_eq!(index.retained_bytes(), 0);

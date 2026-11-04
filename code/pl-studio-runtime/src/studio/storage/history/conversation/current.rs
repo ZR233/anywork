@@ -1,6 +1,7 @@
 //! Frozen effect-local current mutations. This module never samples a live execution owner.
 
 use super::*;
+use crate::studio::thread_projection::FrozenCurrentProjection;
 use pl_core::chat::{ChatContent, ChatContentKey, ChatError, ContentData, ContentDescriptor};
 use pl_protocol::{CurrentCollectionRef, CurrentProjection};
 use serde::{Deserialize, Serialize};
@@ -50,7 +51,7 @@ pub(crate) struct PreparedTimelineItem {
 pub(crate) struct PreparedCurrent {
     pub(in crate::studio) timeline_update:
         Arc<crate::studio::thread_projection::timeline::TimelineUpdate>,
-    pub projection: CurrentProjection,
+    projection: Arc<FrozenCurrentProjection>,
     pub changes: Arc<[CurrentEntryChange]>,
     pub contents: Arc<[CurrentContentWrite]>,
     /// Real source starts/ends from this effect, not group boundaries or presentation state.
@@ -62,6 +63,43 @@ pub(crate) struct PreparedCurrent {
     /// Source effect at which the committed items above became visible.
     /// Set on publication; zero for effects that committed no display item.
     pub timeline_commit: u64,
+}
+
+impl PreparedCurrent {
+    pub(in crate::studio) fn new(
+        projection: Arc<FrozenCurrentProjection>,
+        changes: Arc<[CurrentEntryChange]>,
+        contents: Arc<[CurrentContentWrite]>,
+    ) -> Self {
+        Self {
+            timeline_update: Arc::new(Default::default()),
+            projection,
+            changes,
+            contents,
+            source_changes: Arc::from([]),
+            timeline: Arc::from([]),
+            timeline_commit: 0,
+        }
+    }
+
+    pub fn projection(&self) -> &CurrentProjection {
+        self.projection.projection()
+    }
+
+    pub(in crate::studio) fn frozen_projection(&self) -> &Arc<FrozenCurrentProjection> {
+        &self.projection
+    }
+
+    pub(in crate::studio) fn replace_projection(
+        &mut self,
+        projection: Arc<FrozenCurrentProjection>,
+    ) {
+        self.projection = projection;
+    }
+
+    pub fn projection_retained_bytes(&self) -> u64 {
+        self.projection.retained_bytes()
+    }
 }
 
 pub(in super::super) fn validate_database(
@@ -105,7 +143,7 @@ pub(crate) async fn apply(
     current: &PreparedCurrent,
 ) -> Result<()> {
     ensure!(
-        current.projection.source_effect_seq == write_seq,
+        current.projection().source_effect_seq == write_seq,
         "current projection does not belong to the committing effect"
     );
     let mut live_keys = std::collections::BTreeSet::new();
@@ -114,7 +152,7 @@ pub(crate) async fn apply(
         live_keys.insert(key.clone());
         super::content::write_content(db, &write.content, write.sealed).await?;
     }
-    let bytes = serde_json::to_vec(&current.projection)?;
+    let bytes = serde_json::to_vec(current.projection())?;
     // The product envelope is bounded; growing facts belong in the collection/content tables.
     ensure!(
         bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
@@ -137,10 +175,10 @@ pub(crate) async fn apply(
                     "current collection identity is empty"
                 );
                 let collection = current
-                    .projection
+                    .projection()
                     .collections
                     .iter()
-                    .chain(current.projection.interactions.iter())
+                    .chain(current.projection().interactions.iter())
                     .find(|reference| reference.collection == entry.collection)
                     .context("current entry has no collection revision")?;
                 let owner = pl_protocol::ContentOwner::Current {
@@ -197,14 +235,14 @@ pub(crate) async fn apply(
     // Typed heads are bounded. Collection retirement follows explicit mutations; body retirement
     // only visits the current-owner directory prefix in bounded metadata batches.
     for reference in current
-        .projection
+        .projection()
         .plan
         .iter()
         .filter_map(|p| p.document.as_ref())
-        .chain(current.projection.previews.iter().map(|p| &p.reference))
+        .chain(current.projection().previews.iter().map(|p| &p.reference))
         .chain(
             current
-                .projection
+                .projection()
                 .atoms
                 .iter()
                 .flat_map(|atom: &pl_protocol::ChatAtom| {
@@ -255,10 +293,10 @@ pub(crate) async fn apply(
             serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
         for reference in old.collections.iter().chain(old.interactions.iter()) {
             if !current
-                .projection
+                .projection()
                 .collections
                 .iter()
-                .chain(current.projection.interactions.iter())
+                .chain(current.projection().interactions.iter())
                 .any(|new| new.collection == reference.collection)
             {
                 remove_entries(db, &reference.collection, None).await?;
@@ -344,7 +382,7 @@ pub(crate) async fn read(db: &impl ConnectionTrait) -> Result<CurrentProjection>
 pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent) -> Result<()> {
     super::sources::verify(
         db,
-        current.projection.source_effect_seq,
+        current.projection().source_effect_seq,
         &current.source_changes,
     )
     .await?;
@@ -356,7 +394,7 @@ pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent)
         .await?
         .context("retried effect has no committed current projection")?;
     ensure!(
-        row.try_get::<Vec<u8>>("", "payload")? == serde_json::to_vec(&current.projection)?,
+        row.try_get::<Vec<u8>>("", "payload")? == serde_json::to_vec(current.projection())?,
         ChatError::Conflict("retried effect changed its frozen current projection".into())
     );
     for write in current.contents.iter() {
@@ -438,10 +476,10 @@ pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent)
         let metadata: EntryPayload =
             serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
         let reference = current
-            .projection
+            .projection()
             .collections
             .iter()
-            .chain(current.projection.interactions.iter())
+            .chain(current.projection().interactions.iter())
             .find(|reference| reference.collection == collection)
             .context("retried entry has no revision")?;
         let owner = crate::studio::conversation_identity::content_owner_key(

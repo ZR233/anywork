@@ -86,7 +86,7 @@ fn publish(
         session,
         prepared.current_state.clone().context("prepared current")?,
         prepared.current_handoff.clone(),
-        &prepared.current.timeline_update.generation,
+        prepared.current.timeline_update.generation(),
     )
 }
 
@@ -101,14 +101,17 @@ pub(super) struct Harness {
 }
 impl Harness {
     pub async fn new(env: &support::Environment) -> Result<Self> {
-        let (delta, thread) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
-            crate::studio::ids::new_id("timeline-fixture"),
-            &env.project.id,
-            "timeline fixture",
-            ThreadModeId::simple(),
-            ThreadWorkspaceMode::Local,
-            env.project.path.clone(),
-        );
+        let (delta, directory_session, agent) =
+            crate::studio::store::directory::DirectoryDelta::register_session(
+                crate::studio::ids::new_id("timeline-fixture"),
+                &env.project.id,
+                "timeline fixture",
+                ThreadModeId::simple(),
+                ThreadWorkspaceMode::Local,
+                env.project.path.clone(),
+                crate::config::ROOT_AGENT_ROUTE_KEY,
+            );
+        let thread = crate::studio::records::thread_projection(&directory_session, &agent);
         env.runtime
             .agent_facility
             .product_events
@@ -303,7 +306,7 @@ async fn failed_display_fold_retains_original_publication_for_retry_without_adva
         assert_eq!(harness.session.head_seq(),head);
         assert!(Arc::ptr_eq(&prepared.completions[0],&record));
         assert!(prepared.timeline.is_empty());
-        assert!(harness.projection.current_state().context("unchanged current")?.projection.items.is_empty());
+        assert!(harness.projection.current_state().context("unchanged current")?.projection().items.is_empty());
         Ok::<_,anyhow::Error>(())
     }.await;
     env.finish(result).await
@@ -393,7 +396,7 @@ async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start
         let frozen = prepared
             .current
             .timeline_update
-            .facts
+            .facts()
             .iter()
             .find(|atom| atom.kind == ChatAtomKind::ToolCall)
             .context("original tool start")?;
@@ -403,7 +406,7 @@ async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start
         );
         let head = prepared
             .current
-            .projection
+            .projection()
             .atoms
             .iter()
             .find(|atom| atom.id == frozen.id)
@@ -418,7 +421,7 @@ async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start
         let member = prepared
             .current
             .timeline_update
-            .members
+            .members()
             .iter()
             .rev()
             .find(|member| member.atom.id == frozen.id)
@@ -430,7 +433,7 @@ async fn first_tool_prepare_publishes_argument_head_but_preserves_original_start
         assert_eq!(member.atom.lifecycle, head.lifecycle);
         let reference = prepared
             .current
-            .projection
+            .projection()
             .items
             .iter()
             .find_map(|item| item.members.clone())
@@ -567,14 +570,14 @@ async fn reliable_starts_reverse_completion_and_member_window_use_real_item_feed
         );
         let current_text = started
             .current
-            .projection
+            .projection()
             .atoms
             .iter()
             .find(|atom| atom.kind == ChatAtomKind::Text)
             .context("live text head")?;
         let text_item = started
             .current
-            .projection
+            .projection()
             .items
             .iter()
             .find(|item| item.kind == TimelineItemKind::Text)
@@ -871,14 +874,17 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
         // This test owns the projection and its synthetic Core effects. Register only the durable
         // directory fact: create_thread also activates a real observation worker, which would race
         // this owner over the same execution index and overwrite its completion identity knowledge.
-        let (delta, thread) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
-            "background-order".into(),
-            &env.project.id,
-            "background order",
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
-            env.project.path.clone(),
-        );
+        let (delta, directory_session, agent) =
+            crate::studio::store::directory::DirectoryDelta::register_session(
+                "background-order".into(),
+                &env.project.id,
+                "background order",
+                pl_protocol::ThreadModeId::simple(),
+                pl_protocol::ThreadWorkspaceMode::Local,
+                env.project.path.clone(),
+                crate::config::ROOT_AGENT_ROUTE_KEY,
+            );
+        let thread = crate::studio::records::thread_projection(&directory_session, &agent);
         env.runtime
             .agent_facility
             .product_events
@@ -1036,7 +1042,7 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
         if recovered {
             save_effect(&history,&session,&prepared).await?;
             assert!(prepared.timeline.is_empty());
-            let group=prepared.current.projection.items.first().context("open G")?;
+            let group=prepared.current.projection().items.first().context("open G")?;
             assert!(!group.admission_closed);
             assert_eq!(group.summary.as_ref().context("G summary")?.active_count,0);
         }
@@ -1275,7 +1281,7 @@ async fn real_empty_part_closes_work_but_whitespace_remains_a_message() -> Resul
         let empty=harness.effect(vec![start("empty",false)],vec![finish("empty",false,"")?]).await?;
         assert_eq!(empty.timeline.len(),1);
         assert_eq!(empty.timeline[0].kind,TimelineItemKind::WorkGroup);
-        assert!(empty.current.projection.items.is_empty());
+        assert!(empty.current.projection().items.is_empty());
         let empty_atom:ChatAtom=serde_json::from_slice(&empty.completions[0].header.metadata)?;
         assert_eq!(empty_atom.content_present,Some(false));
         assert!(matches!(empty_atom.lifecycle,ChatAtomLifecycle::Terminal{..}));

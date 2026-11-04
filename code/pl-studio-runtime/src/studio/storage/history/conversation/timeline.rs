@@ -151,8 +151,8 @@ pub(in crate::studio) async fn apply_facts(
     db: &impl ConnectionTrait,
     current: &PreparedCurrent,
 ) -> Result<()> {
-    for atom in &current.timeline_update.facts {
-        save_fact(db, atom, current.projection.source_effect_seq).await?;
+    for atom in current.timeline_update.facts() {
+        save_fact(db, atom, current.projection().source_effect_seq).await?;
     }
     Ok(())
 }
@@ -232,11 +232,11 @@ async fn save_update(
     facts: bool,
 ) -> Result<()> {
     if facts {
-        for atom in &update.facts {
+        for atom in update.facts() {
             save_fact(db, atom, effect).await?;
         }
     }
-    for member in &update.members {
+    for member in update.members() {
         let bytes = serde_json::to_vec(&member.atom)?;
         let written = db.execute_raw(statement("INSERT INTO timeline_item_members(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata) VALUES(?,?,?,?,?,?) ON CONFLICT(item_id,member_order) DO UPDATE SET completion_item_id=excluded.completion_item_id,metadata=excluded.metadata WHERE timeline_item_members.member_id=excluded.member_id AND (timeline_item_members.completion_item_id IS NULL OR timeline_item_members.completion_item_id=excluded.completion_item_id)",vec![member.item_id.clone().into(),integer(member.member_order)?.into(),member.atom.id.clone().into(),member.atom.completion_item_id.clone().into(),integer(effect)?.into(),bytes.into()])).await?;
         ensure!(
@@ -244,15 +244,15 @@ async fn save_update(
             "timeline member identity/completion conflict"
         );
     }
-    for item in &update.current {
+    for item in update.current() {
         save_item(db, database, item, effect).await?;
     }
     for entry in committed {
         save_item(db, database, &entry.item, effect).await?;
     }
     // Empty text remains a boundary in the source facts, not an empty display row.
-    db.execute_raw(statement("DELETE FROM timeline_items WHERE location='current' AND item_id NOT IN (SELECT value FROM json_each(?))",vec![serde_json::to_string(&update.current.iter().map(|item| &item.id).collect::<Vec<_>>())?.into()])).await?;
-    db.execute_raw(statement("INSERT INTO timeline_projection_state(singleton_id,projection_version,next_position,source_effect_seq,projection_generation,recovery) VALUES(1,?,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET projection_version=excluded.projection_version,next_position=excluded.next_position,source_effect_seq=excluded.source_effect_seq,projection_generation=excluded.projection_generation,recovery=excluded.recovery",vec![i64::from(TIMELINE_PROJECTION_VERSION).into(),integer(update.next_position)?.into(),integer(effect)?.into(),update.generation.clone().into(),update.recovery.clone().into()])).await?;
+    db.execute_raw(statement("DELETE FROM timeline_items WHERE location='current' AND item_id NOT IN (SELECT value FROM json_each(?))",vec![serde_json::to_string(&update.current().iter().map(|item| &item.id).collect::<Vec<_>>())?.into()])).await?;
+    db.execute_raw(statement("INSERT INTO timeline_projection_state(singleton_id,projection_version,next_position,source_effect_seq,projection_generation,recovery) VALUES(1,?,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET projection_version=excluded.projection_version,next_position=excluded.next_position,source_effect_seq=excluded.source_effect_seq,projection_generation=excluded.projection_generation,recovery=excluded.recovery",vec![i64::from(TIMELINE_PROJECTION_VERSION).into(),integer(update.next_position())?.into(),integer(effect)?.into(),update.generation().to_owned().into(),update.recovery().to_vec().into()])).await?;
     Ok(())
 }
 pub(in super::super) async fn apply(
@@ -262,20 +262,20 @@ pub(in super::super) async fn apply(
 ) -> Result<()> {
     ensure!(
         current.timeline.is_empty()
-            || current.timeline_commit == current.projection.source_effect_seq,
+            || current.timeline_commit == current.projection().source_effect_seq,
         "timeline publication is not bound to its source effect"
     );
-    if current.timeline_update.generation.is_empty() {
+    if current.timeline_update.generation().is_empty() {
         ensure!(
             current.timeline.is_empty()
-                && current.timeline_update.facts.is_empty()
-                && current.timeline_update.members.is_empty(),
+                && current.timeline_update.facts().is_empty()
+                && current.timeline_update.members().is_empty(),
             "unqualified derived write"
         );
         return Ok(());
     }
     ensure!(
-        generation(db).await? == current.timeline_update.generation,
+        generation(db).await? == current.timeline_update.generation(),
         "retired timeline generation cannot write"
     );
     let mut expected = next_position(db).await?;
@@ -287,7 +287,7 @@ pub(in super::super) async fn apply(
         expected = expected.checked_add(1).context("timeline order overflow")?;
     }
     ensure!(
-        current.timeline_update.next_position == expected,
+        current.timeline_update.next_position() == expected,
         "timeline recovery order differs from history prefix"
     );
     save_update(
@@ -295,7 +295,7 @@ pub(in super::super) async fn apply(
         database,
         &current.timeline_update,
         &current.timeline,
-        current.projection.source_effect_seq,
+        current.projection().source_effect_seq,
         true,
     )
     .await
@@ -319,7 +319,7 @@ pub(in super::super) async fn verify(
             "retried timeline item differs"
         );
     }
-    for atom in &current.timeline_update.facts {
+    for atom in current.timeline_update.facts() {
         let phase = if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
             "start"
         } else {
@@ -337,7 +337,7 @@ pub(in super::super) async fn verify(
             "retried canonical atom fact differs"
         );
     }
-    for member in &current.timeline_update.members {
+    for member in current.timeline_update.members() {
         if let Some(completion) = &member.atom.completion_item_id {
             let row = db.query_one_raw(statement(
                 "SELECT member_id,completion_item_id FROM timeline_item_members WHERE item_id=? AND member_order=?",

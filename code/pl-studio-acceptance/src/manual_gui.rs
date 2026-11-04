@@ -2304,7 +2304,8 @@ fn run_timeline_history_scenario(
         if *run_displacement {
             let gui_log = working.join("timeline-history-displacement-gui.log");
             let native_exit = output.join("timeline-history-displacement-native-exit.json");
-            let mut gui = start_timeline_history_gui(workspace, home, &gui_log, &native_exit)?;
+            let mut gui =
+                start_timeline_history_gui(workspace, home, &gui_log, &native_exit, false)?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
             observe_capture_exit(
                 app_dir,
@@ -2440,12 +2441,13 @@ fn start_timeline_history_gui(
     home: &Path,
     log_path: &Path,
     native_exit: &Path,
+    inspect: bool,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
-        // Profile（不是 debug）与其它长历史场景一致；仍不是 AOT/release 性能证据。
+        // Profile 与发布构建分开取证；只有显式采样调用方装配官方 Driver。
         .args([
             "xtask",
             "run-gui",
@@ -2458,6 +2460,9 @@ fn start_timeline_history_gui(
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    if inspect {
+        command.arg("--inspect");
+    }
     OwnedProcess::start(&mut command, false)
 }
 

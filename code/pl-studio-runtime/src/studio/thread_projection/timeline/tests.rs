@@ -111,6 +111,320 @@ fn fold() -> TimelineProjection {
     TimelineProjection::new("db".into(), "test-generation".into(), 0)
 }
 
+fn assert_projection_retention(timeline: &TimelineProjection) -> u64 {
+    let canonical = serde_json::to_vec(&(
+        &timeline.items,
+        &timeline.active,
+        &timeline.committed,
+        &timeline.changes,
+        &timeline.facts,
+    ))
+    .unwrap();
+    let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
+    assert_eq!(timeline.retained_bytes(), expected);
+    expected
+}
+
+#[test]
+fn mutable_projection_retention_tracks_fold_restore_and_drains() {
+    let mut timeline = fold();
+    assert_projection_retention(&timeline);
+    let started = active("tool", ChatAtomKind::ToolCall, 1, pos(1, 0), Vec::new());
+    timeline.observe(&started, None).unwrap();
+    let first = assert_projection_retention(&timeline);
+    timeline.observe(&started, None).unwrap();
+    timeline.refresh_current(&started).unwrap();
+    assert_eq!(assert_projection_retention(&timeline), first);
+    let mut waiting = started.clone();
+    waiting.lifecycle = ChatAtomLifecycle::Active {
+        started: Some(pos(1, 0)),
+        status: ChatActiveStatus::Waiting,
+    };
+    waiting.contents = content();
+    timeline.observe(&waiting, None).unwrap();
+    assert_projection_retention(&timeline);
+    timeline.refresh_current(&started).unwrap();
+    assert_projection_retention(&timeline);
+    let update = timeline.take_update().unwrap();
+    assert_projection_retention(&timeline);
+    let recovery = update.recovery().to_vec();
+    let update_bytes = serde_json::to_vec(&update).unwrap();
+    let mut restored = fold();
+    assert_projection_retention(&restored);
+    restored.restore_recovery(&recovery).unwrap();
+    assert_projection_retention(&restored);
+    assert_eq!(restored.current_items(), timeline.current_items());
+    assert_eq!(restored.take_update().unwrap().recovery(), recovery);
+    assert_projection_retention(&restored);
+    let frozen = timeline.clone();
+    let frozen_bytes = assert_projection_retention(&frozen);
+    let ended = terminal(
+        "tool",
+        ChatAtomKind::ToolCall,
+        1,
+        pos(1, 0),
+        pos(2, 0),
+        content(),
+    );
+    timeline.observe(&ended, None).unwrap();
+    assert_eq!(assert_projection_retention(&timeline), frozen_bytes);
+    timeline
+        .complete(
+            ended,
+            1,
+            Some(PayloadData::Inline {
+                bytes: b"done".to_vec(),
+            }),
+        )
+        .unwrap();
+    assert_projection_retention(&timeline);
+    timeline.end_source(&source());
+    let closed = assert_projection_retention(&timeline);
+    timeline.end_source(&source());
+    assert_eq!(assert_projection_retention(&timeline), closed);
+    timeline.commit_ready().unwrap();
+    assert_eq!(timeline.committed().len(), 1);
+    let committed = assert_projection_retention(&timeline);
+    timeline.commit_ready().unwrap();
+    assert_eq!(assert_projection_retention(&timeline), committed);
+    assert_eq!(timeline.take_committed().len(), 1);
+    assert_projection_retention(&timeline);
+    timeline.take_update().unwrap();
+    assert_projection_retention(&timeline);
+    assert_eq!(assert_projection_retention(&frozen), frozen_bytes);
+    assert_eq!(serde_json::to_vec(&update).unwrap(), update_bytes);
+
+    // A text start closes a preceding work group's admission, without completing its member.
+    let work = active("work", ChatAtomKind::Reasoning, 2, pos(3, 0), Vec::new());
+    timeline.observe(&work, None).unwrap();
+    assert_projection_retention(&timeline);
+    let text = active("text", ChatAtomKind::Text, 3, pos(4, 0), content());
+    timeline.close_group_for(&source(), key(&text, None, false));
+    assert_projection_retention(&timeline);
+    timeline.observe(&text, None).unwrap();
+    assert_projection_retention(&timeline);
+    timeline
+        .complete(
+            terminal(
+                "work",
+                ChatAtomKind::Reasoning,
+                2,
+                pos(3, 0),
+                pos(5, 0),
+                Vec::new(),
+            ),
+            2,
+            None,
+        )
+        .unwrap();
+    assert_projection_retention(&timeline);
+    timeline.commit_ready().unwrap();
+    assert_projection_retention(&timeline);
+    timeline
+        .complete(
+            terminal(
+                "text",
+                ChatAtomKind::Text,
+                3,
+                pos(4, 0),
+                pos(6, 0),
+                content(),
+            ),
+            3,
+            None,
+        )
+        .unwrap();
+    assert_projection_retention(&timeline);
+    timeline.commit_ready().unwrap();
+    assert_projection_retention(&timeline);
+    assert_eq!(timeline.take_committed().len(), 2);
+    assert_projection_retention(&timeline);
+    timeline.take_update().unwrap();
+    assert_projection_retention(&timeline);
+}
+
+#[test]
+fn legacy_member_restore_invalidates_projection_retention() {
+    let mut timeline = fold();
+    let ended = terminal(
+        "legacy",
+        ChatAtomKind::ToolCall,
+        1,
+        pos(1, 0),
+        pos(2, 0),
+        content(),
+    );
+    assert_projection_retention(&timeline);
+    timeline.admit_legacy_header(&ended).unwrap();
+    assert_projection_retention(&timeline);
+    let item = timeline.current_items().remove(0);
+    timeline
+        .restore_legacy_member(item.id.clone(), 0, &ended)
+        .unwrap();
+    let restored = assert_projection_retention(&timeline);
+    timeline.restore_legacy_member(item.id, 0, &ended).unwrap();
+    assert_eq!(assert_projection_retention(&timeline), restored);
+    timeline.complete(ended, 1, None).unwrap();
+    assert_projection_retention(&timeline);
+    timeline.end_source(&source());
+    assert_projection_retention(&timeline);
+    timeline.commit_ready().unwrap();
+    assert_projection_retention(&timeline);
+    assert_eq!(timeline.take_committed().len(), 1);
+    assert_projection_retention(&timeline);
+}
+
+// The persisted shape before retention caching, including its canonical field order.
+fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct CanonicalUpdate<'a> {
+        facts: &'a [ChatAtom],
+        members: &'a [MemberChange],
+        current: &'a [TimelineItem],
+        recovery: &'a [u8],
+        next_position: u64,
+        generation: &'a str,
+    }
+    serde_json::to_vec(&CanonicalUpdate {
+        facts: update.facts(),
+        members: update.members(),
+        current: update.current(),
+        recovery: update.recovery(),
+        next_position: update.next_position(),
+        generation: update.generation(),
+    })
+    .unwrap()
+}
+
+#[test]
+fn frozen_update_retention_preserves_canonical_serialization() {
+    let mut timeline = fold();
+    timeline
+        .observe(
+            &active("tool", ChatAtomKind::ToolCall, 1, pos(1, 1), content()),
+            None,
+        )
+        .unwrap();
+    for update in [TimelineUpdate::default(), timeline.take_update().unwrap()] {
+        let canonical = canonical_update_bytes(&update);
+        let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
+        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
+        assert_eq!(update.retained_bytes(), expected);
+        assert_eq!(update.retained_bytes(), expected);
+        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
+        let cloned = update.clone();
+        assert_eq!(cloned.retained_bytes(), expected);
+        assert_eq!(serde_json::to_vec(&cloned).unwrap(), canonical);
+        let restored: TimelineUpdate = serde_json::from_slice(&canonical).unwrap();
+        assert_eq!(restored.retained_bytes(), expected);
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    }
+}
+
+#[test]
+fn frozen_update_retention_counts_recovery_json_numbers() {
+    let mut timeline = TimelineProjection::new("db".into(), "test-generation".into(), 37);
+    timeline
+        .observe(
+            &active(
+                "retention",
+                ChatAtomKind::ToolCall,
+                17,
+                pos(23, 4),
+                content(),
+            ),
+            None,
+        )
+        .unwrap();
+    let base = timeline.take_update().unwrap();
+    assert!(!base.facts().is_empty());
+    assert!(!base.members().is_empty());
+    assert!(!base.current().is_empty());
+    assert_ne!(base.next_position(), 0);
+    assert!(!base.generation().is_empty());
+
+    let cases = [
+        Vec::new(),
+        vec![0],
+        vec![9],
+        vec![10],
+        vec![99],
+        vec![100],
+        vec![255],
+        vec![0, 9, 10, 99, 100, 255],
+        (0..=u8::MAX).collect(),
+    ];
+    for recovery in cases {
+        let mut update = base.clone();
+        update.recovery = recovery;
+        let canonical = canonical_update_bytes(&update);
+        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
+        let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
+        assert_eq!(update.retained_bytes(), expected);
+        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
+    }
+}
+
+#[test]
+fn prepend_prior_invalidates_measured_updates_without_changing_recovery() {
+    let mut timeline = fold();
+    timeline
+        .observe(
+            &active("first", ChatAtomKind::ToolCall, 1, pos(1, 1), content()),
+            None,
+        )
+        .unwrap();
+    let prior = timeline.take_update().unwrap();
+    let prior_bytes = prior.retained_bytes();
+    assert!(!prior.facts().is_empty() && !prior.members().is_empty());
+    timeline
+        .observe(
+            &active("second", ChatAtomKind::ToolCall, 2, pos(2, 1), content()),
+            None,
+        )
+        .unwrap();
+    let fresh = timeline.take_update().unwrap();
+    let fresh_bytes = fresh.retained_bytes();
+    // Exercise both a clone carrying an existing estimate and a newly constructed update.
+    for mut update in [fresh.clone(), timeline.take_update().unwrap()] {
+        let before_bytes = update.retained_bytes();
+        let expected_facts: Vec<_> = prior
+            .facts()
+            .iter()
+            .chain(update.facts())
+            .cloned()
+            .collect();
+        let expected_members: Vec<_> = prior
+            .members()
+            .iter()
+            .chain(update.members())
+            .cloned()
+            .collect();
+        let current = serde_json::to_vec(update.current()).unwrap();
+        let recovery = update.recovery().to_vec();
+        let next_position = update.next_position();
+        let generation = update.generation().to_owned();
+        update.prepend_prior(&prior);
+        assert_eq!(update.facts(), expected_facts);
+        assert_eq!(
+            serde_json::to_vec(update.members()).unwrap(),
+            serde_json::to_vec(&expected_members).unwrap()
+        );
+        assert_eq!(serde_json::to_vec(update.current()).unwrap(), current);
+        assert_eq!(update.recovery(), recovery);
+        assert_eq!(update.next_position(), next_position);
+        assert_eq!(update.generation(), generation);
+        let canonical = canonical_update_bytes(&update);
+        let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
+        assert!(expected > before_bytes);
+        assert_eq!(update.retained_bytes(), expected);
+        assert_eq!(update.retained_bytes(), expected);
+        assert_eq!(serde_json::to_vec(&update).unwrap(), canonical);
+    }
+    assert_eq!(prior.retained_bytes(), prior_bytes);
+    assert_eq!(fresh.retained_bytes(), fresh_bytes);
+}
+
 fn kinds(items: &[TimelineItem]) -> Vec<(TimelineItemKind, u64)> {
     items
         .iter()
@@ -450,6 +764,12 @@ fn repeated_observation_is_idempotent() {
 #[test]
 fn restored_current_fragments_continue_the_same_projection() {
     let mut timeline = fold();
+    let empty_recovery = serde_json::to_vec(&Recovery {
+        items: timeline.items.clone(),
+        active: timeline.active.clone(),
+    })
+    .unwrap();
+    assert_eq!(timeline.take_update().unwrap().recovery, empty_recovery);
     timeline
         .observe(
             &active("r", ChatAtomKind::Reasoning, 1, pos(1, 0), Vec::new()),
@@ -463,7 +783,13 @@ fn restored_current_fragments_continue_the_same_projection() {
         )
         .unwrap();
     let current = timeline.current_items();
+    let owned_recovery = serde_json::to_vec(&Recovery {
+        items: timeline.items.clone(),
+        active: timeline.active.clone(),
+    })
+    .unwrap();
     let recovery = timeline.take_update().unwrap().recovery;
+    assert_eq!(recovery, owned_recovery);
 
     let mut restored = TimelineProjection::new("db".into(), "test-generation".into(), 0);
     restored.restore_recovery(&recovery).unwrap();
@@ -477,6 +803,15 @@ fn restored_current_fragments_continue_the_same_projection() {
             .iter()
             .map(|item| item.id.clone())
             .collect::<Vec<_>>()
+    );
+    let restored_owned_recovery = serde_json::to_vec(&Recovery {
+        items: restored.items.clone(),
+        active: restored.active.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        restored.take_update().unwrap().recovery,
+        restored_owned_recovery
     );
 
     for (projection, sequence) in [(&mut timeline, 1), (&mut restored, 1)] {

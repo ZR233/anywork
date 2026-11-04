@@ -1836,9 +1836,30 @@ async fn assert_canonical_final_blank(
             completed_timeline_payload(&target.read, item, &mut target.remaining, target.deadline)
                 .await?
         else {
+            ensure!(
+                item.turn_id.as_deref() != Some(turn_id.as_str())
+                    || item.text_channel != Some(pl_protocol::ThreadTextChannel::Final),
+                "target Turn Final item was not terminal"
+            );
             continue;
         };
-        if !is_channel(&payload, turn_id, "final") {
+        if payload["type"] != "text" || payload["turnId"].as_str() != Some(turn_id.as_str()) {
+            continue;
+        }
+        ensure!(
+            item.kind == TimelineItemKind::Text
+                && item.atom_kind == Some(pl_protocol::ChatAtomKind::Text)
+                && item.turn_id.as_deref() == Some(turn_id.as_str()),
+            "target Turn text item omitted its Timeline kind or turn_id identity"
+        );
+        let text_channel = item
+            .text_channel
+            .context("target Turn text item omitted its explicit text_channel")?;
+        ensure!(
+            payload["data"]["channel"] == serde_json::to_value(text_channel)?,
+            "Timeline text_channel and original text payload disagree"
+        );
+        if text_channel != pl_protocol::ThreadTextChannel::Final {
             continue;
         }
         let text = body_text(&target.read, text_field(&payload)?).await?;
@@ -1889,12 +1910,24 @@ fn is_channel(payload: &serde_json::Value, turn_id: &str, channel: &str) -> bool
 
 async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<serde_json::Value> {
     let turn_id = &target.turn_id;
+    let expected_channel = match channel {
+        "commentary" => pl_protocol::ThreadTextChannel::Commentary,
+        "final" => pl_protocol::ThreadTextChannel::Final,
+        _ => anyhow::bail!("unsupported Timeline text channel {channel:?}"),
+    };
     ensure!(
         target.batch.before.is_none(),
         "cannot prove unique {channel:?} for Turn {turn_id} on a truncated timeline page"
     );
     let mut payloads = Vec::new();
     for timeline_item in terminal_items(&target.batch) {
+        if timeline_item.kind != TimelineItemKind::Text
+            || timeline_item.atom_kind != Some(pl_protocol::ChatAtomKind::Text)
+            || timeline_item.text_channel != Some(expected_channel)
+            || timeline_item.turn_id.as_deref() != Some(turn_id.as_str())
+        {
+            continue;
+        }
         if let Some(payload) = completed_timeline_payload(
             &target.read,
             timeline_item,
@@ -1903,7 +1936,13 @@ async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<s
         )
         .await?
         {
+            ensure!(
+                is_channel(&payload, turn_id, channel),
+                "Timeline text item metadata and original payload disagree about {channel:?}"
+            );
             payloads.push(payload);
+        } else {
+            anyhow::bail!("target Turn {turn_id} {channel:?} Timeline item is not terminal");
         }
     }
     let mut items = payloads

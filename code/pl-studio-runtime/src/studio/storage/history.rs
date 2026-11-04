@@ -724,7 +724,7 @@ impl HistoryStore {
                     && checkpoint.history_fence == effect.sequence
                     && accounting.facts.thread_id == effect.thread_id
                     && accounting.facts.sequence == effect.sequence
-                    && history.current.projection.source_effect_seq == effect.sequence,
+                    && history.current.projection().source_effect_seq == effect.sequence,
                 "checkpoint, current and history effect identities differ"
             );
         }
@@ -775,7 +775,7 @@ impl HistoryStore {
         } = commit;
         ensure!(write_seq > 0, "history write sequence must be positive");
         ensure!(
-            current_view.projection.source_effect_seq == write_seq,
+            current_view.projection().source_effect_seq == write_seq,
             "current projection is not frozen from this effect"
         );
         let database_id = self
@@ -785,7 +785,7 @@ impl HistoryStore {
             .context("effect transaction has no writer identity")?
             .database_id
             .clone();
-        conversation::current::validate_database(&current_view.projection, &database_id)?;
+        conversation::current::validate_database(current_view.projection(), &database_id)?;
         let write_seq = integer(write_seq)?;
         let (current, prior_context) = if checkpoint.is_some() {
             let head = checkpoint::read_commit_head(tx).await?;
@@ -800,7 +800,7 @@ impl HistoryStore {
             } else {
                 conversation::sources::verify(
                     tx,
-                    current_view.projection.source_effect_seq,
+                    current_view.projection().source_effect_seq,
                     &current_view.source_changes,
                 )
                 .await?;
@@ -3143,18 +3143,13 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 
 #[cfg(test)]
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
-    conversation::current::PreparedCurrent {
-        timeline: std::sync::Arc::from([]),
-        timeline_update: std::sync::Arc::new(Default::default()),
-        timeline_commit: 0,
-        source_changes: std::sync::Arc::from([]),
-        projection: pl_protocol::CurrentProjection::empty(
-            sequence,
-            pl_protocol::ThreadStatus::Idle,
+    conversation::current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(
+            pl_protocol::CurrentProjection::empty(sequence, pl_protocol::ThreadStatus::Idle),
         ),
-        changes: std::sync::Arc::from([]),
-        contents: std::sync::Arc::from([]),
-    }
+        std::sync::Arc::from([]),
+        std::sync::Arc::from([]),
+    )
 }
 
 #[cfg(test)]

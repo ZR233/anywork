@@ -16,8 +16,8 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload, ResourceReference},
     model::{DynModelSession, ToolProgressUpdate},
     thread::{
-        AttemptOutcome, ModelStepLimit, ThreadError, ThreadHandle, ThreadSnapshot, TurnOutcome,
-        TurnState,
+        AttemptOutcome, ModelStepLimit, ThreadEffectBatch, ThreadError, ThreadHandle,
+        ThreadSnapshot, TurnOutcome, TurnState,
         cold::{
             ColdStore, ColdStoreError, ColdStoreHandle, OutputRepair, OutputRetryFuture,
             OutputRetryObligation, OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase,
@@ -73,13 +73,18 @@ struct StoreState {
     /// A generation that stopped erroring and one whose retry the backend itself confirmed are
     /// deliberately different facts: only the latter is reported here.
     verified_generation: Option<u64>,
+    reject_terminal: bool,
+    terminal_presentations: Vec<Arc<ThreadEffectBatch>>,
 }
 
 #[derive(Debug, Clone)]
 struct GatedStore {
     failure: Failure,
     state: Arc<Mutex<StoreState>>,
-    changed: watch::Sender<()>,
+    changed: Arc<Mutex<Option<watch::Sender<()>>>>,
+    subscriptions: Arc<AtomicUsize>,
+    subscription_changed: Arc<Notify>,
+    terminal_rejected: Arc<Notify>,
 }
 
 impl GatedStore {
@@ -96,14 +101,28 @@ impl GatedStore {
                 typed_fault: None,
                 reported_generation: 0,
                 verified_generation: None,
+                reject_terminal: false,
+                terminal_presentations: Vec::new(),
             })),
-            changed,
+            changed: Arc::new(Mutex::new(Some(changed))),
+            subscriptions: Arc::new(AtomicUsize::new(0)),
+            subscription_changed: Arc::new(Notify::new()),
+            terminal_rejected: Arc::new(Notify::new()),
+        }
+    }
+
+    fn notify(&self) {
+        if let Some(changed) = self.changed.lock().unwrap().as_ref() {
+            changed.send_replace(());
         }
     }
 
     fn repair(&self) {
-        self.state.lock().unwrap().active = false;
-        self.changed.send_replace(());
+        let mut state = self.state.lock().unwrap();
+        state.active = false;
+        state.reject_terminal = false;
+        drop(state);
+        self.notify();
     }
 
     fn fail_now(&self) {
@@ -111,7 +130,7 @@ impl GatedStore {
         state.armed = false;
         state.active = true;
         drop(state);
-        self.changed.send_replace(());
+        self.notify();
     }
 
     /// Makes every accepted batch durable, but not a batch that was merely presented.
@@ -121,7 +140,7 @@ impl GatedStore {
             state.durable = state.durable.max(latest);
         }
         drop(state);
-        self.changed.send_replace(());
+        self.notify();
     }
 
     /// Bounds what one in-flight operation may reserve for its live output.
@@ -136,7 +155,7 @@ impl GatedStore {
         state.reported_generation = generation;
         state.verified_generation = None;
         drop(state);
-        self.changed.send_replace(());
+        self.notify();
     }
 
     /// Records that this backend's own retry of `generation` reached its durable target.
@@ -145,7 +164,36 @@ impl GatedStore {
         state.reported_generation = generation;
         state.verified_generation = Some(generation);
         drop(state);
-        self.changed.send_replace(());
+        self.notify();
+    }
+
+    fn reject_terminal(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.armed = false;
+        state.reject_terminal = true;
+    }
+
+    async fn terminal_rejected(&self) {
+        self.terminal_rejected.notified().await;
+    }
+
+    fn terminal_presentations(&self) -> Vec<Arc<ThreadEffectBatch>> {
+        self.state.lock().unwrap().terminal_presentations.clone()
+    }
+
+    async fn await_subscriptions(&self, minimum: usize) {
+        loop {
+            let changed = self.subscription_changed.notified();
+            if self.subscriptions.load(Ordering::SeqCst) >= minimum {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn close_pressure_watch_with_pressure(&self) {
+        self.state.lock().unwrap().active = true;
+        self.changed.lock().unwrap().take();
     }
 }
 
@@ -217,11 +265,31 @@ impl ColdStore for GatedStore {
     }
 
     fn subscribe_pressure(&self, _thread_id: &str) -> Option<watch::Receiver<()>> {
-        Some(self.changed.subscribe())
+        self.subscriptions.fetch_add(1, Ordering::SeqCst);
+        self.subscription_changed.notify_one();
+        self.changed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(watch::Sender::subscribe)
     }
 
     fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
         let mut state = self.state.lock().unwrap();
+        let terminal = write
+            .effect
+            .turn
+            .as_ref()
+            .is_some_and(|turn| matches!(&turn.state, TurnState::Finished(_)));
+        if terminal && state.reject_terminal {
+            state.terminal_presentations.push(write.effect.clone());
+            drop(state);
+            self.terminal_rejected.notify_one();
+            return Err(storage_error());
+        }
+        if terminal && !state.terminal_presentations.is_empty() {
+            state.terminal_presentations.push(write.effect.clone());
+        }
         if state.armed
             && write.effect.attempt.as_ref().is_some_and(|attempt| {
                 matches!(&attempt.outcome, AttemptOutcome::Committed(output) if !output.tool_calls.is_empty())
@@ -229,7 +297,7 @@ impl ColdStore for GatedStore {
         {
             state.armed = false;
             state.active = true;
-            self.changed.send_replace(());
+            self.notify();
         }
         if state.active && self.failure == Failure::Admission {
             return Err(storage_error());
@@ -688,6 +756,113 @@ async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     assert!(!thread.snapshot().persistence.resume_required);
     within(thread.flush()).await.unwrap();
     within(thread.close()).await.unwrap();
+}
+
+/// A terminal effect rejected after the Turn returns stays owned and is retried by the storage watch.
+///
+/// The rejected `Arc` is the handoff identity: repair only wakes the idle owner, which presents that
+/// same batch again without another command or model call. Durability remains a separate backend
+/// notification and is the only event that releases the live effect.
+#[tokio::test]
+async fn an_idle_owner_retries_the_same_terminal_effect_without_a_command() {
+    let store = GatedStore::new(Failure::Admission);
+    store.reject_terminal();
+    let (model, requests) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("idle-terminal".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+
+    let runner = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.run_turn(turn("idle-terminal")).await }
+    });
+    within(store.terminal_rejected()).await;
+    let completed = tokio::time::timeout(Duration::from_secs(5), runner)
+        .await
+        .expect("terminal turn did not return")
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.outcome, TurnOutcome::Completed);
+    assert_eq!(completed.model_steps, 1);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    let rejected = store.terminal_presentations();
+    assert_eq!(rejected.len(), 1);
+    let rejected = rejected[0].clone();
+    let before_repair = thread.snapshot();
+    assert!(!before_repair.persistence.resume_required);
+    assert!(before_repair.persistence.error.is_some());
+    assert!(before_repair.persistence.admitted_sequence < rejected.sequence);
+    assert!(
+        thread
+            .effects()
+            .await
+            .unwrap()
+            .iter()
+            .any(|effect| Arc::ptr_eq(effect, &rejected))
+    );
+
+    store.repair();
+    let admitted = await_snapshot(&thread, |snapshot| {
+        snapshot.persistence.admitted_sequence >= rejected.sequence
+            && snapshot.persistence.error.is_none()
+    })
+    .await;
+    assert!(!admitted.persistence.resume_required);
+    assert!(admitted.persistence.durable_sequence < rejected.sequence);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    let presented = store.terminal_presentations();
+    assert_eq!(presented.len(), 2);
+    assert_eq!(presented[1].sequence, rejected.sequence);
+    assert!(Arc::ptr_eq(&presented[1], &rejected));
+    assert!(
+        thread
+            .effects()
+            .await
+            .unwrap()
+            .iter()
+            .any(|effect| Arc::ptr_eq(effect, &rejected))
+    );
+
+    store.commit_durable();
+    await_snapshot(&thread, |snapshot| {
+        snapshot.persistence.durable_sequence >= rejected.sequence
+    })
+    .await;
+    assert!(
+        !thread
+            .effects()
+            .await
+            .unwrap()
+            .iter()
+            .any(|effect| effect.sequence == rejected.sequence)
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    within(thread.close()).await.unwrap();
+}
+
+/// EOF is a final wake-up for the attached watch, not permission to subscribe to it repeatedly.
+#[tokio::test]
+async fn an_idle_owner_does_not_resubscribe_a_closed_storage_watch_and_can_close() {
+    let store = GatedStore::new(Failure::QueueFull);
+    store.state.lock().unwrap().armed = false;
+    let (model, requests) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("closed-watch".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    within(store.await_subscriptions(1)).await;
+
+    store.close_pressure_watch_with_pressure();
+    await_snapshot(&thread, |snapshot| snapshot.persistence.pressure_paused).await;
+    assert_eq!(store.subscriptions.load(Ordering::SeqCst), 1);
+    assert!(requests.lock().unwrap().is_empty());
+
+    within(thread.close()).await.unwrap();
+    assert_eq!(store.subscriptions.load(Ordering::SeqCst), 1);
 }
 
 async fn interrupt_paused_turn(failure: Failure) {

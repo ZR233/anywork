@@ -404,12 +404,13 @@ async fn uninterrupted(
     for (_, input) in ordered {
         projection.apply_input(input)?;
         items.extend(projection.take_committed().into_iter().map(logical));
+        let update = projection.take_update()?;
         for MemberChange {
             item_id,
             member_order,
             atom,
             ..
-        } in projection.take_update()?.members
+        } in update.members().iter().cloned()
         {
             // A terminal updates its original member slot, not a second admission.
             members.insert((item_id, member_order), atom);
@@ -560,8 +561,8 @@ fn diagnostic(
         .map(|current| {
             (
                 current.projection_generation.clone(),
-                current.current.projection.source_effect_seq,
-                current.current.projection.items.len(),
+                current.current.projection().source_effect_seq,
+                current.current.projection().items.len(),
                 current.serial,
             )
         });
@@ -573,11 +574,17 @@ fn diagnostic(
             progress.retained_error().map(|error| format!("{error:#}")),
         )
     });
+    let writer = env
+        .runtime
+        .persistence_queue_snapshot()
+        .threads
+        .into_iter()
+        .find(|thread| thread.thread_id == id);
     format!(
         "wait={phase}; gate_release_owned={gate_owned}; producer_stage={:?}; producer={:?}; \
          core_commit={}; core_lifecycle={:?}; core_model={:?}; persistence={:?}; \
          channel={status:?}; handoff={}; channel_stopping={}; timeline_paused={}; publication={publication:?}; \
-         owner_finished/error={owner_status:?}",
+         owner_finished/error={owner_status:?}; writer={writer:?}",
         *script.stage.borrow(),
         *script.diagnostic.lock().unwrap(),
         core.commit_sequence,
@@ -622,12 +629,20 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             result
         }
     });
+    // Preserve the original typed reply once consumed. Cleanup must not poll a
+    // completed JoinHandle again, including when the reply reports a failure.
+    let mut producer_join = None;
     let mut feeds = Vec::new();
     let mut database_connection = None;
     // A timeout cancels the story, not the real maintenance owner. Keep its
     // normal-success release responsibility outside that cancellable future.
     let mut gate_release = None;
     let mut phase = "first-window producer ACKs";
+    let story_started = std::time::Instant::now();
+    let trace_phase = |phase: &str| {
+        eprintln!("A34 elapsed={:?}; phase={phase}", story_started.elapsed());
+    };
+    trace_phase(phase);
     let story = async {
         script.reached(Stage::FirstWindow).await?;
         phase = "first-window observation/durable barrier";
@@ -663,7 +678,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             .current_conversation()
             .context("original publication")?;
         let old_generation = live.projection_generation.clone();
-        let cut_current = live.current.projection.clone();
+        let cut_current = live.current.projection().clone();
         assert_eq!(cut_current.items.len(), 3, "R / completed T / active U");
         let r_group = &cut_current.items[0];
         let text = &cut_current.items[1];
@@ -706,8 +721,10 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         gate_release = Some(release);
         history.request_timeline_maintenance();
         phase = "owner maintenance gate after durable C";
+        trace_phase(phase);
         entered.await?;
         phase = "durable C current/recovery/readonly facts";
+        trace_phase(phase);
         let durable = history.conversation_current().await?.context("durable C")?;
         let cut = durable.source_effect_seq;
         assert_eq!(cut, cut_current.source_effect_seq);
@@ -755,6 +772,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         assert!(prefix.len() > PREFIX_MEMBERS * 2);
         script.release();
         phase = "C suffix producer / real QueueFull";
+        trace_phase(phase);
         script.reached(Stage::QueueFull).await?;
         // Do not infer pressure from one Pending poll: the original sink reports
         // its classified ceiling and still owns the complete accepted prefix.
@@ -796,6 +814,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             receipt(R, true, "R ended after T")?
         );
         phase = "original Core flush at classified full sink";
+        trace_phase(phase);
         assert!(
             owner.flush().await.is_err(),
             "full sink accepted the owed producer fence"
@@ -816,6 +835,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             .send(())
             .map_err(|_| anyhow::anyhow!("original maintenance owner disappeared"))?;
         phase = "same owner new-generation publication";
+        trace_phase(phase);
         let new_generation = loop {
             if let Some(error) = owner_progress.borrow_and_update().retained_error() {
                 return Err(anyhow::anyhow!(
@@ -913,21 +933,33 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         // QueueFull is a classified save fault, so use its real explicit retry.
         // Never clear the latch, lower a watermark or replace the producer.
         channel.retry(full.fault_generation)?;
-        phase = "original accepted queue prefix durable / capacity returned";
+        phase = "original writer committed accepted work after C";
+        trace_phase(phase);
+        let mut observed_durable = cut;
         loop {
             let state = status.borrow_and_update().clone();
-            if state.committed_sequence == full.admitted_sequence && state.queued_records == 0 {
-                break;
-            }
             ensure!(
-                state.committed_sequence <= full.admitted_sequence,
-                "Core already advanced original owed responsibility: {state:?}"
+                state.admitted_sequence == full.admitted_sequence,
+                "original admission changed while the producer was held: {state:?}"
+            );
+            ensure!(
+                state.committed_sequence >= observed_durable
+                    && state.committed_sequence <= full.admitted_sequence,
+                "original accepted prefix lost its durable ordering: {state:?}"
+            );
+            ensure!(
+                state.queued_records == full.admitted_sequence - state.committed_sequence,
+                "original accepted prefix has a queue hole: {state:?}"
             );
             ensure!(
                 state.fault.is_none()
                     || state.fault == Some(pl_protocol::studio::HistoryFault::QueueFull),
-                "original writer failed while returning capacity: {state:?}"
+                "original writer failed after maintenance: {state:?}"
             );
+            if state.committed_sequence > cut {
+                break;
+            }
+            observed_durable = state.committed_sequence;
             status.changed().await?;
         }
         let still_owed = owner
@@ -935,32 +967,45 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             .await?
             .into_iter()
             .find(|effect| effect.sequence == owed.sequence)
-            .context("refused producer responsibility disappeared when capacity returned")?;
+            .context("refused producer responsibility disappeared after writer progress")?;
         assert!(Arc::ptr_eq(&still_owed, &owed));
+        assert!(status.borrow().admitted_sequence < owed.sequence);
+        // This proves resumed writer progress, not enough record/byte budget
+        // for R at this instant. The same producer's next canonical input lets
+        // the original Core/sink admission decide when its retained R can move.
+        // Full drain and recovery remain required below, after that continuation.
         script.release();
         phase = "same producer U / original R owed responsibility / Core terminal";
-        let mut execution = owner.subscribe();
-        loop {
-            let state = execution.next().await.context("Core owner ended")?;
-            if let Some(turn) = state.turns.iter().find(|turn| {
-                turn.turn_id == "a34-turn" && turn.state != pl_core::thread::TurnState::Running
-            }) {
-                ensure!(
-                    matches!(
-                        turn.state,
-                        pl_core::thread::TurnState::Finished(TurnOutcome::Completed)
-                    ),
-                    "original Core producer ended unexpectedly: {turn:?}; persistence={:?}",
-                    state.persistence
-                );
-                break;
-            }
-        }
+        trace_phase(phase);
+        // Core removes terminal Turns before publishing its live snapshot; a
+        // subscription is not a terminal journal. The original run_turn reply
+        // proves execution completion, not sink admission or durable settlement.
+        let joined = (&mut run)
+            .await
+            .context("A34 producer join")
+            .and_then(|joined| Ok(joined?));
+        let completed = joined
+            .as_ref()
+            .is_ok_and(|completion| completion.outcome == TurnOutcome::Completed);
+        let terminal = format!("{joined:?}");
+        producer_join = Some(joined);
+        ensure!(
+            completed,
+            "original Core producer ended unexpectedly: {terminal}; persistence={:?}",
+            owner.snapshot().persistence
+        );
         let target = owner.snapshot().commit_sequence;
-        phase = "final admitted suffix durable / QueueFull recovery receipt";
+        phase = "original R admitted/durable and final suffix QueueFull recovery";
+        trace_phase(phase);
         loop {
             let state = status.borrow_and_update().clone();
-            if state.committed_sequence >= target && state.error.is_none() {
+            if state.admitted_sequence >= owed.sequence
+                && state.committed_sequence >= target
+                && state.queued_records == 0
+                && state.fault.is_none()
+                && state.error.is_none()
+            {
+                assert!(state.committed_sequence >= owed.sequence);
                 break;
             }
             ensure!(
@@ -971,6 +1016,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             status.changed().await?;
         }
         phase = "final observation/durable barrier";
+        trace_phase(phase);
         env.runtime.synchronize_thread_observation(&id).await?;
         channel
             .await_handoff_durable(&id, channel.handoff_ticket())
@@ -1123,6 +1169,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     });
     // End all environment waits before runtime close/join, including a failed
     // assertion path. A test-owned JoinHandle is always observed, never detached.
+    trace_phase("cleanup begins");
     let mut cleanup_errors = Vec::new();
     // Release the held gate normally even after a cancelled assertion/read.
     // Dropping its Sender would deliberately inject maintenance cancellation,
@@ -1140,16 +1187,20 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     }
     cancel.cancel();
     script.next.add_permits(3);
-    let joined = match tokio::time::timeout(Duration::from_secs(20), &mut run).await {
-        Ok(joined) => joined
-            .context("A34 producer join")
-            .and_then(|joined| Ok(joined?)),
-        Err(error) => {
-            run.abort();
-            let cancelled = run.await;
-            Err(anyhow::Error::new(error).context(format!(
-                "A34 producer join deadline; abort receipt={cancelled:?}"
-            )))
+    let joined = if let Some(joined) = producer_join {
+        joined
+    } else {
+        match tokio::time::timeout(Duration::from_secs(20), &mut run).await {
+            Ok(joined) => joined
+                .context("A34 producer join")
+                .and_then(|joined| Ok(joined?)),
+            Err(error) => {
+                run.abort();
+                let cancelled = run.await;
+                Err(anyhow::Error::new(error).context(format!(
+                    "A34 producer join deadline; abort receipt={cancelled:?}"
+                )))
+            }
         }
     };
     for feed in &mut feeds {
@@ -1177,6 +1228,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             gate_release.is_some()
         ),
     );
+    trace_phase("owned producer/feed/reader/database cleanup complete");
     let result = result.and_then(|()| {
         let completion = joined?;
         ensure!(

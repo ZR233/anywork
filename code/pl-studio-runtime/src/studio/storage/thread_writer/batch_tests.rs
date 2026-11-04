@@ -114,7 +114,7 @@ async fn new_execution_writer_prepares_identity_before_the_first_projection() ->
     let mut prepared = projection
         .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
         .await?;
-    assert_eq!(prepared.current.projection.source_effect_seq, 1);
+    assert_eq!(prepared.current.projection().source_effect_seq, 1);
     projection
         .publish_prepared(&sink.0.chat, &mut prepared)
         .await?;

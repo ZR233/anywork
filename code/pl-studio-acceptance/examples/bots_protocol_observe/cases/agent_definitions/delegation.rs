@@ -230,10 +230,11 @@ impl Observation<'_> {
                 .open_chat(child, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
-            for item in page.entries.iter().filter_map(|entry| match entry {
-                ChatEntry::Item(item) => Some(item),
-                ChatEntry::Atom(_) | ChatEntry::Source(_) => None,
-            }) {
+            for entry in &page.entries {
+                let ChatEntry::Item(item) = entry else {
+                    anyhow::bail!("Main returned a member atom/source instead of a Timeline item");
+                };
+                let item = item.as_ref();
                 if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
                     continue;
                 }

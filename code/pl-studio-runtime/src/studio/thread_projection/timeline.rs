@@ -5,6 +5,7 @@ use pl_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::result::Result;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct FactKey {
@@ -101,16 +102,85 @@ pub(in crate::studio) struct MemberChange {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::studio) struct TimelineUpdate {
-    pub facts: Vec<ChatAtom>,
-    pub members: Vec<MemberChange>,
-    pub current: Vec<TimelineItem>,
-    pub recovery: Vec<u8>,
-    pub next_position: u64,
-    pub generation: String,
+    facts: Vec<ChatAtom>,
+    members: Vec<MemberChange>,
+    current: Vec<TimelineItem>,
+    recovery: Vec<u8>,
+    next_position: u64,
+    generation: String,
+    #[serde(skip)]
+    retained_bytes: OnceLock<u64>,
+}
+#[derive(Serialize)]
+struct TimelineUpdateRetentionView<'a> {
+    facts: &'a [ChatAtom],
+    members: &'a [MemberChange],
+    current: &'a [TimelineItem],
+    recovery: &'a [u8],
+    next_position: u64,
+    generation: &'a str,
+}
+fn recovery_json_len(recovery: &[u8]) -> u64 {
+    recovery
+        .iter()
+        .enumerate()
+        .try_fold(2_u64, |len, (index, byte)| {
+            let digits = if *byte < 10 {
+                1
+            } else if *byte < 100 {
+                2
+            } else {
+                3
+            };
+            len.checked_add(digits)
+                .and_then(|len| len.checked_add(u64::from(index > 0)))
+        })
+        .unwrap_or(u64::MAX)
 }
 impl TimelineUpdate {
+    pub fn facts(&self) -> &[ChatAtom] {
+        &self.facts
+    }
+    pub fn members(&self) -> &[MemberChange] {
+        &self.members
+    }
+    pub fn current(&self) -> &[TimelineItem] {
+        &self.current
+    }
+    pub fn recovery(&self) -> &[u8] {
+        &self.recovery
+    }
+    pub fn next_position(&self) -> u64 {
+        self.next_position
+    }
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+    /// Carries earlier facts and members into this update without changing its recovery state.
+    pub(super) fn prepend_prior(&mut self, previous: &Self) {
+        self.retained_bytes.take();
+        self.facts.splice(0..0, previous.facts.iter().cloned());
+        self.members.splice(0..0, previous.members.iter().cloned());
+    }
     pub fn retained_bytes(&self) -> u64 {
-        serde_json::to_vec(self).map_or(u64::MAX, |bytes| bytes.len() as u64)
+        *self.retained_bytes.get_or_init(|| {
+            let view = TimelineUpdateRetentionView {
+                facts: &self.facts,
+                members: &self.members,
+                current: &self.current,
+                recovery: &[],
+                next_position: self.next_position,
+                generation: &self.generation,
+            };
+            serde_json::to_vec(&view).map_or(u64::MAX, |bytes| {
+                u64::try_from(bytes.len())
+                    .ok()
+                    .and_then(|len| len.checked_sub(2))
+                    .and_then(|len| len.checked_add(recovery_json_len(&self.recovery)))
+                    .and_then(|len| len.checked_add(std::mem::size_of::<OnceLock<u64>>() as u64))
+                    .unwrap_or(u64::MAX)
+            })
+        })
     }
 }
 impl Default for TimelineUpdate {
@@ -122,6 +192,7 @@ impl Default for TimelineUpdate {
             recovery: br#"{"items":[],"active":{}}"#.to_vec(),
             next_position: 0,
             generation: String::new(),
+            retained_bytes: OnceLock::new(),
         }
     }
 }
@@ -167,6 +238,11 @@ struct Recovery {
     items: Vec<LiveItem>,
     active: BTreeMap<String, ActiveMember>,
 }
+#[derive(Serialize)]
+struct RecoveryView<'a> {
+    items: &'a [LiveItem],
+    active: &'a BTreeMap<String, ActiveMember>,
+}
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct TimelineProjection {
     database_id: String,
@@ -177,6 +253,7 @@ pub(in crate::studio) struct TimelineProjection {
     committed: Vec<TimelineItem>,
     changes: Vec<MemberChange>,
     facts: Vec<ChatAtom>,
+    retained_bytes: OnceLock<u64>,
 }
 /// One bounded, already-retained effect's canonical inputs. The same six-part
 /// key is used by the durable fact/source merge; every input is a commit point.
@@ -244,6 +321,7 @@ impl TimelineProjection {
             committed: Vec::new(),
             changes: Vec::new(),
             facts: Vec::new(),
+            retained_bytes: OnceLock::new(),
         }
     }
     pub(in crate::studio) fn generation(&self) -> &str {
@@ -331,6 +409,7 @@ impl TimelineProjection {
                 ));
             }
         }
+        self.retained_bytes.take();
         self.items = state.items;
         self.active = state.active;
         Ok(())
@@ -350,6 +429,7 @@ impl TimelineProjection {
             if member.atom == next {
                 return Ok(());
             }
+            self.retained_bytes.take();
             member.atom = next.clone();
             if let Some(item) = self
                 .items
@@ -411,6 +491,7 @@ impl TimelineProjection {
             // A legacy header is not a real active fact. Keep only the group's
             // unresolved count; its member association is already an incremental
             // SQLite row and is restored one at a time for the actual terminal.
+            self.retained_bytes.take();
             self.active.remove(&atom.id);
         }
         Ok(())
@@ -433,6 +514,7 @@ impl TimelineProjection {
                 "legacy terminal has no unresolved item".into(),
             ));
         }
+        self.retained_bytes.take();
         self.active.insert(
             atom.id.clone(),
             ActiveMember {
@@ -460,6 +542,7 @@ impl TimelineProjection {
         sequence: Option<u64>,
         payload: Option<PayloadData>,
     ) -> Result<(), ProjectionError> {
+        self.retained_bytes.take();
         let terminal = outcome(&atom).is_some();
         if atom.kind == ChatAtomKind::TurnReceipt
             && outcome(&atom) == Some(ChatTerminalOutcome::Completed)
@@ -639,6 +722,7 @@ impl TimelineProjection {
                 && &item.item.source == source
                 && !item.item.admission_closed
             {
+                self.retained_bytes.take();
                 item.item.admission_closed = true;
                 item.ready_key = item.ready_key.max(at);
             }
@@ -646,7 +730,11 @@ impl TimelineProjection {
     }
     pub(in crate::studio) fn end_source(&mut self, source: &ChatSourceId) {
         for item in &mut self.items {
-            if &item.item.source == source && item.item.kind == TimelineItemKind::WorkGroup {
+            if &item.item.source == source
+                && item.item.kind == TimelineItemKind::WorkGroup
+                && !item.item.admission_closed
+            {
+                self.retained_bytes.take();
                 item.item.admission_closed = true;
             }
         }
@@ -664,6 +752,7 @@ impl TimelineProjection {
             let Some(index) = next else {
                 break;
             };
+            self.retained_bytes.take();
             if self.items[index].item.kind == TimelineItemKind::Text && self.items[index].empty {
                 self.items.remove(index);
                 continue;
@@ -697,18 +786,24 @@ impl TimelineProjection {
         result
     }
     pub(in crate::studio) fn take_committed(&mut self) -> Vec<TimelineItem> {
+        if !self.committed.is_empty() {
+            self.retained_bytes.take();
+        }
         std::mem::take(&mut self.committed)
     }
     pub(in crate::studio) fn take_update(&mut self) -> Result<TimelineUpdate, ProjectionError> {
-        let recovery = serde_json::to_vec(&Recovery {
-            items: self.items.clone(),
-            active: self.active.clone(),
+        let recovery = serde_json::to_vec(&RecoveryView {
+            items: &self.items,
+            active: &self.active,
         })
         .map_err(|e| ProjectionError::History(e.to_string()))?;
         if recovery.len() > CHAT_BATCH_MAX_BYTES as usize {
             return Err(ProjectionError::History(
                 "timeline recovery exceeds current budget".into(),
             ));
+        }
+        if !self.facts.is_empty() || !self.changes.is_empty() {
+            self.retained_bytes.take();
         }
         Ok(TimelineUpdate {
             facts: std::mem::take(&mut self.facts),
@@ -717,17 +812,22 @@ impl TimelineProjection {
             recovery,
             next_position: self.next_position,
             generation: self.generation.clone(),
+            retained_bytes: OnceLock::new(),
         })
     }
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        serde_json::to_vec(&(
-            &self.items,
-            &self.active,
-            &self.committed,
-            &self.changes,
-            &self.facts,
-        ))
-        .map_or(u64::MAX, |bytes| bytes.len() as u64)
+        *self.retained_bytes.get_or_init(|| {
+            serde_json::to_vec(&(
+                &self.items,
+                &self.active,
+                &self.committed,
+                &self.changes,
+                &self.facts,
+            ))
+            .map_or(u64::MAX, |bytes| {
+                (bytes.len() as u64).saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
+            })
+        })
     }
     #[cfg(test)]
     pub(in crate::studio) fn committed(&self) -> &[TimelineItem] {

@@ -162,19 +162,15 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     current.atoms.push(active);
     let tx = writer.db.begin().await?;
     super::super::append_records(&tx, [&item, &skipped], true).await?;
-    super::super::current::apply(
-        &tx,
-        2,
-        &super::super::current::PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            projection: current.clone(),
-            changes: Arc::from([]),
-            contents: Arc::from([]),
-            source_changes: Arc::from([started.clone(), current_source.clone()]),
-        },
-    )
+    super::super::current::apply(&tx, 2, &{
+        let mut prepared = super::super::current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
+            Arc::from([]),
+            Arc::from([]),
+        );
+        prepared.source_changes = Arc::from([started.clone(), current_source.clone()]);
+        prepared
+    })
     .await?;
     tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
         .await?;
@@ -201,19 +197,15 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     };
     current.source_effect_seq = 3;
     let tx = writer.db.begin().await?;
-    super::super::current::apply(
-        &tx,
-        3,
-        &super::super::current::PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            projection: current.clone(),
-            changes: Arc::from([]),
-            contents: Arc::from([]),
-            source_changes: Arc::from([ended.clone()]),
-        },
-    )
+    super::super::current::apply(&tx, 3, &{
+        let mut prepared = super::super::current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
+            Arc::from([]),
+            Arc::from([]),
+        );
+        prepared.source_changes = Arc::from([ended.clone()]);
+        prepared
+    })
     .await?;
     tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=3")
         .await?;

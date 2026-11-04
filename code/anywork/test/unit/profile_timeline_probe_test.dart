@@ -1,4 +1,4 @@
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 import '../../tool/profile_timeline_probe.dart';
 
@@ -193,6 +193,29 @@ void main() {
   });
 
   group('switch observation freshness', () {
+    test('treats valid old thread or generation observations as not ready', () {
+      final oldThread = TimelineObservation.parse(
+        _observed(threadId: 'thread-a', selectionId: 7, generation: 9),
+      );
+      final oldGeneration = TimelineObservation.parse(
+        _observed(threadId: 'thread-b', selectionId: 8, generation: 9),
+      );
+      final fresh = TimelineObservation.parse(
+        _observed(threadId: 'thread-b', selectionId: 8, generation: 10),
+      );
+
+      bool isReady(TimelineObservation observation) => isFreshObservation(
+        observation,
+        threadId: 'thread-b',
+        afterSelectionId: 7,
+        afterGeneration: 9,
+      );
+
+      expect(isReady(oldThread), isFalse);
+      expect(isReady(oldGeneration), isFalse);
+      expect(isReady(fresh), isTrue);
+    });
+
     test('requires requested thread and strictly advancing selection and generation', () {
       final previous = TimelineObservation.parse(
         _observed(threadId: 'thread-b', selectionId: 7, generation: 9),

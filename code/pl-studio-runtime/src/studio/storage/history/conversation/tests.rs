@@ -612,13 +612,9 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
     projection.collections.push(reference.clone());
     let entries = [(37, "first"), (900, "second")];
     let body: Arc<[u8]> = Arc::from(vec![255; 64 * 1024]);
-    let prepared = current::PreparedCurrent {
-        timeline: std::sync::Arc::from([]),
-        timeline_update: std::sync::Arc::new(Default::default()),
-        timeline_commit: 0,
-        source_changes: Arc::from([]),
-        projection,
-        changes: entries
+    let prepared = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        entries
             .iter()
             .map(|&(position, id)| {
                 current::CurrentEntryChange::Put(current::CurrentEntryWrite {
@@ -630,8 +626,8 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
             })
             .collect::<Vec<_>>()
             .into(),
-        contents: Arc::from([]),
-    };
+        Arc::from([]),
+    );
     let writer = store.writer().await?;
     let tx = writer.db.begin().await?;
     current::apply(&tx, 1, &prepared).await?;
@@ -769,13 +765,9 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 collection: "entries".into(),
                 revision,
             });
-        Ok(current::PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            source_changes: Arc::from([]),
-            projection,
-            changes: Arc::from([
+        Ok(current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+            Arc::from([
                 current::CurrentEntryChange::Clear {
                     collection: "entries".into(),
                 },
@@ -786,7 +778,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                     payload: Arc::from(b"{\"known\":true}".as_slice()),
                 }),
             ]),
-            contents: Arc::from([current::CurrentContentWrite {
+            Arc::from([current::CurrentContentWrite {
                 content: Arc::new(ChatContent {
                     descriptor: ContentDescriptor {
                         key,
@@ -798,7 +790,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 }),
                 sealed: true,
             }]),
-        })
+        ))
     };
     let mut first = prepare(1, b"first revision")?;
     let auxiliary = ChatContentKey {
@@ -873,7 +865,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
         read_content(&db, &request).await?.bytes.as_bytes(),
         b"first revision"
     );
-    let reference = &first.projection.collections[0];
+    let reference = &first.projection().collections[0];
     let page = current::page(
         &db,
         reference,
@@ -1225,13 +1217,9 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         }),
         ended: None,
     };
-    let prepared = current::PreparedCurrent {
-        timeline: std::sync::Arc::from([]),
-        timeline_update: std::sync::Arc::new(Default::default()),
-        timeline_commit: 0,
-        source_changes: Arc::from([source_state.clone()]),
-        projection,
-        changes: Arc::from([current::CurrentEntryChange::Put(
+    let mut prepared = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        Arc::from([current::CurrentEntryChange::Put(
             current::CurrentEntryWrite {
                 collection: "interactions".into(),
                 position: 19,
@@ -1239,8 +1227,9 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
                 payload: Arc::from(b"first".as_slice()),
             },
         )]),
-        contents: Arc::from([]),
-    };
+        Arc::from([]),
+    );
+    prepared.source_changes = Arc::from([source_state.clone()]);
     let tx = db.begin().await?;
     assert!(current::apply(&tx, 2, &prepared).await.is_err());
     append_records(
@@ -1297,13 +1286,11 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
     current::apply(
         &tx,
         1,
-        &current::PreparedCurrent {
-            timeline: std::sync::Arc::from([]),
-            timeline_update: std::sync::Arc::new(Default::default()),
-            timeline_commit: 0,
-            source_changes: std::sync::Arc::from([]),
-            projection: prepared.projection.clone(),
-            changes: Arc::from([
+        &current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(
+                prepared.projection().clone(),
+            ),
+            Arc::from([
                 current::CurrentEntryChange::Remove {
                     collection: "interactions".into(),
                     entry_id: "one".into(),
@@ -1312,8 +1299,8 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
                     collection: "interactions".into(),
                 },
             ]),
-            contents: Arc::from([]),
-        },
+            Arc::from([]),
+        ),
     )
     .await?;
     tx.rollback().await?;

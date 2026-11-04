@@ -212,15 +212,15 @@ async fn commit(
     let mut current = CurrentProjection::empty(effect, ThreadStatus::Idle);
     current.items = projection.current_items();
     current.sources = sources.clone();
-    let prepared = PreparedCurrent {
-        projection: current,
-        timeline_commit: if timeline.is_empty() { 0 } else { effect },
-        timeline: timeline.into(),
-        timeline_update: Arc::new(projection.take_update()?),
-        source_changes: sources.into(),
-        changes: Arc::from([]),
-        contents: Arc::from([]),
-    };
+    let mut prepared = PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(current),
+        Arc::from([]),
+        Arc::from([]),
+    );
+    prepared.timeline_commit = if timeline.is_empty() { 0 } else { effect };
+    prepared.timeline = timeline.into();
+    prepared.timeline_update = Arc::new(projection.take_update()?);
+    prepared.source_changes = sources.into();
     store
         .commit_effect(
             effect,

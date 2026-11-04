@@ -587,6 +587,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     use crate::studio::storage::calls::{
         CallsStore, PurposeUsageProjection, SessionUsageProjection,
     };
+    use anyhow::Context as _;
     let temp = tempfile::tempdir()?;
     let home = temp.path();
     let paths = seed(home).await?;
@@ -617,6 +618,48 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     );
     calls.close().await?;
     let store = crate::config::ConfigStore::new(paths.config_paths());
+    // seed() used today's startup to establish the cold directory. Schema 18
+    // predates the separate MCP documents that this fresh startup created.
+    // Remove only this TempDir's byte-verified defaults, never unknown documents.
+    let host_mcp = paths.config_paths().mcp_host_dir();
+    let seeded_mcp = crate::config::McpFileV1::default_host_builtins()
+        .into_iter()
+        .map(|document| {
+            let path = host_mcp.join(crate::config::canonical_mcp_filename(&document.id)?);
+            Ok((path, document))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let expected_paths = seeded_mcp
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_paths = std::fs::read_dir(&host_mcp)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+    assert_eq!(actual_paths, expected_paths, "unexpected seeded MCP files");
+    for (path, document) in &seeded_mcp {
+        assert!(std::fs::symlink_metadata(path)?.file_type().is_file());
+        assert_eq!(std::fs::read(path)?, document.encode()?.as_bytes());
+    }
+    for (path, _) in &seeded_mcp {
+        std::fs::remove_file(path)?;
+    }
+    std::fs::remove_dir(&host_mcp)?;
+    assert!(!host_mcp.exists());
+    let migration_cwd = std::env::current_dir()?
+        .to_str()
+        .context("MCP migration fixture needs a UTF-8 cwd")?
+        .to_owned();
+    let migrated_mcp = seeded_mcp
+        .into_iter()
+        .map(|(path, document)| {
+            let cwd = (document.id == crate::config::mcp::ZHIPU_VISION_MCP_ID)
+                .then(|| migration_cwd.clone());
+            let expected =
+                crate::config::McpFileV1::new_builtin(document.id, true, cwd).encode()?;
+            Ok((path, expected))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut config = crate::config::StudioConfig::default_config().expect("bundled defaults");
     config.instructions.user = "preserved user instructions".into();
     store.save(&config)?;
@@ -656,6 +699,9 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     assert_eq!(std::fs::read(cold)?, b"intentionally invalid cold history");
     assert!(!home.join("startup-backups").exists());
     runtime.shutdown_runtime().await?;
+    for (path, expected) in &migrated_mcp {
+        assert_eq!(std::fs::read(path)?, expected.as_bytes());
+    }
     for _ in 0..2 {
         let calls = CallsStore::open(&paths.calls_database()).await?;
         let rollups = calls.session_cost_rollups().await?;
@@ -669,6 +715,9 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
         let reopened = StudioRuntime::initialize(options(home)).await?;
         assert!(reopened.startup_recovery.is_none());
         reopened.shutdown_runtime().await?;
+        for (path, expected) in &migrated_mcp {
+            assert_eq!(std::fs::read(path)?, expected.as_bytes());
+        }
     }
     Ok(())
 }

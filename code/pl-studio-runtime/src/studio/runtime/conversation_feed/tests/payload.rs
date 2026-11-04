@@ -129,7 +129,7 @@ async fn compaction(
         &harness.session,
         prepared.current_state.clone().context("current")?,
         prepared.current_handoff.clone(),
-        &prepared.current.timeline_update.generation,
+        prepared.current.timeline_update.generation(),
     )?;
     Ok(prepared)
 }

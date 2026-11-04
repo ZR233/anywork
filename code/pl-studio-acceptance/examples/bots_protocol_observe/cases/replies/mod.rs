@@ -135,7 +135,7 @@ pub(super) async fn wait_cancelled_turn(
             charge_chat_batch(&page, &mut remaining)?;
             for entry in page.entries.iter().rev() {
                 let ChatEntry::Item(item) = entry else {
-                    continue;
+                    anyhow::bail!("Main returned a member atom/source instead of a Timeline item");
                 };
                 if !matches!(
                     item.atom_kind,

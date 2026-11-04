@@ -12,12 +12,14 @@ pub(crate) use completions::committed_finish;
 mod content;
 mod current;
 mod current_handoff;
+mod current_projection;
 pub(in crate::studio) use content::{
     continuation_request_digest, input_presentation, prompt_request_digest,
     referenced_attachment_ids, saved_prompt_request_digest,
 };
 pub(in crate::studio) use current::CurrentState;
 pub(in crate::studio) use current_handoff::{CurrentHandoff, CurrentRetirement};
+pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
 mod live;

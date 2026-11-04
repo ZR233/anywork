@@ -135,7 +135,7 @@ async fn opaque_older_cut_survives_append_and_writeback_and_rejects_other_scopes
         let started = harness.effect(vec![start("work", true)], vec![]).await?;
         let reference = started
             .current
-            .projection
+            .projection()
             .items
             .iter()
             .find_map(|item| item.members.clone())
