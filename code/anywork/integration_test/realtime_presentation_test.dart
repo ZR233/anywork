@@ -31,17 +31,37 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
+
+const _parallelObserverStage = 'realtime-parallel-observer';
+const _parallelObserverPrefix = 'realtime parallel observers ready';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   final project = Platform.environment['ANYWORK_REALTIME_PROJECT'];
   final output = Platform.environment['ANYWORK_REALTIME_OUTPUT'];
+  final providerValue = Platform.environment['ANYWORK_REALTIME_PROVIDER'];
+  final provider = providerValue == null ? null : Uri.tryParse(providerValue);
   if (project == null || output == null) {
     throw StateError(
       'Supply ANYWORK_REALTIME_PROJECT and ANYWORK_REALTIME_OUTPUT',
+    );
+  }
+  if (provider == null ||
+      provider.scheme != 'http' ||
+      !provider.hasAuthority ||
+      !const {'127.0.0.1', 'localhost', '::1'}.contains(provider.host) ||
+      !provider.hasPort ||
+      provider.port <= 0 ||
+      provider.port > 65535 ||
+      provider.userInfo.isNotEmpty ||
+      provider.hasQuery ||
+      provider.hasFragment) {
+    throw StateError(
+      'Supply ANYWORK_REALTIME_PROVIDER as the strict loopback HTTP fixture URI',
     );
   }
   final reportFile = File('$output/realtime-presentation.json');
@@ -50,7 +70,7 @@ void main() {
   var assertionsPassed = false;
   final report = <String, Object?>{
     'scenario': 'realtime-presentation',
-    'fixture': 'realtime',
+    'fixture': 'realtime-presentation',
     'runner': 'flutter.integration_test',
     'pass': false,
   };
@@ -192,17 +212,30 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-exec-wait.png');
       await scene.completed(answer: 'realtime long command complete');
+      await scene.closeLatestTurnGroups();
 
       final priorParallelItems = scene.observed.items
           .map((item) => item.id)
           .toSet();
       await scene.submit('Realtime parallel tools');
+      await fixtureGate(tester, provider, _parallelObserverStage);
+      final parallelObserver = await scene.prepareParallelObserver();
+      report['parallelObserver'] = parallelObserver.evidence;
+      await fixtureGate(
+        tester,
+        provider,
+        _parallelObserverStage,
+        release: true,
+      );
+      parallelObserver.evidence['gateReleased'] = true;
       await scene.untilLaidOutCurrentTools(
         minimum: 2,
         runningExecCallIds: const {
           'realtime-parallel-call-a',
           'realtime-parallel-call-b',
         },
+        settleDisclosure: false,
+        preparedObserver: parallelObserver,
       );
       expect(
         find.text('realtime parallel tools complete'),
@@ -214,7 +247,7 @@ void main() {
       await scene.verifyExecReceipts(priorParallelItems, const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
-      });
+      }, turnId: parallelObserver.turnId);
 
       final priorHostCwdItems = scene.observed.items
           .map((item) => item.id)
@@ -225,11 +258,12 @@ void main() {
         runningExecCallIds: const {'realtime-host-cwd-call'},
         settleDisclosure: false,
       );
+      final hostCwdTurnId = scene._submittedTurnId!;
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
       await scene.verifyExecReceipts(priorHostCwdItems, const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
-      });
+      }, turnId: hostCwdTurnId);
 
       await scene.submit('Realtime provider error');
       await scene.terminal(StudioTurnStatus.failed);
@@ -315,6 +349,29 @@ void main() {
   );
 }
 
+typedef _ParallelObserver = ({
+  String turnId,
+  TimelineDisplayLease lease,
+  TimelineCurrentDisplay currentDisplay,
+  Object controller,
+  int generation,
+  int mainSets,
+  TimelineGroupDisplay display,
+  TimelineMembersRef reference,
+  Object expansion,
+  Object bodyGeneration,
+  String prefixId,
+  List<String> prefixReferences,
+  Map<String, Object?> evidence,
+});
+
+typedef _ExecReceipt = ({
+  ChatAtom? member,
+  TimelineMembersRef? reference,
+  TimelineItem? main,
+  ChatItemPresentation value,
+});
+
 final class _RealtimeScene {
   _RealtimeScene(this.tester, this.graph);
 
@@ -323,6 +380,8 @@ final class _RealtimeScene {
   String? _priorTurn;
   String? _submittedThreadId;
   String? _submittedTurnId;
+  int _liveTextObservation = 0;
+  int _execReceiptObservation = 0;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
@@ -364,9 +423,266 @@ final class _RealtimeScene {
     return ChatItemPresentation.decode(reasoning.last);
   }
 
-  Future<void> closeLatestTurnGroups() => observed.closeSource(
-    ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
-  );
+  Future<void> closeLatestTurnGroups() async {
+    await observed.closeSource(
+      ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
+    );
+    await until(
+      () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
+      'collapsed realtime member handles joined before the next turn',
+    );
+  }
+
+  Future<_ParallelObserver> prepareParallelObserver() async {
+    StudioTurnView? turn;
+    await until(() {
+      final current = _latestTurn();
+      if (current == null || current.turnId == _priorTurn) return false;
+      _submittedTurnId ??= current.turnId;
+      expect(current.turnId, _submittedTurnId);
+      turn = current;
+      return current.state.status == StudioTurnStatus.running;
+    }, 'typed parallel Turn at the observer gate');
+    final source = ForegroundTurnChatSource(turnId: turn!.turnId);
+    await until(() {
+      final groups = observed.workFor(source).toList();
+      expect(groups.length, lessThanOrEqualTo(1));
+      return groups.length == 1;
+    }, 'the parallel Turn original observer work group');
+    final unit = observed.workFor(source).single;
+    final mainLease = lease;
+    final mountedDisplay = mainLease.currentDisplay;
+    expect(mountedDisplay, isNotNull);
+    final currentDisplay = mountedDisplay!;
+    expect(currentDisplay.isCurrent, isTrue);
+    expect(currentDisplay.turnId, turn!.turnId);
+    final controller = mainLease.controller;
+    final generation = mainLease.generation;
+    final mainSets = mainLease.appliedSets;
+    final reference = unit.item.members!;
+    final expansion = unit.expansion;
+    final bodyActiveBeforeOpen = expansion.bodyActive;
+    final bodyGenerationBeforeOpen = expansion.bodyGeneration;
+    final display = await observed.openGroup(unit.id);
+    await until(() {
+      final members = display.atoms.toList();
+      expect(members.length, lessThanOrEqualTo(1));
+      expect(
+        members.where((atom) => atom.kind == ChatAtomKind.toolCall),
+        isEmpty,
+        reason: 'The provider gate has not admitted either exec',
+      );
+      return display.isCurrent &&
+          display.expanded &&
+          !display.loading &&
+          members.length == 1 &&
+          members.single.lifecycle is TerminalChatAtom &&
+          members.single.completionItemId != null &&
+          members.single.completionSeq != null;
+    }, 'original parallel member window ready before exec admission');
+    expect(display.error, isNull);
+    expect(display.membersRef, reference);
+    expect(display.atoms, hasLength(1));
+    final prefix = display.atoms.single;
+    expect(prefix.source, source);
+    expect(prefix.kind, ChatAtomKind.reasoning);
+    expect(prefix.tool, isNull);
+    expect(prefix.completionItemId, isNotNull);
+    expect(prefix.completionSeq, isNotNull);
+    expect(prefix.lifecycle, isA<TerminalChatAtom>());
+    expect(
+      (prefix.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.completed,
+    );
+    expect(prefix.payload, isA<InlinePayload>());
+    expect(prefix.contents, isNotEmpty);
+    await until(
+      () => _laidOut(observed.memberRow(prefix.id)),
+      'laid out completed observer reasoning member',
+    );
+    final rendered = tester
+        .widget<ChatItemView>(observed.memberRow(prefix.id))
+        .item;
+    expect(rendered.atom?.id, prefix.id);
+    expect(rendered.compatibility, ChatItemCompatibility.current);
+    expect(rendered.type, 'thinking');
+    expect(
+      rendered.bodies
+          .where((body) => body.inline != null)
+          .map((body) => utf8.decode(body.inline!)),
+      contains(_parallelObserverPrefix),
+    );
+    // Reveal and inspect the actual text boxes while the provider is gated.
+    // This completes the original disclosure layout before either exec starts.
+    await _revealTextFragment(
+      tester,
+      observed.memberRow(prefix.id),
+      _parallelObserverPrefix,
+    );
+    Rect? previousBounds;
+    await until(() {
+      final row = observed.memberRow(prefix.id);
+      if (!_laidOut(row)) return false;
+      final bounds = tester.getRect(row);
+      final stable = previousBounds == bounds;
+      previousBounds = bounds;
+      return stable && display.isCurrent && !display.loading;
+    }, 'stable original reasoning member layout before gate release');
+    expect(display.atoms, hasLength(1));
+    expect(
+      display.atoms.where((atom) => atom.kind == ChatAtomKind.toolCall),
+      isEmpty,
+      reason: 'No exec has been admitted before the observer gate is released',
+    );
+    expect(find.text('realtime parallel tools complete'), findsNothing);
+    // The member body scope is acquired by the original UI disclosure, not
+    // before it. Freeze it only after the real prefix is ready and laid out.
+    expect(expansion.bodyActive, isTrue);
+    final bodyGeneration = expansion.bodyGeneration;
+    if (!bodyActiveBeforeOpen) {
+      expect(bodyGeneration, isNot(same(bodyGenerationBeforeOpen)));
+    }
+    final prepared = (
+      turnId: turn!.turnId,
+      lease: mainLease,
+      currentDisplay: currentDisplay,
+      controller: controller,
+      generation: generation,
+      mainSets: mainSets,
+      display: display,
+      reference: reference,
+      expansion: expansion,
+      bodyGeneration: bodyGeneration,
+      prefixId: prefix.id,
+      prefixReferences: prefix.contents
+          .map(
+            (content) => contentReferenceIdentity(content.reference).toString(),
+          )
+          .toList(),
+      evidence: <String, Object?>{
+        'gate': _parallelObserverStage,
+        'gateReached': true,
+        'gateReleased': false,
+        'bodyScopeAdmission': {
+          'activeBeforeOpen': bodyActiveBeforeOpen,
+          'activeAfterReady': expansion.bodyActive,
+          'generationChangedOnOpen': !identical(
+            bodyGenerationBeforeOpen,
+            bodyGeneration,
+          ),
+        },
+      },
+    );
+    expect(_expectParallelObserver(prepared), isTrue);
+    prepared.evidence['prearm'] = _parallelObserverSnapshot(prepared);
+    return prepared;
+  }
+
+  bool _expectParallelObserver(_ParallelObserver prepared) {
+    expect(_latestTurn()?.turnId, prepared.turnId);
+    expect(lease, same(prepared.lease));
+    expect(lease.currentDisplay, same(prepared.currentDisplay));
+    expect(prepared.currentDisplay.isCurrent, isTrue);
+    expect(lease.controller, same(prepared.controller));
+    expect(lease.generation, prepared.generation);
+    expect(lease.appliedSets, prepared.mainSets);
+    final unit = observed.unit(prepared.reference.itemId);
+    expect(unit.expansion, same(prepared.expansion));
+    expect(unit.expansion.bodyGeneration, same(prepared.bodyGeneration));
+    expect(unit.item.members, prepared.reference);
+    final displays = lease.groupDisplays
+        .where((display) => display.unitId == prepared.reference.itemId)
+        .toList();
+    expect(displays, hasLength(1));
+    expect(displays.single, same(prepared.display));
+    expect(prepared.display.isCurrent && prepared.display.expanded, isTrue);
+    expect(prepared.display.error, isNull);
+    expect(prepared.display.membersRef, prepared.reference);
+    if (prepared.display.loading) return false;
+    final prefix = prepared.display.atoms
+        .where((atom) => atom.id == prepared.prefixId)
+        .single;
+    expect(
+      prefix.contents.map(
+        (content) => contentReferenceIdentity(content.reference).toString(),
+      ),
+      orderedEquals(prepared.prefixReferences),
+    );
+    return true;
+  }
+
+  Map<String, Object?> _parallelObserverSnapshot(
+    _ParallelObserver prepared, {
+    Iterable<ChatAtom> running = const [],
+  }) {
+    final loading = prepared.display.loading;
+    return {
+      'turnId': prepared.turnId,
+      'groupId': prepared.reference.itemId,
+      'sameMainLease': identical(lease, prepared.lease),
+      'sameMainCurrentDisplay': identical(
+        lease.currentDisplay,
+        prepared.currentDisplay,
+      ),
+      'sameMainController': identical(lease.controller, prepared.controller),
+      'mainGeneration': lease.generation,
+      'mainSets': lease.appliedSets,
+      'sameGroupDisplay': identical(
+        lease.groupDisplays.singleWhere(
+          (display) => display.unitId == prepared.reference.itemId,
+        ),
+        prepared.display,
+      ),
+      'sameBodyGeneration': identical(
+        observed.unit(prepared.reference.itemId).expansion.bodyGeneration,
+        prepared.bodyGeneration,
+      ),
+      'membersRef': {
+        'databaseId': prepared.reference.databaseId,
+        'projectionVersion': prepared.reference.projectionVersion,
+        'projectionGeneration': prepared.reference.projectionGeneration,
+        'itemId': prepared.reference.itemId,
+      },
+      'current': prepared.display.isCurrent,
+      'expanded': prepared.display.expanded,
+      'loading': loading,
+      'membersAvailable': !loading,
+      'error': prepared.display.error?.toString(),
+      'prefixId': prepared.prefixId,
+      'prefixReferences': loading ? null : prepared.prefixReferences,
+      'memberIds': loading
+          ? null
+          : prepared.display.atoms.map((atom) => atom.id).toList(),
+      'windows': loading
+          ? null
+          : [
+              for (final window in prepared.display.windows)
+                {
+                  'id': window.id,
+                  'reference': contentReferenceIdentity(window.reference)
+                      .toString(),
+                  'generation': window.window?.generation,
+                  'ready': window.window != null,
+                  'error': window.error?.toString(),
+                },
+            ],
+      'runningTools': loading
+          ? null
+          : [
+              for (final atom in running)
+                {
+                  'id': atom.id,
+                  'callId': atom.tool?.callId,
+                  'active': atom.lifecycle is ActiveChatAtom,
+                  'status': tester
+                      .widget<TimelineToolDetails>(currentToolCard(atom))
+                      .item
+                      .statusString,
+                  'laidOut': _laidOut(currentToolCard(atom)),
+                },
+            ],
+    };
+  }
 
   TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
     (item) =>
@@ -497,69 +813,238 @@ final class _RealtimeScene {
 
   Future<void> verifyExecReceipts(
     Set<String> priorItemIds,
-    Map<String, String> expected,
-  ) async {
-    final source = ForegroundTurnChatSource(turnId: _latestTurn()!.turnId);
-    await observed.openSourceGroups(source);
-    bool requestedResult(ChatItemPresentation item) {
-      final reading = item.toolCard;
-      return reading is DecodedToolCard &&
-          expected.containsKey(reading.value.toolCallId) &&
-          reading.value.statusString == 'succeeded';
+    Map<String, String> expected, {
+    required String turnId,
+  }) async {
+    final source = ForegroundTurnChatSource(turnId: turnId);
+    final associatedTasks = <String, String>{};
+    final observations = <Map<String, Object?>>[];
+    final clock = Stopwatch()..start();
+    Map<String, Object?>? lastObservation;
+    String? previousObservation;
+
+    Map<String, Object?> sourceFacts(ChatSourceId value) =>
+        value is ForegroundTurnChatSource
+        ? {'kind': 'foregroundTurn', 'turnId': value.turnId}
+        : value is BackgroundResultChatSource
+        ? {'kind': 'backgroundResult', 'messageId': value.messageId}
+        : {'kind': value.runtimeType.toString()};
+
+    List<_ExecReceipt> targets() {
+      final result = <_ExecReceipt>[];
+      final candidates = <Map<String, Object?>>[];
+      final counts = {for (final call in expected.keys) call: 0};
+      final snapshot = <String, Object?>{
+        'turnId': turnId,
+        'candidates': candidates,
+        'finalCounts': counts,
+        'complete': false,
+      };
+      lastObservation = {
+        'elapsedMillis': clock.elapsedMilliseconds,
+        ...snapshot,
+      };
+
+      ChatItemPresentation read(
+        PayloadData? payload,
+        Map<String, Object?> candidate,
+        ChatItemPresentation Function() decode,
+      ) {
+        candidates.add(candidate);
+        candidate['payloadKind'] = payload.runtimeType.toString();
+        candidate['payloadBytes'] = payload is InlinePayload
+            ? payload.bytes.length
+            : payload is DeferredPayload
+            ? payload.byteLength
+            : null;
+        if (payload is DeferredPayload) {
+          candidate['payloadReference'] = contentReferenceIdentity(
+            payload.reference,
+          ).toString();
+        }
+        expect(
+          payload,
+          isA<InlinePayload>(),
+          reason:
+              'Small fixture receipt needs its original Inline envelope: '
+              '${jsonEncode(candidate)}',
+        );
+        final value = decode();
+        final reading = value.toolCard;
+        candidate['compatibility'] = value.compatibility.name;
+        candidate['decoder'] = reading.runtimeType.toString();
+        if (reading is DecodedToolCard) {
+          candidate.addAll({
+            'callId': reading.value.toolCallId,
+            'taskId': reading.value.taskId,
+            'status': reading.value.statusString,
+            'exitCode': reading.value.exitCode,
+          });
+        } else if (reading is UnavailableToolCard) {
+          candidate['unavailableKind'] = reading.kind.name;
+        }
+        expect(
+          reading,
+          isA<DecodedToolCard>(),
+          reason:
+              'Receipt envelope must decode without a Deferred loader: '
+              '${jsonEncode(candidate)}',
+        );
+        return value;
+      }
+
+      // Keep the original foreground members as task associations, not as
+      // substitutes for the independently delivered final Main Status.
+      for (final atom in observed.mountedMembers) {
+        if (atom.source != source ||
+            atom.turnId != turnId ||
+            !expected.containsKey(atom.tool?.callId) ||
+            atom.lifecycle is! TerminalChatAtom) {
+          continue;
+        }
+        final terminal = atom.lifecycle as TerminalChatAtom;
+        final reference = observed.unitForMember(atom.id).item.members!;
+        final candidate = <String, Object?>{
+          'domain': 'GroupMembers',
+          'id': atom.id,
+          'kind': atom.kind.name,
+          'source': sourceFacts(atom.source),
+          'turnId': atom.turnId,
+          'delivery': atom.delivery.name,
+          'outcome': terminal.outcome.name,
+          'completionItemId': atom.completionItemId,
+          'groupId': reference.itemId,
+        };
+        final value = read(
+          atom.payload,
+          candidate,
+          () => ChatItemPresentation.decode(atom),
+        );
+        final tool = (value.toolCard as DecodedToolCard).value;
+        expect(tool.toolCallId, atom.tool!.callId);
+        expect(tool.name, atom.tool!.name);
+        final handedOff =
+            atom.kind == ChatAtomKind.toolCall &&
+            tool.name == 'exec' &&
+            atom.delivery == ChatDeliveryKind.backgroundHandoff &&
+            terminal.outcome == ChatTerminalOutcome.transferred &&
+            tool.statusString == 'backgroundStarted';
+        if (handedOff) {
+          expect(tool.taskId, isNotNull);
+          final previous = associatedTasks[tool.toolCallId];
+          expect(previous, anyOf(isNull, tool.taskId));
+          associatedTasks[tool.toolCallId] = tool.taskId!;
+        }
+        final finalResult =
+            atom.kind == ChatAtomKind.toolCall &&
+            atom.delivery == ChatDeliveryKind.foreground &&
+            terminal.outcome == ChatTerminalOutcome.completed &&
+            tool.name == 'exec' &&
+            tool.statusString == 'succeeded' &&
+            tool.exitCode == 0;
+        candidate['handedOff'] = handedOff;
+        candidate['finalResult'] = finalResult;
+        if (finalResult) {
+          result.add((
+            member: atom,
+            reference: reference,
+            main: null,
+            value: value,
+          ));
+          counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
+        }
+      }
+      for (final unit in observed.main) {
+        final item = unit.item;
+        if (priorItemIds.contains(item.id) ||
+            item.turnId != turnId ||
+            item.kind != TimelineItemKind.status ||
+            item.atomKind != ChatAtomKind.toolCall) {
+          continue;
+        }
+        final candidate = <String, Object?>{
+          'domain': 'MainStatus',
+          'id': item.id,
+          'kind': item.kind.name,
+          'source': sourceFacts(item.source),
+          'turnId': item.turnId,
+          'delivery': item.delivery.name,
+          'outcome': item.outcome?.name,
+          'contentItemId': item.contentItemId,
+        };
+        final value = read(
+          item.payload,
+          candidate,
+          () => ChatItemPresentation.forUnit(unit),
+        );
+        final tool = (value.toolCard as DecodedToolCard).value;
+        final backgroundResult =
+            item.source is BackgroundResultChatSource &&
+            item.delivery == ChatDeliveryKind.independent &&
+            item.outcome == ChatTerminalOutcome.completed;
+        final taskAssociated =
+            tool.taskId != null &&
+            associatedTasks[tool.toolCallId] == tool.taskId;
+        final finalResult =
+            backgroundResult &&
+            taskAssociated &&
+            expected.containsKey(tool.toolCallId) &&
+            tool.name == 'exec' &&
+            tool.statusString == 'succeeded' &&
+            tool.exitCode == 0;
+        candidate['backgroundResult'] = backgroundResult;
+        candidate['taskAssociated'] = taskAssociated;
+        candidate['finalResult'] = finalResult;
+        if (finalResult) {
+          result.add((member: null, reference: null, main: item, value: value));
+          counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
+        }
+      }
+      snapshot['associatedTasks'] = Map<String, String>.of(associatedTasks);
+      snapshot['complete'] = true;
+      lastObservation = {
+        'elapsedMillis': clock.elapsedMilliseconds,
+        ...snapshot,
+      };
+      final signature = jsonEncode(snapshot);
+      if (signature != previousObservation) {
+        previousObservation = signature;
+        if (observations.length < 32) observations.add(lastObservation!);
+      }
+      return result;
     }
 
-    // Main Status and explicit group members are different domains. These
-    // short-lived observations never fabricate an Atom for a Main item.
-    List<
-      ({
-        ChatAtom? member,
-        TimelineMembersRef? reference,
-        TimelineItem? main,
-        ChatItemPresentation value,
-      })
-    >
-    targets() => [
-      for (final unit in observed.main)
-        if (!priorItemIds.contains(unit.id) &&
-            unit.item.source == source &&
-            unit.item.kind == TimelineItemKind.status &&
-            unit.item.payload != null &&
-            requestedResult(ChatItemPresentation.forUnit(unit)))
-          (
-            member: null,
-            reference: null,
-            main: unit.item,
-            value: ChatItemPresentation.forUnit(unit),
-          ),
-      for (final atom in observed.mountedMembers)
-        if (atom.source == source &&
-            atom.payload != null &&
-            requestedResult(ChatItemPresentation.decode(atom)))
-          (
-            member: atom,
-            reference: observed.unitForMember(atom.id).item.members,
-            main: null,
-            value: ChatItemPresentation.decode(atom),
-          ),
-    ];
-
-    await until(
-      () => expected.keys.every(
-        (call) =>
-            targets()
-                .where(
-                  (target) =>
-                      (target.value.toolCard as DecodedToolCard)
-                          .value
-                          .toolCallId ==
-                      call,
-                )
-                .length ==
-            1,
-      ),
-      'all exact completed exec receipts in real Main units',
-    );
-    final receipts = targets();
+    var receipts = <_ExecReceipt>[];
+    try {
+      await observed.openSourceGroups(source);
+      await until(() {
+        receipts = targets();
+        return expected.keys.every(
+          (call) =>
+              receipts
+                  .where(
+                    (target) =>
+                        (target.value.toolCard as DecodedToolCard)
+                            .value
+                            .toolCallId ==
+                        call,
+                  )
+                  .length ==
+              1,
+        );
+      }, 'all exact successful final exec results in their original domains');
+    } finally {
+      final output = Directory(
+        Platform.environment['ANYWORK_REALTIME_OUTPUT']!,
+      );
+      await File.fromUri(
+        output.uri.resolve(
+          'realtime-exec-receipts-${_execReceiptObservation++}.json',
+        ),
+      ).writeAsString(
+        '${jsonEncode({'turnId': turnId, 'expectedCalls': expected.keys.toList(), 'associatedTasks': associatedTasks, 'observations': observations, 'lastObservation': lastObservation})}\n',
+      );
+    }
     expect(
       receipts
           .map(
@@ -884,112 +1369,284 @@ final class _RealtimeScene {
   Future<TimelineItem> untilReadableCurrentText({
     required Duration timeout,
   }) async {
+    final observationId = ++_liveTextObservation;
+    final clock = Stopwatch()..start();
+    final observations = <Map<String, Object?>>[];
+    Map<String, Object?>? lastObservation;
+    String? previousObservation;
+    String? failure;
     TimelineItem? accepted;
-    await until(
-      () {
-        final candidates = observed.live
-            .map((unit) => unit.item)
-            .where(
-              (atom) =>
-                  atom.kind == TimelineItemKind.text &&
-                  atom.atomKind == ChatAtomKind.text &&
-                  atom.outcome == null,
+    try {
+      await until(
+        () {
+          final turn = _latestTurn();
+          final live = observed.live.toList();
+          final candidates = live
+              .map((unit) => unit.item)
+              .where(
+                (atom) =>
+                    atom.kind == TimelineItemKind.text &&
+                    atom.atomKind == ChatAtomKind.text &&
+                    atom.outcome == null,
+              )
+              .toList();
+          // These are fresh synchronous borrows for this predicate invocation,
+          // not a lease or window retained across its next pump.
+          final display = lease.currentDisplay;
+          final allWindows = display?.windows.toList() ?? const [];
+          final views = tester
+              .widgetList<ConversationCurrentWindowView>(
+                find.byType(ConversationCurrentWindowView),
+              )
+              .toList();
+          final state = {
+            'selectedThreadId': graph.client.selection.state.selectedThreadId,
+            'submittedThreadId': _submittedThreadId,
+            'submittedTurnId': _submittedTurnId,
+            'priorTurnId': _priorTurn,
+            'turnId': turn?.turnId,
+            'turnThreadId': turn?.threadId,
+            'turnStatus': turn?.state.status.name,
+            'leaseGeneration': lease.generation,
+            'leaseMode': lease.mode.name,
+            'contentPhase': lease.content.state.value.runtimeType.toString(),
+            'displayPresent': display != null,
+            'displayCurrent': display?.isCurrent,
+            'displayTurnId': display?.turnId,
+            'displayActivityId': display?.activityId,
+            'live': [
+              for (final unit in live)
+                {
+                  'id': unit.id,
+                  'kind': unit.item.kind.name,
+                  'atomKind': unit.item.atomKind?.name,
+                  'outcome': unit.item.outcome?.name,
+                  'sourceType': unit.item.source.runtimeType.toString(),
+                  'sourceTurnId': unit.item.source is ForegroundTurnChatSource
+                      ? (unit.item.source as ForegroundTurnChatSource).turnId
+                      : null,
+                  'matchesTurnSource':
+                      turn != null &&
+                      unit.item.source ==
+                          ForegroundTurnChatSource(turnId: turn.turnId),
+                  'references': [
+                    for (final content in unit.item.contents)
+                      contentReferenceIdentity(content.reference).toString(),
+                  ],
+                },
+            ],
+            'candidateIds': candidates.map((item) => item.id).toList(),
+            'views': [
+              for (final view in views)
+                {
+                  'id': view.id,
+                  'laidOut': _laidOut(find.byWidget(view)),
+                  'textCodeUnits': view.text.length,
+                  'error': view.error?.toString(),
+                  'offset': view.offset,
+                  'end': view.end,
+                  'availableThrough': view.availableThrough,
+                },
+            ],
+            'windows': [
+              for (final window in allWindows)
+                {
+                  'id': window.id,
+                  'reference': contentReferenceIdentity(window.reference)
+                      .toString(),
+                  'error': window.error?.toString(),
+                  'ready': window.window != null,
+                  'generation': window.window?.generation,
+                  'offset': window.window?.offset,
+                  'bytes': window.window?.bytes.length,
+                  'availableThrough': window.window?.availableThrough,
+                  'sealed': window.window?.sealed,
+                },
+            ],
+          };
+          final signature = jsonEncode(state);
+          if (signature != previousObservation) {
+            final observation = {
+              'elapsedMillis': clock.elapsedMilliseconds,
+              ...state,
+            };
+            lastObservation = observation;
+            if (observations.length < 32) {
+              observations.add(observation);
+            }
+            previousObservation = signature;
+          }
+          for (final atom in candidates) {
+            final view = find.byWidgetPredicate(
+              (widget) =>
+                  widget is ConversationCurrentWindowView &&
+                  widget.id == atom.id &&
+                  widget.error == null &&
+                  widget.text.isNotEmpty,
             );
-        for (final atom in candidates) {
-          final view = find.byWidgetPredicate(
-            (widget) =>
-                widget is ConversationCurrentWindowView &&
-                widget.id == atom.id &&
-                widget.error == null &&
-                widget.text.isNotEmpty,
-          );
-          if (!_laidOut(view)) continue;
-          final windows =
-              lease.currentDisplay?.windows
-                  .where((window) => window.id == atom.id)
-                  .toList() ??
-              const [];
-          for (final window in windows) {
-            if (window.error case final error?) throw StateError('$error');
-          }
-          if (windows.isEmpty ||
-              windows.every((window) => window.window == null)) {
-            continue;
-          }
-          expect(
-            atom.contents.any(
-              (content) => windows.any(
-                (window) =>
-                    contentReferenceIdentity(content.reference) ==
-                    contentReferenceIdentity(window.reference),
+            if (!_laidOut(view)) continue;
+            final windows = allWindows
+                .where((window) => window.id == atom.id)
+                .toList();
+            for (final window in windows) {
+              if (window.error case final error?) throw StateError('$error');
+            }
+            if (windows.isEmpty ||
+                windows.every((window) => window.window == null)) {
+              continue;
+            }
+            expect(
+              atom.contents.any(
+                (content) => windows.any(
+                  (window) =>
+                      contentReferenceIdentity(content.reference) ==
+                      contentReferenceIdentity(window.reference),
+                ),
               ),
-            ),
-            isTrue,
-          );
-          accepted = atom;
-          return true;
-        }
-        return false;
-      },
-      'readable production live text with its original content-window borrow',
-      timeout: timeout,
-    );
-    return accepted!;
+              isTrue,
+            );
+            accepted = atom;
+            return true;
+          }
+          return false;
+        },
+        'readable production live text with its original content-window borrow',
+        timeout: timeout,
+      );
+      return accepted!;
+    } catch (error) {
+      failure = error.toString();
+      rethrow;
+    } finally {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri.resolve('realtime-live-text-$observationId.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert({'acceptedItemId': accepted?.id, 'failure': failure, 'timeoutMillis': timeout.inMilliseconds, 'observations': observations, 'lastObservation': lastObservation})}\n',
+      );
+    }
   }
 
-  // Live atoms without a completion payload use the real tool disclosure,
-  // including wait. Only a completed wait payload has a TimelineWaitPanel.
-  Finder currentToolCard(ChatAtom atom) => atom.wait != null
-      ? find.byWidgetPredicate(
-          (widget) => widget is TimelineWaitPanel && widget.identity == atom.id,
-        )
-      : find.byWidgetPredicate(
-          (widget) =>
-              widget is TimelineToolDetails &&
-              widget.item.id == atom.id &&
-              widget.item.toolCallId == atom.tool?.callId &&
-              widget.item.name == atom.tool?.name,
-        );
+  Finder currentToolCard(ChatAtom atom) {
+    final reading = atom.payload == null
+        ? null
+        : ChatItemPresentation.decode(atom).toolCard;
+    // Use the renderer's same typed facts for active and completed waits.
+    final wait =
+        atom.wait ?? (reading is DecodedToolCard ? reading.value.wait : null);
+    return wait != null
+        ? find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineWaitPanel && widget.identity == atom.id,
+          )
+        : find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineToolDetails &&
+                widget.item.id == atom.id &&
+                widget.item.toolCallId == atom.tool?.callId &&
+                widget.item.name == atom.tool?.name,
+          );
+  }
 
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> toolCallIds = const {},
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
+    _ParallelObserver? preparedObserver,
   }) async {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
+    final observations = <Map<String, Object?>>[];
+    if (preparedObserver != null) {
+      preparedObserver.evidence['observations'] = observations;
+    }
+    String? previousObservation;
     try {
       while (true) {
-        final units = observed.live
-            .where((unit) => unit.item.kind == TimelineItemKind.workGroup)
-            .toList();
-        for (final unit in units) {
-          await observed.openGroup(unit.id);
+        final turn = _latestTurn();
+        if (turn != null && turn.turnId != _priorTurn) {
+          _submittedTurnId ??= turn.turnId;
+          expect(turn.turnId, _submittedTurnId);
         }
-        final liveIds = units.map((unit) => unit.id).toSet();
-        final tools = lease.groupDisplays
-            .where((display) => liveIds.contains(display.unitId))
-            .expand((display) => display.atoms)
-            .where((atom) => atom.kind == ChatAtomKind.toolCall)
-            .toList();
+        // Expansion can outlive the live-to-Main handoff of this exact group.
+        // Follow its original Turn source; the running assertions below still
+        // require the exact parallel exec calls to be active and laid out.
+        final units = [
+          if (turn != null && turn.turnId == _submittedTurnId)
+            ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
+        ];
+        final openingStartedMillis = clock.elapsedMilliseconds;
+        if (preparedObserver == null) {
+          for (final unit in units) {
+            await observed.openGroup(unit.id);
+          }
+        }
+        // Keep every original identity/error assertion even while the same
+        // reader temporarily cannot lend an admitted member window.
+        final observerReady =
+            preparedObserver == null ||
+            _expectParallelObserver(preparedObserver);
+        final groupIds = units.map((unit) => unit.id).toSet();
+        if (preparedObserver != null) {
+          expect(groupIds, {preparedObserver.reference.itemId});
+        }
+        final tools = !observerReady
+            ? null
+            : lease.groupDisplays
+                  .where((display) => groupIds.contains(display.unitId))
+                  .expand((display) => display.atoms)
+                  .where((atom) => atom.kind == ChatAtomKind.toolCall)
+                  .toList();
         final running = tools
-            .where(
+            ?.where(
               (atom) =>
                   atom.tool?.name == 'exec' && atom.lifecycle is ActiveChatAtom,
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
         final expectedCallIds = {...toolCallIds, ...runningExecCallIds};
-        final required = expectedCallIds.isEmpty
+        final required = tools == null
+            ? null
+            : expectedCallIds.isEmpty
             ? tools
             : tools
                   .where((atom) => expectedCallIds.contains(atom.tool?.callId))
                   .toList();
         final laidOut = required
-            .where((atom) => _laidOut(currentToolCard(atom)))
+            ?.where((atom) => _laidOut(currentToolCard(atom)))
             .length;
-        if (tools.length >= minimum &&
+        final observation = {
+          'groupIds': groupIds.toList(),
+          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          if (preparedObserver != null)
+            'observer': _parallelObserverSnapshot(preparedObserver),
+          'membersAvailable': observerReady,
+          'members': tools
+              ?.map(
+                (atom) => {
+                  'id': atom.id,
+                  'callId': atom.tool?.callId,
+                  'active': atom.lifecycle is ActiveChatAtom,
+                  'laidOut': _laidOut(currentToolCard(atom)),
+                },
+              )
+              .toList(),
+        };
+        final signature = jsonEncode(observation);
+        if (signature != previousObservation && observations.length < 32) {
+          observations.add({
+            'openingStartedMillis': openingStartedMillis,
+            'observedMillis': clock.elapsedMilliseconds,
+            ...observation,
+          });
+        }
+        previousObservation = signature;
+        if (observerReady &&
+            tools != null &&
+            required != null &&
+            running != null &&
+            tools.length >= minimum &&
             required.isNotEmpty &&
             required
                 .map((atom) => atom.tool?.callId)
@@ -1050,6 +1707,15 @@ final class _RealtimeScene {
           debugPrintSynchronously(
             'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
           );
+          if (preparedObserver != null) {
+            expect(_expectParallelObserver(preparedObserver), isTrue);
+            preparedObserver.evidence['running'] = _parallelObserverSnapshot(
+              preparedObserver,
+              running: required.where(
+                (atom) => runningExecCallIds.contains(atom.tool?.callId),
+              ),
+            );
+          }
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
@@ -1059,6 +1725,33 @@ final class _RealtimeScene {
         expect(tester.takeException(), isNull);
       }
     } catch (_) {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri.resolve('realtime-tool-observation-failure.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert({
+          'turnId': _submittedTurnId,
+          'expectedCallIds': {...toolCallIds, ...runningExecCallIds}.toList(),
+          'runningExecCallIds': runningExecCallIds.toList(),
+          'observations': observations,
+        })}\n',
+      );
+      debugPrintSynchronously(
+        'Realtime tool observation failure: ${jsonEncode({
+          'turnId': _submittedTurnId,
+          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          'chatHandles': graph.client.budget.used(ResourceKind.chatHandle),
+          'groups': lease.groupDisplays.map((display) => {
+            'id': display.unitId,
+            'current': display.isCurrent,
+            'expanded': display.expanded,
+            'loading': display.loading,
+            'membersAvailable': display.isCurrent && !display.loading,
+            'error': display.error?.toString(),
+            'members': display.isCurrent && !display.loading ? display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': _laidOut(currentToolCard(atom))}).toList() : null,
+          }).toList(),
+        })}',
+      );
       await capturePresentation(
         tester,
         'realtime-current-tools-$minimum-failure.png',
