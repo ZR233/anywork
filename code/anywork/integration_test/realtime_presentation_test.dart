@@ -573,12 +573,12 @@ final class _RealtimeScene {
         },
       },
     );
-    _expectParallelObserver(prepared);
+    expect(_expectParallelObserver(prepared), isTrue);
     prepared.evidence['prearm'] = _parallelObserverSnapshot(prepared);
     return prepared;
   }
 
-  void _expectParallelObserver(_ParallelObserver prepared) {
+  bool _expectParallelObserver(_ParallelObserver prepared) {
     expect(_latestTurn()?.turnId, prepared.turnId);
     expect(lease, same(prepared.lease));
     expect(lease.currentDisplay, same(prepared.currentDisplay));
@@ -598,6 +598,7 @@ final class _RealtimeScene {
     expect(prepared.display.isCurrent && prepared.display.expanded, isTrue);
     expect(prepared.display.error, isNull);
     expect(prepared.display.membersRef, prepared.reference);
+    if (prepared.display.loading) return false;
     final prefix = prepared.display.atoms
         .where((atom) => atom.id == prepared.prefixId)
         .single;
@@ -607,69 +608,81 @@ final class _RealtimeScene {
       ),
       orderedEquals(prepared.prefixReferences),
     );
+    return true;
   }
 
   Map<String, Object?> _parallelObserverSnapshot(
     _ParallelObserver prepared, {
     Iterable<ChatAtom> running = const [],
-  }) => {
-    'turnId': prepared.turnId,
-    'groupId': prepared.reference.itemId,
-    'sameMainLease': identical(lease, prepared.lease),
-    'sameMainCurrentDisplay': identical(
-      lease.currentDisplay,
-      prepared.currentDisplay,
-    ),
-    'sameMainController': identical(lease.controller, prepared.controller),
-    'mainGeneration': lease.generation,
-    'mainSets': lease.appliedSets,
-    'sameGroupDisplay': identical(
-      lease.groupDisplays.singleWhere(
-        (display) => display.unitId == prepared.reference.itemId,
+  }) {
+    final loading = prepared.display.loading;
+    return {
+      'turnId': prepared.turnId,
+      'groupId': prepared.reference.itemId,
+      'sameMainLease': identical(lease, prepared.lease),
+      'sameMainCurrentDisplay': identical(
+        lease.currentDisplay,
+        prepared.currentDisplay,
       ),
-      prepared.display,
-    ),
-    'sameBodyGeneration': identical(
-      observed.unit(prepared.reference.itemId).expansion.bodyGeneration,
-      prepared.bodyGeneration,
-    ),
-    'membersRef': {
-      'databaseId': prepared.reference.databaseId,
-      'projectionVersion': prepared.reference.projectionVersion,
-      'projectionGeneration': prepared.reference.projectionGeneration,
-      'itemId': prepared.reference.itemId,
-    },
-    'current': prepared.display.isCurrent,
-    'expanded': prepared.display.expanded,
-    'loading': prepared.display.loading,
-    'error': prepared.display.error?.toString(),
-    'prefixId': prepared.prefixId,
-    'prefixReferences': prepared.prefixReferences,
-    'memberIds': prepared.display.atoms.map((atom) => atom.id).toList(),
-    'windows': [
-      for (final window in prepared.display.windows)
-        {
-          'id': window.id,
-          'reference': contentReferenceIdentity(window.reference).toString(),
-          'generation': window.window?.generation,
-          'ready': window.window != null,
-          'error': window.error?.toString(),
-        },
-    ],
-    'runningTools': [
-      for (final atom in running)
-        {
-          'id': atom.id,
-          'callId': atom.tool?.callId,
-          'active': atom.lifecycle is ActiveChatAtom,
-          'status': tester
-              .widget<TimelineToolDetails>(currentToolCard(atom))
-              .item
-              .statusString,
-          'laidOut': _laidOut(currentToolCard(atom)),
-        },
-    ],
-  };
+      'sameMainController': identical(lease.controller, prepared.controller),
+      'mainGeneration': lease.generation,
+      'mainSets': lease.appliedSets,
+      'sameGroupDisplay': identical(
+        lease.groupDisplays.singleWhere(
+          (display) => display.unitId == prepared.reference.itemId,
+        ),
+        prepared.display,
+      ),
+      'sameBodyGeneration': identical(
+        observed.unit(prepared.reference.itemId).expansion.bodyGeneration,
+        prepared.bodyGeneration,
+      ),
+      'membersRef': {
+        'databaseId': prepared.reference.databaseId,
+        'projectionVersion': prepared.reference.projectionVersion,
+        'projectionGeneration': prepared.reference.projectionGeneration,
+        'itemId': prepared.reference.itemId,
+      },
+      'current': prepared.display.isCurrent,
+      'expanded': prepared.display.expanded,
+      'loading': loading,
+      'membersAvailable': !loading,
+      'error': prepared.display.error?.toString(),
+      'prefixId': prepared.prefixId,
+      'prefixReferences': loading ? null : prepared.prefixReferences,
+      'memberIds': loading
+          ? null
+          : prepared.display.atoms.map((atom) => atom.id).toList(),
+      'windows': loading
+          ? null
+          : [
+              for (final window in prepared.display.windows)
+                {
+                  'id': window.id,
+                  'reference': contentReferenceIdentity(window.reference)
+                      .toString(),
+                  'generation': window.window?.generation,
+                  'ready': window.window != null,
+                  'error': window.error?.toString(),
+                },
+            ],
+      'runningTools': loading
+          ? null
+          : [
+              for (final atom in running)
+                {
+                  'id': atom.id,
+                  'callId': atom.tool?.callId,
+                  'active': atom.lifecycle is ActiveChatAtom,
+                  'status': tester
+                      .widget<TimelineToolDetails>(currentToolCard(atom))
+                      .item
+                      .statusString,
+                  'laidOut': _laidOut(currentToolCard(atom)),
+                },
+            ],
+    };
+  }
 
   TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
     (item) =>
@@ -1545,6 +1558,9 @@ final class _RealtimeScene {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
     final observations = <Map<String, Object?>>[];
+    if (preparedObserver != null) {
+      preparedObserver.evidence['observations'] = observations;
+    }
     String? previousObservation;
     try {
       while (true) {
@@ -1565,41 +1581,49 @@ final class _RealtimeScene {
           for (final unit in units) {
             await observed.openGroup(unit.id);
           }
-        } else {
-          // The exact reader was opened before exec admission; do not reopen it
-          // or spend the foreground window repeating its disclosure animation.
-          _expectParallelObserver(preparedObserver);
         }
+        // Keep every original identity/error assertion even while the same
+        // reader temporarily cannot lend an admitted member window.
+        final observerReady =
+            preparedObserver == null ||
+            _expectParallelObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
         if (preparedObserver != null) {
           expect(groupIds, {preparedObserver.reference.itemId});
         }
-        final tools = lease.groupDisplays
-            .where((display) => groupIds.contains(display.unitId))
-            .expand((display) => display.atoms)
-            .where((atom) => atom.kind == ChatAtomKind.toolCall)
-            .toList();
+        final tools = !observerReady
+            ? null
+            : lease.groupDisplays
+                  .where((display) => groupIds.contains(display.unitId))
+                  .expand((display) => display.atoms)
+                  .where((atom) => atom.kind == ChatAtomKind.toolCall)
+                  .toList();
         final running = tools
-            .where(
+            ?.where(
               (atom) =>
                   atom.tool?.name == 'exec' && atom.lifecycle is ActiveChatAtom,
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
         final expectedCallIds = {...toolCallIds, ...runningExecCallIds};
-        final required = expectedCallIds.isEmpty
+        final required = tools == null
+            ? null
+            : expectedCallIds.isEmpty
             ? tools
             : tools
                   .where((atom) => expectedCallIds.contains(atom.tool?.callId))
                   .toList();
         final laidOut = required
-            .where((atom) => _laidOut(currentToolCard(atom)))
+            ?.where((atom) => _laidOut(currentToolCard(atom)))
             .length;
         final observation = {
           'groupIds': groupIds.toList(),
           'liveIds': observed.live.map((unit) => unit.id).toList(),
+          if (preparedObserver != null)
+            'observer': _parallelObserverSnapshot(preparedObserver),
+          'membersAvailable': observerReady,
           'members': tools
-              .map(
+              ?.map(
                 (atom) => {
                   'id': atom.id,
                   'callId': atom.tool?.callId,
@@ -1618,7 +1642,11 @@ final class _RealtimeScene {
           });
         }
         previousObservation = signature;
-        if (tools.length >= minimum &&
+        if (observerReady &&
+            tools != null &&
+            required != null &&
+            running != null &&
+            tools.length >= minimum &&
             required.isNotEmpty &&
             required
                 .map((atom) => atom.tool?.callId)
@@ -1680,7 +1708,7 @@ final class _RealtimeScene {
             'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
           );
           if (preparedObserver != null) {
-            _expectParallelObserver(preparedObserver);
+            expect(_expectParallelObserver(preparedObserver), isTrue);
             preparedObserver.evidence['running'] = _parallelObserverSnapshot(
               preparedObserver,
               running: required.where(
@@ -1717,8 +1745,10 @@ final class _RealtimeScene {
             'id': display.unitId,
             'current': display.isCurrent,
             'expanded': display.expanded,
+            'loading': display.loading,
+            'membersAvailable': display.isCurrent && !display.loading,
             'error': display.error?.toString(),
-            'members': display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': _laidOut(currentToolCard(atom))}).toList(),
+            'members': display.isCurrent && !display.loading ? display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': _laidOut(currentToolCard(atom))}).toList() : null,
           }).toList(),
         })}',
       );
