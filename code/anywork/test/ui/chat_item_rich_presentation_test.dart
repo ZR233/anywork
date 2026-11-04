@@ -4,6 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
@@ -90,6 +91,100 @@ Finder get _rowTap => find
     .first;
 
 void main() {
+  testWidgets(
+    'Main tool Status keeps its original unit and discloses Item-owned ranges in live and history',
+    (tester) async {
+      final tool = _tool('builtin.exec@2');
+      for (final live in [true, false]) {
+        final mode = live ? 'live' : 'history';
+        final contentItemId = 'original-main-result-$mode';
+        final owner = ItemContentOwner(itemId: contentItemId);
+        final arguments = ContentRef(
+          databaseId: 'main-status-db',
+          target: BodyContentTarget(owner: owner, key: 'tool.arguments'),
+        );
+        final output = ContentRef(
+          databaseId: 'main-status-db',
+          target: BodyContentTarget(owner: owner, key: 'tool.result'),
+        );
+        final unit = TimelineDisplayUnit(
+          live: live,
+          item: TimelineItem(
+            id: 'status:main-result-$mode',
+            kind: TimelineItemKind.status,
+            source: BackgroundResultChatSource(messageId: 'result-$mode'),
+            atomKind: ChatAtomKind.toolCall,
+            delivery: ChatDeliveryKind.independent,
+            outcome: ChatTerminalOutcome.completed,
+            turnId: 'original-turn',
+            contentItemId: contentItemId,
+            payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
+            contents: [
+              ChatAtomContent(
+                role: ChatContentRole.toolArguments,
+                reference: arguments,
+              ),
+              ChatAtomContent(
+                role: ChatContentRole.toolOutput,
+                reference: output,
+              ),
+            ],
+            admissionClosed: true,
+          ),
+        );
+        final item = ChatItemPresentation.forUnit(unit);
+        expect(item.displayUnit, same(unit));
+        expect(item.atom, isNull);
+        expect(item.compatibility, ChatItemCompatibility.current);
+        expect(item.type, 'tool');
+        final declared = {
+          ChatContentRole.toolArguments.name: arguments,
+          ChatContentRole.toolOutput.name: output,
+        };
+        final requests = <({String id, String key, ContentRef reference})>[];
+        await tester.pumpWidget(
+          _host(
+            ChatItemView(
+              key: ValueKey(unit.id),
+              item: item,
+              contentRangeBuilder: (id, key, label, reference, witness) {
+                expect(id, unit.id);
+                expect(declared, contains(key));
+                expect(reference, same(declared[key]));
+                // Observe renderer wiring only; this builder does not read IO.
+                requests.add((id: id, key: key, reference: reference));
+                return Text('declared:$key');
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(TimelineToolDetails), findsOneWidget);
+        final rendered = tester.widget<TimelineToolDetails>(
+          find.byType(TimelineToolDetails),
+        );
+        expect(rendered.item.toolCallId, 'call');
+        expect(rendered.item.statusString, 'succeeded');
+        for (final key in declared.keys) {
+          expect(find.text('declared:$key'), findsNothing);
+        }
+        await tester.tap(_rowTap);
+        await tester.pumpAndSettle();
+        for (final key in declared.keys) {
+          expect(find.text('declared:$key'), findsOneWidget);
+        }
+        expect(
+          requests.map((request) => request.key).toSet(),
+          declared.keys.toSet(),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        unit.expansion.retirement.dispose();
+        unit.expansion.dispose();
+      }
+    },
+  );
+
   testWidgets(
     'Turn completion, failure and stop preserve distinct semantics without invented meta',
     (tester) async {
