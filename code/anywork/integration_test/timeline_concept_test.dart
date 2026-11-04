@@ -617,7 +617,7 @@ final class _ConceptScene {
 
   Future<void> warmSelectionSamples() async {
     final samples = <Map<String, Object?>>[];
-    report['warmSelections'] = {
+    report['warmSelections'] = <String, Object?>{
       'platform': Platform.operatingSystem,
       'buildMode': 'debug integration_test',
       'cacheCondition':
