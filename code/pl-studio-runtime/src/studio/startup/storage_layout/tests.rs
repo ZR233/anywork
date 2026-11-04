@@ -147,6 +147,99 @@ async fn fixture(home: &Path, grouped: bool, standalone: bool) -> Result<(Studio
     Ok((paths, session))
 }
 
+#[tokio::test]
+async fn catalog_636_v2_stale_child_mode_migrates_through_runtime_and_reopens() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (paths, _) = fixture(temp.path(), false, false).await?;
+    let mut catalog: toml::Table = toml::from_str(include_str!(
+        "../../../../tests/fixtures/migration-636/catalog-v4.toml"
+    ))?;
+    for entry in catalog["entries"]
+        .as_array_mut()
+        .context("synthetic entries")?
+    {
+        for field in ["id", "rootThreadId", "parentThreadId", "agentPath"] {
+            if entry.get(field).and_then(toml::Value::as_str) == Some("cold") {
+                entry[field] = THREAD.into();
+            }
+        }
+        entry["projectId"] = OWNER.into();
+        entry["workspacePath"] = "/isolated-workspace".into();
+    }
+    let original_catalog = toml::to_string(&catalog)?;
+    tokio::fs::write(temp.path().join("v2/catalog.toml"), &original_catalog).await?;
+    let child = temp
+        .path()
+        .join("v2/sessions")
+        .join(storage_key("synthetic-child", "Thread")?);
+    tokio::fs::create_dir_all(&child).await?;
+    let original_manifest = format!(
+        "schemaVersion = 1\nthreadId = 'synthetic-child'\nprojectId = '{OWNER}'\nparentThreadId = '{THREAD}'\nrootThreadId = '{THREAD}'\nworkspaceMode = 'local'\nworkspacePath = '/isolated-workspace'\ncreatedAt = 2\n"
+    );
+    tokio::fs::write(child.join("session.toml"), &original_manifest).await?;
+    let options = crate::StudioRuntimeOptions {
+        studio_home: Some(temp.path().to_owned()),
+        host: crate::StudioHostKind::Test,
+        ..crate::StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options.clone()).await?;
+    assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
+    let root = runtime.read_thread(THREAD).await?;
+    assert_eq!(root.workspace_id, OWNER);
+    assert_eq!(root.mode, pl_protocol::ThreadModeId::simple());
+    let child = runtime.read_thread("synthetic-child").await?;
+    assert_eq!(child.root_thread_id, THREAD);
+    assert_eq!(child.parent_thread_id.as_deref(), Some(THREAD));
+    assert_eq!(child.workspace_id, OWNER);
+    assert_eq!(
+        child.frozen_model.context("frozen model")?.model_id,
+        "synthetic-model"
+    );
+    runtime.shutdown_runtime().await?;
+    for id in [THREAD, "synthetic-child"] {
+        assert!(
+            !paths.session_paths(OWNER, id)?.history_database().exists(),
+            "catalog migration must not activate execution or create history"
+        );
+    }
+    let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
+    let preserved = backup_root(&paths, &journal).join("v2");
+    assert_eq!(
+        tokio::fs::read_to_string(preserved.join("catalog.toml")).await?,
+        original_catalog
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(
+            preserved
+                .join("sessions")
+                .join(storage_key("synthetic-child", "Thread")?)
+                .join("session.toml")
+        )
+        .await?,
+        original_manifest
+    );
+    let upgraded = tokio::fs::read(paths.catalog_file()).await?;
+    let reopened = crate::StudioRuntime::initialize(options).await?;
+    assert!(
+        reopened
+            .runtime_snapshot()
+            .await?
+            .startup_recovery
+            .is_none()
+    );
+    assert_eq!(
+        reopened
+            .read_thread("synthetic-child")
+            .await?
+            .root_thread_id,
+        THREAD
+    );
+    reopened.shutdown_runtime().await?;
+    assert_eq!(tokio::fs::read(paths.catalog_file()).await?, upgraded);
+    assert!(!temp.path().join("startup-backups").exists());
+    Ok(())
+}
+
 /// Snapshot a committed WAL family from a separate live donor. No connection ever opens the
 /// fixture family while the migration moves it.
 async fn wal_family(target: &Path, product: bool) -> Result<BTreeMap<String, Vec<u8>>> {

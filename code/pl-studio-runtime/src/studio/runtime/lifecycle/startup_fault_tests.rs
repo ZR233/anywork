@@ -417,6 +417,57 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
     Ok(paths)
 }
 
+#[tokio::test]
+async fn catalog_after_636_stale_child_modes_start_without_reset() -> Result<()> {
+    let fixture = include_str!("../../../../tests/fixtures/migration-636/catalog-v4.toml");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let paths = seed(&home).await?;
+    let mut legacy: toml::Table = toml::from_str(fixture)?;
+    legacy["schemaVersion"] = 5_i64.into();
+    for entry in legacy["entries"].as_array_mut().expect("synthetic entries") {
+        let table = entry.as_table_mut().expect("synthetic entry");
+        let workspace = table
+            .remove("projectId")
+            .expect("published project identity");
+        table.insert("workspaceId".into(), workspace);
+    }
+    tokio::fs::write(paths.catalog_file(), toml::to_string(&legacy)?).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(
+        runtime.startup_recovery.is_none(),
+        "valid old mode copies must not reset the product"
+    );
+    let catalog = runtime.store.catalog();
+    assert_eq!(catalog.sessions().len(), 1);
+    assert_eq!(catalog.agents().len(), 2);
+    let session = catalog.get_session("cold").expect("original root");
+    assert_eq!(session.root_agent_id, "cold");
+    assert_eq!(session.mode, pl_protocol::ThreadModeId::simple());
+    let child = catalog
+        .get_agent("synthetic-child")
+        .expect("original child");
+    assert_eq!(child.parent_agent_id.as_deref(), Some("cold"));
+    assert_eq!(child.session_id, "cold");
+    assert_eq!(
+        child.frozen_model().expect("frozen model").model_id,
+        "synthetic-model"
+    );
+    assert!(
+        runtime.threads.observed_threads().is_empty(),
+        "directory migration stays cold"
+    );
+    runtime.shutdown_runtime().await?;
+    let upgraded = tokio::fs::read(paths.catalog_file()).await?;
+    let reopened = StudioRuntime::initialize(options(&home)).await?;
+    assert!(reopened.startup_recovery.is_none());
+    assert_eq!(reopened.store.catalog().agents().len(), 2);
+    reopened.shutdown_runtime().await?;
+    assert_eq!(tokio::fs::read(paths.catalog_file()).await?, upgraded);
+    assert!(!home.join("startup-backups").exists());
+    Ok(())
+}
+
 /// The v2 key had no verifiable credential/query binding. Preserve its exact bytes through a
 /// durable load migration and restart rather than claiming those balances belong to today's query.
 #[tokio::test]
