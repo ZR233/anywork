@@ -180,7 +180,7 @@ final class TimelineObservation {
           'mainIndex': wanted,
           'elapsedMillis': clock.elapsedMilliseconds,
           'original': {'lease': identityHashCode(originalLease), 'controller': identityHashCode(originalController), 'scrollController': identityHashCode(originalScrollController), 'generation': originalGeneration, 'mounted': originalLease.isMounted, 'retired': originalLease.isRetired, 'released': originalLease.isReleased},
-          'current': {'lease': currentLease == null ? null : identityHashCode(currentLease), 'controller': currentLease == null || currentLease.isReleased ? null : identityHashCode(currentLease.controller), 'generation': currentLease?.generation, 'borrowError': borrowError},
+          'current': {'lease': currentLease == null ? null : identityHashCode(currentLease), 'controller': currentLease == null || currentLease.isRetired || currentLease.isReleased ? null : identityHashCode(currentLease.controller), 'generation': currentLease?.generation, 'borrowError': borrowError},
           'scrollableCount': matches.length,
           'originalScrollable': originalScrollable == null ? null : identityHashCode(originalScrollable),
           'sameScrollable': state != null && identical(state, originalScrollable),
