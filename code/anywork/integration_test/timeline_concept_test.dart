@@ -353,6 +353,42 @@ final class _ConceptScene {
       'activeCount': value.item.summary?.activeCount,
       'membersRef': value.item.members?.itemId,
       'mountedMemberIds': [for (final atom in membersOf(value.id)) atom.id],
+      'memberWindows': [
+        for (final display in lease.groupDisplays)
+          if (display.unitId == value.id)
+            {
+              'displayIdentity': identityHashCode(display),
+              'isCurrent': display.isCurrent,
+              'expanded': display.expanded,
+              'before': display.before,
+              'loading': display.loading,
+              'error': display.error?.toString(),
+              'atoms': [
+                for (final atom in display.atoms)
+                  {
+                    'id': atom.id,
+                    'kind': atom.kind.name,
+                    'sourceOrder': atom.sourceOrder,
+                    'turnId': atom.turnId,
+                    'attemptId': atom.attemptId,
+                    'completionItemId': atom.completionItemId,
+                    'completionSeq': atom.completionSeq,
+                    'lifecycle': atom.lifecycle.runtimeType.toString(),
+                    if (atom.lifecycle is ActiveChatAtom)
+                      'status': (atom.lifecycle as ActiveChatAtom).status.name,
+                    if (atom.lifecycle is TerminalChatAtom)
+                      'outcome':
+                          (atom.lifecycle as TerminalChatAtom).outcome.name,
+                    if (atom.lifecycle is TerminalChatAtom)
+                      'endedEffectSeq':
+                          (atom.lifecycle as TerminalChatAtom).ended?.effectSeq,
+                    'sourceLifecycle': atom.sourceState?.lifecycle.runtimeType
+                        .toString(),
+                    'sourceEndedEffectSeq': atom.sourceState?.ended?.effectSeq,
+                  },
+              ],
+            },
+      ],
       'toolCallIds': [
         for (final atom in membersOf(value.id))
           if (atom.tool != null) atom.tool!.callId,
@@ -927,19 +963,46 @@ final class _ConceptScene {
     ConversationCreditObservation? credit;
     Object? primaryFailure;
     try {
-      await _creditAsync(() async {
-        opening = graph.client.transport.openConversationFeed(
-          lease.threadId,
-          scope: const MainChatScope(),
-          demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
-        );
-        final feed = await opening!.timeout(
-          ConversationCreditObservation.deadline,
-        );
-        credit = ConversationCreditObservation(feed, evidence);
-        await credit!.holdInitialSet();
+      await submit(_prompt);
+      await reach(
+        'thinking',
+        () =>
+            live.isEmpty &&
+            find
+                .byKey(const ValueKey('conversation-activity'))
+                .evaluate()
+                .isNotEmpty,
+      );
+      expect(
+        main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
+        isEmpty,
+      );
+      expect(find.byType(TimelineDisplayUnitView), findsNothing);
+      await capture('thinking');
+      await _journeyWithCredit(project, () async {
+        // Exercise ordinary withheld credit across one new completed text,
+        // not cold-source replacement or full-story retention pressure.
+        // This observation is opened exactly once, before text B starts.
+        evidence['openedAtGate'] = 'second-group-idle';
+        evidence['openedForTurnId'] = graph.client.conversations
+            .session(threadId)
+            .state
+            .lastTurn
+            ?.turnId;
+        await _creditAsync(() async {
+          opening = graph.client.transport.openConversationFeed(
+            lease.threadId,
+            scope: const MainChatScope(),
+            demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
+          );
+          final feed = await opening!.timeout(
+            ConversationCreditObservation.deadline,
+          );
+          credit = ConversationCreditObservation(feed, evidence);
+          await credit!.holdInitialSet();
+        });
+        return credit!;
       });
-      await _journeyWithCredit(project, credit!);
     } catch (error, stack) {
       primaryFailure = error;
       evidence['primaryFailure'] = error.toString();
@@ -989,24 +1052,8 @@ final class _ConceptScene {
 
   Future<void> _journeyWithCredit(
     String project,
-    ConversationCreditObservation credit,
+    Future<ConversationCreditObservation> Function() openCredit,
   ) async {
-    await submit(_prompt);
-    await reach(
-      'thinking',
-      () =>
-          live.isEmpty &&
-          find
-              .byKey(const ValueKey('conversation-activity'))
-              .evaluate()
-              .isNotEmpty,
-    );
-    expect(
-      main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
-      isEmpty,
-    );
-    expect(find.byType(TimelineDisplayUnitView), findsNothing);
-    await capture('thinking');
     await release('thinking');
 
     await reach(
@@ -1035,6 +1082,9 @@ final class _ConceptScene {
     await capture('workgroup');
     // The projection owns stable item identity across owner replacement.
     g1 = (await reopenActiveWorkgroup()).id;
+    final openedMembers = lease.groupDisplays.singleWhere(
+      (display) => display.unitId == g1,
+    );
     await capture('workgroup-reopened');
     await release('workgroup');
 
@@ -1056,6 +1106,15 @@ final class _ConceptScene {
               .every((atom) => atom.lifecycle is TerminalChatAtom),
       'same explicitly opened live member window reaches terminal state',
     );
+    expect(
+      lease.groupDisplays.singleWhere((display) => display.unitId == quiet.id),
+      same(openedMembers),
+      reason: 'member handoff must not replace the explicitly opened display',
+    );
+    expect(openedMembers.isCurrent, isTrue);
+    expect(openedMembers.expanded, isTrue);
+    expect(openedMembers.error, isNull);
+    await _record('same-member-window-terminal');
     expect(quiet.item.admissionClosed, isFalse);
     expect(quiet.live, isTrue);
     expect(
@@ -1147,6 +1206,7 @@ final class _ConceptScene {
           live.single.item.summary!.activeCount == 0,
     );
     expect(live.single.item.admissionClosed, isFalse);
+    final credit = await openCredit();
     await release('second-group-idle');
     await reach(
       'second-text',
@@ -1166,25 +1226,43 @@ final class _ConceptScene {
       main.where((unit) => unit.item.source == source).map((unit) => unit.id),
       orderedEquals([g1, a, g2, b]),
     );
-    await release('before-turn-end');
-    await idle();
     final completedTextB = main.singleWhere((unit) => unit.id == b).item;
     await _creditAsync(() async {
       await credit.queryCompletedText(completedTextB);
       await credit.observeSuccessors();
       await credit.verifyClosed(completedTextB.contentItemId!);
     });
+    await release('before-turn-end');
+    await idle();
     final firstGroup = main.singleWhere((unit) => unit.id == g1);
-    final terminalReceipt = main.singleWhere(
-      (unit) =>
-          unit.item.source == firstGroup.item.source &&
-          unit.item.atomKind == ChatAtomKind.turnReceipt,
-    );
+    await _until(tester, () {
+      final turn = graph.client.conversations.session(threadId).state.lastTurn;
+      return turn != null &&
+          turn.threadId == threadId &&
+          turn.turnId == completedTextB.turnId &&
+          turn.state.isTerminal &&
+          turn.state.status == StudioTurnStatus.completed;
+    }, 'the original successful Turn reaches the Client typed terminal state');
     expect(
-      main.indexOf(terminalReceipt),
-      greaterThan(main.indexWhere((unit) => unit.id == b)),
-      reason: 'The Turn terminal receipt follows its work and completed text',
+      main.where(
+        (unit) =>
+            unit.item.source == firstGroup.item.source &&
+            unit.item.atomKind == ChatAtomKind.turnReceipt,
+      ),
+      isEmpty,
+      reason: 'A normal successful Turn does not manufacture a Main receipt',
     );
+    final completedTurn = graph.client.conversations
+        .session(threadId)
+        .state
+        .lastTurn!;
+    report['completedTurn'] = {
+      'source': 'Client typed state',
+      'threadId': completedTurn.threadId,
+      'turnId': completedTurn.turnId,
+      'status': completedTurn.state.status.name,
+      'isTerminal': completedTurn.state.isTerminal,
+    };
     await expand(firstGroup);
     final reasoningBody = find.descendant(
       of: find.descendant(

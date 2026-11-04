@@ -656,7 +656,7 @@ impl ConversationFeed {
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
                 if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
                     if self.cut_entries.is_none() {
-                        let candidates = if main {
+                        let mut candidates = if main {
                             cut.handoff.entries().to_vec()
                         } else {
                             let ChatScope::GroupMembers { reference } = &self.reader.inner.scope
@@ -668,7 +668,9 @@ impl ConversationFeed {
                                 .iter()
                                 .filter(|member| {
                                     member.item_id == reference.item_id
-                                        && self.reader.observes_member(&member.atom.id)
+                                        && self
+                                            .reader
+                                            .observes_member(&member.atom.id, member.member_order)
                                 })
                                 .map(|member| {
                                     let mut atom = member.atom.clone();
@@ -687,16 +689,28 @@ impl ConversationFeed {
                                     }
                                     ChatEntry::Atom(Box::new(atom))
                                 })
-                                .chain(
-                                    cut.handoff
-                                        .sources()
-                                        .iter()
-                                        .filter(|state| self.reader.observes_source(&state.source))
-                                        .cloned()
-                                        .map(ChatEntry::Source),
-                                )
                                 .collect()
                         };
+                        // Annotate atoms at this reliable cut before budgeting.
+                        // Source events are already frozen handoff facts, not
+                        // ordinary-page atoms, and must retain their own path.
+                        self.reader
+                            .annotate_source_states(
+                                &mut candidates,
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
+                            )
+                            .await?;
+                        if !main {
+                            candidates.extend(
+                                cut.handoff
+                                    .sources()
+                                    .iter()
+                                    .filter(|state| self.reader.observes_source(&state.source))
+                                    .cloned()
+                                    .map(ChatEntry::Source),
+                            );
+                        }
                         self.cut_entries = Some(candidates);
                     }
                     let candidates = self
@@ -745,13 +759,6 @@ impl ConversationFeed {
                         self.cut_entries = None;
                     }
                     if !product.entries.is_empty() || product.current != self.current {
-                        self.reader
-                            .annotate_source_states(
-                                &mut product.entries,
-                                &cut.handoff.after().projection().sources,
-                                cut.handoff.after().projection().source_effect_seq,
-                            )
-                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
                         self.reader.select_member_window(&product.entries);
                         self.current = product.current.clone();
