@@ -31,17 +31,37 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
+
+const _parallelObserverStage = 'realtime-parallel-observer';
+const _parallelObserverPrefix = 'realtime parallel observers ready';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   final project = Platform.environment['ANYWORK_REALTIME_PROJECT'];
   final output = Platform.environment['ANYWORK_REALTIME_OUTPUT'];
+  final providerValue = Platform.environment['ANYWORK_REALTIME_PROVIDER'];
+  final provider = providerValue == null ? null : Uri.tryParse(providerValue);
   if (project == null || output == null) {
     throw StateError(
       'Supply ANYWORK_REALTIME_PROJECT and ANYWORK_REALTIME_OUTPUT',
+    );
+  }
+  if (provider == null ||
+      provider.scheme != 'http' ||
+      !provider.hasAuthority ||
+      !const {'127.0.0.1', 'localhost', '::1'}.contains(provider.host) ||
+      !provider.hasPort ||
+      provider.port <= 0 ||
+      provider.port > 65535 ||
+      provider.userInfo.isNotEmpty ||
+      provider.hasQuery ||
+      provider.hasFragment) {
+    throw StateError(
+      'Supply ANYWORK_REALTIME_PROVIDER as the strict loopback HTTP fixture URI',
     );
   }
   final reportFile = File('$output/realtime-presentation.json');
@@ -50,7 +70,7 @@ void main() {
   var assertionsPassed = false;
   final report = <String, Object?>{
     'scenario': 'realtime-presentation',
-    'fixture': 'realtime',
+    'fixture': 'realtime-presentation',
     'runner': 'flutter.integration_test',
     'pass': false,
   };
@@ -198,12 +218,24 @@ void main() {
           .map((item) => item.id)
           .toSet();
       await scene.submit('Realtime parallel tools');
+      await fixtureGate(tester, provider, _parallelObserverStage);
+      final parallelObserver = await scene.prepareParallelObserver();
+      report['parallelObserver'] = parallelObserver.evidence;
+      await fixtureGate(
+        tester,
+        provider,
+        _parallelObserverStage,
+        release: true,
+      );
+      parallelObserver.evidence['gateReleased'] = true;
       await scene.untilLaidOutCurrentTools(
         minimum: 2,
         runningExecCallIds: const {
           'realtime-parallel-call-a',
           'realtime-parallel-call-b',
         },
+        settleDisclosure: false,
+        preparedObserver: parallelObserver,
       );
       expect(
         find.text('realtime parallel tools complete'),
@@ -316,6 +348,22 @@ void main() {
   );
 }
 
+typedef _ParallelObserver = ({
+  String turnId,
+  TimelineDisplayLease lease,
+  TimelineCurrentDisplay currentDisplay,
+  Object controller,
+  int generation,
+  int mainSets,
+  TimelineGroupDisplay display,
+  TimelineMembersRef reference,
+  Object expansion,
+  Object bodyGeneration,
+  String prefixId,
+  List<String> prefixReferences,
+  Map<String, Object?> evidence,
+});
+
 final class _RealtimeScene {
   _RealtimeScene(this.tester, this.graph);
 
@@ -324,6 +372,7 @@ final class _RealtimeScene {
   String? _priorTurn;
   String? _submittedThreadId;
   String? _submittedTurnId;
+  int _liveTextObservation = 0;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
@@ -374,6 +423,228 @@ final class _RealtimeScene {
       'collapsed realtime member handles joined before the next turn',
     );
   }
+
+  Future<_ParallelObserver> prepareParallelObserver() async {
+    StudioTurnView? turn;
+    await until(() {
+      final current = _latestTurn();
+      if (current == null || current.turnId == _priorTurn) return false;
+      _submittedTurnId ??= current.turnId;
+      expect(current.turnId, _submittedTurnId);
+      turn = current;
+      return current.state.status == StudioTurnStatus.running;
+    }, 'typed parallel Turn at the observer gate');
+    final source = ForegroundTurnChatSource(turnId: turn!.turnId);
+    await until(() {
+      final groups = observed.workFor(source).toList();
+      expect(groups.length, lessThanOrEqualTo(1));
+      return groups.length == 1;
+    }, 'the parallel Turn original observer work group');
+    final unit = observed.workFor(source).single;
+    final mainLease = lease;
+    final mountedDisplay = mainLease.currentDisplay;
+    expect(mountedDisplay, isNotNull);
+    final currentDisplay = mountedDisplay!;
+    expect(currentDisplay.isCurrent, isTrue);
+    expect(currentDisplay.turnId, turn!.turnId);
+    final controller = mainLease.controller;
+    final generation = mainLease.generation;
+    final mainSets = mainLease.appliedSets;
+    final reference = unit.item.members!;
+    final expansion = unit.expansion;
+    final bodyGeneration = expansion.bodyGeneration;
+    final display = await observed.openGroup(unit.id);
+    await until(() {
+      final members = display.atoms.toList();
+      expect(members.length, lessThanOrEqualTo(1));
+      expect(
+        members.where((atom) => atom.kind == ChatAtomKind.toolCall),
+        isEmpty,
+        reason: 'The provider gate has not admitted either exec',
+      );
+      return display.isCurrent &&
+          display.expanded &&
+          !display.loading &&
+          members.length == 1 &&
+          members.single.lifecycle is TerminalChatAtom &&
+          members.single.completionItemId != null &&
+          members.single.completionSeq != null;
+    }, 'original parallel member window ready before exec admission');
+    expect(display.error, isNull);
+    expect(display.membersRef, reference);
+    expect(display.atoms, hasLength(1));
+    final prefix = display.atoms.single;
+    expect(prefix.source, source);
+    expect(prefix.kind, ChatAtomKind.reasoning);
+    expect(prefix.tool, isNull);
+    expect(prefix.completionItemId, isNotNull);
+    expect(prefix.completionSeq, isNotNull);
+    expect(prefix.lifecycle, isA<TerminalChatAtom>());
+    expect(
+      (prefix.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.completed,
+    );
+    expect(prefix.payload, isA<InlinePayload>());
+    expect(prefix.contents, isNotEmpty);
+    await until(
+      () => _laidOut(observed.memberRow(prefix.id)),
+      'laid out completed observer reasoning member',
+    );
+    final rendered = tester
+        .widget<ChatItemView>(observed.memberRow(prefix.id))
+        .item;
+    expect(rendered.atom?.id, prefix.id);
+    expect(rendered.compatibility, ChatItemCompatibility.current);
+    expect(rendered.type, 'thinking');
+    expect(
+      rendered.bodies
+          .where((body) => body.inline != null)
+          .map((body) => utf8.decode(body.inline!)),
+      contains(_parallelObserverPrefix),
+    );
+    // Reveal and inspect the actual text boxes while the provider is gated.
+    // This completes the original disclosure layout before either exec starts.
+    await _revealTextFragment(
+      tester,
+      observed.memberRow(prefix.id),
+      _parallelObserverPrefix,
+    );
+    Rect? previousBounds;
+    await until(() {
+      final row = observed.memberRow(prefix.id);
+      if (!_laidOut(row)) return false;
+      final bounds = tester.getRect(row);
+      final stable = previousBounds == bounds;
+      previousBounds = bounds;
+      return stable && display.isCurrent && !display.loading;
+    }, 'stable original reasoning member layout before gate release');
+    expect(display.atoms, hasLength(1));
+    expect(
+      display.atoms.where((atom) => atom.kind == ChatAtomKind.toolCall),
+      isEmpty,
+      reason: 'No exec has been admitted before the observer gate is released',
+    );
+    expect(find.text('realtime parallel tools complete'), findsNothing);
+    final prepared = (
+      turnId: turn!.turnId,
+      lease: mainLease,
+      currentDisplay: currentDisplay,
+      controller: controller,
+      generation: generation,
+      mainSets: mainSets,
+      display: display,
+      reference: reference,
+      expansion: expansion,
+      bodyGeneration: bodyGeneration,
+      prefixId: prefix.id,
+      prefixReferences: prefix.contents
+          .map(
+            (content) => contentReferenceIdentity(content.reference).toString(),
+          )
+          .toList(),
+      evidence: <String, Object?>{
+        'gate': _parallelObserverStage,
+        'gateReached': true,
+        'gateReleased': false,
+      },
+    );
+    _expectParallelObserver(prepared);
+    prepared.evidence['prearm'] = _parallelObserverSnapshot(prepared);
+    return prepared;
+  }
+
+  void _expectParallelObserver(_ParallelObserver prepared) {
+    expect(_latestTurn()?.turnId, prepared.turnId);
+    expect(lease, same(prepared.lease));
+    expect(lease.currentDisplay, same(prepared.currentDisplay));
+    expect(prepared.currentDisplay.isCurrent, isTrue);
+    expect(lease.controller, same(prepared.controller));
+    expect(lease.generation, prepared.generation);
+    expect(lease.appliedSets, prepared.mainSets);
+    final unit = observed.unit(prepared.reference.itemId);
+    expect(unit.expansion, same(prepared.expansion));
+    expect(unit.expansion.bodyGeneration, same(prepared.bodyGeneration));
+    expect(unit.item.members, prepared.reference);
+    final displays = lease.groupDisplays
+        .where((display) => display.unitId == prepared.reference.itemId)
+        .toList();
+    expect(displays, hasLength(1));
+    expect(displays.single, same(prepared.display));
+    expect(prepared.display.isCurrent && prepared.display.expanded, isTrue);
+    expect(prepared.display.error, isNull);
+    expect(prepared.display.membersRef, prepared.reference);
+    final prefix = prepared.display.atoms
+        .where((atom) => atom.id == prepared.prefixId)
+        .single;
+    expect(
+      prefix.contents.map(
+        (content) => contentReferenceIdentity(content.reference).toString(),
+      ),
+      orderedEquals(prepared.prefixReferences),
+    );
+  }
+
+  Map<String, Object?> _parallelObserverSnapshot(
+    _ParallelObserver prepared, {
+    Iterable<ChatAtom> running = const [],
+  }) => {
+    'turnId': prepared.turnId,
+    'groupId': prepared.reference.itemId,
+    'sameMainLease': identical(lease, prepared.lease),
+    'sameMainCurrentDisplay': identical(
+      lease.currentDisplay,
+      prepared.currentDisplay,
+    ),
+    'sameMainController': identical(lease.controller, prepared.controller),
+    'mainGeneration': lease.generation,
+    'mainSets': lease.appliedSets,
+    'sameGroupDisplay': identical(
+      lease.groupDisplays.singleWhere(
+        (display) => display.unitId == prepared.reference.itemId,
+      ),
+      prepared.display,
+    ),
+    'sameBodyGeneration': identical(
+      observed.unit(prepared.reference.itemId).expansion.bodyGeneration,
+      prepared.bodyGeneration,
+    ),
+    'membersRef': {
+      'databaseId': prepared.reference.databaseId,
+      'projectionVersion': prepared.reference.projectionVersion,
+      'projectionGeneration': prepared.reference.projectionGeneration,
+      'itemId': prepared.reference.itemId,
+    },
+    'current': prepared.display.isCurrent,
+    'expanded': prepared.display.expanded,
+    'loading': prepared.display.loading,
+    'error': prepared.display.error?.toString(),
+    'prefixId': prepared.prefixId,
+    'prefixReferences': prepared.prefixReferences,
+    'memberIds': prepared.display.atoms.map((atom) => atom.id).toList(),
+    'windows': [
+      for (final window in prepared.display.windows)
+        {
+          'id': window.id,
+          'reference': contentReferenceIdentity(window.reference).toString(),
+          'generation': window.window?.generation,
+          'ready': window.window != null,
+          'error': window.error?.toString(),
+        },
+    ],
+    'runningTools': [
+      for (final atom in running)
+        {
+          'id': atom.id,
+          'callId': atom.tool?.callId,
+          'active': atom.lifecycle is ActiveChatAtom,
+          'status': tester
+              .widget<TimelineToolDetails>(currentToolCard(atom))
+              .item
+              .statusString,
+          'laidOut': _laidOut(currentToolCard(atom)),
+        },
+    ],
+  };
 
   TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
     (item) =>
@@ -891,57 +1162,162 @@ final class _RealtimeScene {
   Future<TimelineItem> untilReadableCurrentText({
     required Duration timeout,
   }) async {
+    final observationId = ++_liveTextObservation;
+    final clock = Stopwatch()..start();
+    final observations = <Map<String, Object?>>[];
+    Map<String, Object?>? lastObservation;
+    String? previousObservation;
+    String? failure;
     TimelineItem? accepted;
-    await until(
-      () {
-        final candidates = observed.live
-            .map((unit) => unit.item)
-            .where(
-              (atom) =>
-                  atom.kind == TimelineItemKind.text &&
-                  atom.atomKind == ChatAtomKind.text &&
-                  atom.outcome == null,
+    try {
+      await until(
+        () {
+          final turn = _latestTurn();
+          final live = observed.live.toList();
+          final candidates = live
+              .map((unit) => unit.item)
+              .where(
+                (atom) =>
+                    atom.kind == TimelineItemKind.text &&
+                    atom.atomKind == ChatAtomKind.text &&
+                    atom.outcome == null,
+              )
+              .toList();
+          // These are fresh synchronous borrows for this predicate invocation,
+          // not a lease or window retained across its next pump.
+          final display = lease.currentDisplay;
+          final allWindows = display?.windows.toList() ?? const [];
+          final views = tester
+              .widgetList<ConversationCurrentWindowView>(
+                find.byType(ConversationCurrentWindowView),
+              )
+              .toList();
+          final state = {
+            'selectedThreadId': graph.client.selection.state.selectedThreadId,
+            'submittedThreadId': _submittedThreadId,
+            'submittedTurnId': _submittedTurnId,
+            'priorTurnId': _priorTurn,
+            'turnId': turn?.turnId,
+            'turnThreadId': turn?.threadId,
+            'turnStatus': turn?.state.status.name,
+            'leaseGeneration': lease.generation,
+            'leaseMode': lease.mode.name,
+            'contentPhase': lease.content.state.value.runtimeType.toString(),
+            'displayPresent': display != null,
+            'displayCurrent': display?.isCurrent,
+            'displayTurnId': display?.turnId,
+            'displayActivityId': display?.activityId,
+            'live': [
+              for (final unit in live)
+                {
+                  'id': unit.id,
+                  'kind': unit.item.kind.name,
+                  'atomKind': unit.item.atomKind?.name,
+                  'outcome': unit.item.outcome?.name,
+                  'sourceType': unit.item.source.runtimeType.toString(),
+                  'sourceTurnId': unit.item.source is ForegroundTurnChatSource
+                      ? (unit.item.source as ForegroundTurnChatSource).turnId
+                      : null,
+                  'matchesTurnSource':
+                      turn != null &&
+                      unit.item.source ==
+                          ForegroundTurnChatSource(turnId: turn.turnId),
+                  'references': [
+                    for (final content in unit.item.contents)
+                      contentReferenceIdentity(content.reference).toString(),
+                  ],
+                },
+            ],
+            'candidateIds': candidates.map((item) => item.id).toList(),
+            'views': [
+              for (final view in views)
+                {
+                  'id': view.id,
+                  'laidOut': _laidOut(find.byWidget(view)),
+                  'textCodeUnits': view.text.length,
+                  'error': view.error?.toString(),
+                  'offset': view.offset,
+                  'end': view.end,
+                  'availableThrough': view.availableThrough,
+                },
+            ],
+            'windows': [
+              for (final window in allWindows)
+                {
+                  'id': window.id,
+                  'reference': contentReferenceIdentity(window.reference)
+                      .toString(),
+                  'error': window.error?.toString(),
+                  'ready': window.window != null,
+                  'generation': window.window?.generation,
+                  'offset': window.window?.offset,
+                  'bytes': window.window?.bytes.length,
+                  'availableThrough': window.window?.availableThrough,
+                  'sealed': window.window?.sealed,
+                },
+            ],
+          };
+          final signature = jsonEncode(state);
+          if (signature != previousObservation) {
+            final observation = {
+              'elapsedMillis': clock.elapsedMilliseconds,
+              ...state,
+            };
+            lastObservation = observation;
+            if (observations.length < 32) {
+              observations.add(observation);
+            }
+            previousObservation = signature;
+          }
+          for (final atom in candidates) {
+            final view = find.byWidgetPredicate(
+              (widget) =>
+                  widget is ConversationCurrentWindowView &&
+                  widget.id == atom.id &&
+                  widget.error == null &&
+                  widget.text.isNotEmpty,
             );
-        for (final atom in candidates) {
-          final view = find.byWidgetPredicate(
-            (widget) =>
-                widget is ConversationCurrentWindowView &&
-                widget.id == atom.id &&
-                widget.error == null &&
-                widget.text.isNotEmpty,
-          );
-          if (!_laidOut(view)) continue;
-          final windows =
-              lease.currentDisplay?.windows
-                  .where((window) => window.id == atom.id)
-                  .toList() ??
-              const [];
-          for (final window in windows) {
-            if (window.error case final error?) throw StateError('$error');
-          }
-          if (windows.isEmpty ||
-              windows.every((window) => window.window == null)) {
-            continue;
-          }
-          expect(
-            atom.contents.any(
-              (content) => windows.any(
-                (window) =>
-                    contentReferenceIdentity(content.reference) ==
-                    contentReferenceIdentity(window.reference),
+            if (!_laidOut(view)) continue;
+            final windows = allWindows
+                .where((window) => window.id == atom.id)
+                .toList();
+            for (final window in windows) {
+              if (window.error case final error?) throw StateError('$error');
+            }
+            if (windows.isEmpty ||
+                windows.every((window) => window.window == null)) {
+              continue;
+            }
+            expect(
+              atom.contents.any(
+                (content) => windows.any(
+                  (window) =>
+                      contentReferenceIdentity(content.reference) ==
+                      contentReferenceIdentity(window.reference),
+                ),
               ),
-            ),
-            isTrue,
-          );
-          accepted = atom;
-          return true;
-        }
-        return false;
-      },
-      'readable production live text with its original content-window borrow',
-      timeout: timeout,
-    );
-    return accepted!;
+              isTrue,
+            );
+            accepted = atom;
+            return true;
+          }
+          return false;
+        },
+        'readable production live text with its original content-window borrow',
+        timeout: timeout,
+      );
+      return accepted!;
+    } catch (error) {
+      failure = error.toString();
+      rethrow;
+    } finally {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri.resolve('realtime-live-text-$observationId.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert({'acceptedItemId': accepted?.id, 'failure': failure, 'timeoutMillis': timeout.inMilliseconds, 'observations': observations, 'lastObservation': lastObservation})}\n',
+      );
+    }
   }
 
   Finder currentToolCard(ChatAtom atom) {
@@ -970,6 +1346,7 @@ final class _RealtimeScene {
     Set<String> toolCallIds = const {},
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
+    _ParallelObserver? preparedObserver,
   }) async {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
@@ -990,10 +1367,19 @@ final class _RealtimeScene {
             ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
         ];
         final openingStartedMillis = clock.elapsedMilliseconds;
-        for (final unit in units) {
-          await observed.openGroup(unit.id);
+        if (preparedObserver == null) {
+          for (final unit in units) {
+            await observed.openGroup(unit.id);
+          }
+        } else {
+          // The exact reader was opened before exec admission; do not reopen it
+          // or spend the foreground window repeating its disclosure animation.
+          _expectParallelObserver(preparedObserver);
         }
         final groupIds = units.map((unit) => unit.id).toSet();
+        if (preparedObserver != null) {
+          expect(groupIds, {preparedObserver.reference.itemId});
+        }
         final tools = lease.groupDisplays
             .where((display) => groupIds.contains(display.unitId))
             .expand((display) => display.atoms)
@@ -1099,6 +1485,15 @@ final class _RealtimeScene {
           debugPrintSynchronously(
             'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
           );
+          if (preparedObserver != null) {
+            _expectParallelObserver(preparedObserver);
+            preparedObserver.evidence['running'] = _parallelObserverSnapshot(
+              preparedObserver,
+              running: required.where(
+                (atom) => runningExecCallIds.contains(atom.tool?.callId),
+              ),
+            );
+          }
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
