@@ -1910,15 +1910,83 @@ final class _ConceptScene {
     final work = live.single.id;
     await expand(live.single);
     final originalLease = lease;
+    final originalController = lease.controller;
+    final originalGeneration = lease.generation;
     final original = lease.groupDisplays.singleWhere(
       (display) => display.unitId == work,
     );
-    final reference = original.membersRef;
-    expect(reference, isNotNull);
+    expect(original.membersRef, isNotNull);
+    final reference = original.membersRef!;
+    final originalIdentity = identityHashCode(original);
     final reason = membersOf(work).single.id;
     final source = membersOf(work).single.source;
+    final sourceOrder = membersOf(work).single.sourceOrder;
     expect(source, isA<ForegroundTurnChatSource>());
     final turnId = (source as ForegroundTurnChatSource).turnId;
+    final handoff = <String, Object?>{
+      'unitId': work,
+      'membersRef': {
+        'itemId': reference.itemId,
+        'databaseId': reference.databaseId,
+        'projectionVersion': reference.projectionVersion,
+        'projectionGeneration': reference.projectionGeneration,
+      },
+      'liveDisplayIdentity': originalIdentity,
+      'leaseIdentity': identityHashCode(originalLease),
+      'controllerIdentity': identityHashCode(originalController),
+      'generation': originalGeneration,
+      'memberId': reason,
+      'sourceTurnId': turnId,
+      'sourceOrder': sourceOrder,
+    };
+    report['a07Handoff'] = handoff;
+    // These getters revoke safely after unmount; unitId/membersRef use widget
+    // and must instead come from the identities frozen while live was mounted.
+    Map<String, Object?> eligibility(TimelineGroupDisplay value) => {
+      'identity': identityHashCode(value),
+      'isCurrent': value.isCurrent,
+      'expanded': value.expanded,
+      'before': value.before,
+      'loading': value.loading,
+      'error': value.error?.toString(),
+      'bodyWindowCount': value.windows.length,
+      'mountedMemberCount': value.atoms.length,
+      'atomSampleLimit': 2,
+      'atoms': [
+        for (final atom in value.atoms.take(2))
+          {
+            'id': atom.id,
+            'sourceMatches': atom.source == source,
+            'sourceOrder': atom.sourceOrder,
+            'turnId': atom.turnId,
+            'attemptId': atom.attemptId,
+            'completionItemId': atom.completionItemId,
+            'completionSeq': atom.completionSeq,
+            'lifecycle': atom.lifecycle.runtimeType.toString(),
+            if (atom.lifecycle case TerminalChatAtom(:final outcome))
+              'outcome': outcome.name,
+          },
+      ],
+    };
+    void expectLiveMember() {
+      expect(lease, same(originalLease));
+      expect(lease.controller, same(originalController));
+      expect(lease.generation, originalGeneration);
+      expect(
+        lease.groupDisplays.singleWhere((display) => display.unitId == work),
+        same(original),
+      );
+      expect(original.isCurrent, isTrue);
+      expect(original.membersRef, reference);
+      final member = original.atoms.single;
+      expect(member.id, reason);
+      expect(member.source, source);
+      expect(member.sourceOrder, sourceOrder);
+      expect(member.lifecycle, isA<ActiveChatAtom>());
+    }
+
+    expectLiveMember();
+    handoff['liveExpanded'] = eligibility(original);
     await release('a07-reasoning-start');
     await reach(
       'a07-text-start',
@@ -1930,16 +1998,19 @@ final class _ConceptScene {
     final text = live
         .singleWhere((unit) => unit.item.kind == TimelineItemKind.text)
         .id;
+    expectLiveMember();
     expect(membersOf(work).single.lifecycle, isA<ActiveChatAtom>());
     expect(main.where((unit) => unit.id == work || unit.id == text), isEmpty);
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
+    expectLiveMember();
     await capture('a07-late-reasoning');
     await release('a07-text-readable');
     await reach(
       'a07-text-terminal',
       () => live.any((unit) => unit.id == text && unit.item.outcome != null),
     );
+    expectLiveMember();
     expect(membersOf(work).single.id, reason);
     expect(
       live.singleWhere((unit) => unit.id == work).item.summary!.activeCount,
@@ -1955,66 +2026,151 @@ final class _ConceptScene {
     );
     final order = main.map((unit) => unit.id).toList();
     expect(order.indexOf(work), lessThan(order.indexOf(text)));
-    await release('a07-reasoning-terminal');
-    await idle();
-    report['overlapAtomIds'] = [reason];
-    await _until(tester, () {
-      if (original.error case final error?) throw StateError('$error');
-      final member = original.atoms.singleOrNull;
+    TimelineGroupDisplay? mainDisplay;
+    Map<String, bool> qualifications() {
+      final unit = main.where((unit) => unit.id == work).singleOrNull;
+      final member = mainDisplay?.atoms.singleOrNull;
       final terminal = member?.lifecycle;
       final turn = graph.client.conversations.session(threadId).state.lastTurn;
-      return original.isCurrent &&
-          original.expanded &&
-          original.before == null &&
-          !original.loading &&
-          member?.id == reason &&
-          member?.source == source &&
-          member?.completionItemId == reason &&
-          member?.completionSeq != null &&
-          terminal is TerminalChatAtom &&
-          terminal.outcome == ChatTerminalOutcome.completed &&
-          turn != null &&
-          turn.threadId == threadId &&
-          turn.turnId == turnId &&
-          turn.state.isTerminal &&
-          turn.state.status == StudioTurnStatus.completed;
-    }, 'the original A07 member and Turn finish before its observation closes');
-    expect(lease, same(originalLease));
-    expect(
-      lease.groupDisplays.singleWhere((display) => display.unitId == work),
-      same(original),
-    );
-    expect(original.membersRef, reference);
-    final terminalMember = original.atoms.single;
-    report['overlapMemberTerminal'] = {
-      'id': terminalMember.id,
-      'turnId': terminalMember.turnId,
-      'attemptId': terminalMember.attemptId,
-      'completionItemId': terminalMember.completionItemId,
-      'completionSeq': terminalMember.completionSeq,
-      'lifecycle': terminalMember.lifecycle.runtimeType.toString(),
-      'outcome': (terminalMember.lifecycle as TerminalChatAtom).outcome.name,
-    };
-    _recordMemberInventory('a07-before-close', work, original: original);
-    expect(graph.client.budget.used(ResourceKind.chatHandle), 2);
-    await observed.closeGroup(original);
-    await _until(
-      tester,
-      () =>
-          original.windows.isEmpty &&
-          graph.client.budget.used(ResourceKind.chatHandle) == 1,
-      'the original A07 scope releases its body eligibility and read handle',
-    );
-    expect(lease, same(originalLease));
-    expect(original.membersRef, reference);
-    expect(original.isCurrent, isFalse);
-    expect(original.expanded, isFalse);
-    expect(original.atoms, isEmpty);
-    expect(original.before, isNull);
-    expect(original.loading, isFalse);
-    expect(original.error, isNull);
-    expect(original.windows, isEmpty);
-    _recordMemberInventory('a07-closed', work, original: original);
+      final registered = lease.groupDisplays
+          .where((display) => display.unitId == work)
+          .toList();
+      return {
+        'sameLease': identical(lease, originalLease),
+        'sameController': identical(lease.controller, originalController),
+        'sameGeneration': lease.generation == originalGeneration,
+        'mainWorkGroup': unit?.item.kind == TimelineItemKind.workGroup,
+        'mainSource': unit?.item.source == source,
+        'mainReference': unit?.item.members == reference,
+        'mainPosition': unit?.item.position != null && unit?.live == false,
+        'mainSummary':
+            unit?.item.summary?.memberCount == 1 &&
+            unit?.item.summary?.activeCount == 0,
+        'uniqueMountedDisplay':
+            registered.length == 1 &&
+            identical(registered.singleOrNull, mainDisplay),
+        'displayCurrent': mainDisplay?.isCurrent == true,
+        'displayExpanded': mainDisplay?.expanded == true,
+        'displayReference':
+            mainDisplay?.isCurrent == true &&
+            mainDisplay!.membersRef == reference,
+        'memberEof': mainDisplay != null && mainDisplay!.before == null,
+        'memberNotLoading': mainDisplay?.loading == false,
+        'memberNoError': mainDisplay != null && mainDisplay!.error == null,
+        'memberIdentity': member?.id == reason && member?.source == source,
+        'memberSourceOrder': member?.sourceOrder == sourceOrder,
+        'memberCompletion':
+            member?.completionItemId == reason && member?.completionSeq != null,
+        'memberTerminal':
+            terminal is TerminalChatAtom &&
+            terminal.outcome == ChatTerminalOutcome.completed,
+        'typedTurn':
+            turn != null &&
+            turn.threadId == threadId &&
+            turn.turnId == turnId &&
+            turn.state.isTerminal &&
+            turn.state.status == StudioTurnStatus.completed,
+      };
+    }
+
+    void expectOldRevoked() {
+      if (identical(mainDisplay, original)) return;
+      expect(original.isCurrent, isFalse);
+      expect(original.expanded, isFalse);
+      expect(original.atoms, isEmpty);
+      expect(original.windows, isEmpty);
+    }
+
+    try {
+      await _until(tester, () {
+        final registered = lease.groupDisplays
+            .where((display) => display.unitId == work)
+            .toList();
+        mainDisplay = registered.singleOrNull;
+        if (mainDisplay != null && !identical(mainDisplay, original)) {
+          expectOldRevoked();
+        }
+        return qualifications().entries
+            .where((entry) => entry.key != 'typedTurn')
+            .every((entry) => entry.value);
+      }, 'the existing A07 Main display admits the same completed member');
+      final current = mainDisplay!;
+      final currentIdentity = identityHashCode(current);
+      handoff['mainDisplayIdentity'] = currentIdentity;
+      handoff['sameState'] = identical(current, original);
+      handoff['oldAfterHandoff'] = eligibility(original);
+      handoff['mainAtHandoff'] = eligibility(current);
+      await release('a07-reasoning-terminal');
+      await idle();
+      report['overlapAtomIds'] = [reason];
+      await _until(
+        tester,
+        () => qualifications().values.every((value) => value),
+        'the handed-off A07 Main member and original typed Turn finish',
+      );
+      handoff['mainBeforeClose'] = eligibility(current);
+      handoff['qualifications'] = qualifications();
+      final terminalMember = current.atoms.single;
+      report['overlapMemberTerminal'] = {
+        'id': terminalMember.id,
+        'turnId': terminalMember.turnId,
+        'attemptId': terminalMember.attemptId,
+        'completionItemId': terminalMember.completionItemId,
+        'completionSeq': terminalMember.completionSeq,
+        'lifecycle': terminalMember.lifecycle.runtimeType.toString(),
+        'outcome': (terminalMember.lifecycle as TerminalChatAtom).outcome.name,
+      };
+      _recordMemberInventory('a07-before-close', work, original: current);
+      expect(graph.client.budget.used(ResourceKind.chatHandle), 2);
+      await observed.closeGroup(current);
+      await _until(
+        tester,
+        () =>
+            current.windows.isEmpty &&
+            graph.client.budget.used(ResourceKind.chatHandle) == 1,
+        'the handed-off A07 scope revokes its body and releases its read handle',
+      );
+      expect(lease, same(originalLease));
+      expect(lease.controller, same(originalController));
+      expect(lease.generation, originalGeneration);
+      expect(originalLease.isMounted, isTrue);
+      expect(originalLease.isRetired, isFalse);
+      expect(current.isCurrent, isFalse);
+      expect(current.expanded, isFalse);
+      expect(current.atoms, isEmpty);
+      expect(current.before, isNull);
+      expect(current.loading, isFalse);
+      expect(current.error, isNull);
+      expect(current.windows, isEmpty);
+      expectOldRevoked();
+      handoff['mainAfterClose'] = eligibility(current);
+      handoff['oldAfterClose'] = eligibility(original);
+      // The revoked State may be disposed. Use frozen unit/ref evidence above.
+      _recordMemberInventory('a07-closed', work);
+    } catch (error) {
+      final turn = graph.client.conversations.session(threadId).state.lastTurn;
+      handoff['failure'] = {
+        'error': error.toString(),
+        'currentLeaseIdentity': identityHashCode(lease),
+        'currentControllerIdentity': identityHashCode(lease.controller),
+        'currentGeneration': lease.generation,
+        'qualifications': qualifications(),
+        'oldEligibility': eligibility(original),
+        'mainEligibility': mainDisplay == null
+            ? null
+            : eligibility(mainDisplay!),
+        'typedTurn': turn == null
+            ? null
+            : {
+                'threadId': turn.threadId,
+                'turnId': turn.turnId,
+                'status': turn.state.status.name,
+                'isTerminal': turn.state.isTerminal,
+              },
+      };
+      _recordMemberInventory('a07-failed', work, error: error);
+      rethrow;
+    }
   }
 
   Future<void> emptyText() async {
