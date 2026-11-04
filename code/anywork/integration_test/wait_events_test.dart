@@ -325,18 +325,25 @@ final class _Scene {
       _submittedTurnId ??= candidate.turnId;
       if (candidate.turnId != _submittedTurnId) return false;
       turn = candidate;
+      final originalLease = graph.timeline.lease(id);
       if (!candidate.state.isTerminal ||
           candidate.state.status != outcome ||
-          graph.timeline.lease(id) == null) {
+          originalLease == null) {
         return false;
       }
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
-      // State proves completion; Main must separately accept this source in
-      // the same original wait budget before the history assertions proceed.
+      // State proves completion; Main must separately accept this source and
+      // mount its original viewport within this same wait budget before reveal.
       if (!observed.items.any((item) => item.source == source) ||
           observed.live.any((unit) => unit.item.source == source)) {
         return false;
       }
+      final mainScrollable = find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable &&
+            identical(widget.controller, originalLease.scrollController),
+      );
+      if (mainScrollable.evaluate().length != 1) return false;
       if (outcome == StudioTurnStatus.cancelled) {
         final receipts = observed.items
             .where(
