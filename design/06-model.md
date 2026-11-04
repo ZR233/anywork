@@ -19,6 +19,7 @@
 
 - **统一流式事件**：OpenAI Responses WebSocket、Responses HTTP/SSE、OpenAI Chat Completions、DeepSeek 及智谱/GLM 等兼容接口，在进入唯一累积器（accumulator）前必须先归一化为统一的规范事件：响应开始及 ID、正文增量、思考内容、推理概要（reasoning summary）、工具参数增量、工具就绪/完成、用量报告以及完成/失败终态。`pl-core`、Studio 时间线与外部集成方均不解析厂商原始 JSON。
 - **单点类型化归一化**：同一协议族的用量字段别名、缓存明细、推理明细与工具身份只能由共享的类型化归一化器（normalizer）解析一次；SSE、WebSocket 与非流式测试解析器仅负责提取各自的外层传输信封（envelope），不得各自维护字段优先级或回退逻辑——相同的用量或工具报文无论经由哪种传输通道进入，都必须产出完全一致的规范用量与工具身份。底层事件流、解码器与累积器仅服务于单模型运行时及只读诊断投影，不作为宿主公共 API；外部宿主通过运行时的路由构造入口获取模型绑定或辅助请求客户端，执行器接收已构造的运行时及冻结的推理参数。
+- **Responses 正文开始边界**：原生可见协议按官方 [`response.content_part.added`](https://developers.openai.com/api/reference/resources/responses/streaming-events#response.content_part.added) 的真实 `output_text` part 建立规范正文开始；即使 `text` 为空且尚无 delta，也立即沿既有 item 身份、频道及 `content_index` 发出原 `BlockOpened`，进入原可靠 start 接纳链，不等 item done 才补开始。SSE 与 WebSocket 复用同一解码器；同一未闭合 part 的重复 added、后续 delta 和 done 沿原身份归并，不重复开始、复制正文或伪造空 delta。message added 本身不证明存在正文 part，refusal／reasoning part 也不冒充正文；缺失或非法的已知正文 part 结构、身份或索引按原 `invalid_response` 路径失败，已接纳内容仍保留。完成事实继续由原终态路径交付，空正文不产生可见空卡，零字符结构开始不构成首内容延迟或吞吐内容样本。
 - **历史推理字段出站规则**：历史推理文本的出站字段严格遵循目标模型的能力声明，分别映射至 `reasoning_content` 或 `reasoning`；目标模型未声明交错推理（interleaved reasoning）能力时不发送额外推理字段。结构化的 `reasoning_details` 严禁从纯文本伪造，若缺少原始结构数据则在请求准备阶段明确拒绝，内部已保存的响应材料不会因此丢失。
 - **会话请求诊断**：每个模型会话独立维护请求诊断状态，记录实际规范请求的指令、工具和上下文散列值及其变化原因。诊断世代（generation）递增不会触发厂商提示缓存键轮换；缺乏诊断数据的历史旧回执保持为未知状态。
 
