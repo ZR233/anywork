@@ -194,9 +194,12 @@ final class TimelineObservation {
           .where((display) => display.unitId == id)
           .singleOrNull;
       if (display?.error case final error?) throw StateError('$error');
+      // Main and GroupMembers are delivered independently. Keep the bound,
+      // but qualify both observed views before accepting this open.
       return display?.isCurrent == true &&
           display?.expanded == true &&
-          display!.atoms.isNotEmpty;
+          display!.atoms.isNotEmpty &&
+          display!.atoms.length <= unit(id).item.summary!.memberCount;
     }, 'mounted original ordinary group $id');
     expect(display!.atoms, isNotEmpty);
     expect(display!.membersRef, value.item.members);
