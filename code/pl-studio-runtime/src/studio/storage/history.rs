@@ -507,9 +507,14 @@ impl HistoryStore {
             return Ok(false);
         }
         let db = connect_read_only(&self.state.path).await?;
-        let result = validate_existing_identity(&db, &self.state.thread_id)
-            .await
-            .map(|(_, version)| version < HISTORY_SCHEMA_VERSION);
+        let result = async {
+            let (_, version) = validate_existing_identity(&db, &self.state.thread_id).await?;
+            if version < HISTORY_SCHEMA_VERSION {
+                return Ok(true);
+            }
+            schema::needs_content_preparation(&db, &self.state.thread_id).await
+        }
+        .await;
         let close = db.close().await;
         match (result, close) {
             (Ok(needs_preparation), Ok(())) => Ok(needs_preparation),
@@ -3172,6 +3177,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          WHERE version IN ('m20261029_000001_history_demand_conversation',
                            'm20261101_000010_history_model_route_head',
                            'm20261102_000001_history_atom_metadata',
+                           'm20261104_000001_history_background_results',
                            'm20261103_000001_history_timeline_items')",
     )
     .await?;
