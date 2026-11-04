@@ -110,17 +110,15 @@ impl StudioRuntime {
         }
         loop {
             check_cancelled(&cancellation)?;
-            crate::studio::startup::storage_layout::prepare(&resolved.paths)
-                .await
-                .map_err(|error| {
-                    StudioStartupError::new(
-                        "prepare_layout",
-                        StudioStartupErrorKind::Migration,
-                        error,
-                    )
-                })?;
-
-            match Self::prepare_attempt(&resolved, &observer, &cancellation).await {
+            let attempt =
+                match crate::studio::startup::storage_layout::prepare(&resolved.paths).await {
+                    Ok(()) => {
+                        Self::prepare_attempt(&resolved, &observer, &cancellation, backup.is_some())
+                            .await
+                    }
+                    Err(error) => Err(StudioStartupError::input("prepare_layout", error)),
+                };
+            match attempt {
                 Ok(mut runtime) => {
                     if let Err(error) = check_cancelled(&cancellation) {
                         runtime.dispose_startup().await?;
@@ -148,12 +146,16 @@ impl StudioRuntime {
                     return Ok(runtime);
                 }
                 Err(error)
-                    if error.kind == StudioStartupErrorKind::PersistentData && backup.is_none() =>
+                    if matches!(
+                        error.kind,
+                        StudioStartupErrorKind::PersistentData | StudioStartupErrorKind::Migration
+                    ) && backup.is_none() =>
                 {
                     check_cancelled(&cancellation)?;
                     observer(StudioStartupStage::BackingUp);
                     let home = resolved.paths.home().to_owned();
                     let reason = match error.step {
+                        "prepare_layout" => "本地数据布局不受支持或迁移数据无效",
                         "prepare_configuration" => "配置数据损坏、版本不受支持或引用无效",
                         "prepare_storage" => "本地存储或调用日志数据损坏、版本不受支持",
                         "directories" => "产品目录数据损坏或引用无效",
@@ -178,6 +180,7 @@ impl StudioRuntime {
         resolved: &ResolvedRuntimeOptions,
         observer: &Observer,
         cancellation: &CancellationToken,
+        recovering: bool,
     ) -> Result<Self, StudioStartupError> {
         observer(StudioStartupStage::Preparing);
         let config_store = match resolved.host {
@@ -193,23 +196,22 @@ impl StudioRuntime {
                 let _timing = crate::startup_timing::Stage::new("prepare_storage");
                 StudioStore::prepare_database(&resolved.paths.database())
                     .await
-                    .map_err(|error| {
-                        let mut error = StudioStartupError::input("prepare_storage", error);
-                        if error.kind == StudioStartupErrorKind::PersistentData {
-                            // Storage facts are never reset as a new installation.
-                            error.kind = StudioStartupErrorKind::Migration;
-                        }
-                        error
-                    })
+                    .map_err(|error| StudioStartupError::input("prepare_storage", error))
             },
             async {
                 let _timing = crate::startup_timing::Stage::new("prepare_configuration");
-                tokio::task::spawn_blocking(move || ConfigRuntime::initialize(config_store))
-                    .await
-                    .map_err(|error| internal("prepare_configuration", error))?
-                    .map_err(|error| {
-                        StudioStartupError::input("prepare_configuration", input_error(error))
-                    })
+                tokio::task::spawn_blocking(move || {
+                    let runtime = ConfigRuntime::initialize(config_store.clone())?;
+                    if recovering {
+                        config_store.save(runtime.read()?.canonical_config())?;
+                    }
+                    Ok::<_, crate::ConfigRuntimeError>(runtime)
+                })
+                .await
+                .map_err(|error| internal("prepare_configuration", error))?
+                .map_err(|error| {
+                    StudioStartupError::input("prepare_configuration", input_error(error))
+                })
             }
         );
         let (store, config) = match (store, config) {
@@ -427,9 +429,13 @@ impl StudioRuntime {
 
 fn prefer_environment(first: StudioStartupError, second: StudioStartupError) -> StudioStartupError {
     tracing::error!(step = second.step, kind = ?second.kind, "additional startup step failed");
-    if first.kind == StudioStartupErrorKind::PersistentData
-        && second.kind != StudioStartupErrorKind::PersistentData
-    {
+    if matches!(
+        first.kind,
+        StudioStartupErrorKind::PersistentData | StudioStartupErrorKind::Migration
+    ) && !matches!(
+        second.kind,
+        StudioStartupErrorKind::PersistentData | StudioStartupErrorKind::Migration
+    ) {
         second
     } else {
         first

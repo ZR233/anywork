@@ -191,9 +191,21 @@ async fn wal_family(target: &Path, product: bool) -> Result<BTreeMap<String, Vec
 
 #[tokio::test]
 async fn grouped_and_flat_v2_preserve_sqlite_families_and_share_resources() -> Result<()> {
-    for (grouped, standalone) in [(true, false), (false, true)] {
+    for (grouped, standalone, missing_project_manifest) in [
+        (true, false, false),
+        (false, true, false),
+        (true, false, true),
+    ] {
         let temp = tempfile::tempdir()?;
         let (paths, old_session) = fixture(temp.path(), grouped, standalone).await?;
+        let project_manifest = temp
+            .path()
+            .join("v2/projects")
+            .join(storage_key(OWNER, "Workspace")?)
+            .join("project.toml");
+        if missing_project_manifest {
+            tokio::fs::remove_file(&project_manifest).await?;
+        }
         let family = wal_family(&old_session.join("history.sqlite"), false).await?;
         // Exercise split roots without duplicating the fixture's authoritative product family.
         for suffix in ["", "-wal", "-shm"] {
@@ -209,6 +221,14 @@ async fn grouped_and_flat_v2_preserve_sqlite_families_and_share_resources() -> R
         let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
         assert_eq!(journal.phase, Phase::Completed);
         let backup = backup_root(&paths, &journal);
+        if missing_project_manifest {
+            assert!(
+                !backup
+                    .join(project_manifest.strip_prefix(temp.path())?)
+                    .exists(),
+                "the original must not gain a synthesized manifest"
+            );
+        }
         let saved_session = backup.join(old_session.strip_prefix(temp.path())?);
         for (suffix, expected) in &family {
             assert_eq!(
@@ -411,9 +431,11 @@ async fn invalid_inputs_keep_originals_and_never_publish_default_layout() -> Res
         "bad-journal",
         "conflicting-target",
         "orphan-wal",
+        "conflicting-project-manifest",
     ] {
         let temp = tempfile::tempdir()?;
-        let (paths, session) = fixture(temp.path(), false, false).await?;
+        let (paths, session) =
+            fixture(temp.path(), fault == "conflicting-project-manifest", false).await?;
         let hash = hex::encode(Sha256::digest(BODY));
         match fault {
             "future-catalog" => {
@@ -438,6 +460,18 @@ async fn invalid_inputs_keep_originals_and_never_publish_default_layout() -> Res
                 tokio::fs::write(paths.data_dir().join("unknown"), b"untouched").await?;
             }
             "orphan-wal" => tokio::fs::write(session.join("history.sqlite-wal"), b"orphan").await?,
+            "conflicting-project-manifest" => {
+                let path = temp
+                    .path()
+                    .join("v2/projects")
+                    .join(storage_key(OWNER, "Workspace")?)
+                    .join("project.toml");
+                tokio::fs::write(
+                    path,
+                    "schemaVersion=1\nprojectId='unrelated'\npath='/other'\n",
+                )
+                .await?;
+            }
             _ => unreachable!(),
         }
         for _ in 0..2 {
@@ -1733,30 +1767,56 @@ async fn conflicting_bot_owner_evidence_preserves_sources_without_publication() 
 }
 
 #[tokio::test]
-async fn layout_failure_through_runtime_never_starts_global_reset() -> Result<()> {
+async fn layout_failure_through_runtime_archives_migration_before_default_startup() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (paths, source) = fixture(temp.path(), false, false).await?;
     tokio::fs::write(source.join("attachments.toml"), b"bad = [").await?;
-    for _ in 0..2 {
-        let error = crate::StudioRuntime::initialize(crate::StudioRuntimeOptions {
-            studio_home: Some(temp.path().to_owned()),
-            host: crate::StudioHostKind::Test,
-            ..crate::StudioRuntimeOptions::desktop()
-        })
-        .await
-        .err()
-        .context("runtime must refuse the invalid layout")?;
-        assert_eq!(error.kind, crate::StudioStartupErrorKind::Migration);
-        assert!(!paths.layout_file().exists());
-        assert!(!temp.path().join("startup-backups").exists());
-        assert!(!temp.path().join("startup-recovery.toml").exists());
-    }
-    let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
-    let original = backup_root(&paths, &journal).join(source.strip_prefix(temp.path())?);
+    let options = crate::StudioRuntimeOptions {
+        studio_home: Some(temp.path().to_owned()),
+        host: crate::StudioHostKind::Test,
+        ..crate::StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options.clone()).await?;
+    let snapshot = runtime.runtime_snapshot().await?;
+    let report = snapshot
+        .startup_recovery
+        .as_ref()
+        .context("recovery reported")?;
+    let archived = PathBuf::from(&report.backup_path).join("original");
+    let journal = decode_journal(&tokio::fs::read_to_string(archived.join(JOURNAL)).await?)?;
+    let original = archived
+        .join(backup_root(&paths, &journal).strip_prefix(temp.path())?)
+        .join(source.strip_prefix(temp.path())?);
     assert_eq!(
         tokio::fs::read(original.join("attachments.toml")).await?,
         b"bad = ["
     );
+    assert!(paths.layout_file().exists());
+    assert!(
+        runtime
+            .list_threads_page(None, 100)
+            .await?
+            .state
+            .value()
+            .context("ready directory")?
+            .rows
+            .is_empty()
+    );
+    runtime.shutdown_runtime().await?;
+    let reopened = crate::StudioRuntime::initialize(options).await?;
+    assert!(
+        reopened
+            .runtime_snapshot()
+            .await?
+            .startup_recovery
+            .is_none()
+    );
+    reopened.shutdown_runtime().await?;
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("startup-backups"))?.count(),
+        1
+    );
+    assert!(!temp.path().join("startup-recovery.toml").exists());
     Ok(())
 }
 
