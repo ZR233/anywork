@@ -15,6 +15,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
@@ -769,11 +770,24 @@ final class _RealtimeScene {
     String fragment,
   ) async {
     final mainLease = lease;
-    final currentDisplay = mainLease.currentDisplay;
+    final initialCurrentOverlay = mainLease.currentDisplay;
     final controller = mainLease.controller;
     final scroll = mainLease.scrollController;
     final generation = mainLease.generation;
     final mainSets = mainLease.appliedSets;
+    final scrollable = find.byWidgetPredicate(
+      (widget) => widget is Scrollable && identical(widget.controller, scroll),
+    );
+    TimelineDisplayUnit? originalMain;
+    ScrollableState? originalScrollable;
+    Element? originalCanonical;
+    final canonical = find.byElementPredicate((element) {
+      final widget = element.widget;
+      return originalScrollable != null &&
+          widget is ChatItemView &&
+          widget.item.id == presentationId &&
+          identical(Scrollable.maybeOf(element), originalScrollable);
+    }, skipOffstage: false);
     final connector = find.byWidgetPredicate(
       (widget) =>
           widget is TimelineContentRangeConnector &&
@@ -794,16 +808,50 @@ final class _RealtimeScene {
     State? originalState;
     TimelineCurrentWindowDisplay? originalOwner;
 
-    void expectMain() {
+    void expectLease() {
       expect(lease, same(mainLease));
       expect(mainLease.isRetired, isFalse);
-      expect(mainLease.currentDisplay, same(currentDisplay));
-      expect(currentDisplay, isNotNull);
-      expect(currentDisplay!.isCurrent, isTrue);
       expect(mainLease.controller, same(controller));
       expect(mainLease.scrollController, same(scroll));
       expect(mainLease.generation, generation);
       expect(mainLease.appliedSets, mainSets);
+    }
+
+    TimelineDisplayUnit mainMetadata(ContentRef reference) {
+      final messages = controller.messages
+          .where((message) => message.id == presentationId)
+          .toList();
+      expect(messages, hasLength(1), reason: 'one original Main Message');
+      final metadata = messages.single.metadata?[timelineDisplayUnitKey];
+      if (metadata is! TimelineDisplayUnit) {
+        fail('The original Main Message must own TimelineDisplayUnit metadata');
+      }
+      expect(metadata.live, isFalse);
+      expect(metadata.id, presentationId);
+      expect(metadata.item.id, presentationId);
+      expect(metadata.item.position, isNotNull);
+      expect(metadata.item.contentItemId, contentItemId);
+      final declared = metadata.item.contents
+          .where((content) => content.role == role)
+          .toList();
+      expect(declared, hasLength(1), reason: 'one declared Main content role');
+      expect(
+        contentReferenceIdentity(declared.single.reference),
+        contentReferenceIdentity(reference),
+      );
+      return metadata;
+    }
+
+    bool belongsTo(Element element, Element ancestor) {
+      var belongs = identical(element, ancestor);
+      element.visitAncestorElements((candidate) {
+        if (identical(candidate, ancestor)) {
+          belongs = true;
+          return false;
+        }
+        return true;
+      });
+      return belongs;
     }
 
     try {
@@ -813,6 +861,40 @@ final class _RealtimeScene {
       expectedReference = reference;
       final body = reference.target as BodyContentTarget;
       expect((body.owner as ItemContentOwner).itemId, contentItemId);
+      expectLease();
+      // Completed Main metadata owns this range, independently of a nullable
+      // current-overlay resource borrow.
+      final main = mainMetadata(reference);
+      originalMain = main;
+      expect(scrollable, findsOneWidget);
+      expect(scroll.positions, hasLength(1));
+      final mainScrollable = tester.state<ScrollableState>(scrollable);
+      originalScrollable = mainScrollable;
+      expect(mainScrollable.position, same(scroll.position));
+      expect(canonical, findsOneWidget);
+      final row = tester.element(canonical);
+      originalCanonical = row;
+
+      void expectMain() {
+        expectLease();
+        expect(mainMetadata(reference), same(main));
+        expect(scrollable, findsOneWidget);
+        expect(tester.state<ScrollableState>(scrollable), same(mainScrollable));
+        expect(mainScrollable.mounted, isTrue);
+        expect(scroll.positions, hasLength(1));
+        expect(mainScrollable.position, same(scroll.position));
+        expect(canonical, findsOneWidget);
+        expect(tester.element(canonical), same(row));
+        expect(row.mounted, isTrue);
+        final widget = row.widget;
+        if (widget is! ChatItemView) {
+          fail('The original Main canonical row must remain a ChatItemView');
+        }
+        expect(widget.item.id, presentationId);
+        expect(widget.item.displayUnit, same(main));
+        expect(Scrollable.maybeOf(row), same(mainScrollable));
+      }
+
       await until(() {
         expectMain();
         final count = connector.evaluate().length;
@@ -830,6 +912,9 @@ final class _RealtimeScene {
         expect(connector, findsOneWidget);
         expect(tester.state(connector), same(state));
         expect(state.mounted, isTrue);
+        final element = tester.element(connector);
+        expect(Scrollable.maybeOf(element), same(mainScrollable));
+        expect(belongsTo(element, row), isTrue);
         expect(owner.reference, same(mountedReference));
         expect(
           contentReferenceIdentity(owner.reference),
@@ -989,6 +1074,43 @@ final class _RealtimeScene {
           };
         }
 
+        Map<String, Object?> mainFacts(Object? metadata) {
+          if (metadata is! TimelineDisplayUnit) {
+            return {'type': metadata?.runtimeType.toString()};
+          }
+          final declared = metadata.item.contents
+              .where((content) => content.role == role)
+              .toList();
+          return {
+            'type': metadata.runtimeType.toString(),
+            'live': metadata.live,
+            'id': metadata.id,
+            'itemId': metadata.item.id,
+            'hasPosition': metadata.item.position != null,
+            'contentItemId': metadata.item.contentItemId,
+            'declaredRoleMatches': declared.length,
+            'declaredReference': declared.length == 1
+                ? contentReferenceIdentity(declared.single.reference).toString()
+                : null,
+          };
+        }
+
+        final mainMessages = controller.messages
+            .where((message) => message.id == presentationId)
+            .toList();
+        Object? metadata;
+        if (mainMessages.length == 1) {
+          metadata = mainMessages.single.metadata?[timelineDisplayUnitKey];
+        }
+        final canonicalMatches = canonical.evaluate().toList();
+        final canonicalWidget = canonicalMatches.length == 1
+            ? canonicalMatches.single.widget
+            : null;
+        final scrollableMatches = scrollable.evaluate().toList();
+        final actualScrollable = scrollableMatches.length == 1
+            ? tester.state<ScrollableState>(scrollable)
+            : null;
+        final currentOverlay = mainLease.currentDisplay;
         final matches = connector.evaluate().toList();
         final actualState = matches.length == 1
             ? tester.state(connector)
@@ -1033,11 +1155,58 @@ final class _RealtimeScene {
           'expectedGeneration': generation,
           'mainSets': mainLease.appliedSets,
           'expectedMainSets': mainSets,
-          'sameCurrentDisplay': identical(
-            mainLease.currentDisplay,
-            currentDisplay,
-          ),
-          'current': currentDisplay?.isCurrent,
+          'currentOverlayObservation': {
+            'initialPresent': initialCurrentOverlay != null,
+            'initialIsCurrent': initialCurrentOverlay?.isCurrent,
+            'present': currentOverlay != null,
+            'isCurrent': currentOverlay?.isCurrent,
+            'sameResourceWhenBothPresent':
+                initialCurrentOverlay == null || currentOverlay == null
+                ? null
+                : identical(initialCurrentOverlay, currentOverlay),
+          },
+          'mainMetadata': {
+            'messageMatches': mainMessages.length,
+            'original': mainFacts(originalMain),
+            'actual': mainFacts(metadata),
+            'sameOriginal': originalMain == null
+                ? null
+                : identical(metadata, originalMain),
+          },
+          'mainDomain': {
+            'scrollableMatches': scrollableMatches.length,
+            'originalScrollableMounted': originalScrollable?.mounted,
+            'sameScrollable': originalScrollable == null
+                ? null
+                : identical(actualScrollable, originalScrollable),
+            'sameScrollController':
+                !mainLease.isRetired &&
+                identical(mainLease.scrollController, scroll),
+            'samePosition': actualScrollable == null
+                ? null
+                : scroll.positions.contains(actualScrollable.position),
+            'canonicalMatches': canonicalMatches.length,
+            'originalCanonicalMounted': originalCanonical?.mounted,
+            'sameCanonical': originalCanonical == null
+                ? null
+                : canonicalMatches.length == 1 &&
+                      identical(canonicalMatches.single, originalCanonical),
+            'canonicalMetadataMatches':
+                originalMain != null && canonicalWidget is ChatItemView
+                ? identical(canonicalWidget.item.displayUnit, originalMain)
+                : null,
+            'connectorInOriginalCanonical':
+                originalCanonical != null && matches.length == 1
+                ? belongsTo(matches.single, originalCanonical)
+                : null,
+            'connectorInOriginalScrollable':
+                originalScrollable != null && matches.length == 1
+                ? identical(
+                    Scrollable.maybeOf(matches.single),
+                    originalScrollable,
+                  )
+                : null,
+          },
           'sameState': identical(actualState, originalState),
           'originalStateMounted': originalState?.mounted,
           'actualStateMounted': actualState?.mounted,
