@@ -25,6 +25,7 @@ pub struct SseStreamEvent {
     pub kind: String,
     pub delta: Option<String>,
     pub item: Option<serde_json::Value>,
+    pub part: Option<serde_json::Value>,
     pub item_id: Option<String>,
     pub call_id: Option<String>,
     pub response: Option<serde_json::Value>,
