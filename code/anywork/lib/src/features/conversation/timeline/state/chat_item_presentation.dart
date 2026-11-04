@@ -143,6 +143,7 @@ final class ChatItemPresentation {
       authorId: author ?? value.authorId,
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
+      displayUnit: unit,
     );
   }
 
