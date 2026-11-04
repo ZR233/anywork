@@ -419,6 +419,7 @@ final class _Scene {
     String status = 'succeeded',
   }) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
+    expect(graph.client.selection.state.selectedThreadId, turn.threadId);
     final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
     await observed.openSourceGroups(source);
@@ -428,32 +429,59 @@ final class _Scene {
               atom.source == source &&
               atom.tool?.callId.startsWith(prefix) == true,
         )
-        .map(ChatItemPresentation.decode)
-        .where((item) {
-          final reading = item.toolCard;
-          return reading is DecodedToolCard &&
-              reading.value.toolCallId.startsWith(prefix) &&
-              reading.value.statusString == status;
-        })
         .toList();
-    expect(matches, hasLength(1), reason: '$prefix / $status');
-    final item = matches.single;
-    final reference = observed.unitForMember(item.atom!.id).item.members!;
-    final display = await observed.revealMember(
-      item.atom!,
-      reference: reference,
+    expect(
+      matches,
+      hasLength(1),
+      reason: 'one original tool atom: ${turn.threadId}/${turn.turnId}/$prefix',
     );
+    final atom = matches.single;
+    expect(atom.kind, ChatAtomKind.toolCall);
+    final payload = atom.payload;
+    final byteLength = payload is InlinePayload
+        ? payload.bytes.length
+        : payload is DeferredPayload
+        ? payload.byteLength
+        : null;
+    // Select by reliable metadata first. A missing/Deferred/malformed envelope
+    // must fail as delivery/presentation, not be filtered into "no member".
+    final reason =
+        'Known small wait fixture requires Inline/current business '
+        'presentation within the original frame budget: id=${atom.id}, '
+        'completion=${atom.completionItemId}/${atom.completionSeq}, '
+        'call=${atom.tool!.callId}, payloadType=${payload?.runtimeType}, '
+        'byteLength=$byteLength. '
+        'Over-budget payloads may remain Deferred in the product.';
+    expect(payload, isA<InlinePayload>(), reason: reason);
+    final reference = observed.unitForMember(atom.id).item.members!;
+    final display = await observed.revealMember(atom, reference: reference);
     expect(display.expanded, isTrue);
     expect(
       display.atoms.where(
-        (atom) =>
-            atom.id == item.atom!.id &&
-            atom.tool?.callId ==
-                (item.toolCard as DecodedToolCard).value.toolCallId,
+        (member) =>
+            member.id == atom.id &&
+            member.source == source &&
+            member.tool?.callId == atom.tool!.callId,
       ),
       hasLength(1),
     );
-    return item;
+    final rendered = tester
+        .widget<ChatItemView>(observed.memberRow(atom.id))
+        .item;
+    expect(
+      rendered.compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    expect(rendered.type, 'tool', reason: reason);
+    expect(rendered.atom!.completionItemId, atom.completionItemId);
+    expect(rendered.atom!.completionSeq, atom.completionSeq);
+    expect(rendered.toolCard, isA<DecodedToolCard>(), reason: reason);
+    final card = (rendered.toolCard as DecodedToolCard).value;
+    expect(card.toolCallId, atom.tool!.callId, reason: reason);
+    expect(card.name, atom.tool!.name, reason: reason);
+    expect(card.statusString, status, reason: reason);
+    return rendered;
   }
 
   Future<void> closeTurn(StudioTurnView turn) async {
