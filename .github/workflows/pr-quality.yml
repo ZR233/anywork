@@ -564,7 +564,7 @@ jobs:
               printf 'Not created: %s\n' "$directory"
             fi
           done
-      - name: Preserve native reports
+      - name: Preserve native reports and bounded diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -572,6 +572,12 @@ jobs:
           path: |
             target/ci-native-linux/report.json
             target/ci-native-linux/cases/**/report.json
+            target/ci-native-linux/cases/**/shutdown-*-gui.log
+            target/ci-native-linux/cases/**/shutdown-launch-*.json
+            target/ci-native-linux/cases/**/shutdown-native-exit-*.json
+            target/ci-native-linux/cases/**/shutdown-stage*
+            target/ci-native-linux/cases/**/diagnostics.json
+            target/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
           if-no-files-found: warn
           retention-days: 7
 
