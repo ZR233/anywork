@@ -1441,38 +1441,430 @@ fn a14_atom_metadata(atom: &ChatAtom) -> serde_json::Value {
     })
 }
 
-async fn a14_admitted_cut(
-    feed: &mut ConversationFeed,
-    main: &mut Vec<TimelineItem>,
-    current: &mut Option<CurrentProjection>,
-    ready: impl Fn(&[TimelineItem], Option<&CurrentProjection>) -> bool,
-) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if ready(main, current.as_ref()) {
-                return Ok::<_, anyhow::Error>(());
-            }
-            if let ConversationEvent::Chat { batch } =
-                feed.recv().await?.context("A14 Main feed ended")?
-            {
-                batch.validate_for(&ChatScope::Main)?;
-                match batch.placement {
-                    ChatPlacement::Set => main.clear(),
-                    ChatPlacement::Append => {}
-                    ChatPlacement::Prepend => bail!("A14 unexpectedly paged Main"),
+struct A14MemberRead {
+    reference: TimelineMembersRef,
+    feed: ConversationFeed,
+    atoms: Vec<ChatAtom>,
+    source: Option<ChatSourceState>,
+}
+
+struct A14DurableRead {
+    atom: ChatAtom,
+    item_id: String,
+    append_seq: u64,
+}
+
+#[derive(Default)]
+struct A14Reads {
+    main: Vec<TimelineItem>,
+    current: Option<CurrentProjection>,
+    members: Vec<A14MemberRead>,
+    durable: Vec<A14DurableRead>,
+    before: Option<TimelineMembersRef>,
+    after: Option<TimelineMembersRef>,
+    source: Option<ChatSourceId>,
+    attempt: Option<String>,
+    empty_start: Option<ChatAtom>,
+    body: Option<ContentWindow>,
+}
+
+impl A14Reads {
+    fn main_batch(&mut self, batch: ChatBatch) -> Result<()> {
+        batch.validate_for(&ChatScope::Main)?;
+        match batch.placement {
+            ChatPlacement::Set => self.main.clear(),
+            ChatPlacement::Append => {}
+            ChatPlacement::Prepend => bail!("A14 unexpectedly paged Main"),
+        }
+        for entry in batch.entries {
+            let ChatEntry::Item(item) = entry else {
+                bail!("Main returned a member atom");
+            };
+            ensure!(
+                self.main.iter().all(|old| old.id != item.id),
+                "A14 duplicated a Main item"
+            );
+            self.main.push(*item);
+        }
+        if batch.current.is_some() {
+            self.current = batch.current;
+        }
+        Ok(())
+    }
+
+    fn member_batch(&mut self, index: usize, batch: ChatBatch) -> Result<()> {
+        let group = &mut self.members[index];
+        batch.validate_for(&ChatScope::GroupMembers {
+            reference: group.reference.clone(),
+        })?;
+        ensure!(
+            batch.before.is_none(),
+            "A14 single member unexpectedly paged"
+        );
+        if batch.placement == ChatPlacement::Set {
+            group.atoms.clear();
+        }
+        for entry in batch.entries {
+            match entry {
+                ChatEntry::Atom(atom) => {
+                    if let Some(old) = group.atoms.iter_mut().find(|old| old.id == atom.id) {
+                        *old = *atom;
+                    } else {
+                        group.atoms.push(*atom);
+                    }
                 }
-                for entry in batch.entries {
-                    let ChatEntry::Item(item) = entry else {
-                        bail!("Main returned a member atom");
-                    };
-                    main.push(*item);
-                }
-                *current = batch.current;
+                ChatEntry::Source(source) => group.source = Some(source),
+                ChatEntry::Item(_) => bail!("GroupMembers returned a Main item"),
             }
         }
-    })
-    .await
-    .context("A14 stage lacks an admitted product cut")?
+        Ok(())
+    }
+
+    fn reasoning(&self, reference: Option<&TimelineMembersRef>) -> Option<&ChatAtom> {
+        let group = self
+            .members
+            .iter()
+            .find(|group| Some(&group.reference) == reference)?;
+        let [atom] = group.atoms.as_slice() else {
+            return None;
+        };
+        (atom.kind == ChatAtomKind::Reasoning
+            && Some(&atom.source) == self.source.as_ref()
+            && atom.attempt_id.is_some()
+            && atom.source_order.is_some()
+            && atom.completion_item_id.is_some()
+            && atom.completion_seq.is_some()
+            && matches!(
+                atom.lifecycle,
+                ChatAtomLifecycle::Terminal {
+                    ended: Some(_),
+                    outcome: ChatTerminalOutcome::Completed,
+                    ..
+                }
+            ))
+        .then_some(atom)
+    }
+
+    fn main_group(&self, reference: Option<&TimelineMembersRef>) -> bool {
+        let Some(reference) = reference else {
+            return false;
+        };
+        self.main.iter().any(|item| {
+            item.members.as_ref() == Some(reference)
+                && Some(&item.source) == self.source.as_ref()
+                && item.position.is_some()
+                && item.admission_closed
+                && item
+                    .summary
+                    .as_ref()
+                    .is_some_and(|summary| summary.member_count == 1 && summary.active_count == 0)
+        }) && self.reasoning(Some(reference)).is_some()
+    }
+
+    fn empty_completion(&self) -> Option<&A14DurableRead> {
+        self.durable.iter().find(|record| {
+            let atom = &record.atom;
+            atom.kind == ChatAtomKind::Text
+                && atom.content_present == Some(false)
+                && Some(&atom.source) == self.source.as_ref()
+                && atom.attempt_id.as_ref() == self.attempt.as_ref()
+                && atom.attempt_id.is_some()
+                && atom.source_order.is_some()
+                && self
+                    .empty_start
+                    .as_ref()
+                    .is_none_or(|start| start.id == atom.id)
+                && atom.completion_item_id.as_deref() == Some(record.item_id.as_str())
+                && record.append_seq > 0
+                && matches!(
+                    atom.lifecycle,
+                    ChatAtomLifecycle::Terminal {
+                        ended: Some(_),
+                        outcome: ChatTerminalOutcome::Completed,
+                        ..
+                    }
+                )
+        })
+    }
+
+    fn ready(&self, stage: usize) -> bool {
+        let Some(current) = &self.current else {
+            return false;
+        };
+        let before = self.reasoning(self.before.as_ref());
+        let empty = self.empty_completion();
+        let no_empty_main = empty.is_some_and(|record| {
+            self.main
+                .iter()
+                .all(|item| item.content_item_id.as_deref() != Some(record.item_id.as_str()))
+        });
+        let expected = pl_provider_fixture::timeline_concept::EMPTY_TEXT_ANSWER.as_bytes();
+        match stage {
+            0 => {
+                before.is_some()
+                    && current.items.iter().any(|item| {
+                        item.members.as_ref() == self.before.as_ref()
+                            && !item.admission_closed
+                            && item.summary.as_ref().is_some_and(|summary| {
+                                summary.member_count == 1 && summary.active_count == 0
+                            })
+                    })
+            }
+            1 => {
+                self.main_group(self.before.as_ref())
+                    && self.empty_start.as_ref().is_some_and(|atom| {
+                        Some(&atom.source) == self.source.as_ref()
+                            && atom.attempt_id.as_ref() == self.attempt.as_ref()
+                            && before.is_some_and(|reason| atom.source_order > reason.source_order)
+                            && matches!(
+                                atom.lifecycle,
+                                ChatAtomLifecycle::Active {
+                                    started: Some(_),
+                                    ..
+                                }
+                            )
+                    })
+            }
+            2 => {
+                self.main_group(self.before.as_ref())
+                    && no_empty_main
+                    && empty.is_some_and(|record| {
+                        let ChatAtomLifecycle::Terminal {
+                            ended: Some(ended), ..
+                        } = record.atom.lifecycle
+                        else {
+                            return false;
+                        };
+                        current.source_effect_seq >= ended.effect_seq
+                            && before.is_some_and(|reason| {
+                                record.atom.source_order > reason.source_order
+                            })
+                    })
+            }
+            3 => {
+                self.main_group(self.before.as_ref())
+                    && no_empty_main
+                    && self.after != self.before
+                    && self.reasoning(self.after.as_ref()).is_some_and(|atom| {
+                        atom.attempt_id.as_ref() == self.attempt.as_ref()
+                            && empty.is_some_and(|empty| {
+                                atom.source_order > empty.atom.source_order
+                                    && atom.completion_seq > Some(empty.append_seq)
+                            })
+                    })
+                    && current.items.iter().any(|item| {
+                        item.members.as_ref() == self.after.as_ref()
+                            && !item.admission_closed
+                            && item.summary.as_ref().is_some_and(|summary| {
+                                summary.member_count == 1 && summary.active_count == 0
+                            })
+                    })
+            }
+            4 => {
+                self.main_group(self.after.as_ref())
+                    && no_empty_main
+                    && current.items.iter().any(|item| {
+                        item.atom_kind == Some(ChatAtomKind::Text)
+                            && Some(&item.source) == self.source.as_ref()
+                    })
+                    && self
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.bytes == expected)
+            }
+            5 => {
+                self.main_group(self.before.as_ref())
+                    && self.main_group(self.after.as_ref())
+                    && no_empty_main
+                    && self.main.iter().any(|item| {
+                        item.atom_kind == Some(ChatAtomKind::Text)
+                            && Some(&item.source) == self.source.as_ref()
+                            && item.position.is_some()
+                            && item.admission_closed
+                            && item.outcome == Some(ChatTerminalOutcome::Completed)
+                    })
+                    && self
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.sealed && body.bytes == expected)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn refresh(
+        &mut self,
+        env: &support::Environment,
+        id: &str,
+        stage: usize,
+        reader: &ConversationReader,
+    ) -> Result<()> {
+        // A reference comes only from the original delivered current item. Each real group gets
+        // one member feed, retained across all subsequent stages without reopening it.
+        let group = self
+            .current
+            .as_ref()
+            .and_then(|current| current.items.iter().find(|item| item.is_work_group()))
+            .cloned();
+        if let Some(group) = group {
+            let reference = group.members.context("A14 group lacks its reference")?;
+            if self.before.is_none() {
+                self.source = Some(group.source.clone());
+                self.before = Some(reference.clone());
+            } else {
+                ensure!(
+                    Some(&group.source) == self.source.as_ref(),
+                    "A14 changed source"
+                );
+                if Some(&reference) != self.before.as_ref() {
+                    self.after = Some(reference.clone());
+                }
+            }
+            if !self
+                .members
+                .iter()
+                .any(|member| member.reference == reference)
+            {
+                ensure!(
+                    self.members.len() < 2,
+                    "A14 admitted an unexpected third work group"
+                );
+                let feed = env
+                    .runtime
+                    .open_conversation_feed(
+                        id,
+                        ChatScope::GroupMembers {
+                            reference: reference.clone(),
+                        },
+                        demand(),
+                    )
+                    .await?;
+                self.members.push(A14MemberRead {
+                    reference,
+                    feed,
+                    atoms: Vec::new(),
+                    source: None,
+                });
+            }
+        }
+        if let Some(atom) = self.reasoning(self.before.as_ref()) {
+            self.attempt = atom.attempt_id.clone();
+        }
+        if stage == 1 {
+            self.empty_start = self
+                .current
+                .as_ref()
+                .and_then(|current| {
+                    current.atoms.iter().find(|atom| {
+                        atom.kind == ChatAtomKind::Text
+                            && Some(&atom.source) == self.source.as_ref()
+                            && atom.attempt_id.as_ref() == self.attempt.as_ref()
+                            && atom.attempt_id.is_some()
+                            && matches!(
+                                atom.lifecycle,
+                                ChatAtomLifecycle::Active {
+                                    started: Some(_),
+                                    ..
+                                }
+                            )
+                    })
+                })
+                .cloned();
+        }
+        self.durable.clear();
+        if let Some(ChatSourceId::ForegroundTurn { turn_id }) = &self.source {
+            let history = env.runtime.store.history(id).await?;
+            for item in history.items_for_turn(turn_id).await? {
+                if let Some(frozen) = history.read_chat_item(&item.id).await? {
+                    let atom: ChatAtom = serde_json::from_slice(&frozen.header.metadata)?;
+                    ensure!(
+                        atom.completion_item_id.as_deref() == Some(frozen.header.item_id.as_str())
+                            && atom.completion_seq.is_none()
+                            && atom.payload.is_none(),
+                        "A14 frozen metadata/header mismatch"
+                    );
+                    self.durable.push(A14DurableRead {
+                        atom,
+                        item_id: frozen.header.item_id.clone(),
+                        append_seq: frozen.header.append_seq,
+                    });
+                }
+            }
+        }
+        ensure!(
+            self.durable
+                .iter()
+                .filter(|record| {
+                    record.atom.kind == ChatAtomKind::Text
+                        && record.atom.content_present == Some(false)
+                        && Some(&record.atom.source) == self.source.as_ref()
+                        && record.atom.attempt_id.as_ref() == self.attempt.as_ref()
+                })
+                .count()
+                <= 1,
+            "A14 has ambiguous empty completion identities"
+        );
+        if stage >= 4 {
+            let text = self
+                .current
+                .as_ref()
+                .and_then(|current| {
+                    current.items.iter().find(|item| {
+                        item.atom_kind == Some(ChatAtomKind::Text)
+                            && Some(&item.source) == self.source.as_ref()
+                    })
+                })
+                .or_else(|| {
+                    self.main.iter().find(|item| {
+                        item.atom_kind == Some(ChatAtomKind::Text)
+                            && Some(&item.source) == self.source.as_ref()
+                    })
+                });
+            if let Some(body) = text.and_then(|item| {
+                item.contents
+                    .iter()
+                    .find(|content| content.role == ChatContentRole::Body)
+            }) {
+                self.body = Some(
+                    reader
+                        .read_content(
+                            &body.reference,
+                            ContentRange {
+                                offset: 0,
+                                max_bytes: pl_provider_fixture::timeline_concept::EMPTY_TEXT_ANSWER
+                                    .len() as u32,
+                            },
+                        )
+                        .await?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self, stage: &str, result: &Result<()>, core: &CoreSnapshot) -> serde_json::Value {
+        let item = |item: &TimelineItem| {
+            serde_json::json!({"id":item.id,"kind":item.kind,"source":item.source,
+            "position":item.position,"admissionClosed":item.admission_closed,"summary":item.summary,
+            "contentItemId":item.content_item_id,"outcome":item.outcome})
+        };
+        serde_json::json!({
+            "stage":stage,"admitted":result.is_ok(),"failure":result.as_ref().err().map(|error|format!("{error:#}")),
+            "coreCommitSequence":core.commit_sequence,"coreDurableSequence":core.persistence.durable_sequence,
+            "coreProgress":core.model_progress.as_ref().map(|active|serde_json::json!({"attemptId":active.attempt_id,
+                "parts":active.progress.parts().iter().map(|part|serde_json::json!({"identity":part.identity(),"version":part.version(),"byteLength":part.content().len()})).collect::<Vec<_>>() })),
+            "main":self.main.iter().map(item).collect::<Vec<_>>(),
+            "current":self.current.as_ref().map(|current|serde_json::json!({"sourceEffectSeq":current.source_effect_seq,"sources":current.sources,
+                "items":current.items.iter().map(item).collect::<Vec<_>>(),"atoms":current.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>()})),
+            "members":self.members.iter().map(|group|serde_json::json!({"reference":group.reference,"subscriptionId":group.feed.reader().subscription_id(),
+                "atoms":group.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>(),"source":group.source})).collect::<Vec<_>>(),
+            "durable":self.durable.iter().map(|record|serde_json::json!({"completionItemId":record.item_id,"completionSeq":record.append_seq,
+                "frozenAtom":a14_atom_metadata(&record.atom)})).collect::<Vec<_>>(),
+            "emptyStart":self.empty_start.as_ref().map(a14_atom_metadata),
+            "body":self.body.as_ref().map(|body|serde_json::json!({"byteLength":body.bytes.len(),"availableThrough":body.available_through,
+                "sealed":body.sealed,"matchesFixture":body.bytes==pl_provider_fixture::timeline_concept::EMPTY_TEXT_ANSWER.as_bytes()})),
+        })
+    }
 }
 
 #[tokio::test]
@@ -1485,8 +1877,8 @@ async fn fixture_empty_content_part_preserves_a14_start_and_reliable_handoff() -
         "a14-text-readable",
         "a14-before-turn-end",
     ];
-    let mut step = pl_provider_fixture::timeline_concept::Control::default().script()
-        .into_iter().find(|step| matches!(&step.request, RequestMatch::Prompt { text, .. } if text == pl_provider_fixture::timeline_concept::EMPTY_TEXT_PROMPT))
+    let mut step = pl_provider_fixture::timeline_concept::Control::default().script().into_iter()
+        .find(|step| matches!(&step.request, RequestMatch::Prompt { text, .. } if text == pl_provider_fixture::timeline_concept::EMPTY_TEXT_PROMPT))
         .context("original A14 fixture step")?;
     let RequestMatch::Prompt {
         text: prompt,
@@ -1498,154 +1890,91 @@ async fn fixture_empty_content_part_preserves_a14_start_and_reliable_handoff() -
     *ordinal = 0;
     let prompt = prompt.clone();
     let Reply::SegmentedSse { segments, gates } = &step.reply else {
-        bail!("A14 is not a staged SSE reply");
+        bail!("A14 is not staged SSE");
     };
-    assert_eq!(segments.len(), STAGES.len() + 1);
+    ensure!(
+        segments.len() == STAGES.len() + 1,
+        "A14 fixture stages changed"
+    );
     let gates = gates.clone();
     let env = support::Environment::new(vec![step], vec![]).await?;
-    let mut feeds = Vec::new();
+    let mut reads = A14Reads::default();
     let mut result = async {
         let thread = env.start(ThreadWorkspaceMode::Local, &prompt).await?;
         let id = &thread.thread.id;
         let handle = env.runtime.threads.observed_thread(id).context("real Core owner")?;
-        let history = env.runtime.store.history(id).await?;
+        let mut owner = handle.subscribe();
         let mut feed = env.runtime.open_conversation_feed(id, ChatScope::Main, demand()).await?;
         let result = async {
-            let mut main = Vec::new();
-            let mut current = None;
-            let mut before_id = None;
-            let mut after_id = None;
-            let mut empty_id = None;
-            let mut empty_completion = None;
-            let mut source = None;
             let mut failures = Vec::new();
             for (index, (reached, release)) in gates.iter().enumerate() {
                 tokio::time::timeout(support::integration_test_deadline()?, reached.cancelled()).await?;
-                // Wire reached does not qualify a product state. Keep consuming the original feed
-                // until this stage's actual atom/boundary/terminal facts have been admitted.
-                let admitted = a14_admitted_cut(&mut feed, &mut main, &mut current, |main, current| {
-                    let Some(current) = current else { return false; };
-                    let first_ready = before_id.as_ref().is_some_and(|id| main.iter().any(|item| &item.id == id && item.admission_closed && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)));
-                    match index {
-                        // Current atoms contain active starts. A completed group's qualification
-                        // is checked below through its real GroupMembers query, not this list.
-                        0 => current.items.iter().any(|item| item.is_work_group() && !item.admission_closed && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)),
-                        1 => first_ready && current.atoms.iter().any(|atom| atom.kind == ChatAtomKind::Text && Some(&atom.source) == source.as_ref() && matches!(atom.lifecycle, ChatAtomLifecycle::Active { started: Some(_), .. })),
-                        2 => first_ready && current.items.iter().all(|item| item.atom_kind != Some(ChatAtomKind::Text)),
-                        3 => first_ready && current.items.iter().any(|item| item.is_work_group() && Some(&item.id) != before_id.as_ref() && item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)),
-                        4 => after_id.as_ref().is_some_and(|id| main.iter().any(|item| &item.id == id && item.admission_closed))
-                            && current.items.iter().any(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref() && !item.contents.is_empty()),
-                        5 => main.iter().any(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref() && item.outcome == Some(ChatTerminalOutcome::Completed)),
-                        _ => unreachable!(),
-                    }
-                }).await;
-                if let Err(error) = &admitted {
-                    failures.push(format!("{}: {error:#}", STAGES[index]));
-                }
-                let snapshot = handle.snapshot();
-                let parts = snapshot.model_progress.as_ref().map(|active| serde_json::json!({
-                    "attemptId": active.attempt_id,
-                    "parts": active.progress.parts().iter().map(|part| serde_json::json!({"identity": part.identity(), "version": part.version(), "byteLength": part.content().len()})).collect::<Vec<_>>()
-                }));
-                if index == 0 {
-                    if admitted.is_err() {
-                        eprintln!("A14_STAGE_FAILURE {}", serde_json::json!({
-                            "stage": STAGES[index], "coreCommitSequence": snapshot.commit_sequence,
-                            "coreDurableSequence": snapshot.persistence.durable_sequence,
-                            "coreProgress": parts,
-                            "mainIds": main.iter().map(|item| &item.id).collect::<Vec<_>>(),
-                            "current": current.as_ref().map(|value| serde_json::json!({
-                                "sourceEffectSeq": value.source_effect_seq,
-                                "items": value.items.iter().map(|item| serde_json::json!({
-                                    "id": item.id, "kind": item.kind, "source": item.source,
-                                    "admissionClosed": item.admission_closed, "summary": item.summary,
-                                })).collect::<Vec<_>>(),
-                                "atoms": value.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>(),
-                            })),
-                        }));
-                    }
-                    ensure!(admitted.is_ok(), "A14 before group lacked a reliable completion: {admitted:?}");
-                    let group = current.as_ref().context("before current")?.items.iter().find(|item| item.is_work_group()).context("before group")?;
-                    before_id = Some(group.id.clone());
-                    source = Some(group.source.clone());
-                }
-                if index == 1 {
-                    empty_id = current.as_ref().and_then(|value| value.atoms.iter().find(|atom| atom.kind == ChatAtomKind::Text && Some(&atom.source) == source.as_ref())).map(|atom| atom.id.clone());
-                }
-                if index == 3 {
-                    after_id = current.as_ref().and_then(|value| value.items.iter().find(|item| item.is_work_group())).map(|item| item.id.clone());
-                    if after_id == before_id { failures.push("A14 reused the before group after the empty boundary".into()); }
-                }
-                let turn_id = match source.as_ref().context("A14 source")? {
-                    ChatSourceId::ForegroundTurn { turn_id } => turn_id,
-                    _ => bail!("A14 source was not its real foreground Turn"),
-                };
-                let mut durable = Vec::new();
-                for item in history.items_for_turn(turn_id).await? {
-                    let frozen = match history.read_chat_item(&item.id).await? {
-                        Some(value) => Some(serde_json::from_slice::<ChatAtom>(&value.header.metadata)?),
-                        None => None,
-                    };
-                    if let Some(atom) = &frozen
-                        && atom.kind == ChatAtomKind::Text
-                        && Some(&atom.source) == source.as_ref()
-                        && atom.content_present == Some(false)
-                    {
-                        empty_completion = Some(atom.clone());
-                    }
-                    durable.push(serde_json::json!({"id":item.id,"ordinal":item.ordinal,"kind":item.state().kind(),"frozen":frozen.as_ref().map(a14_atom_metadata)}));
-                }
-                eprintln!("A14_STAGE {}", serde_json::json!({
-                    "stage": STAGES[index], "admitted": admitted.is_ok(),
-                    "coreCommitSequence": snapshot.commit_sequence,
-                    "coreDurableSequence": snapshot.persistence.durable_sequence,
-                    "coreProgress": parts, "durableItems": durable,
-                    "main": main.iter().filter(|item| Some(&item.source) == source.as_ref()).map(|item| serde_json::json!({"id":item.id,"kind":item.kind,"source":item.source,"position":item.position,"admissionClosed":item.admission_closed,"summary":item.summary,"contentItemId":item.content_item_id,"outcome":item.outcome})).collect::<Vec<_>>(),
-                    "current": current.as_ref().map(|value| serde_json::json!({"sourceEffectSeq":value.source_effect_seq,"sources":value.sources,"items":value.items.iter().map(|item| serde_json::json!({"id":item.id,"kind":item.kind,"source":item.source,"admissionClosed":item.admission_closed,"summary":item.summary,"outcome":item.outcome})).collect::<Vec<_>>(),"atoms":value.atoms.iter().map(a14_atom_metadata).collect::<Vec<_>>()})),
-                }));
-                if index == 0 || index == 3 {
-                    if let Some(reference) = current.as_ref().and_then(|value| value.items.iter().find(|item| item.is_work_group())).and_then(|item| item.members.clone()) {
-                        let mut members = env.runtime.open_conversation_feed(id, ChatScope::GroupMembers { reference }, demand()).await?;
-                        let batch = chat(&mut members).await?;
-                        ensure!(batch.before.is_none(), "A14 single reasoning unexpectedly paged");
-                        ensure!(batch.entries.len() == 1, "A14 group query did not return exactly one member");
-                        for entry in batch.entries {
-                            let ChatEntry::Atom(atom) = entry else { bail!("GroupMembers returned a Main item"); };
-                            eprintln!("A14_MEMBER {}", a14_atom_metadata(&atom));
-                            ensure!(Some(&atom.source) == source.as_ref() && atom.completion_item_id.is_some() && atom.completion_seq.is_some() && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { ended: Some(_), outcome: ChatTerminalOutcome::Completed, .. }), "A14 group handoff lacked a reliable member completion");
+                reads.body = None;
+                let admitted = tokio::time::timeout(Duration::from_secs(60), async {
+                    loop {
+                        reads.refresh(&env, id, index, feed.reader()).await?;
+                        if reads.ready(index) { return Ok::<_, anyhow::Error>(()); }
+                        // Owner progress wakes durable completion checks. Neither a wire gate nor
+                        // a structurally empty current substitutes for the required completion.
+                        enum Wake { Main(ConversationEvent), Member(usize, ConversationEvent), Owner }
+                        let wake = {
+                            let count = reads.members.len();
+                            let (before, after) = reads.members.split_at_mut(count.min(1));
+                            tokio::select! {
+                                event = feed.recv() => Wake::Main(event?.context("A14 Main ended")?),
+                                event = async { before[0].feed.recv().await }, if count >= 1 =>
+                                    Wake::Member(0, event?.context("A14 before member feed ended")?),
+                                event = async { after[0].feed.recv().await }, if count >= 2 =>
+                                    Wake::Member(1, event?.context("A14 after member feed ended")?),
+                                snapshot = owner.next() => { snapshot.context("A14 Core owner ended")?; Wake::Owner }
+                            }
+                        };
+                        match wake {
+                            Wake::Main(ConversationEvent::Chat { batch }) => reads.main_batch(*batch)?,
+                            Wake::Member(member, ConversationEvent::Chat { batch }) => reads.member_batch(member, *batch)?,
+                            _ => {}
                         }
-                        feeds.push(members);
                     }
+                }).await.context("A14 stage lacks its required reliable facts").and_then(|result|result);
+                // Print before any failure propagation and before releasing this exact gate.
+                println!("A14_STAGE {}", reads.snapshot(STAGES[index], &admitted, &handle.snapshot()));
+                for group in &reads.members {
+                    for atom in &group.atoms { println!("A14_MEMBER {}", a14_atom_metadata(atom)); }
                 }
-                if let Some(atom) = &empty_completion {
-                    ensure!(matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { ended: Some(_), outcome: ChatTerminalOutcome::Completed, .. }), "empty completion lacks a reliable end");
-                    ensure!(atom.completion_item_id.is_some() && atom.completion_seq.is_some(), "empty completion lacks its real identity");
-                    ensure!(main.iter().all(|item| item.content_item_id != atom.completion_item_id), "empty structural atom appeared in Main");
-                }
+                if let Err(error) = &admitted { failures.push(format!("{}: {error:#}", STAGES[index])); }
                 release.cancel();
             }
-            support::completed_prompt(&env.runtime, id, &prompt).await?;
-            let final_text = main.iter().find(|item| item.atom_kind == Some(ChatAtomKind::Text) && Some(&item.source) == source.as_ref()).context("A14 final Main text")?;
-            let body = final_text.contents.iter().find(|content| content.role == ChatContentRole::Body).context("A14 final body reference")?;
-            let window = feed.reader().read_content(&body.reference, ContentRange { offset: 0, max_bytes: 1024 }).await?;
-            ensure!(window.sealed && !window.bytes.is_empty(), "A14 final text lacked completed nonempty bytes");
-            ensure!(empty_completion.is_some(), "A14 empty completion was not observed in durable metadata");
-            ensure!(empty_id.is_some(), "A14 empty start never reached current; {failures:?}");
+            let turn = support::completed_prompt(&env.runtime, id, &prompt).await?;
+            println!("A14_TURN {}", serde_json::json!({"id":turn.id,"threadId":turn.thread_id,"state":turn.state}));
+            ensure!(reads.source == Some(ChatSourceId::ForegroundTurn { turn_id: turn.id.clone() }), "A14 terminal Turn changed identity");
+            ensure!(matches!(turn.state, pl_protocol::TurnState::Completed(_)), "A14 Turn did not complete successfully");
+            let positions = [&reads.before, &reads.after].into_iter().map(|reference| {
+                reads.main.iter().find(|item| item.members.as_ref() == reference.as_ref()).and_then(|item| item.position)
+            }).collect::<Option<Vec<_>>>().context("A14 work groups did not reach Main")?;
+            ensure!(positions[0] < positions[1], "A14 before/after order changed");
+            let text_position = reads.main.iter().find(|item| item.atom_kind == Some(ChatAtomKind::Text)
+                && Some(&item.source) == reads.source.as_ref()).and_then(|item|item.position).context("A14 final Main position")?;
+            ensure!(positions[1] < text_position, "A14 final text preceded its work group");
             ensure!(failures.is_empty(), "A14 admitted-stage failures: {failures:?}");
             Ok::<_, anyhow::Error>(())
         }.await;
         let closed = feed.close().await;
         let reader_closed = feed.reader().close().await;
+        println!("A14_CLOSE main={} reader={}", closed.is_ok(), reader_closed.is_ok());
         result.and(closed).and(reader_closed)
     }.await;
-    // Always unblock every original response gate before joining the real runtime and fixture,
-    // including a failed admitted-stage assertion. No model worker or test observer is detached.
     for (_, release) in &gates {
         release.cancel();
     }
-    for mut feed in feeds {
-        let closed = feed.close().await;
-        let reader_closed = feed.reader().close().await;
+    for mut group in reads.members {
+        let closed = group.feed.close().await;
+        let reader_closed = group.feed.reader().close().await;
+        println!(
+            "A14_CLOSE member={} feed={} reader={}",
+            group.reference.item_id,
+            closed.is_ok(),
+            reader_closed.is_ok()
+        );
         result = result.and(closed).and(reader_closed);
     }
     env.finish(result).await
