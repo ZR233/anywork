@@ -968,15 +968,24 @@ final class _RealtimeScene {
     var settled = !settleDisclosure;
     try {
       while (true) {
-        final units = observed.live
-            .where((unit) => unit.item.kind == TimelineItemKind.workGroup)
-            .toList();
+        final turn = _latestTurn();
+        if (turn != null && turn.turnId != _priorTurn) {
+          _submittedTurnId ??= turn.turnId;
+          expect(turn.turnId, _submittedTurnId);
+        }
+        // Expansion can outlive the live-to-Main handoff of this exact group.
+        // Follow its original Turn source; the running assertions below still
+        // require the exact parallel exec calls to be active and laid out.
+        final units = [
+          if (turn != null && turn.turnId == _submittedTurnId)
+            ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
+        ];
         for (final unit in units) {
           await observed.openGroup(unit.id);
         }
-        final liveIds = units.map((unit) => unit.id).toSet();
+        final groupIds = units.map((unit) => unit.id).toSet();
         final tools = lease.groupDisplays
-            .where((display) => liveIds.contains(display.unitId))
+            .where((display) => groupIds.contains(display.unitId))
             .expand((display) => display.atoms)
             .where((atom) => atom.kind == ChatAtomKind.toolCall)
             .toList();
@@ -1066,6 +1075,20 @@ final class _RealtimeScene {
         expect(tester.takeException(), isNull);
       }
     } catch (_) {
+      debugPrintSynchronously(
+        'Realtime tool observation failure: ${jsonEncode({
+          'turnId': _submittedTurnId,
+          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          'chatHandles': graph.client.budget.used(ResourceKind.chatHandle),
+          'groups': lease.groupDisplays.map((display) => {
+            'id': display.unitId,
+            'current': display.isCurrent,
+            'expanded': display.expanded,
+            'error': display.error?.toString(),
+            'members': display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': _laidOut(currentToolCard(atom))}).toList(),
+          }).toList(),
+        })}',
+      );
       await capturePresentation(
         tester,
         'realtime-current-tools-$minimum-failure.png',
