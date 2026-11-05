@@ -806,6 +806,10 @@ impl ConversationReader {
             thread_id = self.thread_id(),
             trace_id = self.subscription_id(),
             content_range_requests = 1,
+            content_database_id = reference.database_id.as_str(),
+            content_target = ?reference.target,
+            content_offset = range.offset,
+            content_max_bytes = range.max_bytes,
             "content range started"
         );
         ensure!(
@@ -836,7 +840,11 @@ impl ConversationReader {
                 tracing::debug!(
                     target: "conversation_work",
                     thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                    content_bytes = bytes.as_bytes().len(), "content range completed"
+                    content_bytes = bytes.as_bytes().len(),
+                    content_database_id = reference.database_id.as_str(),
+                    content_target = ?reference.target,
+                    content_offset = range.offset,
+                    "content range completed"
                 );
                 self.ensure()?;
                 return Ok(ContentWindow {
@@ -875,7 +883,11 @@ impl ConversationReader {
                     tracing::debug!(
                         target: "conversation_work",
                         thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                        content_bytes = bytes.as_bytes().len(), "content range completed"
+                        content_bytes = bytes.as_bytes().len(),
+                        content_database_id = reference.database_id.as_str(),
+                        content_target = ?reference.target,
+                        content_offset = range.offset,
+                        "content range completed"
                     );
                     self.ensure()?;
                     return Ok(ContentWindow {
@@ -891,7 +903,7 @@ impl ConversationReader {
                 }
             }
         }
-        let reference = match &reference.target {
+        let core_reference = match &reference.target {
             ContentTarget::ItemPayload { item_id } => {
                 core::ContentRef::ItemPayload(item_id.clone())
             }
@@ -904,7 +916,7 @@ impl ConversationReader {
             .session
             .read_content(core::ContentReadRequest {
                 epoch: r.session.epoch(),
-                reference,
+                reference: core_reference,
                 offset: range.offset,
                 max_bytes: range.max_bytes as usize,
                 generation: None,
@@ -914,7 +926,11 @@ impl ConversationReader {
         tracing::debug!(
             target: "conversation_work",
             thread_id = self.thread_id(), trace_id = self.subscription_id(),
-            content_bytes = window.bytes.as_bytes().len(), "content range completed"
+            content_bytes = window.bytes.as_bytes().len(),
+            content_database_id = reference.database_id.as_str(),
+            content_target = ?reference.target,
+            content_offset = range.offset,
+            "content range completed"
         );
         Ok(ContentWindow {
             offset: window.offset,
