@@ -802,8 +802,9 @@ final class _RealtimeScene {
     expect(header, findsOneWidget);
     expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
     await tap(title);
-    await tester.pump(const Duration(milliseconds: 300));
     expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
   }
 
   Future<ContentWindow> readDeclaredRange(
