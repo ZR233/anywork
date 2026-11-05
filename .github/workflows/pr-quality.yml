@@ -244,6 +244,13 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo fmt --all --check
+            # These isolated selections must run before workspace feature unification.
+            cargo check --locked -p pl-agent-tool --no-default-features --all-targets
+            cargo test --locked -p pl-agent-tool --no-default-features
+            cargo test --locked -p pl-agent-tool --no-default-features --features typed
+            cargo test --locked -p pl-agent-tool --no-default-features --features typed,macros
+            cargo test --locked -p pl-agent-tool-macros
+            cargo test --locked --manifest-path code/pl-agent-tool/fixtures/downstream/Cargo.toml --target-dir target/tool-downstream
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
             # Library tests run outside the Flutter bundle and need the

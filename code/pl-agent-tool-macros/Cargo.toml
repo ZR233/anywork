@@ -1,0 +1,15 @@
+[package]
+name = "pl-agent-tool-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin author macros for pl-agent-tool"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+proc-macro-crate = { workspace = true }

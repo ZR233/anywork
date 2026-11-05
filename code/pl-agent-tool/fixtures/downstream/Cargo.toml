@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "downstream-fixture"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Independent downstream fixture for the renamed tool_api facade dependency"
+
+[dependencies]
+tool_api = { package = "pl-agent-tool", path = "../..", version = "0.1.0", features = ["macros"] }

@@ -6,6 +6,7 @@
 
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
+| 独立工具接口与作者特性 | 分别编译/运行无默认特性、typed、typed+macros 及宏诊断，独立下游验证纯消费方与重命名依赖；workspace 特性合并不证明独立性。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
 | Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |

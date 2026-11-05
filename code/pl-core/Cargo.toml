@@ -9,6 +9,7 @@ default = []
 sqlite = ["dep:sea-orm", "dep:sea-orm-migration", "dep:fs4", "dep:url"]
 
 [dependencies]
+pl-agent-tool = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 sea-orm = { workspace = true, optional = true }
 sea-orm-migration = { workspace = true, optional = true }

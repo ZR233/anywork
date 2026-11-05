@@ -1,60 +1,45 @@
 ---
 name: add-tool
-description: Use when implementing, registering, or testing a 糊来帮 tool through the Thread-owned opaque Tool interface.
+description: Use when implementing, registering, migrating, or testing a 糊来帮 tool with pl-agent-tool and the Thread-owned RuntimeTool binding.
 ---
 
 # 添加或迁移工具
 
-具体工具归 `pl-tool`，Plan/workflow 等产品工具归 Studio。core 只定义通用契约与 Thread 执行机制，
-不依赖工具实现、pl-model 或 pl-protocol。相关契约见 `design/16-core-contracts.md`、
-`design/09-tool-runtime.md`，同类现役工具可提供实现参考。
+通用声明与消费契约归 `pl-agent-tool`，具体工具与宿主绑定归 `pl-tool`，Plan/workflow 等产品工具归 Studio；core 保留上下文、注册、冻结、授权与退休治理。依赖与行为见 `design/02-crates.md`、`design/09-tool-runtime.md`、`design/16-core-contracts.md`，新接口示例见 `code/pl-agent-tool/README.md`。
 
-## 实现与注册
+## 作者与声明
 
-- 实现 `pl_core::tool::opaque::Tool`，用 Registration 转移实例所有权给 Thread。参考
-  `code/pl-core/examples/minimal_thread.rs` 和现役工具，禁止 StaticTool、ToolCallContext、
-  SessionRuntimeBuilder 或旧 working set 兼容包装。
-- 参数与声明使用带 format/version 的 OpaquePayload；工具自己解析原始字符串，model 编码模型声明。
-  JSON 工具使用 typed 参数和 serde/schemars，保留原调用字节，不在 core 规范化参数或 schema。
-- 通过 StudioThreadFactory / StudioThreadAssembler 在创建 root、child、恢复时显式装配，
-  每 Thread 独占工具实例和命令管理器；共用物理服务捕获隔离租约，不共享可变工具状态。
-- 动态注册更新同一 Thread 目录；工具稳定 ID、声明内容身份与 executor 代次分开。重连但声明未变
-  保持 deferred reveal，删除/声明变更清除旧状态；已冻结调用保留旧租约但仍接受权限撤销检查。
-- 同一来源能力的常规重装配必须保持授权身份稳定；不要把每次构造、内容刷新或宽泛失效代次
-  当成权限变化。身份应覆盖完整来源及信任根，实质权限变化仍须使旧冻结调用失效。
+- 普通 JSON 作者使用 `#[pl_agent_tool::tool_args]` 与 `#[pl_agent_tool::tool(name = "...")]`，或手写 `typed::TypedTool`；宏只生成参数派生与 RPITIT + Send 转发，不装箱、spawn 或赋予权限。工具可以持有业务服务，无需无关的 Debug/Clone/Serialize 约束。
+- `ToolDefinition` 是名称、描述、完整 JsonSchema/Text/Grammar 输入和可选输出 schema 的唯一作者声明。静态 typed 与动态 Rust Args 共用 `typed::input_schema_for`，在绑定时生成一次；MCP 使用冻结的远端完整 schema。不在生产作者中构造 ToolSpec；`pl_model::completion::tool_definition_to_spec` 是唯一模型投影入口。
+- `typed::decode_json` 解码原文并保留实际字段/索引路径、JSON source 和尾部检查。Schema 生成不执行所有 JSON Schema 约束，业务检查仍在 handler。普通 flatten/map 直接遵循 Serde；严格未知字段且复用共享业务结构时，以私有非 flatten wire + From 适配，不扫描 schema properties。
+- exec 专属诊断、原始补丁、动态 MCP 和 ordinary/review finish 等特殊路径直接实现 `pl_agent_tool::Tool`，持有不可变 Definition，不增加第二套消费契约或宽泛参数兜底。
 
-## 结果与可信控制
+## 准备、附着与注册
 
-- ToolOutput 分别保存完整 payload 与实际模型 context。大输出用稳定资源引用并校验长度/摘要；
-  预览不能覆盖完整结果，临时 capture 或路径不能冒充已归档资源。
-- 已观察副作用后失败用 ToolError::with_output 保存原输出；取消/失败不丢掉观察事实，也不应用
-  迟到扩展、交互或结束控制。历史只使用已保存 delivered_context，不调用当前渲染器重建。
-- 结束 Turn、扩展 CAS、交互、发现、任务等待和取消须显式注册授权并返回类型化控制值。
-  payload 的 approved/endTurn 等字段、工具名字和 MCP annotations 不授予权限。
-- Note/Todo/Skill/业务状态从 CallContext 只读扩展快照计算 CAS 候选，与结果一同提交；
-  工具不另存可写状态机。冲突保留原结果用于提交处理，不能重新执行副作用。
-- 用户问题返回 AwaitInteraction 与原始问题，core 提供关联 ID；业务回答由工具/Studio 解码，
-  core 不把取消合成空回答。Plan 确认及 continuation 的原子解释属于 Studio。
+1. 返回原生 ToolOutput/ToolError 的工具先用 `pl_tool::binding::prepare_native_tool`；普通 Serialize 输出用 `prepare_json_tool`，在绑定时显式选择同步 context/error 映射。独立应用用 `typed::prepare_json`，无需依赖 core 或 RMCP。
+2. 使用 `binding::prepare_registration` 先完成模型投影、原 opaque 声明编码和内部 ID 校验，再创建/移动服务实例。prepared adapter 的 attach 不失败，全部静态包装完成后只调用一次 `ToolHandle::new`；由 `PreparedRegistration::attach` 接管固定 `RuntimeTool`。core-only 消费方直接准备其不透明声明。
+3. 所有控制、曝光、授权和调度 builder 仍在 Registration。内部 tool_id 与模型名不要求相同。消费实例的 registration 便利方法只能接收已准备材料，不能在错误路径 drop 活资源。
+4. 在 StudioThreadFactory/Assembler 中显式装配 root、child 与恢复工具；每 Thread 独占实例和命令管理器，共用物理服务使用隔离租约。动态刷新保留稳定授权身份；声明、执行代次与权限身份分别处理，冻结旧调用继续持有旧租约并接受撤销检查。
 
-## 物理执行边界
+## 输出、失败与控制
 
-工作区、路径、文件权限、LSP、MCP、SSH、命令进程和归档由工具后端负责。ExecutionPolicy
-接收工具侧访问解释，core 只管理类型化许可；模型参数不能扩大可信 CallContext 的能力。
-文件能力不隐式授权 exec/Git/MCP；远程和受限工作区不能借本地路径授权放宽边界。
+- native helper 原样通过 ToolOutput 和已有 ToolError，包括 observed_output；禁止再次 ToolError::new 包装已有错误。副作用后失败用 with_output 保存观测，不提交迟到控制。
+- 普通 JSON helper 仅在 handler 成功后编码一次，同一文本构造 application/json@1 payload 与 Text context；不使用 Opaque context，也不猜测 content/message/path。编码失败保留 JsonOutputError 的阶段与 serde source，明确可能已有副作用，不重执行。
+- 完整 payload 与实际 delivered_context 分别保存；预览、命令 capture 或临时路径不能冒充可靠资源。重开只读原保存材料，不按当前 Args/Output 重新解码或调用当前渲染器。
+- 结束 Turn、CAS、交互、发现、等待和取消必须显式注册授权并返回类型化控制。JSON 字段、名称、schema 或 MCP annotations 都不授予权限。Note/Todo/Skill 状态从 CallContext 冻结扩展计算候选，不维护第二份可写状态。
 
-MCP executor 固定 server 租约、raw name 与声明；媒体先归档精确字节，再用宿主提供的模型投影。
-归档失败保存明确的原始观察格式，不重跑远端调用。hosted 工具由 model 处理，core 不注册占位 executor。
+## 生命周期与执行边界
 
-工具 close 必须等待自身物理资源收束，失败保留可重试状态。被替换实例仍由原 Thread 负责关闭，
-不得在注册表锁内执行 IO/await/外部回调。
+工作区、命令、路径、文件权限、LSP、MCP、SSH 与归档由工具后端负责；文件许可不隐含 exec/Git/MCP 权限。CallContext 由宿主分配，参数不扩大能力。
+
+Handle 不可 Clone、不实现工具 trait、不在 Drop 自动关闭。原 core owner/lease 负责停止准入、等待在途、catch execute/close future 构造与轮询、收束拒绝候选，并保留 close 失败的原实例重试；不能以强引用计数替换显式 lease 计数，不在注册锁内 await/IO/外部回调。
+
+MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等待并保存结果；close 只释放该工具租约，不 shutdown 共享 runtime。媒体先归档精确字节，失败保存收到结果与原错误，不重发调用。hosted 工具由 model 处理，无本地占位 executor。
 
 ## 验证
 
-按实际风险验证真实工具行为、参数错误、授权、原文保留、取消及物理资源释放；通用执行/注册/CAS/
-冷重放机制由 core 契约测试验证，产品装配在 Studio 验证，不复制旧静态 adapter 测试。
-直接调用 `Tool::execute` 不能证明注册替换后的冻结授权正确；此类变更须经过真实 Thread 的
-注册、请求冻结、重装配和调用交接，并断言实际 ToolOutcome，而非只看 Turn 完成。
-人工 fixture 必须区分快速结果与后台 accepted 回执；后者按精确任务身份等待终态及实际正文，
-不能靠固定延时、把受理视为成功或强制生产工具前台化来通过验收。
-公共接口、消费者、文档和生成输入保持一致。无默认 feature 与显式 sqlite 是不同编译配置，
-单一配置结果不证明另一配置通过；工程入口见 AGENTS.md，真实 provider 操作仍需显式授权。
+先编译公开 API 示例再迁移相应生产路径。新库无特性、typed、typed+macros、重命名下游及必要 compile-fail 分别验证，workspace 特性合并不证明基础消费方独立。
+
+按风险复用真实 Thread 的注册替换、冻结授权、控制、取消和关闭证明，不以 Tool::execute 直调替代。新 binding 的持久化证明应穿过 Thread、原 writer、close/join 与重开冷读，核对原字节、完整 delivery、错误、展示 marker 与不重执行；MCP 用真实本地 peer，Linux-only 零用例不算覆盖。
+
+人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不以固定延时、放宽断言或强制生产前台化制造成功。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。
