@@ -73,6 +73,8 @@ pub struct WorktreeManager {
 }
 
 impl WorktreeManager {
+    /// Uses the repository root already resolved by [`Self::resolve_repository_root`].
+    /// The manager preserves this frozen path when allocating and checking owned handles.
     pub fn new(repo_root: PathBuf, backend: Arc<dyn WorktreeBackend>) -> Self {
         Self { repo_root, backend }
     }
