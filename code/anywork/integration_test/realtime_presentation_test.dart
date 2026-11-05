@@ -2416,6 +2416,12 @@ Future<void> _revealTextFragment(
   String fragment,
 ) async {
   expect(_laidOut(finder), isTrue);
+  // Consume the existing layout allowance before measuring the glyphs: an
+  // admitted body can still be inside an expanding outer disclosure.
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+  expect(tester.takeException(), isNull);
+  expect(_laidOut(finder), isTrue);
   final text = find.descendant(
     of: finder,
     matching: find.byWidgetPredicate(
@@ -2436,13 +2442,10 @@ Future<void> _revealTextFragment(
   final bounds = boxes
       .map((box) => box.toRect())
       .reduce((left, right) => left.expandToInclude(right));
-  paragraph.showOnScreen(
-    rect: bounds,
-    duration: const Duration(milliseconds: 300),
-  );
+  paragraph.showOnScreen(rect: bounds);
   await tester.pump();
-  await tester.pump(const Duration(milliseconds: 400));
   expect(tester.takeException(), isNull);
+  expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
   for (final box in paragraph.getBoxesForSelection(selection)) {
     final local = box.toRect();
     final rect = Rect.fromPoints(
