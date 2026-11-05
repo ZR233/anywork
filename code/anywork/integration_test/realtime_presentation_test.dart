@@ -1834,11 +1834,73 @@ final class _RealtimeScene {
     if (returnToLatest.evaluate().isNotEmpty) {
       await tap(returnToLatest);
     }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final duration = const Duration(minutes: 2) - clock.elapsed;
+      if (duration <= Duration.zero) {
+        fail('Timed out waiting for completed answer "$answer"');
+      }
+      return duration;
+    }
+
     try {
+      expect(_submittedTurnId, isNotNull);
+      final turnId = _submittedTurnId!;
+      final source = ForegroundTurnChatSource(turnId: turnId);
+      TimelineItem? admittedAnswer() {
+        final matches = observed.items
+            .where(
+              (item) =>
+                  item.source == source &&
+                  item.turnId == turnId &&
+                  item.kind == TimelineItemKind.text &&
+                  item.atomKind == ChatAtomKind.text &&
+                  item.textChannel == ThreadTextChannel.finalAnswer &&
+                  item.outcome == ChatTerminalOutcome.completed,
+            )
+            .toList();
+        expect(matches.length, lessThanOrEqualTo(1));
+        return matches.singleOrNull;
+      }
+
+      TimelineItem? target;
       await until(
-        () => find.textContaining(answer).evaluate().isNotEmpty,
+        () {
+          remaining();
+          target = admittedAnswer();
+          return target != null;
+        },
+        'unique Main completed answer for $turnId',
+        timeout: remaining(),
+      );
+      final item = target!;
+      await observed.revealItem(item, timeout: remaining());
+      final unit = observed.unit(item.id);
+      expect(unit.item, same(item));
+      expect(unit.live, isFalse);
+      final row = observed.itemRow(item.id);
+      final originalScrollable = Scrollable.maybeOf(tester.element(row));
+      final text = find
+          .descendant(of: row, matching: find.textContaining(answer))
+          .hitTestable();
+      await until(
+        () {
+          remaining();
+          expect(admittedAnswer(), same(item));
+          expect(observed.unit(item.id), same(unit));
+          if (!_laidOut(row)) return false;
+          final rendered = tester.widget<ChatItemView>(row).item;
+          expect(rendered.compatibility, ChatItemCompatibility.current);
+          expect(rendered.type, 'text');
+          expect(rendered.displayUnit, same(unit));
+          expect(
+            Scrollable.maybeOf(tester.element(row)),
+            same(originalScrollable),
+          );
+          return _laidOut(text);
+        },
         'completed answer "$answer"',
-        timeout: const Duration(minutes: 2),
+        timeout: remaining(),
       );
     } catch (_) {
       final scroll = lease.scrollController;

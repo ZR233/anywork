@@ -138,7 +138,17 @@ final class TimelineObservation {
     expect(tester.takeException(), isNull);
   }
 
-  Future<void> reveal(Finder target, String unitId) async {
+  Future<void> reveal(
+    Finder target,
+    String unitId, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final deadline = timeout < const Duration(seconds: 60)
+        ? timeout
+        : const Duration(seconds: 60);
+    if (deadline <= Duration.zero) {
+      fail('Main reveal requires a positive deadline');
+    }
     final originalLease = lease;
     final originalController = originalLease.controller;
     final originalScrollController = originalLease.scrollController;
@@ -409,7 +419,7 @@ final class TimelineObservation {
       Map<String, Object?>? pointer,
     }) async {
       requireOriginal();
-      if (clock.elapsed > const Duration(seconds: 60)) {
+      if (clock.elapsed > deadline) {
         stop('Main reveal exceeded its original deadline');
       }
       phase = kind;
@@ -445,14 +455,14 @@ final class TimelineObservation {
             : description;
         stop('Main reveal encountered a layout/framework error');
       }
-      if (clock.elapsed > const Duration(seconds: 60)) {
+      if (clock.elapsed > deadline) {
         stop('Main reveal exceeded its original deadline');
       }
     }
 
     while (true) {
       requireOriginal();
-      if (clock.elapsed > const Duration(seconds: 60)) {
+      if (clock.elapsed > deadline) {
         stop('Main did not mount the requested canonical row');
       }
       if (canonical.evaluate().isNotEmpty) break;
@@ -780,9 +790,12 @@ final class TimelineObservation {
     return display!;
   }
 
-  Future<void> revealItem(TimelineItem item) async {
+  Future<void> revealItem(
+    TimelineItem item, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
     expect(item.kind, isNot(TimelineItemKind.workGroup));
-    await reveal(itemRow(item.id), item.id);
+    await reveal(itemRow(item.id), item.id, timeout: timeout);
   }
 
   Future<TimelineGroupDisplay> revealMember(
