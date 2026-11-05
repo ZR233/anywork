@@ -411,12 +411,20 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         );
     }
 
-    let relative =
-        workspace.ensure_relative_path_writable(None, &files.scratch().to_string_lossy());
+    // Backend-relative mutation inputs use POSIX separators on every host.
+    let relative = workspace
+        .ensure_relative_path_writable(None, &files.scratch().to_string_lossy().replace('\\', "/"));
     anyhow::ensure!(relative.is_ok());
     anyhow::ensure!(
         workspace
-            .ensure_relative_path_writable(None, &files.commands().join("x").to_string_lossy())
+            .ensure_relative_path_writable(
+                None,
+                &files
+                    .commands()
+                    .join("x")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            )
             .is_ok()
     );
 
