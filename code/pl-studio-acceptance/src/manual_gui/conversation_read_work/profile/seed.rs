@@ -14,6 +14,19 @@ use std::future::Future;
 pub(super) struct Inventory {
     pub thread_id: Option<String>,
     pub main_items: Option<usize>,
+    batches: Vec<BatchReceipt>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchReceipt {
+    input_id: String,
+    turn_id: String,
+    target_sequence: Option<u64>,
+    history_admitted_sequence: Option<u64>,
+    history_durable_sequence: Option<u64>,
+    state_durable_revision: Option<u64>,
+    completed: bool,
 }
 
 pub(super) fn run(
@@ -31,6 +44,7 @@ pub(super) fn run(
             let mut inventory = Inventory {
                 thread_id: None,
                 main_items: None,
+                batches: Vec::with_capacity(GUI_TIMELINE_HISTORY_20K_SEED_BATCHES),
             };
             let result = Box::pin(write_one(context, &project, index, &mut inventory)).await;
             inventories.push(inventory);
@@ -88,7 +102,7 @@ async fn write_one(
             project,
             index,
             context.interrupt,
-            &mut inventory.thread_id,
+            inventory,
         ))
         .await;
         let mut runtime_errors = Vec::new();
@@ -142,7 +156,7 @@ async fn seed_batches(
     project: &Path,
     index: usize,
     interrupt: &mpsc::Receiver<()>,
-    retained_id: &mut Option<String>,
+    inventory: &mut Inventory,
 ) -> Result<String> {
     let workspace = runtime.open_project(project).await?;
     let input_id = |batch| format!("profile-read-{index}-{batch:02}");
@@ -170,13 +184,21 @@ async fn seed_batches(
         )
         .await?;
     let id = created.thread.id;
-    *retained_id = Some(id.clone());
+    inventory.thread_id = Some(id.clone());
     let mut subscription = runtime
         .subscribe_thread(ThreadSubscriptionRequest {
             thread_id: id.clone(),
         })
         .await?;
-    let mut revision = completed(runtime, &mut subscription, &id, &input_id(1), interrupt).await?;
+    let mut revision = completed(
+        runtime,
+        &mut subscription,
+        &id,
+        &input_id(1),
+        interrupt,
+        &mut inventory.batches,
+    )
+    .await?;
     for batch in 2..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
         checkpoint(interrupt)?;
         runtime
@@ -192,7 +214,15 @@ async fn seed_batches(
                 },
             )
             .await?;
-        revision = completed(runtime, &mut subscription, &id, &input_id(batch), interrupt).await?;
+        revision = completed(
+            runtime,
+            &mut subscription,
+            &id,
+            &input_id(batch),
+            interrupt,
+            &mut inventory.batches,
+        )
+        .await?;
     }
     Ok(id)
 }
@@ -203,11 +233,16 @@ async fn completed(
     thread_id: &str,
     input_id: &str,
     interrupt: &mpsc::Receiver<()>,
+    batches: &mut Vec<BatchReceipt>,
 ) -> Result<u64> {
     // Seed work is excluded from performance samples. Keep cancellation live
     // while a large batch is processed rather than treating a timer as progress.
     cancellable(interrupt, async {
-        loop {
+        ensure!(
+            batches.len() < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES,
+            "seed batch evidence exceeded the required batch count"
+        );
+        let turn_id = loop {
             let update = subscription.recv().await?;
             let Some(update) = update else {
                 bail!("seed Thread stream ended");
@@ -221,13 +256,71 @@ async fn completed(
                     "seed Turn failed: {:?}",
                     turn.state
                 );
-                return runtime
-                    .thread_snapshot(thread_id)
-                    .await?
-                    .model_route
-                    .map(|route| route.revision)
-                    .context("seed has no model route");
+                break turn.id;
             }
+        };
+        // Retain the successful Turn even if the snapshot or save wait fails.
+        let receipt_index = batches.len();
+        batches.push(BatchReceipt {
+            input_id: input_id.to_owned(),
+            turn_id,
+            target_sequence: None,
+            history_admitted_sequence: None,
+            history_durable_sequence: None,
+            state_durable_revision: None,
+            completed: false,
+        });
+        let receipt = &mut batches[receipt_index];
+        let (target_sequence, revision) = {
+            let snapshot = runtime.thread_snapshot(thread_id).await?;
+            ensure!(
+                snapshot.thread.id == thread_id,
+                "seed snapshot belongs to another Thread: {}",
+                snapshot.thread.id
+            );
+            ensure!(
+                snapshot.revision != 0,
+                "seed snapshot has no commit revision"
+            );
+            receipt.target_sequence = Some(snapshot.revision);
+            let revision = snapshot
+                .model_route
+                .map(|route| route.revision)
+                .context("seed has no model route")?;
+            (snapshot.revision, revision)
+        };
+        loop {
+            let saved = {
+                let persistence = runtime.persistence_queue_snapshot();
+                let thread = persistence
+                    .threads
+                    .iter()
+                    .find(|thread| thread.thread_id == thread_id)
+                    .with_context(|| format!("seed persistence has no Thread {thread_id}"))?;
+                receipt.history_admitted_sequence = thread.history_admitted_sequence;
+                receipt.history_durable_sequence = thread.history_durable_sequence;
+                receipt.state_durable_revision = thread.state_durable_revision;
+                ensure!(
+                    thread.fault.is_none() && thread.last_error.is_none(),
+                    "seed Thread persistence fault: {:?}; last error: {:?}",
+                    thread.fault,
+                    thread.last_error
+                );
+                thread
+                    .history_admitted_sequence
+                    .is_some_and(|sequence| sequence >= target_sequence)
+                    && thread
+                        .history_durable_sequence
+                        .is_some_and(|sequence| sequence >= target_sequence)
+                    && thread
+                        .state_durable_revision
+                        .is_some_and(|revision| revision >= target_sequence)
+            };
+            if saved {
+                receipt.completed = true;
+                return Ok(revision);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
