@@ -448,10 +448,15 @@ void main() {
       find.text(archiveL10n.sidebarDeleteSessionConfirmBody),
       findsNothing,
     );
+    final archivedToggle = find.byKey(
+      const ValueKey<String>('sidebar-archived'),
+    );
     await tester.tap(find.byKey(StudioDriverKeys.archiveThreadConfirm));
     await scene.until(
-      () => threadRow.evaluate().isEmpty,
-      'archived canonical thread leaves the live directory',
+      () =>
+          threadRow.evaluate().isEmpty &&
+          archivedToggle.hitTestable().evaluate().length == 1,
+      'archived canonical thread leaves the live directory and navigation is ready',
     );
     final archivedFrame = await _queryDirectory(
       scene,
@@ -462,10 +467,7 @@ void main() {
       contains(fixture.thread.id),
     );
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('sidebar-archived')),
-      kind: ui.PointerDeviceKind.mouse,
-    );
+    await tester.tap(archivedToggle, kind: ui.PointerDeviceKind.mouse);
     await scene.until(
       () =>
           threadRow.evaluate().length == 1 &&
