@@ -973,16 +973,17 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
             let mut retired = first.current.as_ref().is_some_and(|current|
                 current.active_turn.is_none() && current.items.is_empty());
             let mut peak_batch = first.encoded_len()?;
-            let initial = history(feed.reader(), first, demand(37)).await?;
-            let mut last_position = initial.last().and_then(|item| item.position);
+            let initial_tail = items(first.entries.clone())?;
+            let mut last_position = initial_tail.last().and_then(|item| item.position);
+            let mut appended = Vec::new();
             let mut display_ids = HashSet::new();
             let mut identities = HashSet::new();
             let mut turns = HashSet::new();
-            let (mut completed_items, mut body_bytes) = count_output(&env, &thread.thread.id,
-                feed.reader(), &initial, &mut display_ids, &mut identities, &mut turns).await?;
             let mut terminal = None;
-            tokio::time::timeout(Duration::from_secs(120), async {
-                while terminal.is_none() || !retired || completed_items < item_count {
+            let (completed_items, body_bytes) = tokio::time::timeout(Duration::from_secs(120), async {
+                // Accept the list/current facts without waiting for independent member
+                // pagination or body reads, as the production Main consumer does.
+                while terminal.is_none() || !retired {
                     match next(&mut feed).await? {
                         ConversationEvent::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
@@ -998,11 +999,7 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                                 ensure!(item.position > last_position, "Main Append changed item order");
                                 last_position = item.position;
                             }
-                            let (count, bytes) = count_output(&env, &thread.thread.id, feed.reader(),
-                                &items, &mut display_ids, &mut identities, &mut turns).await?;
-                            completed_items += count;
-                            body_bytes += bytes;
-                            ensure!(completed_items <= item_count, "output members repeated");
+                            appended.extend(items);
                         }
                         ConversationEvent::State { update } => {
                             if let ThreadSubscriptionUpdate::Notification { notification } = *update
@@ -1016,7 +1013,12 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                         }
                     }
                 }
-                Ok::<_, anyhow::Error>(())
+                // Preserve the original Set's paging cut and verify every original
+                // member/body after the reliable feed has delivered its final handoff.
+                let mut completed = history(feed.reader(), first, demand(37)).await?;
+                completed.extend(appended);
+                count_output(&env, &thread.thread.id, feed.reader(), &completed,
+                    &mut display_ids, &mut identities, &mut turns).await
             }).await.context("paced fixture feed exceeded its observation deadline")??;
             ensure!(turns.len() == 1 && turns.contains(terminal.as_ref().context("typed Turn terminal")?),
                 "public output belonged to a different Turn");
