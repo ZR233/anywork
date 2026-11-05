@@ -125,14 +125,25 @@ final class TimelineObservation {
     }
   }
 
-  Future<void> tap(Finder target) async {
+  Future<void> tap(Finder target, {double scrollAlignment = 0}) async {
     expect(target, findsOneWidget);
-    await tester.ensureVisible(target);
-    await tester.pump();
-    await until(
-      () => target.hitTestable().evaluate().length == 1,
-      'hittable production control',
-    );
+    final clock = Stopwatch()..start();
+    while (true) {
+      if (clock.elapsed > const Duration(seconds: 60)) {
+        fail('Timed out waiting for hittable production control');
+      }
+      // A nested scroll can change the outer viewport's target geometry on the
+      // next layout. Reveal the same control again, never tap a surrogate.
+      await Scrollable.ensureVisible(
+        tester.element(target),
+        alignment: scrollAlignment,
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      if (target.hitTestable().evaluate().length == 1) break;
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
     await tester.tap(target);
     await tester.pump();
     expect(tester.takeException(), isNull);

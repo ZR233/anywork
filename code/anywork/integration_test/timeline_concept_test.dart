@@ -878,7 +878,17 @@ final class _ConceptScene {
   }
 
   Future<void> showUnit(String id) async {
-    await reveal(unitFinder(id), unitId: id);
+    final unit = observed.unit(id);
+    Finder target = observed.itemRow(id);
+    if (unit.item.kind == TimelineItemKind.workGroup) {
+      target = observed.groupHeader(id);
+    } else if (unit.item.atomKind == ChatAtomKind.compaction) {
+      target = find.descendant(
+        of: target,
+        matching: find.text('已完成压缩', findRichText: true),
+      );
+    }
+    await observed.reveal(target, id);
   }
 
   Future<void> reveal(Finder finder, {String? unitId}) async {
@@ -2668,7 +2678,8 @@ final class _ConceptScene {
     }
     expect(expanded(), isTrue);
     try {
-      await observed.tap(title);
+      // Keep the same title's center inside both nested and reversed viewports.
+      await observed.tap(title, scrollAlignment: 0.5);
     } catch (error) {
       // Preserve the original tap failure and only observe its original control.
       // A laid-out title can still be clipped or covered after the Viewer closes.
@@ -2785,6 +2796,25 @@ final class _ConceptScene {
     TimelineConceptImageInput? input,
     bool missing = false,
   }) async {
+    // Prepare this finite scene through the same Main paging owner before
+    // freezing the unchanged-order baseline. This is not a scroll witness.
+    final originalLease = lease;
+    final pageClock = Stopwatch()..start();
+    while (originalLease.hasOlder) {
+      expect(lease, same(originalLease));
+      final before = originalLease.olderCursor;
+      expect(before, isNotNull);
+      final remaining = const Duration(seconds: 60) - pageClock.elapsed;
+      expect(remaining > Duration.zero, isTrue);
+      await graph.timeline
+          .loadOlder(threadId, generation: originalLease.generation)
+          .timeout(remaining);
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(lease, same(originalLease));
+      expect(graph.timeline.source.value?.olderError, isNull);
+      expect(originalLease.olderCursor, isNot(before));
+    }
     final imageGroup = main.singleWhere((unit) => unit.id == imageWorkItemId);
     try {
       expect(imageGroup.item.kind, TimelineItemKind.workGroup);
@@ -2807,6 +2837,13 @@ final class _ConceptScene {
     final display = await observed.openGroup(imageGroup.id);
     final mainIds = items.map((item) => item.id).toList();
     final before = lease.olderCursor;
+    expect(before, isNull);
+    report['imageMainBaseline'] = {
+      'ownerGeneration': lease.generation,
+      'hasOlder': lease.hasOlder,
+      'olderCursor': before,
+      'mainIds': mainIds,
+    };
     final liveIds = live.map((unit) => unit.id).toList();
     late final List<_ImageResult> results;
     try {
@@ -2833,6 +2870,7 @@ final class _ConceptScene {
       await _verifyImageResult(result, display: display, missing: missing);
     }
     expect(items.map((item) => item.id), orderedEquals(mainIds));
+    expect(lease.olderCursor, before);
     final afterMedia = observed.unit(imageWorkItemId).item.summary!;
     expect(afterMedia.memberCount, summary.memberCount);
     expect(afterMedia.activeCount, summary.activeCount);
