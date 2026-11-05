@@ -20,7 +20,7 @@ use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     StudioThreadSubscription,
-    config::{ConfigPaths, ConfigStore, StudioConfig},
+    config::{ConfigPaths, ConfigStore},
 };
 use serde::Serialize;
 use std::fs;
@@ -327,7 +327,8 @@ fn seed_script() -> Vec<Step> {
 }
 
 fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
-    let mut config = StudioConfig::default_config()?;
+    let store = ConfigStore::new(ConfigPaths::from_config_dir(home));
+    let mut config = store.load_or_default()?;
     let mut model = ModelInfo::compatible(MODEL);
     model
         .binding
@@ -351,7 +352,7 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
         route.model_id = MODEL.into();
         route.effort = None;
     }
-    ConfigStore::new(ConfigPaths::from_config_dir(home)).save(&config)?;
+    store.save(&config)?;
     Ok(())
 }
 
