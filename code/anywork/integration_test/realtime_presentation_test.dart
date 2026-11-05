@@ -1725,10 +1725,24 @@ final class _RealtimeScene {
           );
           expect(expectDisclosure(), isFalse);
         }
+        final closeClock = Stopwatch()..start();
         await until(
           () => outputBorrow.window == null,
           'collapsed member revokes its original bounded output borrow',
         );
+        final closeRemaining = const Duration(seconds: 60) - closeClock.elapsed;
+        expect(
+          closeRemaining > Duration.zero,
+          isTrue,
+          reason: 'receipt closing must keep its original 60 second deadline',
+        );
+        await tester.pumpAndSettle(
+          const Duration(milliseconds: 16),
+          EnginePhase.sendSemanticsUpdate,
+          closeRemaining,
+        );
+        expect(tester.takeException(), isNull);
+        expect(outputBorrow.window, isNull);
       }
       expect(witnessed, expected.keys.toSet());
       await returnAfterReadingHistory();
