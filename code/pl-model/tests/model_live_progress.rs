@@ -983,11 +983,15 @@ async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
     })
     .await
     .expect("both observations arrive before the stream ends");
+    // This deliberately live reply has no terminal response: close its owner instead of relying
+    // on provider shutdown to settle the turn. Both joins share the original cleanup deadline.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        thread.close().await.expect("the observation owner closes");
+        let _ = turn.await;
+    })
+    .await
+    .expect("the observed thread and turn close");
     fixture.shutdown().await.expect("fixture shuts down");
-    // The reply has no terminal response event, but its turn must still settle after shutdown.
-    let _ = tokio::time::timeout(Duration::from_secs(10), turn)
-        .await
-        .expect("the turn ends after the fixture shuts down");
 
     // The frame the consumer kept is byte-for-byte the one it saw: the same identity kept streaming
     // after it, but appending to a shared list never mutates a snapshot a consumer already holds.
@@ -1083,11 +1087,15 @@ async fn a_held_snapshot_survives_the_growth_of_a_chunk_it_shared() {
     })
     .await
     .expect("both observations arrive before the stream ends");
+    // This deliberately live reply has no terminal response: close its owner instead of relying
+    // on provider shutdown to settle the turn. Both joins share the original cleanup deadline.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        thread.close().await.expect("the observation owner closes");
+        let _ = turn.await;
+    })
+    .await
+    .expect("the observed thread and turn close");
     fixture.shutdown().await.expect("fixture shuts down");
-    // The reply has no terminal response event, but its turn must still settle after shutdown.
-    let _ = tokio::time::timeout(Duration::from_secs(10), turn)
-        .await
-        .expect("the turn ends after the fixture shuts down");
 
     // The frame the consumer kept is exactly the one it saw, even though a later delta edited the
     // chunk it shared with the newest snapshot.
