@@ -5514,8 +5514,19 @@ pub(crate) mod storage_fault_tests {
                     resident_bytes: projection.retained_bytes(),
                     pending: None,
                 })?;
+            let mut effects_released = sink.0.channel.effects_released.subscribe();
             drop(lease);
-            tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 3)).await??;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                sink.flush(id, 3).await?;
+                // The durable report precedes process-budget decharge. Observe the same
+                // writer's real release before checking that its retained bytes are zero.
+                effects_released
+                    .wait_for(|sequence| *sequence >= 3)
+                    .await
+                    .context("writer release observation closed before the saved target")?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await??;
             let history = store.history(id).await?;
             let saved = history.item("racing-identity").await?.unwrap();
             assert_eq!(saved.ordinal, old_placement.ordinal);
