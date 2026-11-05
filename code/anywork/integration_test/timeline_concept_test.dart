@@ -2667,7 +2667,79 @@ final class _ConceptScene {
       await capture('read-images');
     }
     expect(expanded(), isTrue);
-    await observed.tap(title);
+    try {
+      await observed.tap(title);
+    } catch (error) {
+      // Preserve the original tap failure and only observe its original control.
+      // A laid-out title can still be clipped or covered after the Viewer closes.
+      final failure = <String, Object?>{
+        'toolId': tool.id,
+        'toolCallId': tool.toolCallId,
+        'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainStatus',
+        'error': error.toString(),
+      };
+      report['imageResultUiFailure'] = failure;
+      try {
+        final titles = title.evaluate().toList(growable: false);
+        failure['titleMatches'] = titles.length;
+        failure['titleHitTestableMatches'] = title
+            .hitTestable()
+            .evaluate()
+            .length;
+        failure['dialogMatches'] = find.byType(Dialog).evaluate().length;
+        failure['modalBarrierMatches'] = find
+            .byType(ModalBarrier)
+            .evaluate()
+            .length;
+        if (titles.length == 1) {
+          final rect = tester.getRect(title);
+          final center = tester.getCenter(title);
+          failure['titleRect'] = [rect.left, rect.top, rect.right, rect.bottom];
+          failure['titleCenter'] = [center.dx, center.dy];
+          failure['centerHitTestPath'] = [
+            for (final entry in tester.hitTestOnBinding(center).path)
+              entry.target.runtimeType.toString(),
+          ];
+          final scrollables = <Map<String, Object?>>[];
+          titles.single.visitAncestorElements((element) {
+            if (element is StatefulElement &&
+                element.state is ScrollableState) {
+              final state = element.state as ScrollableState;
+              final position = state.position;
+              final viewport = tester.getRect(
+                find.byElementPredicate(
+                  (candidate) => identical(candidate, element),
+                ),
+              );
+              scrollables.add({
+                'axisDirection': position.axisDirection.name,
+                'viewportRect': [
+                  viewport.left,
+                  viewport.top,
+                  viewport.right,
+                  viewport.bottom,
+                ],
+                'pixels': position.hasPixels ? position.pixels : null,
+                'viewportDimension': position.hasViewportDimension
+                    ? position.viewportDimension
+                    : null,
+                'minScrollExtent': position.hasContentDimensions
+                    ? position.minScrollExtent
+                    : null,
+                'maxScrollExtent': position.hasContentDimensions
+                    ? position.maxScrollExtent
+                    : null,
+              });
+            }
+            return true;
+          });
+          failure['ancestorScrollables'] = scrollables;
+        }
+      } catch (diagnosticError) {
+        failure['diagnosticError'] = diagnosticError.toString();
+      }
+      rethrow;
+    }
     expect(expanded(), isFalse);
     await _until(
       tester,
