@@ -584,6 +584,7 @@ jobs:
             target/ci-native-linux/cases/**/shutdown-*-gui.log
             target/ci-native-linux/cases/**/shutdown-launch-*.json
             target/ci-native-linux/cases/**/shutdown-native-exit-*.json
+            target/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
             target/ci-native-linux/cases/**/shutdown-stage*
             target/ci-native-linux/cases/**/diagnostics.json
             target/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
