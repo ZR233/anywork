@@ -183,17 +183,15 @@ impl SshManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = prepared
-            .command
-            .spawn()
+        let spawned = pl_remote_helper::process::spawn_background_command(&mut prepared.command)
             .map_err(|e| RemoteClientError::Protocol(format!("start SSH transport: {e}")))?;
-        let stdin = child
-            .stdin()
-            .take()
+        let mut child = spawned.process;
+        let mut stderr = spawned.stderr;
+        let stdin = spawned
+            .stdin
             .ok_or_else(|| RemoteClientError::Protocol("SSH stdin missing".into()))?;
-        let stdout = child
-            .stdout()
-            .take()
+        let stdout = spawned
+            .stdout
             .ok_or_else(|| RemoteClientError::Protocol("SSH stdout missing".into()))?;
         let handshake = async {
             if let Some(previous) = previous {
@@ -249,7 +247,7 @@ impl SshManager {
             Ok(result) => result,
             Err(error) => {
                 ssh::terminate_ssh_child(&mut child, &profile.alias).await?;
-                let diagnostic = ssh::initialization_diagnostic(child.stderr().take()).await?;
+                let diagnostic = ssh::initialization_diagnostic(stderr.take()).await?;
                 if ssh::is_ssh_auth_failure(&diagnostic) {
                     return Err(RemoteClientError::AuthenticationFailed(ssh::auth_failure(
                         &diagnostic,
@@ -268,7 +266,7 @@ impl SshManager {
                 return Err(error);
             }
         };
-        if let Some(mut stderr) = child.stderr().take() {
+        if let Some(mut stderr) = stderr.take() {
             let observer = client.clone();
             let closing = self.closing.clone();
             let alias = profile.alias.clone();

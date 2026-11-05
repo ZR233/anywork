@@ -1,5 +1,6 @@
 use std::process::Stdio;
 
+use pl_remote_helper::process::{spawn_background_command, wrap_background_command};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -56,8 +57,16 @@ impl ContainerBackend for DockerCliContainerBackend {
             command.args(["-w", cwd]);
         }
         command.args([&self.container_id, "/bin/sh", "-lc", &shell_command]);
-        pl_remote_helper::process::configure_background_command(&mut command);
-        let output = command.output().await.map_err(docker_error)?;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut command = wrap_background_command(command);
+        let output = spawn_background_command(&mut command)
+            .map_err(docker_error)?
+            .wait_with_output()
+            .await
+            .map_err(docker_error)?;
         let stdout_bytes = output.stdout.len() as u64;
         let stderr_bytes = output.stderr.len() as u64;
         let cap = request.output_bytes_cap.unwrap_or(usize::MAX);
@@ -83,8 +92,16 @@ impl ContainerBackend for DockerCliContainerBackend {
             let source = format!("{}:{}", self.container_id, request.path);
             let mut command = Command::new(&self.binary);
             command.args(["cp", &source, "-"]);
-            pl_remote_helper::process::configure_background_command(&mut command);
-            let output = command.output().await.map_err(docker_error)?;
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut command = wrap_background_command(command);
+            let output = spawn_background_command(&mut command)
+                .map_err(docker_error)?
+                .wait_with_output()
+                .await
+                .map_err(docker_error)?;
             if !output.status.success() {
                 return Err(docker_error(stderr_or_stdout(&output)));
             }
@@ -99,8 +116,16 @@ impl ContainerBackend for DockerCliContainerBackend {
             "-lc",
             &format!("cat -- {}", shell_quote_word(&request.path)),
         ]);
-        pl_remote_helper::process::configure_background_command(&mut command);
-        let output = command.output().await.map_err(docker_error)?;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut command = wrap_background_command(command);
+        let output = spawn_background_command(&mut command)
+            .map_err(docker_error)?
+            .wait_with_output()
+            .await
+            .map_err(docker_error)?;
         if !output.status.success() {
             return Err(docker_error(stderr_or_stdout(&output)));
         }
@@ -134,8 +159,8 @@ impl ContainerBackend for DockerCliContainerBackend {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        pl_remote_helper::process::configure_background_command(&mut command);
-        let mut child = command.spawn().map_err(docker_error)?;
+        let mut command = wrap_background_command(command);
+        let mut child = spawn_background_command(&mut command).map_err(docker_error)?;
         let mut stdin = child
             .stdin
             .take()

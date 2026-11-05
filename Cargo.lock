@@ -3941,7 +3941,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "percent-encoding",
- "process-wrap",
+ "pl-remote-helper",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -3950,7 +3950,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "windows",
 ]
 
 [[package]]
@@ -4891,7 +4890,6 @@ dependencies = [
  "indexmap 2.14.2",
  "oauth2",
  "pin-project-lite",
- "process-wrap",
  "reqwest",
  "serde",
  "serde_json",

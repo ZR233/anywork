@@ -116,7 +116,7 @@ pub(super) async fn connect_remote_stdio(
         }
     };
 
-    Ok(ConnectedMcp::from_running_with_remote_command(service, process, close_timeout).await)
+    Ok(ConnectedMcp::from_running_with_stdio_command(service, process, close_timeout).await)
 }
 
 async fn cancel_and_wait_remote_process(mut process: ManagedCommand, close_timeout: Duration) {

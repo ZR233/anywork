@@ -9,6 +9,7 @@ pl-studio-bridge / pl-studio-server → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-model → pl-core
 pl-tool → pl-core / pl-model
+pl-lsp → pl-remote-helper
 pl-trace → pl-core
 ```
 
@@ -33,7 +34,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-tool` | 文件读写、命令执行、SSH、Git、LSP、MCP、技能、网络搜索、图像生成与展示、用户交互、笔记、待办（todo）、轮次完成、多智能体协作与机器人会话工具 |
 | `pl-protocol` | Studio 与外围适配器共用的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
-| `pl-lsp` | 语言服务器连接、二进制探测与协议通信 |
+| `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |
 | `pl-remote-helper` | 跨端复用的进程监督、流式读写、输出捕获写入与资源计费组件；Linux 远端辅助进程仅持有物理句柄、偏移量回执、未确认输出及实例租约 |
 | `pl-studio-runtime` | TOML/SQLite 持久化与核心时间线存储适配、产品原子事实及真实来源生命周期投影、唯一 Timeline 展示投影（`text`／`workGroup`／`status` 展示 item、成员归属与 `item_order`）及其可重建派生读模型、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、外部机器人原生接入与会话映射、资源租约，以及根会话/子会话/冷恢复的统一线程装配 |

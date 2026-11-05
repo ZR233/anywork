@@ -171,6 +171,35 @@ impl std::fmt::Debug for ManagedCommand {
 }
 
 impl ManagedCommand {
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn from_background_child(child: pl_remote_helper::process::BackgroundChild) -> Self {
+        let mut process = child.process;
+        let host_pid = process.id();
+        let io = CommandIo {
+            stdin: child.stdin.map(|pipe| Box::pin(pipe) as CommandWriter),
+            stdout: child.stdout.map(|pipe| Box::pin(pipe) as CommandReader),
+            stderr: child.stderr.map(|pipe| Box::pin(pipe) as CommandReader),
+        };
+        Self::new(host_pid, io, move |cancellation| async move {
+            let result = tokio::select! {
+                result = process.wait() => result,
+                _ = cancellation.cancelled() => {
+                    terminate_process_tree(process.id()).await;
+                    process.wait().await
+                }
+            };
+            result
+                .map(|status| CommandExit {
+                    supervision_failure: None,
+                    signal: None,
+                    capture_failure: None,
+                    exit_code: status.code(),
+                    capture: None,
+                })
+                .map_err(|error| format!("failed to wait for local process: {error}"))
+        })
+    }
+
     /// Transfers the process and its IO into one command lease. The supplied future owns
     /// physical cleanup and must observe cancellation while retaining its process handle.
     pub fn new<F>(
@@ -658,48 +687,9 @@ impl CommandBackend for LocalCommandBackend {
             .check()
             .map_err(|error| command_error("exec", error))?;
         request.start_control.mark_start_attempted();
-        let mut child = command
-            .spawn()
+        let child = pl_remote_helper::process::spawn_background_command(&mut command)
             .map_err(|error| command_error("exec", error))?;
-        let host_pid = child.id();
-        let stdin = child
-            .stdin()
-            .take()
-            .map(|value| Box::pin(value) as CommandWriter);
-        let stdout = child
-            .stdout()
-            .take()
-            .map(|value| Box::pin(value) as CommandReader);
-        let stderr = child
-            .stderr()
-            .take()
-            .map(|value| Box::pin(value) as CommandReader);
-        Ok(ManagedCommand::new(
-            host_pid,
-            CommandIo {
-                stdin,
-                stdout,
-                stderr,
-            },
-            move |cancellation| async move {
-                let result = tokio::select! {
-                    result = child.wait() => result,
-                    _ = cancellation.cancelled() => {
-                        terminate_process_tree(child.id()).await;
-                        child.wait().await
-                    }
-                };
-                result
-                    .map(|status| CommandExit {
-                        supervision_failure: None,
-                        signal: None,
-                        capture_failure: None,
-                        exit_code: status.code(),
-                        capture: None,
-                    })
-                    .map_err(|error| format!("failed to wait for local process: {error}"))
-            },
-        ))
+        Ok(ManagedCommand::from_background_child(child))
     }
 
     async fn prepare_output(

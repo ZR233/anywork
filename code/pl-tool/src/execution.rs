@@ -99,9 +99,18 @@ impl LocalExecutionBackend {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
         let mut command = pl_remote_helper::process::wrap_background_command(command);
-        let child = command.spawn().map_err(|error| {
-            LocalExecutionFailure::BeforeSpawn(format!("failed to run command: {error}"))
-        })?;
+        let child =
+            pl_remote_helper::process::spawn_background_command(&mut command).map_err(|error| {
+                use pl_remote_helper::process::BackgroundSpawnError;
+                match error {
+                    BackgroundSpawnError::Process(error) => LocalExecutionFailure::BeforeSpawn(
+                        format!("failed to run command: {error}"),
+                    ),
+                    BackgroundSpawnError::Stdio(error) => LocalExecutionFailure::AfterSpawn(
+                        format!("failed to register command stdio: {error}"),
+                    ),
+                }
+            })?;
         let output = collect_child(child, request.timeout).await?;
         Ok(ExecutionOutput {
             status: output.status.code().unwrap_or(-1),
@@ -112,11 +121,12 @@ impl LocalExecutionBackend {
 }
 
 async fn collect_child(
-    mut child: Box<dyn process_wrap::tokio::ChildWrapper>,
+    child: pl_remote_helper::process::BackgroundChild,
     timeout: Option<Duration>,
 ) -> Result<std::process::Output, LocalExecutionFailure> {
-    let stdout = child.stdout().take();
-    let stderr = child.stderr().take();
+    let mut process = child.process;
+    let stdout = child.stdout;
+    let stderr = child.stderr;
     let output = async move { tokio::join!(read_pipe(stdout), read_pipe(stderr)) };
     tokio::pin!(output);
     let timer = async move {
@@ -132,14 +142,14 @@ async fn collect_child(
     let mut termination_error = None;
     while status.is_none() || streams.is_none() {
         tokio::select! {
-            result = child.wait(), if status.is_none() => {
-                if result.is_err() { termination_error = child.start_kill().err(); }
+            result = process.wait(), if status.is_none() => {
+                if result.is_err() { termination_error = process.start_kill().err(); }
                 status = Some(result);
             }
             result = &mut output, if streams.is_none() => streams = Some(result),
             _ = &mut timer, if !timed_out => {
                 timed_out = true;
-                termination_error = child.start_kill().err();
+                termination_error = process.start_kill().err();
             }
         }
     }
