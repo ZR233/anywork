@@ -228,9 +228,28 @@ impl WorktreeManager {
         });
         if exists {
             if registration.is_none_or(|entry| entry.prunable) {
-                return Err(WorktreeError::IdentityMismatch(
-                    "registration does not name the existing managed checkout".into(),
-                ));
+                return Err(WorktreeError::IdentityMismatch(format!(
+                    "registration does not name the existing managed checkout: \
+                     managed_path={:?}, repo_root={:?}, normalized_target={target:?}, \
+                     matched_registration_prunable={:?}, registered_count={}, \
+                     first_registrations={:?}",
+                    handle.path,
+                    self.repo_root,
+                    registration.map(|entry| entry.prunable),
+                    registered.len(),
+                    registered
+                        .iter()
+                        .take(8)
+                        .map(|entry| (
+                            &entry.path,
+                            super::backend::resolved_git_path(
+                                &entry.path,
+                                &self.repo_root.to_string_lossy()
+                            ),
+                            entry.prunable,
+                        ))
+                        .collect::<Vec<_>>(),
+                )));
             }
             let site = self.git_common_dir(&handle.path).await?;
             let repository = self.git_common_dir(&self.repo_root).await?;

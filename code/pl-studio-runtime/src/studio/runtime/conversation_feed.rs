@@ -591,7 +591,13 @@ impl ConversationFeed {
             }
             ThreadLiveEvent::Activity { .. } => {}
             ThreadLiveEvent::UnframedCommit { sequence } => {
-                ensure!(sequence <= self.state_effect_floor, resync());
+                ensure!(
+                    sequence <= self.state_effect_floor,
+                    resync().context(format!(
+                        "conversation UnframedCommit above State floor: sequence={sequence}, state_effect_floor={}",
+                        self.state_effect_floor
+                    ))
+                );
             }
             ThreadLiveEvent::Rebase { .. } => return Err(resync()),
         }
@@ -643,7 +649,13 @@ impl ConversationFeed {
                             }
                         }
                         Err(broadcast::error::TryRecvError::Empty) => {}
-                        Err(_) => return Err(resync()),
+                        Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                            return Err(resync().context(format!(
+                                "conversation state try_recv lagged: skipped={skipped}, state_effect_floor={}",
+                                self.state_effect_floor
+                            )));
+                        }
+                        Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
                     }
                 }
             }
@@ -819,7 +831,12 @@ impl ConversationFeed {
                         }
                         continue;
                     }
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => return Err(resync()),
+                    Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                        return Err(resync().context(format!(
+                            "conversation cut try_recv lagged: skipped={skipped}, delivered={}, seen_serial={}",
+                            self.delivered, self.seen_serial
+                        )));
+                    }
                     Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
                     Err(broadcast::error::TryRecvError::Empty) => {}
                 }
@@ -862,9 +879,21 @@ impl ConversationFeed {
                     return Err(resync());
                 }
                 Wake::Cut(Ok(cut)) => self.cut = Some(cut),
-                Wake::Cut(Err(_)) => return Err(resync()),
+                Wake::Cut(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    return Err(resync().context(format!(
+                        "conversation cut recv lagged: skipped={skipped}, delivered={}, seen_serial={}",
+                        self.delivered, self.seen_serial
+                    )));
+                }
+                Wake::Cut(Err(broadcast::error::RecvError::Closed)) => return Err(resync()),
                 Wake::State(Ok(event)) => self.state_event(event)?,
-                Wake::State(Err(_)) => return Err(resync()),
+                Wake::State(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    return Err(resync().context(format!(
+                        "conversation state recv lagged: skipped={skipped}, state_effect_floor={}",
+                        self.state_effect_floor
+                    )));
+                }
+                Wake::State(Err(broadcast::error::RecvError::Closed)) => return Err(resync()),
                 Wake::Progress => {
                     if let Some(progress) = self.progress.as_mut() {
                         let newest = progress.borrow_and_update().clone();
