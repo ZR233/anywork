@@ -2881,8 +2881,13 @@ pub fn gui_statistics_script() -> Vec<Step> {
 ///
 /// `parallel_observer` holds the two parallel calls behind a completed reasoning
 /// prefix so the desktop observer can mount the original member window before
-/// the calls begin their foreground lifetime.
-pub fn gui_realtime_script(host_cwd: &str, parallel_observer: Option<&ReplyStage>) -> Vec<Step> {
+/// the calls begin their foreground lifetime. `host_observer` prepares the same
+/// observation boundary for the host-cwd call.
+pub fn gui_realtime_script(
+    host_cwd: &str,
+    parallel_observer: Option<&ReplyStage>,
+    host_observer: Option<&ReplyStage>,
+) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
@@ -3087,23 +3092,39 @@ pub fn gui_realtime_script(host_cwd: &str, parallel_observer: Option<&ReplyStage
         )
     });
     script.add(|step| {
+        let calls = [RealtimeToolCall {
+            item_id: "realtime-host-cwd-item",
+            call_id: "realtime-host-cwd-call",
+            name: TOOL_EXEC_NAME,
+            arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
+        }];
+        let reply = if let Some(stage) = host_observer {
+            let events = responses_reasoning_tool_calls(
+                &["realtime host cwd observers ready"],
+                "realtime-host-cwd",
+                "fixture-model",
+                &calls,
+            );
+            let tool_start = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.added"
+                        && event["item"]["type"] == "function_call"
+                })
+                .expect("host-cwd fixture must contain its original exec call");
+            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-host-cwd",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_HOST_CWD_PROMPT,
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-host-cwd",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-host-cwd-item",
-                    call_id: "realtime-host-cwd-call",
-                    name: TOOL_EXEC_NAME,
-                    arguments: realtime_exec_arguments(
-                        &realtime_host_cwd_command(),
-                        Some(host_cwd),
-                    ),
-                }],
-            )),
+            reply,
         )
     });
     // The command outlives the runtime's one-second foreground window on its own,

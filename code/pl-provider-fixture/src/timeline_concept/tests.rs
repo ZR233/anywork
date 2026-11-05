@@ -551,9 +551,13 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
         0,
         parallel.reply,
     );
+    let observer = Control {
+        names: vec![control.names[0]],
+        stages: vec![control.stages[0].clone()],
+    };
     // The real HTTP observer sees only created/added/delta/done reasoning before
     // release. observe also rejects premature or repeated release requests.
-    let observed = observe(control, step, GUI_REALTIME_PARALLEL_PROMPT, &[4]).await;
+    let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[4]).await;
     assert_eq!(observed[3]["item"]["type"], "reasoning");
     assert_eq!(
         observed[3]["item"]["summary"][0]["text"],
@@ -578,6 +582,55 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
             realtime_exec_arguments(&realtime_parallel_command(tag, lines), None)
         );
     }
+}
+
+#[tokio::test]
+async fn realtime_observer_gate_precedes_original_host_cwd_call() {
+    let control = Control::realtime();
+    let host_cwd = "fixture-host-cwd";
+    let host = control
+        .realtime_script(host_cwd)
+        .into_iter()
+        .find(|step| {
+            matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_HOST_CWD_PROMPT)
+        })
+        .expect("host-cwd observation must have its original prompt");
+    let step = Step::prompt(
+        Protocol::ResponsesHttp,
+        GUI_REALTIME_HOST_CWD_PROMPT,
+        0,
+        host.reply,
+    );
+    let observer = Control {
+        names: vec![control.names[1]],
+        stages: vec![control.stages[1].clone()],
+    };
+    let observed = observe(observer, step, GUI_REALTIME_HOST_CWD_PROMPT, &[4]).await;
+    assert_eq!(observed.len(), 8);
+    assert_eq!(observed[3]["type"], "response.output_item.done");
+    assert_eq!(observed[3]["item"]["type"], "reasoning");
+    assert_eq!(
+        observed[3]["item"]["summary"][0]["text"],
+        "realtime host cwd observers ready"
+    );
+    assert_eq!(observed[4]["type"], "response.output_item.added");
+    assert_eq!(observed[4]["item"]["type"], "function_call");
+    let calls = observed
+        .iter()
+        .filter(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "function_call"
+        })
+        .map(|event| &event["item"])
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["id"], "realtime-host-cwd-item");
+    assert_eq!(calls[0]["call_id"], "realtime-host-cwd-call");
+    assert_eq!(calls[0]["name"], TOOL_EXEC_NAME);
+    assert_eq!(
+        calls[0]["arguments"],
+        realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd))
+    );
+    assert_eq!(observed[7]["type"], "response.completed");
 }
 
 #[tokio::test]

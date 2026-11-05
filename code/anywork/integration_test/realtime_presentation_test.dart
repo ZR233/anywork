@@ -39,6 +39,8 @@ import 'support/timeline_observation.dart';
 
 const _parallelObserverStage = 'realtime-parallel-observer';
 const _parallelObserverPrefix = 'realtime parallel observers ready';
+const _hostCwdObserverStage = 'realtime-host-cwd-observer';
+const _hostCwdObserverPrefix = 'realtime host cwd observers ready';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -221,7 +223,11 @@ void main() {
           .toSet();
       await scene.submit('Realtime parallel tools');
       await fixtureGate(tester, provider, _parallelObserverStage);
-      final parallelObserver = await scene.prepareParallelObserver();
+      final parallelObserver = await scene.prepareToolObserver(
+        stage: _parallelObserverStage,
+        prefix: _parallelObserverPrefix,
+        doneText: 'realtime parallel tools complete',
+      );
       report['parallelObserver'] = parallelObserver.evidence;
       await fixtureGate(
         tester,
@@ -256,12 +262,22 @@ void main() {
           .map((item) => item.id)
           .toSet();
       await scene.submit('Realtime host cwd command');
+      await fixtureGate(tester, provider, _hostCwdObserverStage);
+      final hostObserver = await scene.prepareToolObserver(
+        stage: _hostCwdObserverStage,
+        prefix: _hostCwdObserverPrefix,
+        doneText: 'realtime host cwd complete',
+      );
+      report['hostCwdObserver'] = hostObserver.evidence;
+      await fixtureGate(tester, provider, _hostCwdObserverStage, release: true);
+      hostObserver.evidence['gateReleased'] = true;
       await scene.untilLaidOutCurrentTools(
         minimum: 1,
         runningExecCallIds: const {'realtime-host-cwd-call'},
         settleDisclosure: false,
+        preparedObserver: hostObserver,
       );
-      final hostCwdTurnId = scene._submittedTurnId!;
+      final hostCwdTurnId = hostObserver.turnId;
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
       await scene.verifyExecReceipts(priorHostCwdItems, const {
@@ -353,7 +369,7 @@ void main() {
   );
 }
 
-typedef _ParallelObserver = ({
+typedef _PreparedToolObserver = ({
   String turnId,
   TimelineDisplayLease lease,
   TimelineCurrentDisplay currentDisplay,
@@ -437,7 +453,11 @@ final class _RealtimeScene {
     );
   }
 
-  Future<_ParallelObserver> prepareParallelObserver() async {
+  Future<_PreparedToolObserver> prepareToolObserver({
+    required String stage,
+    required String prefix,
+    required String doneText,
+  }) async {
     StudioTurnView? turn;
     await until(() {
       final current = _latestTurn();
@@ -446,13 +466,13 @@ final class _RealtimeScene {
       expect(current.turnId, _submittedTurnId);
       turn = current;
       return current.state.status == StudioTurnStatus.running;
-    }, 'typed parallel Turn at the observer gate');
+    }, 'typed $stage Turn at the observer gate');
     final source = ForegroundTurnChatSource(turnId: turn!.turnId);
     await until(() {
       final groups = observed.workFor(source).toList();
       expect(groups.length, lessThanOrEqualTo(1));
       return groups.length == 1;
-    }, 'the parallel Turn original observer work group');
+    }, 'the $stage Turn original observer work group');
     final unit = observed.workFor(source).single;
     final mainLease = lease;
     final mountedDisplay = mainLease.currentDisplay;
@@ -474,7 +494,7 @@ final class _RealtimeScene {
       expect(
         members.where((atom) => atom.kind == ChatAtomKind.toolCall),
         isEmpty,
-        reason: 'The provider gate has not admitted either exec',
+        reason: 'The provider gate has not admitted any exec',
       );
       return display.isCurrent &&
           display.expanded &&
@@ -483,49 +503,45 @@ final class _RealtimeScene {
           members.single.lifecycle is TerminalChatAtom &&
           members.single.completionItemId != null &&
           members.single.completionSeq != null;
-    }, 'original parallel member window ready before exec admission');
+    }, 'original $stage member window ready before exec admission');
     expect(display.error, isNull);
     expect(display.membersRef, reference);
     expect(display.atoms, hasLength(1));
-    final prefix = display.atoms.single;
-    expect(prefix.source, source);
-    expect(prefix.kind, ChatAtomKind.reasoning);
-    expect(prefix.tool, isNull);
-    expect(prefix.completionItemId, isNotNull);
-    expect(prefix.completionSeq, isNotNull);
-    expect(prefix.lifecycle, isA<TerminalChatAtom>());
+    final reasoning = display.atoms.single;
+    expect(reasoning.source, source);
+    expect(reasoning.kind, ChatAtomKind.reasoning);
+    expect(reasoning.tool, isNull);
+    expect(reasoning.completionItemId, isNotNull);
+    expect(reasoning.completionSeq, isNotNull);
+    expect(reasoning.lifecycle, isA<TerminalChatAtom>());
     expect(
-      (prefix.lifecycle as TerminalChatAtom).outcome,
+      (reasoning.lifecycle as TerminalChatAtom).outcome,
       ChatTerminalOutcome.completed,
     );
-    expect(prefix.payload, isA<InlinePayload>());
-    expect(prefix.contents, isNotEmpty);
+    expect(reasoning.payload, isA<InlinePayload>());
+    expect(reasoning.contents, isNotEmpty);
     await until(
-      () => _laidOut(observed.memberRow(prefix.id)),
+      () => _laidOut(observed.memberRow(reasoning.id)),
       'laid out completed observer reasoning member',
     );
     final rendered = tester
-        .widget<ChatItemView>(observed.memberRow(prefix.id))
+        .widget<ChatItemView>(observed.memberRow(reasoning.id))
         .item;
-    expect(rendered.atom?.id, prefix.id);
+    expect(rendered.atom?.id, reasoning.id);
     expect(rendered.compatibility, ChatItemCompatibility.current);
     expect(rendered.type, 'thinking');
     expect(
       rendered.bodies
           .where((body) => body.inline != null)
           .map((body) => utf8.decode(body.inline!)),
-      contains(_parallelObserverPrefix),
+      contains(prefix),
     );
     // Reveal and inspect the actual text boxes while the provider is gated.
-    // This completes the original disclosure layout before either exec starts.
-    await _revealTextFragment(
-      tester,
-      observed.memberRow(prefix.id),
-      _parallelObserverPrefix,
-    );
+    // This completes the original disclosure layout before the exec calls start.
+    await _revealTextFragment(tester, observed.memberRow(reasoning.id), prefix);
     Rect? previousBounds;
     await until(() {
-      final row = observed.memberRow(prefix.id);
+      final row = observed.memberRow(reasoning.id);
       if (!_laidOut(row)) return false;
       final bounds = tester.getRect(row);
       final stable = previousBounds == bounds;
@@ -538,7 +554,7 @@ final class _RealtimeScene {
       isEmpty,
       reason: 'No exec has been admitted before the observer gate is released',
     );
-    expect(find.text('realtime parallel tools complete'), findsNothing);
+    expect(find.text(doneText), findsNothing);
     // The member body scope is acquired by the original UI disclosure, not
     // before it. Freeze it only after the real prefix is ready and laid out.
     expect(expansion.bodyActive, isTrue);
@@ -557,14 +573,14 @@ final class _RealtimeScene {
       reference: reference,
       expansion: expansion,
       bodyGeneration: bodyGeneration,
-      prefixId: prefix.id,
-      prefixReferences: prefix.contents
+      prefixId: reasoning.id,
+      prefixReferences: reasoning.contents
           .map(
             (content) => contentReferenceIdentity(content.reference).toString(),
           )
           .toList(),
       evidence: <String, Object?>{
-        'gate': _parallelObserverStage,
+        'gate': stage,
         'gateReached': true,
         'gateReleased': false,
         'bodyScopeAdmission': {
@@ -577,12 +593,12 @@ final class _RealtimeScene {
         },
       },
     );
-    expect(_expectParallelObserver(prepared), isTrue);
-    prepared.evidence['prearm'] = _parallelObserverSnapshot(prepared);
+    expect(_expectPreparedToolObserver(prepared), isTrue);
+    prepared.evidence['prearm'] = _preparedToolObserverSnapshot(prepared);
     return prepared;
   }
 
-  bool _expectParallelObserver(_ParallelObserver prepared) {
+  bool _expectPreparedToolObserver(_PreparedToolObserver prepared) {
     expect(_latestTurn()?.turnId, prepared.turnId);
     expect(lease, same(prepared.lease));
     expect(lease.currentDisplay, same(prepared.currentDisplay));
@@ -615,8 +631,8 @@ final class _RealtimeScene {
     return true;
   }
 
-  Map<String, Object?> _parallelObserverSnapshot(
-    _ParallelObserver prepared, {
+  Map<String, Object?> _preparedToolObserverSnapshot(
+    _PreparedToolObserver prepared, {
     Iterable<ChatAtom> running = const [],
   }) {
     final loading = prepared.display.loading;
@@ -2078,7 +2094,7 @@ final class _RealtimeScene {
     Set<String> toolCallIds = const {},
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
-    _ParallelObserver? preparedObserver,
+    _PreparedToolObserver? preparedObserver,
   }) async {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
@@ -2096,7 +2112,7 @@ final class _RealtimeScene {
         }
         // Expansion can outlive the live-to-Main handoff of this exact group.
         // Follow its original Turn source; the running assertions below still
-        // require the exact parallel exec calls to be active and laid out.
+        // require the exact exec calls to be active and laid out.
         final units = [
           if (turn != null && turn.turnId == _submittedTurnId)
             ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
@@ -2111,7 +2127,7 @@ final class _RealtimeScene {
         // reader temporarily cannot lend an admitted member window.
         final observerReady =
             preparedObserver == null ||
-            _expectParallelObserver(preparedObserver);
+            _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
         if (preparedObserver != null) {
           expect(groupIds, {preparedObserver.reference.itemId});
@@ -2145,7 +2161,7 @@ final class _RealtimeScene {
           'groupIds': groupIds.toList(),
           'liveIds': observed.live.map((unit) => unit.id).toList(),
           if (preparedObserver != null)
-            'observer': _parallelObserverSnapshot(preparedObserver),
+            'observer': _preparedToolObserverSnapshot(preparedObserver),
           'membersAvailable': observerReady,
           'members': tools
               ?.map(
@@ -2233,13 +2249,14 @@ final class _RealtimeScene {
             'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
           );
           if (preparedObserver != null) {
-            expect(_expectParallelObserver(preparedObserver), isTrue);
-            preparedObserver.evidence['running'] = _parallelObserverSnapshot(
-              preparedObserver,
-              running: required.where(
-                (atom) => runningExecCallIds.contains(atom.tool?.callId),
-              ),
-            );
+            expect(_expectPreparedToolObserver(preparedObserver), isTrue);
+            preparedObserver.evidence['running'] =
+                _preparedToolObserverSnapshot(
+                  preparedObserver,
+                  running: required.where(
+                    (atom) => runningExecCallIds.contains(atom.tool?.callId),
+                  ),
+                );
           }
           return;
         }
