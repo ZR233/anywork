@@ -92,6 +92,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
+`timeline-history` 的流式分页观察以原选中会话、活动 Turn、source 和 live 展示项为准：沿原三十秒资格等待冻结同一 lease、current display、未完成文本与生产者非空 preview，再在原活动区观察的三十秒额度内核对同一 live 项的生产组件和真实正文布局。非空 live 项已经替代无内容活动条时，不再要求旧活动条 key 同时挂载，也不为满足测试给生产界面补回旧组件。加载历史页前后仍核对原 Turn、display、live 项、正文引用及已接纳前缀；完成 Main、旧会话、未布局组件或仅有内存 preview 不能替代流式可见证据，不延长 provider pacing 或等待期限。
+
 [#272 A01–A34](https://github.com/ZR233/anywork/issues/272) 分层证明：Rust Studio 投影负责 item 类别、可靠边界、成员归属/顺序、空正文、纯附件、读图归属、逆序终态、后台交错、多 current 片段与同批退役；存储/读取证明同事务、原事实独立、来源输入依据、具名内容迁移及失败重开、已迁移损坏拒绝、版本、旧库和 RAM/SQLite 交接。运行中热维护组合场景已由初始化迁移、真实容量压力、普通积压排空及 close/cancel 独立证明替代，不能仅删除旧场景而漏掉原队列责任。Dart 只验机械映射、一条 item 一条 Message、成员窗口及局部 UI/资源资格；纯 Flutter 验布局与交互，少量官方原生集成穿过真实跨层、持久化、credit 与重开。不在 Dart 重测分组算法，不以截图或旧派生缓存代证完整源事实重建。
 
 新增分页证据须含超过 8 页未满、页内 item 均为折叠摘要或高度不变时继续；短页/字节截页、空末页、cursor 无进展、读取失败与显式重试恢复；窗口/输入区/实时区/展开状态变化、零尺寸与不可见暂停；自动补载/滚动/Append 共用同方向 single-flight，旧页不覆盖新 current。全折叠历史可读到 EOF 后仍不满屏并保留空白，首批内容不等末页。Main item 键集页与 `GroupMembers` 成员页各有独立 cursor，不得互换或把成员页当主历史页；item 顺序与成员顺序来自 Rust 投影，客户端不重排。

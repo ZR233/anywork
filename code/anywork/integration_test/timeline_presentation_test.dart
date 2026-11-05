@@ -9,10 +9,13 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -20,6 +23,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -194,16 +198,8 @@ Future<void> _runLive(
 
   final priorTurn = scene.latestTurnId;
   await scene.submit(_streamPrompt);
-  await scene.until(
-    () => find
-        .byKey(const ValueKey('conversation-activity'))
-        .evaluate()
-        .isNotEmpty,
-    'real streaming activity bar',
-    timeout: const Duration(seconds: 30),
-  );
-  expect(find.byKey(const ValueKey('conversation-activity')), findsOneWidget);
   final streaming = await scene.waitForStreamingTurn(after: priorTurn);
+  final streamingBody = await scene.waitForStreamingBody(streaming);
   final streamingLease = streaming.lease;
   await capturePresentation(scene.tester, 'timeline-streaming-before-page.png');
   scene.expectStreamingTurn(streaming);
@@ -248,7 +244,18 @@ Future<void> _runLive(
   );
   report.addAll({
     'identity': {...baseline, 'evidenceConsistent': true},
-    'streamingActivityVisible': true,
+    'streamingActivityVisible': !streamingBody.visibleGlyphBounds.isEmpty,
+    'streamingPresentation': {
+      'renderer': 'TimelinePlainText',
+      'unitId': streaming.unit.id,
+      'prefixBytes': utf8.encode(streamingBody.prefix).length,
+      'visibleGlyphBounds': [
+        streamingBody.visibleGlyphBounds.left,
+        streamingBody.visibleGlyphBounds.top,
+        streamingBody.visibleGlyphBounds.right,
+        streamingBody.visibleGlyphBounds.bottom,
+      ],
+    },
     'streamingPageRetained': true,
     'streamingHistory': {
       'pass': true,
@@ -398,7 +405,10 @@ typedef _StreamingTurn = ({
   String activityId,
   ChatAtom response,
   CurrentContentPreview preview,
+  TimelineDisplayUnit unit,
 });
+
+typedef _StreamingBody = ({String prefix, Rect visibleGlyphBounds});
 
 final class _TimelineScene {
   _TimelineScene(this.tester, this.graph);
@@ -574,6 +584,27 @@ final class _TimelineScene {
             )
             .firstOrNull;
         if (preview == null) return false;
+        final units = display.liveUnits.value
+            .where(
+              (unit) =>
+                  unit.live &&
+                  unit.item.kind == TimelineItemKind.text &&
+                  unit.item.atomKind == ChatAtomKind.text &&
+                  unit.item.source == response.source &&
+                  unit.item.turnId == candidate &&
+                  unit.item.outcome == null,
+            )
+            .toList();
+        if (units.length != 1) return false;
+        final unit = units.single;
+        final bodies = unit.item.contents
+            .where((content) => content.role == ChatContentRole.body)
+            .toList();
+        if (bodies.length != 1 ||
+            contentReferenceIdentity(bodies.single.reference) !=
+                contentReferenceIdentity(preview.reference)) {
+          return false;
+        }
         streaming = (
           lease: display,
           display: currentDisplay,
@@ -581,6 +612,7 @@ final class _TimelineScene {
           activityId: candidateActivity,
           response: response,
           preview: preview,
+          unit: unit,
         );
         return true;
       },
@@ -588,6 +620,91 @@ final class _TimelineScene {
       timeout: const Duration(seconds: 30),
     );
     return streaming!;
+  }
+
+  Future<_StreamingBody> waitForStreamingBody(_StreamingTurn streaming) async {
+    final prefix = streaming.preview.text.length > 64
+        ? streaming.preview.text.substring(0, 64)
+        : streaming.preview.text;
+    final glyphOffset = prefix.indexOf(RegExp(r'\S'));
+    expect(glyphOffset, greaterThanOrEqualTo(0));
+    final surface = tester.renderObject<RenderBox>(
+      find.byKey(presentationCaptureKey),
+    );
+    Rect? visibleGlyphBounds;
+    await until(
+      () {
+        expectStreamingTurn(streaming);
+        final connector = find.byWidgetPredicate(
+          (widget) =>
+              widget is ConversationCurrentConnector &&
+              identical(widget.content, streaming.lease.content) &&
+              identical(widget.units, streaming.lease.liveUnits),
+        );
+        if (connector.evaluate().length != 1) return false;
+        expect(tester.state(connector), same(streaming.display));
+        final row = find.descendant(
+          of: connector,
+          matching: find.byKey(ValueKey(streaming.unit.id)),
+        );
+        if (row.evaluate().length != 1) return false;
+        final item = find.descendant(
+          of: row,
+          matching: find.byKey(ObjectKey(streaming.unit.expansion)),
+        );
+        if (item.evaluate().length != 1) return false;
+        final body = find.descendant(
+          of: item,
+          matching: find.byType(TimelinePlainText),
+        );
+        if (body.evaluate().length != 1 ||
+            !tester.widget<TimelinePlainText>(body).text.startsWith(prefix)) {
+          return false;
+        }
+        final text = find.descendant(of: body, matching: find.byType(RichText));
+        if (text.evaluate().length != 1) return false;
+        final paragraph = text.evaluate().single.findRenderObject();
+        if (paragraph is! RenderParagraph ||
+            !paragraph.attached ||
+            !paragraph.hasSize ||
+            paragraph.debugNeedsLayout ||
+            !surface.attached ||
+            !surface.hasSize ||
+            !paragraph.text.toPlainText().startsWith(prefix)) {
+          return false;
+        }
+        // The fixture is plain text. Require a real glyph from its accepted
+        // prefix, clipped by the production current scroll view and ancestors.
+        for (final box in paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: glyphOffset, extentOffset: glyphOffset + 1),
+        )) {
+          var visible = MatrixUtils.transformRect(
+            paragraph.getTransformTo(surface),
+            box.toRect(),
+          ).intersect(Offset.zero & surface.size);
+          RenderObject child = paragraph;
+          while (!identical(child, surface)) {
+            final parent = child.parent;
+            if (parent == null || !parent.attached) return false;
+            final clip = parent.describeApproximatePaintClip(child);
+            if (clip != null) {
+              visible = visible.intersect(
+                MatrixUtils.transformRect(parent.getTransformTo(surface), clip),
+              );
+            }
+            child = parent;
+          }
+          if (visible.isFinite && !visible.isEmpty) {
+            visibleGlyphBounds = visible;
+            return true;
+          }
+        }
+        return false;
+      },
+      'visible live response body ${streaming.unit.id}',
+      timeout: const Duration(seconds: 30),
+    );
+    return (prefix: prefix, visibleGlyphBounds: visibleGlyphBounds!);
   }
 
   CurrentContentPreview expectStreamingTurn(_StreamingTurn streaming) {
@@ -627,6 +744,25 @@ final class _TimelineScene {
     expect(response.lifecycle, isA<ActiveChatAtom>());
     expect(response.source, streaming.response.source);
     expect(response.turnId, streaming.turnId);
+    final unit = display.liveUnits.value.singleWhere(
+      (unit) => unit.id == streaming.unit.id,
+    );
+    // Admission replaces unit snapshots while retaining their original intent.
+    expect(unit.live, isTrue);
+    expect(unit.expansion, same(streaming.unit.expansion));
+    expect(unit.expansion.isRetired, isFalse);
+    expect(unit.item.kind, TimelineItemKind.text);
+    expect(unit.item.atomKind, ChatAtomKind.text);
+    expect(unit.item.source, streaming.unit.item.source);
+    expect(unit.item.turnId, streaming.turnId);
+    expect(unit.item.outcome, isNull);
+    final body = unit.item.contents.singleWhere(
+      (content) => content.role == ChatContentRole.body,
+    );
+    expect(
+      contentReferenceIdentity(body.reference),
+      contentReferenceIdentity(streaming.preview.reference),
+    );
     final preview = current.previews.singleWhere(
       (preview) => preview.id == streaming.preview.id,
     );
