@@ -731,6 +731,40 @@ final class _RealtimeScene {
     );
   }
 
+  Finder _turnReceiptTitle(TimelineItem item) {
+    final disclosure = find.descendant(
+      of: observed.itemRow(item.id),
+      matching: find.byKey(ValueKey(('item-disclosure', item.id))),
+    );
+    expect(disclosure, findsOneWidget);
+    final disclosureElement = tester.element(disclosure);
+    final tiles = find.descendant(
+      of: disclosure,
+      matching: find.byElementPredicate(
+        (element) =>
+            element.widget is ExpansionTile &&
+            identical(
+              element
+                  .findAncestorWidgetOfExactType<TimelineActivityDisclosure>(),
+              disclosureElement.widget,
+            ),
+      ),
+    );
+    expect(tiles, findsOneWidget);
+    final outerTile = tester.element(tiles);
+    final title = find.descendant(
+      of: disclosure,
+      matching: find.byWidgetPredicate((widget) {
+        final tile = outerTile.widget;
+        return widget is ListTile &&
+            tile is ExpansionTile &&
+            identical(widget.title, tile.title);
+      }),
+    );
+    expect(title, findsOneWidget);
+    return title;
+  }
+
   Future<Finder> openTurnReceipt(
     StudioTurnView turn, {
     required String expectedOutcome,
@@ -744,18 +778,14 @@ final class _RealtimeScene {
     final receipt = tester.widget<ChatItemView>(row).item;
     expect(receipt.type, 'turn');
     expect((receipt.data['outcome'] as Map)['kind'], expectedOutcome);
-    final header = find
-        .descendant(of: row, matching: find.byType(TimelineActivityRow))
-        .first;
+    final title = _turnReceiptTitle(item);
+    final header = find.descendant(
+      of: title,
+      matching: find.byType(TimelineActivityRow),
+    );
+    expect(header, findsOneWidget);
     if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(
-        find
-            .descendant(
-              of: row,
-              matching: find.byType(TimelineActivityDisclosure),
-            )
-            .first,
-      );
+      await tap(title);
     }
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
@@ -763,19 +793,15 @@ final class _RealtimeScene {
   }
 
   Future<void> closeTurnReceipt(StudioTurnView turn) async {
-    final row = observed.itemRow(_turnReceipt(turn).id);
-    final header = find
-        .descendant(of: row, matching: find.byType(TimelineActivityRow))
-        .first;
-    expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
-    await tap(
-      find
-          .descendant(
-            of: row,
-            matching: find.byType(TimelineActivityDisclosure),
-          )
-          .first,
+    final item = _turnReceipt(turn);
+    final title = _turnReceiptTitle(item);
+    final header = find.descendant(
+      of: title,
+      matching: find.byType(TimelineActivityRow),
     );
+    expect(header, findsOneWidget);
+    expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
+    await tap(title);
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
   }
