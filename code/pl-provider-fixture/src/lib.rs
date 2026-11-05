@@ -2616,6 +2616,32 @@ fn push_timeline_history_20k_batch(
     item_count: usize,
     step_millis: u64,
 ) {
+    if (phase == "seed" && batch > 1) || phase == "growth" {
+        let completed_seed_batches = if phase == "seed" {
+            batch - 1
+        } else {
+            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
+        };
+        let completed_growth_batches = if phase == "growth" { batch - 1 } else { 0 };
+        let compaction_step = steps.len();
+        steps.push(
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "请根据以上完整上下文生成压缩摘要。",
+                compaction_step,
+                Reply::Sse(responses_text(
+                    &format!(
+                        "Timeline history fixture: {completed_seed_batches} seed batches and \
+                         {completed_growth_batches} growth batches completed. \
+                         Continue according to the next explicit batch prompt."
+                    ),
+                    &format!("timeline-history-20k-{phase}-{batch:02}-compaction"),
+                    "fixture-model",
+                )),
+            )
+            .optional(),
+        );
+    }
     let title_step = steps.len();
     steps.push(
         Step::prompt(
@@ -5564,6 +5590,191 @@ mod timeline_history_20k_tests {
     use std::collections::HashSet;
 
     #[tokio::test]
+    async fn seed_batches_finish_with_and_without_text_compaction() {
+        let client = reqwest::Client::new();
+        for compact in [false, true] {
+            let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+                .await
+                .unwrap();
+            for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+                if compact && batch > 1 {
+                    // Synthetic instructions exercise the production prefix/suffix shape
+                    // without copying the private production prompt or captured input.
+                    let response = client
+                        .post(format!("{}/responses", fixture.base_url()))
+                        .json(&json!({
+                            "stream": true,
+                            "input": [
+                                {
+                                    "role": "user",
+                                    "content": gui_timeline_history_20k_seed_prompt(batch - 1)
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": GUI_TIMELINE_HISTORY_20K_TEXT
+                                },
+                                {
+                                    "role": "user",
+                                    "content": concat!(
+                                        "Summarize the completed timeline batches and preserve ",
+                                        "the remaining task for the next explicit batch prompt.",
+                                        "\n\n\n请根据以上完整上下文生成压缩摘要。"
+                                    )
+                                }
+                            ]
+                        }))
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK, "batch {batch}");
+                    let body = response.text().await.unwrap();
+                    assert!(
+                        body.contains(&format!("timeline-history-20k-seed-{batch:02}-compaction")),
+                        "{body}"
+                    );
+                    assert!(!body.contains("-item-"));
+                    assert!(!fixture.live_status().remaining_optional);
+                }
+                let response = client
+                    .post(format!("{}/responses", fixture.base_url()))
+                    .json(&json!({
+                        "stream": true,
+                        "input": [{
+                            "role": "user",
+                            "content": gui_timeline_history_20k_seed_prompt(batch)
+                        }]
+                    }))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "batch {batch}, compact={compact}"
+                );
+                let body = response.text().await.unwrap();
+                assert!(body.contains(&format!("timeline-history-20k-seed-{batch:02}-response")));
+                let completed_items = body
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter(|data| *data != "[DONE]")
+                    .map(|data| serde_json::from_str::<Value>(data).unwrap())
+                    .filter(|event| event["type"] == "response.output_item.done")
+                    .count();
+                assert_eq!(completed_items, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS);
+            }
+            assert!(fixture.live_status().remaining_optional);
+            let requests = fixture.finish().await.unwrap();
+            assert_eq!(
+                requests.len(),
+                GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
+                    + if compact {
+                        GUI_TIMELINE_HISTORY_20K_SEED_BATCHES - 1
+                    } else {
+                        0
+                    }
+            );
+            assert!(requests.iter().all(|request| request.accepted));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_compaction_requests_still_fail_verification_after_all_seed_batches() {
+        let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let compaction = json!({
+            "stream": true,
+            "input": [{
+                "role": "user",
+                "content": concat!(
+                    "Preserve completed timeline history for the next batch.",
+                    "\n\n\n请根据以上完整上下文生成压缩摘要。"
+                )
+            }]
+        });
+        for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+            if batch <= 2 {
+                let response = client
+                    .post(format!("{}/responses", fixture.base_url()))
+                    .json(&compaction)
+                    .send()
+                    .await
+                    .unwrap();
+                let expected = if batch == 1 {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::OK
+                };
+                assert_eq!(response.status(), expected);
+                let body = response.text().await.unwrap();
+                if batch == 1 {
+                    assert!(body.contains("fixture_mismatch"));
+                } else {
+                    assert!(body.contains("timeline-history-20k-seed-02-compaction"));
+                    for invalid in [
+                        compaction.clone(),
+                        json!({
+                            "stream": true,
+                            "input": [{
+                                "role": "user",
+                                "content": "请根据以上完整上下文生成压缩摘要。\nUnrelated request."
+                            }]
+                        }),
+                    ] {
+                        let response = client
+                            .post(format!("{}/responses", fixture.base_url()))
+                            .json(&invalid)
+                            .send()
+                            .await
+                            .unwrap();
+                        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                        assert!(response.text().await.unwrap().contains("fixture_mismatch"));
+                    }
+                }
+            }
+            let response = client
+                .post(format!("{}/responses", fixture.base_url()))
+                .json(&json!({
+                    "stream": true,
+                    "input": [{
+                        "role": "user",
+                        "content": gui_timeline_history_20k_seed_prompt(batch)
+                    }]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "batch {batch}");
+            assert!(
+                response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains(&format!("timeline-history-20k-seed-{batch:02}-response"))
+            );
+        }
+        let report = fixture.shutdown().await.unwrap();
+        assert!(report.remaining_optional);
+        assert_eq!(
+            report
+                .requests
+                .iter()
+                .filter(|request| !request.accepted)
+                .count(),
+            3
+        );
+        assert!(
+            report
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("3 rejected")
+        );
+    }
+
+    #[tokio::test]
     async fn large_history_request_capacity_is_explicit_and_still_bounded() {
         let client = reqwest::Client::new();
         let body = json!({"padding": "a".repeat(1024 * 1024)});
@@ -5625,6 +5836,36 @@ mod timeline_history_20k_tests {
     #[test]
     fn cumulative_history_script_has_exact_batches_items_and_unique_identities() {
         let script = gui_timeline_history_20k_script();
+        let compactions: HashSet<_> = script
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                let RequestMatch::Prompt {
+                    text,
+                    step: request_step,
+                } = &step.request
+                else {
+                    panic!("expected prompt request");
+                };
+                assert_eq!(*request_step, index);
+                if text != "请根据以上完整上下文生成压缩摘要。" {
+                    return None;
+                }
+                assert!(step.optional);
+                let Reply::Sse(events) = &step.reply else {
+                    panic!("expected text compaction SSE");
+                };
+                Some(events[0]["response"]["id"].as_str().unwrap().to_owned())
+            })
+            .collect();
+        let expected_compactions: HashSet<_> = (2..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES)
+            .map(|batch| format!("timeline-history-20k-seed-{batch:02}-compaction"))
+            .chain(
+                (1..=GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES)
+                    .map(|batch| format!("timeline-history-20k-growth-{batch:02}-compaction")),
+            )
+            .collect();
+        assert_eq!(compactions, expected_compactions);
         let required: Vec<&Step> = script.iter().filter(|step| !step.optional).collect();
         assert_eq!(
             required.len(),

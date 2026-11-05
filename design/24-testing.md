@@ -112,6 +112,8 @@ SQLite 查询工作量优先复用 SeaORM 的官方 metric callback，在实际�
 
 原生首内容采样复用 `manual-gui --preset conversation-read-work --profile-read-samples` 的隔离环境、原写入器种子和进程所有权；默认未传此标志的功能集成入口不变。采样使用既有 20k provider seed 生成两条各至少 20,000 个 Main item 的会话，保存、准备完成并关闭种子所有者后，分别采集 20 个新应用进程的普通冷读和 20 次同进程 A→B→A 切换。实际 item 数、Flutter Profile 与 Rust 桥构建配置及构件身份、操作系统缓存未受控等条件随报告记录；不将审计扫描或重建纳入有效读模型的首内容时间。
 
+大历史种子及后续增长仍经过生产上下文准备。严格 fixture 在已有历史的批次间至多安排一次可选文本压缩响应，复用现有压缩请求的精确末条提示匹配，不接纳任意请求、不新增原生压缩兼容分支；首个种子及独立参考会话没有这一历史前置。压缩可发生也可不发生，但不能替代任何必需批次或计入已写入的 Main 库存；原批次数、逐项正文、身份、请求容量和 pacing 不变。不得通过提高模型上下文或预算、关闭自动压缩、改写数据库或放宽匹配来准备数据；准备失败仍保存完整未执行分母，只有完成原真实库存审计后才进入采样。
+
 `run-gui --native-launch --profile --inspect --capture` 仅为显式非发布观察装配官方 Flutter Driver extension，普通发布入口不包含它；debug 的 MCP 组件树能力不外推到 profile。操作沿官方 Driver 的查找、点击与滚动，不恢复 `test_driver/`、`requestData`、自定义控制消息或第二套 UI。仅在非 release 且启用 `ANYWORK_CAPTURE` 时注册只读 `ext.anywork.timelineLayout`：同步借用当前可见、已挂载且未退役的原展示 lease，返回会话/选择/展示代次与已有首内容布局时间戳；未布局为 pending、无有效窗口为 unavailable，不触发读取、分页、执行或布局，也不以零值代替未测。
 
 每个样本保留原 `selectionStartedMicros`、`layoutCompletedMicros`、selectionId、generation 和 itemId，严格在同一 owner 时钟内计算 elapsed。采集端观察到结果的时间不是布局完成时间；旧选择或旧代次不得成为新样本。两类样本独立报告样本数、失败/未执行数、p50、nearest-rank p95 和最大值，完整有效样本的 p95 目标保持 500 ms；缺失、模式错误或超时使采样失败，不丢弃失败样本或补零。关闭请求受理、Driver 连接释放、原生进程真实退出和所属后代收束分别确认，原有 20k 库存人工入口的 notMeasured 结果不因此自动升级为性能通过。
