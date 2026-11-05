@@ -33,7 +33,7 @@ use pl_model::runtime::{
 };
 use pl_protocol::PureError;
 use pl_protocol::trace::TraceTextChannel;
-use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
+use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use serde_json::{Value, json};
 
 fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
@@ -870,8 +870,8 @@ async fn a_closed_item_does_not_freeze_later_blocks_of_the_same_channel() {
     assert!(progress.channel(AggregateChannel::Reasoning).is_none());
 }
 
-/// One stable text part paced so its growth is observable, plus a later part of its own identity.
-fn paced_text_growth_then_a_new_part() -> Vec<Value> {
+/// One stable text part that grows, plus a later part of its own identity.
+fn text_growth_then_a_new_part() -> Vec<Value> {
     vec![
         json!({"type":"response.created","response":{"id":"live-stream","model":"live-fixture"}}),
         json!({"type":"response.output_item.added","output_index":0,
@@ -889,7 +889,7 @@ fn paced_text_growth_then_a_new_part() -> Vec<Value> {
 
 /// One part that grows, then enough further parts that the first part stops being the growing tail
 /// before it grows again.
-fn paced_text_growth_across_a_chunk_boundary() -> Vec<Value> {
+fn text_growth_across_a_chunk_boundary() -> Vec<Value> {
     let mut events = vec![
         json!({"type":"response.created","response":{"id":"live-stream","model":"live-fixture"}}),
         json!({"type":"response.output_item.added","output_index":0,
@@ -924,15 +924,15 @@ async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
     // appending to the same identity and then opens a new one. The producer edits the shared part
     // list in place only while the watch owns its only reference; holding this clone is what forces
     // the copy-on-write that keeps the delivered frame intact.
+    let held_stage = ReplyStage::new();
+    let grown_stage = ReplyStage::new();
+    let mut prefix = text_growth_then_a_new_part();
+    let growth = prefix.split_off(3);
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "live prompt",
         0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 300,
-            events: paced_text_growth_then_a_new_part(),
-        },
+        ReplyStage::staged(vec![prefix, growth, vec![]], &[&held_stage, &grown_stage]),
     )])
     .await
     .expect("fixture starts");
@@ -967,21 +967,27 @@ async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
                     .map(|part| part.text())
             };
             if held.is_none() && part("message-1").as_deref() == Some("a") {
-                // Hold this mid-stream frame; the producer keeps appending after it.
+                // The coalescing watch must deliver this frame before growth is released.
                 held = Some(progress.clone());
+                held_stage.release();
             }
             if let Some(frame) = held.as_ref()
                 && part("message-1").as_deref() == Some("ab")
                 && part("message-2").as_deref() == Some("c")
             {
-                break (frame.clone(), progress.clone());
+                let frames = (frame.clone(), progress.clone());
+                grown_stage.release();
+                break frames;
             }
         }
     })
     .await
     .expect("both observations arrive before the stream ends");
-    let _ = fixture.shutdown().await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), turn).await;
+    fixture.shutdown().await.expect("fixture shuts down");
+    // The reply has no terminal response event, but its turn must still settle after shutdown.
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn)
+        .await
+        .expect("the turn ends after the fixture shuts down");
 
     // The frame the consumer kept is byte-for-byte the one it saw: the same identity kept streaming
     // after it, but appending to a shared list never mutates a snapshot a consumer already holds.
@@ -1018,15 +1024,15 @@ async fn a_held_snapshot_survives_the_growth_of_a_chunk_it_shared() {
     // The part list is shared in chunks, so the frame a consumer holds keeps exactly what it saw
     // even after the chunk it shared has filled, become an immutable chunk, and been edited again by
     // a later delta on the same identity. The producer only ever reproduces the chunk it edits.
+    let held_stage = ReplyStage::new();
+    let grown_stage = ReplyStage::new();
+    let mut prefix = text_growth_across_a_chunk_boundary();
+    let growth = prefix.split_off(3);
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "live prompt",
         0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 30,
-            events: paced_text_growth_across_a_chunk_boundary(),
-        },
+        ReplyStage::staged(vec![prefix, growth, vec![]], &[&held_stage, &grown_stage]),
     )])
     .await
     .expect("fixture starts");
@@ -1063,19 +1069,25 @@ async fn a_held_snapshot_survives_the_growth_of_a_chunk_it_shared() {
             if held.is_none() && part("message-1").as_deref() == Some("a") {
                 // Hold this frame while it still shares the chunk the producer keeps editing.
                 held = Some(progress.clone());
+                held_stage.release();
             }
             if let Some(frame) = held.as_ref()
                 && part("message-1").as_deref() == Some("ab")
                 && part("message-2").as_deref() == Some("c")
             {
-                break (frame.clone(), progress.clone());
+                let frames = (frame.clone(), progress.clone());
+                grown_stage.release();
+                break frames;
             }
         }
     })
     .await
     .expect("both observations arrive before the stream ends");
-    let _ = fixture.shutdown().await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), turn).await;
+    fixture.shutdown().await.expect("fixture shuts down");
+    // The reply has no terminal response event, but its turn must still settle after shutdown.
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn)
+        .await
+        .expect("the turn ends after the fixture shuts down");
 
     // The frame the consumer kept is exactly the one it saw, even though a later delta edited the
     // chunk it shared with the newest snapshot.
