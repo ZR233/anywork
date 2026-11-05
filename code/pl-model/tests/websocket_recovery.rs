@@ -709,6 +709,104 @@ fn turn(prompt: &str, id: &str, steps: u32) -> TurnInput {
 }
 
 #[tokio::test]
+async fn websocket_burst_after_reliable_member_completes_without_replay() {
+    let reached = CancellationToken::new();
+    let release = CancellationToken::new();
+    let chunks = (0..96)
+        .map(|i| format!("正文片段-{i:02}；"))
+        .collect::<Vec<_>>();
+    let expected = chunks.concat();
+    let chunks = chunks.iter().map(String::as_str).collect::<Vec<_>>();
+    let frames = pl_provider_fixture::responses_reasoning_text(
+        &["already admitted reasoning"],
+        &chunks,
+        "burst-response",
+        "recovery-model",
+    );
+    let mut actions = frames[..4]
+        .iter()
+        .cloned()
+        .map(WebSocketAction::Event)
+        .collect::<Vec<_>>();
+    actions.push(WebSocketAction::Barrier {
+        reached: reached.clone(),
+        release: release.clone(),
+    });
+    actions.extend(frames[4..].iter().cloned().map(WebSocketAction::Event));
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesWebSocket,
+        "burst after reasoning",
+        0,
+        Reply::WebSocketScript(actions),
+    )])
+    .await
+    .unwrap();
+    let thread = thread(&fixture).await;
+    let mut subscription = thread.subscribe();
+    let running = tokio::spawn({
+        let thread = thread.clone();
+        async move {
+            thread
+                .run_turn(turn("burst after reasoning", "burst-turn", 1))
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        reached.cancelled().await;
+        loop {
+            let effects = thread.effects().await.unwrap();
+            if effects
+                .iter()
+                .map(|effect| effect.model_members.len())
+                .sum::<usize>()
+                == 1
+            {
+                break;
+            }
+            subscription.next().await.unwrap();
+        }
+    })
+    .await
+    .expect("Core admitted reasoning while the provider was held before its burst");
+    // The original owner is running and replies to admissions. There is no SQLite,
+    // GUI, slow observer or consumer gate that could account for a stalled stream.
+    release.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .unwrap()
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    thread.close().await.unwrap();
+    let records = fixture.finish().await.unwrap();
+    result.expect("a healthy burst must finish without discarding a reliable member");
+    assert_eq!(records.len(), 1, "no retry, reconnect or HTTP fallback");
+    assert!(records[0].accepted);
+    let output = effects
+        .iter()
+        .find_map(
+            |effect| match effect.attempt.as_ref().map(|attempt| &attempt.outcome) {
+                Some(pl_core::thread::AttemptOutcome::Committed(output)) => Some(output),
+                _ => None,
+            },
+        )
+        .expect("committed original attempt");
+    let receipt = pl_model::runtime::model_response_receipt(output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.response.content.as_deref(), Some(expected.as_str()));
+    assert_eq!(receipt.response.orchestration.transport_attempts, 1);
+    assert_eq!(receipt.response.observation.generation, 0);
+    assert!(receipt.response.observation.failed.is_empty());
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect.model_members.len())
+            .sum::<usize>(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn thread_slow_observer_and_final_receipt_keep_failed_generation_without_polluting_input() {
     let mut events = unfinished_text_prefix("discarded secret fragment");
     events.push(temporary_error());

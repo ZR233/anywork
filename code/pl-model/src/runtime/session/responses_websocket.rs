@@ -6,9 +6,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::runtime::responses_websocket::error::{connection_error, socket_error};
+use crate::runtime::responses_websocket::error::{connection_error, protocol_error, socket_error};
 
 type RawResponsesWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+const MAX_QUEUED_BYTES: u32 = 64 * 1024 * 1024;
 
 enum WebSocketCommand {
     Send {
@@ -25,7 +26,8 @@ struct QueuedMessage {
 /// 持续驱动物理 WebSocket 的连接句柄。
 ///
 /// 收包循环独立于模型事件消费者，因此 agent 执行工具或等待下一轮输入时仍会及时
-/// 回复 ping。该类型只管理物理连接，不持有 continuation 或 provider 配置。
+/// 回复 ping。有响应积压时以原帧数和字节预算向套接字施加背压，不把消费者暂慢
+/// 当作断线。该类型只管理物理连接，不持有 continuation 或 provider 配置。
 pub(crate) struct ResponsesWebSocketConnection {
     command_tx: mpsc::Sender<WebSocketCommand>,
     message_rx: mpsc::Receiver<QueuedMessage>,
@@ -40,7 +42,7 @@ impl ResponsesWebSocketConnection {
         let (terminal_tx, terminal_rx) = oneshot::channel();
         // Bound bytes as well as frame count; otherwise 32 large JSON frames could
         // retain gigabytes while the consumer is stalled. Ping/Pong never enter this queue.
-        let queued_bytes = Arc::new(Semaphore::new(64 * 1024 * 1024));
+        let queued_bytes = Arc::new(Semaphore::new(MAX_QUEUED_BYTES as usize));
         let pump_task = tokio::spawn(async move {
             let terminal = loop {
                 tokio::select! {
@@ -74,14 +76,21 @@ impl ResponsesWebSocketConnection {
                             Some(Ok(Message::Pong(_))) => {}
                             Some(Ok(message)) => {
                                 let is_close = matches!(message, Message::Close(_));
-                                let bytes = u32::try_from(message.len().saturating_add(64)).ok();
-                                let Some(permit) = bytes.and_then(|bytes| queued_bytes.clone().try_acquire_many_owned(bytes).ok()) else {
-                                    break connection_error("response event backlog exceeded its byte bound");
+                                let bytes = u32::try_from(message.len().saturating_add(64))
+                                    .ok().filter(|bytes| *bytes <= MAX_QUEUED_BYTES);
+                                let Some(bytes) = bytes else {
+                                    break protocol_error("single response event exceeds the 64 MiB queue byte limit");
                                 };
-                                // Never block ping/command handling on an abandoned consumer.
-                                // Overflow terminates this socket rather than growing memory.
-                                if message_tx.try_send(QueuedMessage { message, _bytes: permit }).is_err() {
-                                    break connection_error("response event backlog exceeded its bound");
+                                // next() can repeatedly return buffered frames without yielding.
+                                // Wait for the original consumer instead of mistaking a full queue
+                                // for a transport failure. Only this one pending frame is retained;
+                                // close/retire still abort and join this owned pump while it waits.
+                                let permit = match Arc::clone(&queued_bytes).acquire_many_owned(bytes).await {
+                                    Ok(permit) => permit,
+                                    Err(_) => break connection_error("connection owner closed"),
+                                };
+                                if message_tx.send(QueuedMessage { message, _bytes: permit }).await.is_err() {
+                                    break connection_error("connection owner closed");
                                 }
                                 if is_close {
                                     break connection_error("server closed the connection");
@@ -169,3 +178,6 @@ impl Drop for ResponsesWebSocketConnection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

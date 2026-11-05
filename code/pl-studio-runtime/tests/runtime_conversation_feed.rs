@@ -228,6 +228,165 @@ async fn history(
 }
 
 #[tokio::test]
+async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> Result<()> {
+    use pl_model::model::ModelTransportProfile;
+    use pl_provider_fixture::{Protocol, Reply, Step, WebSocketAction};
+    use tokio_util::sync::CancellationToken;
+
+    let reached = CancellationToken::new();
+    let release = CancellationToken::new();
+    let frames = pl_provider_fixture::responses_reasoning_text(
+        &[" a"],
+        &[" a"; 96],
+        "burst",
+        support::MODEL,
+    );
+    let mut actions = frames[..4]
+        .iter()
+        .cloned()
+        .map(WebSocketAction::Event)
+        .collect::<Vec<_>>();
+    actions.push(WebSocketAction::Barrier {
+        reached: reached.clone(),
+        release: release.clone(),
+    });
+    actions.extend(frames[4..].iter().cloned().map(WebSocketAction::Event));
+    let mut env = Environment::with_transport(
+        vec![Step::prompt(
+            Protocol::ResponsesWebSocket,
+            "burst",
+            0,
+            Reply::WebSocketScript(actions),
+        )],
+        vec![],
+        ModelTransportProfile::responses_websocket(),
+    )
+    .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, "burst").await?;
+        let id = thread.thread.id;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .await?;
+        let observed = async {
+            let first = chat(&mut feed).await?;
+            ensure!(first.placement == ChatPlacement::Set);
+            tokio::time::timeout(support::integration_test_deadline()?, reached.cancelled())
+                .await?;
+            let mut latest = first.clone();
+            let mut appended = Vec::new();
+            // Observe the real product owner admitting the first complete member before
+            // releasing the provider burst. Neither the writer nor Main is gated.
+            loop {
+                if latest.current.as_ref().is_some_and(|current| {
+                    current.items.iter().any(|item| {
+                        item.is_work_group()
+                            && item.summary.as_ref().is_some_and(|summary| {
+                                summary.member_count == 1 && summary.active_count == 0
+                            })
+                    })
+                }) {
+                    break;
+                }
+                latest = chat(&mut feed).await?;
+                appended.extend(items(latest.entries.clone())?);
+            }
+            release.cancel();
+            let mut terminal = None;
+            let mut retired = false;
+            while terminal.is_none() || !retired {
+                match next(&mut feed).await? {
+                    ConversationEvent::Chat { batch } => {
+                        batch.validate_for(&ChatScope::Main)?;
+                        ensure!(batch.placement == ChatPlacement::Append);
+                        if let Some(current) = &batch.current {
+                            retired = current.active_turn.is_none() && current.items.is_empty();
+                        }
+                        appended.extend(items(batch.entries)?);
+                    }
+                    ConversationEvent::State { update } => {
+                        if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                            && let ThreadNotification::TurnCompleted { turn } =
+                                notification.notification
+                        {
+                            ensure!(
+                                matches!(turn.state, TurnState::Completed(_)),
+                                "burst Turn failed: {:?}",
+                                turn.state
+                            );
+                            terminal = Some(turn.id);
+                        }
+                    }
+                }
+            }
+            let mut published = history(feed.reader(), first, demand(7)).await?;
+            published.extend(appended);
+            ensure!(published.iter().filter(|item| item.is_work_group()).count() == 1);
+            let (members, bytes) = count_output(
+                &env,
+                &id,
+                feed.reader(),
+                &published,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            )
+            .await?;
+            ensure!(
+                members == 2 && bytes == 194,
+                "burst lost or duplicated original output: {members} members, {bytes} bytes"
+            );
+            Ok(published
+                .into_iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>())
+        }
+        .await;
+        let identities = finish_feed(&mut feed, observed).await?;
+        ensure!(
+            env.root_provider.recorded().len() == 1,
+            "burst was replayed or fell back to HTTP"
+        );
+        env.restart().await?;
+        let mut reopened = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .await?;
+        let read = async {
+            let first = chat(&mut reopened).await?;
+            let published = history(reopened.reader(), first, demand(7)).await?;
+            ensure!(
+                published.iter().map(|item| &item.id).eq(identities.iter()),
+                "restart changed Timeline identities/order"
+            );
+            let (members, bytes) = count_output(
+                &env,
+                &id,
+                reopened.reader(),
+                &published,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            )
+            .await?;
+            ensure!(members == 2 && bytes == 194);
+            Ok(())
+        }
+        .await;
+        finish_feed(&mut reopened, read).await?;
+        ensure!(
+            env.root_provider.recorded().len() == 1,
+            "cold read activated the provider"
+        );
+        Ok(())
+    }
+    .await;
+    release.cancel();
+    env.finish(result).await
+}
+
+#[tokio::test]
 async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_batch() -> Result<()>
 {
     let stage = ReplyStage::new();

@@ -137,6 +137,14 @@ pub struct Environment {
 
 impl Environment {
     pub async fn new(root: Vec<Step>, child: Vec<Step>) -> Result<Self> {
+        Self::with_transport(root, child, ModelTransportProfile::responses_http()).await
+    }
+
+    pub async fn with_transport(
+        root: Vec<Step>,
+        child: Vec<Step>,
+        transport: ModelTransportProfile,
+    ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
@@ -164,9 +172,7 @@ impl Environment {
             ("child-fixture", &child_provider),
         ] {
             let mut model = ModelInfo::compatible(MODEL);
-            model
-                .binding
-                .set_transport(ModelTransportProfile::responses_http());
+            model.binding.set_transport(transport.clone());
             model.capabilities.instruction_snapshot_overrides = true;
             model.base_instructions = "Lifecycle fixture model base".into();
             config.models.accounts.insert(
