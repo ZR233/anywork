@@ -274,6 +274,10 @@ final class SidebarFixture {
     ]);
     record({
       'event': 'canonicalCandidates',
+      'directory': _cleanupDirectoryDiagnostic(
+        graph,
+        candidates.map((candidate) => candidate.threadId),
+      ),
       'targets': candidates
           .map((candidate) => candidate.diagnostic)
           .toList(growable: false),
@@ -340,9 +344,49 @@ final class SidebarFixture {
         'event': 'failure',
         'error': error.toString(),
         'stack': stack.toString(),
+        'directory': _cleanupDirectoryDiagnostic(
+          graph,
+          candidates.map((candidate) => candidate.threadId),
+        ),
       });
       rethrow;
     }
+  }
+
+  static Map<String, Object?> _cleanupDirectoryDiagnostic(
+    AppGraph graph,
+    Iterable<String> threadIds,
+  ) {
+    final state = graph.client.project.state;
+    final directory = state.agents;
+    return {
+      'loaded': state.agentsLoaded,
+      'revision': directory?.revision,
+      'transport': {
+        'phase': state.agentSync.phase.name,
+        'errorMessage': state.agentSync.errorMessage,
+        'retryExhausted': state.agentSync.retryExhausted,
+      },
+      'targets': [
+        for (final threadId in threadIds)
+          {
+            'threadId': threadId,
+            'rows': directory == null
+                ? null
+                : [
+                    for (final agent in directory.values)
+                      if (agent.threadId == threadId)
+                        {
+                          'agentId': agent.agentId,
+                          'executionId': agent.execution?.id,
+                          'executionPhase': agent.execution?.phase.name,
+                          'canStop': agent.canStop,
+                          'stateType': agent.state.runtimeType.toString(),
+                        },
+                  ],
+          },
+      ],
+    };
   }
 
   static List<_CleanupTarget> _captureCleanupTargets(

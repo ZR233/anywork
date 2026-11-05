@@ -486,6 +486,9 @@ jobs:
             target/ci-desktop-linux/cases/**/timeline-concept.json
             target/ci-desktop-linux/cases/**/timeline-concept-reopen.json
             target/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
+            target/ci-desktop-linux/cases/**/sidebar-shutdown.json
+            target/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
+            target/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
             target/ci-desktop-linux/cases/**/gui.log
             target/ci-desktop-linux/cases/**/*-integration.log
             target/ci-desktop-linux/cases/**/*-driver.log
