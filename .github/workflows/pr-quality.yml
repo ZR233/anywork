@@ -214,10 +214,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # Keep the Linux producer/consumer policy aligned without changing assertions.
+      # Omit DWARF in Linux CI; keep assertions and leave disk for native GUI outputs.
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -262,8 +262,8 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -354,8 +354,8 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     permissions:
       contents: read
     steps:
@@ -400,8 +400,8 @@ jobs:
     timeout-minutes: 150
     env:
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -497,8 +497,8 @@ jobs:
     timeout-minutes: 150
     env:
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
