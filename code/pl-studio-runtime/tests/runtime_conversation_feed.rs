@@ -1485,3 +1485,161 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
     .await;
     env.finish(result).await
 }
+
+#[tokio::test]
+async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Result<()> {
+    const ITEMS: usize = 2_000;
+    const BYTES: u64 = 256_000;
+    let prompt = "realistic-many-live-bodies";
+    let env = Environment::new(
+        vec![prompt_step(
+            prompt,
+            0,
+            pl_provider_fixture::gui_streaming_output_reply(ITEMS, 1),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, prompt).await?;
+        let id = &thread.thread.id;
+        let (turn_id, execution_id) = {
+            let snapshot = env.runtime.thread_snapshot(id).await?;
+            let turn = snapshot.active_turn.as_ref().context("original active Turn")?;
+            ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+            let execution = running_execution(&snapshot, &turn.id)
+                .context("original execution was not running before the many-item read")?;
+            (turn.id.clone(), execution.to_owned())
+        };
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand(37))
+            .await?;
+        let observed = async {
+            let first = chat(&mut feed).await?;
+            first.validate_for(&ChatScope::Main)?;
+            ensure!(first.placement == ChatPlacement::Set);
+            ensure!(first.entries.len() <= demand(37).max_items as usize);
+            let mut peak_batch = first.encoded_len()?;
+            ensure!(peak_batch <= demand(37).max_bytes as usize);
+            let mut seen_original = first.current.as_ref().is_some_and(|current| {
+                current.active_turn.as_ref().is_some_and(|turn| turn.id == turn_id)
+            });
+            let mut retired = seen_original
+                && first.current.as_ref().is_some_and(|current| {
+                    current.active_turn.is_none() && current.items.is_empty()
+                });
+            let reader = feed.reader().clone();
+            let initial = history(&reader, first, demand(37)).await?;
+            let mut last_position = initial.last().and_then(|item| item.position);
+            // This is the single admitted header inventory used by the assertion, not a second
+            // body or window queue. The independent reader clones at most one demand-sized slice.
+            let admitted = std::sync::Mutex::new((initial, false));
+            let (changed, mut changes) = tokio::sync::watch::channel(0_usize);
+            let observe = async {
+                let result = async {
+                    let mut terminal = None;
+                    while terminal.is_none() || !retired {
+                        match next(&mut feed).await? {
+                            ConversationEvent::Chat { batch } => {
+                                batch.validate_for(&ChatScope::Main)?;
+                                ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
+                                ensure!(batch.entries.len() <= demand(37).max_items as usize);
+                                peak_batch = peak_batch.max(batch.encoded_len()?);
+                                ensure!(peak_batch <= demand(37).max_bytes as usize);
+                                if let Some(current) = &batch.current {
+                                    seen_original |= current.active_turn.as_ref()
+                                        .is_some_and(|turn| turn.id == turn_id);
+                                    retired = seen_original && current.active_turn.is_none()
+                                        && current.items.is_empty();
+                                }
+                                let items = items(batch.entries)?;
+                                for item in &items {
+                                    ensure!(item.position > last_position, "Main Append changed item order");
+                                    last_position = item.position;
+                                }
+                                let count = {
+                                    let mut state = admitted.lock().expect("test header owner poisoned");
+                                    state.0.extend(items);
+                                    state.0.len()
+                                };
+                                changed.send_replace(count);
+                            }
+                            ConversationEvent::State { update } => {
+                                if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                                {
+                                    ensure!(turn.id == turn_id);
+                                    ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+                                    ensure!(matches!(turn.state, TurnState::Completed(_)),
+                                        "real many-item Turn failed: {:?}", turn.state);
+                                    ensure!(terminal.replace(turn.id).is_none(), "duplicate target terminal");
+                                }
+                            }
+                        }
+                    }
+                    terminal.context("typed many-item terminal").map(|terminal| (terminal, peak_batch))
+                }.await;
+                let count = {
+                    let mut state = admitted.lock().expect("test header owner poisoned");
+                    state.1 = true;
+                    state.0.len()
+                };
+                changed.send_replace(count);
+                result
+            };
+            let consume = async {
+                let mut cursor = 0;
+                let mut display_ids = HashSet::new();
+                let mut identities = HashSet::new();
+                let mut turns = HashSet::new();
+                let (mut count, mut bytes) = (0, 0);
+                let (mut live_batches, mut live_items, mut live_bytes) = (0, 0, 0);
+                loop {
+                    let (batch, done) = {
+                        let state = admitted.lock().expect("test header owner poisoned");
+                        (state.0.iter().skip(cursor).take(37).cloned().collect::<Vec<_>>(), state.1)
+                    };
+                    if batch.is_empty() {
+                        if done {
+                            break;
+                        }
+                        changes.changed().await.context("header observation closed before completion")?;
+                        continue;
+                    }
+                    let before = env.runtime.thread_snapshot(id).await?;
+                    let (members, body_bytes) = count_output(&env, id, &reader, &batch,
+                        &mut display_ids, &mut identities, &mut turns).await?;
+                    let after = env.runtime.thread_snapshot(id).await?;
+                    if members > 0
+                        && running_execution(&before, &turn_id) == Some(execution_id.as_str())
+                        && running_execution(&after, &turn_id) == Some(execution_id.as_str())
+                    {
+                        live_batches += 1;
+                        live_items += members;
+                        live_bytes += body_bytes;
+                    }
+                    cursor += batch.len();
+                    count += members;
+                    bytes += body_bytes;
+                }
+                ensure!(turns.len() == 1 && turns.contains(&turn_id));
+                ensure!(count == ITEMS && bytes == BYTES,
+                    "many-item body coverage changed: items={count}, bytes={bytes}");
+                ensure!(live_batches >= 2 && live_items >= 2 && live_bytes > 0,
+                    "no repeated original-running many-item reads: batches={live_batches}, items={live_items}, bytes={live_bytes}");
+                Ok::<_, anyhow::Error>((count, bytes, live_batches, live_items, live_bytes))
+            };
+            tokio::time::timeout(Duration::from_secs(120), async {
+                let (main, bodies) = tokio::join!(observe, consume);
+                let (terminal, peak_batch) = main.with_context(|| format!("many-item body consumer: {bodies:?}"))?;
+                let (count, bytes, live_batches, live_items, live_bytes) = bodies?;
+                ensure!(terminal == turn_id);
+                eprintln!("continuous many bodies: execution={execution_id}, turn={turn_id}, items={count}, bytes={bytes}, original_running_batches={live_batches}, original_running_items={live_items}, original_running_bytes={live_bytes}, peak_chat_bytes={peak_batch}");
+                Ok::<_, anyhow::Error>(())
+            }).await.context("paced many-item live consumer exceeded its original deadline")?
+        }.await;
+        finish_feed(&mut feed, observed).await
+    }.await;
+    env.finish(result).await
+}
