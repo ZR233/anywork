@@ -199,6 +199,18 @@ impl AgentServices {
         owner: &StudioThreadAssembler,
         record: &pl_protocol::Thread,
     ) -> Result<()> {
+        let intent = self
+            .store
+            .agent_close(&record.id)
+            .await?
+            .context("child has no close intent")?;
+        let closing = owner.0.state().entries.get_mut(&record.id).map(|entry| {
+            entry.ready = false;
+            entry.thread.clone()
+        });
+        if let Some(thread) = closing {
+            drop(owner.prepare_close(&record.id, &thread));
+        }
         let operation = owner.agent_operation(&record.id).await;
         let receiver = owner.0.state().entries.get(&record.id).and_then(|entry| {
             (entry.purpose == EntryPurpose::ReportReceiver).then(|| entry.incarnation.clone())
@@ -210,11 +222,6 @@ impl AgentServices {
                 .release_report_receiver(&record.id, &incarnation)
                 .await?;
         }
-        let intent = self
-            .store
-            .agent_close(&record.id)
-            .await?
-            .context("child has no close intent")?;
         if intent.execution_closed {
             return Ok(());
         }

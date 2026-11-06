@@ -41,6 +41,7 @@ class ChatItemView extends StatefulWidget {
     this.isDisplayActive,
     this.groupMembersBuilder,
     this.onToolExpansionChanged,
+    this.toolInitiallyExpanded = false,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
@@ -52,6 +53,7 @@ class ChatItemView extends StatefulWidget {
   final bool Function()? isDisplayActive;
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
   final ValueChanged<bool>? onToolExpansionChanged;
+  final bool toolInitiallyExpanded;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -295,6 +297,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       final details = TimelineToolDetails(
         item: tool,
         inline: wait != null,
+        initiallyExpanded: widget.toolInitiallyExpanded,
         onExpansionChanged: widget.onToolExpansionChanged,
         additionalContentBuilder: item.attachments.isEmpty
             ? null
@@ -316,7 +319,6 @@ class _ChatItemViewState extends State<ChatItemView> {
                         ) ??
                         const Text('内容读取尚未就绪'),
                   ),
-                if (tool.error != null) Text(tool.error!),
               ],
       );
       card = TimelineActivityTileTheme(
@@ -324,6 +326,7 @@ class _ChatItemViewState extends State<ChatItemView> {
             ? TimelineWaitPanel(
                 identity: item.id,
                 presentation: wait,
+                initiallyExpanded: widget.toolInitiallyExpanded,
                 diagnostics: details,
                 onExpansionChanged: widget.onToolExpansionChanged,
               )
@@ -332,6 +335,7 @@ class _ChatItemViewState extends State<ChatItemView> {
                   (contents == null || contents.isEmpty)
             ? TimelineWebSearchToolCard(
                 item: tool,
+                initiallyExpanded: widget.toolInitiallyExpanded,
                 onExpansionChanged: widget.onToolExpansionChanged,
               )
             : details,
@@ -618,6 +622,7 @@ class _ChatItemViewState extends State<ChatItemView> {
   }) => TimelineActivityTileTheme(
     child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
+      initiallyExpanded: item.type == 'tool' && widget.toolInitiallyExpanded,
       onExpansionChanged: item.type == 'tool'
           ? widget.onToolExpansionChanged
           : null,

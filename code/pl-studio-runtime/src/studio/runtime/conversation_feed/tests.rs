@@ -653,7 +653,11 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
             ));
         }
         let (events, state) = tokio::sync::broadcast::channel(1);
-        feed.state = Some(state);
+        feed.state = Some(DeliveryReceiver::new(
+            state,
+            Arc::new(tokio::sync::Notify::new()),
+            Default::default(),
+        ));
         feed.state_turn = true;
         events.send(ThreadLiveEvent::UnframedCommit {
             sequence: feed.state_effect_floor + 1,
@@ -1021,6 +1025,7 @@ async fn cold_open_is_passive_and_absent_live_absent_revokes_old_read_qualificat
         let source = Arc::new(super::super::thread_observation::ThreadLiveFeed::new(
             None,
             owner_progress,
+            Default::default(),
         ));
         slot.install(source.clone());
         slot.retire(&source);

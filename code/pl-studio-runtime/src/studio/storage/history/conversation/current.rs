@@ -93,7 +93,15 @@ impl PreparedCurrent {
     /// Node/handle allowance for the original HistoryStore's secondary pending indexes.
     /// No body or recovery is copied; every original writer owner still pays its full charge.
     pub(in crate::studio) fn pending_index_bytes(&self) -> u64 {
-        128_u64.saturating_add((self.timeline.len() as u64).saturating_mul(256))
+        128_u64
+            .saturating_add((self.timeline.len() as u64).saturating_mul(256))
+            .saturating_add(
+                self.timeline_update
+                    .members()
+                    .iter()
+                    .map(|member| 512_u64.saturating_add(member.item_id.len() as u64 * 2))
+                    .fold(0_u64, u64::saturating_add),
+            )
     }
 
     pub(in crate::studio) fn replace_projection(

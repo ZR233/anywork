@@ -131,7 +131,7 @@ struct HistoryStoreState {
 mod timeline_pending;
 #[path = "history/timeline_read.rs"]
 mod timeline_read;
-pub(in crate::studio) use timeline_read::TimelinePage;
+pub(in crate::studio) use timeline_read::{TimelinePage, TimelineReadCut};
 
 /// Bounded singleton baselines owned only by one physical effect transaction.
 /// They are advanced locally; no second live projection or durable state is created.
@@ -1752,15 +1752,13 @@ impl HistoryStore {
             ceiling: head,
             demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
         };
+        let projection_generation = conversation::timeline::generation(&tx).await?;
         let (page, timeline) = if let Some(scope) = scope {
-            let generation = conversation::timeline::read_state(&tx)
-                .await?
-                .context("initialized history is missing its timeline recovery head")?
-                .generation;
             if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
                 conversation::timeline::validate_members_ref(
                     &tx,
                     &connection.database_id,
+                    &projection_generation,
                     reference,
                 )
                 .await?;
@@ -1772,6 +1770,7 @@ impl HistoryStore {
                 i64::MAX as u64,
                 current.source_effect_seq,
                 demand.max_items + 1,
+                &current.atoms,
             )
             .await?;
             let mut entries = Vec::new();
@@ -1782,7 +1781,7 @@ impl HistoryStore {
                     conversation::timeline::validate_item(
                         item,
                         &connection.database_id,
-                        &generation,
+                        &projection_generation,
                     )?;
                 }
                 let length = conversation::timeline::delivery_entry_bytes(
@@ -1811,7 +1810,7 @@ impl HistoryStore {
                     entries: entries.into_iter().map(|(_, entry)| entry).collect(),
                     before,
                     ceiling,
-                    generation: conversation::timeline::generation(&tx).await?,
+                    generation: projection_generation.clone(),
                 }),
             )
         } else {
@@ -1841,7 +1840,6 @@ impl HistoryStore {
             sources
                 .extend(conversation::sources::read(&tx, &ids, current.source_effect_seq).await?);
         }
-        let projection_generation = conversation::timeline::generation(&tx).await?;
         tx.commit().await?;
         Ok(Some(ColdConversation {
             projection_generation,
@@ -3177,7 +3175,6 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          WHERE version IN ('m20261029_000001_history_demand_conversation',
                            'm20261101_000010_history_model_route_head',
                            'm20261102_000001_history_atom_metadata',
-                           'm20261104_000001_history_background_results',
                            'm20261103_000001_history_timeline_items')",
     )
     .await?;

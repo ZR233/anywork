@@ -30,6 +30,7 @@ import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
+import 'support/timeline_output_consumption.dart';
 
 const _seedPrompt = 'Generate the local timeline history fixture';
 const _streamPrompt = 'Stream the local timeline reading fixture';
@@ -184,37 +185,78 @@ Future<void> _runLive(
   Map<String, Object?> report,
 ) async {
   await scene.submit(_seedPrompt);
+  final seedConsumption = await scene.outputConsumption();
+  try {
+    await seedConsumption.readMany(
+      loadOlder: () => scene.loadOlder(seedConsumption.lease),
+      pump: () async {
+        await scene.tester.pump(const Duration(milliseconds: 16));
+        expect(scene.tester.takeException(), isNull);
+      },
+      expectedItems: 2000,
+      expectedBytes: 256000,
+    );
+  } finally {
+    report['manyBodyConsumption'] = await seedConsumption.close();
+  }
   await scene.waitForCompletedTurn();
   final seed = await scene.readyLease('seed actual content layout');
   expect(seed.loadedCount, greaterThan(0));
-  expect(seed.hasOlder, isTrue);
   expect(find.byType(ChatItemView), findsWidgets);
 
   final beforeDetachGeneration = seed.generation;
   await scene.leaveAndReturn();
   final reattached = await scene.readyLease('reattached seed content');
   expect(reattached.generation, greaterThan(beforeDetachGeneration));
+  // A live feed may have delivered the entire seed. The new historical
+  // window starts at the completed tail and must expose its older cursor.
+  expect(reattached.hasOlder, isTrue);
   await capturePresentation(scene.tester, 'timeline-live-history.png');
 
   final priorTurn = scene.latestTurnId;
   await scene.submit(_streamPrompt);
   final streaming = await scene.waitForStreamingTurn(after: priorTurn);
-  final streamingBody = await scene.waitForStreamingBody(streaming);
+  final singleConsumption = await scene.outputConsumption();
+  late _StreamingBody streamingBody;
+  late CurrentContentPreview afterPage;
   final streamingLease = streaming.lease;
-  await capturePresentation(scene.tester, 'timeline-streaming-before-page.png');
-  scene.expectStreamingTurn(streaming);
-  final beforePage = scene.ids(streamingLease);
-  await scene.loadOlder(streamingLease);
-  expect(scene.ids(streamingLease).length, greaterThan(beforePage.length));
-  expect(
-    scene
-        .ids(streamingLease)
-        .skip(scene.ids(streamingLease).length - beforePage.length),
-    beforePage,
-  );
-  final afterPage = scene.expectStreamingTurn(streaming);
-  await capturePresentation(scene.tester, 'timeline-streaming-after-page.png');
-  await scene.waitForTerminalTurn(streaming.turnId);
+  try {
+    await Future.wait([
+      singleConsumption.readGrowing(
+        streaming.preview.reference,
+        owner: streaming.response.id,
+        expectedBytes: 256000,
+      ),
+      () async {
+        streamingBody = await scene.waitForStreamingBody(streaming);
+        await capturePresentation(
+          scene.tester,
+          'timeline-streaming-before-page.png',
+        );
+        scene.expectStreamingTurn(streaming);
+        final beforePage = scene.ids(streamingLease);
+        await scene.loadOlder(streamingLease);
+        expect(
+          scene.ids(streamingLease).length,
+          greaterThan(beforePage.length),
+        );
+        expect(
+          scene
+              .ids(streamingLease)
+              .skip(scene.ids(streamingLease).length - beforePage.length),
+          beforePage,
+        );
+        afterPage = scene.expectStreamingTurn(streaming);
+        await capturePresentation(
+          scene.tester,
+          'timeline-streaming-after-page.png',
+        );
+        await scene.waitForTerminalTurn(streaming.turnId);
+      }(),
+    ]);
+  } finally {
+    report['singleBodyConsumption'] = await singleConsumption.close();
+  }
   await scene.waitForCompletedTurn(after: priorTurn);
 
   await scene.leaveAndReturn();
@@ -522,6 +564,45 @@ final class _TimelineScene {
       timeout: const Duration(minutes: 6),
     );
     latestTurnId = turn!.turnId;
+  }
+
+  Future<TimelineOutputConsumption> outputConsumption() async {
+    TimelineOutputConsumption? consumption;
+    await until(() {
+      final selected = graph.client.selection.state.selectedThreadId;
+      if (selected == null ||
+          (_submittedThreadId != null && selected != _submittedThreadId)) {
+        return false;
+      }
+      final display = graph.timeline.lease(selected);
+      final session = graph.client.conversations.session(selected);
+      final execution = session.state.runtime?.execution;
+      final turn = session.state.activeTurn;
+      if (display == null ||
+          !display.isMounted ||
+          display.isRetired ||
+          display.content.state.value is! ChatReady<bool> ||
+          execution == null ||
+          execution.phase != AgentExecutionPhase.running ||
+          turn == null ||
+          !turn.state.isBusy ||
+          turn.turnId != execution.turnId ||
+          turn.turnId == _priorTurnId) {
+        return false;
+      }
+      _submittedThreadId ??= selected;
+      _submittedTurnId ??= turn.turnId;
+      expect(turn.turnId, _submittedTurnId);
+      consumption = TimelineOutputConsumption(
+        lease: display,
+        session: session,
+        conversations: graph.client.conversations,
+        turnId: turn.turnId,
+        executionId: execution.id,
+      );
+      return true;
+    }, 'original running execution for content consumption');
+    return consumption!;
   }
 
   Future<_StreamingTurn> waitForStreamingTurn({String? after}) async {

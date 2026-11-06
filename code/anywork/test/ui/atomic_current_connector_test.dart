@@ -17,6 +17,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/conversation_
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
@@ -243,6 +244,147 @@ final class _Harness {
 }
 
 void main() {
+  testWidgets(
+    'an expanded member keeps its identity and reads terminal output across Append',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final members = _MemberContent();
+      await h.accept([workItem('tool-group', closed: false, active: 1)]);
+      h.presentation.live.value.single.expansion.openMembers = (_, _) async =>
+          members;
+      await tester.pumpWidget(h.host());
+      final header = find.byKey(
+        const ValueKey('source-unit-header:tool-group'),
+      );
+      await tester.tap(header);
+      await _flush(tester);
+      final active = ChatAtom(
+        id: 'tool-member',
+        source: _source,
+        sourceOrder: 1,
+        kind: ChatAtomKind.toolCall,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const ActiveChatAtom(
+          started: null,
+          status: ChatActiveStatus.running,
+        ),
+        tool: const ChatToolIdentity(callId: 'call', name: 'exec'),
+        contents: [
+          ChatAtomContent(role: ChatContentRole.toolOutput, reference: _ref()),
+        ],
+      );
+      await members.consumer!.applyBatch(
+        ChatBatch(
+          placement: ChatPlacement.set,
+          entries: [ChatAtomEntry(active)],
+        ),
+      );
+      await _flush(tester);
+      final memberState = tester.state(find.byType(TimelineMemberAtom));
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(TimelineToolDetails),
+              matching: find.byType(InkWell),
+            )
+            .first,
+      );
+      await _flush(tester);
+      final original = members.scopes.single;
+      expect(original.watches, hasLength(1));
+      original.watches.single.add(_window('running output'));
+      await tester.pump();
+      final bytes = utf8.encode('terminal output');
+      members.onRead = (_, _) async => ContentWindow(
+        bytes: bytes,
+        offset: 0,
+        generation: 'sealed',
+        availableThrough: bytes.length,
+        sealed: true,
+      );
+      final completed = ChatAtom(
+        id: active.id,
+        source: _source,
+        sourceOrder: 1,
+        completionItemId: 'completion',
+        completionSeq: 1,
+        kind: active.kind,
+        delivery: active.delivery,
+        tool: active.tool,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contents: const [
+          ChatAtomContent(
+            role: ChatContentRole.toolOutput,
+            reference: ContentRef(
+              databaseId: 'database',
+              target: BodyContentTarget(
+                owner: ItemContentOwner(itemId: 'completion'),
+                key: 'tool.result',
+              ),
+            ),
+          ),
+        ],
+        payload: InlinePayload(
+          bytes: utf8.encode(
+            jsonEncode({
+              'contract': 'anywork.chat/1',
+              'type': 'tool',
+              'data': {
+                'invocation': {
+                  'toolCallId': 'call',
+                  'name': 'exec',
+                  'presentationContract': 'builtin.exec@2',
+                },
+                'state': {
+                  'kind': 'succeeded',
+                  'completedAt': 12,
+                  'output': {'exitCode': 0, 'attachments': []},
+                },
+              },
+              'bodies': [
+                {
+                  'key': 'tool.arguments',
+                  'byteLength': 2,
+                  'inline': utf8.encode('{}'),
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+      await members.consumer!.applyBatch(
+        ChatBatch(
+          placement: ChatPlacement.append,
+          entries: [ChatAtomEntry(completed)],
+        ),
+      );
+      await _flush(tester);
+      expect(tester.state(find.byType(TimelineMemberAtom)), same(memberState));
+      expect(original.closed, isTrue);
+      expect(original.cancels, 1);
+      expect(
+        tester
+            .widget<TimelineToolDetails>(find.byType(TimelineToolDetails))
+            .initiallyExpanded,
+        isTrue,
+      );
+      expect(members.scopes.last.reads, hasLength(1));
+      expect(find.textContaining('terminal output'), findsWidgets);
+      await tester.tap(header);
+      await _flush(tester);
+      expect(
+        members.scopes.every((scope) => !scope.isActive && scope.closed),
+        isTrue,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final kind in [
     InteractionKind.userInput,
     InteractionKind.toolApproval,

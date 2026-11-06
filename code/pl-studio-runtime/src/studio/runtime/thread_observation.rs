@@ -12,7 +12,9 @@ mod directory;
 mod publication;
 mod reports;
 mod slot;
-pub(super) use publication::{ConversationCut, ConversationRegistration, ConversationSource};
+pub(super) use publication::{
+    ConversationCut, ConversationRegistration, ConversationSource, DeliveryReceiver,
+};
 pub(super) use slot::ObservationSlot;
 
 use super::{ModelPerformanceOwner, StudioRuntime};
@@ -39,8 +41,8 @@ use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
 /// Fixed bound on the frames one subscriber may fall behind the projection owner.
 ///
-/// The feed is a bounded observation channel, not a log: a subscriber that stops draining observes
-/// a lag and resynchronizes from the database window instead of letting this queue grow with history.
+/// The original publisher waits for actual reads at this bound. Owner closure
+/// revokes outward delivery before joining observation and storage responsibilities.
 const LIVE_FEED_FRAMES: usize = 512;
 
 /// One output of a Thread's single realtime projection owner.
@@ -97,7 +99,9 @@ pub(super) struct RuntimeStateCut {
 /// session at the same time. Subscribers therefore forward typed events and never project, publish
 /// or read the effect window themselves.
 pub(in crate::studio) struct ThreadLiveFeed {
+    delivery_closed: tokio_util::sync::CancellationToken,
     events: broadcast::Sender<ThreadLiveEvent>,
+    event_capacity: Arc<Notify>,
     /// The Thread's authoritative typed storage state, published by this owner only.
     ///
     /// The projection owner is the one place that derives it from the owner snapshot and the
@@ -161,15 +165,18 @@ impl ThreadLiveFeed {
     pub(super) fn new(
         storage: Option<pl_protocol::ThreadStorageState>,
         owner_progress: watch::Receiver<Progress>,
+        delivery_closed: tokio_util::sync::CancellationToken,
     ) -> Self {
         let (events, _) = broadcast::channel(LIVE_FEED_FRAMES);
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
+            conversation: publication::ConversationPublication::new(delivery_closed.clone()),
+            delivery_closed,
             events,
+            event_capacity: Arc::new(Notify::new()),
             storage,
             last_turn,
-            conversation: Default::default(),
             owner_progress,
             #[cfg(test)]
             first_open_wait: Default::default(),
@@ -194,8 +201,21 @@ impl ThreadLiveFeed {
             .clone()
     }
 
-    pub(in crate::studio) fn subscribe(&self) -> broadcast::Receiver<ThreadLiveEvent> {
-        self.events.subscribe()
+    pub(in crate::studio) fn subscribe(&self) -> DeliveryReceiver<ThreadLiveEvent> {
+        DeliveryReceiver::new(
+            self.events.subscribe(),
+            self.event_capacity.clone(),
+            self.delivery_closed.clone(),
+        )
+    }
+    async fn wait_event_capacity(&self) {
+        publication::wait_capacity(
+            &self.events,
+            LIVE_FEED_FRAMES,
+            &self.event_capacity,
+            &self.delivery_closed,
+        )
+        .await;
     }
 
     /// Watches the newest terminal Turn this owner projected, so a subscriber that registers after
@@ -241,7 +261,7 @@ impl ThreadLiveFeed {
     }
 
     fn has_subscribers(&self) -> bool {
-        self.events.receiver_count() != 0
+        !self.delivery_closed.is_cancelled() && self.events.receiver_count() != 0
     }
 
     fn publish(&self, event: impl FnOnce() -> ThreadLiveEvent) {
@@ -329,6 +349,7 @@ impl WorkerState {
 }
 struct Observation {
     thread: ThreadHandle,
+    feed: Arc<ThreadLiveFeed>,
     state: Arc<WorkerState>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -382,6 +403,7 @@ pub(super) struct ObservationServices {
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
 }
 struct Shared {
+    delivery_closed: tokio_util::sync::CancellationToken,
     projector: ObservationServices,
     observations: Mutex<BTreeMap<String, Vec<Arc<Observation>>>>,
     /// Stable passive slots survive absent → live → absent transitions.
@@ -395,6 +417,7 @@ pub(super) struct ThreadObservations(Arc<Shared>);
 impl ThreadObservations {
     pub(super) fn new(projector: ObservationServices) -> Self {
         Self(Arc::new(Shared {
+            delivery_closed: Default::default(),
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
@@ -433,6 +456,27 @@ impl ThreadObservations {
             .and_then(|slot| slot.source())
     }
 
+    /// End outward delivery before joining producers; their original save
+    /// responsibility continues independently of an idle external receiver.
+    pub(super) fn close_deliveries(&self) {
+        self.0.delivery_closed.cancel();
+    }
+
+    fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
+        let observations = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entries) = observations.get(id) {
+            for observation in entries {
+                if observation.thread.same_instance(thread) {
+                    observation.feed.delivery_closed.cancel();
+                }
+            }
+        }
+    }
+
     /// Register before any asynchronous read or source lookup. This does not activate execution.
     pub(super) fn observation_slot(&self, id: &str) -> Arc<ObservationSlot> {
         self.0
@@ -457,6 +501,7 @@ impl ThreadObservations {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let synchronizing = owner.clone();
+        let closing = owner.clone();
         let message_store = self.0.projector.store.clone();
         let closing_factory = thread_factory.clone();
         self.0.projector.threads.observe_assembly(
@@ -538,6 +583,9 @@ impl ThreadObservations {
                 })
             })),
             move |id, thread| {
+                if let Some(owner) = closing.upgrade() {
+                    ThreadObservations(owner).close_delivery(&id, &thread);
+                }
                 // Cancellation is synchronous, so no new preparation can pass the gate.
                 let gate = closing_factory.stop_tool_operation(&id);
                 let rejected = rejected_tools.clone();
@@ -663,12 +711,14 @@ impl ThreadObservations {
         let feed = Arc::new(ThreadLiveFeed::new(
             initial_storage,
             state.progress.subscribe(),
+            self.0.delivery_closed.child_token(),
         ));
         self.observation_slot(&id).install(feed.clone());
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
+        let observed_feed = feed.clone();
         let task = tokio::spawn(async move {
             run(
                 projector,
@@ -683,6 +733,7 @@ impl ThreadObservations {
         });
         let observation = Arc::new(Observation {
             thread,
+            feed: observed_feed,
             state,
             task: tokio::sync::Mutex::new(Some(task)),
         });
@@ -1079,6 +1130,7 @@ impl LiveOwner {
             &thread,
             &config.config,
         )?;
+        feed.wait_event_capacity().await;
         feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: catalog.revision,
@@ -1305,6 +1357,7 @@ impl LiveOwner {
         if let Some(pending) = self.pending.as_mut()
             && let Some(current) = pending.prepared.current_state.as_ref()
         {
+            self.feed.conversation.wait_capacity().await;
             let handoff = pending
                 .prepared
                 .current_handoff
@@ -1357,6 +1410,13 @@ impl LiveOwner {
         }
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.mode == HandoffMode::Live)
+        {
+            self.feed.wait_event_capacity().await;
+        }
         if let Some(pending) = &self.pending
             && pending.mode == HandoffMode::Live
         {
@@ -1670,8 +1730,8 @@ impl LiveOwner {
             .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
             .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
-        self.observe_runtime(snapshot)?;
-        self.observe_activity(snapshot);
+        self.observe_runtime(snapshot).await?;
+        self.observe_activity(snapshot).await;
         if let Some(current) = self.projection.current_state() {
             self.feed.conversation.publish_generation(
                 &self.chat,
@@ -1686,7 +1746,7 @@ impl LiveOwner {
     /// Execution residency is live-only; next-admission availability also consumes current config.
     /// Derive runtime from the latest owner snapshot after folding all admitted usage,
     /// never from an effect's storage checkpoint. Stable timestamps allow deduplication.
-    fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
+    async fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
         let at = self
             .runtime_published
             .as_ref()
@@ -1708,13 +1768,17 @@ impl LiveOwner {
             (None, None) => true,
             _ => false,
         };
-        if self.config.model_catalog_revision()? == self.qualification_revision && same_identity {
+        let qualification_revision = if self.config.model_catalog_revision()?
+            == self.qualification_revision
+            && same_identity
+        {
             if let (Some(previous), Some(current)) =
                 (self.model_route_published.as_ref(), model_route.as_mut())
             {
                 current.available = previous.available;
                 current.unavailable_reason = previous.unavailable_reason.clone();
             }
+            self.qualification_revision
         } else {
             let (config, catalog) = self.config.read_with_catalog()?;
             crate::studio::model_route::annotate_availability(
@@ -1722,15 +1786,18 @@ impl LiveOwner {
                 &self.thread,
                 &config.config,
             )?;
-            self.qualification_revision = catalog.revision;
-        }
+            catalog.revision
+        };
         if self.runtime_published.as_ref() == Some(&runtime)
             && self.model_route_published == model_route
         {
+            self.qualification_revision = qualification_revision;
             return Ok(());
         }
         runtime.updated_at = crate::studio::unix_seconds();
         runtime.usage.updated_at = runtime.updated_at;
+        self.feed.wait_event_capacity().await;
+        self.qualification_revision = qualification_revision;
         self.model_route_published.clone_from(&model_route);
         let runtime = self.runtime_published.insert(runtime);
         self.feed.publish(|| ThreadLiveEvent::Runtime {
@@ -1748,12 +1815,13 @@ impl LiveOwner {
     /// tool or an interaction change reaches it through the owner snapshot, never through `effect`.
     /// Shared producer versions cover body changes even when the bounded summary stays identical.
     /// The completion ceiling also advances independently of the activity summary.
-    fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
+    async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
         let activity = self.projection.current_activity();
         let activity_changed = activity != self.activity_published;
         if !activity_changed {
             return;
         }
+        self.feed.wait_event_capacity().await;
         self.activity_published = activity;
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
@@ -2542,7 +2610,7 @@ mod readiness_tests {
                     finished: mode == 0 || mode == 2,
                     ..Default::default()
                 });
-                let feed = Arc::new(ThreadLiveFeed::new(None, receiver));
+                let feed = Arc::new(ThreadLiveFeed::new(None, receiver, Default::default()));
                 slot.install(feed.clone());
                 let entered = (mode == 1 || mode == 3).then(|| feed.arm_first_open_wait());
                 let open = env.runtime.open_conversation_feed(
@@ -2780,7 +2848,11 @@ mod storage_fault_tests {
                 pending_hook: None,
             }),
             recovered_through: 0,
-            feed: Arc::new(ThreadLiveFeed::new(None, owner_progress)),
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                owner_progress,
+                Default::default(),
+            )),
             live: None,
             live_floor: 0,
             continuous: true,
@@ -3783,6 +3855,11 @@ mod storage_fault_tests {
         let (release, released) = tokio::sync::oneshot::channel();
         let observation = Observation {
             thread: owner.clone(),
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                progress.subscribe(),
+                Default::default(),
+            )),
             state: Arc::new(WorkerState {
                 terminal_transfer: Default::default(),
                 progress,
@@ -3815,6 +3892,11 @@ mod storage_fault_tests {
         let (progress, _) = watch::channel(Progress::default());
         let failed = Observation {
             thread: owner,
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                progress.subscribe(),
+                Default::default(),
+            )),
             state: Arc::new(WorkerState {
                 terminal_transfer: Default::default(),
                 progress,
@@ -3887,7 +3969,7 @@ mod storage_fault_tests {
             projection
                 .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
             let (_owner, owner_progress) = watch::channel(Progress::default());
-            let feed = ThreadLiveFeed::new(None, owner_progress);
+            let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
             assert!(!feed.has_subscribers());
             let (changes, mut prepared) = projection
                 .prepare(
@@ -3975,7 +4057,7 @@ mod storage_fault_tests {
             mode: HandoffMode::Behind,
         };
         let (_owner, owner_progress) = watch::channel(Progress::default());
-        let feed = ThreadLiveFeed::new(None, owner_progress);
+        let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
         let mut frames = feed.subscribe();
         let mut last_turn = feed.last_turn();
         // 1) 通道尚未受理该提交：交接被拒，批次与原报告原样保留，预算可见。
@@ -4077,6 +4159,96 @@ mod storage_fault_tests {
         services: ObservationServices,
         observations: ThreadObservations,
         writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    }
+
+    #[tokio::test]
+    async fn full_delivery_does_not_block_thread_or_runtime_close() -> Result<()> {
+        for shutdown_runtime in [false, true] {
+            let prompt = "close-with-idle-delivery";
+            let env = crate::runtime_test_support::Environment::new(
+                vec![crate::runtime_test_support::prompt_step(
+                    prompt,
+                    0,
+                    pl_provider_fixture::gui_streaming_output_reply(2_000, 1),
+                )],
+                Vec::new(),
+            )
+            .await?;
+            let result = async {
+                let thread = env
+                    .start(pl_protocol::ThreadWorkspaceMode::Local, prompt)
+                    .await?;
+                let id = &thread.thread.id;
+                let mut delivery = env
+                    .runtime
+                    .open_conversation_feed(
+                        id,
+                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ReadDemand {
+                            max_items: 37,
+                            max_bytes: 256 * 1024,
+                        },
+                    )
+                    .await?;
+                let source = env
+                    .runtime
+                    .thread_observations
+                    .live_feed(id)
+                    .context("original feed")?;
+                let mut changes = source.content_changes();
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        let capacity = source.conversation.wait_capacity();
+                        tokio::pin!(capacity);
+                        if futures::poll!(capacity.as_mut()).is_pending() {
+                            break;
+                        }
+                        changes
+                            .changed()
+                            .await
+                            .context("original source closed before filling")?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                let target = source
+                    .current_conversation()
+                    .context("filled source cut")?
+                    .current
+                    .projection()
+                    .source_effect_seq;
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    if shutdown_runtime {
+                        env.runtime.shutdown_runtime().await?;
+                    } else {
+                        env.runtime.threads.close(id).await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                assert!(source.delivery_closed.is_cancelled());
+                assert!(env.runtime.thread_observations.live_feed(id).is_none());
+                let saved = crate::runtime_test_support::saved(&env.home, id).await?;
+                assert!(saved.checkpoint.state.commit_sequence >= target);
+                assert_eq!(saved.checkpoint.state.lifecycle, ThreadLifecycle::Closed);
+                assert!(
+                    env.runtime
+                        .thread_observations
+                        .0
+                        .observations
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .is_none()
+                );
+                delivery.close().await?;
+                delivery.reader().close().await?;
+                Ok(())
+            }
+            .await;
+            env.finish(result).await?;
+        }
+        Ok(())
     }
 
     async fn observation_fixture() -> Result<ObservationFixture> {
@@ -4629,7 +4801,11 @@ mod storage_fault_tests {
             observed_before_execution: false,
             pending_hook: Some(hook),
         });
-        let feed = Arc::new(ThreadLiveFeed::new(None, state.progress.subscribe()));
+        let feed = Arc::new(ThreadLiveFeed::new(
+            None,
+            state.progress.subscribe(),
+            Default::default(),
+        ));
         let mut live = LiveOwner::open(
             &fixture.services,
             &handle,

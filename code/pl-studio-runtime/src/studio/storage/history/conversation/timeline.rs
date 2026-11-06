@@ -71,7 +71,8 @@ CREATE INDEX timeline_items_by_commit ON timeline_items(commit_seq,position);
 CREATE INDEX timeline_items_by_location_position ON timeline_items(location,position);
 CREATE TABLE timeline_item_members (
  item_id TEXT NOT NULL, member_order INTEGER NOT NULL, member_id TEXT NOT NULL,
- completion_item_id TEXT, admitted_effect INTEGER NOT NULL, metadata BLOB NOT NULL,
+ completion_item_id TEXT, admitted_effect INTEGER NOT NULL, updated_effect INTEGER NOT NULL,
+ payload_bytes INTEGER, metadata BLOB NOT NULL,
  PRIMARY KEY(item_id,member_order), UNIQUE(item_id,member_id)
 ) WITHOUT ROWID;
 CREATE TABLE timeline_projection_state (
@@ -84,7 +85,7 @@ pub(in super::super) async fn validate_tables(db: &impl ConnectionTrait) -> Resu
     for sql in [
         "SELECT effect_seq,suborder,atom_id,phase,fact_order,metadata FROM conversation_atom_facts LIMIT 0",
         "SELECT item_id,kind,location,position,commit_seq,metadata,projection_version FROM timeline_items LIMIT 0",
-        "SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,metadata FROM timeline_item_members LIMIT 0",
+        "SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,metadata FROM timeline_item_members LIMIT 0",
         "SELECT projection_version,next_position,source_effect_seq,projection_generation,recovery FROM timeline_projection_state LIMIT 0",
     ] {
         db.query_all_raw(statement(sql, vec![]))
@@ -128,7 +129,15 @@ pub(in super::super) async fn read_state(
     .transpose()
 }
 pub(in crate::studio) async fn generation(db: &impl ConnectionTrait) -> Result<String> {
-    Ok(read_state(db).await?.ok_or(ProjectionFault)?.generation)
+    let row = db.query_one_raw(statement("SELECT projection_version,projection_generation FROM timeline_projection_state WHERE singleton_id=1", vec![])).await?.ok_or(ProjectionFault)?;
+    let version = u32::try_from(row.try_get::<i64>("", "projection_version")?)
+        .map_err(|_| ProjectionFault)?;
+    let generation: String = row.try_get("", "projection_generation")?;
+    ensure!(
+        version == TIMELINE_PROJECTION_VERSION && !generation.is_empty(),
+        ProjectionFault
+    );
+    Ok(generation)
 }
 pub(in crate::studio) fn deferred_item(database: &str, item: &TimelineItem) -> TimelineItem {
     let mut value = item.clone();
@@ -195,6 +204,7 @@ async fn save_fact(db: &impl ConnectionTrait, atom: &ChatAtom, fallback: u64) ->
     );
     Ok(())
 }
+#[cfg(test)]
 async fn save_update(
     db: &impl ConnectionTrait,
     database: &str,
@@ -225,10 +235,10 @@ async fn save_changes(
         // Validate admission and the canonical terminal in the same write.
         // Mutable active metadata is not another canonical start fact.
         let written = db.execute_raw(statement(
-            "WITH incoming(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata)
-               AS (VALUES(?,?,?,?,?,?))
-             INSERT INTO timeline_item_members(item_id,member_order,member_id,completion_item_id,admitted_effect,metadata)
-             SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,metadata FROM incoming
+            "WITH incoming(item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,metadata)
+               AS (VALUES(?,?,?,?,?,?,?,?))
+             INSERT INTO timeline_item_members(item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,metadata)
+             SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,metadata FROM incoming
              WHERE (json_extract(CAST(incoming.metadata AS TEXT),'$.lifecycle.kind')='active'
                  AND incoming.completion_item_id IS NULL
                  AND json_extract(CAST(incoming.metadata AS TEXT),'$.completionSeq') IS NULL)
@@ -237,7 +247,9 @@ async fn save_changes(
                    WHERE f.atom_id=incoming.member_id AND f.phase='terminal'
                      AND f.metadata=incoming.metadata))
              ON CONFLICT(item_id,member_order) DO UPDATE SET
-               completion_item_id=excluded.completion_item_id,metadata=excluded.metadata
+               completion_item_id=excluded.completion_item_id,payload_bytes=excluded.payload_bytes,
+               updated_effect=CASE WHEN timeline_item_members.metadata=excluded.metadata THEN timeline_item_members.updated_effect ELSE excluded.updated_effect END,
+               metadata=excluded.metadata
              WHERE timeline_item_members.member_id=excluded.member_id
                AND json_extract(CAST(timeline_item_members.metadata AS TEXT),
                  '$.id','$.source','$.sourceOrder','$.kind','$.turnId','$.attemptId',
@@ -248,8 +260,9 @@ async fn save_changes(
                AND (json_extract(CAST(timeline_item_members.metadata AS TEXT),'$.lifecycle.kind')='active'
                  OR (json_extract(CAST(timeline_item_members.metadata AS TEXT),'$.lifecycle.kind')='terminal'
                    AND timeline_item_members.completion_item_id IS excluded.completion_item_id
+                   AND timeline_item_members.payload_bytes IS excluded.payload_bytes
                    AND timeline_item_members.metadata=excluded.metadata))",
-            vec![member.item_id.clone().into(),integer(member.member_order)?.into(),member.atom.id.clone().into(),member.atom.completion_item_id.clone().into(),integer(effect)?.into(),bytes.into()],
+            vec![member.item_id.clone().into(),integer(member.member_order)?.into(),member.atom.id.clone().into(),member.atom.completion_item_id.clone().into(),integer(effect)?.into(),integer(effect)?.into(),member.payload_bytes.map(integer).transpose()?.into(),bytes.into()],
         )).await?;
         ensure!(
             written.rows_affected() == 1,
@@ -375,12 +388,17 @@ pub(in super::super) async fn verify(
     for member in current.timeline_update.members() {
         if let Some(completion) = &member.atom.completion_item_id {
             let row = db.query_one_raw(statement(
-                "SELECT member_id,completion_item_id FROM timeline_item_members WHERE item_id=? AND member_order=?",
+                "SELECT member_id,completion_item_id,payload_bytes FROM timeline_item_members WHERE item_id=? AND member_order=?",
                 vec![member.item_id.clone().into(), integer(member.member_order)?.into()],
             )).await?.context("retried terminal member missing")?;
             ensure!(
                 row.try_get::<String>("", "member_id")? == member.atom.id
-                    && row.try_get::<String>("", "completion_item_id")? == *completion,
+                    && row.try_get::<String>("", "completion_item_id")? == *completion
+                    && row
+                        .try_get::<Option<i64>>("", "payload_bytes")?
+                        .map(u64::try_from)
+                        .transpose()?
+                        == member.payload_bytes,
                 "retried terminal member differs"
             );
         }
@@ -541,7 +559,6 @@ pub(in crate::studio) async fn rebuild_batched(
     let candidate = uuid::Uuid::new_v4().to_string();
     let mut projection = TimelineProjection::new(database.into(), candidate.clone(), 0);
     let mut cursor = (-1i64, -1i64, -1i64, -1i64, String::new(), String::new());
-    let mut previous_effect = None;
     loop {
         let rows = db.query_all_raw(statement("SELECT effect,sub,ordering,completion_order,identity,phase,metadata,source_key FROM (
           SELECT effect_seq AS effect,suborder AS sub,fact_order AS ordering,CASE WHEN phase='legacySourceEnd' THEN 9223372036854775807 WHEN effect_seq=0 THEN COALESCE(json_extract(metadata,'$.sourceOrder'),json_extract(metadata,'$.completionSeq'),0) ELSE COALESCE(json_extract(metadata,'$.completionSeq'),0) END AS completion_order,atom_id AS identity,phase,metadata,CASE WHEN phase='legacySourceEnd' THEN CAST(metadata AS TEXT) END AS source_key FROM conversation_atom_facts
@@ -552,10 +569,6 @@ pub(in crate::studio) async fn rebuild_batched(
         }
         for row in rows {
             let effect: i64 = row.try_get("", "effect")?;
-            if previous_effect.is_some_and(|old| old != effect) {
-                drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
-            }
-            previous_effect = Some(effect);
             cursor = (
                 effect,
                 row.try_get("", "sub")?,
@@ -603,6 +616,9 @@ pub(in crate::studio) async fn rebuild_batched(
             }
             drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
         }
+        // Bound the replay accumulator after each bounded input window without
+        // rewriting the complete current/recovery head for every fact.
+        projection.check_recovery_budget()?;
     }
     for atom in &current.atoms {
         if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
@@ -610,11 +626,14 @@ pub(in crate::studio) async fn rebuild_batched(
         }
     }
     drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
-    let head = read_state(db).await?.ok_or(ProjectionFault)?;
+    let update = projection.take_update()?;
+    // Legacy admissions may describe missing active members. Validate that
+    // boundary before committing the final head, without reading our own write.
     let mut restored =
-        TimelineProjection::new(database.into(), candidate.clone(), head.next_position);
-    restored.restore_recovery(&head.recovery)?;
-    current.items = projection.current_items();
+        TimelineProjection::new(database.into(), candidate.clone(), update.next_position());
+    restored.restore_recovery(update.recovery())?;
+    save_snapshot(db, database, &update, current.source_effect_seq).await?;
+    current.items = update.current().to_vec();
     let bytes = serde_json::to_vec(&current)?;
     ensure!(
         bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
@@ -639,13 +658,14 @@ async fn drain_rebuild(
         .into_iter()
         .map(|item| PreparedTimelineItem { item })
         .collect();
-    let update = projection.take_update()?;
-    save_update(db, database, &update, &committed, effect, false).await
+    let update = projection.take_changes();
+    save_changes(db, database, &update, &committed, effect, false).await
 }
 
 pub(in crate::studio) async fn validate_members_ref(
     db: &impl ConnectionTrait,
     database: &str,
+    generation: &str,
     reference: &TimelineMembersRef,
 ) -> Result<()> {
     ensure!(
@@ -653,9 +673,8 @@ pub(in crate::studio) async fn validate_members_ref(
             && reference.projection_version == TIMELINE_PROJECTION_VERSION,
         pl_core::chat::ChatError::StaleContent
     );
-    let head = read_state(db).await?.ok_or(ProjectionFault)?;
     ensure!(
-        head.generation == reference.projection_generation,
+        generation == reference.projection_generation,
         pl_core::chat::ChatError::StaleContent
     );
     ensure!(db.query_one_raw(statement("SELECT 1 FROM timeline_items WHERE item_id=? AND kind='workGroup' AND projection_version=?",vec![reference.item_id.clone().into(),i64::from(reference.projection_version).into()])).await?.is_some(),pl_core::chat::ChatError::StaleContent);
@@ -727,6 +746,7 @@ pub(in crate::studio) async fn page_rows(
     ceiling: u64,
     effect_cut: u64,
     limit: usize,
+    active_heads: &[ChatAtom],
 ) -> Result<Vec<(u64, pl_protocol::ChatEntry)>> {
     let (sql, values) = match scope {
         pl_protocol::ChatScope::Main => (
@@ -739,15 +759,25 @@ pub(in crate::studio) async fn page_rows(
             ],
         ),
         pl_protocol::ChatScope::GroupMembers { reference } => (
-            "SELECT member_order AS ordering,metadata,
-                    (SELECT source_effect_seq FROM timeline_projection_state WHERE singleton_id=1) AS stored_effect
-             FROM timeline_item_members WHERE item_id=? AND member_order<? AND member_order<? AND admitted_effect<=? ORDER BY member_order DESC LIMIT ?",
+            "WITH page AS (
+               SELECT member_order AS ordering,member_id,metadata,updated_effect,payload_bytes
+               FROM timeline_item_members WHERE item_id=? AND member_order<? AND member_order<?
+                 AND admitted_effect<=? ORDER BY member_order DESC LIMIT ?)
+             SELECT m.*,COALESCE(t.metadata,s.metadata,l.metadata) AS canonical
+             FROM page m
+             LEFT JOIN conversation_atom_facts t ON t.atom_id=m.member_id AND t.phase='terminal' AND t.effect_seq<=?
+             LEFT JOIN conversation_atom_facts s ON s.atom_id=m.member_id AND s.phase='start' AND s.effect_seq<=?
+             LEFT JOIN conversation_atom_facts l ON l.atom_id=m.member_id AND l.phase='legacyAdmission' AND l.effect_seq<=?
+             ORDER BY m.ordering DESC",
             vec![
                 reference.item_id.clone().into(),
                 integer(before.unwrap_or(ceiling))?.into(),
                 integer(ceiling)?.into(),
                 integer(effect_cut)?.into(),
                 i64::try_from(limit)?.into(),
+                integer(effect_cut)?.into(),
+                integer(effect_cut)?.into(),
+                integer(effect_cut)?.into(),
             ],
         ),
         pl_protocol::ChatScope::Children { .. } => {
@@ -771,28 +801,30 @@ pub(in crate::studio) async fn page_rows(
             pl_protocol::ChatEntry::Item(Box::new(item))
         } else {
             let mut atom: ChatAtom = serde_json::from_slice(&bytes)?;
-            let fact=db.query_one_raw(statement("SELECT metadata FROM conversation_atom_facts WHERE atom_id=? AND effect_seq<=? AND phase IN ('start','terminal','legacyAdmission') ORDER BY CASE phase WHEN 'terminal' THEN 0 ELSE 1 END LIMIT 1",vec![atom.id.clone().into(),integer(effect_cut)?.into()])).await?.context("member has no source fact at the captured cut")?;
-            let canonical: ChatAtom =
-                serde_json::from_slice(&fact.try_get::<Vec<u8>>("", "metadata")?)?;
+            let canonical: ChatAtom = serde_json::from_slice(
+                &row.try_get::<Option<Vec<u8>>>("", "canonical")?
+                    .context("member has no source fact at the captured cut")?,
+            )?;
             ensure!(
                 atom.id == canonical.id && atom.source == canonical.source,
                 ProjectionFault
             );
-            // A validated mutable member head carries active content references that the
-            // immutable start need not contain. The snapshot's saved head bounds all such
-            // updates; only an older captured cut must fall back to its canonical fact.
-            let stored_effect = u64::try_from(row.try_get::<i64>("", "stored_effect")?)?;
-            if stored_effect > effect_cut {
+            if matches!(canonical.lifecycle, ChatAtomLifecycle::Terminal { .. }) {
                 atom = canonical;
+            } else if let Some(captured) = active_heads.iter().find(|head| head.id == atom.id) {
+                ensure!(
+                    captured.source == atom.source
+                        && matches!(captured.lifecycle, ChatAtomLifecycle::Active { .. }),
+                    ProjectionFault
+                );
+                atom = captured.clone();
+            } else {
+                ensure!(
+                    u64::try_from(row.try_get::<i64>("", "updated_effect")?)? <= effect_cut,
+                    pl_core::chat::ChatError::StaleContent
+                );
             }
             if let Some(id) = &atom.completion_item_id {
-                let payload = db
-                    .query_one_raw(statement(
-                        "SELECT length(payload) AS bytes FROM conversation_items WHERE item_id=?",
-                        vec![id.clone().into()],
-                    ))
-                    .await?
-                    .context("member completion missing")?;
                 atom.payload = Some(PayloadData::Deferred {
                     reference: ContentRef {
                         database_id: match scope {
@@ -805,7 +837,10 @@ pub(in crate::studio) async fn page_rows(
                             item_id: id.clone(),
                         },
                     },
-                    byte_length: u64::try_from(payload.try_get::<i64>("", "bytes")?)?,
+                    byte_length: u64::try_from(
+                        row.try_get::<Option<i64>>("", "payload_bytes")?
+                            .context("member completion length missing")?,
+                    )?,
                 });
             }
             pl_protocol::ChatEntry::Atom(Box::new(atom))

@@ -128,14 +128,11 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
                     final message = messages[messageIndex];
                     return KeyedSubtree(
                       key: ValueKey(message.id),
-                      child: KeyedSubtree(
-                        key: ObjectKey(message),
-                        child: itemBuilder(
-                          context,
-                          message,
-                          messageIndex,
-                          const AlwaysStoppedAnimation<double>(1),
-                        ),
+                      child: itemBuilder(
+                        context,
+                        message,
+                        messageIndex,
+                        const AlwaysStoppedAnimation<double>(1),
                       ),
                     );
                   },

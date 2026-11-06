@@ -278,6 +278,33 @@ async fn chat(feed: &mut ConversationFeed, scope: &ChatScope) -> Result<ChatBatc
         }
     }
 }
+
+async fn receive_while<T>(
+    feed: &mut ConversationFeed,
+    delivered: &mut Vec<TimelineItem>,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            event = feed.recv() => {
+                if let ConversationEvent::Chat { batch } = event?.context("A34 original feed ended")? {
+                    batch.validate_for(&ChatScope::Main)?;
+                    assert_eq!(batch.placement, ChatPlacement::Append);
+                    assert!(batch.encoded_len()? <= demand().max_bytes as usize);
+                    for entry in batch.entries {
+                        let ChatEntry::Item(item) = entry else { bail!("Main delivered a non-item"); };
+                        if let Some(previous) = delivered.last() {
+                            assert!(previous.position < item.position);
+                        }
+                        delivered.push(*item);
+                    }
+                }
+            }
+        }
+    }
+}
 fn sql(text: &str, values: Vec<sea_orm::Value>) -> Statement {
     Statement::from_sql_and_values(DbBackend::Sqlite, text, values)
 }
@@ -622,6 +649,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     // completed JoinHandle again, including when the reply reports a failure.
     let mut producer_join = None;
     let mut feeds = Vec::new();
+    let mut delivered = Vec::new();
     let mut database_connection = None;
     let mut phase = "first-window producer ACKs";
     let story_started = std::time::Instant::now();
@@ -748,11 +776,23 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         script.release();
         phase = "ordinary suffix producer ACKs";
         trace_phase(phase);
-        script.reached(Stage::SuffixReady).await?;
+        // The original consumer keeps reading while the original publisher
+        // applies backpressure; a save barrier is not a substitute for reads.
+        receive_while(
+            &mut feeds[0],
+            &mut delivered,
+            script.reached(Stage::SuffixReady),
+        )
+        .await?;
         let suffix_target = owner.snapshot().commit_sequence;
         phase = "ordinary suffix fixed-target observation/durable barrier";
         trace_phase(phase);
-        env.runtime.synchronize_thread_observation(&id).await?;
+        receive_while(
+            &mut feeds[0],
+            &mut delivered,
+            env.runtime.synchronize_thread_observation(&id),
+        )
+        .await?;
         channel
             .await_handoff_durable(&id, channel.handoff_ticket())
             .await?;
@@ -798,10 +838,13 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         script.release();
         phase = "same producer U terminal";
         trace_phase(phase);
-        let joined = (&mut run)
-            .await
-            .context("ordinary backlog producer join")
-            .and_then(|joined| Ok(joined?));
+        let joined = receive_while(&mut feeds[0], &mut delivered, async {
+            (&mut run)
+                .await
+                .context("ordinary backlog producer join")
+                .and_then(|joined| Ok(joined?))
+        })
+        .await;
         let completed = joined
             .as_ref()
             .is_ok_and(|completion| completion.outcome == TurnOutcome::Completed);
@@ -815,7 +858,12 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         let target = owner.snapshot().commit_sequence;
         phase = "final observation/durable barrier";
         trace_phase(phase);
-        env.runtime.synchronize_thread_observation(&id).await?;
+        receive_while(
+            &mut feeds[0],
+            &mut delivered,
+            env.runtime.synchronize_thread_observation(&id),
+        )
+        .await?;
         channel
             .await_handoff_durable(&id, channel.handoff_ticket())
             .await?;
@@ -849,6 +897,26 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         phase = "final canonical facts and logical uninterrupted fold";
         let saved = saved_items(db).await?;
         assert_eq!(saved.len(), 3);
+        while delivered.len() < saved.len() {
+            let batch = chat(&mut feeds[0], &ChatScope::Main).await?;
+            assert_eq!(batch.placement, ChatPlacement::Append);
+            for entry in batch.entries {
+                let ChatEntry::Item(item) = entry else {
+                    bail!("Main delivered a non-item");
+                };
+                delivered.push(*item);
+            }
+        }
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|item| (&item.id, item.position))
+                .collect::<Vec<_>>(),
+            saved
+                .iter()
+                .map(|item| (&item.id, item.position))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             saved.iter().map(|item| &item.id).collect::<Vec<_>>(),
             vec![&r_group.id, &text.id, &u_group.id]

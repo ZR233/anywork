@@ -887,6 +887,20 @@ impl ObservedPart {
 /// in, so keeping a held snapshot immutable no longer costs the whole list.
 const MODEL_PARTS_CHUNK: usize = 64;
 
+/// Identity of an immutable filled prefix, without retaining its observations.
+///
+/// Any mutable access to the filled index dissociates this weak identity through
+/// `Arc::make_mut`, including replacement of an earlier part with the same length.
+#[derive(Debug, Clone)]
+pub struct ModelPartsPrefix(std::sync::Weak<Vec<Arc<[ObservedPart]>>>);
+
+impl PartialEq for ModelPartsPrefix {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+impl Eq for ModelPartsPrefix {}
+
 /// The live observations of one request, shared in immutable fixed-size chunks.
 ///
 /// The list keeps its observations in chunks a snapshot shares, and holds the one chunk still being
@@ -937,6 +951,18 @@ impl ModelParts {
     /// Reports whether the list holds no observation.
     pub fn is_empty(&self) -> bool {
         self.filled.is_empty() && self.tail.is_empty()
+    }
+
+    /// The shared filled-prefix identity and its exclusive end position.
+    ///
+    /// Tail edits preserve this prefix. Editing a filled part, retaining parts,
+    /// replacing the list or promoting another full chunk invalidates it. The
+    /// returned identity keeps no body or chunk alive and is never serialized.
+    pub fn stable_prefix(&self) -> (ModelPartsPrefix, usize) {
+        (
+            ModelPartsPrefix(Arc::downgrade(&self.filled)),
+            self.filled.len() * MODEL_PARTS_CHUNK,
+        )
     }
 
     /// The observation at `index`, or `None` when the list is shorter.

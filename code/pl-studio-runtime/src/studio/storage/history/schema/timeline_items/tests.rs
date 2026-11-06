@@ -25,12 +25,7 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| {
-            !matches!(
-                step.name(),
-                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
-            )
-        })
+        .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -45,7 +40,7 @@ impl MigratorTraitSelf for Published14 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | TIMELINE_ITEMS))
+        .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -376,7 +371,8 @@ async fn group_members(
         .members
         .as_ref()
         .context("complete member directory")?;
-    timeline::validate_members_ref(db, database, reference).await?;
+    timeline::validate_members_ref(db, database, &timeline::generation(db).await?, reference)
+        .await?;
     let count = group
         .summary
         .as_ref()
@@ -391,6 +387,7 @@ async fn group_members(
         u64::from(count),
         4,
         usize::try_from(count)? + 1,
+        &[],
     )
     .await?;
     assert_eq!(rows.len(), usize::try_from(count)?);
@@ -475,7 +472,7 @@ async fn assert_migrated_content(
 
     let (_, _, next, _) = store.timeline_snapshot().await?.context("Timeline head")?;
     assert_eq!(next, 2);
-    let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3).await?;
+    let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3, &[]).await?;
     history.reverse();
     assert_eq!(history.len(), 2);
     let mut items = Vec::new();
@@ -606,24 +603,7 @@ async fn formal_migration_round_trip() -> Result<()> {
         "the migration's output indexes must roll back with its tables and head"
     );
     assert_eq!(source_bytes(&inspect).await?, original_source);
-    let corrected_ledger = migration_records(&inspect).await?;
-    assert_eq!(corrected_ledger.len(), original_ledger.len() + 1);
-    for record in &original_ledger {
-        assert!(
-            corrected_ledger.contains(record),
-            "an earlier Applied record changed"
-        );
-    }
-    assert!(
-        inspect
-            .query_one_raw(statement(
-                "SELECT 1 FROM seaql_migrations WHERE version=?",
-                vec![BACKGROUND_RESULTS.into()],
-            ))
-            .await?
-            .is_some(),
-        "the preceding correction commits independently of the failed Timeline transaction"
-    );
+    assert_eq!(migration_records(&inspect).await?, original_ledger);
     assert_eq!(
         inspect
             .query_one_raw(statement(
@@ -672,8 +652,8 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 2,
-        "content preparation records BackgroundResults and TimelineItems, not lifecycle migrations"
+        original_ledger.len() + 1,
+        "content preparation records TimelineItems, not lifecycle migrations"
     );
     for record in &original_ledger {
         assert!(

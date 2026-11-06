@@ -5,10 +5,18 @@ use super::*;
 use anyhow::Result;
 use pl_core::chat::ChatKey;
 use pl_protocol::*;
+use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct AtomMetadata;
+// Frozen legacy delivery encoding: rename_all applies to variants only.
+#[derive(Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+enum PublishedTarget {
+    CallResult,
+    Inbox { message_id: String },
+}
 impl MigrationName for AtomMetadata {
     fn name(&self) -> &str {
         ATOM_METADATA
@@ -186,13 +194,14 @@ async fn completed_metadata(
         .and_then(Json::as_str);
     let terminal = outcome(data);
     let transferred = terminal == ChatTerminalOutcome::Transferred;
-    let member_id = if transferred {
+    let mut member_id = if transferred {
         call.map(|call| format!("tool:{}:{call}", call.len()))
             .unwrap_or_else(|| id.into())
     } else {
         id.into()
     };
     let known = execution(db, &member_id).await?;
+    let mut source_order = known.as_ref().map(|(ordinal, _)| *ordinal);
     if let (Some(turn), Some((_, owner))) = (&turn_id, &known) {
         ensure!(
             turn == owner,
@@ -234,14 +243,39 @@ async fn completed_metadata(
         && let Some(payload) = row.try_get::<Option<String>>("", "delivery_payload")?
     {
         let target: Json = serde_json::from_str(&payload)?;
-        if target.pointer("/target/kind").and_then(Json::as_str) == Some("inbox")
-            && let Some(message_id) = target
-                .pointer("/target/value/messageId")
-                .and_then(Json::as_str)
-        {
-            source = ChatSourceId::BackgroundResult {
-                message_id: message_id.into(),
-            };
+        if let PublishedTarget::Inbox { message_id } = serde_json::from_value::<PublishedTarget>(
+            target
+                .get("target")
+                .context("legacy tool delivery has no target")?
+                .clone(),
+        )? {
+            ensure!(
+                target.get("callId").and_then(Json::as_str) == Some(call),
+                "background delivery differs from its saved tool call"
+            );
+            ensure!(
+                !message_id.is_empty(),
+                "background result has an empty saved message identity"
+            );
+            let identity = db
+                .query_one_raw(statement(
+                    "SELECT item_id,sequence FROM history_message_identities WHERE message_id=?",
+                    vec![message_id.clone().into()],
+                ))
+                .await?
+                .context(
+                    "background result has no durable message identity; original data preserved",
+                )?;
+            let identity_id: String = identity.try_get("", "item_id")?;
+            let sequence = u64::try_from(identity.try_get::<i64>("", "sequence")?)?;
+            ensure!(
+                identity_id == crate::studio::thread_projection::order::message_id(&message_id)
+                    && sequence > 0,
+                "background result has conflicting durable message identity"
+            );
+            member_id = identity_id;
+            source_order = Some(sequence);
+            source = ChatSourceId::BackgroundResult { message_id };
             delivery = ChatDeliveryKind::Independent;
         }
     }
@@ -262,7 +296,7 @@ async fn completed_metadata(
         completion_seq: None,
         source_state: None,
         source,
-        source_order: known.map(|(ordinal, _)| ordinal),
+        source_order,
         kind: atom_kind,
         delivery,
         lifecycle: ChatAtomLifecycle::Terminal {
@@ -677,3 +711,6 @@ async fn migrate(db: &impl ConnectionTrait) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod background_tests;

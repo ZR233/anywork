@@ -111,6 +111,89 @@ fn fold() -> TimelineProjection {
     TimelineProjection::new("db".into(), "test-generation".into(), 0)
 }
 
+#[test]
+fn terminal_text_freezes_its_authoritative_channel() {
+    let mut timeline = fold();
+    let mut start = active("answer", ChatAtomKind::Text, 1, pos(1, 0), content());
+    start.text_channel = Some(ThreadTextChannel::Commentary);
+    timeline.observe(&start, None).unwrap();
+    timeline
+        .complete(
+            terminal(
+                "answer",
+                ChatAtomKind::Text,
+                1,
+                pos(1, 0),
+                pos(2, 0),
+                content(),
+            ),
+            1,
+            None,
+        )
+        .unwrap();
+    timeline.commit_ready().unwrap();
+    assert_eq!(
+        timeline.committed()[0].text_channel,
+        Some(ThreadTextChannel::Final)
+    );
+}
+
+#[test]
+fn many_reverse_terminals_keep_the_source_prefix_and_independent_result_order() {
+    for count in [8, 64] {
+        let mut timeline = fold();
+        for index in 0..count {
+            timeline
+                .observe(
+                    &active(
+                        &format!("part-{index}"),
+                        ChatAtomKind::Text,
+                        index + 1,
+                        pos(index + 1, 0),
+                        content(),
+                    ),
+                    None,
+                )
+                .unwrap();
+        }
+        timeline
+            .complete(background("background", 1, pos(count + 1, 0)), 1, None)
+            .unwrap();
+        timeline.commit_ready().unwrap();
+        assert_eq!(timeline.committed().len(), 1);
+        assert_eq!(timeline.committed()[0].id, "status:background");
+        for index in (0..count).rev() {
+            timeline
+                .complete(
+                    terminal(
+                        &format!("part-{index}"),
+                        ChatAtomKind::Text,
+                        index + 1,
+                        pos(index + 1, 0),
+                        pos(count * 2 - index + 1, 0),
+                        content(),
+                    ),
+                    count - index + 1,
+                    None,
+                )
+                .unwrap();
+            timeline.commit_ready().unwrap();
+        }
+        let expected: Vec<_> = std::iter::once("status:background".to_owned())
+            .chain((0..count).map(|index| format!("text:part-{index}")))
+            .collect();
+        assert_eq!(
+            timeline
+                .committed()
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(timeline.current_items().is_empty());
+    }
+}
+
 fn assert_projection_retention(timeline: &TimelineProjection) -> u64 {
     let canonical = serde_json::to_vec(&(
         &timeline.items,
@@ -121,8 +204,12 @@ fn assert_projection_retention(timeline: &TimelineProjection) -> u64 {
     ))
     .unwrap();
     let expected = canonical.len() as u64 + std::mem::size_of::<OnceLock<u64>>() as u64;
-    assert_eq!(timeline.retained_bytes(), expected);
-    expected
+    let retained = timeline.retained_bytes();
+    assert!(
+        retained >= expected + 128 * timeline.items.len() as u64,
+        "the source/order indexes must retain their node and key charges"
+    );
+    retained
 }
 
 #[test]
@@ -705,7 +792,7 @@ fn repeated_observation_is_idempotent() {
 fn restored_current_fragments_continue_the_same_projection() {
     let mut timeline = fold();
     let empty_recovery = serde_json::to_vec(&Recovery {
-        items: timeline.items.clone(),
+        items: timeline.items.values().cloned().collect(),
         active: timeline.active.clone(),
     })
     .unwrap();
@@ -724,7 +811,7 @@ fn restored_current_fragments_continue_the_same_projection() {
         .unwrap();
     let current = timeline.current_items();
     let owned_recovery = serde_json::to_vec(&Recovery {
-        items: timeline.items.clone(),
+        items: timeline.items.values().cloned().collect(),
         active: timeline.active.clone(),
     })
     .unwrap();
@@ -745,7 +832,7 @@ fn restored_current_fragments_continue_the_same_projection() {
             .collect::<Vec<_>>()
     );
     let restored_owned_recovery = serde_json::to_vec(&Recovery {
-        items: restored.items.clone(),
+        items: restored.items.values().cloned().collect(),
         active: restored.active.clone(),
     })
     .unwrap();

@@ -1599,6 +1599,7 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
             // This is the single admitted header inventory used by the assertion, not a second
             // body or window queue. The independent reader clones at most one demand-sized slice.
             let admitted = std::sync::Mutex::new((initial, false));
+            let consumed = std::sync::Mutex::new((0_usize, 0_u64));
             let (changed, mut changes) = tokio::sync::watch::channel(0_usize);
             let observe = async {
                 let result = async {
@@ -1686,6 +1687,7 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                     cursor += batch.len();
                     count += members;
                     bytes += body_bytes;
+                    *consumed.lock().expect("test read counters poisoned") = (count, bytes);
                 }
                 ensure!(turns.len() == 1 && turns.contains(&turn_id));
                 ensure!(count == ITEMS && bytes == BYTES,
@@ -1701,7 +1703,11 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                 ensure!(terminal == turn_id);
                 eprintln!("continuous many bodies: execution={execution_id}, turn={turn_id}, items={count}, bytes={bytes}, original_running_batches={live_batches}, original_running_items={live_items}, original_running_bytes={live_bytes}, peak_chat_bytes={peak_batch}");
                 Ok::<_, anyhow::Error>(())
-            }).await.context("paced many-item live consumer exceeded its original deadline")?
+            }).await.with_context(|| {
+                let admitted = admitted.lock().expect("test header owner poisoned");
+                let consumed = consumed.lock().expect("test read counters poisoned");
+                format!("paced many-item live consumer exceeded its original deadline: admitted={}, observation_done={}, read_items={}, read_bytes={}", admitted.0.len(), admitted.1, consumed.0, consumed.1)
+            })?
         }.await;
         finish_feed(&mut feed, observed).await
     }.await;

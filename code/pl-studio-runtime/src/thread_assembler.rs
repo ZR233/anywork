@@ -900,14 +900,14 @@ impl StudioThreadAssembler {
         // Broadcast cancellation to the entire tree before the first dependent wait.
         // Each close below awaits the same retained cleanup barrier.
         let owners = {
-            let state = self.0.state();
+            let mut state = self.0.state();
             targets
                 .iter()
                 .filter_map(|(_, id)| {
-                    state
-                        .entries
-                        .get(id)
-                        .map(|entry| (id.clone(), entry.thread.clone()))
+                    state.entries.get_mut(id).map(|entry| {
+                        entry.ready = false;
+                        (id.clone(), entry.thread.clone())
+                    })
                 })
                 .collect::<Vec<_>>()
         };
@@ -925,6 +925,10 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let _seal = self.seal_agent_operation(id);
+        if let Some((_, thread)) = self.admit_thread_close(id)? {
+            drop(self.prepare_close(id, &thread));
+        }
         let operation = self.agent_operation(id).await;
         self.close_with_permit(id, operation).await
     }
@@ -936,6 +940,11 @@ impl StudioThreadAssembler {
         operation: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
+        // Signal the actual owner before a retained collaboration producer can
+        // wait for its projection. close_thread awaits the original cleanup.
+        if let Some((_, thread)) = self.admit_thread_close(id)? {
+            drop(self.prepare_close(id, &thread));
+        }
         drop(operation);
         self.retry_failed_review_deliveries(id)
             .await
@@ -950,22 +959,60 @@ impl StudioThreadAssembler {
                 source: source.into(),
             })?;
         let operation = self.agent_operation(id).await;
-        let preparation = {
-            self.0
-                .state()
-                .creating
-                .get(id)
-                .map(|preparation| preparation.cancellation.clone())
-        };
-        if let Some(cancellation) = preparation {
-            cancellation.cancel();
-            return Err(ThreadAssemblyError::Preparing(id.into()));
-        }
-        if self.0.state().preparing_children.contains_key(id) {
-            return Err(ThreadAssemblyError::Preparing(id.into()));
-        }
         self.close_thread(id, operation).await?;
         self.discard_unpublished_child(id).await
+    }
+
+    /// Reject invalid targets before revoking delivery; a failed admitted close
+    /// keeps this owner unavailable for new work until the original close retries.
+    fn admit_thread_close(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Arc<()>, ThreadHandle)>, ThreadAssemblyError> {
+        let mut state = self.0.state();
+        if let Some(preparation) = state.creating.get(id) {
+            preparation.cancellation.cancel();
+        }
+        if state.preparing_children.contains_key(id) {
+            return Err(ThreadAssemblyError::Preparing(id.into()));
+        }
+        Self::close_entry(&mut state, id)
+    }
+
+    // Internal cleanup already owns its reservation and operation permit. Only
+    // external admission cancels or rejects the target's own preparation.
+    fn close_entry(
+        state: &mut State,
+        id: &str,
+    ) -> Result<Option<(Arc<()>, ThreadHandle)>, ThreadAssemblyError> {
+        if state.creating.contains_key(id) {
+            return Err(ThreadAssemblyError::Preparing(id.into()));
+        }
+        if let Some((child, _)) = state
+            .unpublished_children
+            .iter()
+            .find(|(_, child)| child.parent == id)
+        {
+            return Err(ThreadAssemblyError::Preparing(child.clone()));
+        }
+        if let Some((child, _)) = state
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.parent_id.as_deref() == Some(id))
+        {
+            return Err(ThreadAssemblyError::Descendant(child.clone()));
+        }
+        if let Some((child, _)) = state
+            .creating
+            .iter()
+            .find(|(_, preparation)| preparation.parent_id.as_deref() == Some(id))
+        {
+            return Err(ThreadAssemblyError::Preparing(child.clone()));
+        }
+        Ok(state.entries.get_mut(id).map(|entry| {
+            entry.ready = false;
+            (entry.incarnation.clone(), entry.thread.clone())
+        }))
     }
 
     async fn close_thread(
@@ -998,18 +1045,8 @@ impl StudioThreadAssembler {
             }
             changed.await;
         }
-        let thread = {
-            let mut state = self.0.state();
-            if let Some((child, _)) = state
-                .unpublished_children
-                .iter()
-                .find(|(_, child)| child.parent == id)
-            {
-                return Err(ThreadAssemblyError::Preparing(child.clone()));
-            }
-            if state.creating.contains_key(id) {
-                return Err(ThreadAssemblyError::Preparing(id.to_owned()));
-            }
+        {
+            let state = self.0.state();
             if let Some((child, _)) = state
                 .preparing_children
                 .iter()
@@ -1017,25 +1054,8 @@ impl StudioThreadAssembler {
             {
                 return Err(ThreadAssemblyError::Preparing(child.clone()));
             }
-            if let Some((child, _)) = state
-                .entries
-                .iter()
-                .find(|(_, entry)| entry.parent_id.as_deref() == Some(id))
-            {
-                return Err(ThreadAssemblyError::Descendant(child.clone()));
-            }
-            if let Some((child, _)) = state
-                .creating
-                .iter()
-                .find(|(_, preparation)| preparation.parent_id.as_deref() == Some(id))
-            {
-                return Err(ThreadAssemblyError::Preparing(child.clone()));
-            }
-            state.entries.get_mut(id).map(|entry| {
-                entry.ready = false;
-                (entry.incarnation.clone(), entry.thread.clone())
-            })
-        };
+        }
+        let thread = Self::close_entry(&mut self.0.state(), id)?;
         let Some((incarnation, thread)) = thread else {
             return Ok(());
         };

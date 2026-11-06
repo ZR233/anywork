@@ -4,6 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -170,6 +171,13 @@ void main() {
         }
         await tester.tap(_rowTap);
         await tester.pumpAndSettle();
+        final l10n = AppLocalizations.of(
+          tester.element(find.byType(TimelineToolDetails)),
+        );
+        expect(
+          find.textContaining(l10n.timelineToolExitCode(0)),
+          findsOneWidget,
+        );
         for (final key in declared.keys) {
           expect(find.text('declared:$key'), findsOneWidget);
         }
@@ -181,6 +189,40 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         unit.expansion.retirement.dispose();
         unit.expansion.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'declared tool bodies preserve diagnostics and successful workflow payload hiding',
+    (tester) async {
+      for (final hidden in [false, true]) {
+        final item = _tool(
+          hidden ? 'builtin.workflow_transition@1' : 'builtin.exec@2',
+          name: hidden ? 'workflow_transition' : 'exec',
+        );
+        await tester.pumpWidget(
+          _host(
+            TimelineToolDetails(
+              key: ValueKey(hidden),
+              item: (item.toolCard as DecodedToolCard).value,
+              initiallyExpanded: true,
+              declaredContents: const [Text('declared internal body')],
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text('declared internal body'),
+          hidden ? findsNothing : findsOneWidget,
+        );
+        final l10n = AppLocalizations.of(
+          tester.element(find.byType(TimelineToolDetails)),
+        );
+        expect(
+          find.textContaining(l10n.timelineToolExitCode(0)),
+          findsOneWidget,
+        );
       }
     },
   );

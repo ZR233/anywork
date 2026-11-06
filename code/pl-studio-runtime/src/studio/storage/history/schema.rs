@@ -1,7 +1,6 @@
 //! Official, ordered history migrations. Format numbers are only legacy import markers.
 use super::*;
 mod atom_metadata;
-mod background_results;
 mod conversion;
 mod demand_conversation;
 mod model_route_head;
@@ -112,7 +111,6 @@ impl MigratorTraitSelf for Migrator {
                 thread_id: self.thread_id.clone(),
             }),
             Box::new(atom_metadata::AtomMetadata),
-            Box::new(background_results::BackgroundResults),
             Box::new(timeline_items::TimelineItems),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
@@ -157,7 +155,6 @@ const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
 const DEMAND_CONVERSATION: &str = "m20261029_000001_history_demand_conversation";
 const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
 const ATOM_METADATA: &str = "m20261102_000001_history_atom_metadata";
-const BACKGROUND_RESULTS: &str = "m20261104_000001_history_background_results";
 const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
@@ -384,9 +381,9 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         if version == HISTORY_SCHEMA_VERSION {
             validate_current_structure(db).await?;
             ensure!(
-                pending.iter().all(|step| {
-                    step.name() == BACKGROUND_RESULTS || is_lifecycle_migration(step.name())
-                }),
+                pending
+                    .iter()
+                    .all(|step| { is_lifecycle_migration(step.name()) }),
                 "current history format has pending earlier content migrations; existing data preserved"
             );
         } else {
@@ -400,10 +397,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         pending.iter().all(|step| {
                             matches!(
                                 step.name(),
-                                MODEL_ROUTE_HEAD
-                                    | ATOM_METADATA
-                                    | BACKGROUND_RESULTS
-                                    | TIMELINE_ITEMS
+                                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 12 has pending earlier content migrations; existing data preserved"
@@ -415,10 +409,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     timeline_items::validate_source(db).await?;
                     ensure!(
                         pending.iter().all(|step| {
-                            matches!(
-                                step.name(),
-                                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
-                            ) || is_lifecycle_migration(step.name())
+                            matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS)
+                                || is_lifecycle_migration(step.name())
                         }),
                         "schema 13 has pending earlier content migrations; existing data preserved"
                     );
@@ -429,7 +421,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     timeline_items::validate_source(db).await?;
                     ensure!(
                         pending.iter().all(|step| {
-                            matches!(step.name(), BACKGROUND_RESULTS | TIMELINE_ITEMS)
+                            matches!(step.name(), TIMELINE_ITEMS)
                                 || is_lifecycle_migration(step.name())
                         }),
                         "schema 14 has pending earlier content migrations; existing data preserved"
@@ -1094,7 +1086,6 @@ impl MigrationTrait for CombinedContent {
                             | DEMAND_CONVERSATION
                             | MODEL_ROUTE_HEAD
                             | ATOM_METADATA
-                            | BACKGROUND_RESULTS
                             | TIMELINE_ITEMS
                     ) && !is_lifecycle_migration(step.name())
                 })

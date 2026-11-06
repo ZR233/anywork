@@ -19,9 +19,7 @@ pub(super) struct Manifest {
 }
 
 pub(super) fn descriptor(owner: &str, key: String, bytes: &[u8]) -> Result<ContentDescriptor> {
-    ensure!(bytes.len() <= MANIFEST_BYTES, "oversized content manifest");
-    let manifest: Manifest = serde_json::from_slice(bytes)?;
-    integer(manifest.byte_length)?;
+    let manifest = manifest(bytes)?;
     Ok(ContentDescriptor {
         key: ChatContentKey {
             owner: ChatKey::from_encoded(owner.to_owned())?,
@@ -31,6 +29,13 @@ pub(super) fn descriptor(owner: &str, key: String, bytes: &[u8]) -> Result<Conte
         generation: manifest.generation,
         media_type: manifest.media_type,
     })
+}
+
+pub(super) fn manifest(bytes: &[u8]) -> Result<Manifest> {
+    ensure!(bytes.len() <= MANIFEST_BYTES, "oversized content manifest");
+    let manifest: Manifest = serde_json::from_slice(bytes)?;
+    integer(manifest.byte_length)?;
+    Ok(manifest)
 }
 
 pub(in super::super) async fn write_contents(

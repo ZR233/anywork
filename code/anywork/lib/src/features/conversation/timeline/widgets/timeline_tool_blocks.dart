@@ -309,47 +309,47 @@ class TimelineToolDetails extends StatelessWidget {
         error != null && error.isNotEmpty && output?.trim() != error.trim();
     final diagnostics = _toolDiagnostics(context, item, tool);
     final children = <Widget>[
-      ...(declaredContents ??
-          <Widget>[
-            if (diagnostics.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  diagnostics.join('\n'),
-                  maxLines: 6,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.text.bodySmall?.copyWith(
-                    color: context.colors.onSurfaceVariant,
-                    height: 1.4,
-                    fontFamily: studioCodeFontFamily,
-                  ),
-                ),
-              ),
-            if (arguments != null && arguments.trim().isNotEmpty)
-              StudioCodeBlock(
-                text: _prettyToolPayload(arguments),
-                language: context.l10n.timelineToolArguments,
-                maxHeight: 200,
-                margin: const EdgeInsets.only(top: 8),
-              ),
-            if (output != null && output.trim().isNotEmpty)
-              StudioCodeBlock(
-                text: _prettyToolPayload(output),
-                language: context.l10n.timelineToolOutput,
-                maxHeight: 280,
-                margin: const EdgeInsets.only(top: 8),
-              ),
-            if (showError)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  error,
-                  style: context.text.bodySmall?.copyWith(
-                    color: _toolDiagnosticColor(context, item),
-                  ),
-                ),
-              ),
-          ]),
+      if (diagnostics.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            diagnostics.join('\n'),
+            maxLines: 6,
+            overflow: TextOverflow.ellipsis,
+            style: context.text.bodySmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              height: 1.4,
+              fontFamily: studioCodeFontFamily,
+            ),
+          ),
+        ),
+      if (!hidePayload && declaredContents != null) ...declaredContents!,
+      if (declaredContents == null) ...[
+        if (arguments != null && arguments.trim().isNotEmpty)
+          StudioCodeBlock(
+            text: _prettyToolPayload(arguments),
+            language: context.l10n.timelineToolArguments,
+            maxHeight: 200,
+            margin: const EdgeInsets.only(top: 8),
+          ),
+        if (output != null && output.trim().isNotEmpty)
+          StudioCodeBlock(
+            text: _prettyToolPayload(output),
+            language: context.l10n.timelineToolOutput,
+            maxHeight: 280,
+            margin: const EdgeInsets.only(top: 8),
+          ),
+      ],
+      if (showError)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            error,
+            style: context.text.bodySmall?.copyWith(
+              color: _toolDiagnosticColor(context, item),
+            ),
+          ),
+        ),
       if (additionalContentBuilder != null)
         Builder(builder: additionalContentBuilder!),
     ];

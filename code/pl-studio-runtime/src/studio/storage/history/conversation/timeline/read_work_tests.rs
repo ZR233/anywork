@@ -525,8 +525,11 @@ impl Fixture {
             .timeline_page(
                 &ChatScope::Main,
                 None,
-                i64::MAX as u64,
-                self.effect,
+                crate::studio::storage::history::TimelineReadCut {
+                    ceiling: i64::MAX as u64,
+                    effect: self.effect,
+                    active_heads: &[],
+                },
                 ReadDemand {
                     max_items: 1,
                     max_bytes: PAGE_BYTES,
@@ -547,8 +550,11 @@ impl Fixture {
                     reference: reference.clone(),
                 },
                 before,
-                self.count as u64,
-                self.effect,
+                crate::studio::storage::history::TimelineReadCut {
+                    ceiling: self.count as u64,
+                    effect: self.effect,
+                    active_heads: &[],
+                },
                 ReadDemand {
                     max_items: PAGE_ITEMS,
                     max_bytes: PAGE_BYTES,

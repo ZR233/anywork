@@ -170,6 +170,9 @@ struct OrderIndexState {
     ceiling: u64,
     durable: u64,
     assigned: BTreeMap<String, ExecutionIdentity>,
+    by_source: BTreeMap<String, std::collections::BTreeSet<String>>,
+    pending: std::collections::BTreeSet<(u64, String)>,
+    dirty: std::collections::BTreeSet<String>,
     /// An already admitted material owner failed to fund its next step; only an explicit
     /// successful owner measurement/transfer or retry can reopen optional allocations.
     resident_blocked: bool,
@@ -179,7 +182,6 @@ struct OrderIndexState {
 struct ExecutionIdentity {
     ordinal: u64,
     source: Option<String>,
-    source_seen: bool,
     source_ended: bool,
     effect: Option<u64>,
     retained: bool,
@@ -195,6 +197,70 @@ struct ExecutionStamp {
     created_at: i64,
     updated_at: i64,
     turn_id: String,
+}
+
+impl OrderIndexState {
+    fn auxiliary_bytes(&self, id: &str, entry: &ExecutionIdentity) -> u64 {
+        let mut bytes = if self.dirty.contains(id) {
+            identity_key_bytes(id)
+        } else {
+            0
+        };
+        if entry
+            .effect
+            .is_some_and(|effect| self.pending.contains(&(effect, id.to_owned())))
+        {
+            bytes = bytes.saturating_add(pending_key_bytes(id));
+        }
+        if entry.source.is_some() && !entry.source_ended {
+            bytes = bytes.saturating_add(identity_key_bytes(id));
+        }
+        bytes
+    }
+    fn index_identity(&mut self, id: &str, old_effect: Option<u64>) {
+        if let Some(effect) = old_effect {
+            self.pending.remove(&(effect, id.to_owned()));
+        }
+        let entry = &self.assigned[id];
+        if let Some(source) = &entry.source
+            && !entry.source_ended
+        {
+            self.by_source
+                .entry(source.clone())
+                .or_default()
+                .insert(id.to_owned());
+        }
+        if let Some(effect) = entry.effect
+            && effect > self.durable
+        {
+            self.pending.insert((effect, id.to_owned()));
+        }
+        self.dirty.insert(id.to_owned());
+    }
+    fn remove_identity(&mut self, id: &str) -> Option<(ExecutionIdentity, u64)> {
+        let entry = self.assigned.remove(id)?;
+        let mut bytes = entry.bytes(id);
+        if let Some(effect) = entry.effect
+            && self.pending.remove(&(effect, id.to_owned()))
+        {
+            bytes = bytes.saturating_add(pending_key_bytes(id));
+        }
+        if let Some(source) = &entry.source
+            && let Some(ids) = self.by_source.get_mut(source)
+        {
+            if ids.remove(id) {
+                bytes = bytes.saturating_add(identity_key_bytes(id));
+            }
+            if ids.is_empty() {
+                self.by_source.remove(source);
+                bytes = bytes.saturating_add(source_bucket_bytes(source));
+            }
+        }
+        if self.dirty.remove(id) {
+            bytes = bytes.saturating_add(identity_key_bytes(id));
+        }
+        Some((entry, bytes))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +283,22 @@ impl ExecutionIdentity {
     }
 }
 
+fn identity_key_bytes(id: &str) -> u64 {
+    (std::mem::size_of::<String>() as u64)
+        .saturating_add(64)
+        .saturating_add(id.len() as u64)
+}
+fn pending_key_bytes(id: &str) -> u64 {
+    (std::mem::size_of::<(u64, String)>() as u64)
+        .saturating_add(64)
+        .saturating_add(id.len() as u64)
+}
+fn source_bucket_bytes(source: &str) -> u64 {
+    (std::mem::size_of::<(String, std::collections::BTreeSet<String>)>() as u64)
+        .saturating_add(64)
+        .saturating_add(source.len() as u64)
+}
+
 impl RuntimeOrderIndex {
     fn new(process_bytes: Arc<AtomicU64>, ceiling: u64) -> Self {
         Self::with_delivery(process_bytes, ceiling, Arc::new(AtomicU64::new(0)))
@@ -232,6 +314,9 @@ impl RuntimeOrderIndex {
                 ceiling,
                 durable: 0,
                 assigned: BTreeMap::new(),
+                by_source: BTreeMap::new(),
+                pending: Default::default(),
+                dirty: Default::default(),
                 resident_blocked: false,
             }),
             bytes: AtomicU64::new(0),
@@ -276,21 +361,18 @@ impl RuntimeOrderIndex {
 
     fn allocate(&self, item_id: &str, source: Option<&str>, ordinal: Option<u64>) -> Result<u64> {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        self.allocate_locked(&mut state, item_id, source, ordinal, 0)
+        self.allocate_locked(&mut state, item_id, source, ordinal)
     }
 
-    /// Validate and fund the entire mutation before inserting or changing an identity. A caller
-    /// materializing a stamp includes its growth in this one charge while holding the same lock.
+    /// Placement and actual auxiliary keys are funded together before mutation.
     fn allocate_locked(
         &self,
         state: &mut OrderIndexState,
         item_id: &str,
         source: Option<&str>,
         ordinal: Option<u64>,
-        stamp_growth: u64,
     ) -> Result<u64> {
-        let blocked = state.resident_blocked;
-        if let Some(entry) = state.assigned.get_mut(item_id) {
+        if let Some(entry) = state.assigned.get(item_id) {
             ensure!(
                 ordinal.is_none_or(|order| order == entry.ordinal),
                 "execution ordinal conflict"
@@ -299,15 +381,18 @@ impl RuntimeOrderIndex {
                 source.is_none_or(|source| entry.source.as_deref().is_none_or(|old| old == source)),
                 "execution observation source conflict"
             );
-            let source = source.filter(|_| entry.source.is_none());
-            let added = stamp_growth.saturating_add(source.map_or(0, |source| source.len() as u64));
-            if added > 0 {
-                self.charge(added, blocked)?;
-            }
-            if let Some(source) = source {
+            let ordinal = entry.ordinal;
+            if let Some(source) = source.filter(|_| entry.source.is_none()) {
+                let mut entry = entry.clone();
                 entry.source = Some(source.to_owned());
+                entry.retained = true;
+                self.commit_execution_batch(
+                    state,
+                    BTreeMap::from([(item_id.to_owned(), entry)]),
+                    state.ceiling,
+                )?;
             }
-            return Ok(entry.ordinal);
+            return Ok(ordinal);
         }
         let order = ordinal
             .or_else(|| state.ceiling.checked_add(1))
@@ -316,7 +401,6 @@ impl RuntimeOrderIndex {
         let entry = ExecutionIdentity {
             ordinal: order,
             source: source.map(str::to_owned),
-            source_seen: false,
             source_ended: false,
             effect: None,
             retained: true,
@@ -325,10 +409,11 @@ impl RuntimeOrderIndex {
             completion_checked: false,
             stamp: None,
         };
-        let bytes = entry.bytes(item_id).saturating_add(stamp_growth);
-        self.charge(bytes, blocked)?;
-        state.ceiling = state.ceiling.max(order);
-        state.assigned.insert(item_id.to_owned(), entry);
+        self.commit_execution_batch(
+            state,
+            BTreeMap::from([(item_id.to_owned(), entry)]),
+            state.ceiling.max(order),
+        )?;
         Ok(order)
     }
 
@@ -405,9 +490,14 @@ impl RuntimeOrderIndex {
         }
         let mut staged = BTreeMap::new();
         let mut ceiling = state.ceiling;
-        let mut bytes = 0_u64;
         for id in &ids {
-            if state.assigned.contains_key(id) || staged.contains_key(id) {
+            if staged.contains_key(id) {
+                continue;
+            }
+            if let Some(entry) = state.assigned.get(id) {
+                let mut entry = entry.clone();
+                entry.effect = Some(entry.effect.unwrap_or(0).max(effect.sequence));
+                staged.insert(id.clone(), entry);
                 continue;
             }
             ceiling = ceiling
@@ -417,7 +507,6 @@ impl RuntimeOrderIndex {
             let entry = ExecutionIdentity {
                 ordinal: ceiling,
                 source: None,
-                source_seen: false,
                 source_ended: false,
                 effect: Some(effect.sequence),
                 retained: false,
@@ -426,45 +515,43 @@ impl RuntimeOrderIndex {
                 completion_checked: false,
                 stamp: None,
             };
-            bytes = bytes.saturating_add(entry.bytes(id));
             staged.insert(id.clone(), entry);
         }
+        let (old_bytes, new_bytes) = Self::replacement_bytes(state, &staged);
         ensure!(
             self.other_thread_bytes
                 .load(Ordering::Acquire)
                 .saturating_add(self.delivery_bytes.load(Ordering::Acquire))
                 .saturating_add(self.retained_bytes())
                 .saturating_add(additional_bytes)
-                .saturating_add(bytes)
+                .saturating_add(new_bytes.saturating_sub(old_bytes))
                 <= MAX_HISTORY_THREAD_BYTES,
             ExecutionIndexBudgetFull { scope: "thread" }
         );
         // Fund the whole boundary set before publishing any placement or advancing the ceiling.
-        self.charge(bytes, false)?;
-        state.ceiling = ceiling;
-        state.assigned.extend(staged);
-        for id in ids {
-            let entry = state.assigned.get_mut(&id).expect("reserved boundary");
-            entry.effect = Some(entry.effect.unwrap_or(0).max(effect.sequence));
-        }
+        let added = new_bytes.saturating_sub(old_bytes);
+        let released = old_bytes.saturating_sub(new_bytes);
+        self.charge(added, false)?;
+        Self::apply_execution_batch(state, staged, ceiling);
+        self.release_charge(released);
         Ok(())
     }
 
     fn has_pending(&self) -> bool {
         let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         state
-            .assigned
-            .values()
-            .any(|entry| entry.effect.is_some_and(|seq| seq > state.durable))
+            .pending
+            .last()
+            .is_some_and(|(effect, _)| *effect > state.durable)
     }
 
     fn has_unfinished_source(&self) -> bool {
-        self.inner
+        !self
+            .inner
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .assigned
-            .values()
-            .any(|entry| entry.source.is_some() && !entry.source_ended)
+            .by_source
+            .is_empty()
     }
 
     pub(in crate::studio) fn materialize(
@@ -473,18 +560,28 @@ impl RuntimeOrderIndex {
         effect: u64,
     ) -> Result<()> {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        let old = state
-            .assigned
-            .get(&item.id)
-            .and_then(|entry| entry.stamp.as_ref())
-            .map_or(0, |stamp| stamp.turn_id.len() as u64);
-        let new = item.turn_id.len() as u64;
-        self.allocate_locked(
-            &mut state,
-            &item.id,
-            None,
-            Some(item.ordinal),
-            new.saturating_sub(old),
+        ensure!(
+            item.ordinal <= i64::MAX as u64,
+            "execution ordinal space is exhausted"
+        );
+        if let Some(entry) = state.assigned.get(&item.id) {
+            ensure!(entry.ordinal == item.ordinal, "execution ordinal conflict");
+        }
+        let mut staged = BTreeMap::new();
+        Self::stage_materialization(
+            &state,
+            &mut staged,
+            &ExecutionMaterialization {
+                item_id: &item.id,
+                ordinal: Some(item.ordinal),
+                revision: item.revision,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+                turn_id: &item.turn_id,
+                terminal: item.is_terminal(),
+            },
+            item.ordinal,
+            effect,
         )?;
         #[cfg(test)]
         {
@@ -496,25 +593,10 @@ impl RuntimeOrderIndex {
                     .expect("materialization regression gate was not released");
             }
         }
-        // allocate_locked and this update share the index lock: a save cannot prune the entry
-        // between checking its placement and attaching the new pending obligation.
-        let entry = state
-            .assigned
-            .get_mut(&item.id)
-            .expect("allocated identity");
-        if old > new {
-            self.release_charge(old - new);
-        }
-        entry.stamp = Some(ExecutionStamp {
-            revision: item.revision,
-            created_at: item.created_at,
-            updated_at: item.updated_at,
-            turn_id: item.turn_id.clone(),
-        });
-        entry.effect = Some(entry.effect.unwrap_or(0).max(effect));
-        entry.terminal |= item.is_terminal();
+        let ceiling = state.ceiling.max(item.ordinal);
+        let released = self.commit_execution_batch(&mut state, staged, ceiling)?;
         drop(state);
-        if old > new {
+        if released > 0 {
             self.notify_capacity();
         }
         Ok(())
@@ -599,13 +681,11 @@ impl RuntimeOrderIndex {
             return Ok(());
         }
         let mut entry = if let Some(entry) = state.assigned.get(item.item_id) {
-            ensure!(entry.ordinal == ordinal, "execution ordinal conflict");
             entry.clone()
         } else {
             ExecutionIdentity {
                 ordinal,
                 source: None,
-                source_seen: false,
                 source_ended: false,
                 effect: None,
                 retained: false,
@@ -623,29 +703,78 @@ impl RuntimeOrderIndex {
     }
 
     /// Validate and fund the net delta once, before changing any placement, stamp or ceiling.
+    fn replacement_bytes(
+        state: &OrderIndexState,
+        staged: &BTreeMap<String, ExecutionIdentity>,
+    ) -> (u64, u64) {
+        let mut old_bytes = 0_u64;
+        let mut new_bytes = 0_u64;
+        let mut sources = BTreeMap::<&str, (usize, usize)>::new();
+        for (id, entry) in staged {
+            if let Some(old) = state.assigned.get(id) {
+                old_bytes = old_bytes
+                    .saturating_add(old.bytes(id))
+                    .saturating_add(state.auxiliary_bytes(id, old));
+                if let Some(source) = &old.source
+                    && !old.source_ended
+                {
+                    sources.entry(source).or_default().0 += 1;
+                }
+            }
+            new_bytes = new_bytes
+                .saturating_add(entry.bytes(id))
+                .saturating_add(identity_key_bytes(id));
+            if entry.effect.is_some_and(|effect| effect > state.durable) {
+                new_bytes = new_bytes.saturating_add(pending_key_bytes(id));
+            }
+            if let Some(source) = &entry.source
+                && !entry.source_ended
+            {
+                new_bytes = new_bytes.saturating_add(identity_key_bytes(id));
+                sources.entry(source).or_default().1 += 1;
+            }
+        }
+        for (source, (removed, added)) in sources {
+            let old = state.by_source.get(source).map_or(0, |ids| ids.len());
+            let new = old
+                .checked_sub(removed)
+                .and_then(|count| count.checked_add(added))
+                .expect("source index matches assigned identities");
+            if old == 0 && new != 0 {
+                new_bytes = new_bytes.saturating_add(source_bucket_bytes(source));
+            } else if old != 0 && new == 0 {
+                old_bytes = old_bytes.saturating_add(source_bucket_bytes(source));
+            }
+        }
+        (old_bytes, new_bytes)
+    }
+
+    fn apply_execution_batch(
+        state: &mut OrderIndexState,
+        staged: BTreeMap<String, ExecutionIdentity>,
+        ceiling: u64,
+    ) {
+        for (id, entry) in staged {
+            let old = state.assigned.insert(id.clone(), entry);
+            state.index_identity(&id, old.and_then(|entry| entry.effect));
+        }
+        state.ceiling = ceiling;
+    }
+
     fn commit_execution_batch(
         &self,
         state: &mut OrderIndexState,
         staged: BTreeMap<String, ExecutionIdentity>,
         ceiling: u64,
     ) -> Result<u64> {
-        let mut old_bytes = 0_u64;
-        let mut new_bytes = 0_u64;
-        for (id, entry) in &staged {
-            old_bytes =
-                old_bytes.saturating_add(state.assigned.get(id).map_or(0, |old| old.bytes(id)));
-            new_bytes = new_bytes.saturating_add(entry.bytes(id));
-        }
+        let (old_bytes, new_bytes) = Self::replacement_bytes(state, &staged);
         let added = new_bytes.saturating_sub(old_bytes);
         let released = old_bytes.saturating_sub(new_bytes);
         if added > 0 {
             self.charge(added, state.resident_blocked)?;
         }
-        if released > 0 {
-            self.release_charge(released);
-        }
-        state.assigned.extend(staged);
-        state.ceiling = ceiling;
+        Self::apply_execution_batch(state, staged, ceiling);
+        self.release_charge(released);
         Ok(released)
     }
 
@@ -729,35 +858,62 @@ impl RuntimeOrderIndex {
     /// Materialized identities additionally require a real writer acknowledgement.
     pub(in crate::studio) fn finish_source(&self, attempt_id: &str) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        for entry in state.assigned.values_mut() {
-            if entry.source.as_deref() == Some(attempt_id) {
-                entry.source_ended = true;
+        let Some((source, identities)) = state.by_source.remove_entry(attempt_id) else {
+            return;
+        };
+        let mut released = source_bucket_bytes(&source);
+        for id in identities {
+            state
+                .assigned
+                .get_mut(&id)
+                .expect("indexed source identity")
+                .source_ended = true;
+            let bytes = identity_key_bytes(&id);
+            if !state.dirty.insert(id) {
+                released = released.saturating_add(bytes);
             }
+        }
+        drop(source);
+        self.release_charge(released);
+        drop(state);
+        self.notify_capacity();
+    }
+
+    pub(in crate::studio) fn retain_reference(&self, id: &str) {
+        if let Some(entry) = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .assigned
+            .get_mut(id)
+        {
+            entry.retained = true;
         }
     }
 
     pub(in crate::studio) fn retain<V>(
         &self,
-        sources: &std::collections::BTreeSet<String>,
         identities: &BTreeMap<String, V>,
+        removed: Vec<String>,
     ) {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        for (id, entry) in &mut state.assigned {
-            let source_live = entry.source.as_ref().is_some_and(|source| {
-                if sources.contains(source) {
-                    entry.source_seen = true;
-                } else if entry.source_seen {
-                    entry.source_ended = true;
-                }
-                // A synchronous producer can reserve before this projection reaches its start
-                // checkpoint. Absence from an older checkpoint does not prove source retirement.
-                !entry.source_ended
-            });
-            entry.retained = source_live || identities.contains_key(id);
+        let touched = std::mem::take(&mut state.dirty);
+        let dirty_bytes = touched
+            .iter()
+            .map(|id| identity_key_bytes(id))
+            .fold(0_u64, u64::saturating_add);
+        for id in touched.iter().chain(&removed) {
+            let referenced = identities.contains_key(id);
+            if let Some(entry) = state.assigned.get_mut(id) {
+                // Only the real source terminal retires a reservation. An older snapshot
+                // missing that source cannot prove it ended.
+                entry.retained = referenced || (entry.source.is_some() && !entry.source_ended);
+            }
         }
-        let released = self.prune(&mut state);
+        let released = self.prune(&mut state, touched.into_iter().chain(removed));
+        self.release_charge(dirty_bytes);
         drop(state);
-        if released > 0 {
+        if released > 0 || dirty_bytes > 0 {
             self.notify_capacity();
         }
     }
@@ -772,22 +928,39 @@ impl RuntimeOrderIndex {
         }
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         state.durable = state.durable.max(effect);
-        let released = self.prune(&mut state);
+        let mut confirmed = Vec::new();
+        let mut pending_bytes = 0_u64;
+        while state
+            .pending
+            .first()
+            .is_some_and(|(effect, _)| *effect <= state.durable)
+        {
+            let (_, id) = state.pending.pop_first().expect("confirmed prefix");
+            pending_bytes = pending_bytes.saturating_add(pending_key_bytes(&id));
+            confirmed.push(id);
+        }
+        let released = self.prune(&mut state, confirmed);
+        self.release_charge(pending_bytes);
         drop(state);
-        if released > 0 {
+        if released > 0 || pending_bytes > 0 {
             self.notify_capacity();
         }
     }
 
-    fn prune(&self, state: &mut OrderIndexState) -> u64 {
+    fn prune(
+        &self,
+        state: &mut OrderIndexState,
+        identities: impl IntoIterator<Item = String>,
+    ) -> u64 {
         let mut released = 0_u64;
-        state.assigned.retain(|id, entry| {
-            let keep = entry.retained || entry.effect.is_some_and(|seq| seq > state.durable);
-            if !keep {
-                released = released.saturating_add(entry.bytes(id));
+        for id in identities {
+            if state.assigned.get(&id).is_some_and(|entry| {
+                !entry.retained && entry.effect.is_none_or(|seq| seq <= state.durable)
+            }) && let Some((_, bytes)) = state.remove_identity(&id)
+            {
+                released = released.saturating_add(bytes);
             }
-            keep
-        });
+        }
         self.release_charge(released);
         released
     }
@@ -915,6 +1088,11 @@ struct Progress {
 }
 
 impl Progress {
+    fn has_writable_head(&self) -> bool {
+        self.effects
+            .front()
+            .is_some_and(|queued| queued.prepared.is_some())
+    }
     /// Locate a sequence in the continuous original queue without scanning it.
     fn queue_offset(&self, sequence: u64) -> Option<usize> {
         let first = self.effects.front()?.sequence;
@@ -1750,6 +1928,9 @@ impl HistoryChannel {
         progress.effects[index].prepared_bytes = bytes;
         progress.effects[index].prepared = Some(prepared);
         progress.handoff = progress.handoff.max(sequence);
+        if progress.has_writable_head() {
+            progress.last_progress_at.get_or_insert_with(Instant::now);
+        }
         #[cfg(test)]
         self.pause_resident_commit();
         self.commit_residents(&progress, &order_index);
@@ -1979,7 +2160,7 @@ impl HistoryChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if progress.error.is_some()
-            || progress.effects.is_empty()
+            || !progress.has_writable_head()
             || !progress
                 .last_progress_at
                 .is_some_and(|last| last.elapsed() >= NO_PROGRESS_WINDOW)
@@ -2407,9 +2588,9 @@ impl ThreadStorageSink {
                         continue;
                     }
                     Ok(Step::Idle) => {
-                        // No prepared work: periodic wake-up only detects a stalled producer.
+                        // Upstream preparation and delivery capacity are event-driven.
+                        // The existing watchdog owns writable-prefix stall detection.
                         tokio::select! {
-                            () = tokio::time::sleep(Duration::from_secs(1)) => {}
                             () = inner.changed.notified() => {}
                             () = accounting_retry_due(&inner) => {}
                             () = inner.channel.stopping.cancelled() => {}
@@ -2538,7 +2719,7 @@ async fn step(inner: &Inner) -> Result<Step> {
         progress.durable = committed.sequence;
     }
     progress.in_flight = None;
-    progress.last_progress_at = (!progress.effects.is_empty()).then(Instant::now);
+    progress.last_progress_at = progress.has_writable_head().then(Instant::now);
     #[cfg(test)]
     let sequence = progress.durable;
     inner.channel.commit_residents(&progress, &index);
@@ -3084,7 +3265,6 @@ impl ColdStore for ThreadStorageSink {
             });
             progress.effect_bytes += bytes;
             progress.admit_saved_at(write.checkpoint.saved_at);
-            progress.last_progress_at.get_or_insert_with(Instant::now);
             self.0.channel.commit_residents(&progress, &index);
             drop(index);
         }
@@ -5214,21 +5394,23 @@ pub(crate) mod storage_fault_tests {
         let reserved_bytes = index.retained_bytes();
         assert!(reserved_bytes > "observed".len() as u64);
         assert_eq!(process.load(Ordering::Acquire), reserved_bytes);
-        index.retain::<()>(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), Vec::new());
+        let active_bytes = index.retained_bytes();
+        assert!(active_bytes > 0 && active_bytes < reserved_bytes);
         assert_eq!(
-            index.retained_bytes(),
-            reserved_bytes,
+            index.assigned("observed"),
+            Some(observed),
             "an older checkpoint cannot retire a source the projection has not reached"
         );
         index.finish_source("attempt-one");
         let identities = BTreeMap::from([("observed".to_owned(), 5_u64)]);
-        index.retain(&Default::default(), &identities);
-        assert_eq!(
-            index.retained_bytes(),
-            reserved_bytes,
-            "an ended source's identity stays charged while the original fact index retains it"
+        index.retain(&identities, Vec::new());
+        assert!(
+            index.retained_bytes() > 0 && index.retained_bytes() < active_bytes,
+            "retained facts own the identity after source and change keys are released"
         );
-        index.retain::<()>(&Default::default(), &Default::default());
+        assert_eq!(index.assigned("observed"), Some(observed));
+        index.retain::<()>(&Default::default(), vec!["observed".into()]);
         assert_eq!(
             index.retained_bytes(),
             0,
@@ -5256,7 +5438,7 @@ pub(crate) mod storage_fault_tests {
         index.materialize(&item, 7)?;
         index.mark_completion("completed", true);
         index.finish_source("attempt-two");
-        index.retain::<()>(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), Vec::new());
         assert!(index.pending("completed"));
         assert!(index.is_sealed("completed"));
         assert!(index.is_terminal("completed"));
@@ -5290,7 +5472,7 @@ pub(crate) mod storage_fault_tests {
         index.other_thread_bytes.store(0, Ordering::Release);
         assert_eq!(index.reserve_observed("attempt", "accepted")?, 11);
         index.finish_source("attempt");
-        index.retain::<()>(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), Vec::new());
         assert_eq!(process.load(Ordering::Acquire), 0);
         Ok(())
     }
@@ -5333,7 +5515,7 @@ pub(crate) mod storage_fault_tests {
 
         index.other_thread_bytes.store(0, Ordering::Release);
         index.materialize(&item, 7)?;
-        index.retain::<()>(&Default::default(), &Default::default());
+        index.retain::<()>(&Default::default(), Vec::new());
         let pending = index.pending_placement(id, "thread").unwrap();
         let resident_bytes = index.retained_bytes();
         let mut growing = item.clone();
@@ -5349,6 +5531,18 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(index.retained_bytes(), resident_bytes);
         assert_eq!(process.load(Ordering::Acquire), resident_bytes);
         index.confirm_saved(7);
+        assert_eq!(index.retained_bytes(), 0);
+        assert_eq!(process.load(Ordering::Acquire), 0);
+        // A committed database prefix can precede its local acknowledgement.
+        // Replacing that pending key must charge only the actual replacement.
+        index.other_thread_bytes.store(0, Ordering::Release);
+        index.materialize(&item, 9)?;
+        index.retain::<()>(&Default::default(), Vec::new());
+        index.seed(item.ordinal, 9);
+        index.materialize(&item, 10)?;
+        index.retain::<()>(&Default::default(), Vec::new());
+        index.confirm_saved(10);
+        assert!(index.inner.lock().unwrap().assigned.is_empty());
         assert_eq!(index.retained_bytes(), 0);
         assert_eq!(process.load(Ordering::Acquire), 0);
         Ok(())
@@ -5496,7 +5690,7 @@ pub(crate) mod storage_fault_tests {
                 })?;
             // The later fact has also left the live window; only its new unsaved obligation
             // must keep the reconstructed identity resident until the writer reaches it.
-            index.retain::<()>(&Default::default(), &Default::default());
+            index.retain::<()>(&Default::default(), vec!["racing-identity".into()]);
             let mut next_prepared = old_prepared.clone();
             next_prepared.sequence = 3;
             next_prepared.current = next_current.current.clone();
@@ -5719,6 +5913,62 @@ pub(crate) mod storage_fault_tests {
             pl_core::chat::ChatHistory::item(&history, "late-input").await?,
             Some(original)
         );
+        sink.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stall_clock_belongs_to_the_writable_prefix_and_survives_later_admissions() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "writable-stall-clock";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let chat = store.chat_session(id).await?;
+        let mut projection = live_projection(&sink).await?;
+        let lease = sink.0.channel.step_lock.lock().await;
+        let first = visible_input_ticket(id, 1, "first")?;
+        sink.admit(id, first.clone())?;
+        assert!(lock_progress(&sink.0).last_progress_at.is_none());
+        sink.0.channel.detect_stall();
+        assert!(sink.0.channel.subscribe().borrow().fault.is_none());
+        let mut prepared = projection
+            .prepare_committed(&sink.0.thread, &first.effect, &first.checkpoint.state)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
+        assert!(sink.0.channel.prepare(prepared));
+        assert!(lock_progress(&sink.0).last_progress_at.unwrap().elapsed() < NO_PROGRESS_WINDOW);
+        let stalled_at = Instant::now() - NO_PROGRESS_WINDOW;
+        lock_progress(&sink.0).last_progress_at = Some(stalled_at);
+        let second = visible_input_ticket(id, 2, "second")?;
+        sink.admit(id, second.clone())?;
+        assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
+        let mut prepared = projection
+            .prepare_committed(&sink.0.thread, &second.effect, &second.checkpoint.state)
+            .await?;
+        projection.publish_prepared(&chat, &mut prepared).await?;
+        assert!(sink.0.channel.prepare(prepared));
+        assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
+        sink.0.channel.detect_stall();
+        let failed = sink.0.channel.subscribe().borrow().clone();
+        assert_eq!(
+            failed.fault,
+            Some(pl_protocol::studio::HistoryFault::NoProgress)
+        );
+        sink.0.channel.detect_stall();
+        assert_eq!(
+            sink.0.channel.subscribe().borrow().fault_generation,
+            failed.fault_generation
+        );
+        drop(lease);
+        store
+            .thread_persistence()
+            .retry_history(id, failed.fault_generation)
+            .await?;
+        sink.flush(id, 2).await?;
+        assert_eq!(store.history(id).await?.watermark().await?, 2);
+        assert!(lock_progress(&sink.0).last_progress_at.is_none());
         sink.0.channel.stop_and_join().await?;
         Ok(())
     }
@@ -7571,8 +7821,9 @@ pub(crate) mod storage_fault_tests {
         assert!(bytes > 0);
         assert_eq!(process.load(Ordering::Acquire), bytes);
         // Processing an older checkpoint cannot retire an admitted but unprojected boundary.
-        index.retain::<()>(&Default::default(), &Default::default());
-        assert_eq!(index.retained_bytes(), bytes);
+        index.retain::<()>(&Default::default(), Vec::new());
+        assert!(index.retained_bytes() > 0 && index.retained_bytes() < bytes);
+        assert_eq!(index.inner.lock().unwrap().assigned.len(), 2);
         index.confirm_saved(1);
         assert_eq!(index.retained_bytes(), 0);
         assert_eq!(process.load(Ordering::Acquire), 0);
@@ -8780,10 +9031,10 @@ pub(crate) mod storage_fault_tests {
             );
             assert_eq!(index.assigned(&ack_id), None);
             assert_eq!(index.inner.lock().unwrap().ceiling, ceiling + 2);
-            assert_eq!(index.retained_bytes(), before_index);
+            let after_index = index.retained_bytes();
             assert_eq!(
                 sink.0.channel.process_bytes.load(Ordering::Acquire),
-                before_process
+                before_process - before_index + after_index
             );
             assert!(prepared.items.iter().all(|item| item.ordinal > 0));
             let tool = prepared
@@ -8804,7 +9055,8 @@ pub(crate) mod storage_fault_tests {
                 })?;
             assert_eq!(
                 sink.pressure(id).thread_bytes,
-                before_thread - before_projection
+                before_thread - before_projection - before_index
+                    + after_index
                     + projection.retained_bytes()
                     + prepared.retained_bytes()
             );

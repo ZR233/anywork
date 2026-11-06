@@ -1218,6 +1218,7 @@ impl StudioRuntime {
     /// 背景 watcher 用 abort 即刻停摆；title 任务用一次性取消信号。此步不做任何可能无界阻塞的
     /// 服务 join，保证所有独立资源先收到取消。
     async fn broadcast_cancel(&self) {
+        self.thread_observations.close_deliveries();
         self.account_usage.request_close();
         self.model_performance.request_close();
         use super::super::background_task;
