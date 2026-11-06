@@ -116,8 +116,9 @@ pub(super) fn core_demand(demand: ReadDemand) -> Result<core::ReadDemand> {
         demand.max_bytes as usize,
     ))
 }
+#[track_caller]
 pub(super) fn resync() -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
+    let error = pl_protocol::studio::StudioError::new(
         pl_protocol::studio::StudioErrorCode::Busy,
         "Conversation source continuity changed; open a new handle",
         true,
@@ -125,8 +126,16 @@ pub(super) fn resync() -> anyhow::Error {
     .with_reason(
         pl_protocol::studio::StudioErrorReason::ConversationResyncRequired,
         serde_json::Value::Null,
-    )
-    .into()
+    );
+    let caller = std::panic::Location::caller();
+    tracing::debug!(
+        target: "conversation_continuity",
+        correlation_id = %error.correlation_id,
+        source_file = caller.file(),
+        source_line = caller.line(),
+        "conversation resynchronization required"
+    );
+    error.into()
 }
 fn cancelled() -> anyhow::Error {
     core::ChatError::Cancelled.into()
@@ -229,7 +238,17 @@ impl ConversationReader {
         }
         Ok(())
     }
+    #[track_caller]
     pub(super) fn invalidate(&self) {
+        let caller = std::panic::Location::caller();
+        tracing::debug!(
+            target: "conversation_continuity",
+            subscription_id = self.subscription_id(),
+            thread_id = self.thread_id(),
+            source_file = caller.file(),
+            source_line = caller.line(),
+            "conversation reader invalidated"
+        );
         self.inner
             .member_window
             .lock()
