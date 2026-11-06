@@ -616,40 +616,97 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
     )
     .await
     .unwrap();
-    assert!(result.is_err());
     let effects = thread.effects().await.unwrap();
     let members = effects
         .iter()
         .flat_map(|effect| effect.model_members.iter())
         .collect::<Vec<_>>();
-    assert_eq!(members.len(), 1);
     let beginnings: Vec<_> = effects
         .iter()
         .flat_map(|e| e.model_member_starts.iter())
         .collect();
-    assert_eq!(beginnings.len(), 1);
-    let receipt = model_member_receipt(members[0]).unwrap();
+    // Capture the ungated call before any assertion can hide an unexpected replay. Only the local
+    // fixture's request metadata is included, never request bodies or account configuration.
+    let requests_before_assertions = fixture.recorded();
+    let request_metadata: Vec<_> = requests_before_assertions
+        .iter()
+        .map(|request| {
+            (
+                &request.method,
+                &request.path,
+                request.accepted,
+                &request.diagnostic,
+            )
+        })
+        .collect();
+    let member_effects: Vec<_> = effects
+        .iter()
+        .filter(|effect| {
+            !effect.model_members.is_empty()
+                || !effect.model_member_starts.is_empty()
+                || effect.attempt.is_some()
+        })
+        .map(|effect| {
+            (
+                effect.sequence,
+                &effect.model_members,
+                &effect.model_member_starts,
+                &effect.attempt,
+            )
+        })
+        .collect();
+    let failure_receipts: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| {
+            let attempt = effect.attempt.as_ref()?;
+            let AttemptOutcome::Failed(error) = &attempt.outcome else {
+                return None;
+            };
+            // Serialize the public reader's complete result, including message, providerFailure
+            // and partialProgress.observation (generation/recovery), rather than just the preview.
+            Some((
+                effect.sequence,
+                &attempt.attempt_id,
+                model_failure_receipt(error).map(|receipt| serde_json::to_string_pretty(&receipt)),
+            ))
+        })
+        .collect();
+    let diagnostic = format!(
+        "ungated early EOF: turn_result={result:?}\n\
+         fixture_request_count={}; request_metadata={request_metadata:#?}\n\
+         effects=(sequence, members, starts, attempt): {member_effects:#?}\n\
+         decoded_failure_receipts={failure_receipts:#?}",
+        requests_before_assertions.len(),
+    );
+    assert!(result.is_err(), "{diagnostic}");
+    assert_eq!(members.len(), 1, "{diagnostic}");
+    assert_eq!(beginnings.len(), 1, "{diagnostic}");
+    let receipt =
+        model_member_receipt(members[0]).unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"));
     let failed = effects
         .iter()
         .filter_map(|effect| effect.attempt.as_ref())
         .next_back()
-        .unwrap();
+        .unwrap_or_else(|| panic!("missing terminal attempt\n{diagnostic}"));
     let AttemptOutcome::Failed(error) = &failed.outcome else {
-        panic!("early EOF remains an attempt failure, not a successful member's context");
+        panic!(
+            "early EOF remains an attempt failure, not a successful member's context\n{diagnostic}"
+        );
     };
     assert_eq!(
         model_failure_receipt(error)
-            .unwrap()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"))
+            .unwrap_or_else(|| panic!("missing failure receipt\n{diagnostic}"))
             .presentation_items,
-        vec![receipt.item]
+        vec![receipt.item],
+        "{diagnostic}"
     );
     thread.close().await.unwrap();
     let requests = fixture
         .finish()
         .await
-        .expect("no unexpected replay request");
-    assert_eq!(requests.len(), 1);
+        .unwrap_or_else(|error| panic!("no unexpected replay request: {error:?}\n{diagnostic}"));
+    assert_eq!(requests.len(), 1, "{diagnostic}");
 }
 
 #[tokio::test]

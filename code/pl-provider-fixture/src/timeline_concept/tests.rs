@@ -557,8 +557,8 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
         parallel.reply,
     );
     let observer = Control {
-        names: vec![control.names[1]],
-        stages: vec![control.stages[1].clone()],
+        names: vec![control.names[2]],
+        stages: vec![control.stages[2].clone()],
     };
     // The real HTTP observer sees only created/added/delta/done reasoning before
     // release. observe also rejects premature or repeated release requests.
@@ -590,7 +590,7 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
 }
 
 #[tokio::test]
-async fn realtime_first_live_text_gate_holds_after_real_text_delta() {
+async fn realtime_first_reply_holds_waiting_and_live_text_phases() {
     let control = Control::realtime();
     let first = control
         .realtime_script("fixture-host-cwd")
@@ -599,15 +599,21 @@ async fn realtime_first_live_text_gate_holds_after_real_text_delta() {
             matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_DELAYED_PROMPT)
         })
         .expect("first realtime prompt must exist");
-    let Reply::GatedSse { before, .. } = &first.reply else {
-        panic!("first realtime response must be gated");
+    let Reply::SegmentedSse { segments, .. } = &first.reply else {
+        panic!("first realtime response must hold both observation phases");
     };
-    assert_eq!(before.last().unwrap()["type"], "response.output_text.delta");
-    assert!(!before.last().unwrap()["delta"].as_str().unwrap().is_empty());
-    let prefix_events = before.len();
+    assert!(!segments[0].is_empty());
+    assert!(segments[0].iter().all(|event| {
+        event["type"] != "response.output_item.added"
+            && event["type"] != "response.output_text.delta"
+    }));
+    let first_text = segments[1].last().unwrap();
+    assert_eq!(first_text["type"], "response.output_text.delta");
+    assert!(!first_text["delta"].as_str().unwrap().is_empty());
+    let prefix_events = [segments[0].len(), segments[0].len() + segments[1].len()];
     let observer = Control {
-        names: vec![control.names[0]],
-        stages: vec![control.stages[0].clone()],
+        names: control.names[..2].to_vec(),
+        stages: control.stages[..2].to_vec(),
     };
     let step = Step::prompt(
         Protocol::ResponsesHttp,
@@ -615,13 +621,7 @@ async fn realtime_first_live_text_gate_holds_after_real_text_delta() {
         0,
         first.reply,
     );
-    let observed = observe(
-        observer,
-        step,
-        GUI_REALTIME_DELAYED_PROMPT,
-        &[prefix_events],
-    )
-    .await;
+    let observed = observe(observer, step, GUI_REALTIME_DELAYED_PROMPT, &prefix_events).await;
     assert!(
         observed
             .iter()
@@ -631,6 +631,7 @@ async fn realtime_first_live_text_gate_holds_after_real_text_delta() {
     assert_eq!(
         control.names,
         [
+            "realtime-before-first-text",
             "realtime-first-live-text",
             "realtime-parallel-observer",
             "realtime-host-cwd-observer"
@@ -656,8 +657,8 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
         host.reply,
     );
     let observer = Control {
-        names: vec![control.names[2]],
-        stages: vec![control.stages[2].clone()],
+        names: vec![control.names[3]],
+        stages: vec![control.stages[3].clone()],
     };
     let observed = observe(observer, step, GUI_REALTIME_HOST_CWD_PROMPT, &[4]).await;
     assert_eq!(observed.len(), 8);

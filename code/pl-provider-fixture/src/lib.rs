@@ -2908,12 +2908,13 @@ pub fn gui_statistics_script() -> Vec<Step> {
 /// `parallel_observer` holds the two parallel calls behind a completed reasoning
 /// prefix so the desktop observer can mount the original member window before
 /// the calls begin their foreground lifetime. `host_observer` prepares the same
-/// observation boundary for the host-cwd call.
+/// observation boundary for the host-cwd call. `first_text_observers` holds the
+/// initial reply before its first output item, then after its first text delta.
 pub fn gui_realtime_script(
     host_cwd: &str,
     parallel_observer: Option<&ReplyStage>,
     host_observer: Option<&ReplyStage>,
-    first_live_text: Option<&ReplyStage>,
+    first_text_observers: Option<(&ReplyStage, &ReplyStage)>,
 ) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
@@ -2924,7 +2925,11 @@ pub fn gui_realtime_script(
             "realtime-delayed",
             "fixture-model",
         );
-        let reply = if let Some(stage) = first_live_text {
+        let reply = if let Some((waiting, live_text)) = first_text_observers {
+            let first_output = events
+                .iter()
+                .position(|event| event["type"] == "response.output_item.added")
+                .expect("realtime text fixture must contain its output item");
             let first_text_delta = events
                 .iter()
                 .position(|event| {
@@ -2932,9 +2937,13 @@ pub fn gui_realtime_script(
                         && event["delta"].as_str().is_some_and(|text| !text.is_empty())
                 })
                 .expect("realtime text fixture must contain its first text delta");
-            stage.gated(
-                events[..=first_text_delta].to_vec(),
-                events[first_text_delta + 1..].to_vec(),
+            ReplyStage::staged(
+                vec![
+                    events[..first_output].to_vec(),
+                    events[first_output..=first_text_delta].to_vec(),
+                    events[first_text_delta + 1..].to_vec(),
+                ],
+                &[waiting, live_text],
             )
         } else {
             Reply::PacedEvents {

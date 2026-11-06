@@ -41,6 +41,7 @@ const _parallelObserverStage = 'realtime-parallel-observer';
 const _parallelObserverPrefix = 'realtime parallel observers ready';
 const _hostCwdObserverStage = 'realtime-host-cwd-observer';
 const _hostCwdObserverPrefix = 'realtime host cwd observers ready';
+const _beforeFirstTextStage = 'realtime-before-first-text';
 const _firstLiveTextStage = 'realtime-first-live-text';
 
 void main() {
@@ -184,14 +185,16 @@ void main() {
 
       await capturePresentation(tester, 'realtime-start.png');
       await scene.submit('Realtime delayed first token');
+      await fixtureGate(tester, provider, _beforeFirstTextStage);
       await scene.untilKey(const ValueKey('conversation-activity'));
       await capturePresentation(tester, 'realtime-thinking.png');
+      await fixtureGate(tester, provider, _beforeFirstTextStage, release: true);
       await fixtureGate(tester, provider, _firstLiveTextStage);
       await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 20),
       );
-      await fixtureGate(tester, provider, _firstLiveTextStage, release: true);
       await capturePresentation(tester, 'realtime-streaming.png');
+      await fixtureGate(tester, provider, _firstLiveTextStage, release: true);
       await scene.completed(answer: 'realtime delayed first token');
 
       await scene.submit('Realtime reasoning then answer');
