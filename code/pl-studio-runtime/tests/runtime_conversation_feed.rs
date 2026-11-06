@@ -229,6 +229,15 @@ async fn history(
 
 #[tokio::test]
 async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> Result<()> {
+    observe_reliable_websocket_output(false).await
+}
+
+#[tokio::test]
+async fn websocket_reconnect_keeps_admitted_members_and_bodies_through_restart() -> Result<()> {
+    observe_reliable_websocket_output(true).await
+}
+
+async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
     use pl_model::model::ModelTransportProfile;
     use pl_provider_fixture::{Protocol, Reply, Step, WebSocketAction};
     use tokio_util::sync::CancellationToken;
@@ -250,18 +259,37 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
         reached: reached.clone(),
         release: release.clone(),
     });
-    actions.extend(frames[4..].iter().cloned().map(WebSocketAction::Event));
-    let mut env = Environment::with_transport(
-        vec![Step::prompt(
+    if reconnect {
+        actions.push(WebSocketAction::Event(serde_json::json!({
+            "type":"error","status":400,"error":{
+                "code":"websocket_connection_limit_reached",
+                "message":"Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."
+            }
+        })));
+    } else {
+        actions.extend(frames[4..].iter().cloned().map(WebSocketAction::Event));
+    }
+    let mut steps = vec![Step::prompt(
+        Protocol::ResponsesWebSocket,
+        "burst",
+        0,
+        Reply::WebSocketScript(actions),
+    )];
+    if reconnect {
+        // Reuse the same provider item IDs. The observation generation, not a new
+        // display-only ID or deletion of old output, must isolate the two attempts.
+        steps.push(Step::prompt(
             Protocol::ResponsesWebSocket,
             "burst",
-            0,
-            Reply::WebSocketScript(actions),
-        )],
-        vec![],
-        ModelTransportProfile::responses_websocket(),
-    )
-    .await?;
+            1,
+            Reply::WebSocket(frames),
+        ));
+    }
+    let expected_members = if reconnect { 3 } else { 2 };
+    let expected_bytes = if reconnect { 196 } else { 194 };
+    let mut env =
+        Environment::with_transport(steps, vec![], ModelTransportProfile::responses_websocket())
+            .await?;
     let result = async {
         let thread = env.start(ThreadWorkspaceMode::Worktree, "burst").await?;
         let id = thread.thread.id;
@@ -277,7 +305,7 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
             let mut latest = first.clone();
             let mut appended = Vec::new();
             // Observe the real product owner admitting the first complete member before
-            // releasing the provider burst. Neither the writer nor Main is gated.
+            // releasing the provider burst/error. Neither the writer nor Main is gated.
             loop {
                 if latest.current.as_ref().is_some_and(|current| {
                     current.items.iter().any(|item| {
@@ -322,19 +350,13 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
             }
             let mut published = history(feed.reader(), first, demand(7)).await?;
             published.extend(appended);
-            ensure!(published.iter().filter(|item| item.is_work_group()).count() == 1);
-            let (members, bytes) = count_output(
-                &env,
-                &id,
-                feed.reader(),
-                &published,
-                &mut HashSet::new(),
-                &mut HashSet::new(),
-                &mut HashSet::new(),
-            )
-            .await?;
+            if !reconnect {
+                ensure!(published.iter().filter(|item| item.is_work_group()).count() == 1);
+            }
+            let (members, bytes) =
+                websocket_output(&env, &id, feed.reader(), &published, reconnect).await?;
             ensure!(
-                members == 2 && bytes == 194,
+                members == expected_members && bytes == expected_bytes,
                 "burst lost or duplicated original output: {members} members, {bytes} bytes"
             );
             Ok(published
@@ -344,10 +366,17 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
         }
         .await;
         let identities = finish_feed(&mut feed, observed).await?;
+        let recorded = env.root_provider.recorded();
+        ensure!(recorded.len() == if reconnect { 2 } else { 1 });
         ensure!(
-            env.root_provider.recorded().len() == 1,
-            "burst was replayed or fell back to HTTP"
+            recorded
+                .iter()
+                .all(|request| request.accepted && request.method == "WS")
         );
+        if reconnect {
+            ensure!(recorded[1].body.get("previous_response_id").is_none());
+            ensure!(recorded[0].body["input"] == recorded[1].body["input"]);
+        }
         env.restart().await?;
         let mut reopened = env
             .runtime
@@ -360,23 +389,15 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
                 published.iter().map(|item| &item.id).eq(identities.iter()),
                 "restart changed Timeline identities/order"
             );
-            let (members, bytes) = count_output(
-                &env,
-                &id,
-                reopened.reader(),
-                &published,
-                &mut HashSet::new(),
-                &mut HashSet::new(),
-                &mut HashSet::new(),
-            )
-            .await?;
-            ensure!(members == 2 && bytes == 194);
+            let (members, bytes) =
+                websocket_output(&env, &id, reopened.reader(), &published, reconnect).await?;
+            ensure!(members == expected_members && bytes == expected_bytes);
             Ok(())
         }
         .await;
         finish_feed(&mut reopened, read).await?;
         ensure!(
-            env.root_provider.recorded().len() == 1,
+            env.root_provider.recorded().len() == recorded.len(),
             "cold read activated the provider"
         );
         Ok(())
@@ -384,6 +405,49 @@ async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> 
     .await;
     release.cancel();
     env.finish(result).await
+}
+
+async fn websocket_output(
+    env: &Environment,
+    thread_id: &str,
+    reader: &ConversationReader,
+    messages: &[TimelineItem],
+    reconnect: bool,
+) -> Result<(usize, u64)> {
+    let mut output = Vec::new();
+    let mut notices = HashSet::new();
+    for message in messages {
+        let owner = message.content_item_id.as_deref().unwrap_or_default();
+        let notice = if owner.ends_with(":recovery:retry:1") {
+            Some("连接中断，正在重试（1/5）。")
+        } else if owner.ends_with(":recovery:result") {
+            Some("连接已恢复，继续执行。")
+        } else {
+            None
+        };
+        if let Some(notice) = notice {
+            ensure!(
+                reconnect && notices.insert(notice),
+                "unexpected or repeated recovery notice"
+            );
+            let value = envelope(reader, message.payload.as_ref(), owner).await?;
+            ensure!(value["type"] == "text" && value["data"]["channel"] == "commentary");
+            ensure!(bodies(reader, &value, &message.contents, owner).await? == [notice.as_bytes()]);
+        } else {
+            output.push(message.clone());
+        }
+    }
+    ensure!(notices.len() == if reconnect { 2 } else { 0 });
+    count_output(
+        env,
+        thread_id,
+        reader,
+        &output,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
+    .await
 }
 
 #[tokio::test]

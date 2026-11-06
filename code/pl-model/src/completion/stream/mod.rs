@@ -43,7 +43,6 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
     pub(crate) members: Option<pl_core::model::ModelMemberSender>,
     pub(crate) generation: u32,
-    pub(crate) member_admitted: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
@@ -61,7 +60,6 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         on_stream_end,
         members,
         generation,
-        member_admitted,
     } = context;
     let mut accumulator =
         StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation);
@@ -152,9 +150,6 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                         .submit(generation, item.provider_item_id.clone(), payload)
                         .await
                         .map_err(|error| PureError::LlmError(error.to_string()))?;
-                    if let Some(admitted) = member_admitted {
-                        admitted.store(true, std::sync::atomic::Ordering::Release);
-                    }
                 }
             }
             Ok::<(), PureError>(())

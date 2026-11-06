@@ -59,8 +59,7 @@ fn interrupted_text(text: &str) -> Vec<serde_json::Value> {
     events
 }
 
-/// A Thread can transparently retry this unfinished preview. In contrast, `interrupted_text`
-/// already includes output_item.done and may have handed a member to the reliable Core owner.
+/// An unfinished preview, without the independent member admission in `interrupted_text`.
 fn unfinished_text_prefix(text: &str) -> Vec<serde_json::Value> {
     vec![
         json!({"type":"response.created","response":{"id":"interrupted","model":"recovery-model"}}),
@@ -603,15 +602,52 @@ async fn completed_presentation_item_does_not_prevent_safe_recovery() {
             ])
             .await
             .unwrap();
-            let session = ModelSession::default();
-            let result = runtime_with_profile(&fixture, profile.clone())
-                .complete(
-                    request("recover"),
-                    ModelInvocationContext::new(session.clone()),
+            let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
+                runtime_with_profile(&fixture, profile.clone()),
+                None,
+            ))
+            .open_session()
+            .await
+            .unwrap();
+            let thread = ThreadHandle::start("recovery-thread".into(), session).unwrap();
+            let result = thread.run_turn(turn("recover", "recover-turn", 1)).await;
+            let effects = thread.effects().await.unwrap();
+            thread.close().await.unwrap();
+            assert_eq!(result.unwrap().model_steps, 1);
+            let output = effects
+                .iter()
+                .find_map(
+                    |effect| match effect.attempt.as_ref().map(|attempt| &attempt.outcome) {
+                        Some(pl_core::thread::AttemptOutcome::Committed(output)) => Some(output),
+                        _ => None,
+                    },
                 )
-                .await;
-            session.close().await.unwrap();
-            let response = result.unwrap();
+                .unwrap();
+            let response = pl_model::runtime::model_response_receipt(output)
+                .unwrap()
+                .unwrap()
+                .response;
+            let admitted = effects
+                .iter()
+                .flat_map(|effect| effect.model_members.iter())
+                .collect::<Vec<_>>();
+            assert_eq!(admitted.len(), 2);
+            for (generation, member) in admitted.iter().enumerate() {
+                assert_eq!(member.generation, generation as u32);
+                let receipt = pl_model::runtime::model_member_receipt(member).unwrap();
+                assert_eq!(
+                    receipt.state,
+                    pl_model::runtime::ModelMemberState::Completed
+                );
+                assert_eq!(
+                    receipt.item.parts[0].text,
+                    if generation == 0 {
+                        "discarded attempt"
+                    } else {
+                        "successful attempt"
+                    }
+                );
+            }
             assert_eq!(response.content.as_deref(), Some("successful attempt"));
             let replay = serde_json::to_string(response.replay.as_ref().unwrap()).unwrap();
             assert!(replay.contains("successful attempt"));
@@ -990,6 +1026,12 @@ fn tool_events(call_id: &str, argument: &str) -> Vec<serde_json::Value> {
 async fn retry_never_executes_discarded_tool_call_or_reexecutes_preceding_result() {
     let mut interrupted = tool_events("second-call", "discarded argument");
     interrupted.pop();
+    interrupted.push(
+        json!({"type":"response.output_item.done","output_index":1,"item":{
+            "id":"reasoning-before-reconnect","type":"reasoning",
+            "summary":[{"type":"summary_text","text":"reasoning already admitted"}]
+        }}),
+    );
     let mut actions = interrupted
         .into_iter()
         .map(WebSocketAction::Event)
@@ -1157,6 +1199,8 @@ async fn controlled_websocket_idle_is_300_seconds_and_ping_does_not_extend_it() 
 #[tokio::test]
 async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succeeds() {
     for completed in [false, true] {
+        let reached = CancellationToken::new();
+        let release = CancellationToken::new();
         let mut events = vec![
             json!({"type":"response.created","response":{"id":"reasoning-failed","model":"recovery-model"}}),
             json!({"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning-item","type":"reasoning","summary":[]}}),
@@ -1169,7 +1213,20 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
             .into_iter()
             .map(WebSocketAction::Event)
             .collect::<Vec<_>>();
-        actions.push(WebSocketAction::Disconnect);
+        actions.push(WebSocketAction::Barrier {
+            reached: reached.clone(),
+            release: release.clone(),
+        });
+        if completed {
+            actions.push(WebSocketAction::Event(json!({
+                "type":"error","status":400,"error":{
+                    "code":"websocket_connection_limit_reached",
+                    "message":"Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."
+                }
+            })));
+        } else {
+            actions.push(WebSocketAction::Disconnect);
+        }
         let fixture = FixtureServer::start(vec![
             Step::prompt(
                 Protocol::ResponsesWebSocket,
@@ -1190,14 +1247,58 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
         ])
         .await
         .unwrap();
-        let session = ModelSession::default();
-        let response = runtime(&fixture)
-            .complete(
-                request("reasoning"),
-                ModelInvocationContext::new(session.clone()),
-            )
+        let thread = thread(&fixture).await;
+        let mut subscription = thread.subscribe();
+        let running = tokio::spawn({
+            let thread = thread.clone();
+            async move {
+                thread
+                    .run_turn(turn("reasoning", "reasoning-turn", 1))
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            reached.cancelled().await;
+            while completed
+                && !thread.effects().await.unwrap().iter().any(|effect| {
+                    effect
+                        .model_members
+                        .iter()
+                        .any(|member| member.generation == 0)
+                })
+            {
+                subscription.next().await.unwrap();
+            }
+        })
+        .await
+        .expect("the real Thread must admit the complete member before connection expiry");
+        release.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), running)
             .await
+            .unwrap()
             .unwrap();
+        let effects = thread.effects().await.unwrap();
+        thread.close().await.unwrap();
+        let records = fixture.finish().await;
+        assert_eq!(
+            result
+                .expect("ordinary content must not prevent reconnect")
+                .model_steps,
+            1
+        );
+        let output = effects
+            .iter()
+            .find_map(
+                |effect| match effect.attempt.as_ref().map(|attempt| &attempt.outcome) {
+                    Some(pl_core::thread::AttemptOutcome::Committed(output)) => Some(output),
+                    _ => None,
+                },
+            )
+            .unwrap();
+        let response = pl_model::runtime::model_response_receipt(output)
+            .unwrap()
+            .unwrap()
+            .response;
         assert_eq!(response.content.as_deref(), Some("successful answer"));
         assert!(
             response
@@ -1205,6 +1306,8 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
                 .as_ref()
                 .is_none_or(String::is_empty)
         );
+        assert_eq!(response.orchestration.transport_attempts, 2);
+        assert_eq!(response.observation.generation, 1);
         assert_eq!(response.observation.failed.len(), 1);
         assert_eq!(
             response.observation.failed[0]
@@ -1214,9 +1317,31 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
                 .collect::<String>(),
             "abandoned reasoning"
         );
-        session.close().await.unwrap();
-        let records = fixture.finish().await.unwrap();
+        if completed {
+            assert!(
+                response.observation.failed[0]
+                    .message
+                    .contains("websocket_connection_limit_reached")
+            );
+        }
+        let admitted = effects
+            .iter()
+            .flat_map(|effect| effect.model_members.iter())
+            .filter(|member| member.generation == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(admitted.len(), usize::from(completed));
+        if let Some(member) = admitted.first() {
+            let receipt = pl_model::runtime::model_member_receipt(member).unwrap();
+            assert_eq!(
+                receipt.state,
+                pl_model::runtime::ModelMemberState::Completed
+            );
+            assert_eq!(receipt.item.parts[0].text, "abandoned reasoning");
+        }
+        let records = records.unwrap();
         assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.accepted));
+        assert!(records[1].body.get("previous_response_id").is_none());
         assert_eq!(records[0].body["input"], records[1].body["input"]);
     }
 }

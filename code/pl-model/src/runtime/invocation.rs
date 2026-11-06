@@ -844,7 +844,6 @@ impl InvocationRunner {
                                 .progress
                                 .as_ref()
                                 .map_or(0, |p| p.latest().observation().generation),
-                            member_admitted: Some(&replay_unsafe),
                         },
                         opened.idle_timeout,
                     )
@@ -1261,7 +1260,6 @@ mod timing_tests {
                     on_stream_end: &on_stream_end,
                     members: None,
                     generation: 0,
-                    member_admitted: None,
                 },
                 Some(Duration::from_millis(1)),
             )
