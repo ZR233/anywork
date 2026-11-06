@@ -38,7 +38,7 @@
 
 公开 API 按五个稳定领域模块组织：`completion`、`config`、`model`、`protocol`、`runtime`。消费方统一通过领域模块前缀访问类型；crate 根模块仅重导出基础错误类型与 `Result`，确保同一公开接口仅有一条规范导入路径。各领域模块精确重导出其公共签名中直接引用的 `pl-protocol` 类型，使消费方仅依赖 `pl-model` 即可完整命名公开签名，同时禁止与公共签名无关的成套镜像转发。
 
-工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。直接调用策略保持空 `allowed_callers`；允许编程式调用时显式声明两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。策略不授予执行权限，托管工具也不生成本地占位执行器。
+工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 显式声明 Direct 与 Programmatic 两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
 
 作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
 

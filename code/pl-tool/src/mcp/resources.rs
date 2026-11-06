@@ -9,7 +9,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use pl_protocol::{PureError, Result};
@@ -30,6 +30,11 @@ pub enum McpResourceToolKind {
 }
 
 impl McpResourceToolKind {
+    pub fn definition(self) -> pl_agent_tool::ToolDefinition {
+        pl_agent_tool::ToolDefinition::json(self.name(), self.description(), self.input_schema())
+            .expect("static MCP resource definition")
+    }
+
     /// All stable resource façade operations.
     pub fn all() -> &'static [Self] {
         &[
@@ -138,6 +143,7 @@ fn parse_resource_arguments<T: for<'de> Deserialize<'de>>(
 /// One Thread's resource façade, retaining service leases until in-flight queries finish.
 #[derive(Debug)]
 pub struct ThreadMcpResourceTool<H> {
+    definition: pl_agent_tool::ToolDefinition,
     authorization: pl_core::tool::opaque::ToolAuthorization,
     lease: Mutex<Option<McpTurnLease>>,
     kind: McpResourceToolKind,
@@ -146,8 +152,14 @@ pub struct ThreadMcpResourceTool<H> {
 
 impl<H: ToolMediaHost> ThreadMcpResourceTool<H> {
     /// Creates an instance over resource-capable services in this frozen generation.
-    pub fn new(lease: McpTurnLease, kind: McpResourceToolKind, media: Arc<H>) -> Self {
+    pub fn new(
+        lease: McpTurnLease,
+        kind: McpResourceToolKind,
+        media: Arc<H>,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
         Self {
+            definition,
             authorization: lease.authorization(),
             lease: Mutex::new(Some(lease)),
             kind,
@@ -155,34 +167,31 @@ impl<H: ToolMediaHost> ThreadMcpResourceTool<H> {
         }
     }
 
-    /// Returns stable declaration material for model-side encoding.
-    pub fn declaration(&self) -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            self.kind.name(),
-            self.kind.description(),
-            self.kind.input_schema(),
-        )
-        .allow_programmatic(serde_json::json!({"type":"object", "additionalProperties":true}))
-    }
-
     /// Transfers an instance without granting it framework control permissions.
     ///
-    /// # Errors
-    /// Returns an invalid registry identity error.
+    /// The supplied preparation has already validated the registration identity.
     pub fn registration(
         self,
-        declaration: OpaquePayload,
-    ) -> std::result::Result<Registration, RegistryError> {
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let authorization = self.authorization.clone();
-        Ok(
-            Registration::new(self.kind.name().into(), declaration, self)?
-                .deferred()
-                .with_authorization(authorization),
-        )
+        prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
+            .deferred()
+            .with_authorization(authorization)
     }
 }
 
-impl<H: ToolMediaHost> Tool for ThreadMcpResourceTool<H> {
+impl<H: ToolMediaHost> pl_agent_tool::Tool for ThreadMcpResourceTool<H> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -193,7 +202,7 @@ impl<H: ToolMediaHost> Tool for ThreadMcpResourceTool<H> {
         }
         let (server, operation) = self
             .kind
-            .parse(serde_json::from_str(input.content()).map_err(ToolError::new)?)
+            .parse(pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?)
             .map_err(ToolError::new)?;
         if context.cancellation.is_cancelled() {
             return Err(resource_error(

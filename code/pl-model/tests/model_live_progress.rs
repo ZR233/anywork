@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::chat::PresentationPart;
 use pl_core::context::{
     ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
@@ -18,12 +19,11 @@ use pl_core::model::{
 use pl_core::thread::{ModelStepLimit, ThreadHandle, TurnInput};
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use pl_model::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind, CompletionRequest, Message, MessageContent, MessageRole,
-    ToolSpec,
 };
 use pl_model::model::{ModelInfo, ModelTransportProfile};
 use pl_model::protocol::ProtocolEndpoint;
@@ -2216,9 +2216,19 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
 #[derive(Debug)]
 struct RecordingLookup {
     calls: Arc<Mutex<Vec<String>>>,
+    definition: ToolDefinition,
 }
 
 impl Tool for RecordingLookup {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -2282,23 +2292,30 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         .await
         .expect("storage attaches");
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let definition = ToolDefinition::json(
+        "lookup",
+        "Look up a term",
+        json!({"type": "object", "properties": {"term": {"type": "string"}}}),
+    )
+    .unwrap();
+    let declaration = thread_tool_declaration(&pl_model::completion::tool_definition_to_spec(
+        &definition,
+        pl_model::completion::ToolCallPolicy::DirectOnly,
+    ))
+    .expect("a valid function declaration");
     thread
         .register_tools(vec![
-            Registration::new(
+            Registration::prepare(
                 "lookup".into(),
                 // A real tool declaration, encoded exactly as the runtime does, so the request is
                 // projected as a normal function tool and the stream reaches the identity resolver.
-                thread_tool_declaration(&ToolSpec::function(
-                    "lookup",
-                    "Look up a term",
-                    json!({"type": "object", "properties": {"term": {"type": "string"}}}),
-                ))
-                .expect("a valid function declaration"),
-                RecordingLookup {
-                    calls: calls.clone(),
-                },
+                declaration,
             )
-            .expect("valid tool identity"),
+            .expect("valid tool identity")
+            .attach(ToolHandle::new(RecordingLookup {
+                calls: calls.clone(),
+                definition,
+            })),
         ])
         .await
         .expect("tool registers");

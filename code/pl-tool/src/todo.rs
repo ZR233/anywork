@@ -117,30 +117,20 @@ fn todo_document(args: TodoListInput) -> Result<TodoDocument, PureError> {
 #[derive(Debug, Default)]
 pub struct TodoUpdateTool;
 
-/// Builds the checklist tool for a Thread using host-encoded model declaration material.
-///
-/// # Errors
-/// Propagates invalid registration identity.
-pub fn registration(
-    declaration: pl_core::context::OpaquePayload,
-) -> Result<pl_core::tool::opaque::Registration, pl_core::tool::opaque::RegistryError> {
-    Ok(pl_core::tool::opaque::Registration::new(
-        TOOL_UPDATE_TODO_LIST.into(),
-        declaration,
-        TodoUpdateTool,
-    )?
-    .with_extension_updates())
-}
+impl pl_agent_tool::typed::TypedTool for TodoUpdateTool {
+    const NAME: &'static str = TODO_UPDATE_TOOL_NAME;
+    const DESCRIPTION: &'static str = TODO_UPDATE_TOOL_DESCRIPTION;
+    type Args = TodoListInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
 
-impl pl_core::tool::opaque::Tool for TodoUpdateTool {
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         context: pl_core::tool::opaque::CallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
         let decode = |source: PureError| pl_core::tool::opaque::ToolError::new(source);
-        let input: TodoListInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         let document = todo_document(input).map_err(decode)?;
         let encoded =
             serde_json::to_string(&document).map_err(pl_core::tool::opaque::ToolError::new)?;
@@ -179,3 +169,16 @@ fn invalid_todo_list(message: &str) -> PureError {
         error: message.to_string(),
     }
 }
+
+pub fn todo_update_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        TODO_UPDATE_TOOL_NAME,
+        TODO_UPDATE_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<TodoListInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const TODO_UPDATE_TOOL_NAME: &str = crate::todo::TOOL_UPDATE_TODO_LIST;
+const TODO_UPDATE_TOOL_DESCRIPTION: &str =
+    "Replace the current task checklist; maintain at most one in-progress item.";

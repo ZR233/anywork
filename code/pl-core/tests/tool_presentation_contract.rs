@@ -8,7 +8,7 @@ use pl_core::{
     thread::{ThreadCheckpoint, ThreadHandle, TurnOutcome},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use std::sync::{Arc, Mutex};
@@ -58,7 +58,24 @@ struct RecordingTool {
     events: Arc<Mutex<Vec<String>>>,
 }
 
-impl Tool for RecordingTool {
+impl pl_agent_tool::Tool for RecordingTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "RecordingTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         self.events
             .lock()
@@ -80,15 +97,15 @@ impl Tool for RecordingTool {
 }
 
 fn registration(generation: &'static str, events: &Arc<Mutex<Vec<String>>>) -> Registration {
-    Registration::new(
+    Registration::prepare(
         "same-tool".into(),
         OpaquePayload::text("unchanged declaration"),
-        RecordingTool {
-            generation,
-            events: events.clone(),
-        },
     )
     .unwrap()
+    .attach(pl_core::tool::opaque::RuntimeTool::new(RecordingTool {
+        generation,
+        events: events.clone(),
+    }))
     .foreground_coexisting()
 }
 

@@ -11,7 +11,7 @@ use pl_core::{
     },
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use std::sync::{
@@ -56,7 +56,21 @@ impl ModelSession for RepeatingModel {
 }
 #[derive(Debug)]
 struct Tick;
-impl Tool for Tick {
+impl pl_agent_tool::Tool for Tick {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("Tick", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::new(
             input,
@@ -103,8 +117,9 @@ async fn long_turn_checkpoint_keeps_one_current_input() {
         .unwrap();
     thread
         .register_tools(vec![
-            Registration::new("tick".into(), OpaquePayload::text("tick"), Tick)
+            Registration::prepare("tick".into(), OpaquePayload::text("tick"))
                 .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(Tick))
                 .foreground_coexisting(),
         ])
         .await
@@ -173,8 +188,9 @@ async fn compacted_tool_identity_survives_turn_completion_and_restart() {
         ThreadHandle::start("deduplicate".into(), DynModelSession::new(ReusedCallModel)).unwrap();
     thread
         .register_tools(vec![
-            Registration::new("tick".into(), OpaquePayload::text("tick"), Tick)
+            Registration::prepare("tick".into(), OpaquePayload::text("tick"))
                 .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(Tick))
                 .foreground_coexisting(),
         ])
         .await
@@ -210,8 +226,9 @@ async fn compacted_tool_identity_survives_turn_completion_and_restart() {
     .unwrap();
     restored
         .register_tools(vec![
-            Registration::new("tick".into(), OpaquePayload::text("tick"), Tick)
+            Registration::prepare("tick".into(), OpaquePayload::text("tick"))
                 .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(Tick))
                 .foreground_coexisting(),
         ])
         .await
@@ -273,7 +290,9 @@ async fn retry_uses_latest_failure_and_rejects_changed_context_or_tool_plan() {
         if mutation == "presentation" {
             thread
                 .register_tools(vec![
-                    Registration::new("tick".into(), OpaquePayload::text("tick"), Tick).unwrap(),
+                    Registration::prepare("tick".into(), OpaquePayload::text("tick"))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(Tick)),
                 ])
                 .await
                 .unwrap();
@@ -308,15 +327,18 @@ async fn retry_uses_latest_failure_and_rejects_changed_context_or_tool_plan() {
         } else if mutation == "tools" {
             thread
                 .register_tools(vec![
-                    Registration::new("tick".into(), OpaquePayload::text("tick"), Tick).unwrap(),
+                    Registration::prepare("tick".into(), OpaquePayload::text("tick"))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(Tick)),
                 ])
                 .await
                 .unwrap();
         } else if mutation == "presentation" {
             thread
                 .register_tools(vec![
-                    Registration::new("tick".into(), OpaquePayload::text("tick"), Tick)
+                    Registration::prepare("tick".into(), OpaquePayload::text("tick"))
                         .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(Tick))
                         .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                             "vendor.tick@changed",
                         )),
@@ -350,7 +372,24 @@ async fn retry_uses_latest_failure_and_rejects_changed_context_or_tool_plan() {
 async fn execution_receipts_are_reliable_but_only_latest_is_resident() {
     #[derive(Debug)]
     struct Receipts(Arc<std::sync::Mutex<Option<pl_core::thread::TaskAccess>>>);
-    impl Tool for Receipts {
+    impl pl_agent_tool::Tool for Receipts {
+        type Input = pl_core::context::OpaquePayload;
+        type Context = pl_core::tool::opaque::CallContext;
+        type Output = pl_core::tool::ToolOutput;
+        type Error = pl_core::tool::opaque::ToolError;
+
+        fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+            static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+                std::sync::LazyLock::new(|| {
+                    pl_agent_tool::ToolDefinition::text(
+                        "Receipts",
+                        "Text tool for core runtime tests",
+                    )
+                    .expect("valid definition")
+                });
+            &DEFINITION
+        }
+
         async fn execute(
             &self,
             input: OpaquePayload,
@@ -369,13 +408,12 @@ async fn execution_receipts_are_reliable_but_only_latest_is_resident() {
         ThreadHandle::start("receipts".into(), DynModelSession::new(RepeatingModel(0))).unwrap();
     thread
         .register_tools(vec![
-            Registration::new(
-                "tick".into(),
-                OpaquePayload::text("tick"),
-                Receipts(last.clone()),
-            )
-            .unwrap()
-            .foreground_coexisting(),
+            Registration::prepare("tick".into(), OpaquePayload::text("tick"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(Receipts(
+                    last.clone(),
+                )))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();

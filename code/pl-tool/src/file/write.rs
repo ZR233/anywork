@@ -52,14 +52,19 @@ impl MovePathTool {
     }
 }
 
-impl pl_core::tool::opaque::Tool for CreateDirectoryTool {
+impl pl_agent_tool::typed::TypedTool for CreateDirectoryTool {
+    const NAME: &'static str = CREATE_DIRECTORY_TOOL_NAME;
+    const DESCRIPTION: &'static str = CREATE_DIRECTORY_TOOL_DESCRIPTION;
+    type Args = PathInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         context: pl_core::tool::opaque::CallContext,
     ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        let input: PathInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         self.execute_input(input, context)
             .await
             .map_err(pl_core::tool::opaque::ToolError::new)
@@ -84,14 +89,19 @@ impl CreateDirectoryTool {
     }
 }
 
-impl pl_core::tool::opaque::Tool for DeletePathTool {
+impl pl_agent_tool::typed::TypedTool for DeletePathTool {
+    const NAME: &'static str = DELETE_PATH_TOOL_NAME;
+    const DESCRIPTION: &'static str = DELETE_PATH_TOOL_DESCRIPTION;
+    type Args = DeletePathInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         context: pl_core::tool::opaque::CallContext,
     ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        let input: DeletePathInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         self.execute_input(input, context)
             .await
             .map_err(pl_core::tool::opaque::ToolError::new)
@@ -138,14 +148,19 @@ impl DeletePathTool {
     }
 }
 
-impl pl_core::tool::opaque::Tool for CopyPathTool {
+impl pl_agent_tool::typed::TypedTool for CopyPathTool {
+    const NAME: &'static str = COPY_PATH_TOOL_NAME;
+    const DESCRIPTION: &'static str = COPY_PATH_TOOL_DESCRIPTION;
+    type Args = CopyMoveInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         context: pl_core::tool::opaque::CallContext,
     ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        let input: CopyMoveInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         self.execute_input(input, context)
             .await
             .map_err(pl_core::tool::opaque::ToolError::new)
@@ -182,14 +197,19 @@ impl CopyPathTool {
     }
 }
 
-impl pl_core::tool::opaque::Tool for MovePathTool {
+impl pl_agent_tool::typed::TypedTool for MovePathTool {
+    const NAME: &'static str = MOVE_PATH_TOOL_NAME;
+    const DESCRIPTION: &'static str = MOVE_PATH_TOOL_DESCRIPTION;
+    type Args = CopyMoveInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         context: pl_core::tool::opaque::CallContext,
     ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        let input: CopyMoveInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         self.execute_input(input, context)
             .await
             .map_err(pl_core::tool::opaque::ToolError::new)
@@ -227,3 +247,53 @@ impl MovePathTool {
         )))
     }
 }
+
+pub fn create_directory_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        CREATE_DIRECTORY_TOOL_NAME,
+        CREATE_DIRECTORY_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<PathInput>(),
+    )
+    .expect("static tool definition")
+}
+
+pub fn delete_path_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        DELETE_PATH_TOOL_NAME,
+        DELETE_PATH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<DeletePathInput>(),
+    )
+    .expect("static tool definition")
+}
+
+pub fn copy_path_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        COPY_PATH_TOOL_NAME,
+        COPY_PATH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<CopyMoveInput>(),
+    )
+    .expect("static tool definition")
+}
+
+pub fn move_path_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        MOVE_PATH_TOOL_NAME,
+        MOVE_PATH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<CopyMoveInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const MOVE_PATH_TOOL_NAME: &str = "move_path";
+const MOVE_PATH_TOOL_DESCRIPTION: &str =
+    "Move a workspace file or directory with explicit destination collision behavior.";
+
+const COPY_PATH_TOOL_NAME: &str = "copy_path";
+const COPY_PATH_TOOL_DESCRIPTION: &str =
+    "Copy a workspace file with explicit destination collision behavior.";
+
+const DELETE_PATH_TOOL_NAME: &str = "delete_path";
+const DELETE_PATH_TOOL_DESCRIPTION: &str = "Delete a file or directory using an explicit file, emptyDirectory, or recursiveDirectory mode.";
+
+const CREATE_DIRECTORY_TOOL_NAME: &str = "create_directory";
+const CREATE_DIRECTORY_TOOL_DESCRIPTION: &str = "Create a directory inside the workspace.";

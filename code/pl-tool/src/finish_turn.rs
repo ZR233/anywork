@@ -1,13 +1,13 @@
 //! Explicit Turn handoff. Ending a Turn does not assert that the assigned task is complete.
+pub use pl_agent_tool::ToolDefinition;
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Tool, ToolError},
+    opaque::{CallContext, ToolError},
 };
 pub use pl_core::{
     context::OpaquePayload,
     tool::opaque::{Registration, RegistryError},
 };
-pub use pl_protocol::ToolSpec;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub use serde_json::Error as ReportDecodeError;
@@ -34,20 +34,21 @@ struct OrdinaryFinishTurnInput {
 }
 
 /// Ordinary roles do not advertise or accept a review parameter, including explicit null.
-pub fn declaration() -> ToolSpec {
-    ToolSpec::function(
+pub fn declaration() -> ToolDefinition {
+    ToolDefinition::json(
         TOOL_FINISH_TURN,
         "End this Turn with a complete Markdown report. This does not declare the task complete.",
-        schemars::schema_for!(OrdinaryFinishTurnInput).to_value(),
+        pl_agent_tool::typed::input_schema_for::<OrdinaryFinishTurnInput>(),
     )
+    .expect("valid tool definition")
 }
 
-pub fn review_declaration() -> ToolSpec {
-    ToolSpec::function(
+pub fn review_declaration() -> ToolDefinition {
+    ToolDefinition::json(
         TOOL_FINISH_TURN,
         "End this review Turn with the full report and an optional structured review conclusion. reviewedVersion must identify the actual reviewed commit or diff/content; it is not a host verification of disk state.",
-        schemars::schema_for!(FinishTurnInput).to_value(),
-    )
+        pl_agent_tool::typed::input_schema_for::<FinishTurnInput>(),
+    ).expect("valid tool definition")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -79,6 +80,7 @@ pub struct SavedFinishTurn {
 
 #[derive(Debug)]
 pub struct FinishTurnTool {
+    definition: ToolDefinition,
     review: Option<ReviewAuthority>,
 }
 
@@ -137,38 +139,49 @@ pub fn saved_report(payload: &OpaquePayload) -> Result<Option<SavedFinishTurn>, 
 }
 
 /// Registers explicit Turn-ending authority.
-/// # Errors
-/// Propagates invalid registration identity.
-pub fn registration(declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-    registration_with_review(declaration, None)
+/// The supplied preparation has already validated the registration identity.
+pub fn registration(
+    prepared: pl_core::tool::opaque::PreparedRegistration,
+    definition: ToolDefinition,
+) -> Registration {
+    registration_with_review(prepared, None, definition)
 }
 
 /// Registers a host-selected review role alongside explicit Turn-ending authority.
-/// # Errors
-/// Propagates invalid registration identity.
+/// The supplied definition must match the host-selected ordinary or review role.
 pub fn registration_with_review(
-    declaration: OpaquePayload,
+    prepared: pl_core::tool::opaque::PreparedRegistration,
     review: Option<ReviewAuthority>,
-) -> Result<Registration, RegistryError> {
-    Ok(Registration::new(
-        TOOL_FINISH_TURN.into(),
-        declaration,
-        FinishTurnTool { review },
-    )?
-    .with_turn_completion())
+    definition: ToolDefinition,
+) -> Registration {
+    prepared
+        .attach(pl_agent_tool::ToolHandle::new(FinishTurnTool {
+            definition,
+            review,
+        }))
+        .with_turn_completion()
 }
 
-impl Tool for FinishTurnTool {
+impl pl_agent_tool::Tool for FinishTurnTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         let report: FinishTurnInput = if self.review.is_some() {
-            serde_json::from_str(input.content()).map_err(ToolError::new)?
+            pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?
         } else {
             let ordinary: OrdinaryFinishTurnInput =
-                serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
             FinishTurnInput {
                 message: ordinary.message,
                 review: None,

@@ -14,11 +14,11 @@
 
 具体工具实现 `pl-agent-tool` 的公共 `Tool` 消费契约，原生 JSON 作者可通过可选 typed 适配与薄宏提供实现。作者声明 `ToolDefinition` 唯一保存名称、描述、完整 JSON Schema 或 Text/Grammar 输入及可选输出 schema；权限、曝光、并发策略与 MCP 身份不混入声明。Anywork 将输入、上下文、输出和错误固定为自身类型，通过 `RuntimeTool` 与不可克隆的注册句柄将实例所有权移交给所属会话线程（`Thread`）。全部静态适配完成后，仅在 `ToolHandle` 中做一次动态擦除；接口库不提供注册表、调度器或自动异步关闭。
 
-声明与内部注册身份先准备并校验，再无失败地附着实例；会失败的声明投影、编码及空 ID 校验不得消耗活资源。后续批量拒绝、目录替换、取消及关闭失败仍由原 Thread 的候选清理、在途租约与同实例重试负责。内部工具 ID 与模型可见名称是独立身份空间，不要求相等。
+声明与内部注册身份先准备并校验，再无失败地附着实例：`Registration::prepare` 只持有已校验的内部 ID 与不透明声明，`PreparedRegistration::attach` 接管已经完成静态适配的 `RuntimeTool`。会失败的声明投影、编码及空 ID 校验不得消耗活资源；消费实例的注册便利方法同样只能接收已准备材料。后续批量拒绝、目录替换、取消及关闭失败仍由原 Thread 的候选清理、在途租约与同实例重试负责。内部工具 ID 与模型可见名称是独立身份空间，不要求相等。
 
-typed 输入 schema 在绑定时按反序列化语义生成一次，保留完整作者文档；执行时直接解码原始字符串，保留上游字段/索引路径、JSON source 及尾部检查，不逐调用生成 schema 或扫描 properties。普通 flatten 与开放 map 遵循 Serde；需要严格未知字段拒绝的共享业务结构通过私有非 flatten wire 参数与无失败转换适配。schema 生成不等于运行全部 JSON Schema 约束，业务校验仍归作者。特殊 exec 诊断、原始补丁、动态 MCP 和角色化 finish 工具保留各自的 raw/dynamic 适配。
+typed 输入 schema 在绑定时按反序列化语义生成一次，保留完整作者文档；动态工具族同样将已准备的 `ToolDefinition` 同时交给模型投影与实例冻结，不在实例构造时再次从 Rust 参数类型生成 schema，也不以全局缓存代替单次绑定准备。执行时直接解码原始字符串，保留上游字段/索引路径、JSON source 及尾部检查，不逐调用生成 schema 或扫描 properties。普通 flatten 与开放 map 遵循 Serde；需要严格未知字段拒绝的共享业务结构通过私有非 flatten wire 参数与无失败转换适配。schema 生成不等于运行全部 JSON Schema 约束，业务校验仍归作者。特殊 exec 诊断、原始补丁、动态 MCP 和角色化 finish 工具保留各自的 raw/dynamic 适配。
 
-Anywork 的 native 绑定原样交付 `ToolOutput` 与已有 `ToolError`，包括错误携带的观测输出。普通 JSON 输出绑定仅在业务成功后编码一次，同一文本生成完整 payload 与模型 Text context；编码失败保留阶段和 source，明确副作用可能已经发生，不重执行。新的作者类型不进入历史协议；声明经唯一模型投影成为原有带格式与版本号的载荷，投影边界见 [06](./06-model.md#62-依赖与公开-api)。工作区路径约束、业务权限分类与输出截断仍归 `pl-tool`，`pl-core` 不解析参数 schema。内置补丁工具的规范声明为带 lark 语法的 freeform 工具，输入是补丁原文，形态投影与执行边界见 §9.8。
+`pl_tool::binding::prepare_native_tool` 原样交付 `ToolOutput` 与已有 `ToolError`，包括错误携带的观测输出；`prepare_json_tool` 显式接收同步的上下文与业务错误映射，仅在业务成功后编码一次，同一文本生成完整 payload 与模型 Text context。编码失败保留阶段和 source，明确副作用可能已经发生，不重执行。`prepare_registration` 汇集唯一模型投影、原声明编码与 core 注册预检，不创建或接管工具实例。新的作者类型不进入历史协议；声明经唯一模型投影成为原有带格式与版本号的载荷，投影边界见 [06](./06-model.md#62-依赖与公开-api)。工作区路径约束、业务权限分类与输出截断仍归 `pl-tool`，`pl-core` 不解析参数 schema。内置补丁工具的规范声明为带 lark 语法的 freeform 工具，输入是补丁原文，形态投影与执行边界见 §9.8。
 
 每次模型请求冻结同一份工具目录与执行器（executor）快照，并将稳定工具身份与原始调用参数写入日志。工具执行结果分别保存完整的原始载荷（payload）与裁剪后的模型可见上下文（context）；已产生外部副作用的失败调用同样携带已观测输出事实一并保存。会话笔记（Note）、待办事项（Todo）与技能（Skill）激活状态统一存储在线程扩展（Thread extension）中，工具实例自身不维护第二份会话状态。
 

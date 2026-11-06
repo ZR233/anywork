@@ -63,3 +63,5 @@ pub struct WriteStdinInput {
     #[serde(default)]
     pub max_output_chars: Option<usize>,
 }
+
+pub use thread::{exec_definition, write_stdin_definition};

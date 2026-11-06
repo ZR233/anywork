@@ -1,4 +1,4 @@
-use pl_protocol::ToolSpec;
+use pl_agent_tool::ToolDefinition;
 
 use crate::approval::ToolEffect;
 
@@ -39,14 +39,15 @@ impl WorkspaceFileToolKind {
         !matches!(self, Self::ApplyPatch)
     }
 
-    pub fn to_spec(self) -> ToolSpec {
+    pub fn definition(self) -> ToolDefinition {
         match self {
-            Self::ApplyPatch => ToolSpec::custom_grammar(
+            Self::ApplyPatch => ToolDefinition::grammar(
                 TOOL_APPLY_PATCH,
                 APPLY_PATCH_FREEFORM_DESCRIPTION,
                 "lark",
                 pl_patch::APPLY_PATCH_LARK_GRAMMAR,
-            ),
+            )
+            .expect("valid tool definition"),
         }
     }
 }

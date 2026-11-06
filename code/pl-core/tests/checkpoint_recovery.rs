@@ -112,7 +112,21 @@ async fn recovery_marks_a_pending_tool_interrupted_without_reexecuting_it() {
 #[derive(Debug)]
 struct HeldTask(tokio_util::sync::CancellationToken);
 
-impl pl_core::tool::opaque::Tool for HeldTask {
+impl pl_agent_tool::Tool for HeldTask {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("HeldTask", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: pl_core::context::OpaquePayload,
@@ -157,12 +171,11 @@ async fn background_result_identity_survives_consumed_history_pruning_and_recove
     let release = CancellationToken::new();
     thread
         .register_tools(vec![
-            Registration::new(
-                "held".into(),
-                OpaquePayload::text("held task"),
-                HeldTask(release.clone()),
-            )
-            .unwrap(),
+            Registration::prepare("held".into(), OpaquePayload::text("held task"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTask(
+                    release.clone(),
+                ))),
         ])
         .await
         .unwrap();

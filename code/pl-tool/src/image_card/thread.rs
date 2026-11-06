@@ -4,7 +4,7 @@ use pl_core::{
     context::{ContextContent, ContextRecord, OpaquePayload, ResourceReference},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use pl_protocol::AttachmentModality;
@@ -78,36 +78,24 @@ impl ThreadShowImageTool {
     }
 
     /// Stable declaration, independent of conversation state and observed results.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            TOOL_SHOW_IMAGE,
-            DESCRIPTION,
-            schemars::schema_for!(ShowImageInput).to_value(),
-        )
-    }
-
-    /// Transfers a local, side-effect-free display that coexists with other foreground calls.
-    ///
-    /// The call only reads its own frozen context and grants no framework control permission.
-    ///
-    /// # Errors
-    /// Returns invalid registry identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(Registration::new(TOOL_SHOW_IMAGE.into(), declaration, self)?.foreground_coexisting())
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        thread_show_image_tool_definition()
     }
 }
 
-impl Tool for ThreadShowImageTool {
+impl pl_agent_tool::typed::TypedTool for ThreadShowImageTool {
+    const NAME: &'static str = THREAD_SHOW_IMAGE_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_SHOW_IMAGE_TOOL_DESCRIPTION;
+    type Args = ShowImageInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(failure("unsupported image card argument encoding"));
-        }
-        let input: ShowImageInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         let caption = input
             .caption
             .as_deref()
@@ -187,3 +175,15 @@ fn archived_image(records: &[ContextRecord], image_id: Option<&str>) -> Option<R
 fn failure(message: &str) -> ToolError {
     ToolError::new(crate::tool_error(TOOL_SHOW_IMAGE, message))
 }
+
+pub fn thread_show_image_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_SHOW_IMAGE_TOOL_NAME,
+        THREAD_SHOW_IMAGE_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<ShowImageInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_SHOW_IMAGE_TOOL_NAME: &str = TOOL_SHOW_IMAGE;
+const THREAD_SHOW_IMAGE_TOOL_DESCRIPTION: &str = DESCRIPTION;

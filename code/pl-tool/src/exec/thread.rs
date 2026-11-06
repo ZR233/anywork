@@ -8,7 +8,7 @@ use pl_core::thread::cold::{
 };
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use sha2::{Digest, Sha256};
 
@@ -48,6 +48,7 @@ pub trait CommandOutputArchive: fmt::Debug + Send + Sync + 'static {
 /// Thread-owned exec instance using a host-provided backend and output archive.
 #[derive(Debug)]
 pub struct ThreadExecTool<B: CommandBackend, A: CommandOutputArchive> {
+    definition: pl_agent_tool::ToolDefinition,
     processes: Arc<CommandProcessManager<B>>,
     archive: Arc<A>,
     access: CommandAccess,
@@ -55,21 +56,29 @@ pub struct ThreadExecTool<B: CommandBackend, A: CommandOutputArchive> {
 
 impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
     /// Binds services once; the returned tool must belong to only one Thread.
-    pub fn new(backend: Arc<B>, archive: Arc<A>, access: CommandAccess) -> Self {
+    pub fn new(
+        backend: Arc<B>,
+        archive: Arc<A>,
+        access: CommandAccess,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
         Self {
+            definition,
             processes: Arc::new(CommandProcessManager::new(backend)),
             archive,
             access,
         }
     }
 
-    /// Rebuilds declarations while retaining this Thread's existing physical command manager.
+    /// Binds a prepared definition while retaining this Thread's existing physical command manager.
     pub fn from_process_manager(
         processes: Arc<CommandProcessManager<B>>,
         archive: Arc<A>,
         access: CommandAccess,
+        definition: pl_agent_tool::ToolDefinition,
     ) -> Self {
         Self {
+            definition,
             processes,
             archive,
             access,
@@ -78,36 +87,39 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
 
     /// Transfers paired instances over this Thread's one process manager.
     ///
-    /// # Errors
-    /// Returns invalid declaration identities before registration.
+    /// Both definitions have already been frozen and their registration identities validated.
     pub fn registrations(
         self,
-        exec: OpaquePayload,
-        stdin: OpaquePayload,
-    ) -> Result<Vec<Registration>, RegistryError> {
+        exec: pl_core::tool::opaque::PreparedRegistration,
+        stdin: pl_core::tool::opaque::PreparedRegistration,
+        stdin_definition: pl_agent_tool::ToolDefinition,
+    ) -> Vec<Registration> {
         let input = ThreadWriteStdinTool {
+            definition: stdin_definition,
             processes: self.processes.clone(),
         };
-        Ok(vec![
-            self.registration(exec)?,
-            Registration::new(super::TOOL_WRITE_STDIN.into(), stdin, input)?
+        vec![
+            self.registration(exec),
+            stdin
+                .attach(pl_agent_tool::ToolHandle::new(input))
                 .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                     "builtin.write_stdin@1",
                 )),
-        ])
+        ]
     }
 
     /// Transfers this instance with the host's frozen model declaration.
     ///
-    /// # Errors
-    /// Returns an invalid tool identity error before registration.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(
-            Registration::new(super::TOOL_EXEC.into(), declaration, self)?
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.exec@2",
-                )),
-        )
+    /// The supplied preparation has already validated the registration identity.
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
+        prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
+            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                "builtin.exec@2",
+            ))
     }
 }
 
@@ -228,10 +240,20 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
 /// Input writer paired with an exec instance from the same Thread assembly.
 #[derive(Debug)]
 struct ThreadWriteStdinTool<B: CommandBackend> {
+    definition: pl_agent_tool::ToolDefinition,
     processes: Arc<CommandProcessManager<B>>,
 }
 
-impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
+impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -350,7 +372,16 @@ pub enum ExecFailure {
     },
 }
 
-impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
+impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadExecTool<B, A> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -644,4 +675,14 @@ async fn report_output_storage_fault(
 fn safe_identity(id: &str) -> String {
     let digest = Sha256::digest(id.as_bytes());
     format!("task-{}", hex::encode(digest))
+}
+
+pub fn write_stdin_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json("write_stdin",
+                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. A blocked write returns its own task receipt: cancel that input task to stop writing without stopping exec, then query its result. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Wait for the input task before actions that require completed delivery.", pl_agent_tool::typed::input_schema_for::<crate::exec::WriteStdinInput>()).expect("static tool definition")
+}
+
+pub fn exec_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json("exec",
+                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars caps combined stdout+stderr text at 65536 UTF-8 bytes; metadata, JSON escaping and protocol wrappers are additional. Results distinguish execution, capture and archive facts. stdoutFile/stderrFile are exact workspace-root-relative paths: read them with cwd omitted or set to '.', even when the original command used another cwd. Never reconstruct paths or repeat side effects to recover output; query the original receipt.", pl_agent_tool::typed::input_schema_for::<crate::exec::ExecInput>()).expect("static tool definition")
 }

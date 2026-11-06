@@ -5,12 +5,12 @@ use pl_protocol::Result;
 
 use crate::file::{CopyMoveInput, DeleteMode, DeletePathInput, PathCollision, PathInput};
 use crate::workspace::ToolWorkspace;
-use crate::{deserialize_tool_input, typed_tool_input_schema};
+use pl_agent_tool::typed::{decode_json, input_schema_for};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 
@@ -18,6 +18,7 @@ use super::RemoteWorkspaceFileBackend;
 
 #[derive(Debug, Clone)]
 pub struct RemoteWorkspaceMutationTool {
+    definition: pl_agent_tool::ToolDefinition,
     kind: RemoteMutationKind,
     backend: Arc<RemoteWorkspaceFileBackend>,
     workspace: ToolWorkspace,
@@ -38,6 +39,11 @@ pub enum RemoteMutationKind {
 }
 
 impl RemoteMutationKind {
+    pub fn definition(self) -> pl_agent_tool::ToolDefinition {
+        pl_agent_tool::ToolDefinition::json(self.name(), self.description(), self.schema())
+            .expect("static mutation definition")
+    }
+
     pub fn all() -> &'static [Self] {
         &[Self::CreateDirectory, Self::Delete, Self::Copy, Self::Move]
     }
@@ -64,9 +70,9 @@ impl RemoteMutationKind {
 
     fn schema(self) -> serde_json::Value {
         match self {
-            Self::CreateDirectory => typed_tool_input_schema::<PathInput>(),
-            Self::Delete => typed_tool_input_schema::<DeletePathInput>(),
-            Self::Copy | Self::Move => typed_tool_input_schema::<CopyMoveInput>(),
+            Self::CreateDirectory => input_schema_for::<PathInput>(),
+            Self::Delete => input_schema_for::<DeletePathInput>(),
+            Self::Copy | Self::Move => input_schema_for::<CopyMoveInput>(),
         }
     }
 }
@@ -74,36 +80,54 @@ impl RemoteMutationKind {
 impl RemoteWorkspaceMutationTool {
     pub fn new(
         kind: RemoteMutationKind,
+        definition: pl_agent_tool::ToolDefinition,
         backend: Arc<RemoteWorkspaceFileBackend>,
         workspace: ToolWorkspace,
     ) -> Self {
         Self {
+            definition,
             kind,
             backend,
             workspace,
         }
     }
-    pub fn declaration(&self) -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            self.kind.name(),
-            self.kind.description(),
-            self.kind.schema(),
-        )
-    }
-    async fn execute_input(&self, input: serde_json::Value) -> Result<ToolOutput> {
-        self.workspace.ensure_workspace_writable()?;
+    async fn execute_input(&self, input: &str) -> std::result::Result<ToolOutput, ToolError> {
+        self.workspace
+            .ensure_workspace_writable()
+            .map_err(ToolError::new)?;
         let _guard = self.workspace.write_lock().await;
 
         let text = match self.kind {
-            RemoteMutationKind::CreateDirectory => self.create_directory(input).await?,
-            RemoteMutationKind::Delete => self.delete(input).await?,
-            RemoteMutationKind::Copy => self.copy_or_move(input, false).await?,
-            RemoteMutationKind::Move => self.copy_or_move(input, true).await?,
+            RemoteMutationKind::CreateDirectory => self
+                .create_directory(decode_json(input).map_err(ToolError::new)?)
+                .await
+                .map_err(ToolError::new)?,
+            RemoteMutationKind::Delete => self
+                .delete(decode_json(input).map_err(ToolError::new)?)
+                .await
+                .map_err(ToolError::new)?,
+            RemoteMutationKind::Copy => self
+                .copy_or_move(decode_json(input).map_err(ToolError::new)?, false)
+                .await
+                .map_err(ToolError::new)?,
+            RemoteMutationKind::Move => self
+                .copy_or_move(decode_json(input).map_err(ToolError::new)?, true)
+                .await
+                .map_err(ToolError::new)?,
         };
         Ok(text_result(text))
     }
 }
-impl Tool for RemoteWorkspaceMutationTool {
+impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -112,14 +136,13 @@ impl Tool for RemoteWorkspaceMutationTool {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let input = serde_json::from_str(input.content()).map_err(ToolError::new)?;
-        self.execute_input(input).await.map_err(ToolError::new)
+        let input = input.content();
+        self.execute_input(input).await
     }
 }
 
 impl RemoteWorkspaceMutationTool {
-    async fn create_directory(&self, input: serde_json::Value) -> Result<String> {
-        let input: PathInput = deserialize_tool_input(self.name(), input)?;
+    async fn create_directory(&self, input: PathInput) -> Result<String> {
         self.workspace
             .ensure_relative_path_writable(None, &input.path)?;
         self.backend
@@ -128,8 +151,7 @@ impl RemoteWorkspaceMutationTool {
         Ok(format!("Created directory {}", input.path))
     }
 
-    async fn delete(&self, input: serde_json::Value) -> Result<String> {
-        let input: DeletePathInput = deserialize_tool_input(self.name(), input)?;
+    async fn delete(&self, input: DeletePathInput) -> Result<String> {
         self.workspace
             .ensure_relative_path_writable(None, &input.path)?;
         let stat = self
@@ -162,8 +184,7 @@ impl RemoteWorkspaceMutationTool {
         Ok(format!("Deleted {}", input.path))
     }
 
-    async fn copy_or_move(&self, input: serde_json::Value, moving: bool) -> Result<String> {
-        let input: CopyMoveInput = deserialize_tool_input(self.name(), input)?;
+    async fn copy_or_move(&self, input: CopyMoveInput, moving: bool) -> Result<String> {
         if moving {
             self.workspace
                 .ensure_relative_path_writable(None, &input.from)?;

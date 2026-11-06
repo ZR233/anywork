@@ -2913,24 +2913,41 @@ pub fn gui_realtime_script(
     host_cwd: &str,
     parallel_observer: Option<&ReplyStage>,
     host_observer: Option<&ReplyStage>,
+    first_live_text: Option<&ReplyStage>,
 ) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
     script.add(|step| {
+        let events = responses_text_chunks(
+            &["realtime ", "delayed ", "first ", "token"],
+            "realtime-delayed",
+            "fixture-model",
+        );
+        let reply = if let Some(stage) = first_live_text {
+            let first_text_delta = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_text.delta"
+                        && event["delta"].as_str().is_some_and(|text| !text.is_empty())
+                })
+                .expect("realtime text fixture must contain its first text delta");
+            stage.gated(
+                events[..=first_text_delta].to_vec(),
+                events[first_text_delta + 1..].to_vec(),
+            )
+        } else {
+            Reply::PacedEvents {
+                initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
+                step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
+                events,
+            }
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_DELAYED_PROMPT,
             step,
-            Reply::PacedEvents {
-                initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
-                step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
-                events: responses_text_chunks(
-                    &["realtime ", "delayed ", "first ", "token"],
-                    "realtime-delayed",
-                    "fixture-model",
-                ),
-            },
+            reply,
         )
     });
     script.optional_title(&title);
