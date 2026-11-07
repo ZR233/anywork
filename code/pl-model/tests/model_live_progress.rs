@@ -583,20 +583,33 @@ async fn authoritative_member_is_reliable_while_provider_stream_is_still_open() 
 }
 
 #[tokio::test]
-async fn admitted_member_prevents_transparent_replay_after_early_eof() {
+async fn admitted_member_survives_early_eof_and_retry_failure() {
+    use pl_core::model::ObservedPartIdentity;
     use pl_core::thread::AttemptOutcome;
     use pl_model::runtime::model_member_receipt;
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "do not replay",
-        0,
-        Reply::Sse(vec![
-            json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
-            json!({"type":"response.output_item.done","output_index":0,"item":{
-                "id":"irrevocable","type":"reasoning",
-                "summary":[{"type":"summary_text","text":"frozen before EOF"}]}}),
-        ]),
-    )])
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry with retained member",
+            0,
+            Reply::Sse(vec![
+                json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
+                json!({"type":"response.output_item.done","output_index":0,"item":{
+                    "id":"irrevocable","type":"reasoning",
+                    "summary":[{"type":"summary_text","text":"frozen before EOF"}]}}),
+            ]),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry with retained member",
+            1,
+            Reply::HttpError {
+                status: 400,
+                code: "invalid_request_error".into(),
+                message: "permanent retry failure".into(),
+            },
+        ),
+    ])
     .await
     .unwrap();
     let runtime = ModelRuntime::new_with_account_id(
@@ -609,10 +622,10 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
         .open_session()
         .await
         .unwrap();
-    let thread = ThreadHandle::start("no-replay".into(), session).unwrap();
+    let thread = ThreadHandle::start("retained-member".into(), session).unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        thread.run_turn(user_turn("do not replay")),
+        thread.run_turn(user_turn("retry with retained member")),
     )
     .await
     .unwrap();
@@ -623,33 +636,60 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
         .flat_map(|effect| effect.model_members.iter())
         .collect::<Vec<_>>();
     assert_eq!(members.len(), 1);
+    assert_eq!(members[0].generation, 0);
     let beginnings: Vec<_> = effects
         .iter()
         .flat_map(|e| e.model_member_starts.iter())
         .collect();
     assert_eq!(beginnings.len(), 1);
     let receipt = model_member_receipt(members[0]).unwrap();
+    assert_eq!(receipt.item.provider_item_id, "irrevocable");
+    assert_eq!(receipt.item.parts[0].text, "frozen before EOF");
     let failed = effects
         .iter()
         .filter_map(|effect| effect.attempt.as_ref())
         .next_back()
         .unwrap();
     let AttemptOutcome::Failed(error) = &failed.outcome else {
-        panic!("early EOF remains an attempt failure, not a successful member's context");
+        panic!("a permanent retry failure must not commit the earlier member to context");
     };
+    let failure = model_failure_receipt(error).unwrap().unwrap();
     assert_eq!(
-        model_failure_receipt(error)
-            .unwrap()
-            .unwrap()
-            .presentation_items,
-        vec![receipt.item]
+        failure.provider_failure.unwrap().code.as_deref(),
+        Some("invalid_request_error")
+    );
+    assert!(failure.presentation_items.is_empty());
+    let progress = failure.partial_progress.unwrap();
+    assert!(progress.parts().is_empty());
+    let observation = progress.observation();
+    assert_eq!(observation.generation, 1);
+    assert_eq!(observation.failed.len(), 1);
+    assert_eq!(observation.failed[0].generation, members[0].generation);
+    assert_eq!(observation.failed[0].parts.len(), 1);
+    let ObservedPartIdentity::Provider(identity) = observation.failed[0].parts[0].identity() else {
+        panic!("the retained part must keep its provider identity");
+    };
+    assert_eq!(identity.item_id.as_ref(), receipt.item.provider_item_id);
+    assert_eq!(identity.output_index, receipt.item.output_index);
+    assert_eq!(
+        observation.failed[0].parts[0].text(),
+        receipt.item.parts[0].text
+    );
+    assert!(
+        !thread
+            .snapshot()
+            .context
+            .records
+            .iter()
+            .any(|record| record.source == ContextSource::Assistant)
     );
     thread.close().await.unwrap();
     let requests = fixture
         .finish()
         .await
-        .expect("no unexpected replay request");
-    assert_eq!(requests.len(), 1);
+        .expect("one retry with the same prepared input");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body["input"], requests[1].body["input"]);
 }
 
 #[tokio::test]

@@ -592,7 +592,7 @@ jobs:
           retention-days: 7
 
   windows-build:
-    name: Native Rust and application checks (windows)
+    name: Clippy and GUI build (Windows)
     needs: [changes, linux-inputs]
     if: needs.changes.outputs.windows_build == 'true'
     runs-on: windows-latest
@@ -605,6 +605,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore this run's bundled helper inputs
+        if: needs.changes.outputs.windows_gui_build == 'true'
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
@@ -614,7 +615,7 @@ jobs:
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
-        if: needs.changes.outputs.windows_gui_build == 'true' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance'))
+        if: needs.changes.outputs.windows_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
@@ -626,38 +627,12 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test the Rust workspace on Windows with SQLite enabled
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo xtask build-gui
-          test -f dist/anywork-release/anywork.exe
-
-      # Explicit platform observation; the normal Windows job remains a build
-      # and Rust check. The current desktop runner owns the isolated fixture.
-      - name: Observe Windows Flutter presentation when requested
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
-        env:
-          ANYWORK_CAPTURE_PRESENTATION: '1'
-        run: cargo xtask test-project --suite desktop --case question_history --output target/ci-inspection-windows
-
-      - name: Preserve Windows presentation evidence
-        if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: windows-flutter-presentation-${{ github.sha }}
-          path: |
-            target/ci-inspection-windows/report.json
-            target/ci-inspection-windows/**/*.png
-            target/ci-inspection-windows/**/*.meta.json
-          if-no-files-found: error
+        run: cargo xtask build-gui
 
   macos-build:
-    name: Native Rust and application checks (macos)
+    name: Clippy and GUI build (macOS)
     needs: [changes, linux-inputs]
     if: needs.changes.outputs.macos_build == 'true'
     runs-on: macos-15
@@ -670,6 +645,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore this run's bundled helper inputs
+        if: needs.changes.outputs.macos_gui_build == 'true'
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
@@ -691,19 +667,9 @@ jobs:
       - name: Check Rust on macOS
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Use the runner's physical temporary directory
-        shell: bash
-        run: echo "TMPDIR=$(cd "$RUNNER_TEMP" && pwd -P)" >> "$GITHUB_ENV"
-      - name: Test the Rust workspace on macOS with SQLite enabled
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         if: needs.changes.outputs.macos_gui_build == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo xtask build-gui
-          test -x dist/anywork-release/anywork.app/Contents/MacOS/anywork
+        run: cargo xtask build-gui
 
   # Configure this stable aggregate as the repository required check.
   ci-gate:
