@@ -22,7 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/pump_client_future.dart';
 
 /// 计划详情头部右内边距（`PlanDetailView` 头部的
-/// `EdgeInsets.fromLTRB(16, 12, 8, 12)`）。
+/// `EdgeInsets.fromLTRB(20, 12, 8, 12)`）。
 const _planHeaderContentInset = 8.0;
 
 /// 根因回归：阅读布局（并排 / 全宽 / 窄窗 / 计划详情关开）只改变几何。
@@ -146,7 +146,7 @@ void main() {
     expect(
       approveRect.left - reviseRect.right,
       closeTo(8, 1.0),
-      reason: '组内间距沿用 DockActions 的 8px',
+      reason: '组内间距保持 8px',
     );
     final input = find.byKey(const ValueKey('plan-feedback-input'));
     await tester.enterText(input, 'keep this draft');
@@ -206,9 +206,18 @@ void main() {
     // 已受理不等于 canonical 已移除：成功后保持禁用，重复决定不再发命令。
     transport.failure = null;
     await tester.tap(find.byKey(const ValueKey('plan-submit-revision')));
-    await tester.pumpAndSettle();
+    // Accepted commands keep a live progress ticker until canonical removal.
+    await tester.pump(const Duration(milliseconds: 300));
     expect(transport.respondCalls, 2);
     expect(tester.widget<TextField>(input).enabled, isFalse);
+    expect(tester.widget<TextField>(input).controller!.text, 'keep this draft');
+    expect(find.text('Submitting your decision…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('plan-approve'))),
+      approveRect,
+      reason: '提交中保留原按钮位置，不因 footer 文案缩短而跳行',
+    );
     expect(
       approveButton().onPressed,
       isNull,
@@ -218,7 +227,7 @@ void main() {
       find.byKey(const ValueKey('plan-submit-revision')),
       warnIfMissed: false,
     );
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(transport.respondCalls, 2);
 
     // 旧交互的迟到回包不能污染新交互：新身份下错误与锁都不继承。

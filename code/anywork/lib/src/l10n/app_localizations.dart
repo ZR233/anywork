@@ -4209,13 +4209,13 @@ abstract class AppLocalizations {
   /// No description provided for @interactionPlanConfirmTitle.
   ///
   /// In en, this message translates to:
-  /// **'Confirm this plan?'**
+  /// **'Confirm implementation plan'**
   String get interactionPlanConfirmTitle;
 
   /// No description provided for @interactionPlanConfirmSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Confirm it, or describe what should change.'**
+  /// **'Approve to continue with this plan, or request changes.'**
   String get interactionPlanConfirmSubtitle;
 
   /// No description provided for @interactionPlanReadyTitle.
@@ -4248,6 +4248,48 @@ abstract class AppLocalizations {
   /// **'Changes requested'**
   String get planDetailRevisionRequested;
 
+  /// No description provided for @planDetailDraftingHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'You will be asked to confirm when the plan is ready.'**
+  String get planDetailDraftingHelp;
+
+  /// No description provided for @planDetailAwaitingHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Read the plan, then approve it or request changes.'**
+  String get planDetailAwaitingHelp;
+
+  /// No description provided for @planDetailRevisionHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Your feedback was submitted. You will be asked to confirm the updated plan.'**
+  String get planDetailRevisionHelp;
+
+  /// No description provided for @planDetailApprovedHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved and available to read at any time.'**
+  String get planDetailApprovedHelp;
+
+  /// No description provided for @planDetailEmptyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'The plan is being drafted'**
+  String get planDetailEmptyTitle;
+
+  /// No description provided for @planDetailEmptyHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'You can read the full plan here when it is ready.'**
+  String get planDetailEmptyHelp;
+
+  /// No description provided for @planDecisionSubmitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitting your decision…'**
+  String get planDecisionSubmitting;
+
   /// No description provided for @statusPlanEntry.
   ///
   /// In en, this message translates to:
@@ -4275,19 +4317,19 @@ abstract class AppLocalizations {
   /// No description provided for @interactionPlanAdjust.
   ///
   /// In en, this message translates to:
-  /// **'Tell anywork how to adjust'**
+  /// **'Requested changes'**
   String get interactionPlanAdjust;
 
   /// No description provided for @interactionPlanConfirmAction.
   ///
   /// In en, this message translates to:
-  /// **'Confirm and execute'**
+  /// **'Approve plan'**
   String get interactionPlanConfirmAction;
 
   /// No description provided for @interactionPlanAdjustHint.
   ///
   /// In en, this message translates to:
-  /// **'Describe what should change...'**
+  /// **'Write what you would like to change…'**
   String get interactionPlanAdjustHint;
 
   /// No description provided for @interactionPlanAdjustSubmit.

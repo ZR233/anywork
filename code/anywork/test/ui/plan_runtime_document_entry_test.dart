@@ -18,7 +18,7 @@ import '../support/test_statistics_feed.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('要求修订且现有文档时只读详情显示真实状态，不是已批准', (tester) async {
+  testWidgets('当前计划按真实状态重开，缺正文为空态且无计划时不造入口', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() {
@@ -118,6 +118,124 @@ void main() {
     expect(find.text('已批准'), findsNothing);
     expect(find.text('等待确认'), findsNothing);
     expect(find.byKey(const ValueKey('plan-approve')), findsNothing);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.planDetailsTitle)).data,
+      '实施计划',
+      reason: '导航标题不再重复 Markdown 文档标题',
+    );
+
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.pumpAndSettle();
+    await transport.publishWorkspace(
+      workspace.copyWith(
+        interactions: const [],
+        runtime: workspace.runtime.copyWith(
+          plan: PlanRuntimeView(
+            revision: 5,
+            state: PlanRuntimePhase.drafting,
+            updatedAt: DateTime.utc(2026, 3, 19),
+            document: null,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    for (var reopen = 0; reopen < 2; reopen++) {
+      await tester.tap(statusOverflow);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<Text>(find.byKey(StudioDriverKeys.planDetailsStatus))
+            .data,
+        '起草中',
+      );
+      expect(find.text('计划正在起草'), findsOneWidget);
+      expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsOneWidget);
+      expect(find.byKey(StudioDriverKeys.planDetailsMarkdown), findsNothing);
+      expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
+      await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+      await tester.pumpAndSettle();
+    }
+
+    await transport.publishWorkspace(
+      workspace.copyWith(
+        interactions: const [],
+        runtime: workspace.runtime.copyWith(plan: null),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
+    if (statusOverflow.evaluate().isNotEmpty) {
+      await tester.tap(statusOverflow);
+      await tester.pumpAndSettle();
+      expect(find.byKey(StudioDriverKeys.statusPlanEntry), findsNothing);
+      await tester.tapAt(const Offset(30, 30));
+      await tester.pumpAndSettle();
+    }
+
+    // Exercise the actual shell footer, whose height budget is smaller than
+    // the full Plan form in this viewport.
+    await transport.publishWorkspace(
+      workspace.copyWith(
+        interactions: [
+          PendingInteraction(
+            id: 'short-plan',
+            threadId: 'thread-main',
+            turnId: 'short-turn',
+            kind: InteractionKind.userInput,
+            title: 'Plan',
+            body: markdown,
+            payload: const UserInputInteractionPayload(
+              questions: [
+                UserQuestionView(
+                  id: agentSessionPlanConfirmationQuestionId,
+                  header: 'Plan',
+                  question: markdown,
+                  isOther: false,
+                  isSecret: false,
+                  options: [],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    tester.view.physicalSize = const Size(640, 480);
+    // The real shell may keep activity animations alive. Wait for the Plan
+    // outlet instead of requiring all unrelated animations to stop.
+    await pumpClientUntil(
+      tester,
+      () =>
+          find.byKey(StudioDriverKeys.planDetails).evaluate().isNotEmpty &&
+          find.byKey(StudioDriverKeys.planApprove).evaluate().isNotEmpty,
+      'short viewport Plan outlets',
+    );
+    expect(tester.takeException(), isNull);
+    expect(
+      find.byKey(const ValueKey('plan-workspace-footer-scroll')),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(find.byKey(StudioDriverKeys.planApprove));
+    await pumpClientUntil(
+      tester,
+      () => find
+          .byKey(StudioDriverKeys.planApprove)
+          .hitTestable()
+          .evaluate()
+          .isNotEmpty,
+      'short viewport Plan approval reachable',
+    );
+    expect(
+      find.byKey(StudioDriverKeys.planApprove).hitTestable(),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.planSubmitRevision).hitTestable(),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
