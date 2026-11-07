@@ -150,7 +150,7 @@ async fn correct(db: &impl ConnectionTrait) -> Result<()> {
             .await?
             .context("background result correction has no history identity")?;
         let database: String = identity.try_get("", "database_id")?;
-        timeline::rebuild(db, &database).await?;
+        timeline::rebuild_published(db, &database).await?;
     }
     Ok(())
 }

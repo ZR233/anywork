@@ -6,6 +6,10 @@ use pl_core::chat::{ChatContent, ChatContentKey, ChatError, ContentData, Content
 use pl_protocol::{CurrentCollectionRef, CurrentProjection};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+#[path = "current/delta_tests.rs"]
+mod delta_tests;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EntryPayload {
@@ -41,6 +45,88 @@ pub(crate) struct CurrentContentWrite {
     pub sealed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentContentState {
+    pub generation: u64,
+    pub byte_length: u64,
+    pub media_type: Option<String>,
+    pub sealed: bool,
+}
+
+impl CurrentContentState {
+    pub fn new(descriptor: &ContentDescriptor, sealed: bool) -> Self {
+        Self {
+            generation: descriptor.generation,
+            byte_length: descriptor.byte_length,
+            media_type: descriptor.media_type.clone(),
+            sealed,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CurrentContentOperation {
+    Create,
+    Append(CurrentContentState),
+    Replace(CurrentContentState),
+    Seal(CurrentContentState),
+    /// Explicit full validation when activation has metadata but no proven shared prefix.
+    Takeover(CurrentContentState),
+}
+
+impl CurrentContentOperation {
+    pub fn expected(&self) -> Option<&CurrentContentState> {
+        match self {
+            Self::Create => None,
+            Self::Append(old) | Self::Replace(old) | Self::Seal(old) | Self::Takeover(old) => {
+                Some(old)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentContentRetirement {
+    pub key: ChatContentKey,
+    pub generation: u64,
+    /// Completion writes precede current in the same transaction. Never delete a sealed item.
+    pub only_unsealed: bool,
+    pub expected: CurrentContentState,
+}
+
+impl CurrentContentRetirement {
+    #[cfg(test)]
+    pub(in crate::studio) fn new(descriptor: &ContentDescriptor) -> Result<Self> {
+        Self::with_state(
+            descriptor,
+            super::content::current_owner(&descriptor.key.owner)?.is_some(),
+        )
+    }
+
+    pub(in crate::studio) fn with_state(
+        descriptor: &ContentDescriptor,
+        sealed: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            key: descriptor.key.clone(),
+            generation: descriptor.generation,
+            only_unsealed: super::content::current_owner(&descriptor.key.owner)?.is_none(),
+            expected: CurrentContentState::new(descriptor, sealed),
+        })
+    }
+}
+
+/// Activation seed from one admitted SQLite snapshot, never from UI previews.
+pub(crate) struct SavedCurrent {
+    pub projection: CurrentProjection,
+    pub contents: std::collections::BTreeMap<ChatContentKey, SavedCurrentContent>,
+}
+
+pub(crate) struct SavedCurrentContent {
+    pub descriptor: ContentDescriptor,
+    pub sealed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedTimelineItem {
     /// Payload is always deferred; the atomic completion item remains the only body copy.
@@ -54,6 +140,17 @@ pub(crate) struct PreparedCurrent {
     projection: Arc<FrozenCurrentProjection>,
     pub changes: Arc<[CurrentEntryChange]>,
     pub contents: Arc<[CurrentContentWrite]>,
+    /// None is an explicit complete snapshot (migrations/full writes). Reliable preparations
+    /// supply exactly one frozen operation for each contents entry, including an empty slice.
+    pub body_operations: Option<Arc<[CurrentContentOperation]>>,
+    /// The original complete frozen cut, shared with PreparedEffect.current_state. Normal writes
+    /// consume only contents/body_operations; durable replay must also verify unchanged bodies.
+    /// No second body map or text cache is created.
+    pub(in crate::studio) replay_current:
+        Option<Arc<crate::studio::thread_projection::CurrentState>>,
+    /// Only newly qualified references require a writer existence check.
+    pub references: Arc<[pl_protocol::ContentRef]>,
+    pub retirements: Arc<[CurrentContentRetirement]>,
     /// Real source starts/ends from this effect, not group boundaries or presentation state.
     pub source_changes: Arc<[pl_protocol::ChatSourceState]>,
     /// Top-level Timeline display items this effect committed, in history order,
@@ -71,11 +168,16 @@ impl PreparedCurrent {
         changes: Arc<[CurrentEntryChange]>,
         contents: Arc<[CurrentContentWrite]>,
     ) -> Self {
+        let references = references(projection.projection()).cloned().collect();
         Self {
             timeline_update: Arc::new(Default::default()),
             projection,
             changes,
             contents,
+            body_operations: None,
+            replay_current: None,
+            references,
+            retirements: Arc::from([]),
             source_changes: Arc::from([]),
             timeline: Arc::from([]),
             timeline_commit: 0,
@@ -114,6 +216,112 @@ impl PreparedCurrent {
     pub fn projection_retained_bytes(&self) -> u64 {
         self.projection.retained_bytes()
     }
+
+    /// New preparation metadata belongs to the original reliable budget, not pending indexes.
+    pub(in crate::studio) fn operation_bytes(&self) -> u64 {
+        let references = self.references.iter().fold(0_u64, |bytes, reference| {
+            let identity = match &reference.target {
+                pl_protocol::ContentTarget::ItemPayload { item_id } => item_id.len() as u64,
+                pl_protocol::ContentTarget::Body { owner, key } => {
+                    let owner = match owner {
+                        pl_protocol::ContentOwner::Item { item_id } => item_id.len() as u64,
+                        pl_protocol::ContentOwner::Current { domain, id, .. } => {
+                            (domain.len() as u64).saturating_add(id.len() as u64)
+                        }
+                    };
+                    owner.saturating_add(key.len() as u64)
+                }
+            };
+            bytes
+                .saturating_add(256)
+                .saturating_add(reference.database_id.len() as u64)
+                .saturating_add(identity)
+        });
+        self.retirements.iter().fold(
+            references
+                .saturating_add(64)
+                .saturating_add(self.replay_current.as_ref().map_or(0, |_| 32))
+                .saturating_add(self.body_operations.as_ref().map_or(0, |operations| {
+                    operations.iter().fold(32_u64, |bytes, operation| {
+                        bytes.saturating_add(128).saturating_add(
+                            operation
+                                .expected()
+                                .and_then(|old| old.media_type.as_ref())
+                                .map_or(0, |media| media.len() as u64),
+                        )
+                    })
+                }))
+                .saturating_add((self.contents.len() as u64).saturating_mul(32)),
+            |bytes, retirement| {
+                bytes
+                    .saturating_add(128)
+                    .saturating_add(retirement.key.owner.as_str().len() as u64)
+                    .saturating_add(retirement.key.key.len() as u64)
+                    .saturating_add(64)
+                    .saturating_add(
+                        retirement
+                            .expected
+                            .media_type
+                            .as_ref()
+                            .map_or(0, |s| s.len() as u64),
+                    )
+            },
+        )
+    }
+}
+
+pub(in crate::studio) fn references(
+    projection: &CurrentProjection,
+) -> impl Iterator<Item = &pl_protocol::ContentRef> {
+    projection
+        .plan
+        .iter()
+        .filter_map(|plan| plan.document.as_ref())
+        .chain(projection.previews.iter().map(|preview| &preview.reference))
+        .chain(
+            projection
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.contents.iter().map(|content| &content.reference)),
+        )
+}
+
+pub(in super::super) async fn read_seed(db: &impl ConnectionTrait) -> Result<SavedCurrent> {
+    let projection = read(db).await?;
+    let mut contents = std::collections::BTreeMap::new();
+    for reference in references(&projection) {
+        let pl_protocol::ContentTarget::Body { owner, key } = &reference.target else {
+            continue;
+        };
+        let key = ChatContentKey {
+            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            key: key.clone(),
+        };
+        if contents.contains_key(&key) {
+            continue;
+        }
+        let row = db
+            .query_one_raw(statement(
+                "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+                vec![key.owner.as_str().into(), key.key.clone().into()],
+            ))
+            .await?
+            .context("saved current refers to missing content")?;
+        let bytes = row.try_get::<Vec<u8>>("", "payload")?;
+        let manifest = super::content::manifest(&bytes)?;
+        let descriptor = super::content::descriptor(key.owner.as_str(), key.key.clone(), &bytes)?;
+        contents.insert(
+            key,
+            SavedCurrentContent {
+                descriptor,
+                sealed: manifest.sealed,
+            },
+        );
+    }
+    Ok(SavedCurrent {
+        projection,
+        contents,
+    })
 }
 
 pub(in super::super) fn validate_database(
@@ -156,12 +364,12 @@ pub(crate) async fn apply(
     write_seq: u64,
     current: &PreparedCurrent,
 ) -> Result<()> {
-    let prior = read_head(db).await?;
-    apply_changes(db, write_seq, current, prior.as_ref()).await?;
+    apply_changes(db, write_seq, current, &[]).await?;
     write_head(db, current).await
 }
 
-/// The transaction owner carries this bounded header between consecutive effects.
+/// Tests can inspect the singleton without the committed-watermark guard between batch effects.
+#[cfg(test)]
 pub(in super::super) async fn read_head(
     db: &impl ConnectionTrait,
 ) -> Result<Option<CurrentProjection>> {
@@ -183,17 +391,34 @@ pub(in super::super) async fn apply_changes(
     db: &impl ConnectionTrait,
     write_seq: u64,
     current: &PreparedCurrent,
-    prior: Option<&CurrentProjection>,
+    completions: &[Arc<ChatItem>],
 ) -> Result<()> {
     ensure!(
         current.projection().source_effect_seq == write_seq,
         "current projection does not belong to the committing effect"
     );
-    let mut live_keys = std::collections::BTreeSet::new();
-    for write in current.contents.iter() {
-        let key = &write.content.descriptor.key;
-        live_keys.insert(key.clone());
-        super::content::write_content(db, &write.content, write.sealed).await?;
+    if let Some(operations) = &current.body_operations {
+        ensure!(
+            operations.len() == current.contents.len(),
+            "prepared content operation count changed"
+        );
+        for (write, operation) in current.contents.iter().zip(operations.iter()) {
+            let completed = completions
+                .iter()
+                .find_map(|item| item.contents.get(&write.content.descriptor.key));
+            super::content::write_operation(
+                db,
+                &write.content,
+                write.sealed,
+                operation,
+                completed.map(AsRef::as_ref),
+            )
+            .await?;
+        }
+    } else {
+        for write in current.contents.iter() {
+            super::content::write_content(db, &write.content, write.sealed).await?;
+        }
     }
     // The product envelope is bounded; growing facts belong in the collection/content tables.
     ensure!(
@@ -274,27 +499,19 @@ pub(in super::super) async fn apply_changes(
             }
         }
     }
-    // Typed heads are bounded. Collection retirement follows explicit mutations; body retirement
-    // only visits the current-owner directory prefix in bounded metadata batches.
-    for reference in current
-        .projection()
-        .plan
-        .iter()
-        .filter_map(|p| p.document.as_ref())
-        .chain(current.projection().previews.iter().map(|p| &p.reference))
-        .chain(
-            current
-                .projection()
-                .atoms
-                .iter()
-                .flat_map(|atom: &pl_protocol::ChatAtom| {
-                    atom.contents
-                        .iter()
-                        .map(|content: &pl_protocol::ChatAtomContent| &content.reference)
-                }),
-        )
-        .collect::<Vec<_>>()
-    {
+    validate_references(db, &current.references).await?;
+    for retirement in current.retirements.iter() {
+        retire_content(db, retirement).await?;
+    }
+    super::sources::apply(db, write_seq, &current.source_changes).await?;
+    Ok(())
+}
+
+async fn validate_references(
+    db: &impl ConnectionTrait,
+    references: &[pl_protocol::ContentRef],
+) -> Result<()> {
+    for reference in references {
         let exists = match &reference.target {
             pl_protocol::ContentTarget::ItemPayload { item_id } => db
                 .query_one_raw(statement(
@@ -317,29 +534,7 @@ pub(in super::super) async fn apply_changes(
             exists,
             "current projection contains an unpublished content reference"
         );
-        if let pl_protocol::ContentTarget::Body { owner, key } = &reference.target {
-            live_keys.insert(ChatContentKey {
-                owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-                key: key.clone(),
-            });
-        }
     }
-    if let Some(old) = prior {
-        for reference in old.collections.iter().chain(old.interactions.iter()) {
-            if !current
-                .projection()
-                .collections
-                .iter()
-                .chain(current.projection().interactions.iter())
-                .any(|new| new.collection == reference.collection)
-            {
-                remove_entries(db, &reference.collection, None).await?;
-            }
-        }
-    }
-    retire_current_contents(db, &live_keys).await?;
-    retire_unsealed_items(db, &live_keys).await?;
-    super::sources::apply(db, write_seq, &current.source_changes).await?;
     Ok(())
 }
 
@@ -443,18 +638,38 @@ pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent)
         row.try_get::<Vec<u8>>("", "payload")? == serde_json::to_vec(current.projection())?,
         ChatError::Conflict("retried effect changed its frozen current projection".into())
     );
-    for write in current.contents.iter() {
-        let stored = super::content::validate_content(db, &write.content)
-            .await?
-            .context("retried effect is missing committed current content")?;
-        let descriptor = &write.content.descriptor;
-        ensure!(
-            stored.byte_length == descriptor.byte_length
-                && stored.generation == descriptor.generation
-                && stored.media_type == descriptor.media_type
-                && (!write.sealed || stored.sealed),
-            ChatError::Conflict("retried effect changed its frozen content descriptor".into())
-        );
+    validate_references(db, &current.references).await?;
+    if let Some(state) = &current.replay_current {
+        let sealed_plan = state
+            .projection()
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.document.as_ref())
+            .and_then(|reference| match &reference.target {
+                pl_protocol::ContentTarget::Body { owner, key } => Some(
+                    crate::studio::conversation_identity::content_owner_key(owner).map(|owner| {
+                        ChatContentKey {
+                            owner,
+                            key: key.clone(),
+                        }
+                    }),
+                ),
+                _ => None,
+            })
+            .transpose()?;
+        for body in state.contents().values() {
+            verify_body(
+                db,
+                &body.content(),
+                sealed_plan.as_ref() == Some(&body.descriptor.key),
+            )
+            .await?;
+        }
+    } else {
+        // Explicit complete-snapshot constructors already carry all bodies in contents.
+        for write in current.contents.iter() {
+            verify_body(db, &write.content, write.sealed).await?;
+        }
     }
     let mut changes = std::collections::BTreeMap::<(&str, &str), Option<&CurrentEntryWrite>>::new();
     let mut cleared = std::collections::BTreeSet::new();
@@ -562,6 +777,21 @@ pub(crate) async fn verify(db: &impl ConnectionTrait, current: &PreparedCurrent)
     }
     Ok(())
 }
+
+async fn verify_body(db: &impl ConnectionTrait, content: &ChatContent, sealed: bool) -> Result<()> {
+    let stored = super::content::validate_content(db, content)
+        .await?
+        .context("retried effect is missing committed current content")?;
+    let descriptor = &content.descriptor;
+    ensure!(
+        stored.byte_length == descriptor.byte_length
+            && stored.generation == descriptor.generation
+            && stored.media_type == descriptor.media_type
+            && (!sealed || stored.sealed),
+        ChatError::Conflict("retried effect changed its frozen content descriptor".into())
+    );
+    Ok(())
+}
 pub(crate) fn validate_collection<'a>(
     current: &'a CurrentProjection,
     reference: &CurrentCollectionRef,
@@ -588,118 +818,61 @@ async fn retire_owner(db: &impl ConnectionTrait, owner: &str) -> Result<()> {
     Ok(())
 }
 
-async fn retire_current_contents(
+async fn retire_content(
     db: &impl ConnectionTrait,
-    live: &std::collections::BTreeSet<ChatContentKey>,
+    retirement: &CurrentContentRetirement,
 ) -> Result<()> {
-    // Derive the indexed domain prefix from Core's encoder, never a second Current-owner codec.
-    let sample = ChatKey::new("current", "_")?;
-    let prefix = sample
-        .as_str()
-        .strip_suffix('_')
-        .context("current key has no identity suffix")?;
-    let upper = format!("{prefix}\u{10ffff}");
-    let mut after: Option<(String, String)> = None;
-    loop {
-        let mut sql = String::from(
-            "SELECT owner_key,content_key FROM conversation_contents WHERE owner_key>=? AND owner_key<?",
-        );
-        let mut values = vec![prefix.into(), upper.clone().into()];
-        if let Some((owner, key)) = &after {
-            sql.push_str(" AND (owner_key,content_key)>(?,?)");
-            values.push(owner.clone().into());
-            values.push(key.clone().into());
+    if let Some((old, _)) = super::content::read_manifest(db, &retirement.key).await? {
+        // A sealed completion is not a withdrawal. The completion writer has already validated it.
+        if retirement.only_unsealed && old.sealed {
+            return Ok(());
         }
-        sql.push_str(" ORDER BY owner_key,content_key LIMIT 64");
-        let rows = db.query_all_raw(statement(&sql, values)).await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            let owner: String = row.try_get("", "owner_key")?;
-            let name: String = row.try_get("", "content_key")?;
-            after = Some((owner.clone(), name.clone()));
-            let key = ChatContentKey {
-                owner: ChatKey::from_encoded(owner.clone())?,
-                key: name.clone(),
-            };
-            let Some(pl_protocol::ContentOwner::Current { domain, .. }) =
-                super::content::current_owner(&key.owner)?
-            else {
-                continue;
-            };
-            // Entry bodies are retired with their indexed collection mutations. They are not a
-            // second active-body snapshot and do not require scanning collection payloads here.
-            if domain.starts_with("collection:") && name == "entry" {
-                continue;
-            }
-            if !live.contains(&key) {
-                db.execute_raw(statement(
-                    "DELETE FROM conversation_content_chunks WHERE owner_key=? AND content_key=?",
-                    vec![owner.clone().into(), name.clone().into()],
-                ))
-                .await?;
-                db.execute_raw(statement(
-                    "DELETE FROM conversation_contents WHERE owner_key=? AND content_key=?",
-                    vec![owner.into(), name.into()],
-                ))
-                .await?;
-            }
-        }
+        super::content::require_expected(&old, &retirement.expected)?;
+        super::content::validate_structure(db, &retirement.key, old.byte_length).await?;
+    } else {
+        anyhow::bail!("retired current content owner is missing");
     }
-    Ok(())
-}
-
-async fn retire_unsealed_items(
-    db: &impl ConnectionTrait,
-    live: &std::collections::BTreeSet<ChatContentKey>,
-) -> Result<()> {
-    // The partial index contains only active bodies. Never scan the sealed Item history to retire
-    // a withdrawn active owner, and never retire a completion sealed earlier in this transaction.
-    let sample = ChatKey::new("item", "_")?;
-    let prefix = sample
-        .as_str()
-        .strip_suffix('_')
-        .context("item key has no identity suffix")?;
-    let upper = format!("{prefix}\u{10ffff}");
-    let mut after: Option<(String, String)> = None;
-    loop {
-        let mut sql = String::from(
-            "SELECT owner_key,content_key FROM conversation_contents INDEXED BY conversation_contents_unsealed
-             WHERE json_extract(CAST(payload AS TEXT),'$.sealed')=0 AND owner_key>=? AND owner_key<?");
-        let mut values = vec![prefix.into(), upper.clone().into()];
-        if let Some((owner, key)) = &after {
-            sql.push_str(" AND (owner_key,content_key)>(?,?)");
-            values.push(owner.clone().into());
-            values.push(key.clone().into());
-        }
-        sql.push_str(" ORDER BY owner_key,content_key LIMIT 64");
-        let rows = db.query_all_raw(statement(&sql, values)).await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            let owner: String = row.try_get("", "owner_key")?;
-            let name: String = row.try_get("", "content_key")?;
-            after = Some((owner.clone(), name.clone()));
-            let key = ChatContentKey {
-                owner: ChatKey::from_encoded(owner.clone())?,
-                key: name.clone(),
-            };
-            if !live.contains(&key) {
-                db.execute_raw(statement(
-                    "DELETE FROM conversation_content_chunks WHERE owner_key=? AND content_key=?",
-                    vec![owner.clone().into(), name.clone().into()],
-                ))
-                .await?;
-                db.execute_raw(statement(
-                    "DELETE FROM conversation_contents WHERE owner_key=? AND content_key=?",
-                    vec![owner.into(), name.into()],
-                ))
-                .await?;
-            }
-        }
-    }
+    // Match the frozen incarnation. A completion sealed earlier in this transaction wins the
+    // handoff; a later replacement must not be deleted by an older retirement either.
+    let predicate = if retirement.only_unsealed {
+        " AND json_extract(CAST(payload AS TEXT),'$.sealed')=0"
+    } else {
+        ""
+    };
+    let values: Vec<sea_orm::Value> = vec![
+        retirement.key.owner.as_str().into(),
+        retirement.key.key.clone().into(),
+        integer(retirement.generation)?.into(),
+    ];
+    db.execute_raw(statement(
+        &format!(
+            "DELETE FROM conversation_content_chunks WHERE owner_key=? AND content_key=?
+             AND EXISTS(SELECT 1 FROM conversation_contents WHERE owner_key=? AND content_key=?
+             AND json_extract(CAST(payload AS TEXT),'$.generation')=?{predicate})"
+        ),
+        [
+            vec![
+                retirement.key.owner.as_str().into(),
+                retirement.key.key.clone().into(),
+            ],
+            values.clone(),
+        ]
+        .concat(),
+    ))
+    .await?;
+    let result = db
+        .execute_raw(statement(
+            &format!(
+                "DELETE FROM conversation_contents WHERE owner_key=? AND content_key=?
+             AND json_extract(CAST(payload AS TEXT),'$.generation')=?{predicate}"
+            ),
+            values,
+        ))
+        .await?;
+    ensure!(
+        result.rows_affected() == 1,
+        ChatError::Conflict("prepared retirement lost its content baseline".into())
+    );
     Ok(())
 }
 

@@ -139,7 +139,6 @@ struct EffectTransaction {
     applied: i64,
     context: Option<checkpoint::ContextHead>,
     completion: u64,
-    current: Option<std::sync::Arc<crate::studio::thread_projection::FrozenCurrentProjection>>,
     timeline: conversation::timeline::ProjectionState,
 }
 
@@ -150,9 +149,6 @@ impl EffectTransaction {
             applied: commit.applied_write_seq,
             context: commit.context,
             completion: conversation::latest_append_seq(db).await?,
-            current: conversation::current::read_head(db)
-                .await?
-                .map(crate::studio::thread_projection::FrozenCurrentProjection::new),
             timeline: conversation::timeline::read_state(db)
                 .await?
                 .context("initialized history is missing its timeline recovery head")?,
@@ -881,7 +877,7 @@ impl HistoryStore {
             tx,
             u64::try_from(write_seq)?,
             current_view,
-            heads.current.as_ref().map(|current| current.projection()),
+            completions,
         )
         .await?;
         conversation::timeline::apply_delta(tx, &database_id, current_view, &mut heads.timeline)
@@ -1013,7 +1009,6 @@ impl HistoryStore {
             }
         }
         heads.applied = write_seq;
-        heads.current = Some(current_view.frozen_projection().clone());
         let committed_accounting = if let Some((checkpoint, _)) = checkpoint
             && accounting
                 .as_ref()
@@ -1635,6 +1630,7 @@ impl HistoryStore {
     }
 
     /// Saved bounded current only, through the same identity/schema admission as other reads.
+    #[cfg(test)]
     pub(crate) async fn conversation_current(
         &self,
     ) -> Result<Option<pl_protocol::CurrentProjection>> {
@@ -1645,6 +1641,21 @@ impl HistoryStore {
         let current = conversation::current::read(&tx).await?;
         tx.commit().await?;
         Ok(Some(current))
+    }
+
+    /// Execution activation additionally captures exact saved body descriptors and ownership.
+    /// Normal current reads do not load this seed, and UI previews never establish it.
+    pub(crate) async fn conversation_current_seed(
+        &self,
+    ) -> Result<Option<conversation::current::SavedCurrent>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let seed = conversation::current::read_seed(&tx).await?;
+        conversation::current::validate_database(&seed.projection, &connection.database_id)?;
+        tx.commit().await?;
+        Ok(Some(seed))
     }
 
     /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
@@ -3175,7 +3186,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          WHERE version IN ('m20261029_000001_history_demand_conversation',
                            'm20261101_000010_history_model_route_head',
                            'm20261102_000001_history_atom_metadata',
-                           'm20261103_000001_history_timeline_items')",
+                           'm20261103_000001_history_timeline_items',
+                           'm20261108_000001_history_source_classification')",
     )
     .await?;
     Ok(())

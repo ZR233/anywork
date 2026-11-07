@@ -79,6 +79,9 @@ enum ChatAtomKind {
   compaction,
   turnReceipt,
   receipt,
+  raw,
+  agent,
+  inference,
   unknown,
 }
 

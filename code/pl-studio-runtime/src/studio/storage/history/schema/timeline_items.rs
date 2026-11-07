@@ -35,7 +35,7 @@ impl MigrationTrait for TimelineItems {
                 .context("timeline migration has no history identity")?;
             let database_id: String = identity.try_get("", "database_id")?;
             timeline::normalize_legacy(db).await?;
-            timeline::rebuild(db, &database_id).await?;
+            timeline::rebuild_published(db, &database_id).await?;
             set_version(db, 15).await?;
             Ok(())
         }

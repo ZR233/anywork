@@ -561,6 +561,22 @@ pub(in crate::studio) async fn rebuild_batched(
     database: &str,
     batch_size: usize,
 ) -> Result<String> {
+    rebuild_with_classification(db, database, batch_size, false).await
+}
+/// Frozen classification of the already-published TimelineItems content step.
+/// Later rule upgrades must use their own named migration, not change this phase.
+pub(in super::super) async fn rebuild_published(
+    db: &impl ConnectionTrait,
+    database: &str,
+) -> Result<String> {
+    rebuild_with_classification(db, database, 128, true).await
+}
+async fn rebuild_with_classification(
+    db: &impl ConnectionTrait,
+    database: &str,
+    batch_size: usize,
+    published: bool,
+) -> Result<String> {
     ensure!(
         (1..=128).contains(&batch_size),
         "timeline replay batch is outside its bounded window"
@@ -570,6 +586,9 @@ pub(in crate::studio) async fn rebuild_batched(
         .await?;
     let candidate = uuid::Uuid::new_v4().to_string();
     let mut projection = TimelineProjection::new(database.into(), candidate.clone(), 0);
+    if published {
+        projection.published_classification();
+    }
     let mut cursor = (-1i64, -1i64, -1i64, -1i64, String::new(), String::new());
     loop {
         let rows = db.query_all_raw(statement("SELECT effect,sub,ordering,completion_order,identity,phase,metadata,source_key FROM (

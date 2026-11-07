@@ -142,6 +142,9 @@ enum BridgeChatAtomKind {
   compaction,
   turnReceipt,
   receipt,
+  raw,
+  agent,
+  inference,
   unknown,
 }
 

@@ -412,6 +412,7 @@ impl PreparedEffect {
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
             .saturating_add(self.current.pending_index_bytes())
+            .saturating_add(self.current.operation_bytes())
             .saturating_add(
                 serde_json::to_vec(self.current.source_changes.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1472,10 +1473,9 @@ impl LiveProjection {
         self.current
             .adopt_timeline_projection(current.frozen_projection(), &projection);
         Arc::make_mut(&mut prepared).replace_projection(projection.clone());
-        Ok((
-            prepared,
-            super::CurrentState::with_projection(current, projection),
-        ))
+        let current = super::CurrentState::with_projection(current, projection);
+        Arc::make_mut(&mut prepared).replay_current = Some(current.clone());
+        Ok((prepared, current))
     }
 
     /// Drains the items this fold step proved ready, in history order, together
@@ -2420,6 +2420,7 @@ impl LiveProjection {
         if let Some(state) = prepared.current_state.take() {
             prepared.current_state = Some(super::CurrentState::with_projection(state, after));
         }
+        current_after.replay_current = prepared.current_state.clone();
         prepared.current = Arc::new(current_after);
         if let Some(history) = &self.execution_history {
             history.timeline_publish(prepared.current.clone());

@@ -104,9 +104,13 @@ final class TimelineMessageController implements ConversationBatchConsumer {
       ]) {
         _retire(unit);
       }
-    } else if (items.any(
-      (item) => controller.messages.any((message) => message.id == item.id),
-    )) {
+    }
+    final loadedIds = <String>{};
+    for (final message in controller.messages) {
+      loadedIds.add(message.id);
+    }
+    if (batch.placement != ChatPlacement.set &&
+        items.any((item) => loadedIds.contains(item.id))) {
       throw const ConversationContinuityError(
         'Main item was already committed',
       );

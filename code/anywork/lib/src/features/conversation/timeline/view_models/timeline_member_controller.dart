@@ -48,14 +48,24 @@ final class TimelineMemberController implements ConversationBatchConsumer {
       await controller.setMessages(messages, animated: false);
     } else {
       final inserted = <Message>[];
+      final loadedById = <String, Message>{};
+      for (final message in controller.messages) {
+        loadedById[message.id] = message;
+      }
+      final pendingIndexById = <String, int>{};
       for (final message in messages) {
-        final previous = controller.messages
-            .where((value) => value.id == message.id)
-            .firstOrNull;
-        if (previous == null) {
-          inserted.add(message);
-        } else {
+        final previous = loadedById[message.id];
+        if (previous != null) {
           await controller.updateMessage(previous, message);
+          loadedById[message.id] = message;
+          continue;
+        }
+        final pendingIndex = pendingIndexById[message.id];
+        if (pendingIndex != null) {
+          inserted[pendingIndex] = message;
+        } else {
+          pendingIndexById[message.id] = inserted.length;
+          inserted.add(message);
         }
       }
       if (inserted.isNotEmpty) {
