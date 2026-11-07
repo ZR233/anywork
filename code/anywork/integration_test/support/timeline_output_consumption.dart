@@ -150,19 +150,18 @@ final class TimelineOutputConsumption {
       // While the SDK waits for capacity, layout must retire old GUI scopes.
       // Keep the same consumer: its existing availability observation resumes
       // admission, without reopening or increasing the resource limit.
-      while (content.state.value is! ChatReady<bool>) {
+      while (true) {
         final state = content.state.value;
-        if (state is ChatFailed<bool>) {
-          final error = state.error;
-          if (error is! ResourceBudgetExceeded ||
-              error.kind != ResourceKind.chatHandle) {
-            throw error;
-          }
-          await foldMemberViews();
+        if (state is! ChatFailed<bool>) break;
+        final error = state.error;
+        if (error is! ResourceBudgetExceeded ||
+            error.kind != ResourceKind.chatHandle) {
+          throw error;
         }
         if (_clock.elapsed >= const Duration(minutes: 6)) {
           throw TimeoutException('Original timeline consumption deadline');
         }
+        await foldMemberViews();
         _memberAdmissionFrames += 1;
         await pump();
       }

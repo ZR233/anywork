@@ -1026,13 +1026,30 @@ final class _ConceptScene {
       final ids = <String>{};
       var olderPageCommands = 0;
       while (true) {
+        await _until(tester, () {
+          expect(display.isCurrent, isTrue);
+          expect(display.expanded, isTrue);
+          if (display.error case final error?) throw error;
+          return !display.loading;
+        }, 'original group member window is ready');
         ids.addAll(display.atoms.map((atom) => atom.id));
-        if (display.before == null && !display.loading) break;
+        if (display.before == null) break;
         final before = display.before;
         final older = find.descendant(
           of: observed.groupRow(id),
           matching: find.byKey(const ValueKey('timeline-children-load-older')),
         );
+        // SDK admission precedes the frame that installs the enabled control.
+        // Keep the original window and cursor while waiting for that same UI.
+        await _until(tester, () {
+          expect(display.isCurrent, isTrue);
+          expect(display.before, before);
+          if (display.error case final error?) throw error;
+          final matches = older.evaluate().length;
+          expect(matches, lessThanOrEqualTo(1));
+          return matches == 1 &&
+              tester.widget<TextButton>(older).onPressed != null;
+        }, 'enabled original group pagination control');
         await observed.tap(older);
         olderPageCommands++;
         await _until(tester, () {
