@@ -3,6 +3,21 @@
   const app = window.AnyworkConversation;
   const { escape, node, icon, spinner, icons, statusLabel } = app.ui;
 
+  // 列表只显示短状态词；长说明不参与固定列的排版。
+  const agentStatusLabels = {
+    running: '运行中', completed: '完成', stopped: '待调度',
+    failed: '失败', stopping: '停止中', waiting: '待调度', idle: '空闲',
+    queued: '排队中', closing: '关闭中', closed: '已关闭',
+    unknown: '未确认', approval: '待批准', input: '待输入'
+  };
+  const agentStatusDetails = {
+    waiting: '已停止，等待主智能体调度',
+    stopped: '已停止，等待主智能体调度',
+    unknown: '上次操作尚未确认，请检查会话状态后再重试',
+    approval: '等待批准工具执行',
+    input: '等待用户输入'
+  };
+
   /* ========================================================================
      1. Popover Menu Manager (Single Active Menu + Viewport Auto-Flip)
      ======================================================================== */
@@ -175,7 +190,9 @@
                       <div class="cv-item-sub">${escape(ag.role)} · ${escape(ag.routeLabel)}</div>
                     </div>
                   </button>
-                  <span class="cv-agent-state-pill" data-status="${escape(ag.status)}">${escape(statusLabel(ag.status))}</span>
+                  <span class="cv-agent-state-pill" data-status="${escape(ag.status)}"
+                    title="${escape(ag.error || agentStatusDetails[ag.status] || statusLabel(ag.status))}"
+                    >${escape(agentStatusLabels[ag.status] || statusLabel(ag.status))}</span>
                   <span class="cv-agent-action-slot">
                     ${canStop ? `
                       <button
