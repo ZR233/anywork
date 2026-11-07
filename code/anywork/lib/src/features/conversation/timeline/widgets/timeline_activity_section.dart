@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../app/theme/studio_tokens.dart';
 
 /// 实时区共同布局：标题保留自然高度，正文在父级实际余量内滚动。
 class TimelineActivitySection extends StatefulWidget {
@@ -61,64 +62,73 @@ class _SectionState extends State<TimelineActivitySection> {
                 fit: FlexFit.loose,
                 child: ConstrainedBox(
                   constraints: BoxConstraints(maxHeight: widget.maxBodyHeight),
-                  child: NotificationListener<ScrollMetricsNotification>(
-                    onNotification: (_) {
-                      _follow();
-                      return false;
-                    },
-                    child: NotificationListener<ScrollNotification>(
-                      onNotification: (notification) {
-                        if ((notification is ScrollUpdateNotification &&
-                                notification.dragDetails != null) ||
-                            notification is UserScrollNotification) {
-                          final next = notification.metrics.extentAfter < 22;
-                          if (_following != next) {
-                            setState(() => _following = next);
-                          }
-                        }
-                        return false;
-                      },
-                      child: Scrollbar(
-                        controller: _scroll,
-                        child: SingleChildScrollView(
-                          controller: _scroll,
-                          primary: false,
-                          child: SelectionArea(
-                            onSelectionChanged: (selection) {
-                              _selected =
-                                  selection?.plainText.isNotEmpty ?? false;
-                              if (_selected && _following) {
-                                setState(() => _following = false);
+                  child: Stack(
+                    children: [
+                      NotificationListener<ScrollMetricsNotification>(
+                        onNotification: (_) {
+                          _follow();
+                          return false;
+                        },
+                        child: NotificationListener<ScrollNotification>(
+                          onNotification: (notification) {
+                            if ((notification is ScrollUpdateNotification &&
+                                    notification.dragDetails != null) ||
+                                notification is UserScrollNotification) {
+                              final next =
+                                  notification.metrics.extentAfter < 22;
+                              if (_following != next) {
+                                setState(() => _following = next);
                               }
-                            },
-                            child: widget.body!,
+                            }
+                            return false;
+                          },
+                          child: Scrollbar(
+                            controller: _scroll,
+                            child: SingleChildScrollView(
+                              controller: _scroll,
+                              primary: false,
+                              child: SelectionArea(
+                                onSelectionChanged: (selection) {
+                                  _selected =
+                                      selection?.plainText.isNotEmpty ?? false;
+                                  if (_selected && _following) {
+                                    setState(() => _following = false);
+                                  }
+                                },
+                                child: widget.body!,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                ),
-              ),
-            if (widget.followOutput && !_following)
-              Flexible(
-                fit: FlexFit.loose,
-                child: Align(
-                  alignment: AlignmentDirectional.centerEnd,
-                  heightFactor: 1,
-                  child: TextButton.icon(
-                    onPressed: () {
-                      FocusManager.instance.primaryFocus?.unfocus();
-                      setState(() {
-                        _selected = false;
-                        _following = true;
-                      });
-                      _follow();
-                    },
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    icon: const Icon(Icons.arrow_downward, size: 14),
-                    label: Text(context.l10n.conversationActivityFollowOutput),
+                      if (widget.followOutput && !_following)
+                        PositionedDirectional(
+                          end: 4,
+                          bottom: 4,
+                          child: Material(
+                            color: context.colors.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(8),
+                            elevation: 1,
+                            child: TextButton.icon(
+                              onPressed: () {
+                                FocusManager.instance.primaryFocus?.unfocus();
+                                setState(() {
+                                  _selected = false;
+                                  _following = true;
+                                });
+                                _follow();
+                              },
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              icon: const Icon(Icons.arrow_downward, size: 14),
+                              label: Text(
+                                context.l10n.conversationActivityFollowOutput,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),

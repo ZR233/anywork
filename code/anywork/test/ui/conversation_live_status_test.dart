@@ -301,12 +301,21 @@ void main() {
           .position;
       expect(scroll.maxScrollExtent, greaterThan(0));
       expect(scroll.pixels, scroll.maxScrollExtent);
+      final cardHeight = tester
+          .getSize(find.byKey(const ValueKey('conversation-activity')))
+          .height;
       await tester.drag(
         find.byType(SingleChildScrollView).first,
         const Offset(0, 120),
       );
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('跟随输出'), findsOneWidget);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('conversation-activity')))
+            .height,
+        cardHeight,
+      );
       final before = scroll.pixels;
       await tester.pumpWidget(scene(_longResponse * 4));
       await tester.pump();
