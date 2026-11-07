@@ -2886,6 +2886,15 @@ pub fn gui_statistics_script() -> Vec<Step> {
     steps
 }
 
+/// Observation stages for the independent native realtime journey.
+#[derive(Debug)]
+pub struct RealtimeObservers<'a> {
+    pub first_token: &'a ReplyStage,
+    pub readable_text: &'a ReplyStage,
+    pub parallel: &'a ReplyStage,
+    pub host_cwd: &'a ReplyStage,
+}
+
 /// Strict state script for the realtime native GUI acceptance journey.
 ///
 /// The script keeps user prompts as the primary request identity: after a tool
@@ -2905,32 +2914,48 @@ pub fn gui_statistics_script() -> Vec<Step> {
 /// alive for the whole run; the command reports the directory it really runs in,
 /// so the delivered output never depends on this argument alone.
 ///
-/// `parallel_observer` holds the two parallel calls behind a completed reasoning
+/// `observers` holds the first token and its original live body until the native
+/// observer has rendered them. Without it, manual observation keeps its pacing.
+/// The parallel stage holds the two parallel calls behind a completed reasoning
 /// prefix so the desktop observer can mount the original member window before
-/// the calls begin their foreground lifetime. `host_observer` prepares the same
+/// the calls begin their foreground lifetime. The host-cwd stage prepares the same
 /// observation boundary for the host-cwd call.
-pub fn gui_realtime_script(
-    host_cwd: &str,
-    parallel_observer: Option<&ReplyStage>,
-    host_observer: Option<&ReplyStage>,
-) -> Vec<Step> {
+pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'_>>) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
     script.add(|step| {
+        let events = responses_text_chunks(
+            &["realtime ", "delayed ", "first ", "token"],
+            "realtime-delayed",
+            "fixture-model",
+        );
+        let reply = if let Some(stages) = &observers {
+            let readable_end = events
+                .iter()
+                .position(|event| event["type"] == "response.output_text.delta")
+                .expect("delayed text fixture must contain its first token")
+                + 1;
+            ReplyStage::staged(
+                vec![
+                    events[..1].to_vec(),
+                    events[1..readable_end].to_vec(),
+                    events[readable_end..].to_vec(),
+                ],
+                &[stages.first_token, stages.readable_text],
+            )
+        } else {
+            Reply::PacedEvents {
+                initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
+                step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
+                events,
+            }
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_DELAYED_PROMPT,
             step,
-            Reply::PacedEvents {
-                initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
-                step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
-                events: responses_text_chunks(
-                    &["realtime ", "delayed ", "first ", "token"],
-                    "realtime-delayed",
-                    "fixture-model",
-                ),
-            },
+            reply,
         )
     });
     script.optional_title(&title);
@@ -3026,7 +3051,7 @@ pub fn gui_realtime_script(
                 ),
             },
         ];
-        let reply = if let Some(stage) = parallel_observer {
+        let reply = if let Some(stages) = &observers {
             // Prepare the real group window before either command is issued.
             // The original foreground lifetime begins only after the observer
             // releases this prefix; command durations and receipts stay exact.
@@ -3043,7 +3068,9 @@ pub fn gui_realtime_script(
                         && event["item"]["type"] == "function_call"
                 })
                 .expect("parallel fixture must contain its original exec calls");
-            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+            stages
+                .parallel
+                .gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
         } else {
             Reply::Sse(responses_tool_calls(
                 "realtime-parallel",
@@ -3124,7 +3151,7 @@ pub fn gui_realtime_script(
             name: TOOL_EXEC_NAME,
             arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
         }];
-        let reply = if let Some(stage) = host_observer {
+        let reply = if let Some(stages) = &observers {
             let events = responses_reasoning_tool_calls(
                 &["realtime host cwd observers ready"],
                 "realtime-host-cwd",
@@ -3138,7 +3165,9 @@ pub fn gui_realtime_script(
                         && event["item"]["type"] == "function_call"
                 })
                 .expect("host-cwd fixture must contain its original exec call");
-            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+            stages
+                .host_cwd
+                .gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
         } else {
             Reply::Sse(responses_tool_calls(
                 "realtime-host-cwd",

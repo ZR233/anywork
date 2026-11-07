@@ -219,7 +219,7 @@ void main() {
     }
   });
 
-  testWidgets('Plan 正文局部排版同时用于详情和回执，普通 Markdown 保留原主题', (tester) async {
+  testWidgets('Plan 正文局部排版同时用于详情和回执，普通正文保留时间线排版', (tester) async {
     const document = '# 阅读标题\n\n## 实施范围\n\n### 步骤\n\n正文内容。';
     Widget markdown(String id) => TimelineMarkdown(
       key: ValueKey(id),
@@ -268,11 +268,18 @@ void main() {
       matching: find.byType(GptMarkdown),
     );
     final outside = renderer('ordinary-body');
-    final base = GptMarkdownTheme.of(tester.element(outside));
+    final base = GptMarkdownTheme.of(
+      tester.element(find.byKey(const ValueKey('ordinary-body'))),
+    );
+    final ordinary = GptMarkdownTheme.of(tester.element(outside));
+    expect(ordinary.h1?.fontSize, 20);
+    expect(ordinary.h1?.height, 1.48);
+    expect(ordinary.h2?.fontSize, 17);
+    expect(ordinary.h3?.fontSize, 14);
     expect(
       find.descendant(of: outside, matching: find.byType(CustomDivider)),
-      findsOneWidget,
-      reason: '同一真实 Markdown 在 Plan 外继续使用原主题的 h1 分隔线',
+      findsNothing,
+      reason: '普通正文保留主线的紧凑标题排版，不添加 h1 分隔线',
     );
     for (final id in ['plan-detail-body', 'plan-receipt-body']) {
       final rendered = renderer(id);
