@@ -24,7 +24,21 @@ impl StudioRuntime {
         Self::validate_operation_id(&operation_id)?;
         let runtime = self.clone();
         self.run_thread_lifecycle_operation(async move {
-            runtime.delete_thread_owned(operation_id, thread_id).await
+            let started = std::time::Instant::now();
+            match runtime.delete_thread_owned(operation_id, thread_id.clone()).await {
+                Ok(reply) => {
+                    tracing::info!(%thread_id, elapsed_ms = started.elapsed().as_millis() as u64, "会话永久删除完成");
+                    Ok(reply)
+                }
+                Err(error) => {
+                    let stage = error.downcast_ref::<DeleteStage>().map_or("准备删除", |stage| stage.0);
+                    let public = deletion_error(&error, stage, &thread_id);
+                    tracing::error!(%thread_id, %stage, correlation_id = %public.correlation_id,
+                        error_code = public.code.label(), elapsed_ms = started.elapsed().as_millis() as u64,
+                        message = %public.message, "会话永久删除失败");
+                    Err(error.context(public))
+                }
+            }
         })
         .await
     }
@@ -86,7 +100,9 @@ impl StudioRuntime {
                 phase: DeletePhase::Sealed,
                 members,
             };
-            self.store.save_thread_delete(&operation).await?;
+            self.store
+                .save_thread_removal_scope(&archive, &operation)
+                .await?;
             operation
         };
         let ids = operation.thread_ids.clone();
@@ -139,7 +155,9 @@ impl StudioRuntime {
                 }
             }
             operation.changed()?;
-            self.store.save_thread_delete(&operation).await?;
+            self.store
+                .save_thread_removal_scope(&archive, &operation)
+                .await?;
             // Existing owners must really stop/join and release their storage and workspace
             // handles. Cold members have no producer to close and need no checkpoint recovery.
             let identities = operation
@@ -149,14 +167,20 @@ impl StudioRuntime {
                 .collect::<Vec<_>>();
             self.threads
                 .close_tree_for_deletion(&root_id, &identities)
-                .await?;
+                .await
+                .context(DeleteStage("停止会话与释放存储"))?;
             self.retire_private_deleted_members(&archive).await?;
             for id in &ids {
                 self.residency.remove(id).await;
             }
             // Git owns worktree removal. Dedicated execution and host roots are removed below
             // as a whole; archive temp migration/cleanup would only traverse them twice.
-            self.clean_archive_worktrees(&mut archive).await?;
+            deletion_step(
+                &root_id,
+                "删除专属工作树",
+                self.clean_archive_worktrees(&mut archive),
+            )
+            .await?;
             // Worktrees may contain this member's entire execution SessionFiles root.
             for member in &mut operation.members {
                 member.execution_removal_started = false;
@@ -198,42 +222,32 @@ impl StudioRuntime {
                 .product_events
                 .drain_directory_writes()
                 .await?;
-            self.store.calls().delete_threads(&ids).await?;
+            deletion_step(
+                &root_id,
+                "删除调用记录",
+                self.store.calls().delete_threads(&ids),
+            )
+            .await?;
             self.bots.delete_threads(&ids).await?;
             self.delete_thread_settings(&ids)?;
+            let mut remote_hosts = Vec::new();
             for index in 0..operation.members.len() {
                 let member = operation.members[index].clone();
                 if !member.execution_deleted {
-                    self.delete_execution_session(&mut operation, index).await?;
+                    deletion_step(
+                        &root_id,
+                        "删除执行端目录",
+                        self.delete_execution_session(&mut operation, index, &mut remote_hosts),
+                    )
+                    .await?;
                 }
                 if !member.host_deleted {
-                    let current = self
-                        .store
-                        .session_paths(&member.identity.workspace_id, &member.identity.thread_id)?;
-                    ensure!(
-                        current.root() == member.host_session,
-                        "delete host session binding changed"
-                    );
-                    if host_session_exists(&member.host_session).await? {
-                        ensure!(
-                            !member.host_removal_started,
-                            "previous host session removal outcome is unresolved; existing object preserved"
-                        );
-                        operation.members[index].host_removal_started = true;
-                        operation.changed()?;
-                        self.store.save_thread_delete(&operation).await?;
-                        path_safety::remove_dir_all_no_follow_async(
-                            member
-                                .host_session
-                                .parent()
-                                .context("delete session has no parent")?,
-                            &member.host_session,
-                        )
-                        .await?;
-                    }
-                    operation.members[index].host_deleted = true;
-                    operation.changed()?;
-                    self.store.save_thread_delete(&operation).await?;
+                    deletion_step(
+                        &root_id,
+                        "删除宿主会话目录",
+                        self.delete_host_session(&mut operation, index),
+                    )
+                    .await?;
                 }
             }
             self.store.delete_thread_product_data(&operation).await?;
@@ -329,6 +343,10 @@ impl StudioRuntime {
         &self,
         operation: &mut ThreadDeleteOperation,
         index: usize,
+        remote_hosts: &mut Vec<(
+            crate::studio::agent_host::worktree_lease::WorkspaceIdentity,
+            pl_tool::remote::RemoteWorkspaceHost,
+        )>,
     ) -> Result<()> {
         let member = operation.members[index].clone();
         if let PreparationBinding::Bound { identity } = &member.execution {
@@ -353,15 +371,40 @@ impl StudioRuntime {
                         })
                         .context("delete frozen SSH endpoint is no longer configured")?
                         .profile;
-                    let host = self
-                        .ssh_manager
-                        .open_workspace_host(&profile.alias, identity.root.clone())
-                        .await?;
+                    let cached = remote_hosts
+                        .iter()
+                        .find(|(original, _)| original == identity)
+                        .map(|(_, host)| host.clone());
+                    let opened = if let Some(host) = cached {
+                        Ok(host)
+                    } else {
+                        self.ssh_manager
+                            .open_workspace_host(&profile.alias, identity.root.clone())
+                            .await
+                    };
+                    let host = match opened {
+                        Ok(host) => host,
+                        Err(pl_tool::remote::RemoteClientError::Remote {
+                            code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
+                            ..
+                        }) => {
+                            operation.members[index].execution_deleted = true;
+                            operation.changed()?;
+                            return self.store.save_thread_delete(operation).await;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     ensure!(
                         WorkspaceEndpoint::from_profile(Some(&host.profile)) == identity.endpoint
                             && host.files.canonical_path() == identity.root,
                         "delete SSH endpoint or canonical root changed"
                     );
+                    if !remote_hosts
+                        .iter()
+                        .any(|(original, _)| original == identity)
+                    {
+                        remote_hosts.push((identity.clone(), host.clone()));
+                    }
                     self.remove_bound_execution_session(
                         operation,
                         index,
@@ -386,16 +429,159 @@ impl StudioRuntime {
         if operation.members[index].execution_removal_started {
             ensure!(
                 !backend.session_exists(&files).await?,
-                "previous execution session removal outcome is unresolved; existing object preserved"
+                unresolved_removal("执行端目录")
             );
             return Ok(());
         }
         operation.members[index].execution_removal_started = true;
         operation.changed()?;
         self.store.save_thread_delete(operation).await?;
-        backend.remove_session(&files).await?;
+        if let Err(error) = backend.remove_session(&files).await {
+            if error.definitely_not_started() {
+                operation.members[index].execution_removal_started = false;
+                operation.changed()?;
+                self.store.save_thread_delete(operation).await?;
+            }
+            return Err(error.into());
+        }
         Ok(())
     }
+
+    async fn delete_host_session(
+        &self,
+        operation: &mut ThreadDeleteOperation,
+        index: usize,
+    ) -> Result<()> {
+        let member = operation.members[index].clone();
+        let current = self
+            .store
+            .session_paths(&member.identity.workspace_id, &member.identity.thread_id)?;
+        ensure!(
+            current.root() == member.host_session,
+            "delete host session binding changed"
+        );
+        if member.host_removal_started {
+            ensure!(
+                !host_session_exists(&member.host_session).await?,
+                unresolved_removal("宿主会话目录")
+            );
+        } else {
+            operation.members[index].host_removal_started = true;
+            operation.changed()?;
+            self.store.save_thread_delete(operation).await?;
+            let anchor = member
+                .host_session
+                .ancestors()
+                .last()
+                .context("delete host path has no root")?;
+            if let Err(error) =
+                path_safety::remove_dir_all_no_follow_async(anchor, &member.host_session).await
+            {
+                let absent = matches!(&error, path_safety::PathSafetyError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound);
+                if !absent {
+                    let started = matches!(
+                        &error,
+                        path_safety::PathSafetyError::Io {
+                            removal_started: true,
+                            ..
+                        }
+                    );
+                    if !started {
+                        operation.members[index].host_removal_started = false;
+                        operation.changed()?;
+                        self.store.save_thread_delete(operation).await?;
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        operation.members[index].host_deleted = true;
+        operation.changed()?;
+        self.store.save_thread_delete(operation).await
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct DeleteStage(&'static str);
+
+async fn deletion_step<T>(
+    thread_id: &str,
+    stage: &'static str,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let started = std::time::Instant::now();
+    let result = operation.await.context(DeleteStage(stage));
+    tracing::info!(%thread_id, %stage, elapsed_ms = started.elapsed().as_millis() as u64, success = result.is_ok(), "会话删除阶段结束");
+    result
+}
+
+fn unresolved_removal(target: &str) -> pl_protocol::studio::StudioError {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Conflict,
+        format!("上次删除{target}的结果无法确认，已保留现存目录，避免误删替换对象"),
+        false,
+    )
+}
+
+fn deletion_error(
+    error: &anyhow::Error,
+    stage: &str,
+    thread_id: &str,
+) -> pl_protocol::studio::StudioError {
+    use pl_protocol::studio::{StudioError, StudioErrorCode};
+    let mut public = if let Some(public) = error.downcast_ref::<StudioError>() {
+        public.clone()
+    } else if let Some(source) = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<pl_tool::remote::RemoteClientError>())
+    {
+        crate::error_mapping::studio_error_from_anyhow_ref(&anyhow::Error::new(source.clone()))
+    } else if let Some(source) = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+    {
+        StudioError::new(
+            if source.kind() == std::io::ErrorKind::PermissionDenied {
+                StudioErrorCode::PermissionDenied
+            } else {
+                StudioErrorCode::Storage
+            },
+            format!("文件系统操作失败：{source}"),
+            true,
+        )
+    } else if error.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<path_safety::PathSafetyError>(),
+            Some(
+                path_safety::PathSafetyError::OutsideRoot { .. }
+                    | path_safety::PathSafetyError::LinkOrReparse { .. }
+            )
+        )
+    }) {
+        StudioError::new(
+            StudioErrorCode::Conflict,
+            "原绑定路径已越界或包含链接，现存目录已保留",
+            false,
+        )
+    } else {
+        crate::error_mapping::studio_error_from_anyhow_ref(error)
+    };
+    if public.code == StudioErrorCode::Internal {
+        public.message = "操作未能完成，请查看关联编号对应的诊断记录".into();
+    }
+    public.message = format!("永久删除在「{stage}」阶段失败：{}", public.message);
+    let mut details = match public.details.take().map(|value| *value) {
+        Some(serde_json::Value::Object(fields)) => fields,
+        Some(value) => serde_json::Map::from_iter([("causeDetails".into(), value)]),
+        None => serde_json::Map::new(),
+    };
+    details.extend(serde_json::Map::from_iter([
+        ("operation".into(), "deleteThread".into()),
+        ("stage".into(), stage.into()),
+        ("threadId".into(), thread_id.into()),
+    ]));
+    public.with_details(serde_json::Value::Object(details))
 }
 
 fn delete_members(archive: &ThreadArchiveOperation) -> Vec<DeleteMember> {
@@ -446,5 +632,38 @@ async fn host_session_exists(session: &Path) -> Result<bool> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_context_preserves_typed_permission_and_original_details() {
+        use pl_protocol::studio::{StudioError, StudioErrorCode};
+        let original = StudioError::new(StudioErrorCode::PermissionDenied, "合成权限拒绝", false)
+            .with_details(serde_json::json!({"reason": "syntheticPermission"}));
+        let correlation = original.correlation_id.clone();
+        let error = anyhow::Error::new(original).context(DeleteStage("删除执行端目录"));
+        let public = deletion_error(&error, "删除执行端目录", "fixture-root");
+        assert_eq!(public.code, StudioErrorCode::PermissionDenied);
+        assert_eq!(public.correlation_id, correlation);
+        assert!(!public.retryable);
+        assert_eq!(
+            public.details.as_ref().unwrap()["reason"],
+            "syntheticPermission"
+        );
+        let remote = pl_tool::remote::RemoteClientError::AuthenticationFailed(
+            pl_tool::remote::SshAuthFailure::new("fixture denied", vec![]),
+        );
+        let error = anyhow::Error::new(pl_tool::workspace::SessionRemovalError::Remote(remote))
+            .context(DeleteStage("删除执行端目录"));
+        let public = deletion_error(&error, "删除执行端目录", "fixture-root");
+        assert_eq!(public.code, StudioErrorCode::PermissionDenied);
+        assert_eq!(
+            public.details.as_ref().unwrap()["sshErrorKind"],
+            "authenticationFailed"
+        );
     }
 }

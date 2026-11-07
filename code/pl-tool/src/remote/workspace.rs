@@ -176,8 +176,8 @@ impl RemoteWorkspaceFileBackend {
         path: String,
         cwd: Option<String>,
         recursive: bool,
-    ) -> Result<()> {
-        let path = self.path_request(path, cwd).map_err(remote_file_error)?;
+    ) -> std::result::Result<(), RemoteClientError> {
+        let path = self.path_request(path, cwd)?;
         let reply = self
             .request(
                 RemoteRequest::RemovePath(RemoteRemoveRequest {
@@ -187,9 +187,8 @@ impl RemoteWorkspaceFileBackend {
                 }),
                 &[],
             )
-            .await
-            .map_err(remote_file_error)?;
-        expect_ack(reply).map_err(remote_file_error)
+            .await?;
+        expect_ack(reply)
     }
 
     /// 在同一 workspace 内重命名路径。
@@ -388,7 +387,9 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     }
 
     async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> Result<()> {
-        self.remove_path(request.path, request.cwd, false).await
+        self.remove_path(request.path, request.cwd, false)
+            .await
+            .map_err(remote_file_error)
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
@@ -408,6 +409,7 @@ fn resolve_remote_path(
     {
         if source.starts_with('/') || source.contains('\\') {
             return Err(RemoteClientError::Remote {
+                removal_effect: None,
                 code: super::RemoteErrorCode::InvalidRequest,
                 message: "remote workspace paths must be relative POSIX paths".into(),
             });
@@ -417,6 +419,7 @@ fn resolve_remote_path(
                 "" | "." => {}
                 ".." => {
                     return Err(RemoteClientError::Remote {
+                        removal_effect: None,
                         code: super::RemoteErrorCode::WorkspaceEscape,
                         message: "remote path must not escape workspace".into(),
                     });

@@ -214,6 +214,7 @@ pub(crate) fn remote_error(code: RemoteErrorCode, message: impl Into<String>) ->
     RemoteError {
         code,
         message: message.into(),
+        removal_effect: None,
     }
 }
 

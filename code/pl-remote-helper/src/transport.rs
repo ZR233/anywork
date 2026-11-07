@@ -639,6 +639,7 @@ pub fn respond_control(
         encoded = serde_json::to_vec(&RemoteResponse::Error(pl_protocol::remote::RemoteError {
             code: pl_protocol::remote::RemoteErrorCode::ResourceExhausted,
             message: "control response exceeds its metadata grant".into(),
+            removal_effect: None,
         }))
         .map_err(io::Error::other)?;
     }

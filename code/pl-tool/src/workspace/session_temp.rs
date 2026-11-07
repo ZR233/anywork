@@ -5,6 +5,7 @@ use pl_protocol::Result;
 use serde::{Deserialize, Serialize};
 
 use super::{SessionFiles, path_safety};
+use crate::remote::RemoteClientError;
 use crate::remote::RemoteWorkspaceFileBackend;
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 
@@ -13,6 +14,43 @@ use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 pub enum SessionTempBackend<'a> {
     Local(&'a Path),
     Ssh(&'a RemoteWorkspaceFileBackend),
+}
+
+/// Keeps the actual deletion boundary visible to lifecycle retry ownership.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionRemovalError {
+    #[error("{0}")]
+    Local(#[from] path_safety::PathSafetyError),
+    #[error("{0}")]
+    Remote(#[from] RemoteClientError),
+}
+
+impl SessionRemovalError {
+    pub fn definitely_not_started(&self) -> bool {
+        match self {
+            Self::Local(path_safety::PathSafetyError::Io {
+                removal_started, ..
+            }) => !removal_started,
+            Self::Local(_) => true,
+            Self::Remote(RemoteClientError::Cancelled) => true,
+            Self::Remote(RemoteClientError::Remote { removal_effect, .. }) => {
+                *removal_effect == Some(pl_protocol::remote::RemoteRemovalEffect::NotStarted)
+            }
+            Self::Remote(_) => false,
+        }
+    }
+
+    fn is_absent(&self) -> bool {
+        match self {
+            Self::Local(path_safety::PathSafetyError::Io { source, .. }) => {
+                source.kind() == std::io::ErrorKind::NotFound
+            }
+            Self::Remote(RemoteClientError::Remote { code, .. }) => {
+                *code == pl_protocol::remote::RemoteErrorCode::PathNotFound
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -144,12 +182,15 @@ impl SessionTempBackend<'_> {
     /// Removes only the dedicated temp directory. Explicit absence is idempotent success.
     /// Callers must stop/join producers and confirm reliable persistence before invoking this.
     pub async fn remove(&self, files: &SessionFiles) -> Result<()> {
-        self.remove_dedicated(&files.temp()).await
+        self.remove_dedicated(&files.temp()).await.map_err(failure)
     }
 
     /// Permanently removes only this Thread's private execution SessionFiles directory.
     /// The lifecycle owner must have joined its producers and released reliable readers/writers.
-    pub async fn remove_session(&self, files: &SessionFiles) -> Result<()> {
+    pub async fn remove_session(
+        &self,
+        files: &SessionFiles,
+    ) -> std::result::Result<(), SessionRemovalError> {
         self.remove_dedicated(&files.root()).await
     }
 
@@ -159,22 +200,23 @@ impl SessionTempBackend<'_> {
         self.exists(&files.root()).await
     }
 
-    async fn remove_dedicated(&self, path: &Path) -> Result<()> {
-        if !self.exists(path).await? {
-            return Ok(());
-        }
-        match self {
+    async fn remove_dedicated(&self, path: &Path) -> std::result::Result<(), SessionRemovalError> {
+        let result = match self {
             Self::Local(root) => {
-                path_safety::remove_dir_all_no_follow_async(root, &root.join(path))
+                let anchor = root.ancestors().last().unwrap_or(root);
+                path_safety::remove_dir_all_no_follow_async(anchor, &root.join(path))
                     .await
-                    .map_err(failure)?
+                    .map_err(SessionRemovalError::Local)
             }
-            Self::Ssh(backend) => backend.remove_path(posix(path), None, true).await?,
+            Self::Ssh(backend) => backend
+                .remove_path(posix(path), None, true)
+                .await
+                .map_err(SessionRemovalError::Remote),
+        };
+        match result {
+            Err(error) if error.is_absent() => Ok(()),
+            result => result,
         }
-        if self.exists(path).await? {
-            return Err(failure("session directory remains after removal"));
-        }
-        Ok(())
     }
 
     async fn exists(&self, path: &Path) -> Result<bool> {
@@ -373,6 +415,42 @@ fn failure(error: impl std::fmt::Display) -> pl_protocol::PureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Explicit observation, not a timing threshold in the default regression suite.
+    #[tokio::test]
+    #[ignore = "explicit directory deletion timing; creates isolated files"]
+    async fn session_directory_removal_timing() {
+        for sample in 0..3 {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            let files = SessionFiles::new("timing-owner");
+            let neighbor = SessionFiles::new("timing-neighbor");
+            put(root, neighbor.artifacts().join("keep"), b"neighbor");
+            for directory in 0..16 {
+                for file in 0..64 {
+                    put(
+                        root,
+                        files.root().join(format!("{directory}/nested/deep/{file}")),
+                        b"disposable",
+                    );
+                }
+            }
+            let started = std::time::Instant::now();
+            SessionTempBackend::Local(root)
+                .remove_session(&files)
+                .await
+                .unwrap();
+            println!(
+                "SESSION_DIRECTORY_DELETE sample={sample} files=1024 elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+            assert!(!root.join(files.root()).exists());
+            assert_eq!(
+                std::fs::read(root.join(neighbor.artifacts()).join("keep")).unwrap(),
+                b"neighbor"
+            );
+        }
+    }
 
     fn put(root: &Path, path: impl AsRef<Path>, bytes: &[u8]) {
         let path = root.join(path);

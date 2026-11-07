@@ -350,7 +350,6 @@ impl CallLog {
         db: &DatabaseConnection,
         ids: &BTreeSet<String>,
     ) -> Result<()> {
-        self.repair_pending_index(db).await?;
         self.sync_pending().await?;
         self.current.take();
         let mut segments = list_segments(&self.dir).await?;
@@ -364,22 +363,31 @@ impl CallLog {
             let path = self.dir.join(&segment.name);
             let bytes = tokio::fs::read(&path).await?;
             let mut retained = Vec::with_capacity(bytes.len());
+            let mut locators = Vec::new();
             for line in bytes.split_inclusive(|byte| *byte == b'\n') {
                 ensure!(
                     line.last() == Some(&b'\n'),
                     "incomplete call record during permanent deletion"
                 );
-                let record = event::decode_record(std::str::from_utf8(&line[..line.len() - 1])?)?;
+                let record: event::CallLogLocator =
+                    serde_json::from_slice(&line[..line.len() - 1])?;
+                ensure!(
+                    !record.thread_id.is_empty(),
+                    "call record has no deletion identity"
+                );
                 if !ids.contains(&record.thread_id)
                     && !record
                         .root_thread_id
                         .as_ref()
                         .is_some_and(|id| ids.contains(id))
                 {
+                    let offset = retained.len();
                     retained.extend_from_slice(line);
+                    locators.push((record, offset, line.len() - 1));
                 }
             }
-            if retained != bytes {
+            let changed = retained != bytes;
+            if changed || self.unindexed_segments.contains(&segment.name) {
                 // Invalidate before replacing: an error or crash can leave locators missing,
                 // but never leave old offsets pointing into a different retained record.
                 // The caller owns the log lock until the replacement task has finished.
@@ -388,12 +396,32 @@ impl CallLog {
                 super::prune_index(&tx, std::slice::from_ref(&segment.name)).await?;
                 tx.commit().await?;
                 let retained_len = retained.len() as u64;
-                tokio::task::spawn_blocking(move || {
-                    pl_tool::workspace::write_file_atomically(&path, &retained)
-                })
-                .await??;
+                if changed {
+                    let path = path.clone();
+                    retained = tokio::task::spawn_blocking(move || {
+                        pl_tool::workspace::write_file_atomically(&path, &retained)?;
+                        Ok::<_, anyhow::Error>(retained)
+                    })
+                    .await??;
+                }
                 self.total_bytes = self.total_bytes.saturating_sub(segment.len - retained_len);
-                self.repair_pending_index(db).await?;
+                let tx = db.begin().await?;
+                for (record, offset, length) in locators {
+                    super::index_locator(
+                        &tx,
+                        &record,
+                        &pl_core::context::content_hash(&retained[offset..offset + length]),
+                        &AppendedRecord {
+                            segment: segment.name.clone(),
+                            offset: offset as u64,
+                            length: length as u64,
+                        },
+                        record.truncated,
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+                self.unindexed_segments.remove(&segment.name);
             }
         }
         Ok(())
@@ -418,8 +446,8 @@ impl CallLog {
                     "incomplete call record during locator repair"
                 );
                 let text = std::str::from_utf8(&line[..line.len() - 1])?;
-                let record = event::decode_record(text)?;
-                super::index_record(
+                let record: event::CallLogLocator = serde_json::from_str(text)?;
+                super::index_locator(
                     &tx,
                     &record,
                     &pl_core::context::content_hash(text.as_bytes()),

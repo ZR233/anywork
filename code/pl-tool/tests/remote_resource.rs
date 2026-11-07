@@ -16,6 +16,90 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::test]
+async fn helper_directory_removal_retains_effect_and_preserves_neighbor() -> anyhow::Result<()> {
+    use pl_tool::remote::RemoteClientError;
+    let executable = helper::remote_helper_executable();
+    let helper = support::Helper::start(executable).await?;
+    let outcome = async {
+        let target = helper.root.path().join("deleted");
+        let neighbor = helper.root.path().join("neighbor");
+        std::fs::create_dir(&neighbor)?;
+        std::fs::write(neighbor.join("keep"), b"neighbor")?;
+        for directory in 0..16 {
+            let directory = target.join(format!("{directory}/nested/deep"));
+            std::fs::create_dir_all(&directory)?;
+            for file in 0..64 {
+                std::fs::write(directory.join(file.to_string()), b"disposable")?;
+            }
+        }
+        let request = |path: &str, recursive| {
+            RemoteRequest::RemovePath(RemoteRemoveRequest {
+                workspace_id: helper.workspace.clone(),
+                path: path.into(),
+                recursive,
+            })
+        };
+        let refused = helper
+            .client
+            .request(request("neighbor", false), &[])
+            .await
+            .expect_err("nonempty directory refusal");
+        ensure!(matches!(
+            refused,
+            RemoteClientError::Remote {
+                code: RemoteErrorCode::Io,
+                removal_effect: Some(RemoteRemovalEffect::MayHaveChanged),
+                ..
+            }
+        ));
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("keep"), b"outside")?;
+        std::os::unix::fs::symlink(outside.path(), helper.root.path().join("linked"))?;
+        let refused = helper
+            .client
+            .request(request("linked", true), &[])
+            .await
+            .expect_err("linked target refusal");
+        ensure!(matches!(
+            refused,
+            RemoteClientError::Remote {
+                code: RemoteErrorCode::WorkspaceEscape,
+                removal_effect: Some(RemoteRemovalEffect::NotStarted),
+                ..
+            }
+        ));
+        ensure!(std::fs::read(outside.path().join("keep"))? == b"outside");
+        let started = Instant::now();
+        helper.client.request(request("deleted", true), &[]).await?;
+        println!(
+            "REMOTE_DIRECTORY_DELETE files=1024 directories=48 elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        ensure!(!target.exists());
+        let absent = helper
+            .client
+            .request(request("deleted", true), &[])
+            .await
+            .expect_err("typed absence");
+        ensure!(matches!(
+            absent,
+            RemoteClientError::Remote {
+                code: RemoteErrorCode::PathNotFound,
+                removal_effect: Some(RemoteRemovalEffect::NotStarted),
+                ..
+            }
+        ));
+        ensure!(std::fs::read(neighbor.join("keep"))? == b"neighbor");
+        anyhow::Ok(())
+    }
+    .await;
+    let closed = helper.close().await;
+    outcome?;
+    closed?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     receipts::verify(executable).await?;

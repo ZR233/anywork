@@ -293,7 +293,7 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
         RemoteClientError::Protocol(reason) => {
             StudioError::new(StudioErrorCode::InvalidArgument, reason.clone(), false)
         }
-        RemoteClientError::Remote { code, message } => StudioError::new(
+        RemoteClientError::Remote { code, message, .. } => StudioError::new(
             StudioErrorCode::Unavailable,
             format!("{code:?}: {message}"),
             false,

@@ -17,6 +17,251 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 mod required;
 
 #[tokio::test]
+async fn permanent_delete_preflight_failure_retries_without_repairing_history() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let root = runtime
+        .create_thread_with_id("preflight-root", &project.id, "root")
+        .await?;
+    let files = SessionFiles::new(&root.id);
+    let path = workspace.join(files.root());
+    if path.exists() {
+        tokio::fs::remove_dir_all(&path).await?;
+    }
+    tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+    tokio::fs::write(&path, b"unexpected file").await?;
+    let error = runtime
+        .delete_thread("preflight-fail".into(), root.id.clone())
+        .await
+        .expect_err("wrong target kind must be preserved");
+    let public = crate::error_mapping::studio_error_from_anyhow_ref(&error);
+    assert!(public.message.contains("删除执行端目录"), "{public}");
+    let operation = runtime.store.thread_delete(&root.id).await?.unwrap();
+    assert!(
+        !operation
+            .members
+            .iter()
+            .find(|member| member.identity.thread_id == root.id)
+            .unwrap()
+            .execution_removal_started
+    );
+    assert_eq!(tokio::fs::read(&path).await?, b"unexpected file");
+    tokio::fs::remove_file(&path).await?;
+    tokio::fs::create_dir(&path).await?;
+    tokio::fs::write(path.join("retry"), b"disposable").await?;
+    runtime
+        .delete_thread("preflight-retry".into(), root.id.clone())
+        .await?
+        .context("retry must complete")?;
+    assert!(!path.exists());
+    assert!(runtime.store.read_thread(&root.id).await?.is_none());
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_delete_takes_pending_project_archive_atomically_and_preserves_neighbor()
+-> Result<()> {
+    use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let root = runtime
+        .create_thread_with_id("transfer-root", &project.id, "root")
+        .await?;
+    let neighbor = runtime
+        .create_thread_with_id("transfer-neighbor", &project.id, "neighbor")
+        .await?;
+    let source_scope = ArchiveScope::Workspace(project.id.clone());
+    runtime
+        .store
+        .database()
+        .execute_unprepared(
+            "CREATE TRIGGER reject_project_cleanup BEFORE UPDATE ON studio_objects
+         WHEN NEW.object_kind='threadArchive'
+         AND json_extract(NEW.payload_json,'$.scope.kind')='workspace'
+         AND json_extract(NEW.payload_json,'$.phase')='cleaned'
+         BEGIN SELECT RAISE(ABORT,'project cleanup ACK failure'); END",
+        )
+        .await?;
+    let error = runtime
+        .archive_project(&project.id)
+        .await
+        .expect_err("project archive must leave its original cleanup responsibility");
+    assert!(
+        format!("{error:#}").contains("project cleanup ACK failure"),
+        "{error:#}"
+    );
+    let source = runtime.store.thread_archive(&source_scope).await?;
+    let source = source.context("pending project archive")?;
+    assert_eq!(source.phase, ArchivePhase::Saved);
+    assert!(
+        source
+            .members
+            .iter()
+            .all(|member| member.host_cleaned && member.execution_cleaned)
+    );
+    let original_neighbor = source
+        .members
+        .iter()
+        .find(|member| member.thread_id == neighbor.id)
+        .context("neighbor cleanup responsibility")?;
+    runtime
+        .store
+        .database()
+        .execute_unprepared(
+            "CREATE TRIGGER reject_delete_transfer BEFORE INSERT ON studio_objects
+         WHEN NEW.object_kind='threadDelete' BEGIN SELECT RAISE(ABORT,'transfer rollback'); END",
+        )
+        .await?;
+    assert!(
+        runtime
+            .delete_thread("transfer-fail".into(), root.id.clone())
+            .await
+            .is_err()
+    );
+    let unchanged = runtime.store.thread_archive(&source_scope).await?.unwrap();
+    assert_eq!(unchanged.revision, source.revision);
+    assert_eq!(unchanged.thread_ids(), source.thread_ids());
+    assert!(
+        runtime
+            .store
+            .thread_archive(&ArchiveScope::Thread(root.id.clone()))
+            .await?
+            .is_none()
+    );
+    assert!(runtime.store.thread_delete(&root.id).await?.is_none());
+    runtime
+        .store
+        .database()
+        .execute_unprepared("DROP TRIGGER reject_delete_transfer")
+        .await?;
+    runtime
+        .delete_thread("transfer-success".into(), root.id.clone())
+        .await?
+        .context("delete without finishing preservation")?;
+    let remaining = runtime.store.thread_archive(&source_scope).await?.unwrap();
+    assert_eq!(remaining.phase, ArchivePhase::Saved);
+    assert_eq!(remaining.thread_ids(), vec![neighbor.id.clone()]);
+    assert_eq!(
+        serde_json::to_value(&remaining.members[0])?,
+        serde_json::to_value(original_neighbor)?,
+        "the neighbor's original binding and completed cleanup must survive unchanged"
+    );
+    assert!(runtime.store.read_thread(&neighbor.id).await?.is_some());
+    assert!(runtime.store.read_thread(&root.id).await?.is_none());
+    runtime.shutdown_runtime().await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let resumed = runtime.store.thread_archive(&source_scope).await?.unwrap();
+    assert_eq!(resumed.phase, ArchivePhase::Saved);
+    assert_eq!(resumed.thread_ids(), vec![neighbor.id.clone()]);
+    assert_eq!(
+        serde_json::to_value(&resumed.members[0])?,
+        serde_json::to_value(original_neighbor)?
+    );
+    runtime
+        .store
+        .database()
+        .execute_unprepared("DROP TRIGGER reject_project_cleanup")
+        .await?;
+    runtime
+        .archive_project(&project.id)
+        .await?
+        .context("remaining project archive can continue")?;
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_delete_resumes_removing_with_a_previously_published_project_archive()
+-> Result<()> {
+    use crate::studio::store::thread_archive::ArchiveScope;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let root = runtime
+        .create_thread_with_id("resume-root", &project.id, "root")
+        .await?;
+    let neighbor = runtime
+        .create_thread_with_id("resume-neighbor", &project.id, "neighbor")
+        .await?;
+    runtime
+        .archive_project(&project.id)
+        .await?
+        .context("archive project")?;
+    let scope = ArchiveScope::Workspace(project.id.clone());
+    let mut original = runtime.store.thread_archive(&scope).await?.unwrap();
+    runtime
+        .store
+        .database()
+        .execute_unprepared(
+            "CREATE TRIGGER pause_before_removing BEFORE UPDATE ON studio_objects
+         WHEN NEW.object_kind='threadDelete' AND json_extract(NEW.payload_json,'$.phase')='removing'
+         BEGIN SELECT RAISE(ABORT,'pause before removing'); END",
+        )
+        .await?;
+    let error = runtime
+        .delete_thread("resume-pause".into(), root.id.clone())
+        .await
+        .expect_err("pause after producers released");
+    assert!(
+        format!("{error:#}").contains("pause before removing"),
+        "{error:#}"
+    );
+    runtime
+        .store
+        .database()
+        .execute_unprepared("DROP TRIGGER pause_before_removing")
+        .await?;
+    // Prior producers could persist Removing while the published project still
+    // retained its members. Recreate that durable cut using the original record.
+    let mut deletion = runtime.store.thread_delete(&root.id).await?.unwrap();
+    deletion.phase = DeletePhase::Removing;
+    deletion.changed()?;
+    runtime.store.save_thread_delete(&deletion).await?;
+    original.revision = runtime
+        .store
+        .thread_archive(&scope)
+        .await?
+        .unwrap()
+        .revision
+        + 1;
+    runtime.store.save_thread_archive(&original).await?;
+    runtime.shutdown_runtime().await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    runtime
+        .delete_thread("resume-complete".into(), root.id.clone())
+        .await?
+        .context("resumed deletion")?;
+    assert_eq!(
+        runtime
+            .store
+            .thread_archive(&scope)
+            .await?
+            .unwrap()
+            .thread_ids(),
+        vec![neighbor.id.clone()]
+    );
+    assert!(runtime.store.read_thread(&neighbor.id).await?.is_some());
+    assert!(runtime.store.read_thread(&root.id).await?.is_none());
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_repair()
 -> Result<()> {
     use crate::thread_assembler::{
@@ -40,7 +285,7 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
     let owner = runtime.ensure_thread_owner(&root.id).await?;
     owner.flush().await?;
     runtime.synchronize_thread_observation(&root.id).await?;
-    let child = cold_child(&runtime, &root).await?;
+    let child = cold_child(&runtime, &root.clone().into(), "delete-cold-child").await?;
     let producer_released = CancellationToken::new();
     let released = producer_released.clone();
     runtime
@@ -156,14 +401,15 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
 
 async fn cold_child(
     runtime: &StudioRuntime,
-    root: &crate::studio::ThreadRecord,
+    parent: &pl_protocol::Thread,
+    id: &str,
 ) -> Result<pl_protocol::Thread> {
-    let mut child = pl_protocol::Thread::placeholder("delete-cold-child");
-    child.agent_path = format!("{}/{}", root.id, child.id);
-    child.workspace_id = root.workspace_id.clone();
-    child.workspace_path = root.workspace_path.clone();
-    child.root_thread_id = root.id.clone();
-    child.parent_thread_id = Some(root.id.clone());
+    let mut child = pl_protocol::Thread::placeholder(id);
+    child.agent_path = format!("{}/{}", parent.agent_path, child.id);
+    child.workspace_id = parent.workspace_id.clone();
+    child.workspace_path = parent.workspace_path.clone();
+    child.root_thread_id = parent.root_thread_id.clone();
+    child.parent_thread_id = Some(parent.id.clone());
     let (_, agent) = crate::studio::records::directory_facts_from_thread(&child);
     runtime
         .agent_facility
@@ -224,6 +470,18 @@ async fn permanent_delete_cold_missing_or_unreadable_history_skips_storage_and_t
             .create_thread_with_id("keep-cold", &project.id, "neighbor")
             .await?;
         let host = runtime.store.session_paths(&project.id, &root.id)?;
+        runtime
+            .store
+            .begin_removal_preparation(
+                PreparationIdentity {
+                    thread_id: root.id.clone(),
+                    workspace_id: project.id.clone(),
+                    parent_id: None,
+                    root_id: root.id.clone(),
+                },
+                true,
+            )
+            .await?;
         assert!(runtime.threads.observed_thread(&root.id).is_none());
         assert!(!host.history_database().exists());
         if unreadable_history {
@@ -314,8 +572,13 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             .await?
             .flush()
             .await?;
-        let child = cold_child(&runtime, &root).await?;
-        for (agent, parent) in [(&child.id, &root.id), (&neighbor.id, &neighbor.id)] {
+        let child = cold_child(&runtime, &root.clone().into(), "delete-cold-child").await?;
+        let grandchild = cold_child(&runtime, &child, "delete-cold-grandchild").await?;
+        for (agent, parent) in [
+            (&child.id, &root.id),
+            (&grandchild.id, &child.id),
+            (&neighbor.id, &neighbor.id),
+        ] {
             runtime.store.database().execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
                 "INSERT INTO agent_evaluations
                  (agent_id,parent_agent_id,account_id,model_id,profile_id,mode,preference,turn_id,
@@ -364,7 +627,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             .store
             .confirm_preparation_retirement(&private.thread_id)
             .await?;
-        let ids = [&root.id, &child.id, &private.thread_id];
+        let ids = [&root.id, &child.id, &grandchild.id, &private.thread_id];
         for id in ids {
             let host = runtime.store.session_paths(&project.id, id)?;
             for name in ["notes", "plan", "reports", "resources", "attachments"] {
@@ -409,6 +672,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
         let old_history = runtime.store.history(&root.id).await?;
         let root_host = runtime.store.session_paths(&project.id, &root.id)?;
         let child_host = runtime.store.session_paths(&project.id, &child.id)?;
+        let grandchild_host = runtime.store.session_paths(&project.id, &grandchild.id)?;
         let private_host = runtime
             .store
             .session_paths(&project.id, &private.thread_id)?;
@@ -418,11 +682,19 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
                 .await
                 .is_err()
         );
+        let started = std::time::Instant::now();
         let result = runtime
             .delete_thread("permanent-delete".into(), root.id.clone())
             .await?
             .context("delete reply")?;
-        assert_eq!(result.result.deleted_thread_ids.len(), 3);
+        println!(
+            "PERMANENT_DELETE_TREE members=4 depth=3 archived={archived} elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+        assert_eq!(result.result.deleted_thread_ids.len(), ids.len());
+        for id in ids {
+            assert!(result.result.deleted_thread_ids.contains(id));
+        }
         assert_eq!(
             result
                 .result
@@ -439,7 +711,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             old_history.conversation_database_id().await.is_err(),
             "the original pools must close"
         );
-        for host in [root_host, child_host, private_host] {
+        for host in [root_host, child_host, grandchild_host, private_host] {
             assert!(!host.root().exists());
         }
         for id in ids {
@@ -451,13 +723,9 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
                 [id.clone().into()])).await?;
             assert!(owned.is_none(), "private/lease/close records must be gone");
         }
-        assert!(
-            runtime
-                .store
-                .read_agent_evaluation(&child.id)
-                .await?
-                .is_none()
-        );
+        for id in [&child.id, &grandchild.id] {
+            assert!(runtime.store.read_agent_evaluation(id).await?.is_none());
+        }
         assert!(
             runtime
                 .store
@@ -984,6 +1252,20 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
             &["worktree", "unlock", handle.path.to_str().unwrap()],
         )
         .await?;
+        // Forced cleanup must not inspect disposable file content or depend on a healthy index.
+        let index = git_fixture(&handle.path, &["rev-parse", "--git-path", "index"]).await?;
+        let index = Path::new(index.trim());
+        let index = if index.is_absolute() {
+            index.to_owned()
+        } else {
+            handle.path.join(index)
+        };
+        tokio::fs::write(index, b"invalid disposable Git index").await?;
+        assert!(
+            git_fixture(&handle.path, &["status", "--porcelain=v1"])
+                .await
+                .is_err()
+        );
         runtime
             .archive_thread("discard-archive".into(), root.id.clone())
             .await?

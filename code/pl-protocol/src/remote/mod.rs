@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 11;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 12;
 
 /// Monotonic lease TTL for long-lived remote child processes when the SSH
 /// control plane stops renewing.
@@ -475,6 +475,16 @@ pub struct RemoteCaptureReceipt {
 pub struct RemoteError {
     pub code: RemoteErrorCode,
     pub message: String,
+    /// Removal admission differs from transport admission. Missing means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removal_effect: Option<RemoteRemovalEffect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteRemovalEffect {
+    NotStarted,
+    MayHaveChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

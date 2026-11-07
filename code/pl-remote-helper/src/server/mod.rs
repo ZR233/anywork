@@ -209,26 +209,37 @@ async fn remove_path(
     request: RemoteRemoveRequest,
 ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
     let workspaces = state.lock().await.workspaces.clone();
+    use pl_protocol::remote::RemoteRemovalEffect;
+    let before_removal = |mut error: RemoteError| {
+        error.removal_effect = Some(RemoteRemovalEffect::NotStarted);
+        error
+    };
     let path = workspaces
         .resolve_existing(&request.workspace_id, &request.path)
-        .await?;
-    let metadata = tokio::fs::metadata(&path)
         .await
-        .map_err(|error| io_error("failed to inspect removal target", error))?;
+        .map_err(before_removal)?;
+    let metadata = tokio::fs::symlink_metadata(&path)
+        .await
+        .map_err(|error| before_removal(io_error("failed to inspect removal target", error)))?;
+    let after_removal = |error| {
+        let mut error = io_error("failed to remove path", error);
+        error.removal_effect = Some(if error.code == RemoteErrorCode::PathNotFound {
+            RemoteRemovalEffect::NotStarted
+        } else {
+            RemoteRemovalEffect::MayHaveChanged
+        });
+        error
+    };
     if metadata.is_dir() {
         if request.recursive {
             tokio::fs::remove_dir_all(path)
                 .await
-                .map_err(|error| io_error("failed to remove directory", error))?;
+                .map_err(after_removal)?;
         } else {
-            tokio::fs::remove_dir(path)
-                .await
-                .map_err(|error| io_error("failed to remove empty directory", error))?;
+            tokio::fs::remove_dir(path).await.map_err(after_removal)?;
         }
     } else {
-        tokio::fs::remove_file(path)
-            .await
-            .map_err(|error| io_error("failed to remove file", error))?;
+        tokio::fs::remove_file(path).await.map_err(after_removal)?;
     }
     Ok(ack())
 }
