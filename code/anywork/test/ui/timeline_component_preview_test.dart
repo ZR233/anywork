@@ -9,6 +9,8 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +19,64 @@ import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 void main() {
+  testWidgets('正文与工作组间距不随作者和时间变化，成员没有重复缩进', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    for (final narrow in [false, true]) {
+      tester.view.physicalSize = narrow
+          ? const Size(390, 1040)
+          : const Size(1040, 680);
+      await tester.pumpWidget(
+        narrow ? timelineSpacingNarrowPreview() : timelineSpacingPreview(),
+      );
+      await tester.pumpAndSettle();
+      final items = [
+        find.byKey(const ValueKey('chat-item:spacing-intro')),
+        find.byKey(const ValueKey('chat-item:spacing-plain')),
+        find.byKey(const ValueKey('source-unit-header:spacing-group-0')),
+        find.byKey(const ValueKey('chat-item:spacing-result-0')),
+        find.byKey(const ValueKey('source-unit-header:spacing-group-1')),
+        find.byKey(const ValueKey('chat-item:spacing-result-1')),
+      ];
+      final gaps = [
+        for (var i = 1; i < items.length; i++)
+          tester.getRect(items[i]).top - tester.getRect(items[i - 1]).bottom,
+      ];
+      expect(gaps.first, inInclusiveRange(8, 16));
+      for (final gap in gaps) {
+        expect(gap, closeTo(gaps.first, .01), reason: '同作者、跨时间与工作组边界应共享条目间距');
+      }
+      await tester.tap(items[2]);
+      await tester.pumpAndSettle();
+      final rows = find.byType(TimelineActivityRow);
+      final members = find.descendant(
+        of: find.byType(TimelineChildrenView),
+        matching: rows,
+      );
+      expect(members, findsNWidgets(3));
+      final rects = [
+        for (final element in members.evaluate())
+          tester.getRect(find.byWidget(element.widget)),
+      ];
+      for (var i = 1; i < rects.length; i++) {
+        expect(rects[i].left, rects.first.left);
+        expect(
+          rects[i].top,
+          closeTo(rects[i - 1].bottom, .01),
+          reason: '活动行已有自然行高，成员外壳不能再叠加消息间距',
+        );
+      }
+      final rail = tester.getRect(find.byType(TimelineChildrenView));
+      expect(rects.first.left, closeTo(rail.left, .01));
+      expect(rects.first.right, closeTo(rail.right, .01));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
   testWidgets('Plan workspace 工况仅装配生产展示组件，短窗与大字可达', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(() {

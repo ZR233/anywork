@@ -454,7 +454,10 @@ class _TimelineViewState extends State<TimelineView> {
                                           isRemoved: isRemoved,
                                           groupStatus: groupStatus,
                                           horizontalPadding: 24,
-                                          verticalPadding: 8,
+                                          // 条目已由 Studio 投影分组，不再按作者和
+                                          // 时间套用聊天气泡的第二套间距规则。
+                                          verticalPadding: 12,
+                                          verticalGroupedPadding: 12,
                                           child: promptLike
                                               ? Align(
                                                   alignment:

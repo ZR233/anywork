@@ -5,6 +5,7 @@ import 'package:anywork_client/models.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
+import '../state/timeline_display_unit.dart';
 
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
@@ -649,6 +650,96 @@ abstract final class TimelinePreviewFixtures {
     filename: 'synthetic-landscape-320x180.png',
     width: imageWidth,
     height: imageHeight,
+  );
+
+  static List<Message> commandMessages() => [
+    for (var index = 0; index < 3; index++)
+      _message(
+        item(
+          'spacing-command-$index',
+          'tool',
+          tool.data,
+          bodies: _commandBodies,
+        ),
+      ),
+  ];
+
+  /// 同作者相邻消息、跨时间消息和工作组使用同一个生产时间线。
+  static List<Message> spacingMessages() => [
+    _message(
+      item(
+        'spacing-intro',
+        'text',
+        const {'channel': 'commentary'},
+        bodies: [
+          body('part.text.0', '已完成本地验证，接下来检查布局与工作记录。正文保持自然高度，工具详情按需展开。'),
+        ],
+      ),
+    ),
+    _message(
+      item(
+        'spacing-plain',
+        'text',
+        const {'channel': 'commentary'},
+        bodies: [body('part.text.0', '同一作者的连续段落采用一致的间隔。')],
+      ),
+    ),
+    for (var index = 0; index < 2; index++) ...[
+      _message(
+        ChatItemPresentation.forUnit(
+          TimelineDisplayUnit(
+            live: false,
+            item: TimelineItem(
+              id: 'spacing-group-$index',
+              kind: TimelineItemKind.workGroup,
+              source: groupSource,
+              delivery: ChatDeliveryKind.foreground,
+              turnId: 'preview-turn',
+              position: index * 2 + 1,
+              admissionClosed: true,
+              contents: const [],
+              summary: TimelineGroupSummary(
+                memberCount: 3,
+                activeCount: 0,
+                failedCount: 0,
+                cancelledCount: 0,
+                categories: const [
+                  TimelineCategoryCount(
+                    category: TimelineCategory.command,
+                    count: 3,
+                  ),
+                ],
+                startedAt: groupStartedAt,
+                finishedAt: groupStartedAt + 27 + index * 60,
+              ),
+            ),
+          ),
+        ),
+      ),
+      _message(
+        item(
+          'spacing-result-$index',
+          'text',
+          const {'channel': 'commentary'},
+          sealedAt: 1735690200 + index * 600,
+          bodies: [
+            body(
+              'part.text.0',
+              index == 0
+                  ? '两组检查已经完成，`cargo flutter analyze` 与界面测试均已结束。工作摘要、正文和下一组记录沿同一阅读列排列。'
+                  : '布局检查完成。窄窗口下正文自然换行，放大字体后摘要统计可以换行，展开工具后仍由主时间线统一滚动。',
+            ),
+          ],
+        ),
+      ),
+    ],
+  ];
+
+  static Message _message(ChatItemPresentation value) => Message.custom(
+    id: value.id,
+    authorId: value.authorId,
+    createdAt: value.createdAt,
+    metadata: {chatItemPresentationKey: value},
   );
 
   static List<Message> messages() => [

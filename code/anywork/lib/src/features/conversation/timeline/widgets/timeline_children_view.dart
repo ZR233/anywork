@@ -57,6 +57,18 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
     chatController: widget.controller,
     builders: Builders(
       composerBuilder: (_) => const SizedBox.shrink(),
+      // 组导轨与活动行已拥有缩进和行高。成员只借用 Chat 的
+      // 消息分发，不再嵌套顶层 ChatMessage 的留白与对齐外壳。
+      chatMessageBuilder: (
+        context,
+        message,
+        index,
+        animation,
+        child, {
+        bool? isRemoved,
+        required bool isSentByMe,
+        MessageGroupStatus? groupStatus,
+      }) => isRemoved == true ? const SizedBox.shrink() : child,
       customMessageBuilder:
           (
             context,
