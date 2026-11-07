@@ -10,6 +10,7 @@ pub mod session;
 pub mod workspace;
 
 pub mod ask_user;
+pub mod binding;
 pub mod finish_turn;
 pub mod session_note;
 pub mod todo;
@@ -59,6 +60,3 @@ pub mod thread_catalog;
 pub mod collaboration;
 
 pub mod bots;
-
-mod input;
-pub(crate) use input::{deserialize_tool_input, typed_tool_input_schema};

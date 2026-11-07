@@ -1,5 +1,6 @@
 //! Explicit public Thread admission and discovery lifecycle observation (not an automated test).
 //! cargo run -p pl-tool --example skill_lifecycle_observe -- SCRATCH [authorization|root|static-root|cancellation]
+use pl_agent_tool::Tool;
 use std::{
     fs,
     path::Path,
@@ -15,7 +16,7 @@ use pl_core::{
         PreparedModelCall,
     },
     thread::{ModelStepLimit, ThreadError, ThreadHandle, ToolOutcome, TurnInput, TurnOutcome},
-    tool::opaque::{CallContext, Registration, Tool},
+    tool::opaque::{CallContext, Registration},
 };
 use pl_tool::skill::{
     FileSystemSkillProvider, FrozenSkillCatalog, SkillCandidate, SkillDefinition,
@@ -131,8 +132,13 @@ fn request(root: &Path) -> SkillProviderRequest {
 
 fn registration(catalog: &FrozenSkillCatalog) -> anyhow::Result<Registration> {
     let kind = ThreadSkillKind::View;
-    let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-    Ok(ThreadSkillTool::new(catalog.discovery_sources(), kind).registration(declaration)?)
+    let definition = kind.declaration();
+    let prepared = pl_tool::binding::prepare_registration(
+        "skill_view",
+        &definition,
+        pl_tool::binding::ToolCallPolicy::DirectOnly,
+    )?;
+    Ok(ThreadSkillTool::new(catalog.discovery_sources(), kind, definition).registration(prepared))
 }
 
 async fn observe_authorization(root: &Path) -> anyhow::Result<()> {
@@ -334,7 +340,11 @@ async fn observe_root_type(root: &Path) -> anyhow::Result<()> {
         request(root),
     )
     .await?;
-    let tool = ThreadSkillTool::new(original.discovery_sources(), ThreadSkillKind::List);
+    let tool = ThreadSkillTool::new(
+        original.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
     fs::remove_dir_all(&skills)?;
     fs::write(&skills, "existing source is not a directory")?;
     let outcome = tool
@@ -450,7 +460,11 @@ async fn observe_cancellation(root: &Path) -> anyhow::Result<()> {
     let registry = SkillRegistry::new();
     let _registration = registry.register(source.clone())?;
     let original = registry.discover(request(root)).await?;
-    let tool = ThreadSkillTool::new(original.discovery_sources(), ThreadSkillKind::List);
+    let tool = ThreadSkillTool::new(
+        original.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
     let (started, observed) = oneshot::channel();
     let (cleanup_entered, cleanup_observed) = oneshot::channel();
     let (cleanup_release, released) = std::sync::mpsc::channel();

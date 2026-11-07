@@ -209,10 +209,17 @@ void main() {
     );
     final outside = renderer('ordinary-body');
     final base = GptMarkdownTheme.of(tester.element(outside));
+    final surrounding = GptMarkdownTheme.of(
+      tester.element(find.byKey(const ValueKey('ordinary-body'))),
+    );
+    expect(
+      (base.h1?.fontSize, base.h2?.fontSize, base.h3?.fontSize),
+      (20, 17, 14),
+    );
     expect(
       find.descendant(of: outside, matching: find.byType(CustomDivider)),
-      findsOneWidget,
-      reason: '同一真实 Markdown 在 Plan 外继续使用原主题的 h1 分隔线',
+      findsNothing,
+      reason: 'Plan 外继续使用普通 Markdown 的紧凑标题，不额外插入 h1 分隔线',
     );
     for (final id in ['plan-detail-body', 'plan-receipt-body']) {
       final rendered = renderer(id);
@@ -226,11 +233,11 @@ void main() {
       expect(scoped.h2?.fontSize, 18);
       expect(scoped.h3?.fontSize, 16);
       expect(scoped.h1?.fontWeight, FontWeight.w600);
-      expect(scoped.h1?.fontFamily, base.h1?.fontFamily);
-      expect(scoped.h1?.color, base.h1?.color);
-      expect(scoped.linkColor, base.linkColor);
-      expect(scoped.inlineCode, same(base.inlineCode));
-      expect(scoped.styleSheet, same(base.styleSheet));
+      expect(scoped.h1?.fontFamily, surrounding.h1?.fontFamily);
+      expect(scoped.h1?.color, surrounding.h1?.color);
+      expect(scoped.linkColor, surrounding.linkColor);
+      expect(scoped.inlineCode, same(surrounding.inlineCode));
+      expect(scoped.styleSheet, same(surrounding.styleSheet));
       expect(
         find.descendant(of: rendered, matching: find.byType(CustomDivider)),
         findsNothing,
@@ -238,7 +245,7 @@ void main() {
       );
       expect(
         scoped.h1?.fontSize,
-        lessThan(base.h1!.fontSize!),
+        isNot(base.h1!.fontSize!),
         reason: 'Plan 排版必须局部生效，不改变普通 Markdown 的标题层级',
       );
     }

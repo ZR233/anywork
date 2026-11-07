@@ -7,7 +7,7 @@ use pl_core::{
     context::OpaquePayload,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
@@ -19,6 +19,7 @@ use crate::media::{PreparedToolImage, ToolMedia, ToolMediaHost, ToolMediaKind, i
 /// One tool instance belongs to one Thread. In-flight calls clone their lease before awaiting IO.
 #[derive(Debug)]
 pub struct ThreadMcpTool<H> {
+    definition: pl_agent_tool::ToolDefinition,
     authorization: pl_core::tool::opaque::ToolAuthorization,
     lease: Mutex<Option<McpTurnLease>>,
     descriptor: McpRuntimeToolDescriptor,
@@ -38,6 +39,7 @@ impl<H: ToolMediaHost> ThreadMcpTool<H> {
             .cloned()
             .ok_or_else(|| error("tool is absent from the frozen MCP lease"))?;
         Ok(Self {
+            definition: descriptor.definition().map_err(ToolError::new)?,
             authorization: lease.authorization(),
             lease: Mutex::new(Some(lease)),
             descriptor,
@@ -45,40 +47,48 @@ impl<H: ToolMediaHost> ThreadMcpTool<H> {
         })
     }
 
-    /// Stable model declaration without connection generations, health or mutable service state.
-    pub fn declaration(&self) -> pl_protocol::ToolSpec {
-        let mut spec = pl_protocol::ToolSpec::function(
-            &self.descriptor.exposed_name,
-            &self.descriptor.description,
-            self.descriptor.input_schema.clone(),
-        );
-        if let pl_protocol::ToolSpec::Function { output_schema, .. } = &mut spec {
-            *output_schema = self.descriptor.output_schema.clone();
-        }
-        if self.descriptor.effect == Some(crate::approval::ToolEffect::Read) {
-            spec.allow_programmatic(self.descriptor.output_schema.clone().unwrap_or_else(
-                || serde_json::json!({"type":"object", "additionalProperties":true}),
-            ))
-        } else {
-            spec
-        }
-    }
-
     /// Transfers the executor to the Thread as a deferred tool with no framework control permissions.
     ///
-    /// # Errors
-    /// Returns invalid registration identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
+    /// The supplied preparation has already validated the registration identity.
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let authorization = self.authorization.clone();
-        Ok(
-            Registration::new(self.descriptor.exposed_name.clone(), declaration, self)?
-                .deferred()
-                .with_authorization(authorization),
-        )
+        prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
+            .deferred()
+            .with_authorization(authorization)
     }
 }
 
-impl<H: ToolMediaHost> Tool for ThreadMcpTool<H> {
+impl McpRuntimeToolDescriptor {
+    /// Freezes the descriptor's complete input and output documents without rediscovery.
+    pub fn definition(
+        &self,
+    ) -> Result<pl_agent_tool::ToolDefinition, pl_agent_tool::DefinitionError> {
+        let definition = pl_agent_tool::ToolDefinition::json(
+            &self.exposed_name,
+            &self.description,
+            self.input_schema.clone(),
+        )?;
+        match &self.output_schema {
+            Some(schema) => definition.with_output_schema(schema.clone()),
+            None => Ok(definition),
+        }
+    }
+}
+
+impl<H: ToolMediaHost> pl_agent_tool::Tool for ThreadMcpTool<H> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -89,7 +99,8 @@ impl<H: ToolMediaHost> Tool for ThreadMcpTool<H> {
                 "unsupported MCP argument encoding; expected application/json v1",
             ));
         }
-        let arguments: Value = serde_json::from_str(input.content()).map_err(ToolError::new)?;
+        let arguments: Value =
+            pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
         if !arguments.is_object() && !arguments.is_null() {
             return Err(error("MCP arguments must be an object or null"));
         }

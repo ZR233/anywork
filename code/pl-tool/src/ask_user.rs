@@ -65,29 +65,19 @@ impl From<UserQuestionInput> for UserQuestion {
     }
 }
 
-/// Registers ask-user for the protocol-independent Thread interaction lifecycle.
-///
-/// # Errors
-/// Propagates invalid registration identity.
-pub fn registration(
-    declaration: pl_core::context::OpaquePayload,
-) -> Result<pl_core::tool::opaque::Registration, pl_core::tool::opaque::RegistryError> {
-    Ok(pl_core::tool::opaque::Registration::new(
-        "request_user_input".into(),
-        declaration,
-        AskUserTool,
-    )?
-    .with_interactions())
-}
+impl pl_agent_tool::typed::TypedTool for AskUserTool {
+    const NAME: &'static str = ASK_USER_TOOL_NAME;
+    const DESCRIPTION: &'static str = ASK_USER_TOOL_DESCRIPTION;
+    type Args = AskUserInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
 
-impl pl_core::tool::opaque::Tool for AskUserTool {
     async fn execute(
         &self,
-        input: pl_core::context::OpaquePayload,
+        input: Self::Args,
         _: pl_core::tool::opaque::CallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        let input: AskUserInput =
-            serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
         if input
             .questions
             .iter()
@@ -131,3 +121,16 @@ impl pl_core::tool::opaque::Tool for AskUserTool {
         .with_interaction(payload))
     }
 }
+
+pub fn ask_user_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        ASK_USER_TOOL_NAME,
+        ASK_USER_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<AskUserInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const ASK_USER_TOOL_NAME: &str = "request_user_input";
+const ASK_USER_TOOL_DESCRIPTION: &str =
+    "Ask structured questions and suspend until the user answers or cancels.";

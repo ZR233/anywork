@@ -76,6 +76,19 @@ async fn next_frame(
     let frame = receive(port).await?;
     ensure!(frame.thread_id == owner.thread_id);
     ensure!(frame.subscription_id == owner.subscription_id);
+    if matches!(
+        frame.event,
+        BridgeConversationEvent::Failure { .. } | BridgeConversationEvent::Closed
+    ) {
+        ensure!(
+            frame.delivery_sequence == *sent,
+            "terminal changed the last sent prefix: expected {}, got {}; event={:?}",
+            *sent,
+            frame.delivery_sequence,
+            frame.event
+        );
+        anyhow::bail!("Main ended before observation completed: {:?}", frame.event);
+    }
     ensure!(
         frame.delivery_sequence == *sent + 1,
         "duplicated or skipped sent prefix: expected {}, got {}",
@@ -193,7 +206,13 @@ async fn consume_live_body(
             // cannot prove that the original Turn/execution was still running.
             let before = runtime.thread_snapshot(thread_id).await?;
             let window = next_window(facade, &watch, "consume.next")
-                .await?
+                .await
+                .with_context(|| {
+                    format!(
+                        "live body before next window: cursor={cursor}; available={available}; \
+                         generation={generation:?}; windows={windows}"
+                    )
+                })?
                 .context("content watch ended before a sealed body")?;
             ensure!(window.offset == 0 && window.bytes.len() as u32 <= WINDOW_MAX);
             ensure!(window.bytes.len() as u64 <= window.available_through);
@@ -305,6 +324,16 @@ async fn consume_live_body(
 
 #[tokio::test]
 async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Result<()> {
+    // This current-thread runtime keeps the scoped subscriber on the producer's execution
+    // thread too, preserving the original continuity failure without changing global logging.
+    let _tracing = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_env_filter("conversation_continuity=debug")
+            .with_test_writer()
+            .with_ansi(false)
+            .without_time()
+            .finish(),
+    );
     let env =
         Environment::with_output_limit_followup(Some(gui_streaming_output_reply(1, 1))).await?;
     // The real owner and facade stay strongly referenced outside the bounded observation so
@@ -585,9 +614,17 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
             let frame = receive(&mut port).await?;
             ensure!(frame.thread_id == owner.thread_id);
             ensure!(frame.subscription_id == owner.subscription_id);
-            if matches!(frame.event, BridgeConversationEvent::Closed) {
+            if matches!(
+                frame.event,
+                BridgeConversationEvent::Failure { .. } | BridgeConversationEvent::Closed
+            ) {
                 // The producer terminal reuses the last published sequence by design.
                 ensure!(frame.delivery_sequence == sent);
+                ensure!(
+                    matches!(frame.event, BridgeConversationEvent::Closed),
+                    "Main failed during close: {:?}",
+                    frame.event
+                );
                 break frame;
             }
             ensure!(

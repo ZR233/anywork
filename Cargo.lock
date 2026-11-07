@@ -3900,12 +3900,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-agent-tool"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "pl-agent-tool-macros",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-agent-tool-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "pl-core"
 version = "0.1.0"
 dependencies = [
  "fs4",
  "futures",
  "hex",
+ "pl-agent-tool",
  "pretty_assertions",
  "sea-orm",
  "sea-orm-migration",
@@ -3968,6 +3992,7 @@ dependencies = [
  "image",
  "oauth2",
  "openidconnect",
+ "pl-agent-tool",
  "pl-core",
  "pl-protocol",
  "pl-provider-fixture",
@@ -4141,6 +4166,7 @@ dependencies = [
  "libsqlite3-sys",
  "minisign-verify",
  "pl-acp",
+ "pl-agent-tool",
  "pl-core",
  "pl-lsp",
  "pl-model",
@@ -4226,6 +4252,7 @@ dependencies = [
  "ignore",
  "image",
  "libc",
+ "pl-agent-tool",
  "pl-core",
  "pl-lsp",
  "pl-model",

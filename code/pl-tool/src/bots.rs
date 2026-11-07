@@ -3,14 +3,14 @@ use pl_core::{
     context::OpaquePayload,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::input::{deserialize_tool_input, typed_tool_input_schema};
+use pl_agent_tool::typed::{decode_json, input_schema_for};
 
 #[derive(Debug, Clone, Copy)]
 pub enum BotToolKind {
@@ -86,30 +86,39 @@ struct SendMessageInput {
 
 #[derive(Debug)]
 pub struct ThreadBotTool<H> {
+    definition: pl_agent_tool::ToolDefinition,
     host: Arc<H>,
     kind: BotToolKind,
     workspace_id: String,
 }
 
 impl<H: BotSessionHost> ThreadBotTool<H> {
-    pub fn new(host: Arc<H>, kind: BotToolKind, workspace_id: String) -> Self {
+    pub fn new(
+        host: Arc<H>,
+        kind: BotToolKind,
+        workspace_id: String,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
         Self {
+            definition,
             host,
             kind,
             workspace_id,
         }
     }
 
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        let name = self.kind.name();
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let kind = self.kind;
-        let registration = Registration::new(name.into(), declaration, self)?;
-        Ok(match kind {
+        let registration = prepared.attach(pl_agent_tool::ToolHandle::new(self));
+        match kind {
             BotToolKind::SendMessage => registration.foreground(),
             BotToolKind::ListBots | BotToolKind::ListConversations | BotToolKind::ReadMessages => {
                 registration
             }
-        })
+        }
     }
 }
 
@@ -123,33 +132,42 @@ impl BotToolKind {
         }
     }
 
-    pub fn declaration(self) -> pl_protocol::ToolSpec {
+    pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::ListBots => pl_protocol::ToolSpec::function(
+            Self::ListBots => pl_agent_tool::ToolDefinition::json(
                 self.name(),
                 "List bots authorized for the current project. Returns ids, names, connection state and capabilities without credentials.",
-                typed_tool_input_schema::<Empty>(),
-            ),
-            Self::ListConversations => pl_protocol::ToolSpec::function(
+                input_schema_for::<Empty>(),
+            ).expect("valid tool definition"),
+            Self::ListConversations => pl_agent_tool::ToolDefinition::json(
                 self.name(),
                 "List group chats the bot belongs to and locally observed direct chats. Pagination cursor is bound to the bot.",
-                typed_tool_input_schema::<ListConversationsInput>(),
-            ),
-            Self::ReadMessages => pl_protocol::ToolSpec::function(
+                input_schema_for::<ListConversationsInput>(),
+            ).expect("valid tool definition"),
+            Self::ReadMessages => pl_agent_tool::ToolDefinition::json(
                 self.name(),
                 "Read typed bot messages for one chat. Unsupported media is reported explicitly and is not treated as an attachment.",
-                typed_tool_input_schema::<ReadMessagesInput>(),
-            ),
-            Self::SendMessage => pl_protocol::ToolSpec::function(
+                input_schema_for::<ReadMessagesInput>(),
+            ).expect("valid tool definition"),
+            Self::SendMessage => pl_agent_tool::ToolDefinition::json(
                 self.name(),
                 "Send a text message through a project-authorized bot. This is an external write and is not a readonly or programmatic tool.",
-                typed_tool_input_schema::<SendMessageInput>(),
-            ),
+                input_schema_for::<SendMessageInput>(),
+            ).expect("valid tool definition"),
         }
     }
 }
 
-impl<H: BotSessionHost> Tool for ThreadBotTool<H> {
+impl<H: BotSessionHost> pl_agent_tool::Tool for ThreadBotTool<H> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -163,29 +181,24 @@ impl<H: BotSessionHost> Tool for ThreadBotTool<H> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let value: serde_json::Value =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
+        let value = input.content();
         match self.kind {
             BotToolKind::ListBots => {
-                deserialize_tool_input::<Empty>(self.kind.name(), value).map_err(ToolError::new)?;
+                decode_json::<Empty>(value).map_err(ToolError::new)?;
                 self.host.list_bots(&self.workspace_id).await
             }
             BotToolKind::ListConversations => {
-                let input =
-                    deserialize_tool_input::<ListConversationsInput>(self.kind.name(), value)
-                        .map_err(ToolError::new)?;
+                let input = decode_json::<ListConversationsInput>(value).map_err(ToolError::new)?;
                 self.host
                     .list_conversations(&self.workspace_id, input.bot_id, input.cursor, input.limit)
                     .await
             }
             BotToolKind::ReadMessages => {
-                let input = deserialize_tool_input::<ReadMessagesInput>(self.kind.name(), value)
-                    .map_err(ToolError::new)?;
+                let input = decode_json::<ReadMessagesInput>(value).map_err(ToolError::new)?;
                 self.host.read_messages(&self.workspace_id, input).await
             }
             BotToolKind::SendMessage => {
-                let input = deserialize_tool_input::<SendMessageInput>(self.kind.name(), value)
-                    .map_err(ToolError::new)?;
+                let input = decode_json::<SendMessageInput>(value).map_err(ToolError::new)?;
                 self.host
                     .send_message(
                         &self.workspace_id,

@@ -78,6 +78,13 @@ for raw in sys.stdin:
     elif method == "notifications/initialized":
         continue
     elif method == "tools/list":
+        schema = {"type": "object", "properties": {}}
+        if os.environ.get("MCP_BINDING_RESULTS") == "1":
+            schema = {
+                "type": "object",
+                "description": os.environ["MCP_SCHEMA_TAG"],
+                "properties": {"mode": {"type": "string"}}
+            }
         resp = {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -85,7 +92,9 @@ for raw in sys.stdin:
                 "tools": [{
                     "name": "inspect_env",
                     "description": "Returns argv, cwd, and env",
-                    "inputSchema": {"type": "object", "properties": {}}
+                    "inputSchema": schema,
+                    **({"outputSchema": {"type": "object", "additionalProperties": True}}
+                       if os.environ.get("MCP_BINDING_RESULTS") == "1" else {})
                 }]
             }
         }
@@ -107,6 +116,15 @@ for raw in sys.stdin:
                 "content": [{"type": "text", "text": json.dumps(payload)}]
             }
         }
+        if os.environ.get("MCP_BINDING_RESULTS") == "1":
+            mode = msg.get("params", {}).get("arguments", {}).get("mode", "success")
+            if mode == "unarchived":
+                content = [{"type": "resource", "resource": {
+                    "uri": "fixture://received", "mimeType": "application/octet-stream", "blob": "Ynl0ZXM="
+                }}]
+            else:
+                content = [{"type": "text", "text": os.environ["MCP_SCHEMA_TAG"] + ":" + mode}]
+            resp["result"] = {"content": content, "isError": mode == "error"}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
     elif method == "resources/read":

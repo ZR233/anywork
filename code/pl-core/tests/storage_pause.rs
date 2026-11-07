@@ -28,7 +28,7 @@ use pl_core::{
     },
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use tokio::sync::{Barrier, Notify, mpsc, watch};
@@ -379,7 +379,21 @@ struct HeldTool {
     executions: Arc<Mutex<Vec<String>>>,
 }
 
-impl Tool for HeldTool {
+impl pl_agent_tool::Tool for HeldTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("HeldTool", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -410,16 +424,13 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
                 .into_iter()
                 .zip(releases.iter())
                 .map(|(id, release)| {
-                    Registration::new(
-                        id.into(),
-                        OpaquePayload::text(format!("Tool {id}")),
-                        HeldTool {
+                    Registration::prepare(id.into(), OpaquePayload::text(format!("Tool {id}")))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTool {
                             started: started.clone(),
                             release: release.clone(),
                             executions: executions.clone(),
-                        },
-                    )
-                    .unwrap()
+                        }))
                 })
                 .collect(),
         )
@@ -1095,7 +1106,24 @@ struct ObligationFaultTool {
     obligation: Arc<ScriptedObligation>,
 }
 
-impl Tool for ObligationFaultTool {
+impl pl_agent_tool::Tool for ObligationFaultTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "ObligationFaultTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1137,14 +1165,13 @@ async fn a_healthy_history_write_cannot_stand_in_for_a_failed_archive() {
     let obligation = Arc::new(ScriptedObligation::new());
     thread
         .register_tools(vec![
-            Registration::new(
-                "store".into(),
-                OpaquePayload::text("Tool store"),
-                ObligationFaultTool {
-                    obligation: obligation.clone(),
-                },
-            )
-            .unwrap(),
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    ObligationFaultTool {
+                        obligation: obligation.clone(),
+                    },
+                )),
         ])
         .await
         .unwrap();
@@ -1260,7 +1287,24 @@ struct RepairFaultTool {
     stored: Arc<AtomicUsize>,
 }
 
-impl Tool for RepairFaultTool {
+impl pl_agent_tool::Tool for RepairFaultTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "RepairFaultTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1296,14 +1340,11 @@ async fn a_retried_archive_attaches_its_reference_to_the_committed_result() {
     let stored = Arc::new(AtomicUsize::new(0));
     thread
         .register_tools(vec![
-            Registration::new(
-                "store".into(),
-                OpaquePayload::text("Tool store"),
-                RepairFaultTool {
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(RepairFaultTool {
                     stored: stored.clone(),
-                },
-            )
-            .unwrap(),
+                })),
         ])
         .await
         .unwrap();
@@ -1375,7 +1416,24 @@ struct EarlyRepairTool {
     release: Arc<Notify>,
 }
 
-impl Tool for EarlyRepairTool {
+impl pl_agent_tool::Tool for EarlyRepairTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "EarlyRepairTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1432,16 +1490,13 @@ async fn a_retry_before_the_result_commits_still_supplements_it_once() {
     let release = Arc::new(Notify::new());
     thread
         .register_tools(vec![
-            Registration::new(
-                "store".into(),
-                OpaquePayload::text("Tool store"),
-                EarlyRepairTool {
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(EarlyRepairTool {
                     stored: stored.clone(),
                     reported,
                     release: release.clone(),
-                },
-            )
-            .unwrap(),
+                })),
         ])
         .await
         .unwrap();
@@ -1615,7 +1670,24 @@ struct ObligationReporterTool {
     barrier: Arc<Barrier>,
 }
 
-impl Tool for ObligationReporterTool {
+impl pl_agent_tool::Tool for ObligationReporterTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "ObligationReporterTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1658,29 +1730,27 @@ async fn parallel_failed_archives_keep_independent_obligations() {
     let (started, mut starts) = mpsc::unbounded_channel();
     thread
         .register_tools(vec![
-            Registration::new(
-                "store-a".into(),
-                OpaquePayload::text("Tool A"),
-                ObligationReporterTool {
-                    obligation: a.clone(),
-                    // Report the same identity twice: the second report must be idempotent.
-                    reports: 2,
-                    started: started.clone(),
-                    barrier: barrier.clone(),
-                },
-            )
-            .unwrap(),
-            Registration::new(
-                "store-b".into(),
-                OpaquePayload::text("Tool B"),
-                ObligationReporterTool {
-                    obligation: b.clone(),
-                    reports: 1,
-                    started: started.clone(),
-                    barrier: barrier.clone(),
-                },
-            )
-            .unwrap(),
+            Registration::prepare("store-a".into(), OpaquePayload::text("Tool A"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    ObligationReporterTool {
+                        obligation: a.clone(),
+                        // Report the same identity twice: the second report must be idempotent.
+                        reports: 2,
+                        started: started.clone(),
+                        barrier: barrier.clone(),
+                    },
+                )),
+            Registration::prepare("store-b".into(), OpaquePayload::text("Tool B"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    ObligationReporterTool {
+                        obligation: b.clone(),
+                        reports: 1,
+                        started: started.clone(),
+                        barrier: barrier.clone(),
+                    },
+                )),
         ])
         .await
         .unwrap();
@@ -1754,7 +1824,24 @@ struct ImmediateFaultTool {
     release: Arc<Notify>,
 }
 
-impl Tool for ImmediateFaultTool {
+impl pl_agent_tool::Tool for ImmediateFaultTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "ImmediateFaultTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1803,16 +1890,15 @@ async fn a_running_calls_storage_fault_blocks_admission_before_it_returns() {
     let release = Arc::new(Notify::new());
     thread
         .register_tools(vec![
-            Registration::new(
-                "store".into(),
-                OpaquePayload::text("Tool store"),
-                ImmediateFaultTool {
-                    started,
-                    reported,
-                    release: release.clone(),
-                },
-            )
-            .unwrap(),
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    ImmediateFaultTool {
+                        started,
+                        reported,
+                        release: release.clone(),
+                    },
+                )),
         ])
         .await
         .unwrap();
@@ -1900,7 +1986,24 @@ struct ProgressingTool {
     preview_rejected: Arc<Mutex<bool>>,
 }
 
-impl Tool for ProgressingTool {
+impl pl_agent_tool::Tool for ProgressingTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "ProgressingTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -1955,17 +2058,14 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
     let preview_rejected = Arc::new(Mutex::new(false));
     thread
         .register_tools(vec![
-            Registration::new(
-                "stream".into(),
-                OpaquePayload::text("Tool stream"),
-                ProgressingTool {
+            Registration::prepare("stream".into(), OpaquePayload::text("Tool stream"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(ProgressingTool {
                     started,
                     accepted,
                     release: release.clone(),
                     preview_rejected: preview_rejected.clone(),
-                },
-            )
-            .unwrap(),
+                })),
         ])
         .await
         .unwrap();

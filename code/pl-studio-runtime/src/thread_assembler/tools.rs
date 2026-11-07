@@ -1,11 +1,11 @@
 //! Creation-time standard catalog; the resulting registrations belong exclusively to core Thread.
 use super::{StudioThreadSpec, ThreadAssemblyError};
 use crate::resource_store::FileResourceStore;
+use pl_agent_tool::ToolHandle;
 use pl_core::{
-    context::{OpaquePayload, ResourceAccess},
-    model::ToolPresentationContract,
-    tool::opaque::Registration,
+    context::ResourceAccess, model::ToolPresentationContract, tool::opaque::Registration,
 };
+use pl_tool::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
 use pl_tool::{
     exec::{CommandAccess, ThreadExecTool},
     task_control::{TaskControlKind, TaskControlTool},
@@ -109,10 +109,16 @@ impl StudioThreadTools {
         {
             return Ok(());
         }
+        let definition = pl_tool::finish_turn::review_declaration();
         let registration = pl_tool::finish_turn::registration_with_review(
-            pl_model::runtime::thread_tool_declaration(&pl_tool::finish_turn::review_declaration())?,
+            prepare_registration(
+                pl_tool::finish_turn::TOOL_FINISH_TURN,
+                &definition,
+                ToolCallPolicy::DirectOnly,
+            )?,
             Some(authority),
-        )?;
+            definition,
+        );
         self.registrations
             .retain(|tool| tool.tool_id() != pl_tool::finish_turn::TOOL_FINISH_TURN);
         self.registrations.push(registration);
@@ -170,6 +176,15 @@ impl StudioThreadTools {
                 access,
             } => {
                 if capabilities.exec {
+                    let exec_definition = ThreadBuiltin::Exec.declaration();
+                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
+                    let exec =
+                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
+                    let stdin = prepare_registration(
+                        "write_stdin",
+                        &stdin_definition,
+                        ToolCallPolicy::DirectOnly,
+                    )?;
                     let processes = match &commands {
                         Some(StudioCommandProcesses::Local(processes)) => processes.clone(),
                         Some(StudioCommandProcesses::Remote(_)) => {
@@ -198,11 +213,9 @@ impl StudioThreadTools {
                             processes,
                             Arc::new(store.local_command_archive()),
                             access,
+                            exec_definition,
                         )
-                        .registrations(
-                            declaration(ThreadBuiltin::Exec)?,
-                            declaration(ThreadBuiltin::WriteStdin)?,
-                        )?,
+                        .registrations(exec, stdin, stdin_definition),
                     );
                 }
                 if capabilities.workspace_files {
@@ -222,6 +235,15 @@ impl StudioThreadTools {
             }
             StudioCommandBinding::Remote { host, workspace } => {
                 if capabilities.exec {
+                    let exec_definition = ThreadBuiltin::Exec.declaration();
+                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
+                    let exec =
+                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
+                    let stdin = prepare_registration(
+                        "write_stdin",
+                        &stdin_definition,
+                        ToolCallPolicy::DirectOnly,
+                    )?;
                     let archive = store
                         .remote_command_archive(Arc::new(host.files.clone()), host_scratch.clone());
                     let processes = match &commands {
@@ -241,31 +263,32 @@ impl StudioThreadTools {
                             processes,
                             Arc::new(archive),
                             CommandAccess::WorkspaceOnly,
+                            exec_definition,
                         )
-                        .registrations(
-                            declaration(ThreadBuiltin::Exec)?,
-                            declaration(ThreadBuiltin::WriteStdin)?,
-                        )?,
+                        .registrations(exec, stdin, stdin_definition),
                     );
                 }
                 if capabilities.workspace_files {
                     for &kind in pl_tool::remote::RemoteMutationKind::all() {
+                        let definition = kind.definition();
+                        let prepared = prepare_registration(
+                            definition.name(),
+                            &definition,
+                            ToolCallPolicy::DirectOnly,
+                        )?;
                         let tool = pl_tool::remote::RemoteWorkspaceMutationTool::new(
                             kind,
+                            definition,
                             Arc::new(host.files.clone()),
                             workspace.clone(),
                         );
-                        let spec = tool.declaration();
                         registrations.push(
-                            Registration::new(
-                                spec.name().into(),
-                                pl_model::runtime::thread_tool_declaration(&spec)?,
-                                tool,
-                            )?
-                            .with_presentation_contract(ToolPresentationContract::new(
-                                remote_mutation_presentation_contract(kind),
-                            ))
-                            .with_authorization(workspace.authorization()),
+                            prepared
+                                .attach(ToolHandle::new(tool))
+                                .with_presentation_contract(ToolPresentationContract::new(
+                                    remote_mutation_presentation_contract(kind),
+                                ))
+                                .with_authorization(workspace.authorization()),
                         );
                     }
                     let files = pl_tool::workspace_file::WorkspacePolicyBackend::new(
@@ -281,41 +304,82 @@ impl StudioThreadTools {
             }
         }
         if capabilities.ask_user {
-            registrations.push(pl_tool::ask_user::registration(declaration(
-                ThreadBuiltin::AskUser,
-            )?)?);
+            let ask_user = prepare_native_tool::<pl_tool::ask_user::AskUserTool>()?;
+            let prepared = prepare_registration(
+                "request_user_input",
+                ask_user.definition(),
+                ToolCallPolicy::DirectOnly,
+            )?;
+            registrations.push(
+                prepared
+                    .attach(ToolHandle::new(
+                        ask_user.attach(pl_tool::ask_user::AskUserTool),
+                    ))
+                    .with_interactions(),
+            );
         }
-        registrations.extend([
-            pl_tool::finish_turn::registration(declaration(ThreadBuiltin::FinishTurn)?)?,
-            pl_tool::todo::registration(declaration(ThreadBuiltin::Todo)?)?,
-            pl_tool::discovery::registration(declaration(ThreadBuiltin::Discover)?)?,
-        ]);
+        let definition = ThreadBuiltin::FinishTurn.declaration();
+        let prepared =
+            prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
+        registrations.push(pl_tool::finish_turn::registration(prepared, definition));
+        let todo = prepare_native_tool::<pl_tool::todo::TodoUpdateTool>()?;
+        let prepared = prepare_registration(
+            pl_tool::todo::TOOL_UPDATE_TODO_LIST,
+            todo.definition(),
+            ToolCallPolicy::DirectOnly,
+        )?;
         registrations.push(
-            pl_tool::task_control::ListTasksTool
-                .registration(declaration(ThreadBuiltin::ListTasks)?)?,
+            prepared
+                .attach(ToolHandle::new(todo.attach(pl_tool::todo::TodoUpdateTool)))
+                .with_extension_updates(),
         );
+        let discover = prepare_native_tool::<pl_tool::discovery::DiscoverTools>()?;
+        let prepared = prepare_registration(
+            "discover_tools",
+            discover.definition(),
+            ToolCallPolicy::DirectOnly,
+        )?;
         registrations.push(
-            Registration::new(
-                "sleep".into(),
-                declaration(ThreadBuiltin::Sleep)?,
-                pl_tool::session::SleepTool,
-            )?
-            .with_presentation_contract(ToolPresentationContract::new("builtin.sleep@1")),
+            prepared
+                .attach(ToolHandle::new(
+                    discover.attach(pl_tool::discovery::DiscoverTools),
+                ))
+                .with_tool_discovery(),
+        );
+        let list_tasks = prepare_native_tool::<pl_tool::task_control::ListTasksTool>()?;
+        let prepared = prepare_registration(
+            "list_tool_tasks",
+            list_tasks.definition(),
+            ToolCallPolicy::DirectOnly,
+        )?;
+        registrations.push(prepared.attach(ToolHandle::new(
+            list_tasks.attach(pl_tool::task_control::ListTasksTool),
+        )));
+        let sleep = prepare_native_tool::<pl_tool::session::SleepTool>()?;
+        let prepared_sleep =
+            prepare_registration("sleep", sleep.definition(), ToolCallPolicy::DirectOnly)?;
+        registrations.push(
+            prepared_sleep
+                .attach(ToolHandle::new(sleep.attach(pl_tool::session::SleepTool)))
+                .with_presentation_contract(ToolPresentationContract::new("builtin.sleep@1")),
         );
         for kind in [
             TaskControlKind::Wait,
             TaskControlKind::Query,
             TaskControlKind::Cancel,
         ] {
-            registrations.push(
-                TaskControlTool::new(kind).registration(declaration(ThreadBuiltin::Task(kind))?)?,
-            );
+            let definition = ThreadBuiltin::Task(kind).declaration();
+            let prepared =
+                prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
+            registrations.push(TaskControlTool::new(kind, definition).registration(prepared));
         }
         for kind in pl_tool::session_note::SessionNoteToolKind::all() {
+            let definition = ThreadBuiltin::Note(*kind).declaration();
+            let prepared =
+                prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
             registrations.push(pl_tool::session_note::registration(
-                *kind,
-                declaration(ThreadBuiltin::Note(*kind))?,
-            )?);
+                *kind, prepared, definition,
+            ));
         }
         Ok(Self {
             command_processes: commands,
@@ -341,15 +405,22 @@ impl StudioThreadTools {
             return Ok(self);
         }
         for kind in binding.kinds {
-            let declaration = pl_model::runtime::thread_tool_declaration(&kind.to_spec())?;
+            let policy = if kind.effect() == pl_tool::approval::ToolEffect::Read {
+                ToolCallPolicy::DirectAndProgrammatic
+            } else {
+                ToolCallPolicy::DirectOnly
+            };
+            let definition = kind.definition();
+            let declaration = prepare_registration(definition.name(), &definition, policy)?;
             let tool = pl_tool::git::GitTool::new(
                 kind,
                 binding.config.clone(),
                 binding.backend.clone(),
                 binding.credentials.clone(),
+                definition,
             );
             self.registrations
-                .push(tool.registration(declaration, binding.authorization.clone())?);
+                .push(tool.registration(declaration, binding.authorization.clone()));
         }
         Ok(self)
     }
@@ -363,11 +434,18 @@ impl StudioThreadTools {
         client: pl_tool::search::WebSearchClient,
         options: pl_tool::search::ThreadSearchOptions,
     ) -> Result<Self, ThreadAssemblyError> {
-        let declaration = pl_model::runtime::thread_tool_declaration(
-            &pl_tool::search::ThreadWebSearchTool::declaration(),
+        let adapter = prepare_native_tool::<pl_tool::search::ThreadWebSearchTool>()?;
+        let declaration = prepare_registration(
+            adapter.definition().name(),
+            adapter.definition(),
+            ToolCallPolicy::DirectOnly,
         )?;
         self.registrations.push(
-            pl_tool::search::ThreadWebSearchTool::new(client, options).registration(declaration)?,
+            declaration
+                .attach(ToolHandle::new(adapter.attach(
+                    pl_tool::search::ThreadWebSearchTool::new(client, options),
+                )))
+                .with_presentation_contract(ToolPresentationContract::new("builtin.web_search@1")),
         );
         Ok(self)
     }
@@ -384,6 +462,13 @@ impl StudioThreadTools {
         backend: pl_model::config::ImageGenerationBackend,
         media: std::sync::Arc<H>,
     ) -> Result<Self, ThreadAssemblyError> {
+        let adapter =
+            prepare_native_tool::<pl_tool::image_generation::ThreadImageGenerationTool<H>>()?;
+        let declaration = prepare_registration(
+            adapter.definition().name(),
+            adapter.definition(),
+            ToolCallPolicy::DirectOnly,
+        )?;
         let client =
             pl_model::protocol::images::ImagesClient::new(backend.endpoint).map_err(|error| {
                 ThreadAssemblyError::Resource {
@@ -391,18 +476,15 @@ impl StudioThreadTools {
                     source: Box::new(error),
                 }
             })?;
-        let declaration = pl_model::runtime::thread_tool_declaration(
-            &pl_tool::image_generation::ThreadImageGenerationTool::<H>::declaration(),
-        )?;
-        self.registrations.push(
-            pl_tool::image_generation::ThreadImageGenerationTool::new(
-                client,
-                backend.model,
-                backend.account_id.to_string(),
-                media,
-            )
-            .registration(declaration)?,
-        );
+        self.registrations
+            .push(declaration.attach(ToolHandle::new(adapter.attach(
+                pl_tool::image_generation::ThreadImageGenerationTool::new(
+                    client,
+                    backend.model,
+                    backend.account_id.to_string(),
+                    media,
+                ),
+            ))));
         Ok(self)
     }
 
@@ -421,9 +503,11 @@ impl StudioThreadTools {
             pl_tool::skill::ThreadSkillKind::List,
             pl_tool::skill::ThreadSkillKind::View,
         ] {
-            let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-            let tool = pl_tool::skill::ThreadSkillTool::new(sources.clone(), kind);
-            self.registrations.push(tool.registration(declaration)?);
+            let definition = kind.declaration();
+            let declaration =
+                prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
+            let tool = pl_tool::skill::ThreadSkillTool::new(sources.clone(), kind, definition);
+            self.registrations.push(tool.registration(declaration));
         }
         Ok(self)
     }
@@ -440,12 +524,20 @@ impl StudioThreadTools {
         if !self.capabilities.skills {
             return Ok(self);
         }
-        let declaration = pl_model::runtime::thread_tool_declaration(
-            &pl_tool::skill::ThreadSkillManageTool::declaration(),
+        let adapter = prepare_native_tool::<pl_tool::skill::ThreadSkillManageTool>()?;
+        let declaration = prepare_registration(
+            adapter.definition().name(),
+            adapter.definition(),
+            ToolCallPolicy::DirectOnly,
         )?;
+        let authorization = workspace.authorization();
         self.registrations.push(
-            pl_tool::skill::ThreadSkillManageTool::new(catalog, workspace)
-                .registration(declaration)?,
+            declaration
+                .attach(ToolHandle::new(adapter.attach(
+                    pl_tool::skill::ThreadSkillManageTool::new(catalog, workspace),
+                )))
+                .foreground()
+                .with_authorization(authorization),
         );
         Ok(self)
     }
@@ -462,9 +554,16 @@ impl StudioThreadTools {
             pl_tool::bots::BotToolKind::ReadMessages,
             pl_tool::bots::BotToolKind::SendMessage,
         ] {
-            let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-            let tool = pl_tool::bots::ThreadBotTool::new(host.clone(), kind, workspace_id.clone());
-            self.registrations.push(tool.registration(declaration)?);
+            let definition = kind.declaration();
+            let declaration =
+                prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
+            let tool = pl_tool::bots::ThreadBotTool::new(
+                host.clone(),
+                kind,
+                workspace_id.clone(),
+                definition,
+            );
+            self.registrations.push(tool.registration(declaration));
         }
         Ok(self)
     }
@@ -485,9 +584,15 @@ impl StudioThreadTools {
             pl_tool::lsp::LspToolKind::Capabilities,
             pl_tool::lsp::LspToolKind::Query,
         ] {
-            let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-            let tool = pl_tool::lsp::ThreadLspTool::new(registry.clone(), paths.clone(), kind);
-            self.registrations.push(tool.registration(declaration)?);
+            let definition = kind.declaration();
+            let declaration = prepare_registration(
+                definition.name(),
+                &definition,
+                ToolCallPolicy::DirectAndProgrammatic,
+            )?;
+            let tool =
+                pl_tool::lsp::ThreadLspTool::new(registry.clone(), paths.clone(), kind, definition);
+            self.registrations.push(tool.registration(declaration));
         }
         Ok(self)
     }
@@ -510,12 +615,6 @@ impl StudioThreadTools {
     }
 }
 
-fn declaration(tool: ThreadBuiltin) -> Result<OpaquePayload, ThreadAssemblyError> {
-    Ok(pl_model::runtime::thread_tool_declaration(
-        &tool.declaration(),
-    )?)
-}
-
 fn remote_mutation_presentation_contract(
     kind: pl_tool::remote::RemoteMutationKind,
 ) -> &'static str {
@@ -532,35 +631,52 @@ fn local_mutation_tools(
 ) -> Result<Vec<Registration>, ThreadAssemblyError> {
     use pl_tool::file::{CopyPathTool, CreateDirectoryTool, DeletePathTool, MovePathTool};
     let authority = workspace.authorization();
+    let create = prepare_native_tool::<CreateDirectoryTool>()?;
+    let create_registration = prepare_registration(
+        "create_directory",
+        create.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    let delete = prepare_native_tool::<DeletePathTool>()?;
+    let delete_registration = prepare_registration(
+        "delete_path",
+        delete.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    let copy = prepare_native_tool::<CopyPathTool>()?;
+    let copy_registration =
+        prepare_registration("copy_path", copy.definition(), ToolCallPolicy::DirectOnly)?;
+    let move_path = prepare_native_tool::<MovePathTool>()?;
+    let move_registration = prepare_registration(
+        "move_path",
+        move_path.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
     Ok(vec![
-        Registration::new(
-            "create_directory".into(),
-            declaration(ThreadBuiltin::CreateDirectory)?,
-            CreateDirectoryTool::new(workspace.clone()),
-        )?
-        .with_presentation_contract(ToolPresentationContract::new("builtin.create_directory@1"))
-        .with_authorization(authority.clone()),
-        Registration::new(
-            "delete_path".into(),
-            declaration(ThreadBuiltin::DeletePath)?,
-            DeletePathTool::new(workspace.clone()),
-        )?
-        .with_presentation_contract(ToolPresentationContract::new("builtin.delete_path@1"))
-        .with_authorization(authority.clone()),
-        Registration::new(
-            "copy_path".into(),
-            declaration(ThreadBuiltin::CopyPath)?,
-            CopyPathTool::new(workspace.clone()),
-        )?
-        .with_presentation_contract(ToolPresentationContract::new("builtin.copy_path@1"))
-        .with_authorization(authority.clone()),
-        Registration::new(
-            "move_path".into(),
-            declaration(ThreadBuiltin::MovePath)?,
-            MovePathTool::new(workspace),
-        )?
-        .with_presentation_contract(ToolPresentationContract::new("builtin.move_path@1"))
-        .with_authorization(authority),
+        create_registration
+            .attach(ToolHandle::new(
+                create.attach(CreateDirectoryTool::new(workspace.clone())),
+            ))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.create_directory@1"))
+            .with_authorization(authority.clone()),
+        delete_registration
+            .attach(ToolHandle::new(
+                delete.attach(DeletePathTool::new(workspace.clone())),
+            ))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.delete_path@1"))
+            .with_authorization(authority.clone()),
+        copy_registration
+            .attach(ToolHandle::new(
+                copy.attach(CopyPathTool::new(workspace.clone())),
+            ))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.copy_path@1"))
+            .with_authorization(authority.clone()),
+        move_registration
+            .attach(ToolHandle::new(
+                move_path.attach(MovePathTool::new(workspace)),
+            ))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.move_path@1"))
+            .with_authorization(authority),
     ])
 }
 
@@ -574,30 +690,66 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
         .iter()
         .copied()
         .map(|kind| {
+            let definition = kind.definition();
+            let prepared =
+                prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
             Ok(
-                ThreadWorkspaceFileTool::new(kind, backend.clone(), workspace.clone())
-                    .registration(declaration(ThreadBuiltin::File(kind))?)?,
+                ThreadWorkspaceFileTool::new(kind, backend.clone(), workspace.clone(), definition)
+                    .registration(prepared),
             )
         })
         .collect::<Result<Vec<_>, ThreadAssemblyError>>()?;
+    let view_image =
+        prepare_native_tool::<pl_tool::image::ThreadViewImageTool<B, super::media::MediaHost>>()?;
+    let view_registration = prepare_registration(
+        "view_image",
+        view_image.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    let show_image = prepare_native_tool::<pl_tool::image_card::ThreadShowImageTool>()?;
+    let show_registration = prepare_registration(
+        "show_image",
+        show_image.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    let stat = prepare_native_tool::<pl_tool::workspace_file::ThreadStatPathTool<B>>()?;
+    let stat_registration =
+        prepare_registration("stat_path", stat.definition(), ToolCallPolicy::DirectOnly)?;
+    let write = prepare_native_tool::<pl_tool::workspace_file::ThreadWriteFileTool<B>>()?;
+    let write_registration =
+        prepare_registration("write_file", write.definition(), ToolCallPolicy::DirectOnly)?;
     tools.push(
-        pl_tool::image::ThreadViewImageTool::new(backend.clone(), workspace.authorization(), media)
-            .registration(declaration(ThreadBuiltin::ViewImage)?)?,
+        view_registration
+            .attach(ToolHandle::new(view_image.attach(
+                pl_tool::image::ThreadViewImageTool::new(backend.clone(), media),
+            )))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.view_image@1"))
+            .with_authorization(workspace.authorization()),
     );
     tools.push(
-        pl_tool::image_card::ThreadShowImageTool::new()
-            .registration(declaration(ThreadBuiltin::ShowImage)?)?,
+        show_registration
+            .attach(ToolHandle::new(
+                show_image.attach(pl_tool::image_card::ThreadShowImageTool::new()),
+            ))
+            .foreground_coexisting(),
     );
     tools.push(
-        pl_tool::workspace_file::ThreadStatPathTool::new(
-            backend.clone(),
-            workspace.authorization(),
-        )
-        .registration(declaration(ThreadBuiltin::StatPath)?)?,
+        stat_registration
+            .attach(ToolHandle::new(stat.attach(
+                pl_tool::workspace_file::ThreadStatPathTool::new(backend.clone()),
+            )))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.stat_path@1"))
+            .with_authorization(workspace.authorization()),
     );
+    let authorization = workspace.authorization();
     tools.push(
-        pl_tool::workspace_file::ThreadWriteFileTool::new(backend, workspace)
-            .registration(declaration(ThreadBuiltin::WriteFile)?)?,
+        write_registration
+            .attach(ToolHandle::new(write.attach(
+                pl_tool::workspace_file::ThreadWriteFileTool::new(backend, workspace),
+            )))
+            .with_presentation_contract(ToolPresentationContract::new("builtin.write_file@1"))
+            .foreground_coexisting()
+            .with_authorization(authorization),
     );
     Ok(tools)
 }

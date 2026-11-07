@@ -206,6 +206,10 @@ pub enum ThreadAssemblyError {
     PreparationWorker(#[from] tokio::task::JoinError),
     #[error("tool catalog registration failed")]
     Registry(#[from] pl_core::tool::opaque::RegistryError),
+    #[error(transparent)]
+    Definition(#[from] pl_agent_tool::DefinitionError),
+    #[error(transparent)]
+    ToolBinding(#[from] pl_tool::binding::BindingError),
     #[error("Thread assembly is closed")]
     Closed,
     #[error("initial context cannot replace restored Thread history during assembly")]

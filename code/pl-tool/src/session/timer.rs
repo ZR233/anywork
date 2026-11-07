@@ -5,7 +5,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use schemars::JsonSchema;
@@ -25,21 +25,23 @@ pub struct SleepInput {
 }
 
 impl SleepTool {
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            "sleep",
-            "Start a cancellable timer using the Thread task lifecycle. If it exceeds the one-second delivery window, use the returned taskId with wait alongside other tasks; any selected task or Thread message can wake wait first.",
-            schemars::schema_for!(SleepInput).to_value(),
-        )
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        sleep_tool_definition()
     }
 }
-impl Tool for SleepTool {
+impl pl_agent_tool::typed::TypedTool for SleepTool {
+    const NAME: &'static str = SLEEP_TOOL_NAME;
+    const DESCRIPTION: &'static str = SLEEP_TOOL_DESCRIPTION;
+    type Args = SleepInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let input: SleepInput = serde_json::from_str(input.content()).map_err(ToolError::new)?;
         if !(1..=86_400_000).contains(&input.duration_ms) {
             return Err(ToolError::new(tool_error(
                 "sleep",
@@ -61,3 +63,15 @@ impl Tool for SleepTool {
         ))
     }
 }
+
+pub fn sleep_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        SLEEP_TOOL_NAME,
+        SLEEP_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<SleepInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const SLEEP_TOOL_NAME: &str = "sleep";
+const SLEEP_TOOL_DESCRIPTION: &str = "Start a cancellable timer using the Thread task lifecycle. If it exceeds the one-second delivery window, use the returned taskId with wait alongside other tasks; any selected task or Thread message can wake wait first.";

@@ -102,13 +102,28 @@ impl Default for Control {
 impl Control {
     pub fn realtime() -> Self {
         Self {
-            names: vec!["realtime-parallel-observer", "realtime-host-cwd-observer"],
-            stages: vec![ReplyStage::new(), ReplyStage::new()],
+            names: vec![
+                "realtime-before-first-text",
+                "realtime-first-live-text",
+                "realtime-parallel-observer",
+                "realtime-host-cwd-observer",
+            ],
+            stages: vec![
+                ReplyStage::new(),
+                ReplyStage::new(),
+                ReplyStage::new(),
+                ReplyStage::new(),
+            ],
         }
     }
 
     pub fn realtime_script(&self, host_cwd: &str) -> Vec<Step> {
-        super::gui_realtime_script(host_cwd, Some(&self.stages[0]), Some(&self.stages[1]))
+        super::gui_realtime_script(
+            host_cwd,
+            Some(&self.stages[2]),
+            Some(&self.stages[3]),
+            Some((&self.stages[0], &self.stages[1])),
+        )
     }
 
     pub fn questions() -> Self {

@@ -10,7 +10,7 @@ use pl_core::{
     context::OpaquePayload,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolAuthorization, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use std::sync::Arc;
@@ -71,46 +71,30 @@ pub fn saved_view_image_receipt(
 pub struct ThreadViewImageTool<B, H> {
     backend: Arc<B>,
     media: Arc<H>,
-    authorization: ToolAuthorization,
 }
 
 impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> ThreadViewImageTool<B, H> {
-    /// Binds physical reads and authorization to the same Thread installation.
-    pub fn new(backend: Arc<B>, authorization: ToolAuthorization, media: Arc<H>) -> Self {
-        Self {
-            backend,
-            authorization,
-            media,
-        }
-    }
-
-    /// Installs an immediately visible image reader without framework control permissions.
-    ///
-    /// # Errors
-    /// Returns invalid registry identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        let authorization = self.authorization.clone();
-        Ok(
-            Registration::new(TOOL_VIEW_IMAGE.into(), declaration, self)?
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.view_image@1",
-                ))
-                .with_authorization(authorization),
-        )
+    /// Binds physical reads and durable media to the same Thread installation.
+    pub fn new(backend: Arc<B>, media: Arc<H>) -> Self {
+        Self { backend, media }
     }
 }
 
-impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> Tool for ThreadViewImageTool<B, H> {
+impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> pl_agent_tool::typed::TypedTool
+    for ThreadViewImageTool<B, H>
+{
+    const NAME: &'static str = THREAD_VIEW_IMAGE_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_VIEW_IMAGE_TOOL_DESCRIPTION;
+    type Args = ViewImageInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(failure("unsupported image argument encoding"));
-        }
-        let input: ViewImageInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         let limits = image_limits(context.model_projection.as_ref())?
             .filter(|limits| limits.max_count != Some(0))
             .ok_or_else(|| failure("prepared model does not support image input"))?;
@@ -196,3 +180,15 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> Tool for ThreadViewIma
 fn failure(message: &str) -> ToolError {
     ToolError::new(crate::tool_error(TOOL_VIEW_IMAGE, message))
 }
+
+pub fn thread_view_image_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_VIEW_IMAGE_TOOL_NAME,
+        THREAD_VIEW_IMAGE_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<ViewImageInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_VIEW_IMAGE_TOOL_NAME: &str = crate::image::TOOL_VIEW_IMAGE;
+const THREAD_VIEW_IMAGE_TOOL_DESCRIPTION: &str = "Open a local or SSH workspace image so you can inspect screenshots and other image files. Pass its path in the current workspace; SSH paths must be workspace-relative POSIX paths. The image is retained for model context and history replay. Requires image input support from the current model.";

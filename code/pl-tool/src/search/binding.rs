@@ -3,10 +3,11 @@
 //! 装配过程中只消费规划结果与共享配置快照；hosted 条目永不在本层获取 core 执行器。
 //! OpenAI 与 DeepSeek 两条规划彼此独立，任一可用都只追加自己的工具，不排斥其他工具。
 
+use crate::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
 use pl_core::tool::opaque::Registration;
 use pl_model::protocol::StandaloneWebSearchDialect;
 use pl_model::protocol::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
-use pl_model::runtime::{HostedTool, thread_tool_declaration};
+use pl_model::runtime::HostedTool;
 use pl_protocol::HostedWebSearchDialect;
 use pl_protocol::search::WebSearchConfig;
 
@@ -27,10 +28,8 @@ pub enum SearchBindingError {
     MissingBackend,
     #[error(transparent)]
     Config(#[from] pl_protocol::PureError),
-    #[error("web search tool declaration failed")]
-    Declaration(#[from] pl_core::model::ModelError),
-    #[error("web search tool registration failed")]
-    Registry(#[from] pl_core::tool::opaque::RegistryError),
+    #[error(transparent)]
+    Binding(#[from] crate::binding::BindingError),
     #[error(transparent)]
     Tools(#[from] ToolsError),
 }
@@ -91,6 +90,13 @@ impl WebSearchPlans {
                     .ok_or(SearchBindingError::MissingBackend)?;
                 match backend.dialect {
                     StandaloneWebSearchDialect::OpenAiSearchApi => {
+                        let native = prepare_native_tool::<ThreadWebSearchTool>()
+                            .map_err(crate::binding::BindingError::from)?;
+                        let prepared = prepare_registration(
+                            super::TOOL_WEB_SEARCH,
+                            native.definition(),
+                            ToolCallPolicy::DirectOnly,
+                        )?;
                         let client = WebSearchClient::new(&SearchEndpoint {
                             base_url: backend.endpoint.base_url.clone(),
                             bearer_token: backend.endpoint.bearer_token.clone(),
@@ -110,25 +116,67 @@ impl WebSearchPlans {
                                 max_output_tokens: backend.max_output_tokens,
                             },
                         );
-                        let declaration =
-                            thread_tool_declaration(&ThreadWebSearchTool::declaration())?;
-                        binding.tools.push(tool.registration(declaration)?);
+                        binding.tools.push(
+                            prepared
+                                .attach(pl_agent_tool::ToolHandle::new(native.attach(tool)))
+                                .with_presentation_contract(
+                                    pl_core::model::ToolPresentationContract::new(
+                                        "builtin.web_search@1",
+                                    ),
+                                ),
+                        );
                     }
                     StandaloneWebSearchDialect::DeepSeekToolsApi => {
+                        let search = self
+                            .deepseek_options
+                            .enabled
+                            .then(|| {
+                                let native = prepare_native_tool::<ThreadDeepSeekWebSearchTool>()?;
+                                let prepared = prepare_registration(
+                                    super::TOOL_DEEPSEEK_WEB_SEARCH,
+                                    native.definition(),
+                                    ToolCallPolicy::DirectOnly,
+                                )?;
+                                Ok::<_, crate::binding::BindingError>((native, prepared))
+                            })
+                            .transpose()?;
+                        let fetch = self
+                            .deepseek_options
+                            .fetch_enabled
+                            .then(|| {
+                                let native = prepare_native_tool::<ThreadDeepSeekWebFetchTool>()?;
+                                let prepared = prepare_registration(
+                                    super::TOOL_DEEPSEEK_WEB_FETCH,
+                                    native.definition(),
+                                    ToolCallPolicy::DirectOnly,
+                                )?;
+                                Ok::<_, crate::binding::BindingError>((native, prepared))
+                            })
+                            .transpose()?;
                         let client = ToolsClient::new(&backend.endpoint, ToolsOptions::default())?;
-                        if self.deepseek_options.enabled {
+                        if let Some((native, prepared)) = search {
                             let tool = ThreadDeepSeekWebSearchTool::new(client.clone());
-                            let declaration = thread_tool_declaration(
-                                &ThreadDeepSeekWebSearchTool::declaration(),
-                            )?;
-                            binding.tools.push(tool.registration(declaration)?);
+                            binding.tools.push(
+                                prepared
+                                    .attach(pl_agent_tool::ToolHandle::new(native.attach(tool)))
+                                    .with_presentation_contract(
+                                        pl_core::model::ToolPresentationContract::new(
+                                            "builtin.deepseek_web_search@1",
+                                        ),
+                                    ),
+                            );
                         }
-                        if self.deepseek_options.fetch_enabled {
+                        if let Some((native, prepared)) = fetch {
                             let tool = ThreadDeepSeekWebFetchTool::new(client);
-                            let declaration = thread_tool_declaration(
-                                &ThreadDeepSeekWebFetchTool::declaration(),
-                            )?;
-                            binding.tools.push(tool.registration(declaration)?);
+                            binding.tools.push(
+                                prepared
+                                    .attach(pl_agent_tool::ToolHandle::new(native.attach(tool)))
+                                    .with_presentation_contract(
+                                        pl_core::model::ToolPresentationContract::new(
+                                            "builtin.deepseek_web_fetch@1",
+                                        ),
+                                    ),
+                            );
                         }
                     }
                 }

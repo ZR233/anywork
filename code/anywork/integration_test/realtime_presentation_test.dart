@@ -41,6 +41,8 @@ const _parallelObserverStage = 'realtime-parallel-observer';
 const _parallelObserverPrefix = 'realtime parallel observers ready';
 const _hostCwdObserverStage = 'realtime-host-cwd-observer';
 const _hostCwdObserverPrefix = 'realtime host cwd observers ready';
+const _beforeFirstTextStage = 'realtime-before-first-text';
+const _firstLiveTextStage = 'realtime-first-live-text';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -179,16 +181,20 @@ void main() {
       );
       await graph.client.directoryCommands.openProject(project);
       graph.setConversationPageVisible(true);
-      final scene = _RealtimeScene(tester, graph);
+      final scene = _RealtimeScene(tester, graph, project);
 
       await capturePresentation(tester, 'realtime-start.png');
       await scene.submit('Realtime delayed first token');
+      await fixtureGate(tester, provider, _beforeFirstTextStage);
       await scene.untilKey(const ValueKey('conversation-activity'));
       await capturePresentation(tester, 'realtime-thinking.png');
+      await fixtureGate(tester, provider, _beforeFirstTextStage, release: true);
+      await fixtureGate(tester, provider, _firstLiveTextStage);
       await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 20),
       );
       await capturePresentation(tester, 'realtime-streaming.png');
+      await fixtureGate(tester, provider, _firstLiveTextStage, release: true);
       await scene.completed(answer: 'realtime delayed first token');
 
       await scene.submit('Realtime reasoning then answer');
@@ -393,10 +399,11 @@ typedef _ExecReceipt = ({
 });
 
 final class _RealtimeScene {
-  _RealtimeScene(this.tester, this.graph);
+  _RealtimeScene(this.tester, this.graph, this.projectPath);
 
   final WidgetTester tester;
   final AppGraph graph;
+  final String projectPath;
   String? _priorTurn;
   String? _submittedThreadId;
   String? _submittedTurnId;
@@ -984,10 +991,12 @@ final class _RealtimeScene {
         expect(view.canRead, isTrue);
         if (owner.error case final error?) throw error;
         if (view.error case final error?) throw error;
-        expect(read, findsOneWidget);
-        final disclosure = tester.widget<TimelineActivityDisclosure>(read);
-        expect(disclosure.initiallyExpanded, isTrue);
-        expect(disclosure.enabled, !view.loading);
+        expect(view.disclosed, isTrue);
+        expect(
+          read,
+          findsNothing,
+          reason: 'The outer tool is the sole body disclosure',
+        );
         return view;
       }
 
@@ -1837,12 +1846,61 @@ final class _RealtimeScene {
 
   Future<void> submit(String prompt) async {
     final input = find.byKey(const ValueKey('composer-input'));
-    await until(() => input.evaluate().isNotEmpty, 'composer');
+    final composerView = find.byType(PromptComposerView);
+    await until(() {
+      final selection = graph.client.selection.state;
+      final project = graph.client.project.state.projects?.values
+          .where((candidate) => candidate.id == selection.selectedProjectId)
+          .firstOrNull;
+      if (project?.path != projectPath ||
+          selection.needsOpen ||
+          input.evaluate().length != 1 ||
+          composerView.evaluate().length != 1) {
+        return false;
+      }
+      final composer = tester.widget<PromptComposerView>(composerView);
+      final field = tester.widget<TextField>(input);
+      return composer.pasteTargetId ==
+              (selection.selectedThreadId ?? selection.selectedProjectId) &&
+          composer.enabled &&
+          (field.enabled ?? true);
+    }, 'editable composer bound to the selected project and conversation');
+    final selection = graph.client.selection.state;
+    final controller = tester.widget<TextField>(input).controller!;
+    final target = tester
+        .widget<PromptComposerView>(composerView)
+        .pasteTargetId;
+    void recordInput(String phase) {
+      final current = tester.widget<TextField>(input);
+      final composer = tester.widget<PromptComposerView>(composerView);
+      final selected = graph.client.selection.state;
+      debugPrintSynchronously(
+        'Realtime composer input: ${jsonEncode({'phase': phase, 'projectId': selected.selectedProjectId, 'threadId': selected.selectedThreadId, 'needsOpen': selected.needsOpen, 'navigation': graph.client.selection.navigationGeneration, 'target': composer.pasteTargetId, 'element': identityHashCode(tester.element(input)), 'controller': identityHashCode(current.controller), 'enabled': current.enabled, 'draft': composer.composer.draft, 'text': current.controller?.text})}',
+      );
+    }
+
     try {
+      recordInput('before');
       await tester.enterText(input, prompt);
+      recordInput('entered');
+      expect(controller.text, prompt);
       await tester.pump();
-      expect(tester.widget<TextField>(input).controller!.text, prompt);
-      _submittedThreadId = graph.client.selection.state.selectedThreadId;
+      recordInput('after-frame');
+      expect(
+        graph.client.selection.state.selectedProjectId,
+        selection.selectedProjectId,
+      );
+      expect(
+        graph.client.selection.state.selectedThreadId,
+        selection.selectedThreadId,
+      );
+      expect(tester.widget<TextField>(input).controller, same(controller));
+      expect(
+        tester.widget<PromptComposerView>(composerView).pasteTargetId,
+        target,
+      );
+      expect(controller.text, prompt);
+      _submittedThreadId = selection.selectedThreadId;
       _priorTurn = _submittedThreadId == null
           ? null
           : graph.client.conversations

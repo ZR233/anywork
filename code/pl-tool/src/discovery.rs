@@ -2,7 +2,7 @@
 use pl_core::context::{ContextContent, OpaquePayload};
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+    opaque::{CallContext, ToolError},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ pub struct DiscoverTools;
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct SearchInput {
+pub struct SearchInput {
     query: String,
 }
 
@@ -23,24 +23,19 @@ struct SearchResult {
     tool_ids: Vec<String>,
 }
 
-/// Creates a Thread-owned discovery tool using a declaration encoded by the host/model boundary.
-///
-/// # Errors
-/// Propagates invalid registration identity.
-pub fn registration(declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-    Ok(
-        Registration::new("discover_tools".into(), declaration, DiscoverTools)?
-            .with_tool_discovery(),
-    )
-}
+impl pl_agent_tool::typed::TypedTool for DiscoverTools {
+    const NAME: &'static str = DISCOVER_TOOLS_NAME;
+    const DESCRIPTION: &'static str = DISCOVER_TOOLS_DESCRIPTION;
+    type Args = SearchInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
 
-impl Tool for DiscoverTools {
     async fn execute(
         &self,
-        input: OpaquePayload,
+        request: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let request: SearchInput = serde_json::from_str(input.content()).map_err(ToolError::new)?;
         let query = request.query.trim().to_lowercase();
         let ids = context
             .catalog
@@ -64,3 +59,15 @@ impl Tool for DiscoverTools {
         .with_revealed_tools(ids))
     }
 }
+
+pub fn discover_tools_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        DISCOVER_TOOLS_NAME,
+        DISCOVER_TOOLS_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<SearchInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const DISCOVER_TOOLS_NAME: &str = "discover_tools";
+const DISCOVER_TOOLS_DESCRIPTION: &str = "Reveal up to 20 tool IDs matching query as one case-insensitive literal ID substring (surrounding whitespace is trimmed). Use an exact ID or a fragment such as 'delegation'; not a natural-language request, description search, or space-separated list. An empty query returns only the first 20 matches, not the full catalog. No match means this substring did not match the current Thread catalog, not that a capability is globally unavailable.";

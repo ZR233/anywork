@@ -18,7 +18,7 @@ use pl_core::{
     thread::{TaskAccess, ThreadError, ThreadHandle},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use tokio::sync::{Notify, mpsc};
@@ -55,7 +55,24 @@ struct ProgressTool {
     retained: Arc<Mutex<Option<TaskAccess>>>,
 }
 
-impl Tool for ProgressTool {
+impl pl_agent_tool::Tool for ProgressTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "ProgressTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -95,10 +112,9 @@ impl Harness {
         let retained = Arc::new(Mutex::new(None));
         thread
             .register_tools(vec![
-                Registration::new(
-                    "stream".into(),
-                    OpaquePayload::text("Tool stream"),
-                    ProgressTool {
+                Registration::prepare("stream".into(), OpaquePayload::text("Tool stream"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(ProgressTool {
                         updates,
                         step: Step {
                             reached,
@@ -106,9 +122,7 @@ impl Harness {
                         },
                         outcomes: outcomes.clone(),
                         retained: retained.clone(),
-                    },
-                )
-                .unwrap(),
+                    })),
             ])
             .await
             .unwrap();
@@ -350,7 +364,24 @@ async fn a_finished_call_rejects_a_late_increment_instead_of_reviving_its_previe
 #[derive(Debug)]
 struct StorageFaultTool;
 
-impl Tool for StorageFaultTool {
+impl pl_agent_tool::Tool for StorageFaultTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "StorageFaultTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -389,12 +420,9 @@ async fn a_tool_reliable_output_storage_fault_latches_and_keeps_accepted_output(
         ThreadHandle::start("tool-storage-fault".into(), DynModelSession::new(model)).unwrap();
     thread
         .register_tools(vec![
-            Registration::new(
-                "store".into(),
-                OpaquePayload::text("Tool store"),
-                StorageFaultTool,
-            )
-            .unwrap(),
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(StorageFaultTool)),
         ])
         .await
         .unwrap();

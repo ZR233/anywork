@@ -4,7 +4,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolAuthorization, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use std::sync::Arc;
@@ -13,29 +13,12 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct ThreadStatPathTool<B> {
     backend: Arc<B>,
-    authorization: ToolAuthorization,
 }
 
 impl<B: WorkspaceFileBackend + 'static> ThreadStatPathTool<B> {
     /// Binds the operation to the host-selected workspace lease.
-    pub fn new(backend: Arc<B>, authorization: ToolAuthorization) -> Self {
-        Self {
-            backend,
-            authorization,
-        }
-    }
-
-    /// Transfers the reader into the Thread tool manager.
-    ///
-    /// # Errors
-    /// Returns invalid registration identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        let authorization = self.authorization.clone();
-        Ok(Registration::new("stat_path".into(), declaration, self)?
-            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                "builtin.stat_path@1",
-            ))
-            .with_authorization(authorization))
+    pub fn new(backend: Arc<B>) -> Self {
+        Self { backend }
     }
 }
 
@@ -54,23 +37,23 @@ struct Receipt {
     modified_at: Option<i64>,
 }
 
-impl<B: WorkspaceFileBackend + 'static> Tool for ThreadStatPathTool<B> {
+impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadStatPathTool<B> {
+    const NAME: &'static str = THREAD_STAT_PATH_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_STAT_PATH_TOOL_DESCRIPTION;
+    type Args = crate::file::PathInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(crate::tool_error(
-                "stat_path",
-                "unsupported argument encoding",
-            )));
-        }
-        let input: crate::file::PathInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
+
         let granted = self.backend.for_grant(&context.grant);
         let backend = granted.as_ref().unwrap_or(self.backend.as_ref());
         let stat = backend
@@ -113,3 +96,16 @@ impl<B: WorkspaceFileBackend + 'static> Tool for ThreadStatPathTool<B> {
         ))
     }
 }
+
+pub fn thread_stat_path_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_STAT_PATH_TOOL_NAME,
+        THREAD_STAT_PATH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<crate::file::PathInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_STAT_PATH_TOOL_NAME: &str = "stat_path";
+const THREAD_STAT_PATH_TOOL_DESCRIPTION: &str =
+    "Return metadata for a workspace path, or exists: false when the path is absent.";

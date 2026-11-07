@@ -5,17 +5,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::context::{ContextContent, OpaquePayload};
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
+use pl_model::completion::ToolCallPolicy;
 use pl_protocol::studio::{ThreadDirectoryFilter, ThreadDirectoryQuery};
 use pl_protocol::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionPurpose,
     InteractionRequest, InteractionResolution, InteractionStatus, ToolApprovalResolution,
     ToolApprovalResolutionPayload, UserInputAnswer, UserInputResolution,
 };
+use pl_tool::binding::prepare_registration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -55,6 +58,7 @@ impl Operation {
 }
 
 struct SessionTool {
+    definition: ToolDefinition,
     bots: BotRuntime,
     source_thread_id: String,
     operation: Operation,
@@ -87,28 +91,35 @@ pub(crate) fn registrations(
     ]
     .into_iter().map(|operation| {
         let (description, input_schema) = match operation {
-            Operation::List => ("List anywork sessions across projects with status and pagination. Use returned session IDs, never guess IDs.", schemars::schema_for!(ListInput).to_value()),
-            Operation::Get => ("Read a session's current state, model and pending interactions without running it.", schemars::schema_for!(GetInput).to_value()),
-            Operation::Search => ("Search complete visible message text (including Chinese) across anywork sessions. Continue with the returned cursor until complete; a partial page is not an exhaustive search.", schemars::schema_for!(content::SearchInput).to_value()),
+            Operation::List => ("List anywork sessions across projects with status and pagination. Use returned session IDs, never guess IDs.", pl_agent_tool::typed::input_schema_for::<ListInput>()),
+            Operation::Get => ("Read a session's current state, model and pending interactions without running it.", pl_agent_tool::typed::input_schema_for::<GetInput>()),
+            Operation::Search => ("Search complete visible message text (including Chinese) across anywork sessions. Continue with the returned cursor until complete; a partial page is not an exhaustive search.", pl_agent_tool::typed::input_schema_for::<content::SearchInput>()),
             Operation::Read => ("Read bounded session Chat pages and content. Supply demand for pages; retain returned readScope with every before/manifest continuation. Use itemId to list contents, then copy ContentRef and supply range for bytes. before=null means only history EOF; closeReadScope explicitly releases that readScope. Unknown or retired scopes cannot resume.", content::read_schema()),
-            Operation::Send => ("Send the user's requested message to an existing anywork session. This starts or steers execution like a desktop user message. Attachments must be IDs already attached to your own bot session. Acceptance is not task completion; use get_session/read_session_messages for the result.", schemars::schema_for!(SendInput).to_value()),
-            Operation::ReadInteraction => ("Read one pending interaction of an anywork session in full: the complete plan document of a plan confirmation, every question with its options, or the tool approval request. Read it before resolving an interaction ID reported by get_session.", schemars::schema_for!(InteractionInput).to_value()),
-            Operation::ApprovePlan => ("Approve the pending implementation plan of an anywork session so work proceeds, acting on the user's explicit instruction. Use the pending plan confirmation interaction ID from get_session; read_session_interaction shows the full plan first.", schemars::schema_for!(InteractionInput).to_value()),
-            Operation::RevisePlan => ("Request changes to the pending implementation plan of an anywork session, acting on the user's explicit instruction. Required feedback states what to change; the session returns to drafting a revised plan.", schemars::schema_for!(RevisePlanInput).to_value()),
-            Operation::Answer => ("Answer the pending questions of an anywork session on the user's behalf. Each answer selects option labels and/or free text as the user actually said; a free-text entry is a custom reply.", schemars::schema_for!(AnswerInput).to_value()),
-            Operation::DecideApproval => ("Approve or deny a pending tool approval of an anywork session as explicitly instructed by the user; read_session_interaction shows what is being approved.", schemars::schema_for!(ApprovalInput).to_value()),
+            Operation::Send => ("Send the user's requested message to an existing anywork session. This starts or steers execution like a desktop user message. Attachments must be IDs already attached to your own bot session. Acceptance is not task completion; use get_session/read_session_messages for the result.", pl_agent_tool::typed::input_schema_for::<SendInput>()),
+            Operation::ReadInteraction => ("Read one pending interaction of an anywork session in full: the complete plan document of a plan confirmation, every question with its options, or the tool approval request. Read it before resolving an interaction ID reported by get_session.", pl_agent_tool::typed::input_schema_for::<InteractionInput>()),
+            Operation::ApprovePlan => ("Approve the pending implementation plan of an anywork session so work proceeds, acting on the user's explicit instruction. Use the pending plan confirmation interaction ID from get_session; read_session_interaction shows the full plan first.", pl_agent_tool::typed::input_schema_for::<InteractionInput>()),
+            Operation::RevisePlan => ("Request changes to the pending implementation plan of an anywork session, acting on the user's explicit instruction. Required feedback states what to change; the session returns to drafting a revised plan.", pl_agent_tool::typed::input_schema_for::<RevisePlanInput>()),
+            Operation::Answer => ("Answer the pending questions of an anywork session on the user's behalf. Each answer selects option labels and/or free text as the user actually said; a free-text entry is a custom reply.", pl_agent_tool::typed::input_schema_for::<AnswerInput>()),
+            Operation::DecideApproval => ("Approve or deny a pending tool approval of an anywork session as explicitly instructed by the user; read_session_interaction shows what is being approved.", pl_agent_tool::typed::input_schema_for::<ApprovalInput>()),
         };
-        let declaration = pl_model::runtime::thread_tool_declaration(&pl_protocol::ToolSpec::Function {
-            name: operation.name().into(), description: description.into(), input_schema,
-            allowed_callers: vec![], output_schema: None,
-        })?;
-        let tool = SessionTool { bots: bots.clone(), source_thread_id: thread_id.into(), operation, reads:Default::default() };
-        let registration = Registration::new(operation.name().into(), declaration, tool)?;
+        let definition = ToolDefinition::json(operation.name(), description, input_schema)?;
+        let prepared = prepare_registration(operation.name(), &definition, ToolCallPolicy::DirectOnly)?;
+        let tool = SessionTool { definition, bots: bots.clone(), source_thread_id: thread_id.into(), operation, reads:Default::default() };
+        let registration = prepared.attach(ToolHandle::new(tool));
         Ok(if matches!(operation, Operation::Send | Operation::ApprovePlan | Operation::RevisePlan | Operation::Answer | Operation::DecideApproval) { registration.foreground() } else { registration })
     }).collect()
 }
 
 impl Tool for SessionTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -116,7 +127,10 @@ impl Tool for SessionTool {
     ) -> Result<ToolOutput, ToolError> {
         self.run(input, context)
             .await
-            .map_err(|error| ToolError::new(std::io::Error::other(error)))
+            .map_err(|error| match error.downcast::<ToolError>() {
+                Ok(error) => error,
+                Err(error) => ToolError::new(std::io::Error::other(error)),
+            })
     }
     async fn close(&self) -> Result<(), ToolError> {
         self.reads
@@ -152,7 +166,8 @@ impl SessionTool {
             .context("Studio runtime is closed")?;
         match self.operation {
             Operation::List => {
-                let args: ListInput = serde_json::from_str(input.content())?;
+                let args: ListInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 ensure!(
                     (1..=100).contains(&args.limit),
                     "limit must be between 1 and 100"
@@ -166,14 +181,15 @@ impl SessionTool {
                 )
             }
             Operation::Get => {
-                let args: GetInput = serde_json::from_str(input.content())?;
+                let args: GetInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 content::get(&runtime, &self.reads, &args.session_id).await
             }
             Operation::Read => {
                 content::read(
                     &runtime,
                     &self.reads,
-                    serde_json::from_str(input.content())?,
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?,
                 )
                 .await
             }
@@ -181,19 +197,21 @@ impl SessionTool {
                 content::search(
                     &runtime,
                     &self.reads,
-                    serde_json::from_str(input.content())?,
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?,
                     &context.cancellation,
                 )
                 .await
             }
             Operation::Send => {
-                let args: SendInput = serde_json::from_str(input.content())?;
+                let args: SendInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 runtime
                     .send_from_bot(&bot.id, &self.source_thread_id, &context, args)
                     .await
             }
             Operation::ReadInteraction => {
-                let args: InteractionInput = serde_json::from_str(input.content())?;
+                let args: InteractionInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 output(
                     &runtime
                         .read_interaction_from_bot(&self.source_thread_id, &args)
@@ -201,7 +219,8 @@ impl SessionTool {
                 )
             }
             Operation::ApprovePlan => {
-                let args: InteractionInput = serde_json::from_str(input.content())?;
+                let args: InteractionInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 runtime
                     .resolve_from_bot(
                         &self.source_thread_id,
@@ -212,7 +231,8 @@ impl SessionTool {
                     .await
             }
             Operation::RevisePlan => {
-                let args: RevisePlanInput = serde_json::from_str(input.content())?;
+                let args: RevisePlanInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 ensure!(
                     !args.feedback.trim().is_empty(),
                     "revision feedback is required"
@@ -234,7 +254,8 @@ impl SessionTool {
                     .await
             }
             Operation::Answer => {
-                let args: AnswerInput = serde_json::from_str(input.content())?;
+                let args: AnswerInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 runtime
                     .resolve_from_bot(
                         &self.source_thread_id,
@@ -248,7 +269,8 @@ impl SessionTool {
                     .await
             }
             Operation::DecideApproval => {
-                let args: ApprovalInput = serde_json::from_str(input.content())?;
+                let args: ApprovalInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 runtime
                     .resolve_from_bot(
                         &self.source_thread_id,

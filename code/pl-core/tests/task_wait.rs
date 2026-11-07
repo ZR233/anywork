@@ -25,7 +25,7 @@ use pl_core::thread::{
 };
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
@@ -36,7 +36,21 @@ use support::{response, text};
 #[derive(Debug)]
 struct HeldTool(Arc<Notify>);
 
-impl Tool for HeldTool {
+impl pl_agent_tool::Tool for HeldTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("HeldTool", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -58,7 +72,24 @@ struct CleanupHeldTool {
     release: Arc<Notify>,
 }
 
-impl Tool for CleanupHeldTool {
+impl pl_agent_tool::Tool for CleanupHeldTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "CleanupHeldTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: OpaquePayload,
@@ -74,7 +105,21 @@ impl Tool for CleanupHeldTool {
 #[derive(Debug)]
 struct FastTool;
 
-impl Tool for FastTool {
+impl pl_agent_tool::Tool for FastTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("FastTool", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::new(input, vec![text("fast finished")]))
     }
@@ -86,7 +131,24 @@ struct AccessTool {
     release: Arc<Notify>,
 }
 
-impl Tool for AccessTool {
+impl pl_agent_tool::Tool for AccessTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "AccessTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -166,19 +228,19 @@ impl Harness {
         let held_b = Arc::new(Notify::new());
         thread
             .register_tools(vec![
-                Registration::new(
-                    "held".into(),
-                    OpaquePayload::text("held"),
-                    HeldTool(held.clone()),
-                )
-                .unwrap(),
-                Registration::new(
-                    "held-b".into(),
-                    OpaquePayload::text("held-b"),
-                    HeldTool(held_b.clone()),
-                )
-                .unwrap(),
-                Registration::new("fast".into(), OpaquePayload::text("fast"), FastTool).unwrap(),
+                Registration::prepare("held".into(), OpaquePayload::text("held"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTool(
+                        held.clone(),
+                    ))),
+                Registration::prepare("held-b".into(), OpaquePayload::text("held-b"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTool(
+                        held_b.clone(),
+                    ))),
+                Registration::prepare("fast".into(), OpaquePayload::text("fast"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
             ])
             .await
             .unwrap();
@@ -238,15 +300,12 @@ impl Harness {
     ) {
         let (started, mut ready) = mpsc::unbounded_channel();
         let release = Arc::new(Notify::new());
-        let registration = Registration::new(
-            "waiter".into(),
-            OpaquePayload::text("waiter"),
-            AccessTool {
+        let registration = Registration::prepare("waiter".into(), OpaquePayload::text("waiter"))
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(AccessTool {
                 started,
                 release: release.clone(),
-            },
-        )
-        .unwrap();
+            }));
         let registration = if waiting {
             registration.with_task_waiting()
         } else {
@@ -254,19 +313,19 @@ impl Harness {
         };
         self.thread
             .register_tools(vec![
-                Registration::new(
-                    "held".into(),
-                    OpaquePayload::text("held"),
-                    HeldTool(self.held.clone()),
-                )
-                .unwrap(),
-                Registration::new(
-                    "held-b".into(),
-                    OpaquePayload::text("held-b"),
-                    HeldTool(self.held_b.clone()),
-                )
-                .unwrap(),
-                Registration::new("fast".into(), OpaquePayload::text("fast"), FastTool).unwrap(),
+                Registration::prepare("held".into(), OpaquePayload::text("held"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTool(
+                        self.held.clone(),
+                    ))),
+                Registration::prepare("held-b".into(), OpaquePayload::text("held-b"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(HeldTool(
+                        self.held_b.clone(),
+                    ))),
+                Registration::prepare("fast".into(), OpaquePayload::text("fast"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
                 registration,
             ])
             .await
@@ -493,15 +552,12 @@ async fn cancellation_receipt_precedes_cleanup_and_wait_observes_the_same_task_e
     harness
         .thread
         .register_tools(vec![
-            Registration::new(
-                "cleanup".into(),
-                OpaquePayload::text("cleanup"),
-                CleanupHeldTool {
+            Registration::prepare("cleanup".into(), OpaquePayload::text("cleanup"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(CleanupHeldTool {
                     cancelled: cancelled.clone(),
                     release: cleanup.clone(),
-                },
-            )
-            .unwrap(),
+                })),
         ])
         .await
         .unwrap();
@@ -671,7 +727,9 @@ async fn wait_rejects_identity_authorization_and_stale_callers() {
     harness
         .thread
         .register_tools(vec![
-            Registration::new("fast".into(), OpaquePayload::text("fast"), FastTool).unwrap(),
+            Registration::prepare("fast".into(), OpaquePayload::text("fast"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
         ])
         .await
         .unwrap();
