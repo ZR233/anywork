@@ -354,28 +354,33 @@ class _CurrentItemState extends State<_CurrentItem> {
     }
     return ListenableBuilder(
       listenable: body,
-      builder: (_, _) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (body.cleanupError != null) Text(body.cleanupError.toString()),
-          for (final window in body.windows)
-            ConversationCurrentWindowView(
-              id: window.id,
-              text: window.window == null
-                  ? window.source.text
-                  : utf8.decode(window.window!.bytes, allowMalformed: true),
-              error: window.error,
-              offset: window.window?.offset,
-              end: window.window == null
-                  ? null
-                  : window.window!.offset + window.window!.bytes.length,
-              availableThrough: window.window?.availableThrough,
-              onFirst: () => body.firstWindow(window),
-              onNext: () => body.nextWindow(window),
-            ),
-        ],
-      ),
+      builder: (_, _) {
+        final windows = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (body.cleanupError != null) Text(body.cleanupError.toString()),
+            for (final window in body.windows)
+              ConversationCurrentWindowView(
+                id: window.id,
+                text: window.window == null
+                    ? window.source.text
+                    : utf8.decode(window.window!.bytes, allowMalformed: true),
+                error: window.error,
+                offset: window.window?.offset,
+                end: window.window == null
+                    ? null
+                    : window.window!.offset + window.window!.bytes.length,
+                availableThrough: window.window?.availableThrough,
+                onFirst: () => body.firstWindow(window),
+                onNext: () => body.nextWindow(window),
+              ),
+          ],
+        );
+        return item.kind == TimelineItemKind.text
+            ? windows
+            : SingleChildScrollView(primary: false, child: windows);
+      },
     );
   }
 }
